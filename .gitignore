@@ -1,0 +1,172 @@
+# NAILS .gitignore
+# NixOS Anti-forensics Isolation & Layering System
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing and coverage
+.coverage
+.pytest_cache/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+htmlcov/
+.tox/
+.nox/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# Documentation builds
+docs/_build/
+.readthedocs.yml
+site/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Security
+.secrets.baseline
+*.key
+*.pem
+*.p12
+*.pfx
+secrets.yaml
+secrets.json
+
+# Nix
+result
+result-*
+.direnv/
+shell.nix.bak
+flake.lock.bak
+
+# NixOS specific
+hardware-configuration.nix.backup
+configuration.nix.backup
+*.nix.backup
+
+# NAILS specific files
+.nails-state
+nails.log
+nails-*.log
+
+# System backups and temporary files
+backups/system_backup_*/
+*.tmp
+*.temp
+/tmp/
+.tmp/
+
+# VeraCrypt and forensic artifacts
+*.tc
+*.hc
+*.vol
+*.dd
+*.img
+*.raw
+
+# Overlay filesystem artifacts
+/tmp/nails-*
+.overlay-work/
+overlay-work/
+
+# Log files
+*.log
+/var/log/nails*
+logs/
+*.log.*
+
+# Package manager artifacts
+Pipfile.lock
+poetry.lock
+yarn.lock
+
+# OS generated files
+Thumbs.db
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Temporary and cache directories
+.cache/
+.local/
+.config/
+tmp/
+temp/
+
+# Pre-commit
+.pre-commit-cache/
+
+# Environment files (may contain sensitive info)
+.env.local
+.env.*.local
+
+# Build artifacts
+*.deb
+*.rpm
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.zip
+
+# Research data and analysis
+data/
+analysis/
+experiments/
+benchmarks/
+results/
+
+# AGPL compliance - include source, exclude binaries
+*.bin
+*.exe
+*.dll
+*.dylib
+*.so.*
