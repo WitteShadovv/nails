@@ -10,23 +10,23 @@ from pathlib import Path
 
 # Handle both installed package and development modes
 try:
-    from nails.manager import NailsManager
     from nails.exceptions import NailsError
+    from nails.manager import NailsManager
 except ImportError:
     # Development mode - add current directory to path
     sys.path.insert(0, str(Path(__file__).parent))
-    from nails.manager import NailsManager
     from nails.exceptions import NailsError
+    from nails.manager import NailsManager
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="NAILS - NixOS Anti-forensics using Safe Overlay System",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   nails init                 # Initialize hidden config
-  sudo nails activate        # Activate hidden environment  
+  sudo nails activate        # Activate hidden environment
   sudo nails deactivate      # Return to decoy system
   sudo nails rebuild         # Rebuild with current hidden config
   nails status               # Show current status
@@ -34,16 +34,24 @@ Examples:
 
 Safe Overlay Mode:
 ✓ Completely untraceable using overlay filesystems
-✓ All state stored in hidden volume (untraceable when unmounted)  
+✓ All state stored in hidden volume (untraceable when unmounted)
 ✓ Conditional configurations only active when marker present
 ✓ Emergency cleanup always available
 ✓ Maintains 100% plausible deniability
-        """
+        """,
     )
 
-    parser.add_argument("command", choices=[
-        "init", "activate", "deactivate", "rebuild", "status", "emergency-clean"
-    ])
+    parser.add_argument(
+        "command",
+        choices=[
+            "init",
+            "activate",
+            "deactivate",
+            "rebuild",
+            "status",
+            "emergency-clean",
+        ],
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--version", action="version", version="NAILS 1.0.0")
 

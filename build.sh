@@ -11,7 +11,7 @@ echo "================================"
 echo "Creating portable packages for hidden volume deployment..."
 
 # Clean previous builds
-rm -rf "$BUILD_DIR" build/ *.egg-info/
+rm -rf "$BUILD_DIR" build/ -- *.egg-info/
 mkdir -p "$BUILD_DIR"
 
 # 1. Create standalone executable with PyInstaller
@@ -35,7 +35,7 @@ if ! command -v pyinstaller >/dev/null 2>&1; then
     exit 1
 fi
 
-pyinstaller --onefile \
+if pyinstaller --onefile \
     --name "nails" \
     --distpath "$BUILD_DIR/" \
     --workpath "build/pyinstaller/" \
@@ -49,9 +49,7 @@ pyinstaller --onefile \
     --paths "." \
     --console \
     --clean \
-    nails.py
-
-if [[ $? -eq 0 ]]; then
+    nails_cli.py; then
     echo "✓ Standalone executable: $BUILD_DIR/nails"
 else
     echo "❌ PyInstaller build failed"
@@ -92,10 +90,12 @@ STANDALONE_EOF
 # Append all the module contents
 for module in "exceptions.py" "state.py" "config.py" "overlay.py" "nixos.py" "manager.py"; do
     if [[ -f "nails/$module" ]]; then
-        echo "" >> "$SINGLE_FILE"
-        echo "# === $module ===" >> "$SINGLE_FILE"
-        # Skip the imports and add the class/function definitions
-        sed '/^import /d; /^from /d' "nails/$module" >> "$SINGLE_FILE"
+        {
+            echo ""
+            echo "# === $module ==="
+            # Skip the imports and add the class/function definitions
+            sed '/^import /d; /^from /d' "nails/$module"
+        } >> "$SINGLE_FILE"
     fi
 done
 
@@ -184,7 +184,7 @@ elif command -v appimagetool >/dev/null 2>&1; then
     mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib/python3/site-packages"
 
     # Create AppDir structure
-    cp nails.py "$APPDIR/usr/bin/nails"
+    cp nails_cli.py "$APPDIR/usr/bin/nails"
     cp -r nails/ "$APPDIR/usr/lib/python3/site-packages/"
     chmod +x "$APPDIR/usr/bin/nails"
 
