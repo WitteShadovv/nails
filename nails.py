@@ -204,7 +204,7 @@ class NailsSafeUnionFSManager:
             self._create_safety_backup()
 
             # Step 2: Create UnionFS overlays
-            self._create_unionfs_overlays()
+            self._create_overlay_mounts()
 
             # Step 3: Activate overlays FIRST (before building)
             if self._activate_overlays():
@@ -333,26 +333,27 @@ class NailsSafeUnionFSManager:
 
         print("✓ Safety backup created in hidden volume")
 
-    def _create_unionfs_overlays(self):
-        """Create UnionFS overlay mounts."""
-        print("Creating UnionFS overlays...")
+    def _create_overlay_mounts(self):
+        """Create overlay filesystem mounts."""
+        print("Creating overlay filesystem mounts...")
 
-        # Create union mount points
+        # Create mount points and work directories - IMPORTANT: work dirs must be on same mount as upperdir
         self.union_root.mkdir(exist_ok=True)
 
-        # Check for unionfs-fuse
-        if not shutil.which("unionfs"):
-            raise Exception("unionfs-fuse not available. Install with: nix-shell -p unionfs-fuse")
+        # Create work directories under the hidden volume (same mount as upperdir)
+        work_dir = self.hidden_volume_root / "work"
+        work_dir.mkdir(exist_ok=True)
 
         # Create /etc overlay (for configuration changes)
+        etc_work = work_dir / "etc"
+        etc_work.mkdir(exist_ok=True)
         etc_union = self.union_root / "etc"
         etc_union.mkdir(exist_ok=True)
 
         print("  Creating /etc overlay...")
         etc_cmd = [
-            "unionfs",
-            "-o", "cow",
-            f"{self.hidden_overlay / 'etc'}=RW:{self.system_etc}=RO",
+            "mount", "-t", "overlay", "overlay",
+            "-o", f"lowerdir={self.system_etc},upperdir={self.hidden_overlay / 'etc'},workdir={etc_work}",
             str(etc_union)
         ]
 
@@ -363,14 +364,15 @@ class NailsSafeUnionFSManager:
         print("  ✓ /etc overlay created")
 
         # Create /nix overlay (for package changes)
+        nix_work = work_dir / "nix"
+        nix_work.mkdir(exist_ok=True)
         nix_union = self.union_root / "nix"
         nix_union.mkdir(exist_ok=True)
 
         print("  Creating /nix overlay...")
         nix_cmd = [
-            "unionfs",
-            "-o", "cow",
-            f"{self.hidden_overlay / 'nix'}=RW:{self.system_nix}=RO",
+            "mount", "-t", "overlay", "overlay",
+            "-o", f"lowerdir={self.system_nix},upperdir={self.hidden_overlay / 'nix'},workdir={nix_work}",
             str(nix_union)
         ]
 
@@ -379,7 +381,7 @@ class NailsSafeUnionFSManager:
             raise Exception(f"Failed to create /nix overlay: {result.stderr}")
 
         print("  ✓ /nix overlay created")
-        print("✓ UnionFS overlays ready")
+        print("✓ Overlay filesystems ready")
 
     def _build_hidden_system(self) -> bool:
         """Build hidden system using a simpler approach."""
@@ -418,17 +420,21 @@ class NailsSafeUnionFSManager:
             return False
 
     def _activate_overlays(self) -> bool:
-        """Directly mount UnionFS over system paths (correct NAILS implementation)."""
-        print("Activating NAILS UnionFS overlays...")
+        """Directly mount overlay filesystems over system paths (using kernel overlay)."""
+        print("Activating NAILS overlay filesystems...")
         print("Mounting hidden store over system directories for merged access")
 
         try:
-            # Step 1: Create UnionFS overlay directly over /etc
-            print("  Creating /etc UnionFS overlay...")
+            # Use work directories under the hidden volume (same mount as upperdir)
+            work_dir = self.hidden_volume_root / "work"
+            etc_work = work_dir / "etc"
+            nix_work = work_dir / "nix"
+
+            # Step 1: Create overlay filesystem directly over /etc
+            print("  Creating /etc overlay filesystem...")
             etc_cmd = [
-                "unionfs",
-                "-o", "cow",
-                f"{self.hidden_overlay / 'etc'}=RW:/etc=RO",
+                "mount", "-t", "overlay", "overlay",
+                "-o", f"lowerdir={self.system_etc},upperdir={self.hidden_overlay / 'etc'},workdir={etc_work}",
                 "/etc"
             ]
 
@@ -436,17 +442,16 @@ class NailsSafeUnionFSManager:
             if result.returncode != 0:
                 raise Exception(f"Failed to create /etc overlay: {result.stderr}")
 
-            print("  ✓ /etc UnionFS overlay activated")
+            print("  ✓ /etc overlay filesystem activated")
 
-            # Step 2: Create UnionFS overlay directly over /nix (THE KEY INNOVATION)
-            print("  Creating /nix UnionFS overlay...")
+            # Step 2: Create overlay filesystem directly over /nix (THE KEY INNOVATION)
+            print("  Creating /nix overlay filesystem...")
             print(f"  Merging: {self.hidden_overlay / 'nix'} (hidden store) + /nix (system store)")
             print("  This provides access to BOTH decoy and hidden packages")
 
             nix_cmd = [
-                "unionfs",
-                "-o", "cow",
-                f"{self.hidden_overlay / 'nix'}=RW:/nix=RO",
+                "mount", "-t", "overlay", "overlay",
+                "-o", f"lowerdir={self.system_nix},upperdir={self.hidden_overlay / 'nix'},workdir={nix_work}",
                 "/nix"
             ]
 
@@ -455,10 +460,10 @@ class NailsSafeUnionFSManager:
             if nix_mount_result.returncode != 0:
                 print(f"  ✗ /nix overlay failed: {nix_mount_result.stderr}")
                 # Rollback /etc overlay
-                subprocess.run(["fusermount", "-u", "/etc"], capture_output=True, timeout=30)
-                raise Exception(f"Failed to create /nix UnionFS overlay: {nix_mount_result.stderr}")
+                subprocess.run(["umount", "/etc"], capture_output=True, timeout=30)
+                raise Exception(f"Failed to create /nix overlay filesystem: {nix_mount_result.stderr}")
 
-            print("  ✓ /nix UnionFS overlay activated - both stores now merged")
+            print("  ✓ /nix overlay filesystem activated - both stores now merged")
 
             # Verify the overlay is working
             print("  Verifying merged store functionality...")
@@ -471,7 +476,7 @@ class NailsSafeUnionFSManager:
             else:
                 print("  ⚠️ /nix store verification failed")
 
-            print("✓ NAILS UnionFS overlays successfully activated")
+            print("✓ NAILS overlay filesystems successfully activated")
             print("✓ System now has merged view: decoy + hidden packages")
             print("✓ Copy-on-write ensures hidden volume isolation")
 
@@ -481,17 +486,17 @@ class NailsSafeUnionFSManager:
             return True
 
         except subprocess.TimeoutExpired as e:
-            print(f"  ✗ UnionFS operation timed out: {e}")
-            print("  This may indicate issues with UnionFS or system load")
+            print(f"  ✗ Overlay operation timed out: {e}")
+            print("  This may indicate issues with overlay filesystem or system load")
             # Emergency cleanup
-            subprocess.run(["fusermount", "-u", "/nix"], capture_output=True)
-            subprocess.run(["fusermount", "-u", "/etc"], capture_output=True)
+            subprocess.run(["umount", "/nix"], capture_output=True)
+            subprocess.run(["umount", "/etc"], capture_output=True)
             return False
         except Exception as e:
-            print(f"UnionFS overlay activation failed: {e}")
+            print(f"Overlay filesystem activation failed: {e}")
             # Emergency cleanup
-            subprocess.run(["fusermount", "-u", "/nix"], capture_output=True)
-            subprocess.run(["fusermount", "-u", "/etc"], capture_output=True)
+            subprocess.run(["umount", "/nix"], capture_output=True)
+            subprocess.run(["umount", "/etc"], capture_output=True)
             return False
 
     def _debug_overlay_state(self):
@@ -588,25 +593,25 @@ class NailsSafeUnionFSManager:
         """Clean up UnionFS mounts."""
         print("Cleaning up UnionFS mounts...")
 
-        # Unmount union filesystems
+        # Unmount overlay filesystems
         for union_path in [self.union_nix, self.union_etc]:
             if union_path.exists():
                 try:
-                    result = subprocess.run(["fusermount", "-u", str(union_path)],
+                    result = subprocess.run(["umount", str(union_path)],
                                           capture_output=True, text=True)
                     if result.returncode == 0:
-                        print(f"  ✓ UnionFS {union_path.name} unmounted")
+                        print(f"  ✓ Overlay {union_path.name} unmounted")
                         union_path.rmdir()
                     else:
                         print(f"  ⚠️ Warning unmounting {union_path}: {result.stderr}")
-                        subprocess.run(["fusermount", "-uz", str(union_path)], capture_output=True)
+                        subprocess.run(["umount", "-f", str(union_path)], capture_output=True)
                 except Exception as e:
                     print(f"  ⚠️ Error cleaning up {union_path}: {e}")
 
         # Remove union root
         if self.union_root.exists():
             try:
-                self.union_root.rmdir()
+                shutil.rmtree(self.union_root)
                 print("  ✓ Union root removed")
             except:
                 print("  ⚠️ Could not remove union root")
@@ -628,17 +633,17 @@ class NailsSafeUnionFSManager:
             json.dump(state, f, indent=2)
 
     def _is_active(self) -> bool:
-        """Check if NAILS UnionFS is currently active."""
+        """Check if NAILS overlay filesystems are currently active."""
         if not self.state_file.exists():
             return False
 
         # Check if overlays are mounted
         try:
             result = subprocess.run(["findmnt", "/etc"], capture_output=True, text=True)
-            etc_mounted = result.returncode == 0 and "unionfs" in result.stdout
+            etc_mounted = result.returncode == 0 and "overlay" in result.stdout
 
             result = subprocess.run(["findmnt", "/nix"], capture_output=True, text=True)
-            nix_mounted = result.returncode == 0 and "unionfs" in result.stdout
+            nix_mounted = result.returncode == 0 and "overlay" in result.stdout
 
             return etc_mounted and nix_mounted
         except:
@@ -688,11 +693,11 @@ class NailsSafeUnionFSManager:
         # Check mount status
         try:
             result = subprocess.run(["findmnt", "/etc"], capture_output=True, text=True)
-            etc_status = "Overlaid" if "unionfs" in result.stdout else "Normal"
+            etc_status = "Overlaid" if "overlay" in result.stdout else "Normal"
             print(f"/etc status: {etc_status}")
 
             result = subprocess.run(["findmnt", "/nix"], capture_output=True, text=True)
-            nix_status = "Overlaid" if "unionfs" in result.stdout else "Normal"
+            nix_status = "Overlaid" if "overlay" in result.stdout else "Normal"
             print(f"/nix status: {nix_status}")
         except:
             print("Mount status: Could not determine")
