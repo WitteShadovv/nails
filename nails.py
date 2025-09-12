@@ -69,42 +69,17 @@ class NailsSafeUnionFSManager:
             path.mkdir(parents=True, exist_ok=True)
             print(f"✓ Created overlay: {path}")
 
-        # Create hidden system configuration that inherits essential host settings
+        # Create hidden system configuration that imports and extends the existing system config
         hidden_config = '''{ config, pkgs, lib, ... }:
 
 {
-  # NAILS Hidden Configuration - Completely Untraceable
-  # This extends the host system configuration safely
+  # NAILS Hidden Configuration - Extends Existing System Config
+  # This imports the existing system config and adds hidden functionality
   
-  # Essential host system configurations (copied from host)
-  boot.loader.grub.enable = true;
-  boot.loader.grub.device = "/dev/sda";
-  boot.loader.grub.useOSProber = true;
+  # Import the existing system configuration as base
+  imports = [ /etc/nixos/configuration.nix ];
   
-  # Essential filesystem configuration (from host hardware-configuration.nix)
-  boot.initrd.availableKernelModules = [ "ata_piix" "ohci_pci" "ehci_pci" "ahci" "sd_mod" "sr_mod" ];
-  boot.initrd.kernelModules = [ ];
-  boot.kernelModules = [ ];
-  boot.extraModulePackages = [ ];
-
-  fileSystems."/" = {
-    device = "/dev/disk/by-uuid/bd4db48d-a786-4c59-9a5d-02a616c7ca3f";
-    fsType = "ext4";
-  };
-
-  swapDevices = [
-    { device = "/dev/disk/by-uuid/9f4edc58-20b7-4d10-90cb-a43d7efb417d"; }
-  ];
-
-  # Host platform and networking
-  nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
-  networking.useDHCP = lib.mkDefault true;
-  virtualisation.virtualbox.guest.enable = true;
-  
-  # Set state version to match host system
-  system.stateVersion = "25.05";
-  
-  # Hidden packages (additional to host system)
+  # Hidden packages (additional to existing system packages)
   environment.systemPackages = with pkgs; [
     # Security tools
     tor
@@ -120,37 +95,50 @@ class NailsSafeUnionFSManager:
     # signal-desktop
     # element-desktop
     # thunderbird
+    
+    # Forensics/Security tools
+    # wireshark
+    nmap
+    # hashcat
   ];
 
-  # Hidden services (additional to host system)
-  services = {
-    tor = {
-      enable = true;
-      client.enable = true;
-    };
+  # Hidden services (additional to existing services)
+  services.tor = {
+    enable = true;
+    client.enable = true;
   };
+  
+  # Uncomment additional services if needed
+  # services.openssh.enable = lib.mkForce true;  # Force enable SSH even if disabled in decoy
 
-  # Hidden user (exists only in overlay)
+  # Hidden user (exists only when overlay is active)
   users.users.ghost = {
     isNormalUser = true;
     description = "Hidden user - untraceable";
     extraGroups = [ "wheel" "networkmanager" ];
-    # Password will be set in overlay only
+    # Set password with: sudo passwd ghost (after activation)
   };
 
-  # Hidden environment (overlay-only)
+  # Hidden environment variables
   environment.variables = {
     NAILS_ACTIVE = "true";
-    HIDDEN_MODE = "unionfs";
+    HIDDEN_MODE = "overlay";
   };
   
-  # Hidden shell aliases (overlay-only)
+  # Hidden shell aliases
   environment.shellAliases = {
-    nails-status = "echo 'NAILS UnionFS mode active - fully untraceable'";
+    nails-status = "echo 'NAILS overlay mode active - fully untraceable'";
     nails-deactivate = "sudo ${toString ./../..}/nails.py deactivate";
     secure-delete = "shred -vfz -n 3";
     clear-traces = "history -c && history -w && sync";
+    hidden-rebuild = "sudo nixos-rebuild switch -I nixos-config=${toString ./.}/configuration.nix";
   };
+  
+  # Optional: Override specific settings from base config if needed
+  # networking.firewall.enable = lib.mkForce false;  # Disable firewall in hidden mode
+  
+  # Ensure system state version matches base system
+  # system.stateVersion will be inherited from base config
 }'''
 
         config_file = self.hidden_config / "configuration.nix"
@@ -203,21 +191,26 @@ class NailsSafeUnionFSManager:
             # Step 1: Create safety backup (to hidden volume)
             self._create_safety_backup()
 
-            # Step 2: Create UnionFS overlays
+            # Step 2: Create overlay filesystem mounts
             self._create_overlay_mounts()
 
-            # Step 3: Activate overlays FIRST (before building)
+            # Step 3: Activate overlays
             if self._activate_overlays():
                 print("✓ Overlays activated - system now sees unified filesystem")
 
-                # Step 4: Build hidden system with overlays active
-                if self._build_hidden_system():
+                # Step 4: Build and switch to hidden system
+                if self._build_and_switch_hidden_system():
                     self._save_active_state()
                     print("\n✅ NAILS Hidden Environment Active")
+                    print("✓ System switched to hidden configuration")
                     print("✓ All changes written to hidden volume overlay")
                     print("✓ System filesystem completely untouched")
                     print("✓ Zero forensic traces when deactivated")
-                    print("\nRun 'sudo ./nails.py deactivate' to return to decoy")
+                    print("\nHidden environment features now available:")
+                    print("  - Hidden packages: tor, gnupg, keepassxc, etc.")
+                    print("  - Hidden user: ghost (set password with 'sudo passwd ghost')")
+                    print("  - Hidden services: Tor daemon")
+                    print("\nRun 'sudo ./nails.py deactivate' to return to decoy system")
                 else:
                     print("✗ Failed to build hidden system - rolling back")
                     self._deactivate_overlays()
@@ -383,40 +376,95 @@ class NailsSafeUnionFSManager:
         print("  ✓ /nix overlay created")
         print("✓ Overlay filesystems ready")
 
-    def _build_hidden_system(self) -> bool:
-        """Build hidden system using a simpler approach."""
-        print("Building hidden system...")
-        print("Using standard nixos-rebuild without overlay redirection")
+    def _build_and_switch_hidden_system(self) -> bool:
+        """Build and switch to the hidden system configuration."""
+        print("Building and switching to hidden system...")
+        print("This will activate the extended configuration with hidden functionality")
 
         try:
-            # Don't try to redirect Nix paths - this causes permission issues
-            # Just build the configuration normally and let NixOS handle the store
+            # Step 1: Build the hidden configuration first
+            print("\n🔨 Building hidden system configuration...")
             build_cmd = [
                 "nixos-rebuild", "build",
                 "-I", f"nixos-config={self.hidden_config}/configuration.nix",
                 "--show-trace"
             ]
 
-            print("Building hidden system configuration...")
-            print("(This may take several minutes on first run)")
+            print("  Building configuration (may take several minutes on first run)...")
+            build_process = subprocess.run(build_cmd, capture_output=True, text=True)
 
-            # Run without environment variable overrides to avoid permission issues
-            process = subprocess.run(build_cmd, capture_output=True, text=True)
+            if build_process.returncode != 0:
+                print("✗ Build failed:")
+                error_lines = build_process.stderr.split('\n')
+                for line in error_lines[-15:]:  # Show last 15 lines
+                    if line.strip():
+                        print(f"  {line}")
+                return False
 
-            if process.returncode == 0:
-                print("✓ Hidden system built successfully")
+            print("  ✓ Hidden configuration built successfully")
+
+            # Step 2: Switch to the hidden configuration
+            print("\n🔄 Switching to hidden system configuration...")
+            switch_cmd = [
+                "nixos-rebuild", "switch",
+                "-I", f"nixos-config={self.hidden_config}/configuration.nix",
+                "--show-trace"
+            ]
+
+            print("  Activating hidden configuration...")
+            print("  This will:")
+            print("    - Install hidden packages (tor, gnupg, keepassxc, etc.)")
+            print("    - Create hidden user 'ghost'")
+            print("    - Start hidden services (Tor daemon)")
+            print("    - Merge with existing system configuration")
+
+            switch_process = subprocess.run(switch_cmd, capture_output=True, text=True)
+
+            if switch_process.returncode == 0:
+                print("  ✓ Successfully switched to hidden configuration")
+
+                # Verify some key components are active
+                print("\n🔍 Verifying hidden environment activation...")
+
+                # Check if Tor service is running
+                try:
+                    tor_status = subprocess.run(["systemctl", "is-active", "tor"],
+                                              capture_output=True, text=True)
+                    if tor_status.returncode == 0 and "active" in tor_status.stdout:
+                        print("  ✓ Tor service is running")
+                    else:
+                        print("  ℹ️ Tor service not running (may need manual start)")
+                except:
+                    print("  ℹ️ Could not check Tor service status")
+
+                # Check if hidden packages are available
+                try:
+                    tor_check = subprocess.run(["which", "tor"], capture_output=True)
+                    if tor_check.returncode == 0:
+                        print("  ✓ Hidden packages installed (tor available)")
+                    else:
+                        print("  ⚠️ Hidden packages may not be fully installed")
+                except:
+                    print("  ℹ️ Could not verify package installation")
+
+                # Check if environment variables are set
+                env_check = os.environ.get("NAILS_ACTIVE")
+                if env_check:
+                    print("  ✓ Hidden environment variables active")
+                else:
+                    print("  ℹ️ Environment variables will be active in new shells")
+
                 return True
             else:
-                print(f"✗ Build failed:")
-                # Show more detailed error information
-                error_lines = process.stderr.split('\n')
-                for line in error_lines[-20:]:  # Show last 20 lines
+                print("✗ Switch failed:")
+                error_lines = switch_process.stderr.split('\n')
+                for line in error_lines[-15:]:  # Show last 15 lines
                     if line.strip():
                         print(f"  {line}")
                 return False
 
         except Exception as e:
-            print(f"Build error: {e}")
+            print(f"Build/switch error: {e}")
             return False
 
     def _activate_overlays(self) -> bool:
