@@ -165,79 +165,16 @@ MAIN_EOF
 chmod +x "$SINGLE_FILE"
 echo "✓ Single-file Python script: $BUILD_DIR/nails-standalone.py"
 
-# 3. Create AppImage (if tools available)
-echo ""
-echo "📱 Creating AppImage..."
-if command -v python3-appimage >/dev/null 2>&1; then
-    # Use python3-appimage for a more reliable AppImage
-    python3-appimage build app \
-        --python-version 3.12 \
-        --name "NAILS" \
-        --entry-point "nails:main" \
-        --icon "nails.png" \
-        --output-dir "$BUILD_DIR/" \
-        .
-    echo "✓ AppImage: $BUILD_DIR/NAILS-$VERSION-x86_64.AppImage"
-elif command -v appimagetool >/dev/null 2>&1; then
-    # Manual AppImage creation
-    APPDIR="$BUILD_DIR/NAILS.AppDir"
-    mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib/python3/site-packages"
-
-    # Create AppDir structure
-    cp nails_cli.py "$APPDIR/usr/bin/nails"
-    cp -r nails/ "$APPDIR/usr/lib/python3/site-packages/"
-    chmod +x "$APPDIR/usr/bin/nails"
-
-    # Create desktop file
-    cat > "$APPDIR/nails.desktop" << EOF
-[Desktop Entry]
-Type=Application
-Name=NAILS
-Comment=NixOS Anti-forensics Isolation & Layering System
-Icon=nails
-Exec=nails
-Categories=System;Security;
-Terminal=true
-MimeType=application/x-nails;
-EOF
-
-    # Create simple icon (placeholder)
-    cat > "$APPDIR/nails.png" << 'EOF'
-iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==
-EOF
-
-    # Create AppRun
-    cat > "$APPDIR/AppRun" << 'EOF'
-#!/bin/bash
-SELF=$(readlink -f "$0")
-HERE=${SELF%/*}
-export PATH="${HERE}/usr/bin:${PATH}"
-export PYTHONPATH="${HERE}/usr/lib/python3/site-packages:${PYTHONPATH:-}"
-cd "${HERE}"
-exec python3 "${HERE}/usr/bin/nails" "$@"
-EOF
-    chmod +x "$APPDIR/AppRun"
-
-    # Build AppImage
-    appimagetool "$APPDIR" "$BUILD_DIR/NAILS-$VERSION-x86_64.AppImage"
-    rm -rf "$APPDIR"
-    echo "✓ AppImage: $BUILD_DIR/NAILS-$VERSION-x86_64.AppImage"
-else
-    echo "⚠️  AppImage tools not found - skipping AppImage build"
-    echo "   Install with: pip install python3-appimage"
-    echo "   Or: apt install appimagetool (manual method)"
-fi
-
-# 4. Create verification checksums
+# 3. Create verification checksums
 echo ""
 echo "🔐 Creating checksums..."
 cd "$BUILD_DIR"
-find . -maxdepth 1 -type f \( -name "nails" -o -name "nails-standalone.py" -o -name "*.AppImage" \) -exec sha256sum {} \; > checksums.txt
+find . -maxdepth 1 -type f \( -name "nails" -o -name "nails-standalone.py" \) -exec sha256sum {} \; > checksums.txt
 cd "$SCRIPT_DIR"
 
 echo "✓ Checksums: $BUILD_DIR/checksums.txt"
 
-# 5. Create deployment instructions
+# 4. Create deployment instructions
 cat > "$BUILD_DIR/README.txt" << EOF
 NAILS - Portable Distribution
 ============================
@@ -248,8 +185,7 @@ Files:
 ------
 • nails                       - Standalone executable (no dependencies)
 • nails-standalone.py         - Single-file Python script (requires Python 3.12+)
-• NAILS-$VERSION-x86_64.AppImage - AppImage (if available)
-• checksums.txt              - SHA256 verification checksums
+• checksums.txt               - SHA256 verification checksums
 
 Usage Options:
 -------------
@@ -304,13 +240,6 @@ echo "   • Requires only Python 3.12+"
 echo "   • All modules embedded in one file"
 echo "   • Run with: python3 nails-standalone.py <command>"
 echo ""
-if [[ -f "$BUILD_DIR/NAILS-$VERSION-x86_64.AppImage" ]]; then
-    echo "📱 AppImage:"
-    echo "   $BUILD_DIR/NAILS-$VERSION-x86_64.AppImage"
-    echo "   • Portable Linux application"
-    echo "   • Run anywhere with: chmod +x && ./NAILS-*.AppImage"
-    echo ""
-fi
 echo "🔐 All checksums: $BUILD_DIR/checksums.txt"
 echo "📋 Instructions: $BUILD_DIR/README.txt"
 echo ""
