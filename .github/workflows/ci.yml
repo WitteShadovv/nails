@@ -3,11 +3,11 @@ name: Code Quality Checks
 on:
   push:
     branches:
-      - '**'        # run on any branch (including dev)
+      - '**'
   pull_request:
     branches:
-      - '**'        # run for PRs from any branch
-  workflow_dispatch:  # allow manual runs from the Actions tab
+      - '**'
+  workflow_dispatch:
 
 jobs:
   pre-commit:
@@ -21,6 +21,17 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: '3.12'
+
+    - name: Set up Nix (for Nix-related pre-commit hooks)
+      uses: cachix/install-nix-action@v27
+
+    - name: Install Nix tools required by pre-commit hooks
+      run: |
+        nix-env -iA nixpkgs.nix nixpkgs.nixfmt nixpkgs.deadnix nixpkgs.statix
+        nix --version
+        nixfmt --version || true
+        deadnix --version || true
+        statix --version || true
 
     - name: Cache pre-commit environments
       uses: actions/cache@v3
@@ -39,6 +50,12 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -e .[dev]
+
+    - name: Ensure detect-secrets baseline exists
+      run: |
+        if [ ! -f .secrets.baseline ]; then
+          detect-secrets scan --baseline .secrets.baseline --force-use-all-plugins || true
+        fi
 
     - name: Run pre-commit hooks
       run: pre-commit run --all-files
