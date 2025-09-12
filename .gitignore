@@ -1,81 +1,58 @@
-# NAILS - Generated files and directories
-# These files are created during NAILS operations and should not be tracked
-
-# State and runtime files
-.nails-state
-
-# Overlay filesystem structures
-overlay/
-work/
-
-# Configuration files (created by init command)
-config/configuration.nix
-config/hardware-configuration.nix
-
-# Safety backups (contain system files that shouldn't be in git)
-safety/
-
-# Manual backups directory
-backups/
-
-# Build artifacts
-build/
-dist/
-*.egg-info/
-*.spec
-
-# Temporary union filesystem mount points (if they exist in workspace)
-/tmp/nails-union/
-
-# Log files (if any are generated)
-*.log
-nails.log
-
-# Python cache files
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Virtual environments (if used for development)
+# Virtual environments
+.venv/
 venv/
-env/
-.env
+ENV/
 
-# IDE and editor files
+# IDE files
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
-.DS_Store
 
-# OS generated files
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Nix build results (if building locally)
-result
-result-*
-
-# Temporary files
-*.tmp
-*.temp
-.tmp/
-.temp/
-
-# Test artifacts
+# Testing
+.pytest_cache/
 .coverage
 htmlcov/
-.pytest_cache/
 .tox/
 
-# MyPy cache
+# MyPy
 .mypy_cache/
 .dmypy.json
 dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# NAILS specific
+.nails-state
+safety/
+work/
+overlay/
+*.baseline
+config/

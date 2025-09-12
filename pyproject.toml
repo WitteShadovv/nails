@@ -49,6 +49,8 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.7.0",
     "bandit[toml]>=1.7.5",
+    "shellcheck-py>=0.9.0",  # Python wrapper for shellcheck
+    "detect-secrets>=1.4.0",
 ]
 build = [
     "build>=0.10.0",
@@ -56,7 +58,7 @@ build = [
 ]
 
 [project.scripts]
-nails = "nails:main"
+nails = "nails_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/nails-project/nails"
@@ -74,6 +76,8 @@ nails = ["templates/*", "config/*"]
 [tool.ruff]
 target-version = "py311"
 line-length = 88
+
+[tool.ruff.lint]
 select = [
     "E",    # pycodestyle errors
     "W",    # pycodestyle warnings
@@ -94,14 +98,16 @@ ignore = [
     "S603",   # subprocess-untrusted-input (we validate inputs)
     "S607",   # starting-process-with-partial-path (system tools like mount)
     "T201",   # print found (allowed for CLI output)
+    "S108",   # hardcoded-tmp-directory (we use /tmp for overlay mounts)
 ]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "S106"]  # Allow assert and hardcoded passwords in tests
 "**/cli.py" = ["T201"]        # Allow prints in CLI
+"nails_cli.py" = ["T201"]     # Allow prints in main CLI
 "setup-*.sh" = ["S"]          # Skip bandit for shell scripts
 
-[tool.ruff.isort]
+[tool.ruff.lint.isort]
 known-first-party = ["nails"]
 force-single-line = false
 
@@ -121,6 +127,8 @@ warn_no_return = true
 warn_unreachable = true
 strict_equality = true
 show_error_codes = true
+exclude = ["nails_cli.py", "build.sh"]  # Exclude CLI script and shell script
+explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = [
@@ -135,6 +143,9 @@ exclude_dirs = ["tests", "venv", ".venv"]
 skips = [
     "B101",  # assert_used (used in tests)
     "B603",  # subprocess_without_shell_equals_true (we need shell commands)
+    "B404",  # import_subprocess (required for system operations)
+    "B607",  # start_process_with_partial_path (system tools like mount)
+    "B108",  # hardcoded_tmp_directory (we use /tmp for overlay mounts)
 ]
 
 [tool.bandit.assert_used]
