@@ -61,7 +61,6 @@ repos:
         entry: nixfmt
         language: system
         files: \.nix$
-        args: ['.']
 
       - id: nix-syntax-check
         name: nix syntax check
