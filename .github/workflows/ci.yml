@@ -1,0 +1,98 @@
+name: Code Quality Checks
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: Cache pre-commit environments
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pre-commit
+        key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+        restore-keys: |
+          pre-commit-${{ runner.os }}-
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[dev]
+
+    - name: Run pre-commit hooks
+      run: pre-commit run --all-files
+
+    - name: Check for security issues with bandit
+      run: bandit -r nails/ -f json -o bandit-report.json || true
+
+    - name: Upload bandit results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: bandit-security-report
+        path: bandit-report.json
+
+  build-test:
+    runs-on: ubuntu-latest
+    needs: pre-commit
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[build]
+
+    - name: Test package installation
+      run: |
+        pip install -e .
+        nails --version
+
+    - name: Run basic functionality tests
+      run: |
+        # Test that the CLI can be imported and basic help works
+        python -c "from nails.manager import NailsManager; print('✓ Import successful')"
+        nails --help
+
+  nix-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Nix
+      uses: cachix/install-nix-action@v27
+
+    - name: Check nix-shell builds
+      run: |
+        nix-shell -I nixpkgs=channel:nixos-unstable --run "echo '✓ Nix shell environment builds successfully'"
+
+    - name: Validate development environment
+      run: |
+        nix-shell -I nixpkgs=channel:nixos-unstable --run "python --version && shellcheck --version && pre-commit --version"
