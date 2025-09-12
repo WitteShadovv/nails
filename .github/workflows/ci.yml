@@ -27,8 +27,11 @@ jobs:
 
     - name: Install Nix tools required by pre-commit hooks
       run: |
-        nix-env -iA nixpkgs.nix nixpkgs.nixfmt nixpkgs.deadnix nixpkgs.statix
+        # Ensure nix profile binaries are on PATH for subsequent steps
+        echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+        # Install tools via flakes (no channels/NIX_PATH needed)
         nix --version
+        nix profile install nixpkgs#nix nixpkgs#nixfmt nixpkgs#deadnix nixpkgs#statix
         nixfmt --version || true
         deadnix --version || true
         statix --version || true
