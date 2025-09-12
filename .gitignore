@@ -1,40 +1,49 @@
-# NAILS .gitignore
-# NixOS Anti-forensics Isolation & Layering System
+# NAILS - Generated files and directories
+# These files are created during NAILS operations and should not be tracked
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
+# State and runtime files
+.nails-state
+
+# Overlay filesystem structures
+overlay/
+work/
+
+# Configuration files (created by init command)
+config/configuration.nix
+config/hardware-configuration.nix
+
+# Safety backups (contain system files that shouldn't be in git)
+safety/
+
+# Manual backups directory
+backups/
+
+# Build artifacts
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+*.spec
 
-# Virtual environments
-.env
-.venv
-env/
+# Temporary union filesystem mount points (if they exist in workspace)
+/tmp/nails-union/
+
+# Log files (if any are generated)
+*.log
+nails.log
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments (if used for development)
 venv/
-ENV/
-env.bak/
-venv.bak/
+env/
+.env
 
-# IDE and editors
+# IDE and editor files
 .vscode/
 .idea/
 *.swp
@@ -42,131 +51,31 @@ venv.bak/
 *~
 .DS_Store
 
-# Testing and coverage
-.coverage
-.pytest_cache/
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-htmlcov/
-.tox/
-.nox/
-
-# MyPy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Ruff
-.ruff_cache/
-
-# Documentation builds
-docs/_build/
-.readthedocs.yml
-site/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Security
-.secrets.baseline
-*.key
-*.pem
-*.p12
-*.pfx
-secrets.yaml
-secrets.json
-
-# Nix
-result
-result-*
-.direnv/
-shell.nix.bak
-flake.lock.bak
-
-# NixOS specific
-hardware-configuration.nix.backup
-configuration.nix.backup
-*.nix.backup
-
-# NAILS specific files
-.nails-state
-nails.log
-nails-*.log
-
-# System backups and temporary files
-backups/system_backup_*/
-*.tmp
-*.temp
-/tmp/
-.tmp/
-
-# VeraCrypt and forensic artifacts
-*.tc
-*.hc
-*.vol
-*.dd
-*.img
-*.raw
-
-# Overlay filesystem artifacts
-/tmp/nails-*
-.overlay-work/
-overlay-work/
-
-# Log files
-*.log
-/var/log/nails*
-logs/
-*.log.*
-
-# Package manager artifacts
-Pipfile.lock
-poetry.lock
-yarn.lock
-
 # OS generated files
-Thumbs.db
-.DS_Store
 .DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
 ehthumbs.db
+Thumbs.db
 
-# Temporary and cache directories
-.cache/
-.local/
-.config/
-tmp/
-temp/
+# Nix build results (if building locally)
+result
+result-*
 
-# Pre-commit
-.pre-commit-cache/
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
 
-# Environment files (may contain sensitive info)
-.env.local
-.env.*.local
+# Test artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
 
-# Build artifacts
-*.deb
-*.rpm
-*.tar.gz
-*.tar.bz2
-*.tar.xz
-*.zip
-
-# Research data and analysis
-data/
-analysis/
-experiments/
-benchmarks/
-results/
-
-# AGPL compliance - include source, exclude binaries
-*.bin
-*.exe
-*.dll
-*.dylib
-*.so.*
+# MyPy cache
+.mypy_cache/
+.dmypy.json
+dmypy.json

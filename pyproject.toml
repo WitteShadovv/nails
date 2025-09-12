@@ -49,36 +49,26 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.7.0",
     "bandit[toml]>=1.7.5",
-    "pytest>=7.4.0",
-    "pytest-cov>=4.1.0",
-    "pytest-mock>=3.12.0",
-    "vulture>=2.10",
-    "detect-secrets>=1.4.0",
 ]
-docs = [
-    "sphinx>=7.0.0",
-    "sphinx-rtd-theme>=1.3.0",
-    "myst-parser>=2.0.0",
+build = [
+    "build>=0.10.0",
+    "pyinstaller>=6.0.0",
 ]
-
-[project.urls]
-Homepage = "https://github.com/witteshadovv/nails"
-Documentation = "https://nails.readthedocs.io"
-Repository = "https://github.com/witteshadovv/nails"
-Issues = "https://github.com/witteshadovv/nails/issues"
-Changelog = "https://github.com/witteshadovv/nails/blob/main/CHANGELOG.md"
 
 [project.scripts]
-nails-overlay = "nails.overlay:main"
-nails-cli = "nails.cli:main"
+nails = "nails:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["nails*"]
-exclude = ["tests*", "docs*"]
+[project.urls]
+Homepage = "https://github.com/nails-project/nails"
+Repository = "https://github.com/nails-project/nails"
+Documentation = "https://github.com/nails-project/nails/blob/main/README.md"
+"Bug Reports" = "https://github.com/nails-project/nails/issues"
+
+[tool.setuptools]
+packages = ["nails"]
 
 [tool.setuptools.package-data]
-nails = ["config/*.yaml", "config/*.nix"]
+nails = ["templates/*", "config/*"]
 
 # Ruff configuration
 [tool.ruff]
