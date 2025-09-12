@@ -2,9 +2,12 @@ name: Code Quality Checks
 
 on:
   push:
-    branches: [ main, develop ]
+    branches:
+      - '**'        # run on any branch (including dev)
   pull_request:
-    branches: [ main, develop ]
+    branches:
+      - '**'        # run for PRs from any branch
+  workflow_dispatch:  # allow manual runs from the Actions tab
 
 jobs:
   pre-commit:
