@@ -12,12 +12,12 @@ NAILS combines VeraCrypt's cryptographically undetectable hidden volumes with Ni
 
 ### Key Innovation
 
-The system uses a Python script that sits in the root of a VeraCrypt hidden volume alongside a `nix/` directory. When activated, this script overlays the hidden volume's Nix store over the system's `/nix` directory, seamlessly providing access to a completely different set of packages and configurations while maintaining plausible deniability.
+The system uses a Python script that sits in the root of a VeraCrypt hidden volume alongside a `nix/` directory. When activated, this script uses UnionFS-FUSE to union-mount the hidden volume's Nix store with the system's `/nix` directory, seamlessly providing access to a completely different set of packages and configurations while maintaining plausible deniability. This approach avoids duplication of packages and allows for efficient storage usage.
 
 ## Technical Approach
 
 - **VeraCrypt Integration**: Hidden volumes provide cryptographic plausible deniability
-- **Overlay Management**: Python daemon handles mounting/unmounting hidden volumes as filesystem overlays
+- **UnionFS-FUSE Management**: Python script handles mounting/unmounting hidden volumes using user-space union filesystems
 - **NixOS Declarative Config**: Custom Nix modules manage hidden volume mounting and selective persistence
 - **Emergency Sanitization**: Leverage NixOS generations for instant rollback to forensically clean states
 
@@ -25,7 +25,7 @@ The system uses a Python script that sits in the root of a VeraCrypt hidden volu
 
 ```
 Hidden Volume Structure:
-├── nails-overlay.py    # Main overlay management script
+├── nails-unionfs.py     # Main UnionFS management script
 ├── nix/                # Hidden Nix store
 │   └── store/          # Hidden packages and derivations
 ├── config/             # Hidden system configurations
@@ -41,7 +41,7 @@ Hidden Volume Structure:
 - **Declarative Configuration**: Full NixOS configuration management for both environments
 - **Minimal Forensic Footprint**: Base system remains clean by default
 - **Emergency Sanitization**: Quick rollback to clean state using NixOS generations
-- **Storage Optimization**: Intelligent package sharing between environments
+- **Storage Optimization**: No package duplication; hidden and decoy environments share the same Nix store where possible
 
 ## Installation
 
@@ -59,25 +59,25 @@ cd nails
 sudo ./install.sh
 
 # Initialize NAILS in your hidden volume
-./nails-overlay.py init
+./nails.py init
 ```
 
 ## Usage
 
-The main script `nails-overlay.py` is designed to be placed in the root of your VeraCrypt hidden volume:
+The main script `nails.py` is designed to be placed in the root of your VeraCrypt hidden volume:
 
 ```bash
-# Activate hidden environment (overlay nix store)
-./nails-overlay.py activate
+# Activate hidden environment (union-mount hidden nix store)
+./nails.py activate
 
-# Deactivate hidden environment (remove overlay)
-./nails-overlay.py deactivate
+# Deactivate hidden environment (remove union mount)
+./nails.py deactivate
 
 # Check current status
-./nails-overlay.py status
+./nails.py status
 
 # Emergency cleanup (remove all traces)
-./nails-overlay.py emergency-clean
+./nails.py emergency-clean
 ```
 
 ## Research Contribution
@@ -88,7 +88,7 @@ This represents the first academic exploration of declarative configuration syst
 
 - **Cryptographic Layer**: VeraCrypt AES-256 encryption with plausible deniability
 - **System Layer**: NixOS immutable configurations and atomic rollbacks
-- **Application Layer**: Overlay filesystems for seamless environment switching
+- **Application Layer**: UnionFS-FUSE for seamless environment switching
 - **Emergency Layer**: Instant sanitization and rollback capabilities
 
 ## Use Cases
@@ -101,7 +101,7 @@ This represents the first academic exploration of declarative configuration syst
 ## Expected Deliverables
 
 - [x] Working open-source anti-forensics framework
-- [ ] Performance analysis of nested encryption and overlay operations
+- [ ] Performance analysis of nested encryption and union filesystem operations
 - [ ] Security evaluation against common forensic tools
 - [ ] Academic publication for privacy/security conferences
 
