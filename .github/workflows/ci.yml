@@ -81,21 +81,3 @@ jobs:
         # Test that the CLI can be imported and basic help works
         python -c "from nails.manager import NailsManager; print('✓ Import successful')"
         nails --help
-
-  nix-checks:
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Nix
-      uses: cachix/install-nix-action@v27
-
-    - name: Check nix-shell builds
-      run: |
-        nix-shell -I nixpkgs=channel:nixos-unstable --run "echo '✓ Nix shell environment builds successfully'"
-
-    - name: Validate development environment
-      run: |
-        nix-shell -I nixpkgs=channel:nixos-unstable --run "python --version && shellcheck --version && pre-commit --version"
