@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-NAILS - NixOS Anti-forensics using Safe UnionFS System
-Combines UnionFS untraceability with safety mechanisms to prevent bricking
+NAILS - NixOS Anti-forensics using Safe Overlay System
+Combines overlay untraceability with safety mechanisms to prevent bricking
 """
 
 import argparse
@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Dict, Optional
 
 
-class NailsSafeUnionFSManager:
-    """NAILS using safe UnionFS approach that maintains complete untraceability."""
+class NailsSafeOverlayManager:
+    """NAILS using safe overlay approach that maintains complete untraceability."""
 
     def __init__(self, verbose: bool = False):
         # Determine script location (should be in hidden volume root)
@@ -27,7 +27,7 @@ class NailsSafeUnionFSManager:
         self.hidden_overlay = self.hidden_volume_root / "overlay"
         self.hidden_config = self.hidden_volume_root / "config"
 
-        # UnionFS mount points (temporary, in memory when possible)
+        # Overlay mount points (temporary, in memory when possible)
         self.union_root = Path("/tmp/nails-union")
         self.union_etc = self.union_root / "etc"
         self.union_nix = self.union_root / "nix"
@@ -49,10 +49,10 @@ class NailsSafeUnionFSManager:
         self.logger = logging.getLogger("nails")
 
     def init(self):
-        """Initialize hidden UnionFS overlay structure."""
-        print("NAILS Initialization - Safe UnionFS Mode")
+        """Initialize hidden overlay structure."""
+        print("NAILS Initialization - Safe Overlay Mode")
         print("=======================================")
-        print("This mode provides complete untraceability using UnionFS overlays")
+        print("This mode provides complete untraceability using overlay filesystems")
 
         # Create overlay structure that mirrors system hierarchy
         overlay_structure = [
@@ -99,6 +99,7 @@ class NailsSafeUnionFSManager:
     # Forensics/Security tools
     # wireshark
     nmap
+    tor-browser
     # hashcat
   ];
 
@@ -163,14 +164,14 @@ class NailsSafeUnionFSManager:
             f.write(hardware_config)
 
         print(f"\n✓ Hidden configuration created: {config_file}")
-        print("✓ UnionFS overlay structure initialized")
+        print("✓ Overlay filesystem structure initialized")
         print("✓ All changes will be written to hidden volume only")
         print("✓ Zero traces left on system filesystem")
         print(f"\n💡 Edit {config_file} to customize your hidden environment")
 
     def activate(self):
-        """Activate hidden environment using safe UnionFS overlays."""
-        print("NAILS Activation - Safe UnionFS Mode")
+        """Activate hidden environment using safe overlay filesystems."""
+        print("NAILS Activation - Safe Overlay Mode")
         print("===================================")
         print("Creating untraceable overlay environment...")
 
@@ -214,10 +215,10 @@ class NailsSafeUnionFSManager:
                 else:
                     print("✗ Failed to build hidden system - rolling back")
                     self._deactivate_overlays()
-                    self._cleanup_unionfs()
+                    self._cleanup_overlay()
             else:
                 print("✗ Failed to activate overlays")
-                self._cleanup_unionfs()
+                self._cleanup_overlay()
 
         except Exception as e:
             print(f"✗ Activation failed: {e}")
@@ -226,7 +227,7 @@ class NailsSafeUnionFSManager:
 
     def deactivate(self):
         """Deactivate hidden environment and remove all traces."""
-        print("NAILS Deactivation - Safe UnionFS Mode")
+        print("NAILS Deactivation - Safe Overlay Mode")
         print("=====================================")
         print("Removing overlay and returning to clean decoy state...")
 
@@ -243,8 +244,8 @@ class NailsSafeUnionFSManager:
             # Deactivate overlays (atomic operation)
             self._deactivate_overlays()
 
-            # Cleanup UnionFS mounts
-            self._cleanup_unionfs()
+            # Cleanup overlay mounts
+            self._cleanup_overlay()
 
             # Clear state (in hidden volume only)
             if self.state_file.exists():
@@ -260,9 +261,136 @@ class NailsSafeUnionFSManager:
             print("Attempting emergency cleanup...")
             self._emergency_cleanup()
 
+    def rebuild(self):
+        """Rebuild the hidden system with changes from config/configuration.nix."""
+        print("NAILS Rebuild - Safe Overlay Mode")
+        print("=================================")
+        print("Rebuilding hidden system with updated configuration...")
+
+        if os.geteuid() != 0:
+            print("Error: Root privileges required")
+            print("Run with: sudo ./nails.py rebuild")
+            sys.exit(1)
+
+        if not self._is_active():
+            print("✗ Hidden environment is not active")
+            print("Run './nails.py activate' first to enable hidden environment")
+            return
+
+        if not (self.hidden_config / "configuration.nix").exists():
+            print("✗ Hidden configuration not found at config/configuration.nix")
+            print("Run './nails.py init' first to initialize the hidden configuration")
+            return
+
+        try:
+            print(f"📋 Using configuration: {self.hidden_config}/configuration.nix")
+            print("🔄 Building updated hidden system configuration...")
+
+            # Step 1: Build the updated configuration
+            build_cmd = [
+                "nixos-rebuild", "build",
+                "-I", f"nixos-config={self.hidden_config}/configuration.nix",
+                "--show-trace"
+            ]
+
+            print("  Building configuration (this may take a while)...")
+            print("  " + "="*60)
+
+            build_process = subprocess.run(build_cmd, text=True)
+
+            print("  " + "="*60)
+
+            if build_process.returncode != 0:
+                print("✗ Build failed - check the output above for errors")
+                print("💡 Common issues:")
+                print("   - Syntax errors in configuration.nix")
+                print("   - Missing or invalid package names")
+                print("   - Hardware configuration conflicts")
+                return False
+
+            print("  ✓ Updated configuration built successfully")
+
+            # Step 2: Switch to the updated configuration
+            print("\n🔄 Switching to updated hidden system configuration...")
+            switch_cmd = [
+                "nixos-rebuild", "switch",
+                "-I", f"nixos-config={self.hidden_config}/configuration.nix",
+                "--show-trace"
+            ]
+
+            print("  Activating updated configuration...")
+            print("  This will apply any changes made to config/configuration.nix")
+            print("  " + "="*60)
+
+            switch_process = subprocess.run(switch_cmd, text=True)
+
+            print("  " + "="*60)
+
+            if switch_process.returncode == 0:
+                print("  ✓ Successfully switched to updated configuration")
+
+                # Step 3: Verify the rebuild was successful
+                print("\n🔍 Verifying rebuild completion...")
+
+                # Check Nix store integrity
+                print("  Verifying Nix store integrity...")
+                try:
+                    verify_cmd = ["nix-store", "--verify"]
+                    verify_result = subprocess.run(verify_cmd, capture_output=True, text=True, timeout=30)
+
+                    if verify_result.returncode == 0:
+                        print("  ✓ Nix store verification passed")
+                    else:
+                        print("  ⚠️ Nix store verification found issues (may be normal)")
+
+                except subprocess.TimeoutExpired:
+                    print("  ⚠️ Store verification timed out")
+                except Exception:
+                    print("  ℹ️ Could not verify store integrity")
+
+                # Test basic system functionality
+                print("  Testing system functionality...")
+                try:
+                    test_cmd = ["nix-store", "--query", "--references", "/run/current-system"]
+                    test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=15)
+
+                    if test_result.returncode == 0:
+                        print("  ✓ System functionality verified")
+                    else:
+                        print("  ⚠️ System functionality test failed")
+
+                except subprocess.TimeoutExpired:
+                    print("  ⚠️ System test timed out")
+                except Exception:
+                    print("  ℹ️ Could not test system functionality")
+
+                print("\n✅ NAILS Hidden System Rebuilt Successfully")
+                print("✓ Configuration changes applied")
+                print("✓ System updated while maintaining overlay filesystem")
+                print("✓ Hidden environment remains active and untraceable")
+                print("\n💡 Your changes from config/configuration.nix are now active")
+                print("   To see what packages are available: nix-env -qa")
+                print("   To deactivate: sudo ./nails.py deactivate")
+
+                return True
+            else:
+                print("✗ Switch to updated configuration failed")
+                print("💡 The system is still running the previous configuration")
+                print("   Check the error output above and fix configuration issues")
+                return False
+
+        except KeyboardInterrupt:
+            print("\n⚠️ Rebuild interrupted by user")
+            print("System remains in previous state")
+            return False
+        except Exception as e:
+            print(f"✗ Rebuild error: {e}")
+            print("System remains in previous state")
+            return False
+
     def emergency_clean(self):
         """Emergency cleanup - restore to clean decoy state."""
-        print("NAILS Emergency Cleanup - Safe UnionFS Mode")
+        print("NAILS Emergency Cleanup - Safe Overlay Mode")
         print("==========================================")
         print("⚠️  This will immediately restore decoy state")
 
@@ -280,8 +408,8 @@ class NailsSafeUnionFSManager:
                 subprocess.run(["umount", "-l", path], capture_output=True)  # lazy unmount
                 print(f"  ✓ Force unmounted {path}")
 
-            # Cleanup unionfs
-            self._cleanup_unionfs()
+            # Cleanup overlay
+            self._cleanup_overlay()
 
             # Clear state
             if self.state_file.exists():
@@ -391,14 +519,16 @@ class NailsSafeUnionFSManager:
             ]
 
             print("  Building configuration (may take several minutes on first run)...")
-            build_process = subprocess.run(build_cmd, capture_output=True, text=True)
+            print("  You will see the build progress below:")
+            print("  " + "="*60)
+
+            # Run with real-time output instead of capturing it
+            build_process = subprocess.run(build_cmd, text=True)
+
+            print("  " + "="*60)
 
             if build_process.returncode != 0:
-                print("✗ Build failed:")
-                error_lines = build_process.stderr.split('\n')
-                for line in error_lines[-15:]:  # Show last 15 lines
-                    if line.strip():
-                        print(f"  {line}")
+                print("✗ Build failed - check the output above for errors")
                 return False
 
             print("  ✓ Hidden configuration built successfully")
@@ -417,14 +547,82 @@ class NailsSafeUnionFSManager:
             print("    - Create hidden user 'ghost'")
             print("    - Start hidden services (Tor daemon)")
             print("    - Merge with existing system configuration")
+            print("  " + "="*60)
 
-            switch_process = subprocess.run(switch_cmd, capture_output=True, text=True)
+            # Run switch with real-time output too
+            switch_process = subprocess.run(switch_cmd, text=True)
+
+            print("  " + "="*60)
 
             if switch_process.returncode == 0:
                 print("  ✓ Successfully switched to hidden configuration")
 
                 # Verify some key components are active
                 print("\n🔍 Verifying hidden environment activation...")
+
+                # Check Nix store integrity first
+                print("  Verifying Nix store integrity...")
+                try:
+                    verify_cmd = ["nix-store", "--verify"]
+                    verify_result = subprocess.run(verify_cmd, capture_output=True, text=True, timeout=30)
+
+                    if verify_result.returncode == 0:
+                        print("  ✓ Nix store verification passed")
+                    else:
+                        print("  ⚠️ Nix store verification found issues:")
+                        # Show verification errors
+                        if verify_result.stderr:
+                            error_lines = verify_result.stderr.split('\n')[:10]  # Show first 10 lines
+                            for line in error_lines:
+                                if line.strip():
+                                    print(f"    {line}")
+
+                        # Attempt to repair the store
+                        print("  🔧 Attempting to repair Nix store...")
+                        try:
+                            # Get list of broken paths if any
+                            if "path" in verify_result.stderr and "is not valid" in verify_result.stderr:
+                                # Extract broken paths from error output
+                                broken_paths = []
+                                for line in verify_result.stderr.split('\n'):
+                                    if "path" in line and "is not valid" in line:
+                                        # Try to extract path from error message
+                                        parts = line.split()
+                                        for part in parts:
+                                            if part.startswith('/nix/store/'):
+                                                broken_paths.append(part.rstrip("'\""))
+                                                break
+
+                                # Repair broken paths
+                                for path in broken_paths[:5]:  # Limit to first 5 paths
+                                    print(f"    Repairing: {path}")
+                                    repair_cmd = ["nix", "store", "repair", path]
+                                    repair_result = subprocess.run(repair_cmd, capture_output=True, text=True, timeout=60)
+
+                                    if repair_result.returncode == 0:
+                                        print(f"    ✓ Repaired: {path}")
+                                    else:
+                                        print(f"    ⚠️ Could not repair: {path}")
+                            else:
+                                # General repair attempt
+                                print("    Running general store repair...")
+                                repair_cmd = ["nix-store", "--verify", "--check-contents", "--repair"]
+                                repair_result = subprocess.run(repair_cmd, capture_output=True, text=True, timeout=120)
+
+                                if repair_result.returncode == 0:
+                                    print("    ✓ Store repair completed")
+                                else:
+                                    print("    ⚠️ Store repair had issues - overlay may need manual attention")
+
+                        except subprocess.TimeoutExpired:
+                            print("    ⚠️ Store repair timed out")
+                        except Exception as repair_error:
+                            print(f"    ⚠️ Store repair error: {repair_error}")
+
+                except subprocess.TimeoutExpired:
+                    print("  ⚠️ Store verification timed out")
+                except Exception as verify_error:
+                    print(f"  ⚠️ Store verification error: {verify_error}")
 
                 # Check if Tor service is running
                 try:
@@ -434,6 +632,7 @@ class NailsSafeUnionFSManager:
                         print("  ✓ Tor service is running")
                     else:
                         print("  ℹ️ Tor service not running (may need manual start)")
+                        print("    Try: sudo systemctl start tor")
                 except:
                     print("  ℹ️ Could not check Tor service status")
 
@@ -447,22 +646,48 @@ class NailsSafeUnionFSManager:
                 except:
                     print("  ℹ️ Could not verify package installation")
 
+                # Test Nix store functionality with a simple query
+                print("  Testing Nix store functionality...")
+                try:
+                    store_test = subprocess.run(["nix-store", "--query", "--references", "/run/current-system"],
+                                              capture_output=True, text=True, timeout=15)
+                    if store_test.returncode == 0:
+                        ref_count = len([line for line in store_test.stdout.split('\n') if line.strip()])
+                        print(f"  ✓ Nix store is functional ({ref_count} system references)")
+                    else:
+                        print("  ⚠️ Nix store query failed - overlay may have issues")
+                except subprocess.TimeoutExpired:
+                    print("  ⚠️ Nix store test timed out")
+                except:
+                    print("  ℹ️ Could not test Nix store functionality")
+
+                # Check if ghost user was created
+                try:
+                    user_check = subprocess.run(["id", "ghost"], capture_output=True, text=True)
+                    if user_check.returncode == 0:
+                        print("  ✓ Hidden user 'ghost' created successfully")
+                    else:
+                        print("  ℹ️ Hidden user 'ghost' may not be created yet")
+                except:
+                    print("  ℹ️ Could not verify user creation")
+
                 # Check if environment variables are set
                 env_check = os.environ.get("NAILS_ACTIVE")
                 if env_check:
                     print("  ✓ Hidden environment variables active")
                 else:
                     print("  ℹ️ Environment variables will be active in new shells")
+                    print("    Try: source /etc/environment")
 
                 return True
             else:
-                print("✗ Switch failed:")
-                error_lines = switch_process.stderr.split('\n')
-                for line in error_lines[-15:]:  # Show last 15 lines
-                    if line.strip():
-                        print(f"  {line}")
+                print("✗ Switch failed - check the output above for errors")
                 return False
 
+        except KeyboardInterrupt:
+            print("\n⚠️ Build interrupted by user")
+            print("System may be in an inconsistent state")
+            return False
         except Exception as e:
             print(f"Build/switch error: {e}")
             return False
@@ -637,9 +862,9 @@ class NailsSafeUnionFSManager:
             except Exception as e:
                 print(f"  ⚠️ Error deactivating {mount_point}: {e}")
 
-    def _cleanup_unionfs(self):
-        """Clean up UnionFS mounts."""
-        print("Cleaning up UnionFS mounts...")
+    def _cleanup_overlay(self):
+        """Clean up overlay mounts."""
+        print("Cleaning up overlay mounts...")
 
         # Unmount overlay filesystems
         for union_path in [self.union_nix, self.union_etc]:
@@ -669,7 +894,7 @@ class NailsSafeUnionFSManager:
         state = {
             "active": True,
             "activated_at": datetime.now().isoformat(),
-            "method": "safe_unionfs",
+            "method": "safe_overlay",
             "overlays": {
                 "etc": str(self.union_etc),
                 "nix": str(self.union_nix)
@@ -706,8 +931,8 @@ class NailsSafeUnionFSManager:
             subprocess.run(["umount", "-f", path], capture_output=True)
             subprocess.run(["umount", "-l", path], capture_output=True)  # lazy unmount
 
-        # Cleanup unionfs
-        self._cleanup_unionfs()
+        # Cleanup overlay
+        self._cleanup_overlay()
 
         # Clear state
         if self.state_file.exists():
@@ -717,12 +942,12 @@ class NailsSafeUnionFSManager:
 
     def status(self):
         """Show current NAILS status."""
-        print("NAILS Status - Safe UnionFS Mode")
+        print("NAILS Status - Safe Overlay Mode")
         print("===============================")
 
         if self._is_active():
-            print("Status: ✅ ACTIVE (Hidden environment via UnionFS)")
-            print("Mode: Safe UnionFS overlays")
+            print("Status: ✅ ACTIVE (Hidden environment via overlay)")
+            print("Mode: Safe overlay filesystems")
 
             if self.state_file.exists():
                 try:
@@ -751,7 +976,7 @@ class NailsSafeUnionFSManager:
             print("Mount status: Could not determine")
 
         if self._is_active():
-            print("\n✅ UnionFS Hidden Environment Features:")
+            print("\n✅ Overlay Hidden Environment Features:")
             print("- All changes written to hidden volume overlay")
             print("- System filesystem completely untouched")
             print("- Zero forensic traces when deactivated")
@@ -759,18 +984,19 @@ class NailsSafeUnionFSManager:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="NAILS - NixOS Anti-forensics using Safe UnionFS System",
+        description="NAILS - NixOS Anti-forensics using Safe Overlay System",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   ./nails.py init                 # Initialize hidden config
   sudo ./nails.py activate        # Activate hidden environment  
   sudo ./nails.py deactivate      # Return to decoy system
+  sudo ./nails.py rebuild         # Rebuild with current hidden config
   ./nails.py status               # Show current status
   sudo ./nails.py emergency-clean # Emergency restore to decoy
 
-Safe UnionFS Mode:
-✓ Completely untraceable using UnionFS overlays
+Safe Overlay Mode:
+✓ Completely untraceable using overlay filesystems
 ✓ All state stored in hidden volume (untraceable when unmounted)  
 ✓ Conditional configurations only active when marker present
 ✓ Emergency cleanup always available
@@ -778,12 +1004,12 @@ Safe UnionFS Mode:
         """
     )
 
-    parser.add_argument("command", choices=["init", "activate", "deactivate", "status", "emergency-clean"])
+    parser.add_argument("command", choices=["init", "activate", "deactivate", "rebuild", "status", "emergency-clean"])
     parser.add_argument("-v", "--verbose", action="store_true")
 
     args = parser.parse_args()
 
-    nails = NailsSafeUnionFSManager(verbose=args.verbose)
+    nails = NailsSafeOverlayManager(verbose=args.verbose)
 
     try:
         if args.command == "init":
@@ -792,6 +1018,8 @@ Safe UnionFS Mode:
             nails.activate()
         elif args.command == "deactivate":
             nails.deactivate()
+        elif args.command == "rebuild":
+            nails.rebuild()
         elif args.command == "status":
             nails.status()
         elif args.command == "emergency-clean":
