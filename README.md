@@ -1,200 +1,301 @@
 # NAILS - NixOS Anti-forensics Isolation & Layering System
 
-A novel anti-forensics framework that integrates VeraCrypt hidden volumes with NixOS's declarative configuration system to provide cryptographically undetectable dual-environment computing.
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![NixOS](https://img.shields.io/badge/NixOS-supported-blue.svg)](https://nixos.org/)
 
-## Problem Statement
+A novel anti-forensics framework that combines VeraCrypt hidden volumes with NixOS's declarative configuration system and Linux overlay filesystems to provide cryptographically undetectable dual-environment computing.
 
-Current anti-forensics solutions require manual management and leave detectable metadata traces, limiting their effectiveness for users requiring cryptographic plausible deniability. Existing tools operate independently from the operating system, creating usability and security gaps.
+## 🎯 Problem Statement
 
-## Solution Overview
+Current anti-forensics solutions require manual management, leave detectable metadata traces, and operate independently from the operating system. This creates usability gaps and limits effectiveness for users requiring cryptographic plausible deniability.
 
-NAILS combines VeraCrypt's cryptographically undetectable hidden volumes with NixOS's functional package management to create a computing environment that can instantly transition between a clean "decoy" state and a hidden "real" working environment.
+## 💡 Solution Overview
 
-### Key Innovation
+NAILS leverages three key technologies:
+- **VeraCrypt Hidden Volumes**: Cryptographically undetectable storage
+- **Linux Overlay Filesystems**: Zero-trace environment switching
+- **NixOS Declarative Configuration**: Reproducible system states
 
-The system uses a Python script that sits in the root of a VeraCrypt hidden volume alongside configuration and overlay directories. When activated, this script uses Linux kernel overlay filesystems to overlay-mount the hidden volume's Nix store and configurations over the system's `/nix` and `/etc` directories, seamlessly providing access to a completely different set of packages and configurations while maintaining plausible deniability. This approach provides efficient storage usage and zero forensic traces on the host system.
+The result is a system that can instantly transition between a clean "decoy" state and a hidden "real" working environment while maintaining complete plausible deniability.
 
-## Technical Approach
-
-- **VeraCrypt Integration**: Hidden volumes provide cryptographic plausible deniability
-- **Kernel Overlay Filesystems**: Python script handles mounting/unmounting hidden overlays using kernel overlay support
-- **NixOS Declarative Config**: Custom Nix configurations manage hidden system states and packages  
-- **Emergency Sanitization**: Instant rollback to forensically clean states via overlay deactivation
-- **Safe Rebuild System**: Update hidden configurations without deactivating the environment
-
-## Architecture
+## 🏗️ Architecture
 
 ```
 Hidden Volume Structure:
-├── nails.py                # Main overlay management script
-├── config/                 # Hidden system configurations
-│   ├── configuration.nix
+├── nails.py                # Main CLI entry point
+├── nails/                  # Core Python modules
+│   ├── manager.py         # Main orchestration
+│   ├── overlay.py         # Overlay filesystem management
+│   ├── config.py          # Configuration handling
+│   ├── nixos.py           # NixOS integration
+│   └── state.py           # State management
+├── config/                # Hidden system configurations
+│   ├── configuration.nix  # Main NixOS config
 │   └── hardware-configuration.nix
-├── overlay/                # Overlay filesystem structures
-│   ├── etc/               # Configuration overlays
-│   ├── nix/               # Package store overlays
-│   ├── var/               # Variable data overlays
-│   └── home/              # User data overlays
-├── work/                   # Overlay filesystem work directories
-├── safety/                 # Automatic safety backups
-└── backups/               # Manual backup storage
+└── overlays/              # Overlay filesystem data
+    ├── etc/               # Configuration overlays
+    ├── nix/               # Package store overlays
+    └── work/              # Overlay work directories
 ```
 
-## Features
+## ✨ Key Features
 
-- **Cryptographic Plausible Deniability**: Uses VeraCrypt hidden volumes that are undetectable
-- **Seamless Environment Switching**: Instant transition between decoy and hidden environments using kernel overlays
-- **Declarative Configuration**: Full NixOS configuration management for hidden environment
-- **Minimal Forensic Footprint**: Host system remains completely untouched via overlay isolation
-- **Emergency Sanitization**: Instant rollback to clean state via overlay deactivation  
-- **Live Configuration Updates**: Rebuild hidden system without deactivating environment
-- **Storage Optimization**: Overlay approach eliminates package duplication
-- **Automatic Safety Backups**: Critical system files backed up before overlay activation
+- **🔒 Cryptographic Plausible Deniability**: Uses VeraCrypt hidden volumes that are mathematically undetectable
+- **⚡ Instant Environment Switching**: Near-instantaneous transition via kernel overlays
+- **📝 Declarative Configuration**: Full NixOS configuration management for hidden environment
+- **🧹 Zero Forensic Footprint**: Host system remains completely untouched via overlay isolation
+- **🚨 Emergency Sanitization**: Instant rollback to clean state with `emergency-clean`
+- **🔄 Live Configuration Updates**: Rebuild hidden system without deactivating environment
+- **💾 Storage Optimization**: Overlay approach eliminates package duplication
+- **🔐 Automatic Safety Backups**: Critical system files backed up before activation
 
-## Installation
+## 🚀 Installation
 
-1. Create a VeraCrypt volume with a hidden partition
-2. Mount the hidden volume and clone NAILS inside
-3. Initialize the hidden overlay structure and configurations
-4. Configure the decoy system for normal operation
+### Prerequisites
+- NixOS with kernel overlay filesystem support
+- VeraCrypt for hidden volume creation
+- Python 3.12+
+- Root access for overlay operations
 
-```bash
-# Clone the repository into your mounted hidden volume
-git clone https://github.com/your-repo/nails
-cd nails
+### Setup Process
 
-# Initialize NAILS overlay structure
-./nails.py init
-```
+1. **Create VeraCrypt Hidden Volume**
+   ```bash
+   # Create a VeraCrypt volume with hidden partition
+   # Mount the hidden volume (e.g., to /media/hidden)
+   ```
 
-## Usage
+2. **Install NAILS**
+   ```bash
+   cd /media/hidden
+   git clone https://github.com/your-repo/nails .
+   pip install -e .
+   ```
 
-The main script `nails.py` is designed to be placed in the root of your VeraCrypt hidden volume:
+3. **Initialize Hidden Environment**
+   ```bash
+   # Initialize NAILS structure
+   ./nails.py init
+
+   # Edit your hidden configuration
+   nano config/configuration.nix
+   ```
+
+## 📖 Usage
 
 ### Basic Commands
 
 ```bash
-# Initialize hidden overlay structure and configurations
+# Initialize hidden overlay structure
 ./nails.py init
 
-# Activate hidden environment (overlay-mount hidden configurations)
+# Activate hidden environment (requires root)
 sudo ./nails.py activate
 
 # Check current status
 ./nails.py status
 
-# Rebuild system with configuration changes (while active)
+# Rebuild system with configuration changes
 sudo ./nails.py rebuild
 
-# Deactivate hidden environment (remove overlays)
+# Deactivate hidden environment
 sudo ./nails.py deactivate
 
-# Emergency cleanup (remove all traces immediately)
+# Emergency cleanup (immediate sanitization)
 sudo ./nails.py emergency-clean
+```
+
+### Command Options
+
+```bash
+# Verbose output for debugging
+./nails.py -v <command>
+
+# Show version information
+./nails.py --version
+
+# Get help
+./nails.py -h
 ```
 
 ### Typical Workflow
 
 ```bash
-# 1. Initial setup (one time)
-./nails.py init
+# 1. Mount VeraCrypt hidden volume
+veracrypt --mount /path/to/volume /media/hidden
 
-# 2. Activate hidden environment
+# 2. Navigate to NAILS directory
+cd /media/hidden
+
+# 3. Activate hidden environment
 sudo ./nails.py activate
 
-# 3. Edit hidden configuration as needed
-nano config/configuration.nix
+# 4. Your system now has access to hidden packages and configs
+# Make changes, use hidden tools, etc.
 
-# 4. Apply changes without deactivating
+# 5. Optional: Update configuration and rebuild
+nano config/configuration.nix
 sudo ./nails.py rebuild
 
-# 5. When finished, return to decoy state
+# 6. Deactivate when finished
 sudo ./nails.py deactivate
+
+# 7. Unmount hidden volume
+veracrypt --dismount /media/hidden
 ```
 
-## Configuration Management
+## ⚙️ Configuration
 
-The hidden system configuration extends your existing NixOS configuration:
+The hidden system configuration extends your base NixOS setup:
 
 ```nix
 # config/configuration.nix
 { config, pkgs, lib, ... }:
 {
-  # Import existing system config as base
+  # Import base system configuration
   imports = [ /etc/nixos/configuration.nix ];
-  
-  # Add hidden packages
+
+  # Hidden packages
   environment.systemPackages = with pkgs; [
-    tor gnupg keepassxc
-    # Add your hidden tools here
+    tor
+    gnupg
+    keepassxc
+    signal-desktop
+    # Add your sensitive tools here
   ];
-  
+
   # Hidden services
   services.tor.enable = true;
-  
-  # Hidden user
+  services.openssh.enable = false;  # Disable SSH in hidden mode
+
+  # Hidden user accounts
   users.users.ghost = {
     isNormalUser = true;
-    extraGroups = [ "wheel" ];
+    extraGroups = [ "wheel" "networkmanager" ];
+    hashedPassword = "$6$...";  # Set secure password
   };
+
+  # Network configuration for privacy
+  networking.firewall.enable = true;
+  networking.networkmanager.enable = true;
 }
 ```
 
-## Security Model
+## 🛡️ Security Model
 
-- **Cryptographic Layer**: VeraCrypt AES-256 encryption with plausible deniability
-- **System Layer**: NixOS immutable configurations and atomic operations
-- **Isolation Layer**: Linux kernel overlay filesystems for complete host isolation
-- **Emergency Layer**: Instant sanitization via overlay deactivation
+### Defense Layers
 
-## Research Contribution
+1. **Cryptographic Layer**: VeraCrypt AES-256 encryption with plausible deniability
+2. **Isolation Layer**: Linux kernel overlays prevent host contamination
+3. **Configuration Layer**: NixOS immutable configurations ensure consistency
+4. **Emergency Layer**: Instant sanitization capabilities
 
-This represents the first academic exploration of kernel overlay filesystems for anti-forensics applications. By combining NixOS's functional approach with VeraCrypt's cryptographic plausible deniability and Linux kernel overlay technology, the research addresses gaps in current anti-forensics literature while creating practical tools for high-risk users.
+### Security Properties
 
-## Use Cases
+- **Undetectability**: Hidden volumes are cryptographically indistinguishable from random data
+- **Non-persistence**: No traces remain on host system after deactivation
+- **Atomicity**: Operations succeed completely or fail safely
+- **Rollback**: Always possible to return to clean decoy state
 
-- **Journalists**: Protect sensitive sources and investigations with instant environment switching
-- **Activists**: Secure communications and organizational tools with plausible deniability
-- **Security Researchers**: Compartmentalized analysis environments with zero host contamination
-- **Privacy Advocates**: General-purpose secure computing with cryptographic undetectability
+## 🎯 Use Cases
 
-## Technical Benefits
+- **👥 Journalists**: Protect sources and investigations with cryptographic deniability
+- **✊ Activists**: Secure communications with instant environment switching
+- **🔬 Security Researchers**: Isolated analysis environments with zero contamination
+- **🕵️ Privacy Advocates**: General-purpose secure computing with untraceability
 
-- **Zero Host Contamination**: All changes written to overlay, host filesystem untouched
-- **Instant Activation/Deactivation**: Overlay mounting is near-instantaneous 
-- **Live Configuration Updates**: Rebuild system without environment cycling
-- **Automatic Rollback**: Failed operations leave system in consistent state
-- **Complete Untraceability**: No artifacts remain after deactivation
+## 📊 Technical Benefits
 
-## Expected Deliverables
+- **Zero Host Contamination**: All changes isolated to overlay filesystems
+- **Instant Operations**: Overlay mounting/unmounting is near-instantaneous
+- **Live Updates**: Rebuild system without deactivating environment
+- **Atomic Operations**: Failed operations leave system in consistent state
+- **Complete Reversibility**: Always possible to return to original state
 
-- [x] Working open-source anti-forensics framework using kernel overlays
-- [x] Safe rebuild system for live configuration updates
-- [x] Comprehensive safety and emergency cleanup mechanisms
-- [ ] Performance analysis of overlay filesystem operations and nested encryption
-- [ ] Security evaluation against forensic tools and techniques
-- [ ] Academic publication for privacy and security conferences
+## 🔧 Development
 
-## System Requirements
+### Project Structure
+```
+nails/
+├── __init__.py            # Package initialization
+├── manager.py             # Main orchestration logic
+├── overlay.py             # Overlay filesystem operations
+├── config.py              # Configuration management
+├── nixos.py               # NixOS integration
+├── state.py               # State tracking
+└── exceptions.py          # Custom exceptions
+```
 
-- NixOS (any recent version with overlay filesystem support)
-- VeraCrypt for hidden volume creation
-- Root access for overlay filesystem operations
-- Sufficient space in hidden volume for overlay storage
+### Contributing
 
-## Contributing
+This is research software under active development. Contributions welcome:
 
-This is research software under active development. Contributions welcome but please understand this is experimental technology. Issues and pull requests should focus on:
+- 🐛 **Bug Reports**: Security issues, functionality problems
+- 🚀 **Features**: Additional safety mechanisms, performance improvements
+- 📚 **Documentation**: Usage examples, security analysis
+- 🔍 **Testing**: Forensic evaluation, performance benchmarks
 
-- Security improvements
-- Performance optimizations  
-- Additional safety mechanisms
-- Documentation improvements
+### Development Setup
 
-## License
+```bash
+# Clone repository
+git clone https://github.com/your-repo/nails
+cd nails
 
-See LICENSE file for details.
+# Install development dependencies
+pip install -e ".[dev]"
 
-## Disclaimer
+# Run tests (when available)
+python -m pytest
 
-This software is for educational and research purposes. Users are responsible for compliance with local laws and regulations. The authors make no warranties about the security properties of this software - use at your own risk.
+# Code quality checks
+pre-commit run --all-files
+```
+
+## 📋 System Requirements
+
+- **OS**: NixOS (any recent version with overlay filesystem support)
+- **Storage**: VeraCrypt for hidden volume creation
+- **Permissions**: Root access for overlay filesystem operations
+- **Python**: 3.12+ with dependencies listed in `pyproject.toml`
+- **Space**: Sufficient storage in hidden volume for overlay data
+
+## 🚨 Important Notes
+
+### Emergency Procedures
+
+If something goes wrong:
+```bash
+# Emergency cleanup (removes all overlays immediately)
+sudo ./nails.py emergency-clean
+
+# If script is unavailable, manual cleanup:
+sudo umount /nix /etc /var /home 2>/dev/null || true
+```
+
+### Performance Considerations
+
+- Overlay filesystems add minimal overhead
+- Hidden volume encryption may impact I/O performance
+- System rebuilds occur within overlay, not affecting host
+
+### Forensic Considerations
+
+- Always unmount hidden volume when not in use
+- Use `emergency-clean` if system compromise is suspected
+- Regular decoy activity maintains plausible cover story
+
+## 📄 License
+
+This project is licensed under the GNU Affero General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+
+## ⚠️ Disclaimer
+
+This software is for **educational and research purposes only**. Users are responsible for compliance with local laws and regulations. The authors make no warranties about the security properties of this software.
+
+**Use at your own risk.**
+
+---
+
+*NAILS represents novel research in combining kernel overlay filesystems with cryptographic plausible deniability for anti-forensics applications.*
