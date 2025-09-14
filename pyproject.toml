@@ -68,6 +68,7 @@ Documentation = "https://github.com/nails-project/nails/blob/main/README.md"
 
 [tool.setuptools]
 packages = ["nails"]
+py-modules = ["nails_cli"]
 
 [tool.setuptools.package-data]
 nails = ["templates/*", "config/*"]
@@ -206,4 +207,4 @@ min_confidence = 80
 paths = ["nails", "tests"]
 exclude = ["venv", ".venv", "build", "dist"]
 ignore_decorators = ["@app.route", "@require_*"]
-ignore_names = ["_*", "setUp", "tearDown"]
+ignore_names = ["_*"]
