@@ -31,7 +31,7 @@ jobs:
         echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
         # Install tools via flakes (no channels/NIX_PATH needed)
         nix --version
-        nix profile install nixpkgs#nix nixpkgs#nixfmt nixpkgs#deadnix nixpkgs#statix
+        nix profile install nixpkgs#nix nixpkgs#nixfmt-classic nixpkgs#deadnix nixpkgs#statix
         nixfmt --version || true
         deadnix --version || true
         statix --version || true
