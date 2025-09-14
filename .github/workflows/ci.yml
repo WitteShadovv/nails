@@ -66,12 +66,12 @@ jobs:
     - name: Check for security issues with bandit
       run: bandit -r nails/ -f json -o bandit-report.json || true
 
-    - name: Upload bandit results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: bandit-security-report
-        path: bandit-report.json
+#    - name: Upload bandit results
+#      uses: actions/upload-artifact@v4
+#      if: always()
+#      with:
+#        name: bandit-security-report
+#        path: bandit-report.json
 
   build-test:
     runs-on: ubuntu-latest
