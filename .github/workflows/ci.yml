@@ -1,0 +1,104 @@
+name: Code Quality Checks
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: Set up Nix (for Nix-related pre-commit hooks)
+      uses: cachix/install-nix-action@v27
+
+    - name: Install Nix tools required by pre-commit hooks
+      run: |
+        # Ensure nix profile binaries are on PATH for subsequent steps
+        echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+        # Install tools via flakes (no channels/NIX_PATH needed)
+        nix --version
+        nix profile install nixpkgs#nix nixpkgs#nixfmt-classic nixpkgs#deadnix nixpkgs#statix
+        nixfmt --version || true
+        deadnix --version || true
+        statix --version || true
+
+    - name: Cache pre-commit environments
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pre-commit
+        key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+        restore-keys: |
+          pre-commit-${{ runner.os }}-
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[dev]
+
+    - name: Ensure detect-secrets baseline exists
+      run: |
+        if [ ! -f .secrets.baseline ]; then
+          detect-secrets scan --baseline .secrets.baseline --force-use-all-plugins || true
+        fi
+
+    - name: Run pre-commit hooks
+      run: pre-commit run --all-files
+
+    - name: Check for security issues with bandit
+      run: bandit -r nails/ -f json -o bandit-report.json || true
+
+#    - name: Upload bandit results
+#      uses: actions/upload-artifact@v4
+#      if: always()
+#      with:
+#        name: bandit-security-report
+#        path: bandit-report.json
+
+  build-test:
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.base_ref == 'main') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: pre-commit
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[build]
+
+    - name: Test package installation
+      run: |
+        pip install -e .
+        nails --version
+
+    - name: Run basic functionality tests
+      run: |
+        # Test that the CLI can be imported and basic help works
+        python -c "from nails.manager import NailsManager; print('✓ Import successful')"
+        nails --help

@@ -1,0 +1,172 @@
+exclude: (hardware-configuration\.nix|flake\.lock)$
+
+repos:
+  # Python linting and formatting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.12
+    hooks:
+      # Linting
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      # Formatting
+      - id: ruff-format
+
+  # General file formatting and checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: debug-statements
+      - id: check-docstring-first
+      - id: check-symlinks
+
+  # Security checks for Python code
+  - repo: https://github.com/PyCQA/bandit
+    rev: '1.8.6'
+    hooks:
+    - id: bandit
+      args: ["-c", "pyproject.toml"]
+      additional_dependencies: ["bandit[toml]"]
+      files: \.py$
+
+  # Type checking for Python
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.17.1
+    hooks:
+      - id: mypy
+        args: [--ignore-missing-imports, --no-strict-optional]
+        files: \.py$
+
+  # Secret detection
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: .*\.lock$|^\.secrets\.baseline$
+
+  # Local hooks for Nix and project-specific checks
+  - repo: local
+    hooks:
+      - id: nixfmt
+        name: nixfmt (Nix formatter)
+        entry: nixfmt
+        language: system
+        files: \.nix$
+
+      - id: nix-syntax-check
+        name: nix syntax check
+        entry: bash
+        language: system
+        files: \.nix$
+        exclude: '.*/tmp-.*\.nix$'
+        args:
+          - -c
+          - 'for file in "$@"; do nix-instantiate --parse "$file" > /dev/null || exit 1; done'
+          - --
+
+      - id: deadnix
+        name: deadnix (remove dead Nix code)
+        entry: deadnix
+        language: system
+        files: \.nix$
+        exclude: '.*/tmp-.*\.nix$'
+        args: [--fail]
+
+      - id: statix
+        name: statix (Nix linter)
+        entry: statix
+        language: system
+        files: \.nix$
+        exclude: '.*/tmp-.*\.nix$|hardware-configuration\.nix'
+        args: [check]
+
+      - id: nix-store-check
+        name: check for hard-coded store paths
+        entry: bash
+        language: system
+        files: '.*\.nix$'
+        exclude: '.*/tmp-.*\.nix$'
+        args:
+          - -c
+          - 'for file in "$@"; do if grep -q "/nix/store" "$file"; then echo "Hard-coded store paths found in $file!"; exit 1; fi; done'
+          - --
+
+      - id: shell-script-check
+        name: shellcheck
+        entry: shellcheck
+        language: system
+        files: '.*\.sh$'
+        args: [-e, SC1091, -e, SC2034]
+
+      - id: python-executable-check
+        name: ensure Python scripts are executable
+        entry: bash
+        language: system
+        files: '.*\.py$'
+        args:
+          - -c
+          - 'for file in "$@"; do if head -1 "$file" | grep -q "^#!/usr/bin/env python3"; then if [ ! -x "$file" ]; then echo "Making $file executable"; chmod +x "$file"; fi; fi; done'
+          - --
+
+      - id: nails-config-validation
+        name: validate NAILS configuration files
+        entry: bash
+        language: system
+        files: '(configuration|hardware-configuration)\.nix$'
+        args:
+          - -c
+          - |
+            for file in "$@"; do
+              echo "Validating NAILS config: $file"
+              # Basic syntax check
+              nix-instantiate --parse "$file" > /dev/null || exit 1
+
+              # Check for common security issues in configs
+              if grep -q "openssh.*enable.*true" "$file"; then
+                echo "Warning: SSH is enabled in $file - consider security implications"
+              fi
+
+              if grep -q "firewall.*enable.*false" "$file"; then
+                echo "Warning: Firewall is disabled in $file - consider security implications"
+              fi
+            done
+          - --
+
+      - id: overlay-safety-check
+        name: overlay safety check
+        entry: bash
+        language: system
+        files: 'nails-overlay\.py$'
+        args:
+          - -c
+          - |
+            echo "Checking overlay script safety..."
+            # Check for dangerous operations without proper checks
+            if grep -n "rm -rf" nails-overlay.py | grep -v "check\|confirm\|emergency"; then
+              echo "Warning: Potentially unsafe rm -rf operations found"
+              exit 1
+            fi
+
+            # Check for proper privilege checking
+            if ! grep -q "os.geteuid.*0" nails-overlay.py; then
+              echo "Warning: No root privilege check found in overlay script"
+              exit 1
+            fi
+
+# Configuration for specific tools
+default_language_version:
+  python: python3.12
+
+# CI-specific configuration
+ci:
+  autofix_prs: false
+  autoupdate_schedule: monthly

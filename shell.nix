@@ -1,0 +1,58 @@
+{ pkgs ? import <nixpkgs> { } }:
+
+pkgs.mkShell {
+  buildInputs = with pkgs; [
+    # Python environment
+    python312
+    python312Packages.pip
+    python312Packages.setuptools
+    python312Packages.wheel
+
+    # Development tools
+    pre-commit
+    git
+
+    # Security and forensics tools (for testing)
+    veracrypt
+  ];
+
+  shellHook = ''
+    echo "🔧 NAILS Development Environment"
+    echo "Python: $(python --version)"
+    echo "Pre-commit: $(pre-commit --version)"
+    echo ""
+
+    # Create and activate virtual environment
+    if [ ! -d ".venv" ]; then
+        echo "🐍 Creating Python virtual environment..."
+        python -m venv .venv
+    fi
+
+    echo "🔄 Activating virtual environment..."
+    source .venv/bin/activate
+
+    # Upgrade pip in venv
+    pip install --upgrade pip -q
+
+    # Automatically install development dependencies
+    echo "📦 Installing development dependencies..."
+    pip install "$(pwd)[dev]" -q
+
+    # Install pre-commit hooks if not already installed
+    if [ ! -f .git/hooks/pre-commit ]; then
+        echo "🔗 Installing pre-commit hooks..."
+        pre-commit install --quiet
+    fi
+
+    echo "✅ Development environment ready!"
+    echo "🐍 Virtual environment: $(which python)"
+    echo ""
+    echo "Available commands:"
+    echo "  pre-commit run --all-files  # Run all checks"
+    echo "  ./nails.py init             # Initialize NAILS"
+    echo "  sudo ./nails.py activate    # Activate hidden environment"
+    echo ""
+    echo "⚠️  Remember: NAILS requires root privileges for overlay operations"
+    echo "💡 To deactivate venv later: deactivate"
+  '';
+}
