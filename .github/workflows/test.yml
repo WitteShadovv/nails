@@ -1,0 +1,355 @@
+name: Test Pipeline
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+      - develop
+  schedule:
+    # Run burn-in weekly (Sundays at 2am UTC)
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+  # Enforce 100% coverage (TDD methodology)
+  COVERAGE_THRESHOLD: 100
+
+jobs:
+  # Stage 1: Lint and format checks
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry/index
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-lint-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # Stage 2: Test execution with parallel sharding
+  test:
+    name: Test (Shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry/index
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked
+
+      - name: Run tests (shard ${{ matrix.shard }}/4)
+        run: |
+          cargo nextest run \
+            --partition count:${{ matrix.shard }}/4 \
+            --no-fail-fast \
+            --status-level all
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-shard-${{ matrix.shard }}
+          path: |
+            target/nextest/**/*.xml
+            target/debug/**/*.log
+          retention-days: 30
+
+  # Stage 3: Coverage enforcement (100% required for TDD)
+  coverage:
+    name: Coverage Enforcement
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry/index
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-coverage-
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      - name: Run coverage analysis
+        run: |
+          cargo tarpaulin \
+            --out Xml \
+            --out Html \
+            --output-dir ./coverage \
+            --timeout 300 \
+            --all-features \
+            --workspace
+
+      - name: Enforce 100% coverage threshold
+        run: |
+          # Extract coverage percentage from XML report
+          COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' coverage/cobertura.xml | head -1)
+          COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc)
+          
+          echo "📊 Current coverage: ${COVERAGE_PCT}%"
+          echo "🎯 Required coverage: ${COVERAGE_THRESHOLD}%"
+          
+          if (( $(echo "$COVERAGE_PCT < $COVERAGE_THRESHOLD" | bc -l) )); then
+            echo "❌ Coverage below threshold: ${COVERAGE_PCT}% < ${COVERAGE_THRESHOLD}%"
+            echo "   TDD methodology requires 100% coverage"
+            exit 1
+          else
+            echo "✅ Coverage meets threshold: ${COVERAGE_PCT}% >= ${COVERAGE_THRESHOLD}%"
+          fi
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 30
+
+      - name: Upload coverage to Codecov (optional)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage/cobertura.xml
+          fail_ci_if_error: false
+
+  # Stage 4: Burn-in loop for flaky test detection
+  burn-in:
+    name: Burn-In Loop (Flaky Detection)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: coverage
+    # Only run burn-in on PRs to main/develop or on schedule
+    if: |
+      github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request' && contains(fromJson('["main", "develop"]'), github.base_ref)) ||
+      github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry/index
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-burnin-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-burnin-
+
+      - name: Run burn-in loop (10 iterations)
+        run: |
+          echo "🔥 Starting burn-in loop: 10 iterations"
+          echo "Purpose: Detect flaky/non-deterministic tests"
+          echo ""
+          
+          for i in {1..10}; do
+            echo "================================================"
+            echo "🔥 Burn-in iteration $i/10"
+            echo "================================================"
+            
+            if ! cargo test --all-features --workspace; then
+              echo ""
+              echo "❌ FLAKY TEST DETECTED!"
+              echo "   Test failed on iteration $i/10"
+              echo "   This indicates non-deterministic behavior"
+              echo ""
+              echo "Action required:"
+              echo "  1. Review test output above"
+              echo "  2. Identify which test failed"
+              echo "  3. Fix the flaky test before merging"
+              echo "  4. Flaky tests compromise TDD methodology"
+              exit 1
+            fi
+            
+            echo "✅ Iteration $i/10 passed"
+            echo ""
+          done
+          
+          echo "🎉 All 10 iterations passed - no flaky tests detected"
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: burn-in-failures
+          path: |
+            target/debug/**/*.log
+            target/tmp/**
+          retention-days: 30
+
+  # Stage 5: Performance benchmarks (Criterion)
+  benchmarks:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: test
+    # Only run on main branch or manual trigger
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry/index
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+
+      - name: Run benchmarks
+        run: cargo bench --all-features
+
+      - name: Check performance targets (RQ2)
+        run: |
+          echo "🎯 Checking performance targets (RQ2 validation):"
+          echo "  - Activation: p95 < 5.0s"
+          echo "  - Emergency: p95 < 3.0s"
+          echo "  - Status: p95 < 500ms"
+          echo ""
+          echo "📊 Benchmark results available in target/criterion/"
+          
+          # TODO: Parse Criterion results and enforce performance thresholds
+          # This will be implemented once actual benchmarks exist
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: target/criterion/
+          retention-days: 90
+
+  # Final status check
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [lint, test, coverage, burn-in, benchmarks]
+    if: always()
+
+    steps:
+      - name: Check all jobs passed
+        run: |
+          # Check if all required jobs succeeded
+          if [[ "${{ needs.lint.result }}" != "success" ]]; then
+            echo "❌ Lint job failed"
+            exit 1
+          fi
+          
+          if [[ "${{ needs.test.result }}" != "success" ]]; then
+            echo "❌ Test job failed"
+            exit 1
+          fi
+          
+          if [[ "${{ needs.coverage.result }}" != "success" ]]; then
+            echo "❌ Coverage job failed (100% required)"
+            exit 1
+          fi
+          
+          # Burn-in and benchmarks are optional (may be skipped)
+          if [[ "${{ needs.burn-in.result }}" == "failure" ]]; then
+            echo "❌ Burn-in detected flaky tests"
+            exit 1
+          fi
+          
+          if [[ "${{ needs.benchmarks.result }}" == "failure" ]]; then
+            echo "❌ Benchmarks failed"
+            exit 1
+          fi
+          
+          echo "✅ All CI checks passed!"
