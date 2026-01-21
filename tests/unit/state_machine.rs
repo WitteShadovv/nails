@@ -19,10 +19,10 @@ use nails::state::{SystemState, StateTransition};
 fn test_inactive_to_activating_valid() {
     // GIVEN: System is in INACTIVE state
     let current = SystemState::Inactive;
-    
+
     // WHEN: Transition to ACTIVATING requested
     let result = current.transition_to(StateTransition::BeginActivation);
-    
+
     // THEN: Transition succeeds to ACTIVATING state
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), SystemState::Activating);
@@ -33,10 +33,10 @@ fn test_inactive_to_activating_valid() {
 fn test_activating_to_active_valid() {
     // GIVEN: System is ACTIVATING
     let current = SystemState::Activating;
-    
+
     // WHEN: Activation completes successfully
     let result = current.transition_to(StateTransition::CompleteActivation);
-    
+
     // THEN: Transition succeeds to ACTIVE state
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), SystemState::Active);
@@ -47,10 +47,10 @@ fn test_activating_to_active_valid() {
 fn test_active_to_deactivating_valid() {
     // GIVEN: System is ACTIVE
     let current = SystemState::Active;
-    
+
     // WHEN: Deactivation requested
     let result = current.transition_to(StateTransition::BeginDeactivation);
-    
+
     // THEN: Transition succeeds to DEACTIVATING state
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), SystemState::Deactivating);
@@ -61,10 +61,10 @@ fn test_active_to_deactivating_valid() {
 fn test_deactivating_to_inactive_valid() {
     // GIVEN: System is DEACTIVATING
     let current = SystemState::Deactivating;
-    
+
     // WHEN: Deactivation completes successfully
     let result = current.transition_to(StateTransition::CompleteDeactivation);
-    
+
     // THEN: Transition succeeds to INACTIVE state
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), SystemState::Inactive);
@@ -75,7 +75,7 @@ fn test_deactivating_to_inactive_valid() {
 fn test_emergency_from_any_state_valid() {
     // Emergency transition must be reachable from ANY state
     // Architecture: Emergency deactivation for threat scenarios
-    
+
     let states = vec![
         SystemState::Inactive,
         SystemState::Activating,
@@ -83,11 +83,11 @@ fn test_emergency_from_any_state_valid() {
         SystemState::Deactivating,
         SystemState::Emergency,
     ];
-    
+
     for current_state in states {
         // WHEN: Emergency transition requested from any state
         let result = current_state.transition_to(StateTransition::Emergency);
-        
+
         // THEN: Transition always succeeds to EMERGENCY state
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), SystemState::Emergency);
@@ -103,10 +103,10 @@ fn test_emergency_from_any_state_valid() {
 fn test_inactive_to_active_invalid() {
     // GIVEN: System is INACTIVE
     let current = SystemState::Inactive;
-    
+
     // WHEN: Direct transition to ACTIVE attempted (skipping ACTIVATING)
     let result = current.transition_to(StateTransition::CompleteActivation);
-    
+
     // THEN: Transition fails with InvalidTransition error
     assert!(result.is_err());
     // Error message should be clear and actionable
@@ -117,10 +117,10 @@ fn test_inactive_to_active_invalid() {
 fn test_active_to_inactive_invalid() {
     // GIVEN: System is ACTIVE
     let current = SystemState::Active;
-    
+
     // WHEN: Direct transition to INACTIVE attempted (skipping DEACTIVATING)
     let result = current.transition_to(StateTransition::CompleteDeactivation);
-    
+
     // THEN: Transition fails with InvalidTransition error
     assert!(result.is_err());
 }
@@ -130,10 +130,10 @@ fn test_active_to_inactive_invalid() {
 fn test_activating_to_deactivating_invalid() {
     // GIVEN: System is in ACTIVATING state
     let current = SystemState::Activating;
-    
+
     // WHEN: Deactivation requested mid-activation
     let result = current.transition_to(StateTransition::BeginDeactivation);
-    
+
     // THEN: Transition fails (must complete or emergency-abort activation first)
     assert!(result.is_err());
 }
@@ -143,10 +143,10 @@ fn test_activating_to_deactivating_invalid() {
 fn test_deactivating_to_activating_invalid() {
     // GIVEN: System is DEACTIVATING
     let current = SystemState::Deactivating;
-    
+
     // WHEN: Activation requested mid-deactivation
     let result = current.transition_to(StateTransition::BeginActivation);
-    
+
     // THEN: Transition fails (must complete deactivation first)
     assert!(result.is_err());
 }
@@ -160,10 +160,10 @@ fn test_deactivating_to_activating_invalid() {
 fn test_activate_when_already_active_idempotent() {
     // GIVEN: System is already ACTIVE
     let current = SystemState::Active;
-    
+
     // WHEN: Activation requested again
     let result = current.transition_to(StateTransition::BeginActivation);
-    
+
     // THEN: Either succeeds as no-op OR returns clear error (idempotent)
     // Architecture: Commands must be safe to run multiple times
     match result {
@@ -180,10 +180,10 @@ fn test_activate_when_already_active_idempotent() {
 fn test_deactivate_when_already_inactive_idempotent() {
     // GIVEN: System is already INACTIVE
     let current = SystemState::Inactive;
-    
+
     // WHEN: Deactivation requested again
     let result = current.transition_to(StateTransition::BeginDeactivation);
-    
+
     // THEN: Either succeeds as no-op OR returns clear error (idempotent)
     match result {
         Ok(state) => assert_eq!(state, SystemState::Inactive), // No-op acceptable
@@ -209,11 +209,11 @@ fn test_state_serialization_to_json() {
         (SystemState::Deactivating, "\"Deactivating\""),
         (SystemState::Emergency, "\"Emergency\""),
     ];
-    
+
     for (state, expected_json) in states {
         // WHEN: Serializing to JSON
         let json = serde_json::to_string(&state).unwrap();
-        
+
         // THEN: Produces expected JSON representation
         assert_eq!(json, expected_json);
     }
@@ -230,11 +230,11 @@ fn test_state_deserialization_from_json() {
         ("\"Deactivating\"", SystemState::Deactivating),
         ("\"Emergency\"", SystemState::Emergency),
     ];
-    
+
     for (json, expected_state) in json_states {
         // WHEN: Deserializing from JSON
         let state: SystemState = serde_json::from_str(json).unwrap();
-        
+
         // THEN: Produces correct state enum
         assert_eq!(state, expected_state);
     }
@@ -245,10 +245,10 @@ fn test_state_deserialization_from_json() {
 fn test_state_deserialization_invalid_json() {
     // GIVEN: Invalid JSON state string
     let invalid_json = "\"InvalidState\"";
-    
+
     // WHEN: Attempting to deserialize
     let result: Result<SystemState, _> = serde_json::from_str(invalid_json);
-    
+
     // THEN: Deserialization fails gracefully
     assert!(result.is_err());
 }
@@ -262,7 +262,7 @@ fn test_state_deserialization_invalid_json() {
 fn test_all_states_handled_in_match() {
     // This test validates that pattern matching is exhaustive
     // Rust compiler will fail if any state is unhandled
-    
+
     let states = vec![
         SystemState::Inactive,
         SystemState::Activating,
@@ -270,7 +270,7 @@ fn test_all_states_handled_in_match() {
         SystemState::Deactivating,
         SystemState::Emergency,
     ];
-    
+
     for state in states {
         let description = match state {
             SystemState::Inactive => "No overlays mounted",
@@ -280,7 +280,7 @@ fn test_all_states_handled_in_match() {
             SystemState::Emergency => "Emergency deactivation completed",
             // Compiler enforces: If new state added, this match must be updated
         };
-        
+
         assert!(!description.is_empty());
     }
 }
@@ -296,10 +296,10 @@ fn test_activation_failure_triggers_rollback() {
     let mut current = SystemState::Inactive;
     current = current.transition_to(StateTransition::BeginActivation).unwrap();
     assert_eq!(current, SystemState::Activating);
-    
+
     // WHEN: Activation fails mid-process (e.g., second overlay mount fails)
     let result = current.transition_to(StateTransition::RollbackActivation);
-    
+
     // THEN: System rolls back to INACTIVE (known good state)
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), SystemState::Inactive);
@@ -312,10 +312,10 @@ fn test_deactivation_failure_triggers_rollback() {
     let mut current = SystemState::Active;
     current = current.transition_to(StateTransition::BeginDeactivation).unwrap();
     assert_eq!(current, SystemState::Deactivating);
-    
+
     // WHEN: Deactivation fails mid-process (e.g., unmount fails)
     let result = current.transition_to(StateTransition::RollbackDeactivation);
-    
+
     // THEN: System rolls back to ACTIVE (known good state)
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), SystemState::Active);
@@ -330,10 +330,10 @@ fn test_deactivation_failure_triggers_rollback() {
 fn test_emergency_transition_is_one_way() {
     // GIVEN: System is in EMERGENCY state
     let current = SystemState::Emergency;
-    
+
     // WHEN: Attempting to transition out of EMERGENCY
     let result = current.transition_to(StateTransition::BeginActivation);
-    
+
     // THEN: Transition fails (emergency is terminal - requires manual recovery)
     assert!(result.is_err());
 }
@@ -343,10 +343,10 @@ fn test_emergency_transition_is_one_way() {
 fn test_emergency_from_activating_skips_rollback() {
     // GIVEN: System is ACTIVATING (partial overlays mounted)
     let current = SystemState::Activating;
-    
+
     // WHEN: Emergency transition requested
     let result = current.transition_to(StateTransition::Emergency);
-    
+
     // THEN: Transition succeeds directly to EMERGENCY (no rollback attempt)
     // Architecture: Emergency prioritizes speed over perfect cleanup
     assert!(result.is_ok());
@@ -368,11 +368,11 @@ fn test_state_display_user_friendly() {
         (SystemState::Deactivating, "DEACTIVATING"),
         (SystemState::Emergency, "EMERGENCY"),
     ];
-    
+
     for (state, expected_display) in states {
         // WHEN: Converting state to string for user display
         let display = format!("{}", state);
-        
+
         // THEN: Produces user-friendly uppercase string
         assert_eq!(display, expected_display);
     }
@@ -387,12 +387,12 @@ fn test_state_display_user_friendly() {
 fn test_state_implements_copy_clone_debug() {
     // GIVEN: SystemState enum
     let state = SystemState::Active;
-    
+
     // WHEN: Cloning and debugging state
     let cloned = state.clone(); // Must implement Clone
     let copied = state; // Must implement Copy (enum with no heap data)
     let debug_string = format!("{:?}", state); // Must implement Debug
-    
+
     // THEN: All operations succeed
     assert_eq!(state, cloned);
     assert_eq!(state, copied);
@@ -409,14 +409,14 @@ fn test_state_equality_comparison() {
     // GIVEN: Two instances of same state
     let state1 = SystemState::Active;
     let state2 = SystemState::Active;
-    
+
     // WHEN: Comparing states
     // THEN: Equality works correctly
     assert_eq!(state1, state2);
-    
+
     // GIVEN: Two different states
     let state3 = SystemState::Inactive;
-    
+
     // WHEN: Comparing different states
     // THEN: Inequality works correctly
     assert_ne!(state1, state3);
@@ -430,7 +430,7 @@ fn test_state_equality_comparison() {
 mod property_tests {
     use super::*;
     use proptest::prelude::*;
-    
+
     // TODO: Add property-based tests with proptest
     // - Generate random state transition sequences
     // - Verify invariants hold across all sequences:

@@ -68,11 +68,11 @@ else
         # Extract coverage percentage
         COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' coverage/cobertura.xml | head -1)
         COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc)
-        
+
         echo ""
         echo "📊 Current coverage: ${COVERAGE_PCT}%"
         echo "🎯 Required coverage: 100%"
-        
+
         if (( $(echo "$COVERAGE_PCT < 100" | bc -l) )); then
             echo -e "${RED}✗${NC} Coverage below threshold: ${COVERAGE_PCT}% < 100%"
             echo "   TDD methodology requires 100% coverage"
@@ -98,7 +98,7 @@ echo ""
 
 for i in {1..3}; do
     echo -e "${YELLOW}→${NC} Burn-in iteration $i/3..."
-    
+
     if ! cargo test --all-features --workspace; then
         echo ""
         echo -e "${RED}❌ FLAKY TEST DETECTED!${NC}"
@@ -106,7 +106,7 @@ for i in {1..3}; do
         echo "   This indicates non-deterministic behavior"
         exit 1
     fi
-    
+
     echo -e "${GREEN}✓${NC} Iteration $i/3 passed"
 done
 
@@ -119,7 +119,7 @@ if [[ "$1" == "--bench" ]]; then
     echo "================================================"
     echo "Stage 5: Performance Benchmarks"
     echo "================================================"
-    
+
     echo -e "${YELLOW}→${NC} Running benchmarks..."
     if cargo bench --all-features; then
         echo -e "${GREEN}✓${NC} Benchmarks completed"
@@ -127,7 +127,7 @@ if [[ "$1" == "--bench" ]]; then
         echo -e "${RED}✗${NC} Benchmarks failed"
         exit 1
     fi
-    
+
     echo ""
 fi
 

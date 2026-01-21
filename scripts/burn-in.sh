@@ -18,13 +18,13 @@ for i in $(seq 1 $ITERATIONS); do
     echo "================================================"
     echo "🔥 Iteration $i/$ITERATIONS"
     echo "================================================"
-    
+
     if ! cargo test --all-features --workspace; then
         FAILED=1
         FAILED_ITERATION=$i
         break
     fi
-    
+
     echo "✅ Iteration $i/$ITERATIONS passed"
     echo ""
 done

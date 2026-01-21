@@ -159,10 +159,10 @@ jobs:
           # Extract coverage percentage from XML report
           COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' coverage/cobertura.xml | head -1)
           COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc)
-          
+
           echo "📊 Current coverage: ${COVERAGE_PCT}%"
           echo "🎯 Required coverage: ${COVERAGE_THRESHOLD}%"
-          
+
           if (( $(echo "$COVERAGE_PCT < $COVERAGE_THRESHOLD" | bc -l) )); then
             echo "❌ Coverage below threshold: ${COVERAGE_PCT}% < ${COVERAGE_THRESHOLD}%"
             echo "   TDD methodology requires 100% coverage"
@@ -225,12 +225,12 @@ jobs:
           echo "🔥 Starting burn-in loop: 10 iterations"
           echo "Purpose: Detect flaky/non-deterministic tests"
           echo ""
-          
+
           for i in {1..10}; do
             echo "================================================"
             echo "🔥 Burn-in iteration $i/10"
             echo "================================================"
-            
+
             if ! cargo test --all-features --workspace; then
               echo ""
               echo "❌ FLAKY TEST DETECTED!"
@@ -244,11 +244,11 @@ jobs:
               echo "  4. Flaky tests compromise TDD methodology"
               exit 1
             fi
-            
+
             echo "✅ Iteration $i/10 passed"
             echo ""
           done
-          
+
           echo "🎉 All 10 iterations passed - no flaky tests detected"
 
       - name: Upload failure artifacts
@@ -304,7 +304,7 @@ jobs:
           echo "  - Status: p95 < 500ms"
           echo ""
           echo "📊 Benchmark results available in target/criterion/"
-          
+
           # TODO: Parse Criterion results and enforce performance thresholds
           # This will be implemented once actual benchmarks exist
 
@@ -330,26 +330,26 @@ jobs:
             echo "❌ Lint job failed"
             exit 1
           fi
-          
+
           if [[ "${{ needs.test.result }}" != "success" ]]; then
             echo "❌ Test job failed"
             exit 1
           fi
-          
+
           if [[ "${{ needs.coverage.result }}" != "success" ]]; then
             echo "❌ Coverage job failed (100% required)"
             exit 1
           fi
-          
+
           # Burn-in and benchmarks are optional (may be skipped)
           if [[ "${{ needs.burn-in.result }}" == "failure" ]]; then
             echo "❌ Burn-in detected flaky tests"
             exit 1
           fi
-          
+
           if [[ "${{ needs.benchmarks.result }}" == "failure" ]]; then
             echo "❌ Benchmarks failed"
             exit 1
           fi
-          
+
           echo "✅ All CI checks passed!"

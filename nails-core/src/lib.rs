@@ -22,8 +22,11 @@
 //! - Pure business logic with clear error handling
 //! - Well-defined traits for extensibility
 
-// Public API re-exports will be added in future stories
-// For now: minimal placeholder to satisfy compilation
+// Error handling module
+pub mod error;
+
+// Re-export for convenience
+pub use error::{NailsError, Result};
 
 #[cfg(test)]
 mod tests {
