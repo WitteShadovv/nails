@@ -1,0 +1,29 @@
+[package]
+name = "nails-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI interface for NixOS Anti-forensics Isolation & Layering System"
+homepage.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["nixos", "anti-forensics", "security", "privacy", "veracrypt"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "nails"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace dependencies
+clap = { workspace = true, features = ["derive", "cargo"] }
+
+# Core library
+nails-core = { path = "../nails-core" }
+
+[dev-dependencies]
+# Workspace testing dependencies
+assert_cmd = { workspace = true }
+predicates = { workspace = true }

@@ -1,0 +1,26 @@
+[package]
+name = "nails-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core business logic for NixOS Anti-forensics Isolation & Layering System"
+homepage.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["nixos", "anti-forensics", "security", "privacy", "veracrypt"]
+categories = ["filesystem", "os::linux-apis"]
+
+[lib]
+name = "nails_core"
+path = "src/lib.rs"
+
+[dependencies]
+# Workspace dependencies will be added as needed in future stories
+# For now: minimal placeholder to satisfy compilation
+
+[dev-dependencies]
+# Workspace testing dependencies
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
