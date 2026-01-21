@@ -19,6 +19,9 @@ pkgs.mkShell {
 
     # Security and forensics tools (for testing)
     veracrypt
+
+    # Rust security auditing
+    cargo-audit
   ];
 
   shellHook = ''
@@ -34,16 +37,6 @@ pkgs.mkShell {
         echo "🐍 Creating Python virtual environment..."
         python -m venv .venv
     fi
-
-    echo "🔄 Activating virtual environment..."
-    source .venv/bin/activate
-
-    # Upgrade pip in venv
-    pip install --upgrade pip -q
-
-    # Automatically install development dependencies
-    echo "📦 Installing development dependencies..."
-    pip install "$(pwd)[dev]" -q
 
     # Install pre-commit hooks if not already installed
     if [ ! -f .git/hooks/pre-commit ]; then

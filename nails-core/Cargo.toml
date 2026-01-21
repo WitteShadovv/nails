@@ -17,8 +17,15 @@ name = "nails_core"
 path = "src/lib.rs"
 
 [dependencies]
-# Workspace dependencies will be added as needed in future stories
-# For now: minimal placeholder to satisfy compilation
+# Use workspace versions for consistency
+clap = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+nix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # Workspace testing dependencies

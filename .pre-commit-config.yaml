@@ -163,6 +163,14 @@ repos:
             fi
 
       # Rust testing and quality checks (TDD enforcement)
+      # Security auditing: Scans Cargo.lock for known vulnerabilities (AR50)
+      # Fails on high/critical severity vulnerabilities before commit
+      - id: cargo-audit
+        name: Cargo Security Audit
+        entry: cargo audit
+        language: system
+        pass_filenames: false
+
       - id: rust-fmt
         name: Format Rust code
         entry: cargo fmt --
