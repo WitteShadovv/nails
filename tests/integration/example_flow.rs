@@ -12,12 +12,12 @@ use tempfile::TempDir;
 fn test_status_command_when_inactive() {
     // GIVEN: NAILS is not activated
     let temp_dir = TempDir::new().unwrap();
-    
+
     // WHEN: Running 'nails status' command
     let mut cmd = Command::cargo_bin("nails").unwrap();
     cmd.arg("status");
     cmd.env("NAILS_HOME", temp_dir.path());
-    
+
     // THEN: Status shows INACTIVE
     cmd.assert()
         .success()
@@ -29,12 +29,12 @@ fn test_status_command_when_inactive() {
 fn test_activate_without_hidden_volume_fails() {
     // GIVEN: No hidden volume is mounted
     let temp_dir = TempDir::new().unwrap();
-    
+
     // WHEN: Attempting to activate
     let mut cmd = Command::cargo_bin("nails").unwrap();
     cmd.arg("activate");
     cmd.env("NAILS_HOME", temp_dir.path());
-    
+
     // THEN: Activation is blocked with clear error
     cmd.assert()
         .failure()
@@ -46,12 +46,12 @@ fn test_activate_without_hidden_volume_fails() {
 fn test_emergency_command_always_succeeds() {
     // GIVEN: Any system state
     let temp_dir = TempDir::new().unwrap();
-    
+
     // WHEN: Running 'nails emergency'
     let mut cmd = Command::cargo_bin("nails").unwrap();
     cmd.arg("emergency");
     cmd.env("NAILS_HOME", temp_dir.path());
-    
+
     // THEN: Emergency deactivation completes
     cmd.assert()
         .success()

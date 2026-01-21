@@ -1,0 +1,35 @@
+# <type>[optional scope]: <description>
+# |<----  Limit to 50 characters  ---->|
+
+# Explain why this change is being made
+# |<----   Wrap at 72 characters   ---->|
+
+# Provide links to relevant issues
+# Closes #
+# Fixes #
+# Refs #
+
+# --- COMMIT END ---
+# Type can be:
+#   feat     (new feature)
+#   fix      (bug fix)
+#   docs     (documentation)
+#   test     (tests)
+#   refactor (refactoring)
+#   perf     (performance)
+#   chore    (build/dependencies)
+# --------------------
+# Scopes (NAILS-specific):
+#   activate, deactivate, emergency, status  (commands)
+#   state, overlay, nixos, config            (modules)
+#   test, docs, ci                           (development)
+# --------------------
+# Remember:
+#   - Use imperative mood ("add" not "added")
+#   - Don't end subject with period
+#   - Separate subject from body with blank line
+# --------------------
+# Examples:
+#   feat(activate): add lazy build pattern
+#   fix(emergency): prevent double-mount error
+#   test(state): add property-based validation

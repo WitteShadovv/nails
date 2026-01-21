@@ -5,6 +5,14 @@ __pycache__/
 
 # C extensions
 *.so
+*.rlib
+*.dylib
+
+# Rust specific
+target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
 
 # Distribution / packaging
 .Python
@@ -23,23 +31,38 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+nails.egg-info/
 
 # Virtual environments
 .venv/
 venv/
 ENV/
+env/
 
 # IDE files
 .vscode/
 .idea/
 *.swp
 *.swo
+*.swn
+.project
+.classpath
+.settings/
+
+# Editor/tool config files
+.claude/
+.codex/
+.opencode/
+.qodo/
+.cursor/
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
+*.cover
+.hypothesis/
 
 # MyPy
 .mypy_cache/
@@ -56,3 +79,45 @@ work/
 overlay/
 *.baseline
 config/
+
+# Documentation temporary files
+docs/sprint-artifacts/
+docs/*-report-*.md
+docs/*-readiness-*.md
+
+# OS specific
+.DS_Store
+Thumbs.db
+*~
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+*.env
+
+# Secrets
+*.pem
+*.key
+secrets/
+.secrets/
+
+# Build artifacts
+*.o
+*.a
+*.out
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Editor backups
+*~
+\#*\#
+.\#*

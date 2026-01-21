@@ -80,10 +80,10 @@ Hidden Volume Structure:
    ```bash
    cd /media/hidden
    git clone https://github.com/your-repo/nails .
-   
+
    # Build release binary
    cargo build --release
-   
+
    # Binary available at: ./target/release/nails
    # Optional: Add to PATH or create symlink
    sudo ln -s $(pwd)/target/release/nails /usr/local/bin/nails

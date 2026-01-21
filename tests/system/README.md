@@ -79,7 +79,7 @@ docker run --privileged nails-forensic-test
 
 ```
 ✅ Autopsy: 0 traces detected
-✅ Sleuth Kit: 0 traces detected  
+✅ Sleuth Kit: 0 traces detected
 ✅ Volatility: Minimal RAM traces (acceptable within documented threat model)
 
 Pass: 0% detection rate

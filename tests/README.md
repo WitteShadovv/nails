@@ -1,8 +1,8 @@
 # NAILS Test Suite
 
-**Project:** NAILS (NixOS Anti-forensics Isolation & Layering System)  
-**Test Framework:** Rust native + Criterion + Tarpaulin  
-**Coverage Target:** 100% (enforced via pre-commit hooks)  
+**Project:** NAILS (NixOS Anti-forensics Isolation & Layering System)
+**Test Framework:** Rust native + Criterion + Tarpaulin
+**Coverage Target:** 100% (enforced via pre-commit hooks)
 **TDD Methodology:** Red → Green → Refactor from Day 1
 
 ---
@@ -17,11 +17,11 @@
       /Sys  \      10% - System Tests (20 tests) - Optional
      /------\      - Forensic validation (RQ1)
     /        \     - Performance benchmarks (RQ2)
-   /  Integ   \    
+   /  Integ   \
   /------------\   20% - Integration Tests (40 tests)
  /              \  - Full command flows
 /     Unit       \ - Rollback scenarios
------------------  
+-----------------
        70%         70% - Unit Tests (140 tests)
                    - State machine logic
                    - Trait implementations
@@ -383,7 +383,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 fn benchmark_activation(c: &mut Criterion) {
     let config = test_config();
     let fs = MockFilesystem::new_with_profile_built();
-    
+
     c.bench_function("activate_after_build", |b| {
         b.iter(|| {
             let mut manager = NailsManager::new(config.clone(), fs.clone()).unwrap();
@@ -523,10 +523,10 @@ See `.github/workflows/ci.yml` for complete pipeline definition.
 fn test_invalid_state_transition_rejected() {
     let mut manager = create_test_manager();
     manager.set_state(SystemState::Inactive);
-    
+
     // Invalid: Cannot go from Inactive directly to Deactivating
     let result = manager.transition_to(SystemState::Deactivating);
-    
+
     assert!(result.is_err());
     assert_eq!(manager.state(), SystemState::Inactive);  // State unchanged
 }
@@ -539,22 +539,22 @@ fn test_invalid_state_transition_rejected() {
 fn test_partial_mount_triggers_rollback() {
     let config = test_config();
     let mut fs = MockFilesystem::new();
-    
+
     // Mock: First mount succeeds, second fails
     fs.set_mount_behavior(|path| {
         if path.ends_with("/home") { Ok(()) }
         else { Err(FilesystemError::NoSpace) }
     });
-    
+
     let mut manager = NailsManager::new(config, fs).unwrap();
     let result = manager.activate();
-    
+
     // Assert: Activation failed
     assert!(matches!(result, Err(NailsError::MountFailed(_))));
-    
+
     // Assert: Automatic rollback - first mount unmounted
     assert!(!manager.filesystem.is_mounted("/home"));
-    
+
     // Assert: System back to INACTIVE state
     assert_eq!(manager.state(), SystemState::Inactive);
 }
@@ -566,15 +566,15 @@ fn test_partial_mount_triggers_rollback() {
 #[test]
 fn test_error_message_includes_fix_guidance() {
     let mut manager = create_test_manager();
-    
+
     // Trigger error: swap enabled
     let result = manager.activate();
-    
+
     match result {
         Err(NailsError::SwapEnabled(msg)) => {
             // Assert: Error message includes problem description
             assert!(msg.contains("Swap is enabled"));
-            
+
             // Assert: Error message includes fix guidance
             assert!(msg.contains("sudo swapoff -a"));
         }

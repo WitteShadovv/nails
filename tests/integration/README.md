@@ -35,11 +35,11 @@ use predicates::prelude::*;
 fn test_full_activation_cycle() {
     // GIVEN: Test environment setup
     let temp_dir = tempfile::tempdir().unwrap();
-    
+
     // WHEN: Running command
     let mut cmd = Command::cargo_bin("nails").unwrap();
     cmd.arg("activate");
-    
+
     // THEN: Assert behavior
     cmd.assert()
         .success()
