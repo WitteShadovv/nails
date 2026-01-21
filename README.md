@@ -1,7 +1,7 @@
 # NAILS - NixOS Anti-forensics Isolation & Layering System
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![Rust 1.70+](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org/)
 [![NixOS](https://img.shields.io/badge/NixOS-supported-blue.svg)](https://nixos.org/)
 
 A novel anti-forensics framework that combines VeraCrypt hidden volumes with NixOS's declarative configuration system and Linux overlay filesystems to provide cryptographically undetectable dual-environment computing.
@@ -23,13 +23,15 @@ The result is a system that can instantly transition between a clean "decoy" sta
 
 ```
 Hidden Volume Structure:
-├── nails.py                # Main CLI entry point
-├── nails/                  # Core Python modules
-│   ├── manager.py         # Main orchestration
-│   ├── overlay.py         # Overlay filesystem management
-│   ├── config.py          # Configuration handling
-│   ├── nixos.py           # NixOS integration
-│   └── state.py           # State management
+├── nails                   # Rust binary (main CLI entry point)
+├── src/                    # Rust source code
+│   ├── main.rs            # CLI interface
+│   ├── manager.rs         # Main orchestration
+│   ├── overlay.rs         # Overlay filesystem management
+│   ├── config.rs          # Configuration handling
+│   ├── nixos.rs           # NixOS integration
+│   ├── state.rs           # State management
+│   └── error.rs           # Error handling
 ├── config/                # Hidden system configurations
 │   ├── configuration.nix  # Main NixOS config
 │   └── hardware-configuration.nix
@@ -49,13 +51,15 @@ Hidden Volume Structure:
 - **🔄 Live Configuration Updates**: Rebuild hidden system without deactivating environment
 - **💾 Storage Optimization**: Overlay approach eliminates package duplication
 - **🔐 Automatic Safety Backups**: Critical system files backed up before activation
+- **🦀 Memory-Safe Implementation**: Written in Rust for enhanced security and minimal forensic artifacts
+- **⚙️ Zero-Cost Abstractions**: Compiled binary with native performance and low memory footprint
 
 ## 🚀 Installation
 
 ### Prerequisites
 - NixOS with kernel overlay filesystem support
 - VeraCrypt for hidden volume creation
-- Python 3.12+
+- Rust 1.70+ (stable channel recommended, tested with 1.91.1)
 - Root access for overlay operations
 
 ### Setup Process
@@ -66,17 +70,29 @@ Hidden Volume Structure:
    # Mount the hidden volume (e.g., to /media/hidden)
    ```
 
-2. **Install NAILS**
+2. **Install Rust (if not already installed)**
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   source $HOME/.cargo/env
+   ```
+
+3. **Build and Install NAILS**
    ```bash
    cd /media/hidden
    git clone https://github.com/your-repo/nails .
-   pip install -e .
+   
+   # Build release binary
+   cargo build --release
+   
+   # Binary available at: ./target/release/nails
+   # Optional: Add to PATH or create symlink
+   sudo ln -s $(pwd)/target/release/nails /usr/local/bin/nails
    ```
 
-3. **Initialize Hidden Environment**
+4. **Initialize Hidden Environment**
    ```bash
    # Initialize NAILS structure
-   ./nails.py init
+   nails init
 
    # Edit your hidden configuration
    nano config/configuration.nix
@@ -88,35 +104,35 @@ Hidden Volume Structure:
 
 ```bash
 # Initialize hidden overlay structure
-./nails.py init
+nails init
 
 # Activate hidden environment (requires root)
-sudo ./nails.py activate
+sudo nails activate
 
 # Check current status
-./nails.py status
+nails status
 
 # Rebuild system with configuration changes
-sudo ./nails.py rebuild
+sudo nails rebuild
 
 # Deactivate hidden environment
-sudo ./nails.py deactivate
+sudo nails deactivate
 
 # Emergency cleanup (immediate sanitization)
-sudo ./nails.py emergency-clean
+sudo nails emergency-clean
 ```
 
 ### Command Options
 
 ```bash
 # Verbose output for debugging
-./nails.py -v <command>
+nails -v <command>
 
 # Show version information
-./nails.py --version
+nails --version
 
 # Get help
-./nails.py -h
+nails -h
 ```
 
 ### Typical Workflow
@@ -129,17 +145,17 @@ veracrypt --mount /path/to/volume /media/hidden
 cd /media/hidden
 
 # 3. Activate hidden environment
-sudo ./nails.py activate
+sudo nails activate
 
 # 4. Your system now has access to hidden packages and configs
 # Make changes, use hidden tools, etc.
 
 # 5. Optional: Update configuration and rebuild
 nano config/configuration.nix
-sudo ./nails.py rebuild
+sudo nails rebuild
 
 # 6. Deactivate when finished
-sudo ./nails.py deactivate
+sudo nails deactivate
 
 # 7. Unmount hidden volume
 veracrypt --dismount /media/hidden
@@ -218,13 +234,17 @@ The hidden system configuration extends your base NixOS setup:
 ### Project Structure
 ```
 nails/
-├── __init__.py            # Package initialization
-├── manager.py             # Main orchestration logic
-├── overlay.py             # Overlay filesystem operations
-├── config.py              # Configuration management
-├── nixos.py               # NixOS integration
-├── state.py               # State tracking
-└── exceptions.py          # Custom exceptions
+├── src/
+│   ├── main.rs            # CLI entry point and argument parsing
+│   ├── manager.rs         # Main orchestration logic
+│   ├── overlay.rs         # Overlay filesystem operations
+│   ├── config.rs          # Configuration management
+│   ├── nixos.rs           # NixOS integration
+│   ├── state.rs           # State tracking
+│   ├── error.rs           # Custom error types
+│   └── lib.rs             # Library exports
+├── Cargo.toml             # Rust dependencies and metadata
+└── tests/                 # Integration tests
 ```
 
 ### Contributing
@@ -243,14 +263,27 @@ This is research software under active development. Contributions welcome:
 git clone https://github.com/your-repo/nails
 cd nails
 
-# Install development dependencies
-pip install -e ".[dev]"
+# Install Rust (if needed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Run tests (when available)
-python -m pytest
+# Build in debug mode
+cargo build
+
+# Run tests
+cargo test
+
+# Run with logging
+RUST_LOG=debug cargo run -- status
+
+# Build optimized release
+cargo build --release
 
 # Code quality checks
-pre-commit run --all-files
+cargo clippy -- -D warnings
+cargo fmt --check
+
+# Security audit
+cargo audit
 ```
 
 ## 📋 System Requirements
@@ -258,7 +291,7 @@ pre-commit run --all-files
 - **OS**: NixOS (any recent version with overlay filesystem support)
 - **Storage**: VeraCrypt for hidden volume creation
 - **Permissions**: Root access for overlay filesystem operations
-- **Python**: 3.12+ with dependencies listed in `pyproject.toml`
+- **Rust**: 1.70+ stable channel (tested with 1.91.1)
 - **Space**: Sufficient storage in hidden volume for overlay data
 
 ## 🚨 Important Notes
@@ -268,9 +301,9 @@ pre-commit run --all-files
 If something goes wrong:
 ```bash
 # Emergency cleanup (removes all overlays immediately)
-sudo ./nails.py emergency-clean
+sudo nails emergency-clean
 
-# If script is unavailable, manual cleanup:
+# If binary is unavailable, manual cleanup:
 sudo umount /nix /etc /var /home 2>/dev/null || true
 ```
 

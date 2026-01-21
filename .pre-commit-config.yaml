@@ -162,6 +162,53 @@ repos:
               exit 1
             fi
 
+      # Rust testing and quality checks (TDD enforcement)
+      - id: rust-fmt
+        name: Format Rust code
+        entry: cargo fmt --
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: rust-clippy
+        name: Lint Rust code with clippy
+        entry: cargo clippy -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: rust-test
+        name: Run Rust tests
+        entry: cargo test
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [commit]
+
+      - id: rust-coverage
+        name: Enforce 100% Test Coverage (TDD)
+        entry: bash
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [commit]
+        args:
+          - -c
+          - |
+            echo "🔍 Checking test coverage (100% required)..."
+            if command -v cargo-tarpaulin &> /dev/null; then
+              cargo tarpaulin --fail-under 100 --quiet || {
+                echo "❌ Test coverage below 100% - commit blocked"
+                echo "💡 Run 'cargo tarpaulin --out Html' to see coverage report"
+                exit 1
+              }
+              echo "✅ Test coverage: 100%"
+            else
+              echo "⚠️  cargo-tarpaulin not installed - skipping coverage check"
+              echo "💡 Install with: cargo install cargo-tarpaulin"
+              echo "⚠️  WARNING: Commits without coverage enforcement may break TDD workflow"
+            fi
+
 # Configuration for specific tools
 default_language_version:
   python: python3.12
