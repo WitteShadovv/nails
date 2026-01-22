@@ -173,7 +173,6 @@ repos:
         entry: bash
         language: system
         stages: [commit-msg]
-        always_run: true
         pass_filenames: false
         args:
           - -c
