@@ -88,6 +88,32 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cache cargo tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-tools-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-tools-
+
+      - name: Cache cargo build (coverage)
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-coverage-
+
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin --locked
 
@@ -136,15 +162,14 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    container: ghcr.io/rust-secure-code/cargo-audit:latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Run security audit
-        uses: actions-rust-lang/audit@v1
-        with:
-          deny: high
+        run: cargo audit --deny high
 
   # Job 6: Benchmark
   benchmark:
