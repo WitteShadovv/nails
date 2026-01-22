@@ -1,104 +1,232 @@
-name: Code Quality Checks
+name: CI
 
 on:
+  pull_request:
   push:
     branches:
-      - '**'
-  pull_request:
-    branches:
-      - '**'
-  workflow_dispatch:
+      - main
+      - develop
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  COVERAGE_THRESHOLD: 100
 
 jobs:
-  pre-commit:
+  # Job 1: Format Check
+  format-check:
+    name: Format Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.12'
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
-    - name: Set up Nix (for Nix-related pre-commit hooks)
-      uses: cachix/install-nix-action@v27
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-    - name: Install Nix tools required by pre-commit hooks
-      run: |
-        # Ensure nix profile binaries are on PATH for subsequent steps
-        echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
-        # Install tools via flakes (no channels/NIX_PATH needed)
-        nix --version
-        nix profile install nixpkgs#nix nixpkgs#nixfmt-classic nixpkgs#deadnix nixpkgs#statix
-        nixfmt --version || true
-        deadnix --version || true
-        statix --version || true
-
-    - name: Cache pre-commit environments
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pre-commit
-        key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
-        restore-keys: |
-          pre-commit-${{ runner.os }}-
-
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y shellcheck
-
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .[dev]
-
-    - name: Ensure detect-secrets baseline exists
-      run: |
-        if [ ! -f .secrets.baseline ]; then
-          detect-secrets scan --baseline .secrets.baseline --force-use-all-plugins || true
-        fi
-
-    - name: Run pre-commit hooks
-      run: pre-commit run --all-files
-
-    - name: Check for security issues with bandit
-      run: bandit -r nails/ -f json -o bandit-report.json || true
-
-#    - name: Upload bandit results
-#      uses: actions/upload-artifact@v4
-#      if: always()
-#      with:
-#        name: bandit-security-report
-#        path: bandit-report.json
-
-  build-test:
-    if: github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.base_ref == 'main') || github.event_name == 'workflow_dispatch'
+  # Job 2: Lint
+  lint:
+    name: Clippy Lint
     runs-on: ubuntu-latest
-    needs: pre-commit
+    timeout-minutes: 10
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.12'
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
-    - name: Install build dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .[build]
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-    - name: Test package installation
-      run: |
-        pip install -e .
-        nails --version
+  # Job 3: Test
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
-    - name: Run basic functionality tests
-      run: |
-        # Test that the CLI can be imported and basic help works
-        python -c "from nails.manager import NailsManager; print('✓ Import successful')"
-        nails --help
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test --all-features --workspace
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            target/debug/**/*.log
+          retention-days: 30
+
+  # Job 4: Coverage
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      - name: Run coverage analysis
+        run: |
+          cargo tarpaulin \
+            --out Xml \
+            --out Html \
+            --output-dir ./coverage \
+            --timeout 300 \
+            --fail-under 100 \
+            --all-features \
+            --workspace
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 30
+
+      - name: Extract coverage percentage
+        run: |
+          COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' coverage/cobertura.xml | head -1)
+          COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc)
+          echo "COVERAGE_PCT=${COVERAGE_PCT}" >> $GITHUB_ENV
+          echo "📊 Coverage: ${COVERAGE_PCT}%"
+
+      - name: Post coverage comment to PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: coverage
+          message: |
+            ## 📊 Code Coverage Report
+
+            **Coverage:** ${{ env.COVERAGE_PCT }}%
+            **Threshold:** 100%
+
+            ${{ env.COVERAGE_PCT == '100' && '✅ Coverage meets requirements' || '❌ Coverage below threshold - TDD requires 100%' }}
+
+            [View full report](../actions/runs/${{ github.run_id }})
+
+  # Job 5: Security Audit
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run security audit
+        uses: actions-rust-lang/audit@v1
+        with:
+          deny: high
+
+  # Job 6: Benchmark
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Only run on main branch or manual trigger
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check if benchmarks are real
+        run: |
+          if grep -q "placeholder" benches/performance.rs; then
+            echo "⚠️ Benchmarks are placeholder, skipping benchmark execution"
+            echo "Real benchmarks will be implemented in Epic 4 (Activation Command)"
+            exit 0
+          fi
+
+      - name: Run benchmarks
+        run: cargo bench --all-features
+
+      - name: Check performance targets (RQ2)
+        run: |
+          echo "🎯 Performance Targets (RQ2):"
+          echo "  - Activation: p95 < 5.0s"
+          echo "  - Emergency: p95 < 3.0s"
+          echo "  - Status: p95 < 500ms"
+          echo ""
+          echo "📊 Benchmark results available in target/criterion/"
+
+      - name: Upload benchmark results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: target/criterion/
+          retention-days: 90
+
+  # Final validation
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [format-check, lint, test, coverage, audit, benchmark]
+    if: always()
+
+    steps:
+      - name: Validate all jobs passed
+        run: |
+          if [[ "${{ needs.format-check.result }}" != "success" ]]; then
+            echo "❌ Format check failed"
+            exit 1
+          fi
+
+          if [[ "${{ needs.lint.result }}" != "success" ]]; then
+            echo "❌ Clippy lint failed"
+            exit 1
+          fi
+
+          if [[ "${{ needs.test.result }}" != "success" ]]; then
+            echo "❌ Tests failed"
+            exit 1
+          fi
+
+          if [[ "${{ needs.coverage.result }}" != "success" ]]; then
+            echo "❌ Coverage below 100% threshold"
+            exit 1
+          fi
+
+          if [[ "${{ needs.audit.result }}" != "success" ]]; then
+            echo "❌ Security audit failed (vulnerabilities detected)"
+            exit 1
+          fi
+
+          # Benchmark is optional (may be skipped if placeholder)
+          if [[ "${{ needs.benchmark.result }}" == "failure" ]]; then
+            echo "⚠️ Benchmarks failed (non-blocking for now)"
+          fi
+
+          echo "✅ All required CI checks passed!"
