@@ -37,7 +37,7 @@ mod tests {
     #[test]
     fn test_library_compiles() {
         // Smoke test to verify core library compiles
-        assert!(true);
+        // Test body removed - compilation success is sufficient
     }
 
     #[test]

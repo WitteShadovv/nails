@@ -8,19 +8,18 @@
 
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
-use std::process::Command;
 
 /// Test that the CLI binary exists and runs
 #[test]
 fn test_cli_binary_runs() {
-    let mut cmd = Command::cargo_bin("nails").expect("Failed to find nails binary");
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.arg("--version").assert().success();
 }
 
 /// Test that version is pulled from Cargo.toml (workspace-level versioning)
 #[test]
 fn test_version_from_cargo_toml() {
-    let mut cmd = Command::cargo_bin("nails").expect("Failed to find nails binary");
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.arg("--version")
         .assert()
         .success()
@@ -30,7 +29,7 @@ fn test_version_from_cargo_toml() {
 /// Test that --help flag works
 #[test]
 fn test_help_flag() {
-    let mut cmd = Command::cargo_bin("nails").expect("Failed to find nails binary");
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.arg("--help")
         .assert()
         .success()
@@ -42,7 +41,7 @@ fn test_help_flag() {
 /// Test that activate command accepts --force flag
 #[test]
 fn test_activate_command_force_flag() {
-    let mut cmd = Command::cargo_bin("nails").expect("Failed to find nails binary");
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["activate", "--help"])
         .assert()
         .success()
@@ -55,7 +54,7 @@ fn test_activate_command_force_flag() {
 /// Test that deactivate command accepts --fast flag
 #[test]
 fn test_deactivate_command_fast_flag() {
-    let mut cmd = Command::cargo_bin("nails").expect("Failed to find nails binary");
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["deactivate", "--help"])
         .assert()
         .success()
@@ -66,7 +65,7 @@ fn test_deactivate_command_fast_flag() {
 /// Test that emergency command accepts --delay flag with default
 #[test]
 fn test_emergency_command_delay_flag() {
-    let mut cmd = Command::cargo_bin("nails").expect("Failed to find nails binary");
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["emergency", "--help"])
         .assert()
         .success()
@@ -77,7 +76,7 @@ fn test_emergency_command_delay_flag() {
 /// Test that status command accepts --verbose flag
 #[test]
 fn test_status_command_verbose_flag() {
-    let mut cmd = Command::cargo_bin("nails").expect("Failed to find nails binary");
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["status", "--help"])
         .assert()
         .success()
@@ -90,7 +89,7 @@ fn test_status_command_verbose_flag() {
 /// Test that all 4 core commands are defined
 #[test]
 fn test_all_commands_defined() {
-    let mut cmd = Command::cargo_bin("nails").expect("Failed to find nails binary");
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.arg("--help")
         .assert()
         .success()
@@ -104,14 +103,14 @@ fn test_all_commands_defined() {
 #[test]
 fn test_cli_links_to_core_library() {
     // If the binary executes successfully, it's properly linked to nails-core
-    let mut cmd = Command::cargo_bin("nails").expect("Failed to find nails binary");
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.arg("--version").assert().success();
 }
 
 /// Test that verbose flag (-v) is accepted
 #[test]
 fn test_verbose_flag() {
-    let mut cmd = Command::cargo_bin("nails").expect("Failed to find nails binary");
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["--help"])
         .assert()
         .success()
@@ -124,7 +123,7 @@ fn test_all_commands_have_help() {
     let commands = ["activate", "deactivate", "emergency", "status"];
 
     for command in commands {
-        let mut cmd = Command::cargo_bin("nails").expect("Failed to find nails binary");
+        let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
         cmd.args([command, "--help"])
             .assert()
             .success()
