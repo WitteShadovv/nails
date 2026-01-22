@@ -49,6 +49,40 @@ pub enum NailsError {
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
+    /// Target is already mounted
+    #[error("Already mounted: {path}")]
+    AlreadyMounted { path: std::path::PathBuf },
+
+    /// Mount point is busy (open files)
+    #[error("Mount busy: {path}\nSuggestion: {suggestion}")]
+    MountBusy {
+        path: std::path::PathBuf,
+        suggestion: String,
+    },
+
+    /// Unmount operation failed
+    #[error("Unmount failed: {path}\nReason: {reason}")]
+    UnmountError {
+        path: std::path::PathBuf,
+        reason: String,
+    },
+
+    /// Swap disable failed
+    #[error("Swap disable failed")]
+    SwapDisableFailed,
+
+    /// NixOS profile not found
+    #[error("NixOS profile not found: {profile}")]
+    NixOSProfileNotFound { profile: String },
+
+    /// NixOS build failed
+    #[error("NixOS build failed for profile: {profile}")]
+    NixOSBuildFailed { profile: String },
+
+    /// NixOS switch failed
+    #[error("NixOS switch failed for profile: {profile}")]
+    NixOSSwitchFailed { profile: String },
+
     /// I/O error (transparently converted from std::io::Error)
     ///
     /// This variant has #[from] attribute, enabling automatic conversion
@@ -84,7 +118,7 @@ mod tests {
         let nails_err: NailsError = io_err.into();
 
         match nails_err {
-            NailsError::IoError(_) => {}, // Expected
+            NailsError::IoError(_) => {} // Expected
             _ => panic!("Expected IoError variant"),
         }
     }
@@ -95,16 +129,25 @@ mod tests {
         assert_eq!(err.to_string(), "Permission denied: Root required");
 
         let err = NailsError::InvalidState("Cannot activate when already active".into());
-        assert_eq!(err.to_string(), "Invalid state: Cannot activate when already active");
+        assert_eq!(
+            err.to_string(),
+            "Invalid state: Cannot activate when already active"
+        );
 
         let err = NailsError::OverlayError("Mount failed".into());
         assert_eq!(err.to_string(), "Overlay operation failed: Mount failed");
 
         let err = NailsError::NixOSError("Profile switch failed".into());
-        assert_eq!(err.to_string(), "NixOS operation failed: Profile switch failed");
+        assert_eq!(
+            err.to_string(),
+            "NixOS operation failed: Profile switch failed"
+        );
 
         let err = NailsError::PreFlightCheckFailed("Hidden volume not mounted".into());
-        assert_eq!(err.to_string(), "Pre-flight check failed: Hidden volume not mounted");
+        assert_eq!(
+            err.to_string(),
+            "Pre-flight check failed: Hidden volume not mounted"
+        );
 
         let err = NailsError::ConfigError("Missing config key".into());
         assert_eq!(err.to_string(), "Configuration error: Missing config key");
@@ -146,7 +189,7 @@ mod tests {
 
         // Verify it's an IoError variant
         match result.unwrap_err() {
-            NailsError::IoError(_) => {}, // Expected
+            NailsError::IoError(_) => {} // Expected
             _ => panic!("Expected IoError variant from automatic conversion"),
         }
     }
@@ -161,6 +204,30 @@ mod tests {
         let _err5 = NailsError::PreFlightCheckFailed("test".into());
         let _err6 = NailsError::ConfigError("test".into());
         let _err7 = NailsError::IoError(std::io::Error::new(std::io::ErrorKind::Other, "test"));
+
+        // Filesystem-specific error variants
+        use std::path::PathBuf;
+        let _err8 = NailsError::AlreadyMounted {
+            path: PathBuf::from("/test"),
+        };
+        let _err9 = NailsError::MountBusy {
+            path: PathBuf::from("/test"),
+            suggestion: "Close open files".into(),
+        };
+        let _err10 = NailsError::UnmountError {
+            path: PathBuf::from("/test"),
+            reason: "Test reason".into(),
+        };
+        let _err11 = NailsError::SwapDisableFailed;
+        let _err12 = NailsError::NixOSProfileNotFound {
+            profile: "test-profile".into(),
+        };
+        let _err13 = NailsError::NixOSBuildFailed {
+            profile: "test-profile".into(),
+        };
+        let _err14 = NailsError::NixOSSwitchFailed {
+            profile: "test-profile".into(),
+        };
     }
 
     #[test]
@@ -180,7 +247,7 @@ mod tests {
         match nails_err {
             NailsError::IoError(inner) => {
                 assert_eq!(inner.kind(), std::io::ErrorKind::PermissionDenied);
-            },
+            }
             _ => panic!("Expected IoError variant"),
         }
     }

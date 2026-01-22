@@ -57,7 +57,52 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-  # Stage 2: Test execution with parallel sharding
+  # Stage 2: Security audit for dependency vulnerabilities
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: lint
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry/index
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Generate audit report (JSON)
+        run: |
+          mkdir -p target
+          # Generate JSON report for artifact (don't fail here, action will enforce)
+          cargo audit --json > target/audit-report.json 2>&1 || true
+
+      - name: Run security audit
+        uses: actions-rust-lang/audit@v1
+        with:
+          # Fail on high or critical severity vulnerabilities (AR51)
+          deny: high
+
+      - name: Upload audit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report
+          path: target/audit-report.json
+          retention-days: 30
+
+  # Stage 3: Test execution with parallel sharding
   test:
     name: Test (Shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
@@ -111,7 +156,7 @@ jobs:
             target/debug/**/*.log
           retention-days: 30
 
-  # Stage 3: Coverage enforcement (100% required for TDD)
+  # Stage 4: Coverage enforcement (100% required for TDD)
   coverage:
     name: Coverage Enforcement
     runs-on: ubuntu-latest
@@ -157,11 +202,15 @@ jobs:
       - name: Enforce 100% coverage threshold
         run: |
           # Extract coverage percentage from XML report
+          # Note: Using grep -oP (Perl regex) which is available on ubuntu-latest
           COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' coverage/cobertura.xml | head -1)
           COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc)
 
           echo "📊 Current coverage: ${COVERAGE_PCT}%"
           echo "🎯 Required coverage: ${COVERAGE_THRESHOLD}%"
+
+          # Export for use in PR comment step
+          echo "COVERAGE_PCT=${COVERAGE_PCT}" >> $GITHUB_ENV
 
           if (( $(echo "$COVERAGE_PCT < $COVERAGE_THRESHOLD" | bc -l) )); then
             echo "❌ Coverage below threshold: ${COVERAGE_PCT}% < ${COVERAGE_THRESHOLD}%"
@@ -185,7 +234,22 @@ jobs:
           files: ./coverage/cobertura.xml
           fail_ci_if_error: false
 
-  # Stage 4: Burn-in loop for flaky test detection
+      - name: Post coverage comment to PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: coverage
+          message: |
+            ## 📊 Code Coverage Report
+
+            **Coverage:** ${{ env.COVERAGE_PCT }}%
+            **Threshold:** ${{ env.COVERAGE_THRESHOLD }}%
+
+            ${{ env.COVERAGE_PCT >= env.COVERAGE_THRESHOLD && '✅ Coverage meets requirements' || '❌ Coverage below threshold' }}
+
+            [View full report](../actions/runs/${{ github.run_id }})
+
+  # Stage 5: Burn-in loop for flaky test detection
   burn-in:
     name: Burn-In Loop (Flaky Detection)
     runs-on: ubuntu-latest
@@ -261,7 +325,7 @@ jobs:
             target/tmp/**
           retention-days: 30
 
-  # Stage 5: Performance benchmarks (Criterion)
+  # Stage 6: Performance benchmarks (Criterion)
   benchmarks:
     name: Performance Benchmarks
     runs-on: ubuntu-latest
@@ -319,7 +383,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, test, coverage, burn-in, benchmarks]
+    needs: [lint, audit, test, coverage, burn-in, benchmarks]
     if: always()
 
     steps:
@@ -328,6 +392,11 @@ jobs:
           # Check if all required jobs succeeded
           if [[ "${{ needs.lint.result }}" != "success" ]]; then
             echo "❌ Lint job failed"
+            exit 1
+          fi
+
+          if [[ "${{ needs.audit.result }}" != "success" ]]; then
+            echo "❌ Security audit failed (vulnerabilities detected)"
             exit 1
           fi
 

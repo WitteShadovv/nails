@@ -7,8 +7,8 @@
 //! - Links properly to nails-core library
 
 use assert_cmd::prelude::*;
-use std::process::Command;
 use predicates::prelude::*;
+use std::process::Command;
 
 /// Test that the CLI binary exists and runs
 #[test]
@@ -34,7 +34,9 @@ fn test_help_flag() {
     cmd.arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains("NixOS Anti-forensics Isolation & Layering System"));
+        .stdout(predicates::str::contains(
+            "NixOS Anti-forensics Isolation & Layering System",
+        ));
 }
 
 /// Test that activate command accepts --force flag
@@ -45,7 +47,9 @@ fn test_activate_command_force_flag() {
         .assert()
         .success()
         .stdout(predicates::str::contains("--force"))
-        .stdout(predicates::str::contains("Force activation even if preflight checks fail"));
+        .stdout(predicates::str::contains(
+            "Force activation even if preflight checks fail",
+        ));
 }
 
 /// Test that deactivate command accepts --fast flag
@@ -78,7 +82,9 @@ fn test_status_command_verbose_flag() {
         .assert()
         .success()
         .stdout(predicates::str::contains("--verbose"))
-        .stdout(predicates::str::contains("Display detailed overlay mount information"));
+        .stdout(predicates::str::contains(
+            "Display detailed overlay mount information",
+        ));
 }
 
 /// Test that all 4 core commands are defined

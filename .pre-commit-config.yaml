@@ -1,16 +1,6 @@
 exclude: (hardware-configuration\.nix|flake\.lock)$
 
 repos:
-  # Python linting and formatting
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.12
-    hooks:
-      # Linting
-      - id: ruff
-        args: [--fix, --exit-non-zero-on-fix]
-      # Formatting
-      - id: ruff-format
-
   # General file formatting and checks
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -28,30 +18,14 @@ repos:
       - id: check-docstring-first
       - id: check-symlinks
 
-  # Security checks for Python code
-  - repo: https://github.com/PyCQA/bandit
-    rev: '1.8.6'
-    hooks:
-    - id: bandit
-      args: ["-c", "pyproject.toml"]
-      additional_dependencies: ["bandit[toml]"]
-      files: \.py$
-
-  # Type checking for Python
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.17.1
-    hooks:
-      - id: mypy
-        args: [--ignore-missing-imports, --no-strict-optional]
-        files: \.py$
-
-  # Secret detection
+# Secret detection
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
     hooks:
-      - id: detect-secrets
-        args: ['--baseline', '.secrets.baseline']
-        exclude: .*\.lock$|^\.secrets\.baseline$
+    - id: detect-secrets
+      args: ['--baseline', '.secrets.baseline']
+      exclude: .*\.lock$|^\.secrets\.baseline$
+      additional_dependencies: ["pyyaml", "gibberish-detector"]
 
   # Local hooks for Nix and project-specific checks
   - repo: local
@@ -83,18 +57,21 @@ repos:
 
       - id: statix
         name: statix (Nix linter)
-        entry: statix
+        entry: bash
         language: system
         files: \.nix$
         exclude: '.*/tmp-.*\.nix$|hardware-configuration\.nix'
-        args: [check]
+        args:
+          - -c
+          - 'for file in "$@"; do statix check "$file" || exit 1; done'
+          - --
 
       - id: nix-store-check
         name: check for hard-coded store paths
         entry: bash
         language: system
         files: '.*\.nix$'
-        exclude: '.*/tmp-.*\.nix$'
+        exclude: '.*/tmp-.*\.nix$|^docs/.*$'  # Allow store paths in docs (examples)
         args:
           - -c
           - 'for file in "$@"; do if grep -q "/nix/store" "$file"; then echo "Hard-coded store paths found in $file!"; exit 1; fi; done'
@@ -107,15 +84,6 @@ repos:
         files: '.*\.sh$'
         args: [-e, SC1091, -e, SC2034]
 
-      - id: python-executable-check
-        name: ensure Python scripts are executable
-        entry: bash
-        language: system
-        files: '.*\.py$'
-        args:
-          - -c
-          - 'for file in "$@"; do if head -1 "$file" | grep -q "^#!/usr/bin/env python3"; then if [ ! -x "$file" ]; then echo "Making $file executable"; chmod +x "$file"; fi; fi; done'
-          - --
 
       - id: nails-config-validation
         name: validate NAILS configuration files
@@ -140,27 +108,6 @@ repos:
               fi
             done
           - --
-
-      - id: overlay-safety-check
-        name: overlay safety check
-        entry: bash
-        language: system
-        files: 'nails-overlay\.py$'
-        args:
-          - -c
-          - |
-            echo "Checking overlay script safety..."
-            # Check for dangerous operations without proper checks
-            if grep -n "rm -rf" nails-overlay.py | grep -v "check\|confirm\|emergency"; then
-              echo "Warning: Potentially unsafe rm -rf operations found"
-              exit 1
-            fi
-
-            # Check for proper privilege checking
-            if ! grep -q "os.geteuid.*0" nails-overlay.py; then
-              echo "Warning: No root privilege check found in overlay script"
-              exit 1
-            fi
 
       # Rust testing and quality checks (TDD enforcement)
       # Security auditing: Scans Cargo.lock for known vulnerabilities (AR50)
@@ -191,7 +138,7 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
-        stages: [commit]
+        stages: [pre-commit]
 
       - id: rust-coverage
         name: Enforce 100% Test Coverage (TDD)
@@ -199,27 +146,61 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
-        stages: [commit]
+        stages: [pre-commit]
         args:
           - -c
           - |
             echo "🔍 Checking test coverage (100% required)..."
             if command -v cargo-tarpaulin &> /dev/null; then
-              cargo tarpaulin --fail-under 100 --quiet || {
+              cargo tarpaulin --fail-under 100 || {
                 echo "❌ Test coverage below 100% - commit blocked"
                 echo "💡 Run 'cargo tarpaulin --out Html' to see coverage report"
                 exit 1
               }
               echo "✅ Test coverage: 100%"
             else
-              echo "⚠️  cargo-tarpaulin not installed - skipping coverage check"
-              echo "💡 Install with: cargo install cargo-tarpaulin"
-              echo "⚠️  WARNING: Commits without coverage enforcement may break TDD workflow"
+              echo "❌ CRITICAL: cargo-tarpaulin not installed - coverage enforcement REQUIRED"
+              echo "💡 Run: nix-shell"
+              echo "💡 Or install with: cargo install cargo-tarpaulin"
+              echo "❌ Commit blocked - 100% test coverage is mandatory for security-critical system"
+              exit 1
             fi
 
-# Configuration for specific tools
-default_language_version:
-  python: python3.12
+      # Conventional commit message validation (AR20, AR21, AR22)
+      # Ensures commits follow "<type>[optional scope]: <description>" format
+      - id: commit-msg
+        name: Validate Conventional Commits
+        entry: bash
+        language: system
+        stages: [commit-msg]
+        always_run: true
+        pass_filenames: false
+        args:
+          - -c
+          - |
+            commit_msg_file=.git/COMMIT_EDITMSG
+            if [ ! -f "$commit_msg_file" ]; then
+              echo "Error: Commit message file not found"
+              exit 1
+            fi
+
+            commit_msg=$(cat "$commit_msg_file" | head -1)
+
+            # Pattern: <type>[optional scope]: <description>
+            if ! echo "$commit_msg" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?: .+$'; then
+              echo "❌ Invalid commit message format"
+              echo ""
+              echo "Expected format: <type>[optional scope]: <description>"
+              echo ""
+              echo "Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+              echo ""
+              echo "Examples:"
+              echo "  feat(story-1.5): add pre-commit hooks"
+              echo "  fix: correct state machine transition"
+              echo "  docs: update README with installation steps"
+              echo ""
+              exit 1
+            fi
 
 # CI-specific configuration
 ci:

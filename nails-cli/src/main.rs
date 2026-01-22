@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "nails")]
 #[command(author = "NAILS Project")]
-#[command(version)]  // clap's "cargo" feature auto-reads version from Cargo.toml
+#[command(version)] // clap's "cargo" feature auto-reads version from Cargo.toml
 #[command(about = "NixOS Anti-forensics Isolation & Layering System", long_about = None)]
 struct Cli {
     /// Verbose output (-v, -vv, -vvv)

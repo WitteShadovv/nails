@@ -22,6 +22,15 @@ pkgs.mkShell {
 
     # Rust security auditing
     cargo-audit
+
+    # Coverage enforcement (TDD workflow)
+    cargo-tarpaulin
+
+    # Rust linter
+    clippy
+
+    # Shell script linting
+    shellcheck
   ];
 
   shellHook = ''

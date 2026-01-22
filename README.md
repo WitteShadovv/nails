@@ -3,6 +3,8 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Rust 1.70+](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org/)
 [![NixOS](https://img.shields.io/badge/NixOS-supported-blue.svg)](https://nixos.org/)
+[![Test Pipeline](https://github.com/witteshadovv/nails/actions/workflows/test.yml/badge.svg)](https://github.com/witteshadovv/nails/actions/workflows/test.yml)
+[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](docs/ci.md)
 
 A novel anti-forensics framework that combines VeraCrypt hidden volumes with NixOS's declarative configuration system and Linux overlay filesystems to provide cryptographically undetectable dual-environment computing.
 

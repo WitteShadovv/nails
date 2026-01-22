@@ -25,8 +25,12 @@
 // Error handling module
 pub mod error;
 
+// Filesystem operations module
+pub mod filesystem;
+
 // Re-export for convenience
 pub use error::{NailsError, Result};
+pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
 
 #[cfg(test)]
 mod tests {
