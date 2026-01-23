@@ -75,7 +75,7 @@ jobs:
           cargo audit --json > target/audit-report.json 2>&1 || true
 
       - name: Run security audit
-        run: cargo audit --deny high
+        run: cargo audit
 
       - name: Upload audit results
         if: always()

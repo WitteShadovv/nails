@@ -170,7 +170,7 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: Run security audit
-        run: cargo audit --deny high
+        run: cargo audit
 
   # Job 6: Benchmark
   benchmark:
