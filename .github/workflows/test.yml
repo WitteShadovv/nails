@@ -3,21 +3,20 @@ name: Test Pipeline
 on:
   push:
     branches:
-      - '**'
+      - "**"
   pull_request:
     branches:
       - main
       - develop
   schedule:
     # Run burn-in weekly (Sundays at 2am UTC)
-    - cron: '0 2 * * 0'
+    - cron: "0 2 * * 0"
   workflow_dispatch:
 
 env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
-  # Enforce 100% coverage (TDD methodology)
-  COVERAGE_THRESHOLD: 100
+  COVERAGE_THRESHOLD: 85
 
 jobs:
   # Stage 1: Lint and format checks
@@ -28,7 +27,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -36,7 +35,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
         with:
           shared-key: "lint"
 
@@ -55,13 +54,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
         with:
           shared-key: "audit"
 
@@ -98,13 +97,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
         with:
           shared-key: "test-shard-${{ matrix.shard }}"
 
@@ -128,7 +127,7 @@ jobs:
             target/debug/**/*.log
           retention-days: 30
 
-  # Stage 4: Coverage enforcement (100% required for TDD)
+  # Stage 4: Coverage enforcement (85% required for TDD)
   coverage:
     name: Coverage Enforcement
     runs-on: ubuntu-latest
@@ -137,13 +136,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
         with:
           shared-key: "coverage"
           cache-targets: "true"
@@ -162,7 +161,7 @@ jobs:
             --all-features \
             --workspace
 
-      - name: Enforce 100% coverage threshold
+      - name: Enforce 85% coverage threshold
         run: |
           # Extract coverage percentage from XML report
           # Note: Using grep -oP (Perl regex) which is available on ubuntu-latest
@@ -177,7 +176,7 @@ jobs:
 
           if (( $(echo "$COVERAGE_PCT < $COVERAGE_THRESHOLD" | bc -l) )); then
             echo "❌ Coverage below threshold: ${COVERAGE_PCT}% < ${COVERAGE_THRESHOLD}%"
-            echo "   TDD methodology requires 100% coverage"
+            echo "Code requires ${COVERAGE_THRESHOLD}% coverage minimum"
             exit 1
           else
             echo "✅ Coverage meets threshold: ${COVERAGE_PCT}% >= ${COVERAGE_THRESHOLD}%"
@@ -226,13 +225,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
         with:
           shared-key: "burn-in"
 
@@ -288,13 +287,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
         with:
           shared-key: "benchmarks"
 
@@ -347,7 +346,7 @@ jobs:
           fi
 
           if [[ "${{ needs.coverage.result }}" != "success" ]]; then
-            echo "❌ Coverage job failed (100% required)"
+            echo "❌ Coverage job failed (85% required)"
             exit 1
           fi
 

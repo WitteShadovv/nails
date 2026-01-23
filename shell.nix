@@ -6,6 +6,7 @@ pkgs.mkShell {
     rustc
     cargo
     rust-analyzer
+    rustfmt
 
     # Python environment
     python312

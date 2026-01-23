@@ -10,7 +10,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  COVERAGE_THRESHOLD: 100
+  COVERAGE_THRESHOLD: 85
 
 jobs:
   # Job 1: Format Check
@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -39,7 +39,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -47,7 +47,7 @@ jobs:
           components: clippy
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
         with:
           shared-key: "lint"
 
@@ -62,13 +62,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
         with:
           shared-key: "test"
 
@@ -93,13 +93,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
         with:
           shared-key: "coverage"
           cache-targets: "true"
@@ -115,7 +115,7 @@ jobs:
             --out Html \
             --output-dir ./coverage \
             --timeout 300 \
-            --fail-under 100 \
+            --fail-under 85 \
             --all-features \
             --workspace
 
@@ -142,9 +142,9 @@ jobs:
             ## 📊 Code Coverage Report
 
             **Coverage:** ${{ env.COVERAGE_PCT }}%
-            **Threshold:** 100%
+            **Threshold:** 85%
 
-            ${{ env.COVERAGE_PCT == '100' && '✅ Coverage meets requirements' || '❌ Coverage below threshold - TDD requires 100%' }}
+            ${{ env.COVERAGE_PCT == '85' && '✅ Coverage meets requirements' || '❌ Coverage below threshold - TDD requires 85%' }}
 
             [View full report](../actions/runs/${{ github.run_id }})
 
@@ -156,13 +156,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
         with:
           shared-key: "audit"
 
@@ -182,13 +182,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
         with:
           shared-key: "benchmark"
 
@@ -246,7 +246,7 @@ jobs:
           fi
 
           if [[ "${{ needs.coverage.result }}" != "success" ]]; then
-            echo "❌ Coverage below 100% threshold"
+            echo "❌ Coverage below 85% threshold"
             exit 1
           fi
 

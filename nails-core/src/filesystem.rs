@@ -394,6 +394,13 @@ impl MockFilesystem {
         entry.is_writable = writable;
     }
 
+    /// Set whether a path is readable
+    pub fn mock_set_readable(&self, path: &str, readable: bool) {
+        let mut paths = self.paths.lock().unwrap();
+        let entry = paths.entry(PathBuf::from(path)).or_default();
+        entry.is_readable = readable;
+    }
+
     /// Set free space for a path
     pub fn mock_set_free_space(&self, path: &Path, bytes: u64) {
         let mut paths = self.paths.lock().unwrap();
@@ -726,12 +733,11 @@ impl Filesystem for RealFilesystem {
 
         for line in mounts.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                if let Ok(mount_point) = PathBuf::from(parts[1]).canonicalize() {
-                    if mount_point == canonical_target {
-                        return Ok(true);
-                    }
-                }
+            if parts.len() >= 2
+                && let Ok(mount_point) = PathBuf::from(parts[1]).canonicalize()
+                && mount_point == canonical_target
+            {
+                return Ok(true);
             }
         }
 
@@ -903,10 +909,71 @@ mod tests {
         let fs2 = fs1.clone();
         assert!(fs2.is_mounted(Path::new("/home")).unwrap());
 
-        // Clones share state via Arc<Mutex<_>>
-        fs2.mock_set_mounted(Path::new("/home"), false);
-        // Both fs1 and fs2 see the change (shared state)
-        assert!(!fs1.is_mounted(Path::new("/home")).unwrap());
-        assert!(!fs2.is_mounted(Path::new("/home")).unwrap());
+        // Shared state means modifications from one are visible in the other
+        fs2.mock_set_mounted(Path::new("/tmp"), true);
+        assert!(fs1.is_mounted(Path::new("/tmp")).unwrap());
+    }
+
+    #[test]
+    fn test_mock_filesystem_nixos_build_profile_adds_profile() {
+        let fs = MockFilesystem::new();
+
+        // Build should add profile to set
+        assert!(fs.nixos_build_profile("test-profile").is_ok());
+        assert!(fs.nixos_profile_exists("test-profile").unwrap());
+
+        // Building same profile again should work (idempotent)
+        assert!(fs.nixos_build_profile("test-profile").is_ok());
+    }
+
+    #[test]
+    fn test_mock_set_mounted_can_unmount() {
+        let fs = MockFilesystem::new();
+        let path = Path::new("/test/mount");
+
+        // Mount then unmount
+        fs.mock_set_mounted(path, true);
+        assert!(fs.is_mounted(path).unwrap());
+
+        fs.mock_set_mounted(path, false);
+        assert!(!fs.is_mounted(path).unwrap());
+    }
+
+    #[test]
+    fn test_mock_filesystem_swap_is_disabled_by_default() {
+        let fs = MockFilesystem::new();
+        assert!(!fs.swap_is_enabled().unwrap());
+
+        // Enable then disable
+        fs.mock_set_swap_enabled(true);
+        assert!(fs.swap_is_enabled().unwrap());
+
+        fs.mock_set_swap_enabled(false);
+        assert!(!fs.swap_is_enabled().unwrap());
+    }
+
+    #[test]
+    fn test_mock_filesystem_directory_operations() {
+        let fs = MockFilesystem::new();
+        let path = Path::new("/test/dir");
+
+        fs.mock_set_path_exists("/test/dir", true);
+        fs.mock_set_path_type("/test/dir", "directory");
+
+        assert!(fs.path_exists(path).unwrap());
+        assert!(fs.is_directory(path).unwrap());
+    }
+
+    #[test]
+    fn test_mock_filesystem_file_permissions() {
+        let fs = MockFilesystem::new();
+        let path = Path::new("/test/file");
+
+        fs.mock_set_path_exists("/test/file", true);
+        fs.mock_set_readable("/test/file", true);
+        fs.mock_set_writable("/test/file", true);
+
+        assert!(fs.is_readable(path).unwrap());
+        assert!(fs.is_writable(path).unwrap());
     }
 }

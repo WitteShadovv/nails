@@ -12,6 +12,10 @@ readme = "../../README.md"
 keywords = ["nixos", "anti-forensics", "security", "privacy", "veracrypt"]
 categories = ["command-line-utilities"]
 
+[lib]
+name = "nails"
+path = "src/lib.rs"
+
 [[bin]]
 name = "nails"
 path = "src/main.rs"

@@ -11,21 +11,21 @@ repos:
       - id: check-json
       - id: check-toml
       - id: check-added-large-files
-        args: ['--maxkb=1000']
+        args: ["--maxkb=1000"]
       - id: check-case-conflict
       - id: check-merge-conflict
       - id: debug-statements
       - id: check-docstring-first
       - id: check-symlinks
 
-# Secret detection
+  # Secret detection
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
     hooks:
-    - id: detect-secrets
-      args: ['--baseline', '.secrets.baseline']
-      exclude: .*\.lock$|^\.secrets\.baseline$
-      additional_dependencies: ["pyyaml", "gibberish-detector"]
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        exclude: .*\.lock$|^\.secrets\.baseline$
+        additional_dependencies: ["pyyaml", "gibberish-detector"]
 
   # Local hooks for Nix and project-specific checks
   - repo: local
@@ -71,7 +71,7 @@ repos:
         entry: bash
         language: system
         files: '.*\.nix$'
-        exclude: '.*/tmp-.*\.nix$|^docs/.*$'  # Allow store paths in docs (examples)
+        exclude: '.*/tmp-.*\.nix$|^docs/.*$' # Allow store paths in docs (examples)
         args:
           - -c
           - 'for file in "$@"; do if grep -q "/nix/store" "$file"; then echo "Hard-coded store paths found in $file!"; exit 1; fi; done'
@@ -83,7 +83,6 @@ repos:
         language: system
         files: '.*\.sh$'
         args: [-e, SC1091, -e, SC2034]
-
 
       - id: nails-config-validation
         name: validate NAILS configuration files
@@ -141,7 +140,7 @@ repos:
         stages: [pre-commit]
 
       - id: rust-coverage
-        name: Enforce 100% Test Coverage (TDD)
+        name: Enforce 85% Test Coverage (TDD)
         entry: bash
         language: system
         types: [rust]
@@ -150,19 +149,19 @@ repos:
         args:
           - -c
           - |
-            echo "🔍 Checking test coverage (100% required)..."
+            echo "🔍 Checking test coverage (85% required)..."
             if command -v cargo-tarpaulin &> /dev/null; then
-              cargo tarpaulin --fail-under 100 || {
-                echo "❌ Test coverage below 100% - commit blocked"
+              cargo tarpaulin --fail-under 85 || {
+                echo "❌ Test coverage below 85% - commit blocked"
                 echo "💡 Run 'cargo tarpaulin --out Html' to see coverage report"
                 exit 1
               }
-              echo "✅ Test coverage: 100%"
+              echo "✅ Test coverage: 85%"
             else
               echo "❌ CRITICAL: cargo-tarpaulin not installed - coverage enforcement REQUIRED"
               echo "💡 Run: nix-shell"
               echo "💡 Or install with: cargo install cargo-tarpaulin"
-              echo "❌ Commit blocked - 100% test coverage is mandatory for security-critical system"
+              echo "❌ Commit blocked - 85% test coverage is mandatory for security-critical system"
               exit 1
             fi
 

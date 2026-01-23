@@ -14,7 +14,7 @@ echo ""
 FAILED=0
 FAILED_ITERATION=0
 
-for i in $(seq 1 $ITERATIONS); do
+for i in $(seq 1 "$ITERATIONS"); do
     echo "================================================"
     echo "🔥 Iteration $i/$ITERATIONS"
     echo "================================================"

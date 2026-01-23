@@ -130,3 +130,83 @@ fn test_all_commands_have_help() {
             .stdout(predicates::str::is_empty().not()); // Should have output
     }
 }
+
+/// Test that activate command executes successfully (stub implementation)
+#[test]
+fn test_activate_command_executes() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.arg("activate")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Activate: force=false"));
+}
+
+/// Test that activate command with --force flag executes successfully
+#[test]
+fn test_activate_command_executes_with_force() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--force"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Activate: force=true"));
+}
+
+/// Test that deactivate command executes successfully (stub implementation)
+#[test]
+fn test_deactivate_command_executes() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.arg("deactivate")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Deactivate: fast=false"));
+}
+
+/// Test that deactivate command with --fast flag executes successfully
+#[test]
+fn test_deactivate_command_executes_with_fast() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["deactivate", "--fast"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Deactivate: fast=true"));
+}
+
+/// Test that emergency command executes successfully (stub implementation)
+#[test]
+fn test_emergency_command_executes() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.arg("emergency")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Emergency: delay=10s"));
+}
+
+/// Test that emergency command with custom --delay flag executes successfully
+#[test]
+fn test_emergency_command_executes_with_custom_delay() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["emergency", "--delay", "30"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Emergency: delay=30s"));
+}
+
+/// Test that status command executes successfully (stub implementation)
+#[test]
+fn test_status_command_executes() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.arg("status")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Status: verbose=false"));
+}
+
+/// Test that status command with --verbose flag executes successfully
+#[test]
+fn test_status_command_executes_with_verbose() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["status", "--verbose"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Status: verbose=true"));
+}

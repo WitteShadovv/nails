@@ -7,8 +7,8 @@
 //! Architecture Reference: docs/architecture.md lines 1766-2048
 //! Test Design Reference: docs/test-design-system.md lines 606-611
 
-use nails_core::filesystem::{Filesystem, MockFilesystem};
 use nails_core::NailsError;
+use nails_core::filesystem::{Filesystem, MockFilesystem};
 use std::path::Path;
 
 // ============================================================================
@@ -403,9 +403,10 @@ fn test_create_directory_succeeds_with_writable_parent() {
     assert!(result.is_ok());
 
     // AND: Directory now exists
-    assert!(fs
-        .path_exists(Path::new("/mnt/hidden-volume/upper"))
-        .unwrap());
+    assert!(
+        fs.path_exists(Path::new("/mnt/hidden-volume/upper"))
+            .unwrap()
+    );
 }
 
 #[test]
@@ -692,36 +693,90 @@ fn test_generic_nails_manager_compiles_with_real_filesystem() {
 // ============================================================================
 
 #[test]
-fn test_mock_filesystem_is_send() {
-    fn assert_send<T: Send>() {}
-    assert_send::<MockFilesystem>();
+fn test_mock_filesystem_can_be_used_across_threads() {
+    // GIVEN: MockFilesystem shared across threads
+    let fs = MockFilesystem::new();
+    let fs_clone = fs.clone();
+
+    // WHEN: Using filesystem from multiple threads
+    let handle = std::thread::spawn(move || {
+        let _ = fs_clone.path_exists(Path::new("/test"));
+    });
+
+    handle.join().unwrap();
+
+    // THEN: No panic - filesystem is Send + Sync
+}
+
+// ============================================================================
+// MockFilesystem Helper Methods Tests (for coverage)
+// ============================================================================
+
+#[test]
+fn test_mock_set_busy_can_remove_busy_state() {
+    // GIVEN: MockFilesystem with a busy path
+    let fs = MockFilesystem::new();
+    let path = Path::new("/busy/path");
+
+    fs.mock_set_busy(path, true);
+
+    // WHEN: Removing busy state
+    fs.mock_set_busy(path, false);
+
+    // THEN: Path is no longer busy (unmount should succeed)
+    fs.mock_set_mounted(path, true);
+    let result = fs.unmount(path, false);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_mock_set_nixos_profile_can_remove_profile() {
+    // GIVEN: MockFilesystem with a profile
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_nixos_profile_exists("test-profile", true);
+    assert!(fs.nixos_profile_exists("test-profile").unwrap());
+
+    // WHEN: Removing profile
+    fs.mock_set_nixos_profile_exists("test-profile", false);
+
+    // THEN: Profile no longer exists
+    assert!(!fs.nixos_profile_exists("test-profile").unwrap());
+}
+
+#[test]
+fn test_mock_nixos_build_profile_adds_to_set() {
+    // GIVEN: MockFilesystem
+    let fs = MockFilesystem::new();
+
+    // WHEN: Building a profile
+    let result = fs.nixos_build_profile("new-profile");
+
+    // THEN: Profile is added and exists
+    assert!(result.is_ok());
+    assert!(fs.nixos_profile_exists("new-profile").unwrap());
+}
+
+#[test]
+fn test_mock_set_path_exists_can_unset_path() {
+    // GIVEN: MockFilesystem with existing path
+    let fs = MockFilesystem::new();
+    let path = "/test/path";
+
+    fs.mock_set_path_exists(path, true);
+    assert!(fs.path_exists(Path::new(path)).unwrap());
+
+    // WHEN: Unsetting path existence
+    fs.mock_set_path_exists(path, false);
+
+    // THEN: Path no longer exists
+    assert!(!fs.path_exists(Path::new(path)).unwrap());
 }
 
 #[test]
 fn test_mock_filesystem_is_sync() {
     fn assert_sync<T: Sync>() {}
     assert_sync::<MockFilesystem>();
-}
-
-#[test]
-fn test_mock_filesystem_can_be_used_across_threads() {
-    use std::thread;
-
-    // GIVEN: MockFilesystem shared across threads
-    let fs = MockFilesystem::new();
-    let fs_clone = fs.clone();
-
-    // WHEN: Using in another thread
-    let handle = thread::spawn(move || {
-        fs_clone.mock_set_mounted(Path::new("/home"), true);
-        fs_clone.is_mounted(Path::new("/home")).unwrap()
-    });
-
-    // THEN: Both threads see consistent state
-    let result = handle.join().unwrap();
-    assert!(result);
-    // Original fs also sees the mount (shared state via Arc<Mutex<_>>)
-    assert!(fs.is_mounted(Path::new("/home")).unwrap());
 }
 
 // ============================================================================

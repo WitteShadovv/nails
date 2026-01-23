@@ -203,7 +203,7 @@ mod tests {
         let _err4 = NailsError::NixOSError("test".into());
         let _err5 = NailsError::PreFlightCheckFailed("test".into());
         let _err6 = NailsError::ConfigError("test".into());
-        let _err7 = NailsError::IoError(std::io::Error::new(std::io::ErrorKind::Other, "test"));
+        let _err7 = NailsError::IoError(std::io::Error::other("test"));
 
         // Filesystem-specific error variants
         use std::path::PathBuf;
