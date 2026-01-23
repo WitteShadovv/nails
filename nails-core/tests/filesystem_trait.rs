@@ -560,3 +560,180 @@ fn test_mock_filesystem_clone_shares_state() {
     assert!(!fs1.is_mounted(Path::new("/home")).unwrap());
     assert!(!fs2.is_mounted(Path::new("/home")).unwrap());
 }
+
+// ============================================================================
+// P1: Readability/Writability Checks (Permission Validation)
+// ============================================================================
+
+#[test]
+fn test_is_readable_returns_false_for_nonexistent_path() {
+    // GIVEN: MockFilesystem with path not in map
+    let fs = MockFilesystem::new();
+    let path = Path::new("/mnt/hidden-volume");
+
+    // WHEN: Checking readability on non-existent path
+    let result = fs.is_readable(path);
+
+    // THEN: Returns false (path not tracked = not readable)
+    assert!(!result.unwrap());
+}
+
+#[test]
+fn test_is_writable_returns_true_for_writable_path() {
+    // GIVEN: MockFilesystem with writable path
+    let fs = MockFilesystem::new();
+    let path = Path::new("/mnt/hidden-volume");
+
+    fs.mock_set_writable("/mnt/hidden-volume", true);
+
+    // WHEN: Checking writability
+    let result = fs.is_writable(path);
+
+    // THEN: Returns true
+    assert!(result.unwrap());
+}
+
+#[test]
+fn test_is_writable_returns_false_for_readonly_path() {
+    // GIVEN: MockFilesystem with read-only path
+    let fs = MockFilesystem::new();
+    let path = Path::new("/mnt/hidden-volume");
+
+    fs.mock_set_writable("/mnt/hidden-volume", false);
+
+    // WHEN: Checking writability
+    let result = fs.is_writable(path);
+
+    // THEN: Returns false
+    assert!(!result.unwrap());
+}
+
+// ============================================================================
+// P1: NixOS Profile Current State (For Status Command)
+// ============================================================================
+
+#[test]
+fn test_nixos_get_current_profile_returns_error_when_none_active() {
+    // GIVEN: MockFilesystem with no active profile
+    let fs = MockFilesystem::new();
+
+    // WHEN: Getting current profile
+    let result = fs.nixos_get_current_profile();
+
+    // THEN: Returns error (no profile active)
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("No NixOS profile") || err_msg.contains("not active"));
+}
+
+// ============================================================================
+// P1: Generic NailsManager<F: Filesystem> Compilation Test (AR44)
+// ============================================================================
+
+/// This test verifies that generic NailsManager<F: Filesystem> compiles
+/// as required by AR44. The test doesn't need to run any logic - just compile.
+#[test]
+fn test_generic_nails_manager_compiles_with_mock_filesystem() {
+    // GIVEN: A generic struct that accepts any Filesystem implementation
+    struct GenericManager<F: Filesystem> {
+        fs: F,
+    }
+
+    impl<F: Filesystem> GenericManager<F> {
+        fn new(fs: F) -> Self {
+            Self { fs }
+        }
+
+        fn check_mounted(&self, path: &Path) -> nails_core::Result<bool> {
+            self.fs.is_mounted(path)
+        }
+    }
+
+    // WHEN: Instantiating with MockFilesystem
+    let mock_fs = MockFilesystem::new();
+    let manager = GenericManager::new(mock_fs);
+
+    // THEN: Generic code compiles and works
+    let result = manager.check_mounted(Path::new("/home"));
+    assert!(result.is_ok());
+    assert!(!result.unwrap()); // Not mounted
+}
+
+#[test]
+fn test_generic_nails_manager_compiles_with_real_filesystem() {
+    use nails_core::filesystem::RealFilesystem;
+
+    // GIVEN: A generic struct that accepts any Filesystem implementation
+    struct GenericManager<F: Filesystem> {
+        fs: F,
+    }
+
+    impl<F: Filesystem> GenericManager<F> {
+        fn new(fs: F) -> Self {
+            Self { fs }
+        }
+
+        #[allow(dead_code)]
+        fn get_fs(&self) -> &F {
+            &self.fs
+        }
+    }
+
+    // WHEN: Instantiating with RealFilesystem
+    let real_fs = RealFilesystem;
+    let _manager = GenericManager::new(real_fs);
+
+    // THEN: Generic code compiles (we don't call methods that require root)
+    // This test just verifies compilation with RealFilesystem
+}
+
+// ============================================================================
+// P1: Thread Safety Tests (Send + Sync Bounds)
+// ============================================================================
+
+#[test]
+fn test_mock_filesystem_is_send() {
+    fn assert_send<T: Send>() {}
+    assert_send::<MockFilesystem>();
+}
+
+#[test]
+fn test_mock_filesystem_is_sync() {
+    fn assert_sync<T: Sync>() {}
+    assert_sync::<MockFilesystem>();
+}
+
+#[test]
+fn test_mock_filesystem_can_be_used_across_threads() {
+    use std::thread;
+
+    // GIVEN: MockFilesystem shared across threads
+    let fs = MockFilesystem::new();
+    let fs_clone = fs.clone();
+
+    // WHEN: Using in another thread
+    let handle = thread::spawn(move || {
+        fs_clone.mock_set_mounted(Path::new("/home"), true);
+        fs_clone.is_mounted(Path::new("/home")).unwrap()
+    });
+
+    // THEN: Both threads see consistent state
+    let result = handle.join().unwrap();
+    assert!(result);
+    // Original fs also sees the mount (shared state via Arc<Mutex<_>>)
+    assert!(fs.is_mounted(Path::new("/home")).unwrap());
+}
+
+// ============================================================================
+// P1: Default Implementation Tests
+// ============================================================================
+
+#[test]
+fn test_mock_filesystem_default_trait() {
+    // GIVEN: MockFilesystem created via Default trait
+    let fs = MockFilesystem::default();
+
+    // THEN: Behaves same as ::new()
+    assert!(fs.get_mounted_paths().is_empty());
+    assert!(!fs.swap_is_enabled().unwrap());
+}
