@@ -50,7 +50,7 @@ pub use manager::NailsManager;
 pub use state::{HIDDEN_VOLUME_ROOT, OverlayInfo, StateFile, SystemState};
 
 // Pre-flight validation exports
-pub use preflight::{CheckResult, PreFlightCheck, PreFlightRegistry};
+pub use preflight::{CheckResult, HiddenVolumeCheck, PreFlightCheck, PreFlightRegistry};
 
 /// RAII guard for automatic state rollback on failure
 ///
