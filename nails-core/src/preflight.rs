@@ -447,7 +447,7 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
         // Step 2: Check path is mounted
         if !fs.is_mounted(&self.hidden_volume_path)? {
             return Ok(CheckResult::Fail(format!(
-                "Hidden volume at {} is not mounted. Mount with: cryptsetup open ...",
+                "Hidden volume at {} is not mounted. Mount the hidden LUKS volume to this path before activation.",
                 self.hidden_volume_path.display()
             )));
         }
@@ -1064,7 +1064,7 @@ mod tests {
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
         assert!(result.message().contains("is not mounted"));
-        assert!(result.message().contains("cryptsetup open"));
+        assert!(result.message().contains("Mount the hidden LUKS volume"));
     }
 
     #[test]
