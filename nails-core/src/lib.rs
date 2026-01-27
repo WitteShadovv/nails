@@ -42,7 +42,7 @@ pub use config::{Config, OverlayConfig};
 pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
 pub use manager::NailsManager;
-pub use state::{HIDDEN_VOLUME_ROOT, OverlayInfo, StateFile, SystemState};
+pub use state::{HIDDEN_VOLUME_ROOT, OverlayInfo, StateFile, StateGuard, SystemState};
 
 #[cfg(test)]
 mod tests {

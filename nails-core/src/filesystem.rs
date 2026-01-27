@@ -286,6 +286,8 @@ pub struct MockFilesystem {
     busy: Arc<Mutex<HashSet<PathBuf>>>,
     nixos_profiles: Arc<Mutex<HashSet<String>>>,
     current_profile: Arc<Mutex<Option<String>>>,
+    mount_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Paths that should fail to mount
+    unmount_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Paths that should fail to unmount
 }
 
 impl MockFilesystem {
@@ -316,6 +318,8 @@ impl MockFilesystem {
             busy: Arc::new(Mutex::new(HashSet::new())),
             nixos_profiles: Arc::new(Mutex::new(HashSet::new())),
             current_profile: Arc::new(Mutex::new(None)),
+            mount_should_fail: Arc::new(Mutex::new(HashSet::new())),
+            unmount_should_fail: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -341,6 +345,8 @@ impl MockFilesystem {
         self.busy.lock().unwrap().clear();
         self.nixos_profiles.lock().unwrap().clear();
         self.current_profile.lock().unwrap().take();
+        self.mount_should_fail.lock().unwrap().clear();
+        self.unmount_should_fail.lock().unwrap().clear();
     }
 
     // ========================================================================
@@ -418,6 +424,78 @@ impl MockFilesystem {
         }
     }
 
+    /// Set whether a mount operation should fail for a specific path
+    ///
+    /// This is useful for testing rollback scenarios where mount operations fail.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Target mount path that should fail
+    /// * `should_fail` - If true, mount operations to this path will fail
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_mount_should_fail("/home", true);
+    ///
+    /// // This will now fail
+    /// let result = fs.mount_overlay(
+    ///     Path::new("/"),
+    ///     Path::new("/mnt/hidden/upper"),
+    ///     Path::new("/mnt/hidden/work"),
+    ///     Path::new("/home")
+    /// );
+    /// assert!(result.is_err());
+    /// ```
+    pub fn mock_set_mount_should_fail(&self, path: &str, should_fail: bool) {
+        let mut fail_set = self.mount_should_fail.lock().unwrap();
+        if should_fail {
+            fail_set.insert(PathBuf::from(path));
+        } else {
+            fail_set.remove(&PathBuf::from(path));
+        }
+    }
+
+    /// Set whether an unmount operation should fail for a specific path
+    ///
+    /// This is useful for testing deactivation rollback scenarios where unmount operations fail.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Target mount path that should fail to unmount
+    /// * `should_fail` - If true, unmount operations for this path will fail
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    ///
+    /// // Set up a mounted overlay
+    /// fs.mock_set_mounted(Path::new("/home"), true);
+    ///
+    /// // Configure unmount to fail
+    /// fs.mock_set_unmount_should_fail("/home", true);
+    ///
+    /// // This will now fail
+    /// let result = fs.unmount(Path::new("/home"), false);
+    /// assert!(result.is_err());
+    /// ```
+    pub fn mock_set_unmount_should_fail(&self, path: &str, should_fail: bool) {
+        let mut fail_set = self.unmount_should_fail.lock().unwrap();
+        if should_fail {
+            fail_set.insert(PathBuf::from(path));
+        } else {
+            fail_set.remove(&PathBuf::from(path));
+        }
+    }
+
     /// Get list of currently mounted paths
     ///
     /// Useful for test assertions.
@@ -434,6 +512,16 @@ impl Default for MockFilesystem {
 
 impl Filesystem for MockFilesystem {
     fn mount_overlay(&self, lower: &Path, upper: &Path, work: &Path, target: &Path) -> Result<()> {
+        // Check if this mount should fail (for testing rollback)
+        let fail_set = self.mount_should_fail.lock().unwrap();
+        if fail_set.contains(target) {
+            return Err(NailsError::OverlayError(format!(
+                "Mock mount failure for testing: {}",
+                target.display()
+            )));
+        }
+        drop(fail_set);
+
         // Check if target already mounted
         let mounts = self.mounted.lock().unwrap();
         if mounts.contains(target) {
@@ -475,6 +563,16 @@ impl Filesystem for MockFilesystem {
     }
 
     fn unmount(&self, target: &Path, force: bool) -> Result<()> {
+        // Check if this unmount should fail (for testing rollback)
+        let fail_set = self.unmount_should_fail.lock().unwrap();
+        if fail_set.contains(target) {
+            return Err(NailsError::UnmountError {
+                path: target.to_path_buf(),
+                reason: "Mock unmount failure for testing".to_string(),
+            });
+        }
+        drop(fail_set);
+
         let mut mounts = self.mounted.lock().unwrap();
 
         // Idempotent: succeed if not mounted
