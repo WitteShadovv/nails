@@ -468,6 +468,138 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
 }
 
 // ============================================================================
+// HiddenStorageStructureCheck - Validates hidden storage directory structure
+// ============================================================================
+
+/// Required directories in hidden storage (design.tex Section 4.3.5)
+const REQUIRED_DIRS: &[&str] = &[
+    "etc",        // Upper layer for /etc overlay
+    "home",       // Upper layer for /home overlay
+    "config",     // NAILS configuration (nails.toml)
+    "nixos",      // Hidden environment NixOS configuration
+    ".work/etc",  // OverlayFS work directory for /etc
+    ".work/home", // OverlayFS work directory for /home
+];
+
+// Note: nix/ directory is optional - not enforced by this check
+
+/// Pre-flight check that validates hidden storage has expected directory structure
+///
+/// This check validates that the hidden volume contains all required directories
+/// for NAILS overlay operations as documented in thesis design.tex Section 4.3.5.
+///
+/// # Required Directory Structure
+///
+/// ```text
+/// /mnt/hidden-volume/
+/// ├── etc/           # Upper layer for /etc overlay
+/// ├── home/          # Upper layer for /home overlay
+/// ├── nix/           # Upper layer for /nix overlay (OPTIONAL)
+/// ├── config/        # NAILS configuration (nails.toml)
+/// ├── nixos/         # Hidden environment NixOS configuration
+/// └── .work/         # OverlayFS work directories
+///     ├── etc/
+///     └── home/
+/// ```
+///
+/// # Failure Guidance
+///
+/// When directories are missing, the check provides actionable guidance:
+/// - Lists ALL missing directories (not just the first one)
+/// - Suggests running `nails init-structure` to create required directories
+/// - References thesis documentation for context
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use nails_core::preflight::{HiddenStorageStructureCheck, PreFlightCheck};
+/// use nails_core::filesystem::MockFilesystem;
+/// use std::path::PathBuf;
+///
+/// let fs = MockFilesystem::new();
+/// let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+///
+/// // Set up mock directory structure - all required directories
+/// fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
+/// fs.mock_set_path_type("/mnt/hidden-volume/etc", "directory");
+///
+/// fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+/// fs.mock_set_path_type("/mnt/hidden-volume/home", "directory");
+///
+/// fs.mock_set_path_exists("/mnt/hidden-volume/config", true);
+/// fs.mock_set_path_type("/mnt/hidden-volume/config", "directory");
+///
+/// fs.mock_set_path_exists("/mnt/hidden-volume/nixos", true);
+/// fs.mock_set_path_type("/mnt/hidden-volume/nixos", "directory");
+///
+/// fs.mock_set_path_exists("/mnt/hidden-volume/.work/etc", true);
+/// fs.mock_set_path_type("/mnt/hidden-volume/.work/etc", "directory");
+///
+/// fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+/// fs.mock_set_path_type("/mnt/hidden-volume/.work/home", "directory");
+///
+/// let result = check.run(&fs).unwrap();
+/// assert!(result.is_pass());
+/// ```
+#[derive(Debug, Clone)]
+pub struct HiddenStorageStructureCheck {
+    hidden_volume_path: PathBuf,
+}
+
+impl HiddenStorageStructureCheck {
+    /// Create a new HiddenStorageStructureCheck with a custom path
+    ///
+    /// # Arguments
+    ///
+    /// * `hidden_volume_path` - Path to the hidden volume mount point
+    pub fn new(hidden_volume_path: PathBuf) -> Self {
+        Self { hidden_volume_path }
+    }
+}
+
+impl Default for HiddenStorageStructureCheck {
+    /// Create check with default hidden volume path (/mnt/hidden-volume)
+    fn default() -> Self {
+        Self {
+            hidden_volume_path: PathBuf::from("/mnt/hidden-volume"),
+        }
+    }
+}
+
+impl<F: Filesystem> PreFlightCheck<F> for HiddenStorageStructureCheck {
+    fn name(&self) -> &'static str {
+        "hidden-storage-structure"
+    }
+
+    fn description(&self) -> &'static str {
+        "Validates hidden storage has expected directory structure"
+    }
+
+    fn run(&self, fs: &F) -> Result<CheckResult> {
+        let mut missing = Vec::new();
+
+        // Check all required directories
+        for dir in REQUIRED_DIRS {
+            let path = self.hidden_volume_path.join(dir);
+            if !fs.path_exists(&path)? || !fs.is_directory(&path)? {
+                missing.push(format!("{}/", dir));
+            }
+        }
+
+        if missing.is_empty() {
+            Ok(CheckResult::Pass(
+                "Hidden storage structure valid: etc/, home/, config/, nixos/, .work/etc/, .work/home/".to_string()
+            ))
+        } else {
+            Ok(CheckResult::Fail(format!(
+                "Hidden storage structure invalid. Missing directories: {}. Run 'nails init-structure' to create required directories.",
+                missing.join(", ")
+            )))
+        }
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1104,5 +1236,179 @@ mod tests {
         let check = HiddenVolumeCheck::default();
         let cloned = check.clone();
         assert_eq!(check.hidden_volume_path, cloned.hidden_volume_path);
+    }
+
+    // ========================================================================
+    // HiddenStorageStructureCheck Tests (Story 3.3)
+    // ========================================================================
+
+    #[test]
+    fn test_hidden_storage_structure_check_all_directories_exist_pass() {
+        // AC 3, 7: All required directories exist -> Pass
+        let fs = MockFilesystem::new();
+        let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+
+        // Set up all required directories
+        fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/etc", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/home", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/config", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/config", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/nixos", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/nixos", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/etc", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/.work/etc", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/.work/home", "directory");
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_pass());
+        assert!(result.message().contains("Hidden storage structure valid"));
+    }
+
+    #[test]
+    fn test_hidden_storage_structure_check_single_directory_missing_fail() {
+        // AC 4, 8: Single directory missing -> Fail with that directory
+        let fs = MockFilesystem::new();
+        let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+
+        // Set up all directories except etc/
+        fs.mock_set_path_exists("/mnt/hidden-volume/etc", false);
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/home", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/config", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/config", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/nixos", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/nixos", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/etc", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/.work/etc", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/.work/home", "directory");
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail());
+        assert!(result.message().contains("Missing directories: etc/"));
+        assert!(
+            result
+                .message()
+                .contains("Hidden storage structure invalid")
+        );
+    }
+
+    #[test]
+    fn test_hidden_storage_structure_check_multiple_directories_missing_fail() {
+        // AC 5, 8: Multiple directories missing -> Fail listing all
+        let fs = MockFilesystem::new();
+        let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+
+        // Only set up some directories, missing config/ and nixos/
+        fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/etc", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/home", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/config", false);
+        fs.mock_set_path_exists("/mnt/hidden-volume/nixos", false);
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/etc", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/.work/etc", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/.work/home", "directory");
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail());
+        assert!(result.message().contains("config/"));
+        assert!(result.message().contains("nixos/"));
+        assert!(result.message().contains("'nails init-structure'"));
+    }
+
+    #[test]
+    fn test_hidden_storage_structure_check_directory_is_file_fail() {
+        // AC 8: Directory exists but is a file -> Fail
+        let fs = MockFilesystem::new();
+        let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+
+        // etc/ exists but is a file, not a directory
+        fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/etc", "file");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/home", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/config", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/config", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/nixos", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/nixos", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/etc", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/.work/etc", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/.work/home", "directory");
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail());
+        assert!(result.message().contains("etc/"));
+    }
+
+    #[test]
+    fn test_hidden_storage_structure_check_optional_nix_missing_pass() {
+        // AC 8: Optional nix/ missing -> Pass (it's optional)
+        let fs = MockFilesystem::new();
+        let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+
+        // Set up all required directories (nix/ is optional, can be missing)
+        fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/etc", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/home", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/config", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/config", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/nixos", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/nixos", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/etc", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/.work/etc", "directory");
+
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+        fs.mock_set_path_type("/mnt/hidden-volume/.work/home", "directory");
+
+        // nix/ is not set up - optional
+        fs.mock_set_path_exists("/mnt/hidden-volume/nix", false);
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_pass());
+    }
+
+    #[test]
+    fn test_hidden_storage_structure_check_trait_metadata() {
+        // AC 1: Verify trait implementation
+        let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+
+        assert_eq!(
+            <HiddenStorageStructureCheck as PreFlightCheck<MockFilesystem>>::name(&check),
+            "hidden-storage-structure"
+        );
+        assert!(
+            <HiddenStorageStructureCheck as PreFlightCheck<MockFilesystem>>::description(&check)
+                .contains("directory structure")
+        );
     }
 }
