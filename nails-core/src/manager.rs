@@ -166,19 +166,73 @@ impl<F: Filesystem> NailsManager<F> {
 
     /// Force state transition without validation (for rollback use only)
     ///
-    /// This method bypasses state transition validation and directly sets
-    /// the state. It should ONLY be used by StateGuard for rollback operations.
+    /// **⚠️ WARNING: This method bypasses ALL state transition validation.**
     ///
-    /// # Safety
+    /// This method directly sets the system state without checking if the
+    /// transition is legal according to the state machine rules. Using this
+    /// method incorrectly WILL corrupt your state machine and cause undefined
+    /// behavior.
     ///
-    /// This method is intentionally **NOT** marked as unsafe in Rust terms,
-    /// but it IS unsafe from a state machine perspective. Using this method
-    /// outside of StateGuard::drop() can corrupt the state machine.
+    /// # ⚠️ Safety - State Machine Corruption Risk
     ///
-    /// # Use Case
+    /// This method is intentionally **NOT** marked as `unsafe` in Rust terms
+    /// (it doesn't violate memory safety), but it IS unsafe from a **state
+    /// machine correctness** perspective.
     ///
-    /// When rolling back from a failed activation, we need to restore the
-    /// previous state even if it violates normal transition rules.
+    /// ## When State Machine Corruption Occurs
+    ///
+    /// Using `force_state()` outside of rollback scenarios can create invalid
+    /// state transitions that violate the system's invariants:
+    ///
+    /// ### Example 1: Skipping Required Cleanup
+    /// ```text
+    /// // DANGER: Forcing Active → Inactive without cleanup
+    /// manager.force_state(SystemState::Inactive);
+    /// // Result: Overlays remain mounted but state says Inactive
+    /// // Next activation will fail or double-mount
+    /// ```
+    ///
+    /// ### Example 2: Bypassing Validation Checks
+    /// ```text
+    /// // DANGER: Forcing Inactive → Active without mounting
+    /// manager.force_state(SystemState::Active { ... });
+    /// // Result: State says Active but nothing is mounted
+    /// // System thinks it's protected but it's not
+    /// ```
+    ///
+    /// ### Example 3: Creating Impossible Transitions
+    /// ```text
+    /// // DANGER: Jumping from Error to Activating
+    /// manager.force_state(SystemState::Activating);
+    /// // Result: State machine thinks activation is in progress
+    /// // but prerequisites from Inactive weren't completed
+    /// ```
+    ///
+    /// ## Safe Use Case: Rollback After Partial Failure
+    ///
+    /// The ONLY safe use of `force_state()` is in StateGuard::drop() to restore
+    /// a previous known-good state after a partial operation failure:
+    ///
+    /// ```text
+    /// // SAFE: Rollback in StateGuard::drop()
+    /// // We were in Active, tried to deactivate, unmount failed
+    /// // Roll back to Active (remount what we can)
+    /// self.manager.lock().unwrap()
+    ///     .force_state(self.previous_state.clone());
+    /// // State machine returns to consistent Active state
+    /// ```
+    ///
+    /// # When to Use This Method
+    ///
+    /// **ONLY use `force_state()` in these scenarios:**
+    /// 1. **StateGuard::drop() for rollback** - Restoring previous state after failure
+    /// 2. **Test setup/teardown** - Forcing known states for testing
+    /// 3. **Recovery operations** - Manual state repair by advanced users
+    ///
+    /// **NEVER use `force_state()` in:**
+    /// - Normal activation/deactivation flows (use `update_state()` instead)
+    /// - CLI commands (they should use high-level APIs)
+    /// - Error handling outside of rollback (fix the root cause instead)
     ///
     /// # Arguments
     ///

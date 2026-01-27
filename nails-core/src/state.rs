@@ -869,6 +869,78 @@ impl<F: Filesystem> StateGuard<F> {
         self.committed = true;
         // self is dropped here, but committed=true prevents rollback
     }
+
+    /// Get the previous state that will be restored on rollback
+    ///
+    /// Returns the state that was captured when this guard was created.
+    /// If the guard is dropped without calling commit(), this is the state
+    /// that will be restored to the manager.
+    ///
+    /// # Returns
+    ///
+    /// Reference to the previous SystemState
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::{StateGuard, NailsManager, MockFilesystem, Config, SystemState};
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// let fs = MockFilesystem::new();
+    /// let config = Config::default();
+    /// let temp_dir = tempfile::tempdir().unwrap();
+    /// let state_path = temp_dir.path().join("state.json");
+    /// let manager = Arc::new(Mutex::new(
+    ///     NailsManager::new(fs, config, state_path)
+    /// ));
+    ///
+    /// let previous_state = SystemState::Inactive;
+    /// let guard = StateGuard::new(Arc::clone(&manager), previous_state);
+    ///
+    /// // Check what state will be restored on rollback
+    /// assert_eq!(*guard.previous_state(), SystemState::Inactive);
+    /// ```
+    pub fn previous_state(&self) -> &SystemState {
+        &self.previous_state
+    }
+
+    /// Check if the transaction has been committed
+    ///
+    /// Returns true if commit() has been called, false otherwise.
+    /// When false and the guard is dropped, rollback will occur.
+    ///
+    /// # Returns
+    ///
+    /// true if committed, false if uncommitted
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::{StateGuard, NailsManager, MockFilesystem, Config, SystemState};
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// let fs = MockFilesystem::new();
+    /// let config = Config::default();
+    /// let temp_dir = tempfile::tempdir().unwrap();
+    /// let state_path = temp_dir.path().join("state.json");
+    /// let manager = Arc::new(Mutex::new(
+    ///     NailsManager::new(fs, config, state_path)
+    /// ));
+    ///
+    /// let previous_state = SystemState::Inactive;
+    /// let mut guard = StateGuard::new(Arc::clone(&manager), previous_state);
+    ///
+    /// // Initially not committed
+    /// assert!(!guard.is_committed());
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// This method is primarily useful for testing and debugging.
+    /// In production code, the RAII pattern handles commit/rollback automatically.
+    pub fn is_committed(&self) -> bool {
+        self.committed
+    }
 }
 
 impl<F: Filesystem> Drop for StateGuard<F> {
@@ -2173,5 +2245,171 @@ mod tests {
             loaded.state.is_active(),
             "State file should contain Active after StateGuard rollback (FR51: Remount overlays if cleanup fails)"
         );
+    }
+
+    /// Comprehensive end-to-end test demonstrating StateGuard in real workflow
+    ///
+    /// This test verifies the complete StateGuard pattern as documented in Dev Notes:
+    /// 1. Capture current state
+    /// 2. Create guard
+    /// 3. Perform multi-step operation (may fail at any step)
+    /// 4. Commit on success OR auto-rollback on failure
+    ///
+    /// Tests both success path (commit) and failure path (rollback).
+    /// (MEDIUM #2 from Code Review Follow-up)
+    #[test]
+    fn test_stateguard_end_to_end_workflow() {
+        use chrono::Utc;
+
+        let fs = MockFilesystem::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        // === TEST PART 1: Success Path (commit prevents rollback) ===
+
+        // Step 1: Capture current state for potential rollback
+        let previous_state = {
+            let m = manager.lock().unwrap();
+            m.current_state().unwrap()
+        };
+        assert_eq!(
+            previous_state,
+            SystemState::Inactive,
+            "Should start Inactive"
+        );
+
+        // Step 2: Create guard - if we don't commit, drop() will rollback
+        let guard = StateGuard::new(Arc::clone(&manager), previous_state);
+
+        // Verify guard internals using new getter methods
+        assert_eq!(*guard.previous_state(), SystemState::Inactive);
+        assert!(
+            !guard.is_committed(),
+            "Guard should be uncommitted initially"
+        );
+
+        // Step 3: Perform multi-step operation (simulated - just change state)
+        {
+            let mut m = manager.lock().unwrap();
+            m.force_state(SystemState::Activating {
+                started_at: Utc::now(),
+            })
+            .unwrap(); // Simulate step 1
+        }
+
+        // Verify we're in intermediate state
+        {
+            let m = manager.lock().unwrap();
+            assert!(matches!(
+                m.current_state().unwrap(),
+                SystemState::Activating { .. }
+            ));
+        }
+
+        // Step 4: All steps succeeded - commit prevents rollback
+        guard.commit();
+        // Guard is dropped here but won't rollback because committed=true
+
+        // Verify state was NOT rolled back (stayed in Activating)
+        {
+            let m = manager.lock().unwrap();
+            assert!(
+                matches!(m.current_state().unwrap(), SystemState::Activating { .. }),
+                "State should remain Activating after commit"
+            );
+        }
+
+        // === TEST PART 2: Failure Path (auto-rollback on error) ===
+
+        // Reset to Inactive for next test
+        {
+            let mut m = manager.lock().unwrap();
+            m.force_state(SystemState::Inactive).unwrap();
+        }
+
+        // Step 1: Capture current state
+        let previous_state = {
+            let m = manager.lock().unwrap();
+            m.current_state().unwrap()
+        };
+        assert_eq!(previous_state, SystemState::Inactive);
+
+        // Step 2: Create guard
+        let guard = StateGuard::new(Arc::clone(&manager), previous_state);
+
+        // Step 3: Start operation
+        {
+            let mut m = manager.lock().unwrap();
+            m.force_state(SystemState::Activating {
+                started_at: Utc::now(),
+            })
+            .unwrap();
+        }
+
+        // Step 4: Simulate operation failure - DON'T commit, just drop guard
+        // (In real code, this would be: return Err(...))
+        drop(guard);
+        // Guard's drop() should have rolled back to Inactive
+
+        // Verify automatic rollback occurred
+        {
+            let m = manager.lock().unwrap();
+            assert_eq!(
+                m.current_state().unwrap(),
+                SystemState::Inactive,
+                "State should be rolled back to Inactive when guard dropped without commit"
+            );
+        }
+
+        // === TEST PART 3: Rollback on early return (scope-based) ===
+
+        // Simulate early return pattern with nested scope
+        {
+            let previous_state = {
+                let m = manager.lock().unwrap();
+                m.current_state().unwrap()
+            };
+            let _guard = StateGuard::new(Arc::clone(&manager), previous_state);
+
+            {
+                let mut m = manager.lock().unwrap();
+                m.force_state(SystemState::Activating {
+                    started_at: Utc::now(),
+                })
+                .unwrap();
+            }
+
+            // Early return without commit - guard dropped here
+            // (In real code: if some_condition { return Err(...); })
+        } // _guard dropped, rollback triggered
+
+        // Verify rollback occurred
+        {
+            let m = manager.lock().unwrap();
+            assert_eq!(
+                m.current_state().unwrap(),
+                SystemState::Inactive,
+                "State should rollback on early return (scope exit)"
+            );
+        }
+
+        // Verify state persisted correctly
+        let loaded = StateFile::load(&state_path).unwrap();
+        assert_eq!(loaded.state, SystemState::Inactive);
     }
 }

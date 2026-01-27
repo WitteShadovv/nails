@@ -42,7 +42,61 @@ pub use config::{Config, OverlayConfig};
 pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
 pub use manager::NailsManager;
-pub use state::{HIDDEN_VOLUME_ROOT, OverlayInfo, StateFile, StateGuard, SystemState};
+
+// State management exports
+pub use state::{HIDDEN_VOLUME_ROOT, OverlayInfo, StateFile, SystemState};
+
+/// RAII guard for automatic state rollback on failure
+///
+/// # ⚠️ EXPERIMENTAL API
+///
+/// **This API is experimental and may change in future versions.**
+///
+/// `StateGuard` is primarily intended for **internal use** by `NailsManager`
+/// methods (`activate()`, `deactivate()`) to provide automatic rollback on
+/// failure or panic.
+///
+/// ## External Usage Considerations
+///
+/// While this type is public to allow advanced use cases and testing, most
+/// consumers of this library should **NOT** need to create `StateGuard`
+/// instances directly. Instead:
+///
+/// - **Use high-level methods**: Call `NailsManager::activate()` and
+///   `NailsManager::deactivate()` which handle StateGuard internally
+/// - **Let RAII work for you**: These methods automatically create guards
+///   and handle commit/rollback
+///
+/// ## When You Might Use This Directly
+///
+/// 1. **Testing**: Verifying rollback behavior in custom test scenarios
+/// 2. **Advanced operations**: Building new manager methods that need rollback
+/// 3. **Manual recovery**: Emergency state restoration tools
+///
+/// ## API Stability
+///
+/// Until this warning is removed:
+/// - Method signatures may change
+/// - Fields may be reorganized
+/// - Behavior may be refined
+///
+/// We will maintain semantic versioning - breaking changes will bump the
+/// major version.
+///
+/// ## Example (Internal Pattern)
+///
+/// ```text
+/// // Internal pattern used by NailsManager methods
+/// let guard = StateGuard::new(Arc::clone(&manager), previous_state);
+/// // ... perform operations ...
+/// if success {
+///     guard.commit();  // Prevent rollback
+/// }
+/// // If operations fail, guard drops and rolls back automatically
+/// ```
+///
+/// For the complete API documentation, see [`StateGuard`].
+pub use state::StateGuard;
 
 #[cfg(test)]
 mod tests {
