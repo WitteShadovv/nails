@@ -258,6 +258,9 @@ This is research software under active development. Contributions welcome:
 - 📚 **Documentation**: Usage examples, security analysis
 - 🔍 **Testing**: Forensic evaluation, performance benchmarks
 
+**Quality Standards:**
+All contributions must meet our [Definition of Done](docs/definition-of-done.md) criteria, including 85%+ test coverage, zero clippy warnings, and security audits. See [Development Guide](docs/development-guide.md) for complete development workflow.
+
 ### Development Setup
 
 ```bash
