@@ -111,6 +111,8 @@ secrets/
 *.o
 *.a
 *.out
+core
+*.core
 
 # Temporary files
 tmp/

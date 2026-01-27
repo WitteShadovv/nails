@@ -36,6 +36,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # Atomic file operations (NFR13)
 tempfile = "3.10"
 
+# Colored terminal output (UXR5)
+colored = "2.1"
+
 # Testing (for workspace-level consistency)
 assert_cmd = "2.1.1"
 predicates = "3.1.3"

@@ -37,6 +37,9 @@ pub mod config;
 // Manager module (core orchestrator)
 pub mod manager;
 
+// Pre-flight validation system
+pub mod preflight;
+
 // Re-export for convenience
 pub use config::{Config, OverlayConfig};
 pub use error::{NailsError, Result};
@@ -45,6 +48,9 @@ pub use manager::NailsManager;
 
 // State management exports
 pub use state::{HIDDEN_VOLUME_ROOT, OverlayInfo, StateFile, SystemState};
+
+// Pre-flight validation exports
+pub use preflight::{CheckResult, PreFlightCheck, PreFlightRegistry};
 
 /// RAII guard for automatic state rollback on failure
 ///
