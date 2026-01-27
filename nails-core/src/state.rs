@@ -49,6 +49,11 @@ pub const HIDDEN_VOLUME_ROOT: &str = "/mnt/hidden-volume";
 /// Validates that the given path is within HIDDEN_VOLUME_ROOT to prevent
 /// forensic leakage of state information to the decoy system.
 ///
+/// # Arguments
+///
+/// * `path` - Path to validate
+/// * `hidden_volume_root` - Optional custom hidden volume root (for testing)
+///
 /// # Security Considerations
 ///
 /// - Uses canonicalize() to resolve symlinks (prevents symlink attacks)
@@ -56,18 +61,14 @@ pub const HIDDEN_VOLUME_ROOT: &str = "/mnt/hidden-volume";
 /// - Rejects similar-looking paths like "/mnt/hidden-volume-fake"
 /// - Rejects path traversal attempts like "../etc/state.json"
 ///
-/// # Arguments
-///
-/// * `path` - Path to validate
-///
 /// # Returns
 ///
 /// * `true` if path is within hidden volume
 /// * `false` otherwise
-fn is_on_hidden_volume(path: &Path) -> bool {
+fn is_on_hidden_volume_internal(path: &Path, hidden_volume_root: &str) -> bool {
     // Try to canonicalize to resolve symlinks
     match path.canonicalize() {
-        Ok(canonical) => canonical.starts_with(HIDDEN_VOLUME_ROOT),
+        Ok(canonical) => canonical.starts_with(hidden_volume_root),
         // If path doesn't exist yet, we need to clean it manually
         // to prevent path traversal attacks
         Err(_) => {
@@ -106,9 +107,17 @@ fn is_on_hidden_volume(path: &Path) -> bool {
                 cleaned.push(component);
             }
 
-            cleaned.starts_with(HIDDEN_VOLUME_ROOT)
+            cleaned.starts_with(hidden_volume_root)
         }
     }
+}
+
+/// Check if a path is within the hidden volume (production version)
+///
+/// This is a wrapper around `is_on_hidden_volume_internal` that uses the
+/// default HIDDEN_VOLUME_ROOT constant.
+fn is_on_hidden_volume(path: &Path) -> bool {
+    is_on_hidden_volume_internal(path, HIDDEN_VOLUME_ROOT)
 }
 
 /// System state enum with type-safe transitions
@@ -430,6 +439,10 @@ pub struct OverlayInfo {
 /// - NFR13: Atomic operations
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateFile {
+    /// Schema version for backward compatibility (uses semver from Cargo.toml)
+    /// Format: "major.minor.patch" (e.g., "0.1.0")
+    pub version: String,
+
     /// Current system state (Inactive, Activating, Active, Deactivating, Emergency)
     pub state: SystemState,
 
@@ -441,6 +454,10 @@ pub struct StateFile {
 
     /// Timestamp of last state modification
     pub last_modified: DateTime<Utc>,
+
+    /// HMAC checksum for tamper detection (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
 }
 
 impl Default for StateFile {
@@ -450,10 +467,12 @@ impl Default for StateFile {
     /// Safe default assumes system is INACTIVE (no hidden environment).
     fn default() -> Self {
         Self {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             state: SystemState::Inactive,
             nixos_generation: None,
             overlay_status: std::collections::HashMap::new(),
             last_modified: Utc::now(),
+            checksum: None,
         }
     }
 }
@@ -499,14 +518,47 @@ impl StateFile {
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
     pub fn save(&self, path: &Path) -> Result<()> {
+        self.save_with_root(path, HIDDEN_VOLUME_ROOT)
+    }
+
+    /// Save state file with custom hidden volume root (for testing)
+    ///
+    /// This is an internal method used by tests to verify the atomic write
+    /// logic without requiring access to the actual hidden volume mount point.
+    ///
+    /// Production code should use `save()` instead.
+    #[cfg(test)]
+    fn save_with_root(&self, path: &Path, hidden_volume_root: &str) -> Result<()> {
         // 1. Validate path is on hidden volume (AR26)
-        if !is_on_hidden_volume(path) {
+        if !is_on_hidden_volume_internal(path, hidden_volume_root) {
             return Err(NailsError::InvalidState(
-                "State file must be on hidden volume".into(),
+                format!("State file must be on hidden volume ({}), but attempted to write to: {}",
+                    hidden_volume_root,
+                    path.display())
             ));
         }
 
-        // 2. Serialize to JSON (FR29, AR10)
+        self.save_internal(path)
+    }
+
+    /// Save state file with default hidden volume root (production)
+    #[cfg(not(test))]
+    fn save_with_root(&self, path: &Path, hidden_volume_root: &str) -> Result<()> {
+        // In production, always use HIDDEN_VOLUME_ROOT constant
+        let _ = hidden_volume_root; // Suppress unused warning
+        if !is_on_hidden_volume(path) {
+            return Err(NailsError::InvalidState(
+                format!("State file must be on hidden volume ({}), but attempted to write to: {}",
+                    HIDDEN_VOLUME_ROOT,
+                    path.display())
+            ));
+        }
+
+        self.save_internal(path)
+    }
+
+    /// Internal save implementation (shared by test and production)
+    fn save_internal(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| NailsError::ConfigError(format!("Failed to serialize state: {}", e)))?;
 
@@ -532,10 +584,22 @@ impl StateFile {
         }
 
         // 6. Atomic rename (single syscall on POSIX)
-        temp.persist(path)
-            .map_err(|e| std::io::Error::other(format!("Failed to persist: {}", e)))?;
-
-        Ok(())
+        // Use persist_noclobber to detect race conditions, then fallback to regular persist
+        match temp.persist_noclobber(path) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // If file exists, we have a race condition - try regular persist
+                if e.error.kind() == std::io::ErrorKind::AlreadyExists {
+                    tracing::warn!("State file already exists during atomic write, overwriting");
+                    e.file
+                        .persist(path)
+                        .map_err(|e| std::io::Error::other(format!("Failed to persist after race condition: {}", e)))?;
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other(format!("Failed to persist state file: {}", e.error)).into())
+                }
+            }
+        }
     }
 
     /// Load state file from disk with graceful error handling
@@ -656,9 +720,11 @@ mod tests {
     fn test_state_file_default() {
         let state_file = StateFile::default();
 
+        assert_eq!(state_file.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(state_file.state, SystemState::Inactive);
         assert_eq!(state_file.nixos_generation, None);
         assert!(state_file.overlay_status.is_empty());
+        assert_eq!(state_file.checksum, None);
         // Just verify last_modified exists (can't test exact time)
         assert!(state_file.last_modified <= Utc::now());
     }
@@ -680,6 +746,7 @@ mod tests {
         );
 
         let state_file = StateFile {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             state: SystemState::Active {
                 activated_at: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
                     .unwrap()
@@ -691,10 +758,12 @@ mod tests {
             last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:01Z")
                 .unwrap()
                 .with_timezone(&Utc),
+            checksum: None,
         };
 
         // Serialize to JSON
         let json = serde_json::to_string_pretty(&state_file).expect("Should serialize");
+        assert!(json.contains("\"version\""));
         assert!(json.contains("\"Active\""));
         assert!(json.contains("\"nixos_generation\""));
         assert!(json.contains("\"overlay_status\""));
@@ -773,6 +842,7 @@ mod tests {
         match result {
             Err(NailsError::InvalidState(msg)) => {
                 assert!(msg.contains("State file must be on hidden volume"));
+                assert!(msg.contains("/tmp/state.json")); // Should include actual path
             }
             _ => panic!("Expected InvalidState error"),
         }
@@ -792,6 +862,7 @@ mod tests {
         match result {
             Err(NailsError::InvalidState(msg)) => {
                 assert!(msg.contains("State file must be on hidden volume"));
+                assert!(msg.contains("/home/user/.nails/state.json")); // Should include actual path
             }
             _ => panic!("Expected InvalidState error"),
         }
@@ -868,12 +939,14 @@ mod tests {
         let state_path = temp_dir.path().join("state.json");
 
         let original = StateFile {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             state: SystemState::Inactive,
             nixos_generation: None,
             overlay_status: std::collections::HashMap::new(),
             last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
+            checksum: None,
         };
 
         // Serialize to JSON manually (since we can't use save with temp dir)
@@ -905,6 +978,7 @@ mod tests {
         );
 
         let original = StateFile {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             state: SystemState::Active {
                 activated_at: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
                     .unwrap()
@@ -916,6 +990,7 @@ mod tests {
             last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:01Z")
                 .unwrap()
                 .with_timezone(&Utc),
+            checksum: None,
         };
 
         // Serialize manually
@@ -927,6 +1002,7 @@ mod tests {
         assert_eq!(loaded.state, original.state);
         assert_eq!(loaded.nixos_generation, original.nixos_generation);
         assert_eq!(loaded.overlay_status, original.overlay_status);
+        assert_eq!(loaded.version, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
@@ -951,6 +1027,7 @@ mod tests {
         }
 
         let original = StateFile {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             state: SystemState::Active {
                 activated_at: Utc::now(),
                 overlays: vec![
@@ -962,6 +1039,7 @@ mod tests {
             nixos_generation: Some("test123".to_string()),
             overlay_status,
             last_modified: Utc::now(),
+            checksum: None,
         };
 
         // Serialize manually
@@ -974,5 +1052,164 @@ mod tests {
         assert!(loaded.overlay_status.contains_key(&PathBuf::from("/home")));
         assert!(loaded.overlay_status.contains_key(&PathBuf::from("/etc")));
         assert!(loaded.overlay_status.contains_key(&PathBuf::from("/var")));
+    }
+
+    // ========== Additional Coverage Tests for Review Items ==========
+
+    #[test]
+    fn test_version_field_serializes() {
+        let state = StateFile::default();
+        assert_eq!(state.version, env!("CARGO_PKG_VERSION"));
+
+        let json = serde_json::to_string(&state).expect("Should serialize");
+        assert!(json.contains(&format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"))));
+    }
+
+    #[test]
+    fn test_checksum_field_optional() {
+        let state = StateFile::default();
+        assert_eq!(state.checksum, None);
+
+        let json = serde_json::to_string(&state).expect("Should serialize");
+        // Checksum should not appear in JSON when None (skip_serializing_if)
+        assert!(!json.contains("\"checksum\""));
+    }
+
+    #[test]
+    fn test_checksum_field_present_when_set() {
+        let state = StateFile {
+            checksum: Some("abc123".to_string()),
+            ..StateFile::default()
+        };
+
+        let json = serde_json::to_string(&state).expect("Should serialize");
+        assert!(json.contains("\"checksum\""));
+        assert!(json.contains("\"abc123\""));
+    }
+
+    #[test]
+    fn test_path_validation_with_relative_path() {
+        // Test that relative paths are rejected (not on hidden volume)
+        assert!(!is_on_hidden_volume(Path::new("relative/path/state.json")));
+        assert!(!is_on_hidden_volume(Path::new("./state.json")));
+        assert!(!is_on_hidden_volume(Path::new("../state.json")));
+    }
+
+    #[test]
+    fn test_path_validation_with_non_canonical_paths() {
+        // Test paths that need to be cleaned before checking
+        // These test the non-canonical path logic (line 70-111)
+        assert!(!is_on_hidden_volume(Path::new("/mnt/hidden-volume/../etc/state.json")));
+        assert!(!is_on_hidden_volume(Path::new("/etc/../home/user/.nails/state.json")));
+        assert!(!is_on_hidden_volume(Path::new("/mnt/./other/state.json")));
+
+        // Valid path with redundant components should still work
+        assert!(is_on_hidden_volume(Path::new("/mnt/hidden-volume/./subdir/state.json")));
+        assert!(is_on_hidden_volume(Path::new("/mnt/hidden-volume/subdir/../.nails/state.json")));
+    }
+
+    #[test]
+    fn test_actual_atomic_write_to_temp_hidden_volume() {
+        // Create a mock hidden volume in temp for testing
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol_root = temp_dir.path().to_str().unwrap();
+        let state_dir = temp_dir.path().join(".nails");
+        std::fs::create_dir_all(&state_dir).expect("Should create dirs");
+
+        let state_path = state_dir.join("state.json");
+
+        // Now we can actually test save() with a custom hidden volume root!
+        let state = StateFile {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            state: SystemState::Inactive,
+            nixos_generation: Some("test-gen".to_string()),
+            overlay_status: std::collections::HashMap::new(),
+            last_modified: Utc::now(),
+            checksum: None,
+        };
+
+        // Use save_with_root to test actual atomic write logic
+        state.save_with_root(&state_path, mock_hidden_vol_root)
+            .expect("Should save with custom root");
+
+        // Verify file exists and is readable
+        assert!(state_path.exists());
+        let loaded_json = std::fs::read_to_string(&state_path).expect("Should read");
+        let loaded: StateFile = serde_json::from_str(&loaded_json).expect("Should deserialize");
+        assert_eq!(loaded.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(loaded.nixos_generation, Some("test-gen".to_string()));
+
+        // Verify permissions on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::metadata(&state_path).expect("Should get metadata").permissions();
+            assert_eq!(perms.mode() & 0o777, 0o600);
+        }
+
+        // Test that save_with_root rejects paths outside the custom root
+        let outside_path = temp_dir.path().parent().unwrap().join("outside.json");
+        let result = state.save_with_root(&outside_path, mock_hidden_vol_root);
+        assert!(result.is_err());
+        match result {
+            Err(NailsError::InvalidState(msg)) => {
+                assert!(msg.contains("State file must be on hidden volume"));
+            }
+            _ => panic!("Expected InvalidState error"),
+        }
+    }
+
+    #[test]
+    fn test_load_io_error_returns_default() {
+        // Test load() handling of I/O errors beyond just missing file
+        // Create a directory with the same name as our target file (causes read error)
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let dir_as_file = temp_dir.path().join("state.json");
+        std::fs::create_dir(&dir_as_file).expect("Should create dir");
+
+        // Try to load directory as file (should fail gracefully)
+        let result = StateFile::load(&dir_as_file);
+        assert!(result.is_ok());
+
+        let state = result.unwrap();
+        assert_eq!(state.state, SystemState::Inactive);
+        assert_eq!(state.nixos_generation, None);
+    }
+
+    #[test]
+    fn test_persist_race_condition_handling() {
+        // Test that save_with_root handles race conditions properly
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol_root = temp_dir.path().to_str().unwrap();
+        let state_dir = temp_dir.path().join(".nails");
+        std::fs::create_dir_all(&state_dir).expect("Should create dirs");
+
+        let state_path = state_dir.join("state.json");
+
+        // Pre-create the target file to simulate race condition
+        std::fs::write(&state_path, "existing content").expect("Should write existing file");
+
+        let state = StateFile {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            state: SystemState::Active {
+                activated_at: Utc::now(),
+                overlays: vec![],
+            },
+            nixos_generation: None,
+            overlay_status: std::collections::HashMap::new(),
+            last_modified: Utc::now(),
+            checksum: None,
+        };
+
+        // save_with_root should handle the existing file (overwrite it)
+        state.save_with_root(&state_path, mock_hidden_vol_root)
+            .expect("Should overwrite existing file");
+
+        // Verify new content was written
+        let loaded_json = std::fs::read_to_string(&state_path).expect("Should read");
+        let loaded: StateFile = serde_json::from_str(&loaded_json).expect("Should deserialize");
+        assert_eq!(loaded.version, env!("CARGO_PKG_VERSION"));
+        assert!(loaded.state.is_active());
+        assert_ne!(loaded_json, "existing content");
     }
 }
