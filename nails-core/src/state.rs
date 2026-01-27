@@ -521,6 +521,35 @@ impl StateFile {
         self.save_with_root(path, HIDDEN_VOLUME_ROOT)
     }
 
+    /// Save state file with custom hidden volume root path
+    ///
+    /// This method allows specifying a custom hidden volume root path for validation.
+    /// Used by NailsManager to validate paths against the configured hidden volume root.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path where state file should be saved
+    /// * `hidden_volume_root` - Root path of hidden volume (e.g., from Config)
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use nails_core::StateFile;
+    /// use std::path::{Path, PathBuf};
+    ///
+    /// let state = StateFile::default();
+    /// let hidden_root = PathBuf::from("/mnt/custom-hidden");
+    /// let state_path = hidden_root.join(".nails/state.json");
+    /// state.save_with_custom_root(&state_path, &hidden_root)?;
+    /// # Ok::<(), nails_core::NailsError>(())
+    /// ```
+    pub fn save_with_custom_root(&self, path: &Path, hidden_volume_root: &Path) -> Result<()> {
+        self.save_with_root(
+            path,
+            hidden_volume_root.to_str().unwrap_or(HIDDEN_VOLUME_ROOT),
+        )
+    }
+
     /// Save state file with custom hidden volume root (for testing)
     ///
     /// This is an internal method used by tests to verify the atomic write
@@ -531,11 +560,11 @@ impl StateFile {
     fn save_with_root(&self, path: &Path, hidden_volume_root: &str) -> Result<()> {
         // 1. Validate path is on hidden volume (AR26)
         if !is_on_hidden_volume_internal(path, hidden_volume_root) {
-            return Err(NailsError::InvalidState(
-                format!("State file must be on hidden volume ({}), but attempted to write to: {}",
-                    hidden_volume_root,
-                    path.display())
-            ));
+            return Err(NailsError::InvalidState(format!(
+                "State file must be on hidden volume ({}), but attempted to write to: {}",
+                hidden_volume_root,
+                path.display()
+            )));
         }
 
         self.save_internal(path)
@@ -547,11 +576,11 @@ impl StateFile {
         // In production, always use HIDDEN_VOLUME_ROOT constant
         let _ = hidden_volume_root; // Suppress unused warning
         if !is_on_hidden_volume(path) {
-            return Err(NailsError::InvalidState(
-                format!("State file must be on hidden volume ({}), but attempted to write to: {}",
-                    HIDDEN_VOLUME_ROOT,
-                    path.display())
-            ));
+            return Err(NailsError::InvalidState(format!(
+                "State file must be on hidden volume ({}), but attempted to write to: {}",
+                HIDDEN_VOLUME_ROOT,
+                path.display()
+            )));
         }
 
         self.save_internal(path)
@@ -591,12 +620,18 @@ impl StateFile {
                 // If file exists, we have a race condition - try regular persist
                 if e.error.kind() == std::io::ErrorKind::AlreadyExists {
                     tracing::warn!("State file already exists during atomic write, overwriting");
-                    e.file
-                        .persist(path)
-                        .map_err(|e| std::io::Error::other(format!("Failed to persist after race condition: {}", e)))?;
+                    e.file.persist(path).map_err(|e| {
+                        std::io::Error::other(format!(
+                            "Failed to persist after race condition: {}",
+                            e
+                        ))
+                    })?;
                     Ok(())
                 } else {
-                    Err(std::io::Error::other(format!("Failed to persist state file: {}", e.error)).into())
+                    Err(
+                        std::io::Error::other(format!("Failed to persist state file: {}", e.error))
+                            .into(),
+                    )
                 }
             }
         }
@@ -1099,13 +1134,21 @@ mod tests {
     fn test_path_validation_with_non_canonical_paths() {
         // Test paths that need to be cleaned before checking
         // These test the non-canonical path logic (line 70-111)
-        assert!(!is_on_hidden_volume(Path::new("/mnt/hidden-volume/../etc/state.json")));
-        assert!(!is_on_hidden_volume(Path::new("/etc/../home/user/.nails/state.json")));
+        assert!(!is_on_hidden_volume(Path::new(
+            "/mnt/hidden-volume/../etc/state.json"
+        )));
+        assert!(!is_on_hidden_volume(Path::new(
+            "/etc/../home/user/.nails/state.json"
+        )));
         assert!(!is_on_hidden_volume(Path::new("/mnt/./other/state.json")));
 
         // Valid path with redundant components should still work
-        assert!(is_on_hidden_volume(Path::new("/mnt/hidden-volume/./subdir/state.json")));
-        assert!(is_on_hidden_volume(Path::new("/mnt/hidden-volume/subdir/../.nails/state.json")));
+        assert!(is_on_hidden_volume(Path::new(
+            "/mnt/hidden-volume/./subdir/state.json"
+        )));
+        assert!(is_on_hidden_volume(Path::new(
+            "/mnt/hidden-volume/subdir/../.nails/state.json"
+        )));
     }
 
     #[test]
@@ -1129,7 +1172,8 @@ mod tests {
         };
 
         // Use save_with_root to test actual atomic write logic
-        state.save_with_root(&state_path, mock_hidden_vol_root)
+        state
+            .save_with_root(&state_path, mock_hidden_vol_root)
             .expect("Should save with custom root");
 
         // Verify file exists and is readable
@@ -1143,7 +1187,9 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::metadata(&state_path).expect("Should get metadata").permissions();
+            let perms = std::fs::metadata(&state_path)
+                .expect("Should get metadata")
+                .permissions();
             assert_eq!(perms.mode() & 0o777, 0o600);
         }
 
@@ -1202,7 +1248,8 @@ mod tests {
         };
 
         // save_with_root should handle the existing file (overwrite it)
-        state.save_with_root(&state_path, mock_hidden_vol_root)
+        state
+            .save_with_root(&state_path, mock_hidden_vol_root)
             .expect("Should overwrite existing file");
 
         // Verify new content was written
