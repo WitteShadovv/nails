@@ -27,8 +27,10 @@ nix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 # Workspace testing dependencies
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+tempfile = { workspace = true }

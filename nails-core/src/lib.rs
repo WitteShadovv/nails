@@ -34,7 +34,7 @@ pub mod state;
 // Re-export for convenience
 pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
-pub use state::SystemState;
+pub use state::{HIDDEN_VOLUME_ROOT, OverlayInfo, StateFile, SystemState};
 
 #[cfg(test)]
 mod tests {
