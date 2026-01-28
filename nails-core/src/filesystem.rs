@@ -227,6 +227,48 @@ pub trait Filesystem: Send + Sync + Clone {
     ///
     /// Current profile name.
     fn nixos_get_current_profile(&self) -> Result<String>;
+
+    // ------------------------------------------------------------------------
+    // Process and File Reading Operations (for verify command)
+    // ------------------------------------------------------------------------
+
+    /// Check if any NAILS-related processes are currently running
+    ///
+    /// Scans process list to detect if nails binaries or commands are active.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(true)` if nails processes found, `Ok(false)` otherwise.
+    fn nails_process_running(&self) -> Result<bool>;
+
+    /// Read the contents of a text file
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the file to read
+    ///
+    /// # Returns
+    ///
+    /// File contents as a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if file cannot be read.
+    fn read_file_content(&self, path: &Path) -> Result<String>;
+
+    /// Check if a directory contains any files matching a pattern
+    ///
+    /// Recursively scans directory for files with names containing the pattern.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - Directory to scan
+    /// * `pattern` - Pattern to match in filenames
+    ///
+    /// # Returns
+    ///
+    /// List of matching file paths found.
+    fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>>;
 }
 
 // ============================================================================
@@ -288,6 +330,10 @@ pub struct MockFilesystem {
     current_profile: Arc<Mutex<Option<String>>>,
     mount_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Paths that should fail to mount
     unmount_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Paths that should fail to unmount
+    nails_process_running: Arc<Mutex<bool>>,         // Whether nails processes are running
+    file_contents: Arc<Mutex<HashMap<PathBuf, String>>>, // Mock file contents
+    #[allow(clippy::type_complexity)]
+    files_with_pattern: Arc<Mutex<HashMap<(PathBuf, String), Vec<PathBuf>>>>, // Mock pattern search results
 }
 
 impl MockFilesystem {
@@ -320,6 +366,9 @@ impl MockFilesystem {
             current_profile: Arc::new(Mutex::new(None)),
             mount_should_fail: Arc::new(Mutex::new(HashSet::new())),
             unmount_should_fail: Arc::new(Mutex::new(HashSet::new())),
+            nails_process_running: Arc::new(Mutex::new(false)),
+            file_contents: Arc::new(Mutex::new(HashMap::new())),
+            files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -494,6 +543,75 @@ impl MockFilesystem {
         } else {
             fail_set.remove(&PathBuf::from(path));
         }
+    }
+
+    /// Set whether nails processes are running
+    ///
+    /// # Arguments
+    ///
+    /// * `running` - If true, nails_process_running() will return true
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_nails_process_running(true);
+    /// assert!(fs.nails_process_running().unwrap());
+    /// ```
+    pub fn mock_set_nails_process_running(&self, running: bool) {
+        let mut is_running = self.nails_process_running.lock().unwrap();
+        *is_running = running;
+    }
+
+    /// Set mock file contents for reading
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - File path
+    /// * `content` - Content to return when read_file_content is called
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_file_content("/root/.bash_history", "nails activate\nls\n");
+    /// let content = fs.read_file_content(Path::new("/root/.bash_history")).unwrap();
+    /// assert!(content.contains("nails"));
+    /// ```
+    pub fn mock_set_file_content(&self, path: &str, content: &str) {
+        let mut contents = self.file_contents.lock().unwrap();
+        contents.insert(PathBuf::from(path), content.to_string());
+    }
+
+    /// Set mock results for pattern-based file searches
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - Directory that was searched
+    /// * `pattern` - Pattern that was searched for
+    /// * `files` - Files to return as search results
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::MockFilesystem;
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_files_with_pattern("/tmp", "nails", &[
+    ///     Path::new("/tmp/nails.log"),
+    ///     Path::new("/tmp/nails.toml"),
+    /// ]);
+    /// ```
+    pub fn mock_set_files_with_pattern(&self, dir: &str, pattern: &str, files: &[&Path]) {
+        let mut pattern_results = self.files_with_pattern.lock().unwrap();
+        let key = (PathBuf::from(dir), pattern.to_string());
+        pattern_results.insert(key, files.iter().map(|p| p.to_path_buf()).collect());
     }
 
     /// Get list of currently mounted paths
@@ -712,6 +830,30 @@ impl Filesystem for MockFilesystem {
             .as_ref()
             .map(|p| p.clone())
             .ok_or_else(|| NailsError::InvalidState("No NixOS profile is currently active".into()))
+    }
+
+    fn nails_process_running(&self) -> Result<bool> {
+        Ok(*self.nails_process_running.lock().unwrap())
+    }
+
+    fn read_file_content(&self, path: &Path) -> Result<String> {
+        self.file_contents
+            .lock()
+            .unwrap()
+            .get(path)
+            .cloned()
+            .ok_or_else(|| {
+                NailsError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("File not found in mock: {}", path.display()),
+                ))
+            })
+    }
+
+    fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
+        let pattern_results = self.files_with_pattern.lock().unwrap();
+        let key = (dir.to_path_buf(), pattern.to_string());
+        Ok(pattern_results.get(&key).cloned().unwrap_or_default())
     }
 }
 
@@ -975,6 +1117,84 @@ impl Filesystem for RealFilesystem {
             .read_link()
             .map(|target| target.to_string_lossy().to_string())
             .map_err(|_| NailsError::InvalidState("Could not determine current profile".into()))
+    }
+
+    fn nails_process_running(&self) -> Result<bool> {
+        // Scan /proc for nails-related processes
+        let proc_path = Path::new("/proc");
+
+        if !proc_path.exists() {
+            // Not on Linux or /proc not mounted
+            return Ok(false);
+        }
+
+        // Iterate through /proc/*/cmdline to find nails processes
+        if let Ok(entries) = std::fs::read_dir(proc_path) {
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                let pid_dir = entry_path.file_name().and_then(|n| n.to_str());
+
+                // Check if it's a numeric PID directory
+                if pid_dir.is_some_and(|p| p.chars().all(|c| c.is_ascii_digit())) {
+                    let cmdline_path = entry_path.join("cmdline");
+
+                    if let Ok(cmdline) = std::fs::read_to_string(&cmdline_path) {
+                        // Check if cmdline contains "nails"
+                        if cmdline.to_lowercase().contains("nails") {
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn read_file_content(&self, path: &Path) -> Result<String> {
+        std::fs::read_to_string(path).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to read file {}: {}", path.display(), e),
+            ))
+        })
+    }
+
+    fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
+        let mut matching_files = Vec::new();
+
+        if !dir.exists() || !dir.is_dir() {
+            return Ok(matching_files);
+        }
+
+        // Recursively walk the directory tree
+        let entries = std::fs::read_dir(dir).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to read directory {}: {}", dir.display(), e),
+            ))
+        })?;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+
+            if path.is_dir() {
+                // Recursively scan subdirectories
+                matching_files.extend(self.find_files_with_pattern(&path, pattern)?);
+            } else if path.is_file() {
+                // Check if filename contains the pattern
+                if let Some(filename) = path.file_name()
+                    && filename
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .contains(&pattern.to_lowercase())
+                {
+                    matching_files.push(path);
+                }
+            }
+        }
+
+        Ok(matching_files)
     }
 }
 

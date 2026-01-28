@@ -40,6 +40,9 @@ pub mod manager;
 // Pre-flight validation system
 pub mod preflight;
 
+// Forensic validation system
+pub mod verify;
+
 // Re-export for convenience
 pub use config::{Config, OverlayConfig};
 pub use error::{NailsError, Result};
@@ -54,6 +57,9 @@ pub use preflight::{
     CheckResult, HiddenStorageStructureCheck, HiddenVolumeCheck, OverlayDirectoriesCheck,
     OverlayDirs, PreFlightCheck, PreFlightRegistry, SpaceCheck, StateCheck, SwapCheck,
 };
+
+// Forensic validation exports
+pub use verify::{Finding, ScanDepth, Severity, Verifier, VerifyResult, VerifyStatus};
 
 /// RAII guard for automatic state rollback on failure
 ///

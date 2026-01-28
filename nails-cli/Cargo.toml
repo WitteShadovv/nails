@@ -23,6 +23,8 @@ path = "src/main.rs"
 [dependencies]
 # Workspace dependencies
 clap = { workspace = true, features = ["derive", "cargo"] }
+colored = { workspace = true }
+serde_json = { workspace = true }
 
 # Core library
 nails-core = { path = "../nails-core" }
