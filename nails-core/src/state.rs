@@ -1614,6 +1614,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
+            ..Config::default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(
@@ -2079,6 +2080,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
+            ..Config::default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(
@@ -2099,7 +2101,7 @@ mod tests {
 
         // Call activate() which will fail and trigger StateGuard rollback
         let manager_clone = Arc::clone(&manager);
-        let result = NailsManager::activate(manager_clone);
+        let result = NailsManager::activate(manager_clone, true);
 
         // Activation should fail due to mount error
         assert!(result.is_err(), "Activation should fail due to mount error");
@@ -2165,6 +2167,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
+            ..Config::default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(
@@ -2272,6 +2275,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
+            ..Config::default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(

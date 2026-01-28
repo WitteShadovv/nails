@@ -285,34 +285,28 @@ impl<F: Filesystem> PreFlightRegistry<F> {
     /// Even when Err is returned, all results are included in the error message.
     pub fn run_all(&self, fs: &F) -> Result<Vec<(String, CheckResult)>> {
         let mut results: Vec<(String, CheckResult)> = Vec::new();
-        let mut has_failure = false;
-        let mut failed_checks: Vec<String> = Vec::new();
+        let mut failed_checks: Vec<(String, String)> = Vec::new();
 
         for check in &self.checks {
             let name = check.name().to_string();
             match check.run(fs) {
                 Ok(result) => {
                     if result.is_fail() {
-                        has_failure = true;
-                        failed_checks.push(format!("{}: {}", name, result.message()));
+                        failed_checks.push((name.clone(), result.message().to_string()));
                     }
                     results.push((name, result));
                 }
                 Err(e) => {
                     // Convert execution error to Fail result
-                    has_failure = true;
                     let fail_msg = format!("Check execution error: {}", e);
-                    failed_checks.push(format!("{}: {}", name, fail_msg));
+                    failed_checks.push((name.clone(), fail_msg.clone()));
                     results.push((name, CheckResult::Fail(fail_msg)));
                 }
             }
         }
 
-        if has_failure {
-            Err(NailsError::PreFlightCheckFailed(format!(
-                "Pre-flight checks failed:\n  - {}",
-                failed_checks.join("\n  - ")
-            )))
+        if !failed_checks.is_empty() {
+            Err(NailsError::PreFlightCheckFailed(failed_checks))
         } else {
             Ok(results)
         }
@@ -1225,9 +1219,10 @@ mod tests {
         }
 
         fn run(&self, _fs: &F) -> Result<CheckResult> {
-            Err(NailsError::PreFlightCheckFailed(
+            Err(NailsError::PreFlightCheckFailed(vec![(
+                "error-check".to_string(),
                 "Simulated error".to_string(),
-            ))
+            )]))
         }
     }
 
@@ -1552,8 +1547,13 @@ mod tests {
 
         // Error should be converted to Fail
         let err = result.unwrap_err();
-        if let NailsError::PreFlightCheckFailed(msg) = err {
-            assert!(msg.contains("Check execution error"));
+        if let NailsError::PreFlightCheckFailed(failures) = err {
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].0, "error-check");
+            assert!(
+                failures[0].1.contains("Check execution error")
+                    || failures[0].1.contains("Simulated error")
+            );
         } else {
             panic!("Expected PreFlightCheckFailed error");
         }
@@ -1652,11 +1652,15 @@ mod tests {
         let result = registry.run_all(&fs);
         let err = result.unwrap_err();
 
-        if let NailsError::PreFlightCheckFailed(msg) = err {
-            // Should list both failures
-            assert!(msg.contains("failing-check"));
-            // Message format: "Pre-flight checks failed:\n  - ..."
-            assert!(msg.contains("Pre-flight checks failed"));
+        if let NailsError::PreFlightCheckFailed(failures) = err {
+            // Should have 2 failures (both FailingCheck instances)
+            assert_eq!(failures.len(), 2);
+            // Both should be from failing-check
+            assert_eq!(failures[0].0, "failing-check");
+            assert_eq!(failures[1].0, "failing-check");
+            // Both should contain the failure message
+            assert!(failures[0].1.contains("This check always fails"));
+            assert!(failures[1].1.contains("This check always fails"));
         } else {
             panic!("Expected PreFlightCheckFailed error");
         }

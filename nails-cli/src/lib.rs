@@ -26,9 +26,9 @@ pub mod cli {
     pub enum Commands {
         /// Activate the hidden NixOS environment (mount overlayfs + switch profiles)
         Activate {
-            /// Force activation even if preflight checks fail
-            #[arg(short, long)]
-            force: bool,
+            /// Skip pre-flight checks (DANGEROUS - expert use only)
+            #[arg(long)]
+            no_preflight: bool,
         },
         /// Deactivate and return to decoy state (unmount + cleanup)
         Deactivate {
@@ -53,9 +53,12 @@ pub mod cli {
     /// Execute the CLI command - extracted for testability
     pub fn execute_command(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
         match cli.command {
-            Commands::Activate { force } => {
-                println!("Activate: force={}", force);
-                // TODO: Call nails-core activation logic
+            Commands::Activate { no_preflight } => {
+                if no_preflight {
+                    eprintln!("⚠️  DANGER: Skipping pre-flight checks. Activation may fail.");
+                }
+                println!("Activate: no_preflight={}", no_preflight);
+                // TODO: Call nails-core activation logic with no_preflight parameter
                 Ok(())
             }
             Commands::Deactivate { fast } => {
@@ -82,19 +85,21 @@ mod tests {
     use super::cli::*;
 
     #[test]
-    fn test_execute_activate_command_without_force() {
+    fn test_execute_activate_command_without_no_preflight() {
         let cli = Cli {
             verbose: 0,
-            command: Commands::Activate { force: false },
+            command: Commands::Activate {
+                no_preflight: false,
+            },
         };
         assert!(execute_command(cli).is_ok());
     }
 
     #[test]
-    fn test_execute_activate_command_with_force() {
+    fn test_execute_activate_command_with_no_preflight() {
         let cli = Cli {
             verbose: 0,
-            command: Commands::Activate { force: true },
+            command: Commands::Activate { no_preflight: true },
         };
         assert!(execute_command(cli).is_ok());
     }

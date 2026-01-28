@@ -1,5 +1,17 @@
 use thiserror::Error;
 
+/// Format pre-flight check failures for display
+///
+/// Converts a list of (check_name, error_message) tuples into a formatted
+/// multi-line string for error output.
+fn format_preflight_errors(errors: &[(String, String)]) -> String {
+    errors
+        .iter()
+        .map(|(name, msg)| format!("  - [{}] {}", name, msg))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Comprehensive error types for NAILS operations
 ///
 /// All NAILS operations return Result<T, NailsError> for explicit error handling.
@@ -41,9 +53,20 @@ pub enum NailsError {
 
     /// Pre-flight validation check failed
     ///
-    /// Used when system validation fails before activation.
-    #[error("Pre-flight check failed: {0}")]
-    PreFlightCheckFailed(String),
+    /// Contains a list of (check_name, error_message) tuples for all failed checks.
+    /// This allows comprehensive reporting of multiple validation failures.
+    ///
+    /// # Example
+    /// ```
+    /// # use nails_core::NailsError;
+    /// let failures = vec![
+    ///     ("swap-check".to_string(), "Swap is enabled - disable before activation".to_string()),
+    ///     ("space-check".to_string(), "Insufficient disk space: 100 MB available, 500 MB required".to_string()),
+    /// ];
+    /// let err = NailsError::PreFlightCheckFailed(failures);
+    /// ```
+    #[error("Pre-flight checks failed:\n{}", format_preflight_errors(.0))]
+    PreFlightCheckFailed(Vec<(String, String)>),
 
     /// Configuration error (missing file, invalid format, etc.)
     #[error("Configuration error: {0}")]
@@ -143,11 +166,13 @@ mod tests {
             "NixOS operation failed: Profile switch failed"
         );
 
-        let err = NailsError::PreFlightCheckFailed("Hidden volume not mounted".into());
-        assert_eq!(
-            err.to_string(),
-            "Pre-flight check failed: Hidden volume not mounted"
-        );
+        let err = NailsError::PreFlightCheckFailed(vec![(
+            "hidden-volume".to_string(),
+            "Hidden volume not mounted".to_string(),
+        )]);
+        assert!(err.to_string().contains("Pre-flight checks failed"));
+        assert!(err.to_string().contains("hidden-volume"));
+        assert!(err.to_string().contains("Hidden volume not mounted"));
 
         let err = NailsError::ConfigError("Missing config key".into());
         assert_eq!(err.to_string(), "Configuration error: Missing config key");
@@ -201,7 +226,8 @@ mod tests {
         let _err2 = NailsError::InvalidState("test".into());
         let _err3 = NailsError::OverlayError("test".into());
         let _err4 = NailsError::NixOSError("test".into());
-        let _err5 = NailsError::PreFlightCheckFailed("test".into());
+        let _err5 =
+            NailsError::PreFlightCheckFailed(vec![("test-check".to_string(), "test".to_string())]);
         let _err6 = NailsError::ConfigError("test".into());
         let _err7 = NailsError::IoError(std::io::Error::other("test"));
 

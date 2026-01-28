@@ -38,17 +38,15 @@ fn test_help_flag() {
         ));
 }
 
-/// Test that activate command accepts --force flag
+/// Test that activate command accepts --no-preflight flag
 #[test]
 fn test_activate_command_force_flag() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["activate", "--help"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("--force"))
-        .stdout(predicates::str::contains(
-            "Force activation even if preflight checks fail",
-        ));
+        .stdout(predicates::str::contains("--no-preflight"))
+        .stdout(predicates::str::contains("Skip pre-flight checks"));
 }
 
 /// Test that deactivate command accepts --fast flag
@@ -138,17 +136,20 @@ fn test_activate_command_executes() {
     cmd.arg("activate")
         .assert()
         .success()
-        .stdout(predicates::str::contains("Activate: force=false"));
+        .stdout(predicates::str::contains("Activate: no_preflight=false"));
 }
 
-/// Test that activate command with --force flag executes successfully
+/// Test that activate command with --no-preflight flag executes successfully
 #[test]
 fn test_activate_command_executes_with_force() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--force"])
+    cmd.args(["activate", "--no-preflight"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("Activate: force=true"));
+        .stdout(predicates::str::contains("Activate: no_preflight=true"))
+        .stderr(predicates::str::contains(
+            "DANGER: Skipping pre-flight checks",
+        ));
 }
 
 /// Test that deactivate command executes successfully (stub implementation)

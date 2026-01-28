@@ -260,6 +260,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///     hidden_volume_root: mock_hidden_vol.to_path_buf(),
     ///     state_file_path: state_path.clone(),
     ///     overlays: vec![],
+    ///     ..Config::default()
     /// };
     /// let mut manager = NailsManager::new(fs, config, state_path);
     ///
@@ -313,6 +314,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///     hidden_volume_root: mock_hidden_vol.to_path_buf(),
     ///     state_file_path: state_path.clone(),
     ///     overlays: vec![],
+    ///     ..Config::default()
     /// };
     /// let mut manager = NailsManager::new(fs, config, state_path);
     ///
@@ -431,11 +433,124 @@ impl<F: Filesystem> NailsManager<F> {
         Ok(())
     }
 
+    /// Run all pre-flight checks before activation
+    ///
+    /// Creates a PreFlightRegistry, registers all validation checks, and executes them.
+    /// Returns comprehensive error information if any checks fail.
+    ///
+    /// # Pre-flight Checks Executed (Stories 3.1-3.7)
+    ///
+    /// 1. **HiddenVolumeCheck** - Validates hidden volume is mounted
+    /// 2. **HiddenStorageStructureCheck** - Validates directory structure exists
+    /// 3. **SwapCheck** - Validates swap is disabled
+    /// 4. **SpaceCheck** - Validates sufficient disk space
+    /// 5. **OverlayDirectoriesCheck** - Validates overlay directories exist
+    /// 6. **StateCheck** - Validates current state allows activation
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - All checks passed (or only warnings)
+    /// * `Err(NailsError::PreFlightCheckFailed)` - One or more checks failed
+    ///
+    /// # Example
+    ///
+    /// This is a private method called automatically during activation.
+    /// To run preflight checks, use `activate()`:
+    ///
+    /// ```rust,no_run
+    /// use nails_core::{NailsManager, MockFilesystem, Config};
+    /// use std::path::PathBuf;
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// let fs = MockFilesystem::new();
+    /// let config = Config::default();
+    /// let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+    /// let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    ///
+    /// // Activate with preflight checks (no_preflight = false)
+    /// let result = NailsManager::activate(manager, false);
+    /// ```
+    fn run_preflight_checks(&self) -> Result<()> {
+        use crate::preflight::{
+            HiddenStorageStructureCheck, HiddenVolumeCheck, OverlayDirectoriesCheck,
+            PreFlightRegistry, SpaceCheck, StateCheck, SwapCheck,
+        };
+
+        let mut registry = PreFlightRegistry::new();
+
+        // Register all checks (Stories 3.1-3.7)
+        registry.add_check(Box::new(HiddenVolumeCheck::new(
+            self.config.hidden_volume_root.clone(),
+        )));
+
+        registry.add_check(Box::new(HiddenStorageStructureCheck::new(
+            self.config.hidden_volume_root.clone(),
+        )));
+
+        registry.add_check(Box::new(SwapCheck));
+
+        registry.add_check(Box::new(SpaceCheck::new(
+            self.config.hidden_volume_root.clone(),
+            self.config.minimum_space_mb,
+        )));
+
+        registry.add_check(Box::new(OverlayDirectoriesCheck::new(
+            self.config
+                .overlays
+                .iter()
+                .map(|o| {
+                    crate::preflight::OverlayDirs::new(
+                        o.name.clone(),
+                        o.lower.clone(),
+                        o.upper.clone(),
+                        o.work.clone(),
+                    )
+                })
+                .collect(),
+        )));
+
+        registry.add_check(Box::new(StateCheck::new(self.current_state()?)));
+
+        // Run all checks
+        let results = registry.run_all(&self.filesystem)?;
+
+        // Collect failures and warnings
+        let mut warnings = Vec::new();
+
+        for (name, result) in results {
+            match result {
+                crate::preflight::CheckResult::Pass(msg) => {
+                    tracing::info!("[{}] {}", name, msg);
+                }
+                crate::preflight::CheckResult::Warn(msg) => {
+                    tracing::warn!("[{}] {}", name, msg);
+                    warnings.push((name, msg));
+                }
+                crate::preflight::CheckResult::Fail(_) => {
+                    // Failures are already handled by registry.run_all() returning Err
+                    // This branch shouldn't be reached, but we keep it for completeness
+                }
+            }
+        }
+
+        if warnings.is_empty() {
+            tracing::info!("All pre-flight checks passed");
+        } else {
+            tracing::info!(
+                "Pre-flight checks passed with {} warning{}",
+                warnings.len(),
+                if warnings.len() == 1 { "" } else { "s" }
+            );
+        }
+
+        Ok(())
+    }
+
     /// Activate NAILS with automatic RAII rollback on failure
     ///
-    /// Validates current state is Inactive, transitions through Activating,
-    /// mounts overlays, and transitions to Active. If any step fails or panic occurs,
-    /// StateGuard automatically rolls back to Inactive state via RAII.
+    /// Validates current state is Inactive, runs pre-flight checks (unless skipped),
+    /// transitions through Activating, mounts overlays, and transitions to Active.
+    /// If any step fails or panic occurs, StateGuard automatically rolls back to Inactive state via RAII.
     ///
     /// # RAII Rollback Pattern (FR50, NFR20, NFR24)
     ///
@@ -444,12 +559,19 @@ impl<F: Filesystem> NailsManager<F> {
     /// - On error return: `guard.drop()` restores previous state
     /// - On panic: Stack unwinding calls `guard.drop()`, restores state
     ///
+    /// # Pre-flight Validation (FR9, NFR29)
+    ///
+    /// By default, runs all pre-flight checks before activation.
+    /// Can be skipped with `no_preflight = true` (expert override, UXR21).
+    ///
     /// # Arguments
     ///
     /// * `manager_arc` - Shared reference to NailsManager wrapped in Arc<Mutex<>>
+    /// * `no_preflight` - Skip pre-flight checks (DANGEROUS - expert use only)
     ///
     /// # Errors
     ///
+    /// - `NailsError::PreFlightCheckFailed` - Pre-flight validation failed
     /// - `NailsError::InvalidStateTransition` - Current state is not Inactive
     /// - `NailsError::MountError` - Overlay mount failed (state rolled back)
     /// - `NailsError::StateFileError` - Cannot read/write state file
@@ -466,33 +588,43 @@ impl<F: Filesystem> NailsManager<F> {
     /// let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
     /// let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
     ///
-    /// // Activate overlays - StateGuard automatically rolls back on any failure
-    /// let result = NailsManager::activate(Arc::clone(&manager));
-    /// // Result depends on configuration - with no overlays, activation succeeds trivially
+    /// // Activate overlays with pre-flight checks
+    /// let result = NailsManager::activate(Arc::clone(&manager), false);
     /// ```
-    pub fn activate(manager_arc: Arc<Mutex<Self>>) -> Result<()> {
+    pub fn activate(manager_arc: Arc<Mutex<Self>>, no_preflight: bool) -> Result<()> {
         use crate::StateGuard;
 
-        // Step 1: Capture current state for StateGuard BEFORE any modifications
+        // Step 1: Run pre-flight checks (unless skipped)
+        if no_preflight {
+            tracing::warn!("DANGER: Skipping pre-flight checks. Activation may fail.");
+        } else {
+            // Run checks before creating StateGuard to avoid rollback overhead
+            let manager = manager_arc.lock().unwrap();
+            manager.run_preflight_checks()?;
+            // Drop lock before proceeding
+            drop(manager);
+        }
+
+        // Step 2: Capture current state for StateGuard BEFORE any modifications
         let previous_state = {
             let manager = manager_arc.lock().unwrap();
             manager.current_state()?
         };
 
-        // Step 2: Create StateGuard for automatic rollback on failure/panic
+        // Step 3: Create StateGuard for automatic rollback on failure/panic
         // If we don't call guard.commit(), drop() will rollback to previous_state
         let guard = StateGuard::new(Arc::clone(&manager_arc), previous_state.clone());
 
-        // Step 3: Validate transition is allowed
+        // Step 4: Validate transition is allowed
         let activating_state = previous_state.begin_activation()?;
 
-        // Step 4: Transition to Activating state
+        // Step 5: Transition to Activating state
         {
             let mut manager = manager_arc.lock().unwrap();
             manager.update_state(activating_state)?;
         }
 
-        // Step 5: Mount overlays - collect mounted paths for Active state
+        // Step 6: Mount overlays - collect mounted paths for Active state
         let mut mounted_overlays = Vec::new();
         let overlays = {
             let manager = manager_arc.lock().unwrap();
@@ -741,6 +873,7 @@ mod tests {
             hidden_volume_root: PathBuf::from("/mnt/test-hidden"),
             state_file_path: PathBuf::from("/mnt/test-hidden/.nails/state.json"),
             overlays: vec![],
+            ..Config::default()
         };
         let state_path = PathBuf::from("/mnt/test-hidden/.nails/state.json");
 
@@ -898,6 +1031,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
+            ..Config::default()
         };
         let mut manager = NailsManager::new(fs, config, state_path.clone());
 
@@ -930,6 +1064,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
+            ..Config::default()
         };
         let mut manager = NailsManager::new(fs, config, state_path.clone());
 
@@ -960,6 +1095,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
+            ..Config::default()
         };
         let mut manager = NailsManager::new(fs, config, state_path.clone());
 
@@ -993,6 +1129,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
+            ..Config::default()
         };
         let mut manager = NailsManager::new(fs, config, state_path.clone());
 
@@ -1136,12 +1273,13 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
+            ..Config::default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
 
         // Activate should succeed
-        let result = NailsManager::activate(Arc::clone(&manager));
+        let result = NailsManager::activate(Arc::clone(&manager), true);
         assert!(result.is_ok());
 
         // Final state should be Active
@@ -1165,6 +1303,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
+            ..Config::default()
         };
         let manager = Arc::new(Mutex::new(NailsManager::new(
             fs,
@@ -1187,7 +1326,7 @@ mod tests {
         *manager.lock().unwrap().cached_state.lock().unwrap() = None;
 
         // activate() should fail from Active state
-        let result = NailsManager::activate(Arc::clone(&manager));
+        let result = NailsManager::activate(Arc::clone(&manager), true);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), NailsError::InvalidState(_)));
     }
@@ -1224,13 +1363,14 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
+            ..Config::default()
         };
 
         let fs_clone = fs.clone();
         let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
 
         // Activate
-        NailsManager::activate(Arc::clone(&manager)).unwrap();
+        NailsManager::activate(Arc::clone(&manager), true).unwrap();
 
         // Verify mount was called
         assert!(fs_clone.is_mounted(Path::new("/home")).unwrap());
@@ -1273,6 +1413,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
+            ..Config::default()
         };
 
         let fs_clone = fs.clone();
@@ -1289,7 +1430,7 @@ mod tests {
         );
 
         // Activation should fail
-        let result = NailsManager::activate(Arc::clone(&manager));
+        let result = NailsManager::activate(Arc::clone(&manager), true);
         assert!(result.is_err());
 
         // Verify state was rolled back to Inactive (FR50)
@@ -1361,6 +1502,7 @@ mod tests {
                     target: PathBuf::from("/etc"),
                 },
             ],
+            ..Config::default()
         };
 
         let fs_clone = fs.clone();
@@ -1371,7 +1513,7 @@ mod tests {
         )));
 
         // Activation should fail at second overlay
-        let result = NailsManager::activate(Arc::clone(&manager));
+        let result = NailsManager::activate(Arc::clone(&manager), true);
         assert!(result.is_err());
 
         // Verify /home was mounted initially but then unmounted during rollback
@@ -1428,6 +1570,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
+            ..Config::default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(
@@ -1437,7 +1580,7 @@ mod tests {
         )));
 
         // Activation should fail
-        let result = NailsManager::activate(Arc::clone(&manager));
+        let result = NailsManager::activate(Arc::clone(&manager), true);
         assert!(result.is_err());
 
         // Verify state file was saved with Inactive state
@@ -1495,6 +1638,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
+            ..Config::default()
         };
 
         let fs_clone = fs.clone();
@@ -1607,6 +1751,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
+            ..Config::default()
         };
 
         let fs_clone = fs.clone();
@@ -1682,6 +1827,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
+            ..Config::default()
         };
         let manager = Arc::new(Mutex::new(NailsManager::new(
             fs,
@@ -1755,6 +1901,7 @@ mod tests {
                     target: PathBuf::from("/etc"),
                 },
             ],
+            ..Config::default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(
@@ -1816,5 +1963,405 @@ mod tests {
         // reverse filesystem operations that already succeeded. The state file still tracks both
         // overlays as part of the Active state, even if /home was unmounted.
         // This is a known limitation that could be enhanced in future iterations.
+    }
+
+    // ========== Task 5: Pre-flight Integration Tests ==========
+
+    #[test]
+    fn test_preflight_all_checks_pass_activation_proceeds() {
+        use crate::OverlayConfig;
+
+        // Create mock hidden volume structure
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Set up all paths for pre-flight checks to pass
+        fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+        fs.mock_set_mounted(mock_hidden_vol, true);
+
+        // Create expected directory structure
+        let overlays_dir = mock_hidden_vol.join("overlays");
+        let etc_dir = mock_hidden_vol.join("etc");
+        let home_dir = mock_hidden_vol.join("home");
+        let config_dir = mock_hidden_vol.join("config");
+        let nixos_dir = mock_hidden_vol.join("nixos");
+        let work_dir = mock_hidden_vol.join(".work");
+        let work_etc = work_dir.join("etc");
+        let work_home = work_dir.join("home");
+
+        std::fs::create_dir_all(&overlays_dir).unwrap();
+        std::fs::create_dir_all(&etc_dir).unwrap();
+        std::fs::create_dir_all(&home_dir).unwrap();
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::create_dir_all(&nixos_dir).unwrap();
+        std::fs::create_dir_all(&work_etc).unwrap();
+        std::fs::create_dir_all(&work_home).unwrap();
+
+        // Mock that MockFilesystem sees these directories
+        fs.mock_set_path_exists(etc_dir.to_str().unwrap(), true);
+        fs.mock_set_path_type(etc_dir.to_str().unwrap(), "directory");
+        fs.mock_set_path_exists(home_dir.to_str().unwrap(), true);
+        fs.mock_set_path_type(home_dir.to_str().unwrap(), "directory");
+        fs.mock_set_path_exists(config_dir.to_str().unwrap(), true);
+        fs.mock_set_path_type(config_dir.to_str().unwrap(), "directory");
+        fs.mock_set_path_exists(nixos_dir.to_str().unwrap(), true);
+        fs.mock_set_path_type(nixos_dir.to_str().unwrap(), "directory");
+        fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
+        fs.mock_set_path_type(work_etc.to_str().unwrap(), "directory");
+        fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+        fs.mock_set_path_type(work_home.to_str().unwrap(), "directory");
+
+        // Set up overlay directories
+        let upper_dir = overlays_dir.join("home").join("upper");
+        let work_dir_path = work_home.clone();
+        std::fs::create_dir_all(&upper_dir).unwrap();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_type("/", "directory");
+        fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+        fs.mock_set_path_type(upper_dir.to_str().unwrap(), "directory");
+        fs.mock_set_path_exists(work_dir_path.to_str().unwrap(), true);
+        fs.mock_set_path_type(work_dir_path.to_str().unwrap(), "directory");
+        fs.mock_set_readable(upper_dir.to_str().unwrap(), true);
+        fs.mock_set_writable(upper_dir.to_str().unwrap(), true);
+        fs.mock_set_writable(work_dir_path.to_str().unwrap(), true);
+
+        // Disable swap
+        fs.mock_set_swap_enabled(false);
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_dir.clone(),
+                work: work_dir_path.clone(),
+                target: PathBuf::from("/home"),
+            }],
+            ..Config::default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+
+        // Activate with pre-flight checks (no_preflight = false)
+        let result = NailsManager::activate(Arc::clone(&manager), false);
+        if let Err(ref e) = result {
+            eprintln!("Activation error: {:?}", e);
+        }
+        assert!(
+            result.is_ok(),
+            "Activation should succeed when all checks pass: {:?}",
+            result.err()
+        );
+
+        // Verify state is Active
+        assert!(matches!(
+            manager.lock().unwrap().current_state().unwrap(),
+            SystemState::Active { .. }
+        ));
+    }
+
+    #[test]
+    fn test_preflight_check_fails_activation_aborted() {
+        // Create mock hidden volume structure
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // DON'T mount hidden volume - this will cause HiddenVolumeCheck to fail
+        fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+        fs.mock_set_mounted(mock_hidden_vol, false); // NOT MOUNTED
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            ..Config::default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path,
+        )));
+
+        // Verify initial state is Inactive
+        assert_eq!(
+            manager.lock().unwrap().current_state().unwrap(),
+            SystemState::Inactive
+        );
+
+        // Activate with pre-flight checks (should fail)
+        let result = NailsManager::activate(Arc::clone(&manager), false);
+        assert!(result.is_err(), "Activation should fail when checks fail");
+
+        // Verify error is PreFlightCheckFailed
+        match result.unwrap_err() {
+            NailsError::PreFlightCheckFailed(failures) => {
+                assert!(!failures.is_empty());
+                // Should contain hidden-volume check failure
+                assert!(failures.iter().any(|(name, _)| name == "hidden-volume"));
+            }
+            _ => panic!("Expected PreFlightCheckFailed error"),
+        }
+
+        // Verify state remains Inactive (no state changes occurred)
+        assert_eq!(
+            manager.lock().unwrap().current_state().unwrap(),
+            SystemState::Inactive,
+            "State should remain Inactive after failed preflight"
+        );
+
+        // Verify no mounts occurred
+        assert!(
+            fs.get_mounted_paths().is_empty(),
+            "No mounts should exist after failed preflight"
+        );
+    }
+
+    #[test]
+    fn test_preflight_multiple_checks_fail_all_reported() {
+        // Create mock hidden volume structure
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Set up multiple failing conditions:
+        // 1. Hidden volume not mounted
+        fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+        fs.mock_set_mounted(mock_hidden_vol, false); // FAIL
+
+        // 2. Swap enabled
+        fs.mock_set_swap_enabled(true); // FAIL
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            ..Config::default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+
+        // Activate with pre-flight checks
+        let result = NailsManager::activate(Arc::clone(&manager), false);
+        assert!(result.is_err());
+
+        // Verify error contains BOTH failures
+        match result.unwrap_err() {
+            NailsError::PreFlightCheckFailed(failures) => {
+                assert!(
+                    failures.len() >= 2,
+                    "Should report at least 2 failures (hidden-volume and swap)"
+                );
+
+                let failure_names: Vec<&str> =
+                    failures.iter().map(|(name, _)| name.as_str()).collect();
+                assert!(
+                    failure_names.contains(&"hidden-volume"),
+                    "Should report hidden-volume failure"
+                );
+                assert!(
+                    failure_names.contains(&"swap"),
+                    "Should report swap failure"
+                );
+            }
+            _ => panic!("Expected PreFlightCheckFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_preflight_warnings_only_activation_proceeds() {
+        // Create mock hidden volume structure
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Set up minimal passing conditions (may trigger warnings but not failures)
+        fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+        fs.mock_set_mounted(mock_hidden_vol, true);
+
+        // Create minimal directory structure (all required dirs for HiddenStorageStructureCheck)
+        let overlays_dir = mock_hidden_vol.join("overlays");
+        let etc_dir = mock_hidden_vol.join("etc");
+        let home_dir = mock_hidden_vol.join("home");
+        let config_dir = mock_hidden_vol.join("config");
+        let nixos_dir = mock_hidden_vol.join("nixos");
+        let work_dir = mock_hidden_vol.join(".work");
+        let work_etc = work_dir.join("etc");
+        let work_home = work_dir.join("home");
+
+        std::fs::create_dir_all(&overlays_dir).unwrap();
+        std::fs::create_dir_all(&etc_dir).unwrap();
+        std::fs::create_dir_all(&home_dir).unwrap();
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::create_dir_all(&nixos_dir).unwrap();
+        std::fs::create_dir_all(&work_etc).unwrap();
+        std::fs::create_dir_all(&work_home).unwrap();
+
+        // Mock that MockFilesystem sees these directories
+        fs.mock_set_path_exists(etc_dir.to_str().unwrap(), true);
+        fs.mock_set_path_type(etc_dir.to_str().unwrap(), "directory");
+        fs.mock_set_path_exists(home_dir.to_str().unwrap(), true);
+        fs.mock_set_path_type(home_dir.to_str().unwrap(), "directory");
+        fs.mock_set_path_exists(config_dir.to_str().unwrap(), true);
+        fs.mock_set_path_type(config_dir.to_str().unwrap(), "directory");
+        fs.mock_set_path_exists(nixos_dir.to_str().unwrap(), true);
+        fs.mock_set_path_type(nixos_dir.to_str().unwrap(), "directory");
+        fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
+        fs.mock_set_path_type(work_etc.to_str().unwrap(), "directory");
+        fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+        fs.mock_set_path_type(work_home.to_str().unwrap(), "directory");
+
+        // Disable swap
+        fs.mock_set_swap_enabled(false);
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![], // No overlays to check
+            ..Config::default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+
+        // Activate with pre-flight checks
+        let result = NailsManager::activate(Arc::clone(&manager), false);
+        if let Err(ref e) = result {
+            eprintln!("Activation error: {:?}", e);
+        }
+
+        // Should succeed even if there are warnings (warnings don't block)
+        assert!(
+            result.is_ok(),
+            "Activation should proceed when only warnings exist: {:?}",
+            result.err()
+        );
+
+        // Verify state is Active
+        assert!(matches!(
+            manager.lock().unwrap().current_state().unwrap(),
+            SystemState::Active { .. }
+        ));
+    }
+
+    #[test]
+    fn test_preflight_skip_with_no_preflight_flag() {
+        // Create mock hidden volume structure
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Set up FAILING conditions (hidden volume not mounted)
+        fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+        fs.mock_set_mounted(mock_hidden_vol, false); // This WOULD fail preflight
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![], // No overlays to mount
+            ..Config::default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+
+        // Activate with no_preflight = true (skip checks)
+        let result = NailsManager::activate(Arc::clone(&manager), true);
+
+        // Should succeed even though checks would have failed
+        assert!(
+            result.is_ok(),
+            "Activation should succeed when preflight is skipped"
+        );
+
+        // Verify state is Active
+        assert!(matches!(
+            manager.lock().unwrap().current_state().unwrap(),
+            SystemState::Active { .. }
+        ));
+    }
+
+    #[test]
+    fn test_preflight_no_filesystem_changes_on_failure() {
+        use crate::OverlayConfig;
+
+        // Create mock hidden volume structure
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Set up failing condition
+        fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+        fs.mock_set_mounted(mock_hidden_vol, false); // Preflight will fail
+
+        // Set up overlay paths
+        let upper_dir = mock_hidden_vol.join("overlays/home/upper");
+        let work_dir_path = mock_hidden_vol.join(".work/home");
+        std::fs::create_dir_all(&upper_dir).unwrap();
+        std::fs::create_dir_all(&work_dir_path).unwrap();
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_dir.clone(),
+                work: work_dir_path.clone(),
+                target: PathBuf::from("/home"),
+            }],
+            ..Config::default()
+        };
+
+        let fs_clone = fs.clone();
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs,
+            config,
+            state_path.clone(),
+        )));
+
+        // Attempt activation (will fail at preflight)
+        let result = NailsManager::activate(Arc::clone(&manager), false);
+        assert!(result.is_err());
+
+        // Verify NO filesystem changes occurred:
+        // 1. State is still Inactive
+        assert_eq!(
+            manager.lock().unwrap().current_state().unwrap(),
+            SystemState::Inactive
+        );
+
+        // 2. No mounts exist
+        assert!(fs_clone.get_mounted_paths().is_empty());
+
+        // 3. State file was not modified (or still shows Inactive)
+        let loaded_state = StateFile::load(&state_path).unwrap();
+        assert_eq!(loaded_state.state, SystemState::Inactive);
     }
 }

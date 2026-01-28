@@ -97,6 +97,7 @@ impl Default for OverlayConfig {
 ///     hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
 ///     state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
 ///     overlays: vec![],
+///     ..Config::default()
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +110,9 @@ pub struct Config {
 
     /// Overlay configurations
     pub overlays: Vec<OverlayConfig>,
+
+    /// Minimum disk space required for activation (in MB)
+    pub minimum_space_mb: u64,
 }
 
 impl Default for Config {
@@ -120,6 +124,7 @@ impl Default for Config {
             hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
             state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
             overlays: vec![],
+            minimum_space_mb: 500, // Default minimum: 500 MB
         }
     }
 }
@@ -250,6 +255,7 @@ mod tests {
             hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
             state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
             overlays: vec![overlay.clone()],
+            ..Config::default()
         };
 
         assert_eq!(config.overlays.len(), 1);
@@ -262,6 +268,7 @@ mod tests {
             hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
             state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
             overlays: vec![],
+            ..Config::default()
         };
 
         let config2 = config1.clone();
@@ -280,6 +287,7 @@ mod tests {
                 work: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
                 target: PathBuf::from("/home"),
             }],
+            ..Config::default()
         };
 
         // Serialize to JSON
@@ -315,6 +323,7 @@ mod tests {
             hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
             state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
             overlays: vec![overlay1.clone(), overlay2.clone()],
+            ..Config::default()
         };
 
         assert_eq!(config.overlays.len(), 2);
