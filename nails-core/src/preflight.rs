@@ -827,6 +827,233 @@ impl<F: Filesystem> PreFlightCheck<F> for SpaceCheck {
 }
 
 // ============================================================================
+// OverlayDirectoriesCheck - Validates overlay directories exist and accessible
+// ============================================================================
+
+/// Configuration for a single overlay mount (lower, upper, work directories)
+///
+/// # OverlayFS Structure
+///
+/// OverlayFS requires three directory types:
+/// - **Lower**: Read-only base layer (e.g., /home, /etc)
+/// - **Upper**: Writable layer for changes (on hidden volume)
+/// - **Work**: OverlayFS internal working directory (on hidden volume)
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::preflight::OverlayDirs;
+/// use std::path::PathBuf;
+///
+/// let home_overlay = OverlayDirs::new(
+///     "home".to_string(),
+///     PathBuf::from("/home"),
+///     PathBuf::from("/mnt/hidden-volume/home"),
+///     PathBuf::from("/mnt/hidden-volume/.work/home"),
+/// );
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayDirs {
+    /// Name/identifier for this overlay (e.g., "home", "etc")
+    pub name: String,
+    /// Lower (read-only) directory - base layer
+    pub lower: PathBuf,
+    /// Upper (writable) directory - changes persist here
+    pub upper: PathBuf,
+    /// Work directory - OverlayFS metadata
+    pub work: PathBuf,
+}
+
+impl OverlayDirs {
+    /// Create a new OverlayDirs configuration
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Identifier for this overlay (e.g., "home", "etc")
+    /// * `lower` - Read-only base layer path
+    /// * `upper` - Writable overlay layer path
+    /// * `work` - OverlayFS work directory path
+    pub fn new(name: String, lower: PathBuf, upper: PathBuf, work: PathBuf) -> Self {
+        Self {
+            name,
+            lower,
+            upper,
+            work,
+        }
+    }
+}
+
+/// Pre-flight check that validates overlay directories exist and are accessible
+///
+/// This check validates that all configured overlay directories meet OverlayFS requirements:
+/// - **Lower directories** must exist and be readable
+/// - **Upper directories** must exist and be writable
+/// - **Work directories** must exist and be writable
+///
+/// # Default Configuration
+///
+/// Default configuration validates two overlays:
+/// - **/home**: User home directories
+/// - **/etc**: System configuration files
+///
+/// # Complete Error Reporting
+///
+/// This check validates ALL overlays and collects ALL errors before returning.
+/// This provides a comprehensive report rather than failing on the first issue.
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::preflight::{OverlayDirectoriesCheck, OverlayDirs, PreFlightCheck};
+/// use nails_core::filesystem::MockFilesystem;
+/// use std::path::PathBuf;
+///
+/// let fs = MockFilesystem::new();
+/// let overlays = vec![
+///     OverlayDirs::new(
+///         "home".to_string(),
+///         PathBuf::from("/home"),
+///         PathBuf::from("/mnt/hidden-volume/home"),
+///         PathBuf::from("/mnt/hidden-volume/.work/home"),
+///     ),
+/// ];
+///
+/// let check = OverlayDirectoriesCheck::new(overlays);
+///
+/// // Set up mock state
+/// fs.mock_set_path_exists("/home", true);
+/// fs.mock_set_readable("/home", true);
+/// fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+/// fs.mock_set_writable("/mnt/hidden-volume/home", true);
+/// fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+/// fs.mock_set_writable("/mnt/hidden-volume/.work/home", true);
+///
+/// let result = check.run(&fs).unwrap();
+/// assert!(result.is_pass());
+/// ```
+#[derive(Debug, Clone)]
+pub struct OverlayDirectoriesCheck {
+    overlays: Vec<OverlayDirs>,
+}
+
+impl OverlayDirectoriesCheck {
+    /// Create a new OverlayDirectoriesCheck with custom overlay configuration
+    ///
+    /// # Arguments
+    ///
+    /// * `overlays` - Vector of overlay directory configurations to validate
+    pub fn new(overlays: Vec<OverlayDirs>) -> Self {
+        Self { overlays }
+    }
+}
+
+impl Default for OverlayDirectoriesCheck {
+    /// Create check with default /home and /etc overlays
+    fn default() -> Self {
+        let default_overlays = vec![
+            OverlayDirs {
+                name: "home".into(),
+                lower: PathBuf::from("/home"),
+                upper: PathBuf::from("/mnt/hidden-volume/home"),
+                work: PathBuf::from("/mnt/hidden-volume/.work/home"),
+            },
+            OverlayDirs {
+                name: "etc".into(),
+                lower: PathBuf::from("/etc"),
+                upper: PathBuf::from("/mnt/hidden-volume/etc"),
+                work: PathBuf::from("/mnt/hidden-volume/.work/etc"),
+            },
+        ];
+        Self {
+            overlays: default_overlays,
+        }
+    }
+}
+
+impl<F: Filesystem> PreFlightCheck<F> for OverlayDirectoriesCheck {
+    fn name(&self) -> &'static str {
+        "overlay-directories"
+    }
+
+    fn description(&self) -> &'static str {
+        "Validates overlay directories (lower, upper, work) are accessible"
+    }
+
+    fn run(&self, fs: &F) -> Result<CheckResult> {
+        let mut errors = Vec::new();
+        let mut validated = Vec::new();
+
+        for overlay in &self.overlays {
+            let mut overlay_has_errors = false;
+
+            // Check lower (must exist and be readable)
+            if !fs.path_exists(&overlay.lower)? {
+                errors.push(format!(
+                    "{} lower directory not found at {}",
+                    overlay.name,
+                    overlay.lower.display()
+                ));
+                overlay_has_errors = true;
+            } else if !fs.is_readable(&overlay.lower)? {
+                errors.push(format!(
+                    "{} lower directory not readable at {}",
+                    overlay.name,
+                    overlay.lower.display()
+                ));
+                overlay_has_errors = true;
+            }
+
+            // Check upper (must exist and be writable)
+            if !fs.path_exists(&overlay.upper)? {
+                errors.push(format!(
+                    "{} upper directory not found at {}",
+                    overlay.name,
+                    overlay.upper.display()
+                ));
+                overlay_has_errors = true;
+            } else if !fs.is_writable(&overlay.upper)? {
+                errors.push(format!(
+                    "{} upper directory not writable at {}",
+                    overlay.name,
+                    overlay.upper.display()
+                ));
+                overlay_has_errors = true;
+            }
+
+            // Check work (must exist and be writable)
+            if !fs.path_exists(&overlay.work)? {
+                errors.push(format!(
+                    "{} work directory not found at {}",
+                    overlay.name,
+                    overlay.work.display()
+                ));
+                overlay_has_errors = true;
+            } else if !fs.is_writable(&overlay.work)? {
+                errors.push(format!(
+                    "{} work directory not writable at {}",
+                    overlay.name,
+                    overlay.work.display()
+                ));
+                overlay_has_errors = true;
+            }
+
+            if !overlay_has_errors {
+                validated.push(overlay.name.clone());
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(CheckResult::Pass(format!(
+                "All overlay directories accessible: {}",
+                validated.join(", ")
+            )))
+        } else {
+            Ok(CheckResult::Fail(errors.join("; ")))
+        }
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1949,5 +2176,463 @@ mod tests {
         let check = SpaceCheck::default();
         let debug = format!("{:?}", check);
         assert!(debug.contains("SpaceCheck"));
+    }
+
+    // ========================================================================
+    // OverlayDirectoriesCheck Tests (Story 3.6)
+    // ========================================================================
+
+    #[test]
+    fn test_overlay_dirs_new_constructor() {
+        // AC 1: OverlayDirs struct with new() constructor
+        let overlay = OverlayDirs::new(
+            "home".to_string(),
+            PathBuf::from("/home"),
+            PathBuf::from("/mnt/hidden-volume/home"),
+            PathBuf::from("/mnt/hidden-volume/.work/home"),
+        );
+
+        assert_eq!(overlay.name, "home");
+        assert_eq!(overlay.lower, PathBuf::from("/home"));
+        assert_eq!(overlay.upper, PathBuf::from("/mnt/hidden-volume/home"));
+        assert_eq!(overlay.work, PathBuf::from("/mnt/hidden-volume/.work/home"));
+    }
+
+    #[test]
+    fn test_overlay_dirs_struct_fields() {
+        // AC 1: OverlayDirs has correct fields
+        let overlay = OverlayDirs {
+            name: "test".to_string(),
+            lower: PathBuf::from("/test"),
+            upper: PathBuf::from("/upper"),
+            work: PathBuf::from("/work"),
+        };
+
+        assert_eq!(overlay.name, "test");
+        assert_eq!(overlay.lower, PathBuf::from("/test"));
+        assert_eq!(overlay.upper, PathBuf::from("/upper"));
+        assert_eq!(overlay.work, PathBuf::from("/work"));
+    }
+
+    #[test]
+    fn test_overlay_dirs_clone() {
+        // Verify OverlayDirs is Clone
+        let overlay = OverlayDirs::new(
+            "home".to_string(),
+            PathBuf::from("/home"),
+            PathBuf::from("/upper"),
+            PathBuf::from("/work"),
+        );
+        let cloned = overlay.clone();
+        assert_eq!(overlay, cloned);
+    }
+
+    #[test]
+    fn test_overlay_dirs_debug() {
+        // Verify OverlayDirs is Debug
+        let overlay = OverlayDirs::new(
+            "home".to_string(),
+            PathBuf::from("/home"),
+            PathBuf::from("/upper"),
+            PathBuf::from("/work"),
+        );
+        let debug = format!("{:?}", overlay);
+        assert!(debug.contains("OverlayDirs"));
+        assert!(debug.contains("home"));
+    }
+
+    #[test]
+    fn test_overlay_directories_check_new_constructor() {
+        // AC 1: OverlayDirectoriesCheck with new() constructor
+        let overlays = vec![OverlayDirs::new(
+            "home".to_string(),
+            PathBuf::from("/home"),
+            PathBuf::from("/upper"),
+            PathBuf::from("/work"),
+        )];
+
+        let check = OverlayDirectoriesCheck::new(overlays.clone());
+        assert_eq!(check.overlays, overlays);
+    }
+
+    #[test]
+    fn test_overlay_directories_check_default() {
+        // AC 1: OverlayDirectoriesCheck::default() has /home and /etc overlays
+        let check = OverlayDirectoriesCheck::default();
+
+        assert_eq!(check.overlays.len(), 2);
+        assert_eq!(check.overlays[0].name, "home");
+        assert_eq!(check.overlays[0].lower, PathBuf::from("/home"));
+        assert_eq!(
+            check.overlays[0].upper,
+            PathBuf::from("/mnt/hidden-volume/home")
+        );
+        assert_eq!(
+            check.overlays[0].work,
+            PathBuf::from("/mnt/hidden-volume/.work/home")
+        );
+
+        assert_eq!(check.overlays[1].name, "etc");
+        assert_eq!(check.overlays[1].lower, PathBuf::from("/etc"));
+        assert_eq!(
+            check.overlays[1].upper,
+            PathBuf::from("/mnt/hidden-volume/etc")
+        );
+        assert_eq!(
+            check.overlays[1].work,
+            PathBuf::from("/mnt/hidden-volume/.work/etc")
+        );
+    }
+
+    #[test]
+    fn test_overlay_directories_check_trait_metadata() {
+        // AC 1: OverlayDirectoriesCheck implements PreFlightCheck trait
+        // AC 2: name() returns "overlay-directories"
+        let check = OverlayDirectoriesCheck::default();
+
+        assert_eq!(
+            <OverlayDirectoriesCheck as PreFlightCheck<MockFilesystem>>::name(&check),
+            "overlay-directories"
+        );
+        assert_eq!(
+            <OverlayDirectoriesCheck as PreFlightCheck<MockFilesystem>>::description(&check),
+            "Validates overlay directories (lower, upper, work) are accessible"
+        );
+    }
+
+    #[test]
+    fn test_overlay_directories_check_all_accessible_pass() {
+        // AC 3: Given all overlay directories exist and accessible, Then Pass
+        let fs = MockFilesystem::new();
+        let overlays = vec![
+            OverlayDirs::new(
+                "home".to_string(),
+                PathBuf::from("/home"),
+                PathBuf::from("/mnt/hidden-volume/home"),
+                PathBuf::from("/mnt/hidden-volume/.work/home"),
+            ),
+            OverlayDirs::new(
+                "etc".to_string(),
+                PathBuf::from("/etc"),
+                PathBuf::from("/mnt/hidden-volume/etc"),
+                PathBuf::from("/mnt/hidden-volume/.work/etc"),
+            ),
+        ];
+
+        let check = OverlayDirectoriesCheck::new(overlays);
+
+        // Set up /home overlay
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_readable("/home", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+        fs.mock_set_writable("/mnt/hidden-volume/home", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+        fs.mock_set_writable("/mnt/hidden-volume/.work/home", true);
+
+        // Set up /etc overlay
+        fs.mock_set_path_exists("/etc", true);
+        fs.mock_set_readable("/etc", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
+        fs.mock_set_writable("/mnt/hidden-volume/etc", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/etc", true);
+        fs.mock_set_writable("/mnt/hidden-volume/.work/etc", true);
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_pass());
+        assert!(
+            result
+                .message()
+                .contains("All overlay directories accessible")
+        );
+        assert!(result.message().contains("home"));
+        assert!(result.message().contains("etc"));
+    }
+
+    #[test]
+    fn test_overlay_directories_check_lower_missing_fail() {
+        // AC 4: Given /home lower directory is missing, Then Fail
+        let fs = MockFilesystem::new();
+        let overlays = vec![OverlayDirs::new(
+            "home".to_string(),
+            PathBuf::from("/home"),
+            PathBuf::from("/mnt/hidden-volume/home"),
+            PathBuf::from("/mnt/hidden-volume/.work/home"),
+        )];
+
+        let check = OverlayDirectoriesCheck::new(overlays);
+
+        // Lower directory does not exist
+        fs.mock_set_path_exists("/home", false);
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+        fs.mock_set_writable("/mnt/hidden-volume/home", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+        fs.mock_set_writable("/mnt/hidden-volume/.work/home", true);
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail());
+        assert!(result.message().contains("home lower directory not found"));
+        assert!(result.message().contains("/home"));
+    }
+
+    #[test]
+    fn test_overlay_directories_check_lower_not_readable_fail() {
+        // AC 2, 4: Given lower directory not readable, Then Fail
+        let fs = MockFilesystem::new();
+        let overlays = vec![OverlayDirs::new(
+            "home".to_string(),
+            PathBuf::from("/home"),
+            PathBuf::from("/mnt/hidden-volume/home"),
+            PathBuf::from("/mnt/hidden-volume/.work/home"),
+        )];
+
+        let check = OverlayDirectoriesCheck::new(overlays);
+
+        // Lower exists but not readable
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_readable("/home", false);
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+        fs.mock_set_writable("/mnt/hidden-volume/home", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+        fs.mock_set_writable("/mnt/hidden-volume/.work/home", true);
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail());
+        assert!(
+            result
+                .message()
+                .contains("home lower directory not readable")
+        );
+        assert!(result.message().contains("/home"));
+    }
+
+    #[test]
+    fn test_overlay_directories_check_upper_missing_fail() {
+        // AC 2: Given upper directory missing, Then Fail
+        let fs = MockFilesystem::new();
+        let overlays = vec![OverlayDirs::new(
+            "home".to_string(),
+            PathBuf::from("/home"),
+            PathBuf::from("/mnt/hidden-volume/home"),
+            PathBuf::from("/mnt/hidden-volume/.work/home"),
+        )];
+
+        let check = OverlayDirectoriesCheck::new(overlays);
+
+        // Upper directory does not exist
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_readable("/home", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", false);
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+        fs.mock_set_writable("/mnt/hidden-volume/.work/home", true);
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail());
+        assert!(result.message().contains("home upper directory not found"));
+        assert!(result.message().contains("/mnt/hidden-volume/home"));
+    }
+
+    #[test]
+    fn test_overlay_directories_check_upper_not_writable_fail() {
+        // AC 5: Given /etc upper directory is not writable, Then Fail
+        let fs = MockFilesystem::new();
+        let overlays = vec![OverlayDirs::new(
+            "etc".to_string(),
+            PathBuf::from("/etc"),
+            PathBuf::from("/mnt/hidden-volume/etc"),
+            PathBuf::from("/mnt/hidden-volume/.work/etc"),
+        )];
+
+        let check = OverlayDirectoriesCheck::new(overlays);
+
+        // Upper exists but not writable
+        fs.mock_set_path_exists("/etc", true);
+        fs.mock_set_readable("/etc", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
+        fs.mock_set_writable("/mnt/hidden-volume/etc", false);
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/etc", true);
+        fs.mock_set_writable("/mnt/hidden-volume/.work/etc", true);
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail());
+        assert!(
+            result
+                .message()
+                .contains("etc upper directory not writable")
+        );
+        assert!(result.message().contains("/mnt/hidden-volume/etc"));
+    }
+
+    #[test]
+    fn test_overlay_directories_check_work_missing_fail() {
+        // AC 2: Given work directory missing, Then Fail
+        let fs = MockFilesystem::new();
+        let overlays = vec![OverlayDirs::new(
+            "home".to_string(),
+            PathBuf::from("/home"),
+            PathBuf::from("/mnt/hidden-volume/home"),
+            PathBuf::from("/mnt/hidden-volume/.work/home"),
+        )];
+
+        let check = OverlayDirectoriesCheck::new(overlays);
+
+        // Work directory does not exist
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_readable("/home", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+        fs.mock_set_writable("/mnt/hidden-volume/home", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", false);
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail());
+        assert!(result.message().contains("home work directory not found"));
+        assert!(result.message().contains("/mnt/hidden-volume/.work/home"));
+    }
+
+    #[test]
+    fn test_overlay_directories_check_work_not_writable_fail() {
+        // AC 2: Given work directory not writable, Then Fail
+        let fs = MockFilesystem::new();
+        let overlays = vec![OverlayDirs::new(
+            "home".to_string(),
+            PathBuf::from("/home"),
+            PathBuf::from("/mnt/hidden-volume/home"),
+            PathBuf::from("/mnt/hidden-volume/.work/home"),
+        )];
+
+        let check = OverlayDirectoriesCheck::new(overlays);
+
+        // Work exists but not writable
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_readable("/home", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+        fs.mock_set_writable("/mnt/hidden-volume/home", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+        fs.mock_set_writable("/mnt/hidden-volume/.work/home", false);
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail());
+        assert!(
+            result
+                .message()
+                .contains("home work directory not writable")
+        );
+        assert!(result.message().contains("/mnt/hidden-volume/.work/home"));
+    }
+
+    #[test]
+    fn test_overlay_directories_check_multiple_overlays_one_fails() {
+        // AC 2: Multiple overlays, one fails -> Fail with specific overlay
+        let fs = MockFilesystem::new();
+        let overlays = vec![
+            OverlayDirs::new(
+                "home".to_string(),
+                PathBuf::from("/home"),
+                PathBuf::from("/mnt/hidden-volume/home"),
+                PathBuf::from("/mnt/hidden-volume/.work/home"),
+            ),
+            OverlayDirs::new(
+                "etc".to_string(),
+                PathBuf::from("/etc"),
+                PathBuf::from("/mnt/hidden-volume/etc"),
+                PathBuf::from("/mnt/hidden-volume/.work/etc"),
+            ),
+        ];
+
+        let check = OverlayDirectoriesCheck::new(overlays);
+
+        // Set up /home overlay correctly
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_readable("/home", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", true);
+        fs.mock_set_writable("/mnt/hidden-volume/home", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", true);
+        fs.mock_set_writable("/mnt/hidden-volume/.work/home", true);
+
+        // Set up /etc overlay with failure (upper not writable)
+        fs.mock_set_path_exists("/etc", true);
+        fs.mock_set_readable("/etc", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
+        fs.mock_set_writable("/mnt/hidden-volume/etc", false);
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/etc", true);
+        fs.mock_set_writable("/mnt/hidden-volume/.work/etc", true);
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail());
+        assert!(
+            result
+                .message()
+                .contains("etc upper directory not writable")
+        );
+        // Should NOT mention home since it passed
+        assert!(!result.message().contains("home"));
+    }
+
+    #[test]
+    fn test_overlay_directories_check_custom_overlay_configuration() {
+        // AC 6: Custom overlay configuration works
+        let fs = MockFilesystem::new();
+        let overlays = vec![OverlayDirs::new(
+            "custom".to_string(),
+            PathBuf::from("/custom/lower"),
+            PathBuf::from("/custom/upper"),
+            PathBuf::from("/custom/work"),
+        )];
+
+        let check = OverlayDirectoriesCheck::new(overlays);
+
+        // Set up custom paths
+        fs.mock_set_path_exists("/custom/lower", true);
+        fs.mock_set_readable("/custom/lower", true);
+        fs.mock_set_path_exists("/custom/upper", true);
+        fs.mock_set_writable("/custom/upper", true);
+        fs.mock_set_path_exists("/custom/work", true);
+        fs.mock_set_writable("/custom/work", true);
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_pass());
+        assert!(result.message().contains("custom"));
+    }
+
+    #[test]
+    fn test_overlay_directories_check_collect_all_errors() {
+        // AC 2: Collect ALL errors before returning (comprehensive report)
+        let fs = MockFilesystem::new();
+        let overlays = vec![OverlayDirs::new(
+            "home".to_string(),
+            PathBuf::from("/home"),
+            PathBuf::from("/mnt/hidden-volume/home"),
+            PathBuf::from("/mnt/hidden-volume/.work/home"),
+        )];
+
+        let check = OverlayDirectoriesCheck::new(overlays);
+
+        // Set up multiple failures
+        fs.mock_set_path_exists("/home", false); // Lower missing
+        fs.mock_set_path_exists("/mnt/hidden-volume/home", false); // Upper missing
+        fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", false); // Work missing
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail());
+
+        // Should contain ALL three error messages
+        assert!(result.message().contains("lower directory not found"));
+        assert!(result.message().contains("upper directory not found"));
+        assert!(result.message().contains("work directory not found"));
+    }
+
+    #[test]
+    fn test_overlay_directories_check_clone() {
+        // Verify OverlayDirectoriesCheck is Clone
+        let check = OverlayDirectoriesCheck::default();
+        let cloned = check.clone();
+        assert_eq!(check.overlays, cloned.overlays);
+    }
+
+    #[test]
+    fn test_overlay_directories_check_debug() {
+        // Verify OverlayDirectoriesCheck is Debug
+        let check = OverlayDirectoriesCheck::default();
+        let debug = format!("{:?}", check);
+        assert!(debug.contains("OverlayDirectoriesCheck"));
     }
 }
