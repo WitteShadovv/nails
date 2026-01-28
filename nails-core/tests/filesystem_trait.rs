@@ -45,6 +45,11 @@ fn test_mount_overlay_fails_if_target_already_mounted() {
     let fs = MockFilesystem::new();
     let target = Path::new("/home");
 
+    // Set up paths to exist (required for precondition checks)
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists("/mnt/hidden/upper", true);
+    fs.mock_set_path_exists("/mnt/hidden/work", true);
+
     fs.mock_set_mounted(target, true);
 
     // WHEN: Attempting to mount overlay on same target

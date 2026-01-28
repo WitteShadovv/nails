@@ -42,6 +42,51 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 // ============================================================================
+// Mount Metadata Tracking
+// ============================================================================
+
+/// Mount metadata for tracking overlay mount operations
+///
+/// Used by MockFilesystem to track which overlays are mounted and when.
+/// This enables comprehensive testing of mount/unmount sequences.
+///
+/// # Fields
+///
+/// * `lower` - Read-only base layer path
+/// * `upper` - Writeable upper layer path
+/// * `work` - Work directory path for overlay metadata
+/// * `target` - Mount point where overlay appears
+/// * `mounted_at` - Timestamp when mount occurred (UTC)
+///
+/// # Dependencies
+///
+/// Requires `chrono` crate for timestamp functionality.
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::filesystem::MountInfo;
+/// use std::path::PathBuf;
+/// use chrono::Utc;
+///
+/// let info = MountInfo {
+///     lower: PathBuf::from("/"),
+///     upper: PathBuf::from("/mnt/hidden/upper"),
+///     work: PathBuf::from("/mnt/hidden/work"),
+///     target: PathBuf::from("/home"),
+///     mounted_at: Utc::now(),
+/// };
+/// ```
+#[derive(Debug, Clone)]
+pub struct MountInfo {
+    pub lower: PathBuf,
+    pub upper: PathBuf,
+    pub work: PathBuf,
+    pub target: PathBuf,
+    pub mounted_at: chrono::DateTime<chrono::Utc>,
+}
+
+// ============================================================================
 // Core Filesystem Trait
 // ============================================================================
 
@@ -272,6 +317,133 @@ pub trait Filesystem: Send + Sync + Clone {
 }
 
 // ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Verify all preconditions are met before mounting an overlay
+///
+/// This helper validates that all required directories exist and the target
+/// is not already mounted. It provides specific error messages for each
+/// failure condition to aid diagnostics.
+///
+/// # Arguments
+///
+/// * `fs` - Filesystem trait object to use for checks
+/// * `lower` - Lower directory path (must exist)
+/// * `upper` - Upper directory path (must exist or be creatable)
+/// * `work` - Work directory path (must exist or be creatable)
+/// * `target` - Target mount point (must not be already mounted)
+///
+/// # "Creatable" Definition
+///
+/// A directory is considered "creatable" if its parent directory exists
+/// and is writable. This check does NOT attempt to create the directory,
+/// but validates that creation would succeed if attempted.
+///
+/// # Returns
+///
+/// `Ok(())` if all preconditions pass, otherwise returns specific error.
+///
+/// # Errors
+///
+/// * `NailsError::OverlayError` - If lower, upper, or work directories don't exist
+/// * `NailsError::AlreadyMounted` - If target is already mounted
+/// * `NailsError::PermissionDenied` - If upper/work directories aren't creatable (parent not writable)
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::filesystem::{verify_mount_preconditions, MockFilesystem};
+/// use std::path::Path;
+///
+/// let fs = MockFilesystem::new();
+/// fs.mock_set_path_exists("/", true);
+/// fs.mock_set_path_exists("/mnt/hidden/upper", true);
+/// fs.mock_set_path_exists("/mnt/hidden/work", true);
+///
+/// let result = verify_mount_preconditions(
+///     &fs,
+///     Path::new("/"),
+///     Path::new("/mnt/hidden/upper"),
+///     Path::new("/mnt/hidden/work"),
+///     Path::new("/home")
+/// );
+/// assert!(result.is_ok());
+/// ```
+pub fn verify_mount_preconditions<F: Filesystem>(
+    fs: &F,
+    lower: &Path,
+    upper: &Path,
+    work: &Path,
+    target: &Path,
+) -> Result<()> {
+    // Check lower directory exists
+    if !fs.path_exists(lower)? {
+        return Err(NailsError::OverlayError(format!(
+            "Lower directory not found: {}",
+            lower.display()
+        )));
+    }
+
+    // Check upper directory exists or can be created
+    if !fs.path_exists(upper)? {
+        // Check if parent directory exists and is writable (can create upper)
+        if let Some(parent) = upper.parent() {
+            if !fs.path_exists(parent)? {
+                return Err(NailsError::OverlayError(format!(
+                    "Upper directory not found and parent doesn't exist: {}",
+                    upper.display()
+                )));
+            }
+            if !fs.is_writable(parent)? {
+                return Err(NailsError::PermissionDenied(format!(
+                    "Upper directory not found and parent not writable: {}",
+                    upper.display()
+                )));
+            }
+        } else {
+            return Err(NailsError::OverlayError(format!(
+                "Upper directory not found: {}",
+                upper.display()
+            )));
+        }
+    }
+
+    // Check work directory exists or can be created
+    if !fs.path_exists(work)? {
+        // Check if parent directory exists and is writable (can create work)
+        if let Some(parent) = work.parent() {
+            if !fs.path_exists(parent)? {
+                return Err(NailsError::OverlayError(format!(
+                    "Work directory not found and parent doesn't exist: {}",
+                    work.display()
+                )));
+            }
+            if !fs.is_writable(parent)? {
+                return Err(NailsError::PermissionDenied(format!(
+                    "Work directory not found and parent not writable: {}",
+                    work.display()
+                )));
+            }
+        } else {
+            return Err(NailsError::OverlayError(format!(
+                "Work directory not found: {}",
+                work.display()
+            )));
+        }
+    }
+
+    // Check target not already mounted
+    if fs.is_mounted(target)? {
+        return Err(NailsError::AlreadyMounted {
+            path: target.to_path_buf(),
+        });
+    }
+
+    Ok(())
+}
+
+// ============================================================================
 // MockFilesystem - In-Memory Testing Implementation
 // ============================================================================
 
@@ -334,6 +506,7 @@ pub struct MockFilesystem {
     file_contents: Arc<Mutex<HashMap<PathBuf, String>>>, // Mock file contents
     #[allow(clippy::type_complexity)]
     files_with_pattern: Arc<Mutex<HashMap<(PathBuf, String), Vec<PathBuf>>>>, // Mock pattern search results
+    mounted_overlays: Arc<Mutex<HashMap<PathBuf, MountInfo>>>, // Track overlay mount metadata
 }
 
 impl MockFilesystem {
@@ -369,6 +542,7 @@ impl MockFilesystem {
             nails_process_running: Arc::new(Mutex::new(false)),
             file_contents: Arc::new(Mutex::new(HashMap::new())),
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
+            mounted_overlays: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -396,6 +570,7 @@ impl MockFilesystem {
         self.current_profile.lock().unwrap().take();
         self.mount_should_fail.lock().unwrap().clear();
         self.unmount_should_fail.lock().unwrap().clear();
+        self.mounted_overlays.lock().unwrap().clear();
     }
 
     // ========================================================================
@@ -620,6 +795,81 @@ impl MockFilesystem {
     pub fn get_mounted_paths(&self) -> Vec<PathBuf> {
         self.mounted.lock().unwrap().iter().cloned().collect()
     }
+
+    /// Get mount info for a specific overlay
+    ///
+    /// Returns None if the target is not currently mounted as an overlay.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/", true);
+    /// fs.mock_set_path_exists("/mnt/hidden/upper", true);
+    /// fs.mock_set_path_exists("/mnt/hidden/work", true);
+    ///
+    /// fs.mount_overlay(
+    ///     Path::new("/"),
+    ///     Path::new("/mnt/hidden/upper"),
+    ///     Path::new("/mnt/hidden/work"),
+    ///     Path::new("/home")
+    /// ).unwrap();
+    ///
+    /// let info = fs.mock_get_mount_info(Path::new("/home")).unwrap();
+    /// assert_eq!(info.lower, Path::new("/"));
+    /// assert_eq!(info.upper, Path::new("/mnt/hidden/upper"));
+    /// ```
+    pub fn mock_get_mount_info(&self, target: &Path) -> Option<MountInfo> {
+        self.mounted_overlays.lock().unwrap().get(target).cloned()
+    }
+
+    /// Set whether a directory can be created (parent exists and is writable)
+    ///
+    /// Helper for testing directory creation scenarios in verify_mount_preconditions().
+    /// This sets up the parent directory to exist and be writable, allowing the test
+    /// to verify that a directory can be created when it doesn't exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Directory path that should be creatable
+    /// * `creatable` - If true, parent exists and is writable; if false, parent not writable
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{verify_mount_preconditions, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/", true);
+    ///
+    /// // Set parent directory writable, upper doesn't exist but can be created
+    /// fs.mock_set_directory_creatable("/mnt/hidden/upper", true);
+    /// fs.mock_set_directory_creatable("/mnt/hidden/work", true);
+    ///
+    /// let result = verify_mount_preconditions(
+    ///     &fs,
+    ///     Path::new("/"),
+    ///     Path::new("/mnt/hidden/upper"),
+    ///     Path::new("/mnt/hidden/work"),
+    ///     Path::new("/home")
+    /// );
+    /// assert!(result.is_ok());
+    /// ```
+    pub fn mock_set_directory_creatable(&self, path: &str, creatable: bool) {
+        let path_buf = PathBuf::from(path);
+        if let Some(parent) = path_buf.parent() {
+            // Set parent to exist and be writable (or not writable)
+            let mut paths = self.paths.lock().unwrap();
+            let parent_entry = paths.entry(parent.to_path_buf()).or_default();
+            parent_entry.exists = true;
+            parent_entry.is_directory = true;
+            parent_entry.is_writable = creatable;
+        }
+    }
 }
 
 impl Default for MockFilesystem {
@@ -640,43 +890,25 @@ impl Filesystem for MockFilesystem {
         }
         drop(fail_set);
 
-        // Check if target already mounted
-        let mounts = self.mounted.lock().unwrap();
-        if mounts.contains(target) {
-            return Err(NailsError::AlreadyMounted {
-                path: target.to_path_buf(),
-            });
-        }
-        drop(mounts);
+        // Verify all preconditions using the helper function
+        verify_mount_preconditions(self, lower, upper, work, target)?;
 
-        // Validate lower path exists
-        let paths = self.paths.lock().unwrap();
-        if !paths.get(lower).map(|info| info.exists).unwrap_or(false) {
-            return Err(NailsError::OverlayError(format!(
-                "Lower path does not exist: {}",
-                lower.display()
-            )));
-        }
+        // Create mount info with timestamp
+        let mount_info = MountInfo {
+            lower: lower.to_path_buf(),
+            upper: upper.to_path_buf(),
+            work: work.to_path_buf(),
+            target: target.to_path_buf(),
+            mounted_at: chrono::Utc::now(),
+        };
 
-        // Validate upper path exists
-        if !paths.get(upper).map(|info| info.exists).unwrap_or(false) {
-            return Err(NailsError::OverlayError(format!(
-                "Upper path does not exist: {}",
-                upper.display()
-            )));
-        }
-
-        // Validate work path exists
-        if !paths.get(work).map(|info| info.exists).unwrap_or(false) {
-            return Err(NailsError::OverlayError(format!(
-                "Work path does not exist: {}",
-                work.display()
-            )));
-        }
-        drop(paths);
-
-        // Add to mounted set
+        // Add to mounted set and track mount info
         self.mounted.lock().unwrap().insert(target.to_path_buf());
+        self.mounted_overlays
+            .lock()
+            .unwrap()
+            .insert(target.to_path_buf(), mount_info);
+
         Ok(())
     }
 
@@ -708,8 +940,11 @@ impl Filesystem for MockFilesystem {
         }
         drop(busy);
 
-        // Remove from mounted set
+        // Remove from mounted set and overlays tracking
         mounts.remove(target);
+        drop(mounts);
+        self.mounted_overlays.lock().unwrap().remove(target);
+
         Ok(())
     }
 
@@ -885,32 +1120,8 @@ impl Default for RealFilesystem {
 
 impl Filesystem for RealFilesystem {
     fn mount_overlay(&self, lower: &Path, upper: &Path, work: &Path, target: &Path) -> Result<()> {
-        // Check if already mounted
-        if self.is_mounted(target)? {
-            return Err(NailsError::AlreadyMounted {
-                path: target.to_path_buf(),
-            });
-        }
-
-        // Validate paths exist
-        if !lower.exists() {
-            return Err(NailsError::OverlayError(format!(
-                "Lower path does not exist: {}",
-                lower.display()
-            )));
-        }
-        if !upper.exists() {
-            return Err(NailsError::OverlayError(format!(
-                "Upper path does not exist: {}",
-                upper.display()
-            )));
-        }
-        if !work.exists() {
-            return Err(NailsError::OverlayError(format!(
-                "Work path does not exist: {}",
-                work.display()
-            )));
-        }
+        // Verify all preconditions using the helper function
+        verify_mount_preconditions(self, lower, upper, work, target)?;
 
         // Build overlay options
         let options = format!(
@@ -920,15 +1131,27 @@ impl Filesystem for RealFilesystem {
             work.display()
         );
 
-        // Perform mount using nix crate
+        // Perform mount using nix crate with security flags
+        // MS_NOSUID: Prevent setuid/setgid bits from taking effect
+        // MS_NODEV: Prevent access to device files
+        // MS_NOEXEC: NOT used - /home and /etc overlays must allow execution
+        //            (user scripts, shell configs, system binaries in hidden environment)
+        //            Story 4.11 may introduce different strategies for tmpfs-backed layers
         nix::mount::mount(
             Some("overlay"),
             target,
             Some("overlay"),
-            nix::mount::MsFlags::empty(),
+            nix::mount::MsFlags::MS_NOSUID | nix::mount::MsFlags::MS_NODEV,
             Some(options.as_str()),
         )
-        .map_err(|e| NailsError::OverlayError(format!("Mount failed: {}", e)))?;
+        .map_err(|e| {
+            // Check for specific error conditions
+            if e == nix::errno::Errno::EACCES || e == nix::errno::Errno::EPERM {
+                NailsError::PermissionDenied("Mount requires root privileges".to_string())
+            } else {
+                NailsError::OverlayError(format!("Failed to mount {}: {}", target.display(), e))
+            }
+        })?;
 
         Ok(())
     }
@@ -1293,5 +1516,584 @@ mod tests {
 
         assert!(fs.is_readable(path).unwrap());
         assert!(fs.is_writable(path).unwrap());
+    }
+
+    // ========================================================================
+    // Tests for Story 4.1: Overlay Mount Operations
+    // ========================================================================
+
+    #[test]
+    fn test_mount_overlay_success_tracks_mount_info() {
+        // AC5: MockFilesystem tracks mounted paths with MountInfo
+        let fs = MockFilesystem::new();
+
+        // Set up paths to exist
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        // Mount overlay
+        let result = fs.mount_overlay(
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_ok());
+
+        // Verify mount tracking
+        assert!(fs.is_mounted(Path::new("/home")).unwrap());
+
+        // Verify MountInfo is tracked
+        let mount_info = fs.mock_get_mount_info(Path::new("/home"));
+        assert!(mount_info.is_some());
+
+        let info = mount_info.unwrap();
+        assert_eq!(info.lower, Path::new("/"));
+        assert_eq!(info.upper, Path::new("/mnt/hidden/upper"));
+        assert_eq!(info.work, Path::new("/mnt/hidden/work"));
+        assert_eq!(info.target, Path::new("/home"));
+        // Verify timestamp is recent (within last second)
+        let elapsed = chrono::Utc::now() - info.mounted_at;
+        assert!(elapsed.num_seconds() < 2);
+    }
+
+    #[test]
+    fn test_mount_overlay_fails_on_missing_lower() {
+        // AC2: Returns error when lower directory missing
+        let fs = MockFilesystem::new();
+
+        // Only set upper and work to exist, not lower
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        let result = fs.mount_overlay(
+            Path::new("/nonexistent/lower"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::OverlayError(msg) => {
+                assert!(msg.contains("Lower directory not found"));
+                assert!(msg.contains("/nonexistent/lower"));
+            }
+            _ => panic!("Expected OverlayError for missing lower directory"),
+        }
+    }
+
+    #[test]
+    fn test_mount_overlay_fails_on_missing_upper() {
+        // AC2: Returns error when upper directory missing
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        let result = fs.mount_overlay(
+            Path::new("/"),
+            Path::new("/nonexistent/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::OverlayError(msg) => {
+                assert!(msg.contains("Upper directory not found"));
+                assert!(msg.contains("/nonexistent/upper"));
+            }
+            _ => panic!("Expected OverlayError for missing upper directory"),
+        }
+    }
+
+    #[test]
+    fn test_mount_overlay_fails_on_missing_work() {
+        // AC2: Returns error when work directory missing
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+
+        let result = fs.mount_overlay(
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/nonexistent/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::OverlayError(msg) => {
+                assert!(msg.contains("Work directory not found"));
+                assert!(msg.contains("/nonexistent/work"));
+            }
+            _ => panic!("Expected OverlayError for missing work directory"),
+        }
+    }
+
+    #[test]
+    fn test_mount_overlay_fails_on_already_mounted() {
+        // AC4: Returns error when target already mounted
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        // Mount once (should succeed)
+        let result = fs.mount_overlay(
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+        assert!(result.is_ok());
+
+        // Try to mount again (should fail)
+        let result = fs.mount_overlay(
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::AlreadyMounted { path } => {
+                assert_eq!(path, Path::new("/home"));
+            }
+            _ => panic!("Expected AlreadyMounted error"),
+        }
+    }
+
+    #[test]
+    fn test_mock_filesystem_can_simulate_mount_failure() {
+        // AC5: Mock can simulate mount failures
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        // Configure mock to fail mount for /home
+        fs.mock_set_mount_should_fail("/home", true);
+
+        let result = fs.mount_overlay(
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::OverlayError(msg) => {
+                // Verify error message format matches AC1 specification
+                assert!(msg.contains("Mock mount failure for testing"));
+                assert!(msg.contains("/home"), "Error should include target path");
+            }
+            _ => panic!("Expected OverlayError for simulated failure"),
+        }
+    }
+
+    #[test]
+    fn test_mount_overlay_target_contains_merged_view() {
+        // AC4: Verify target contains merged view of lower + upper after mount
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        // Mount overlay
+        let result = fs.mount_overlay(
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+        assert!(result.is_ok());
+
+        // Verify mount info contains merged view metadata
+        let mount_info = fs.mock_get_mount_info(Path::new("/home")).unwrap();
+        assert_eq!(
+            mount_info.lower,
+            Path::new("/"),
+            "Lower directory should be tracked"
+        );
+        assert_eq!(
+            mount_info.upper,
+            Path::new("/mnt/hidden/upper"),
+            "Upper directory should be tracked"
+        );
+        assert_eq!(
+            mount_info.work,
+            Path::new("/mnt/hidden/work"),
+            "Work directory should be tracked"
+        );
+        assert_eq!(
+            mount_info.target,
+            Path::new("/home"),
+            "Target mount point should be tracked"
+        );
+
+        // For MockFilesystem, the merged view is verified through the mount_info tracking
+        // For RealFilesystem (integration tests), the actual filesystem would show merged content
+    }
+
+    #[test]
+    fn test_unmount_removes_mount_info() {
+        // Verify unmount removes mount from tracking
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        // Mount
+        fs.mount_overlay(
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        )
+        .unwrap();
+
+        // Verify mounted
+        assert!(fs.is_mounted(Path::new("/home")).unwrap());
+        assert!(fs.mock_get_mount_info(Path::new("/home")).is_some());
+
+        // Unmount
+        fs.unmount(Path::new("/home"), false).unwrap();
+
+        // Verify unmounted and info removed
+        assert!(!fs.is_mounted(Path::new("/home")).unwrap());
+        assert!(fs.mock_get_mount_info(Path::new("/home")).is_none());
+    }
+
+    #[test]
+    fn test_verify_mount_preconditions_succeeds_when_all_valid() {
+        // AC6: verify_mount_preconditions checks all conditions
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        let result = verify_mount_preconditions(
+            &fs,
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_mount_preconditions_fails_on_missing_lower() {
+        // AC6: verify_mount_preconditions detects missing lower
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        let result = verify_mount_preconditions(
+            &fs,
+            Path::new("/nonexistent"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::OverlayError(msg) => {
+                assert!(msg.contains("Lower directory not found"));
+            }
+            _ => panic!("Expected OverlayError"),
+        }
+    }
+
+    #[test]
+    fn test_verify_mount_preconditions_fails_on_missing_upper() {
+        // AC6: verify_mount_preconditions detects missing upper when parent doesn't exist
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        // Use a path where parent doesn't exist
+        let result = verify_mount_preconditions(
+            &fs,
+            Path::new("/"),
+            Path::new("/nonexistent/subdir/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::OverlayError(msg) => {
+                assert!(msg.contains("Upper directory not found and parent doesn't exist"));
+            }
+            _ => panic!("Expected OverlayError"),
+        }
+    }
+
+    #[test]
+    fn test_verify_mount_preconditions_fails_on_missing_work() {
+        // AC6: verify_mount_preconditions detects missing work when parent doesn't exist
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+
+        // Use a path where parent doesn't exist
+        let result = verify_mount_preconditions(
+            &fs,
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/nonexistent/subdir/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::OverlayError(msg) => {
+                assert!(msg.contains("Work directory not found and parent doesn't exist"));
+            }
+            _ => panic!("Expected OverlayError"),
+        }
+    }
+
+    #[test]
+    fn test_verify_mount_preconditions_fails_on_already_mounted() {
+        // AC6: verify_mount_preconditions detects already mounted
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        // Mount first
+        fs.mount_overlay(
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        )
+        .unwrap();
+
+        // Try preconditions check (should fail because already mounted)
+        let result = verify_mount_preconditions(
+            &fs,
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::AlreadyMounted { path } => {
+                assert_eq!(path, Path::new("/home"));
+            }
+            _ => panic!("Expected AlreadyMounted error"),
+        }
+    }
+
+    #[test]
+    fn test_verify_mount_preconditions_succeeds_when_upper_creatable() {
+        // AC6: verify_mount_preconditions accepts upper directory if it can be created
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        // Upper doesn't exist but parent is writable
+        fs.mock_set_directory_creatable("/mnt/hidden/upper", true);
+
+        let result = verify_mount_preconditions(
+            &fs,
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_mount_preconditions_succeeds_when_work_creatable() {
+        // AC6: verify_mount_preconditions accepts work directory if it can be created
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+
+        // Work doesn't exist but parent is writable
+        fs.mock_set_directory_creatable("/mnt/hidden/work", true);
+
+        let result = verify_mount_preconditions(
+            &fs,
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_mount_preconditions_fails_when_upper_not_creatable() {
+        // AC6: verify_mount_preconditions fails if upper can't be created (parent not writable)
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/work", true);
+
+        // Upper doesn't exist and parent is not writable
+        fs.mock_set_directory_creatable("/mnt/hidden/upper", false);
+
+        let result = verify_mount_preconditions(
+            &fs,
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::PermissionDenied(msg) => {
+                assert!(msg.contains("Upper directory not found and parent not writable"));
+            }
+            _ => panic!("Expected PermissionDenied error"),
+        }
+    }
+
+    #[test]
+    fn test_verify_mount_preconditions_fails_when_work_not_creatable() {
+        // AC6: verify_mount_preconditions fails if work can't be created (parent not writable)
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/hidden/upper", true);
+
+        // Work doesn't exist and parent is not writable
+        fs.mock_set_directory_creatable("/mnt/hidden/work", false);
+
+        let result = verify_mount_preconditions(
+            &fs,
+            Path::new("/"),
+            Path::new("/mnt/hidden/upper"),
+            Path::new("/mnt/hidden/work"),
+            Path::new("/home"),
+        );
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::PermissionDenied(msg) => {
+                assert!(msg.contains("Work directory not found and parent not writable"));
+            }
+            _ => panic!("Expected PermissionDenied error"),
+        }
+    }
+
+    // ========================================================================
+    // Integration Tests for RealFilesystem (require root privileges)
+    // ========================================================================
+
+    #[test]
+    #[ignore]
+    fn test_real_overlay_mount_creates_merged_view() {
+        // AC4 Integration test: Verify actual overlay filesystem merge
+        // This test requires root privileges and is marked #[ignore] for CI/CD
+        //
+        // Run with: cargo test test_real_overlay_mount_creates_merged_view -- --ignored
+        //
+        // Test verifies:
+        // 1. Files from lower directory are visible in target
+        // 2. Files from upper directory overlay correctly in target
+        // 3. Modifications in upper don't affect lower
+
+        use std::fs;
+        use std::io::Write;
+
+        let fs = RealFilesystem;
+
+        // Create test directories in /tmp (requires cleanup on failure)
+        let test_dir = std::env::temp_dir().join("nails-overlay-test-XXXXXX");
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let lower = test_dir.join("lower");
+        let upper = test_dir.join("upper");
+        let work = test_dir.join("work");
+        let target = test_dir.join("target");
+
+        fs::create_dir_all(&lower).unwrap();
+        fs::create_dir_all(&upper).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&target).unwrap();
+
+        // Create test files in lower
+        let lower_file = lower.join("from_lower.txt");
+        let mut lower_fh = fs::File::create(&lower_file).unwrap();
+        lower_fh.write_all(b"content from lower layer").unwrap();
+        lower_fh.sync_all().unwrap();
+
+        // Create test files in upper
+        let upper_file = upper.join("from_upper.txt");
+        let mut upper_fh = fs::File::create(&upper_file).unwrap();
+        upper_fh.write_all(b"content from upper layer").unwrap();
+        upper_fh.sync_all().unwrap();
+
+        // Mount overlay
+        let result = fs.mount_overlay(&lower, &upper, &work, &target);
+        if result.is_err() {
+            // Clean up on failure
+            let _ = fs::remove_dir_all(&test_dir);
+            panic!("Overlay mount failed: {:?}", result.unwrap_err());
+        }
+
+        // Verify merged view: both files should be visible in target
+        let target_lower_file = target.join("from_lower.txt");
+        let target_upper_file = target.join("from_upper.txt");
+
+        assert!(
+            target_lower_file.exists(),
+            "File from lower layer should be visible in target"
+        );
+        assert!(
+            target_upper_file.exists(),
+            "File from upper layer should be visible in target"
+        );
+
+        // Verify content is correct
+        let content_from_lower = fs::read_to_string(&target_lower_file).unwrap();
+        let content_from_upper = fs::read_to_string(&target_upper_file).unwrap();
+
+        assert_eq!(
+            content_from_lower, "content from lower layer",
+            "Lower layer content should be readable"
+        );
+        assert_eq!(
+            content_from_upper, "content from upper layer",
+            "Upper layer content should be readable"
+        );
+
+        // Unmount
+        fs.unmount(&target, false).unwrap();
+
+        // Cleanup
+        fs::remove_dir_all(&test_dir).unwrap();
     }
 }
