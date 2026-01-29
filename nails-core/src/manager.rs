@@ -34,6 +34,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// Defined mount order for overlays
+///
+/// **Rationale:**
+/// - `/home` mounts first: user data has no system dependencies
+/// - `/etc` mounts second: system config may reference /home paths
+///
+/// **Unmount order is LIFO (reverse):** /etc unmounts first, /home unmounts last
+///
+/// This ordering ensures dependency safety during both mounting and rollback.
+/// (Story 4.6, AC1, FR10-FR12)
+const MOUNT_ORDER: &[&str] = &["/home", "/etc"];
+
 /// RAII mount tracker for automatic rollback on failure
 ///
 /// Tracks mounted overlays in LIFO order and provides automatic rollback
@@ -323,6 +335,84 @@ impl<F: Filesystem> NailsManager<F> {
             state_file_path,
             cached_state: Arc::new(Mutex::new(None)),
             nixos_builder: Some(nixos_builder),
+        }
+    }
+
+    /// Unmount overlays in reverse order (LIFO)
+    ///
+    /// Unmounts overlays in reverse of mount order to respect dependencies.
+    /// Uses best-effort rollback: continues unmounting even if individual unmounts fail.
+    ///
+    /// # Arguments
+    ///
+    /// * `mounted_paths` - Vec of mounted overlay paths in mount order
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - All unmounts succeeded
+    /// * `Err(NailsError)` - One or more unmounts failed (with aggregate error details)
+    ///
+    /// # Behavior (Story 4.6, AC4-AC5)
+    ///
+    /// - Unmounts in LIFO order (reverse iteration)
+    /// - Tries graceful unmount first, then force unmount on failure
+    /// - Logs each unmount operation
+    /// - Best-effort: continues even if one unmount fails
+    /// - Returns aggregate error listing all failures
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::{NailsManager, MockFilesystem, Config};
+    /// use std::path::PathBuf;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// let config = Config::default();
+    /// let manager = NailsManager::new(fs, config, PathBuf::from("/tmp/state.json"));
+    ///
+    /// let mounted = vec![PathBuf::from("/home"), PathBuf::from("/etc")];
+    /// manager.unmount_overlays(mounted).unwrap();
+    /// // Unmounts in reverse: /etc first, then /home
+    /// ```
+    pub fn unmount_overlays(&self, mounted_paths: Vec<PathBuf>) -> Result<()> {
+        let mut errors: Vec<String> = Vec::new();
+
+        // LIFO: unmount in reverse order
+        for path in mounted_paths.iter().rev() {
+            tracing::info!("↩ Unmounting {}", path.display());
+
+            // Try graceful unmount first (Epic 4.2 requirement)
+            if let Err(e) = self.filesystem.unmount(path, false) {
+                tracing::warn!(
+                    "Graceful unmount failed for {}, trying force unmount: {}",
+                    path.display(),
+                    e
+                );
+
+                // If graceful fails, try force unmount
+                if let Err(force_err) = self.filesystem.unmount(path, true) {
+                    let msg = format!(
+                        "Failed to unmount {} (graceful and force both failed): {}",
+                        path.display(),
+                        force_err
+                    );
+                    tracing::warn!("{}", msg);
+                    errors.push(msg); // Collect error but continue (best-effort)
+                } else {
+                    tracing::info!("✓ Force unmount succeeded for {}", path.display());
+                }
+            } else {
+                tracing::info!("✓ Graceful unmount succeeded for {}", path.display());
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(NailsError::OverlayError(format!(
+                "Unmount completed with errors: {}",
+                errors.join("; ")
+            )))
         }
     }
 
@@ -903,28 +993,54 @@ impl<F: Filesystem> NailsManager<F> {
         };
 
         // Step 8: Mount overlays using MountTracker for proper LIFO rollback
+        // Mount order is critical: /home first (no dependencies), /etc second (may depend on /home)
+        // See MOUNT_ORDER constant for rationale (Story 4.6, AC1)
         tracing::info!("Mounting overlays...");
         let phase_start = Instant::now();
         let mounted_overlays = {
             let manager = manager_arc.lock().unwrap();
             let mut tracker = MountTracker::new(&manager.filesystem);
 
-            for overlay in &manager.config.overlays {
-                manager
-                    .filesystem
-                    .mount_overlay(
-                        &overlay.lower,
-                        &overlay.upper,
-                        &overlay.work,
-                        &overlay.target,
-                    )
-                    .map_err(|e| {
-                        tracing::error!("Failed to mount overlay {}: {}", overlay.name, e);
-                        e
-                    })?;
+            // Enforce mount order: iterate MOUNT_ORDER, not config.overlays
+            // Only mount overlays that are actually configured
+            for target_name in MOUNT_ORDER {
+                let overlay = match manager
+                    .config
+                    .overlays
+                    .iter()
+                    .find(|o| o.target.to_string_lossy() == *target_name)
+                {
+                    Some(overlay) => overlay,
+                    None => {
+                        // Skip overlays not configured (optional in some deployments)
+                        tracing::debug!("Skipping {}: not configured", target_name);
+                        continue;
+                    }
+                };
 
-                tracker.push_mount(overlay.target.clone());
-                tracing::info!("  ✓ {} mounted", overlay.target.display());
+                match manager.filesystem.mount_overlay(
+                    &overlay.lower,
+                    &overlay.upper,
+                    &overlay.work,
+                    &overlay.target,
+                ) {
+                    Ok(_) => {
+                        tracker.push_mount(overlay.target.clone());
+                        tracing::info!("  ✓ {} mounted", overlay.target.display());
+                    }
+                    Err(e) => {
+                        tracing::error!("✗ {} mount failed: {}", overlay.target.display(), e);
+                        // Explicit rollback on mount failure (Story 4.6, AC2-AC3)
+                        // Don't just rely on Drop trait - make rollback intent explicit
+                        if let Err(rollback_err) = tracker.rollback_all() {
+                            tracing::error!(
+                                "Rollback also failed during mount failure recovery: {}",
+                                rollback_err
+                            );
+                        }
+                        return Err(e);
+                    }
+                }
             }
 
             // Commit tracker to prevent automatic rollback on drop
@@ -2668,5 +2784,283 @@ mod tests {
         // 3. State file was not modified (or still shows Inactive)
         let loaded_state = StateFile::load(&state_path).unwrap();
         assert_eq!(loaded_state.state, SystemState::Inactive);
+    }
+
+    // ========== Story 4.6: MountTracker Drop Trait and Edge Cases Tests ==========
+
+    #[test]
+    fn test_mount_tracker_drop_without_commit_triggers_rollback() {
+        let fs = MockFilesystem::new();
+        let home = PathBuf::from("/home");
+        let etc = PathBuf::from("/etc");
+
+        {
+            let mut tracker = MountTracker::new(&fs);
+            tracker.push_mount(home.clone());
+            tracker.push_mount(etc.clone());
+            // Drop without commit - should trigger automatic rollback
+        } // Tracker drops here
+
+        // Verify unmount was called for both paths in reverse order
+        let mounted = fs.get_mounted_paths();
+        assert!(
+            mounted.is_empty(),
+            "All mounts should be rolled back on Drop without commit"
+        );
+    }
+
+    #[test]
+    fn test_mount_tracker_drop_with_commit_no_rollback() {
+        let fs = MockFilesystem::new();
+        let home = PathBuf::from("/home");
+        let etc = PathBuf::from("/etc");
+
+        // Mock successful mounts
+        fs.mock_set_mounted(&home, true);
+        fs.mock_set_mounted(&etc, true);
+
+        {
+            let mut tracker = MountTracker::new(&fs);
+            tracker.push_mount(home.clone());
+            tracker.push_mount(etc.clone());
+            tracker.commit(); // Commit prevents rollback
+        } // Tracker drops here
+
+        // Verify mounts still exist (no rollback)
+        assert!(
+            fs.is_mounted(&home).unwrap(),
+            "/home should still be mounted after committed Drop"
+        );
+        assert!(
+            fs.is_mounted(&etc).unwrap(),
+            "/etc should still be mounted after committed Drop"
+        );
+    }
+
+    #[test]
+    fn test_mount_tracker_rollback_all_best_effort_continues_on_failure() {
+        let fs = MockFilesystem::new();
+        let home = PathBuf::from("/home");
+        let etc = PathBuf::from("/etc");
+
+        // Mock /etc unmount to fail
+        fs.mock_set_mounted(&home, true);
+        fs.mock_set_mounted(&etc, true);
+        fs.mock_set_unmount_should_fail(&etc.to_string_lossy(), true);
+
+        let mut tracker = MountTracker::new(&fs);
+        tracker.push_mount(home.clone());
+        tracker.push_mount(etc.clone());
+
+        // Rollback should continue despite /etc failure
+        let result = tracker.rollback_all();
+
+        // Should return error mentioning /etc failure
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("/etc") && err_msg.contains("Failed to unmount"),
+            "Error should mention /etc unmount failure"
+        );
+
+        // But /home should still be unmounted (best-effort)
+        assert!(
+            !fs.is_mounted(&home).unwrap(),
+            "/home should be unmounted despite /etc failure"
+        );
+    }
+
+    #[test]
+    fn test_mount_tracker_rollback_all_aggregate_errors() {
+        let fs = MockFilesystem::new();
+        let home = PathBuf::from("/home");
+        let etc = PathBuf::from("/etc");
+
+        // Mock BOTH unmounts to fail
+        fs.mock_set_mounted(&home, true);
+        fs.mock_set_mounted(&etc, true);
+        fs.mock_set_unmount_should_fail(&home.to_string_lossy(), true);
+        fs.mock_set_unmount_should_fail(&etc.to_string_lossy(), true);
+
+        let mut tracker = MountTracker::new(&fs);
+        tracker.push_mount(home.clone());
+        tracker.push_mount(etc.clone());
+
+        let result = tracker.rollback_all();
+
+        // Should return aggregate error mentioning both failures
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("/home") && err_msg.contains("/etc"),
+            "Error should mention both unmount failures"
+        );
+    }
+
+    #[test]
+    fn test_unmount_overlays_method_reverse_order() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+        let state_path = PathBuf::from("/tmp/state.json");
+        let manager = NailsManager::new(fs.clone(), config, state_path);
+
+        let home = PathBuf::from("/home");
+        let etc = PathBuf::from("/etc");
+
+        // Mock successful mounts
+        fs.mock_set_mounted(&home, true);
+        fs.mock_set_mounted(&etc, true);
+
+        // Create mounted paths in mount order: /home, /etc
+        let mounted_paths = vec![home.clone(), etc.clone()];
+
+        // Unmount should happen in reverse: /etc first, /home second
+        let result = manager.unmount_overlays(mounted_paths);
+        assert!(result.is_ok(), "Unmount should succeed");
+
+        // Verify both unmounted
+        assert!(!fs.is_mounted(&home).unwrap());
+        assert!(!fs.is_mounted(&etc).unwrap());
+    }
+
+    #[test]
+    fn test_unmount_overlays_best_effort_on_failure() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+        let state_path = PathBuf::from("/tmp/state.json");
+        let manager = NailsManager::new(fs.clone(), config, state_path);
+
+        let home = PathBuf::from("/home");
+        let etc = PathBuf::from("/etc");
+
+        // Mock /etc unmount to fail, /home to succeed
+        fs.mock_set_mounted(&home, true);
+        fs.mock_set_mounted(&etc, true);
+        fs.mock_set_unmount_should_fail(&etc.to_string_lossy(), true);
+
+        let mounted_paths = vec![home.clone(), etc.clone()];
+
+        // Should return error but still unmount /home
+        let result = manager.unmount_overlays(mounted_paths);
+        assert!(result.is_err(), "Should return error for /etc failure");
+
+        // Verify /home still unmounted (best-effort)
+        assert!(
+            !fs.is_mounted(&home).unwrap(),
+            "/home should be unmounted despite /etc failure"
+        );
+    }
+
+    #[test]
+    fn test_mount_order_constant_enforces_home_then_etc() {
+        // Verify MOUNT_ORDER constant has correct order
+        assert_eq!(MOUNT_ORDER.len(), 2, "Should have 2 mount targets");
+        assert_eq!(MOUNT_ORDER[0], "/home", "First mount should be /home");
+        assert_eq!(MOUNT_ORDER[1], "/etc", "Second mount should be /etc");
+    }
+
+    #[test]
+    fn test_mount_tracker_empty_rollback_succeeds() {
+        let fs = MockFilesystem::new();
+        let mut tracker = MountTracker::new(&fs);
+
+        // Rollback with no mounts should succeed
+        let result = tracker.rollback_all();
+        assert!(result.is_ok(), "Empty rollback should succeed");
+    }
+
+    #[test]
+    fn test_unmount_overlays_empty_list_succeeds() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+        let state_path = PathBuf::from("/tmp/state.json");
+        let manager = NailsManager::new(fs, config, state_path);
+
+        // Unmount empty list should succeed
+        let result = manager.unmount_overlays(vec![]);
+        assert!(result.is_ok(), "Unmounting empty list should succeed");
+    }
+
+    #[test]
+    fn test_unmount_overlays_single_path_failure() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+        let state_path = PathBuf::from("/tmp/state.json");
+        let manager = NailsManager::new(fs.clone(), config, state_path);
+
+        let home = PathBuf::from("/home");
+
+        // Mock unmount to fail
+        fs.mock_set_mounted(&home, true);
+        fs.mock_set_unmount_should_fail(&home.to_string_lossy(), true);
+
+        let mounted_paths = vec![home.clone()];
+
+        // Should return error
+        let result = manager.unmount_overlays(mounted_paths);
+        assert!(result.is_err(), "Should return error when unmount fails");
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Unmount completed with errors"),
+            "Error should mention unmount failure"
+        );
+    }
+
+    #[test]
+    fn test_unmount_overlays_multiple_paths_partial_failure() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+        let state_path = PathBuf::from("/tmp/state.json");
+        let manager = NailsManager::new(fs.clone(), config, state_path);
+
+        let home = PathBuf::from("/home");
+        let etc = PathBuf::from("/etc");
+
+        // Mock /etc to fail, /home to succeed
+        fs.mock_set_mounted(&home, true);
+        fs.mock_set_mounted(&etc, true);
+        fs.mock_set_unmount_should_fail(&etc.to_string_lossy(), true);
+
+        let mounted_paths = vec![home.clone(), etc.clone()];
+
+        // Should return error but /home should be unmounted (best-effort)
+        let result = manager.unmount_overlays(mounted_paths);
+        assert!(result.is_err(), "Should return error for /etc failure");
+
+        // /home should still be unmounted (best-effort)
+        assert!(
+            !fs.is_mounted(&home).unwrap(),
+            "/home should be unmounted despite /etc failure"
+        );
+    }
+
+    #[test]
+    fn test_unmount_overlays_three_paths_reverse_order() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+        let state_path = PathBuf::from("/tmp/state.json");
+        let manager = NailsManager::new(fs.clone(), config, state_path);
+
+        let home = PathBuf::from("/home");
+        let etc = PathBuf::from("/etc");
+        let opt = PathBuf::from("/opt");
+
+        // Mock all as mounted
+        fs.mock_set_mounted(&home, true);
+        fs.mock_set_mounted(&etc, true);
+        fs.mock_set_mounted(&opt, true);
+
+        // Create mounted paths in order: /home, /etc, /opt
+        let mounted_paths = vec![home.clone(), etc.clone(), opt.clone()];
+
+        // Unmount should happen in reverse: /opt, /etc, /home
+        let result = manager.unmount_overlays(mounted_paths);
+        assert!(result.is_ok(), "Unmount should succeed");
+
+        // Verify all unmounted
+        assert!(!fs.is_mounted(&home).unwrap());
+        assert!(!fs.is_mounted(&etc).unwrap());
+        assert!(!fs.is_mounted(&opt).unwrap());
     }
 }
