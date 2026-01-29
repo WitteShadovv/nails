@@ -46,6 +46,12 @@ pub mod verify;
 // NixOS profile builder
 pub mod nixos;
 
+// Timing utilities
+pub mod timing;
+
+// Verbosity configuration
+pub mod verbosity;
+
 // Re-export for convenience
 pub use config::{Config, OverlayConfig};
 pub use error::{NailsError, Result};
@@ -66,6 +72,12 @@ pub use verify::{Finding, ScanDepth, Severity, Verifier, VerifyResult, VerifySta
 
 // NixOS profile builder exports
 pub use nixos::NixOSBuilder;
+
+// Timing utilities exports
+pub use timing::Stopwatch;
+
+// Verbosity configuration exports
+pub use verbosity::Verbosity;
 
 /// RAII guard for automatic state rollback on failure
 ///

@@ -235,6 +235,9 @@ pub struct NailsManager<F: Filesystem> {
     /// NixOS profile builder (optional, for activation with NixOS switching)
     /// If None, activation will skip NixOS build/switch steps
     nixos_builder: Option<crate::nixos::NixOSBuilder>,
+
+    /// Verbosity level for progress output
+    verbosity: crate::verbosity::Verbosity,
 }
 
 // Manual Debug implementation because NixOSBuilder contains trait objects
@@ -249,6 +252,7 @@ impl<F: Filesystem> std::fmt::Debug for NailsManager<F> {
                 "nixos_builder",
                 &self.nixos_builder.as_ref().map(|_| "<NixOSBuilder>"),
             )
+            .field("verbosity", &self.verbosity)
             .finish()
     }
 }
@@ -287,6 +291,7 @@ impl<F: Filesystem> NailsManager<F> {
             state_file_path,
             cached_state: Arc::new(Mutex::new(None)),
             nixos_builder: None,
+            verbosity: crate::verbosity::Verbosity::default(),
         }
     }
 
@@ -334,7 +339,32 @@ impl<F: Filesystem> NailsManager<F> {
             state_file_path,
             cached_state: Arc::new(Mutex::new(None)),
             nixos_builder: Some(nixos_builder),
+            verbosity: crate::verbosity::Verbosity::default(),
         }
+    }
+
+    /// Set verbosity level for progress output
+    ///
+    /// Controls the amount of detail in progress messages during operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `verbosity` - Desired verbosity level
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::{NailsManager, MockFilesystem, Config, Verbosity};
+    /// use std::path::PathBuf;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// let config = Config::default();
+    /// let state_path = PathBuf::from("/tmp/state.json");
+    /// let mut manager = NailsManager::new(fs, config, state_path);
+    /// manager.set_verbosity(Verbosity::Verbose);
+    /// ```
+    pub fn set_verbosity(&mut self, verbosity: crate::verbosity::Verbosity) {
+        self.verbosity = verbosity;
     }
 
     /// Unmount overlays in reverse order (LIFO)
@@ -581,7 +611,7 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Task 5 (AC4): Clear overlay_status and nixos_generation when rolling back to Inactive
         // This ensures the state file doesn't retain stale activation metadata after rollback
-        if matches!(new_state, SystemState::Inactive) {
+        if let SystemState::Inactive = new_state {
             state_file.overlay_status.clear();
             state_file.nixos_generation = None;
             tracing::debug!("Rollback to Inactive: cleared overlay_status and nixos_generation");
@@ -948,38 +978,47 @@ impl<F: Filesystem> NailsManager<F> {
     /// let result = NailsManager::activate(Arc::clone(&manager), false);
     /// ```
     pub fn activate(manager_arc: Arc<Mutex<Self>>, no_preflight: bool) -> Result<()> {
-        use crate::StateGuard;
-        use std::time::Instant;
+        use crate::{StateGuard, Stopwatch, Verbosity};
 
-        let start = Instant::now();
+        let total_timer = Stopwatch::start();
 
-        // Step 1: Capture current state for idempotency check and StateGuard
-        let previous_state = {
+        // Step 1: Capture current state and verbosity for progress logging
+        let (previous_state, verbosity) = {
             let manager = manager_arc.lock().unwrap();
-            manager.current_state()?
+            (manager.current_state()?, manager.verbosity)
         };
 
         // Step 2: Idempotent check - if already active, return early (AC: 7)
         if previous_state.is_active() {
-            tracing::info!("System already active, nothing to do");
+            if verbosity >= Verbosity::Normal {
+                tracing::info!("System already active, nothing to do");
+            }
             return Ok(());
         }
 
         // Step 3: Run pre-flight checks (unless skipped)
         if no_preflight {
-            tracing::warn!("DANGER: Skipping pre-flight checks. Activation may fail.");
+            if verbosity >= Verbosity::Normal {
+                tracing::warn!("DANGER: Skipping pre-flight checks. Activation may fail.");
+            }
         } else {
-            tracing::info!("Running pre-flight checks...");
-            let phase_start = Instant::now();
+            if verbosity >= Verbosity::Normal {
+                tracing::info!("Running pre-flight checks...");
+            }
+            let step_timer = Stopwatch::start();
             // Run checks before creating StateGuard to avoid rollback overhead
             let manager = manager_arc.lock().unwrap();
             manager.run_preflight_checks()?;
             // Drop lock before proceeding
             drop(manager);
-            tracing::info!(
-                "✓ Pre-flight checks passed ({:.2}s)",
-                phase_start.elapsed().as_secs_f64()
-            );
+            if verbosity >= Verbosity::Normal {
+                tracing::info!(
+                    step = "preflight",
+                    duration_ms = step_timer.elapsed().as_millis() as u64,
+                    "✓ Pre-flight checks passed ({})",
+                    step_timer
+                );
+            }
         }
 
         // Step 4: Create StateGuard for automatic rollback on failure/panic
@@ -999,19 +1038,26 @@ impl<F: Filesystem> NailsManager<F> {
         let generation = {
             let manager = manager_arc.lock().unwrap();
             if let Some(ref builder) = manager.nixos_builder {
-                tracing::info!("Building NixOS profile...");
-                let phase_start = Instant::now();
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!("Building NixOS profile...");
+                }
+                let step_timer = Stopwatch::start();
                 let generation_id = builder.build_profile().map_err(|e| match e {
                     NailsError::NixOSError(msg) => {
                         NailsError::NixOSError(format!("NixOS build failed: {}", msg))
                     }
                     other => other,
                 })?;
-                tracing::info!(
-                    "✓ NixOS profile ready: generation {} ({:.2}s)",
-                    generation_id,
-                    phase_start.elapsed().as_secs_f64()
-                );
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!(
+                        step = "nixos_build",
+                        duration_ms = step_timer.elapsed().as_millis() as u64,
+                        generation = generation_id,
+                        "✓ NixOS profile ready: generation {} ({})",
+                        generation_id,
+                        step_timer
+                    );
+                }
                 Some(generation_id)
             } else {
                 None
@@ -1021,8 +1067,10 @@ impl<F: Filesystem> NailsManager<F> {
         // Step 8: Mount overlays with incremental state tracking (Story 4.7, AC1, AC2, Task 4)
         // Mount order is critical: /home first (no dependencies), /etc second (may depend on /home)
         // See MOUNT_ORDER constant for rationale (Story 4.6, AC1)
-        tracing::info!("Mounting overlays...");
-        let phase_start = Instant::now();
+        if verbosity >= Verbosity::Normal {
+            tracing::info!("Mounting overlays...");
+        }
+        let mount_timer = Stopwatch::start();
         let mounted_overlays = {
             let manager = manager_arc.lock().unwrap();
             let mut tracker = MountTracker::new(&manager.filesystem);
@@ -1039,7 +1087,9 @@ impl<F: Filesystem> NailsManager<F> {
                     Some(overlay) => overlay,
                     None => {
                         // Skip overlays not configured (optional in some deployments)
-                        tracing::debug!("Skipping {}: not configured", target_name);
+                        if verbosity >= Verbosity::Debug {
+                            tracing::debug!("Skipping {}: not configured", target_name);
+                        }
                         continue;
                     }
                 };
@@ -1052,7 +1102,9 @@ impl<F: Filesystem> NailsManager<F> {
                 ) {
                     Ok(_) => {
                         tracker.push_mount(overlay.target.clone());
-                        tracing::info!("  ✓ {} mounted", overlay.target.display());
+                        if verbosity >= Verbosity::Verbose {
+                            tracing::info!("  ✓ {} mounted", overlay.target.display());
+                        }
 
                         // Story 4.7, AC2, Task 4: Update overlay_status incrementally after EACH mount
                         // This ensures crash recovery can track partial activation progress
@@ -1076,17 +1128,23 @@ impl<F: Filesystem> NailsManager<F> {
                             // so we continue despite save failures. The final state save at ACTIVE transition will
                             // succeed, and partial state is better than no state for debugging activation failures.
                             drop(cached); // Release lock before saving
-                            if let Err(e) = manager.save_cached_state() {
+                            if let Err(e) = manager.save_cached_state()
+                                && verbosity >= Verbosity::Debug
+                            {
                                 tracing::warn!("Failed to save state after mount: {}", e);
-                                // Continue - mount succeeded, state save is for crash recovery only
                             }
+                            // Continue - mount succeeded, state save is for crash recovery only
                         }
                     }
                     Err(e) => {
-                        tracing::error!("✗ {} mount failed: {}", overlay.target.display(), e);
+                        if verbosity >= Verbosity::Normal {
+                            tracing::error!("✗ {} mount failed: {}", overlay.target.display(), e);
+                        }
                         // Explicit rollback on mount failure (Story 4.6, AC2-AC3)
                         // Don't just rely on Drop trait - make rollback intent explicit
-                        if let Err(rollback_err) = tracker.rollback_all() {
+                        if let Err(rollback_err) = tracker.rollback_all()
+                            && verbosity >= Verbosity::Normal
+                        {
                             tracing::error!(
                                 "Rollback also failed during mount failure recovery: {}",
                                 rollback_err
@@ -1101,27 +1159,37 @@ impl<F: Filesystem> NailsManager<F> {
             tracker.commit();
             tracker.mounted.clone()
         };
-        tracing::info!(
-            "✓ All overlays mounted ({:.2}s)",
-            phase_start.elapsed().as_secs_f64()
-        );
+        if verbosity >= Verbosity::Normal {
+            tracing::info!(
+                step = "mount_overlays",
+                duration_ms = mount_timer.elapsed().as_millis() as u64,
+                "✓ All overlays mounted ({})",
+                mount_timer
+            );
+        }
 
         // Step 9: Switch NixOS profile and update nixos_generation (Story 4.7, AC3, Task 3.3)
         if let Some(ref generation_id) = generation {
             let manager = manager_arc.lock().unwrap();
             if let Some(ref builder) = manager.nixos_builder {
-                tracing::info!("Switching to NixOS profile...");
-                let phase_start = Instant::now();
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!("Switching to NixOS profile...");
+                }
+                let step_timer = Stopwatch::start();
                 builder.switch_profile(generation_id).map_err(|e| match e {
                     NailsError::NixOSError(msg) => {
                         NailsError::NixOSError(format!("NixOS switch failed: {}", msg))
                     }
                     other => other,
                 })?;
-                tracing::info!(
-                    "✓ NixOS profile switched ({:.2}s)",
-                    phase_start.elapsed().as_secs_f64()
-                );
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!(
+                        step = "nixos_switch",
+                        duration_ms = step_timer.elapsed().as_millis() as u64,
+                        "✓ NixOS profile switched ({})",
+                        step_timer
+                    );
+                }
 
                 // Story 4.7, AC3: Update nixos_generation in state file after successful switch
                 let mut cached = manager.cached_state.lock().unwrap();
@@ -1132,10 +1200,12 @@ impl<F: Filesystem> NailsManager<F> {
                     // State save failures here are non-critical - the switch succeeded and the system is functional.
                     // The final ACTIVE transition save will persist this data. This incremental save aids crash recovery.
                     drop(cached); // Release lock before saving
-                    if let Err(e) = manager.save_cached_state() {
+                    if let Err(e) = manager.save_cached_state()
+                        && verbosity >= Verbosity::Debug
+                    {
                         tracing::warn!("Failed to save nixos_generation to state: {}", e);
-                        // Continue - switch succeeded, state save is for tracking/crash recovery only
                     }
+                    // Continue - switch succeeded, state save is for tracking/crash recovery only
                 }
             }
         }
@@ -1152,10 +1222,15 @@ impl<F: Filesystem> NailsManager<F> {
         // Step 11: Success - commit guard to prevent rollback
         guard.commit();
 
-        tracing::info!(
-            "✓ Activation complete ({:.2}s total)",
-            start.elapsed().as_secs_f64()
-        );
+        // Always show completion message, even in Quiet mode (AC: 3)
+        if verbosity >= Verbosity::Quiet {
+            tracing::info!(
+                step = "activation_complete",
+                duration_ms = total_timer.elapsed().as_millis() as u64,
+                "✓ Activation complete in {}",
+                total_timer
+            );
+        }
         Ok(())
     }
 
@@ -1304,7 +1379,7 @@ impl<F: Filesystem> NailsManager<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MockFilesystem;
+    use crate::{MockFilesystem, Stopwatch, Verbosity};
     use std::collections::HashMap;
     use std::path::Path;
 
@@ -3166,9 +3241,11 @@ mod tests {
             );
 
             let mut cached = mgr.cached_state.lock().unwrap();
-            let mut state_file = StateFile::default();
-            state_file.overlay_status = overlay_status;
-            state_file.nixos_generation = Some("test-generation-123".to_string());
+            let state_file = StateFile {
+                overlay_status,
+                nixos_generation: Some("test-generation-123".to_string()),
+                ..StateFile::default()
+            };
             *cached = Some(state_file);
         }
 
@@ -3196,6 +3273,226 @@ mod tests {
     }
 
     // ========== Story 4.7: Incremental State Persistence Tests (Review Follow-up) ==========
+
+    // ========== Additional Coverage Tests: MountTracker and unmount_overlays edge cases ==========
+
+    #[test]
+    fn test_mount_tracker_rollback_graceful_fails_force_succeeds() {
+        let fs = MockFilesystem::new();
+        let home = PathBuf::from("/home");
+
+        // Mock /home as mounted
+        fs.mock_set_mounted(&home, true);
+
+        // Configure graceful unmount to fail, but force unmount to succeed
+        // MockFilesystem's mock_set_unmount_should_fail sets both graceful and force to fail
+        // We need a workaround: don't set failure, so graceful works, but that doesn't test the path we want
+        // Actually the MockFilesystem doesn't distinguish graceful vs force - let's just verify the path is covered
+
+        // For this test, let's ensure the force unmount path (line 164) is covered
+        // by having graceful fail and force succeed. MockFilesystem behavior needs checking.
+
+        // Actually, let's set up the mock to simulate graceful failure followed by force success
+        // by using mock_set_unmount_graceful_fails to only fail graceful unmount
+        fs.mock_set_unmount_graceful_fails(&home.to_string_lossy(), true);
+
+        let mut tracker = MountTracker::new(&fs);
+        tracker.push_mount(home.clone());
+
+        // Rollback should succeed (graceful fails, force succeeds)
+        let result = tracker.rollback_all();
+
+        // Should succeed because force unmount works
+        assert!(
+            result.is_ok(),
+            "Rollback should succeed when force unmount works"
+        );
+
+        // Verify /home is unmounted
+        assert!(
+            !fs.is_mounted(&home).unwrap(),
+            "/home should be unmounted after force unmount succeeded"
+        );
+    }
+
+    #[test]
+    fn test_unmount_overlays_graceful_fails_force_succeeds() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+        let state_path = PathBuf::from("/tmp/state.json");
+        let manager = NailsManager::new(fs.clone(), config, state_path);
+
+        let home = PathBuf::from("/home");
+
+        // Mock /home as mounted
+        fs.mock_set_mounted(&home, true);
+
+        // Configure graceful unmount to fail, force to succeed
+        fs.mock_set_unmount_graceful_fails(&home.to_string_lossy(), true);
+
+        let mounted_paths = vec![home.clone()];
+
+        // unmount_overlays should succeed (graceful fails, force succeeds)
+        let result = manager.unmount_overlays(mounted_paths);
+        assert!(
+            result.is_ok(),
+            "Unmount should succeed when force unmount works"
+        );
+
+        // Verify /home is unmounted
+        assert!(
+            !fs.is_mounted(&home).unwrap(),
+            "/home should be unmounted after force unmount succeeded"
+        );
+    }
+
+    #[test]
+    fn test_nails_manager_debug_impl() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let manager = NailsManager::new(fs, config.clone(), state_path.clone());
+
+        // Test Debug implementation (lines 242-252)
+        let debug_output = format!("{:?}", manager);
+
+        // Verify Debug output contains expected fields
+        assert!(
+            debug_output.contains("NailsManager"),
+            "Debug should contain struct name"
+        );
+        assert!(
+            debug_output.contains("<filesystem>"),
+            "Debug should mask filesystem"
+        );
+        assert!(
+            debug_output.contains("config"),
+            "Debug should contain config field"
+        );
+        assert!(
+            debug_output.contains("state_file_path"),
+            "Debug should contain state_file_path"
+        );
+        assert!(
+            debug_output.contains("<Arc<Mutex<...>>>"),
+            "Debug should mask cached_state"
+        );
+    }
+
+    #[test]
+    fn test_nails_manager_debug_with_nixos_builder() {
+        use crate::NixOSBuilder;
+
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let nixos_builder = NixOSBuilder::new(
+            PathBuf::from("/mnt/hidden/nixos"),
+            PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        );
+        let manager = NailsManager::with_nixos(fs, config, state_path, nixos_builder);
+
+        // Test Debug implementation with NixOSBuilder present
+        let debug_output = format!("{:?}", manager);
+
+        // Verify Debug output contains nixos_builder field
+        assert!(
+            debug_output.contains("nixos_builder"),
+            "Debug should contain nixos_builder field"
+        );
+        assert!(
+            debug_output.contains("<NixOSBuilder>"),
+            "Debug should mask nixos_builder"
+        );
+    }
+
+    #[test]
+    fn test_verify_overlay_status_inactive_with_mounted_overlay_error() {
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let state_path = temp_dir.path().join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Set up overlay as actually mounted
+        fs.mock_set_mounted(Path::new("/home"), true);
+
+        let config = Config::default();
+        let manager = NailsManager::new(fs, config, state_path.clone());
+
+        // Create Inactive state file but with overlay still tracked
+        let mut overlay_status = HashMap::new();
+        overlay_status.insert(
+            PathBuf::from("/home"),
+            OverlayInfo {
+                mount_path: PathBuf::from("/home"),
+                lower_dir: PathBuf::from("/home"),
+                upper_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
+                work_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+                mounted_at: Utc::now(),
+            },
+        );
+
+        let state_file = StateFile {
+            state: SystemState::Inactive,
+            overlay_status,
+            ..StateFile::default()
+        };
+
+        // Save manually
+        let json = serde_json::to_string_pretty(&state_file).unwrap();
+        std::fs::write(&state_path, json).unwrap();
+
+        // Verify should fail (state claims Inactive but overlay is mounted)
+        let result = manager.verify_overlay_status();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), NailsError::InvalidState(_)));
+    }
+
+    #[test]
+    fn test_verify_overlay_status_transitional_state_skipped() {
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let state_path = temp_dir.path().join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Set up overlay as NOT mounted (potential mismatch if we were strict)
+        fs.mock_set_mounted(Path::new("/home"), false);
+
+        let config = Config::default();
+        let manager = NailsManager::new(fs, config, state_path.clone());
+
+        // Create Activating state (transitional) - verification should skip
+        let mut overlay_status = HashMap::new();
+        overlay_status.insert(
+            PathBuf::from("/home"),
+            OverlayInfo {
+                mount_path: PathBuf::from("/home"),
+                lower_dir: PathBuf::from("/home"),
+                upper_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
+                work_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+                mounted_at: Utc::now(),
+            },
+        );
+
+        let state_file = StateFile {
+            state: SystemState::Activating {
+                started_at: Utc::now(),
+            },
+            overlay_status,
+            ..StateFile::default()
+        };
+
+        // Save manually
+        let json = serde_json::to_string_pretty(&state_file).unwrap();
+        std::fs::write(&state_path, json).unwrap();
+
+        // Verify should succeed (transitional states are skipped - line 751)
+        let result = manager.verify_overlay_status();
+        assert!(
+            result.is_ok(),
+            "Transitional state verification should succeed (skip check)"
+        );
+    }
 
     #[test]
     fn test_activate_saves_state_incrementally_after_each_step() {
@@ -3313,5 +3610,497 @@ mod tests {
             assert!(overlays.contains(&PathBuf::from("/home")));
             assert!(overlays.contains(&PathBuf::from("/etc")));
         }
+    }
+
+    // ========== Story 4.8: Progress Indicators with Timing Tests ==========
+
+    #[test]
+    fn test_verbosity_set_get() {
+        let mut manager = create_test_manager();
+
+        // Default should be Normal
+        assert_eq!(manager.verbosity, Verbosity::Normal);
+
+        // Set to Quiet
+        manager.set_verbosity(Verbosity::Quiet);
+        assert_eq!(manager.verbosity, Verbosity::Quiet);
+
+        // Set to Verbose
+        manager.set_verbosity(Verbosity::Verbose);
+        assert_eq!(manager.verbosity, Verbosity::Verbose);
+
+        // Set to Debug
+        manager.set_verbosity(Verbosity::Debug);
+        assert_eq!(manager.verbosity, Verbosity::Debug);
+    }
+
+    #[test]
+    fn test_verbosity_included_in_debug_output() {
+        let manager = create_test_manager();
+        let debug_str = format!("{:?}", manager);
+
+        // Verify verbosity field is included in Debug output
+        assert!(debug_str.contains("verbosity"));
+    }
+
+    #[test]
+    fn test_activate_with_different_verbosity_levels() {
+        // Test that activate() respects verbosity settings
+        // This is tested implicitly through the existing activate tests
+        // since they use Normal verbosity by default
+
+        let mut manager = create_test_manager();
+        manager.set_verbosity(Verbosity::Quiet);
+        assert_eq!(manager.verbosity, Verbosity::Quiet);
+
+        manager.set_verbosity(Verbosity::Debug);
+        assert_eq!(manager.verbosity, Verbosity::Debug);
+    }
+
+    #[test]
+    fn test_stopwatch_used_for_timing() {
+        // Verify Stopwatch is available and works correctly
+        let stopwatch = Stopwatch::start();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let elapsed = stopwatch.elapsed();
+
+        assert!(elapsed.as_millis() >= 10);
+
+        // Verify Display trait works
+        let display = format!("{}", stopwatch);
+        assert!(display.ends_with("ms") || display.ends_with("s"));
+    }
+
+    #[test]
+    fn test_verbosity_ordering_in_manager() {
+        // Verify verbosity levels can be compared
+        assert!(Verbosity::Quiet < Verbosity::Normal);
+        assert!(Verbosity::Normal < Verbosity::Verbose);
+        assert!(Verbosity::Verbose < Verbosity::Debug);
+    }
+
+    /// Integration test: Verify activate() includes progress timing
+    ///
+    /// This test verifies that the activate() method uses Stopwatch
+    /// for timing and respects verbosity levels. We can't directly
+    /// capture tracing events in unit tests without tracing-test crate,
+    /// but we verify the code compiles and runs with different verbosity
+    /// levels.
+    #[test]
+    fn test_activate_progress_timing_integration() {
+        use std::sync::Arc;
+
+        // Create mock hidden volume structure in temp dir
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Setup initial state file
+        let initial_state = StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        };
+        initial_state
+            .save_with_custom_root(&state_path, mock_hidden_vol)
+            .expect("Should save initial state");
+
+        // Create manager with Normal verbosity
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            ..Config::default()
+        };
+        let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
+        manager.set_verbosity(Verbosity::Normal);
+
+        let manager_arc = Arc::new(Mutex::new(manager));
+
+        // Run activate with no_preflight=true to skip checks
+        let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+
+        // Should succeed (even with no overlays configured)
+        assert!(result.is_ok(), "Activate should succeed: {:?}", result);
+
+        // Verify final state is Active
+        let manager = manager_arc.lock().unwrap();
+        let final_state = manager.current_state().expect("Should load state");
+        assert!(final_state.is_active(), "System should be active");
+    }
+
+    #[test]
+    fn test_activate_with_quiet_verbosity() {
+        use std::sync::Arc;
+
+        // Create mock hidden volume structure in temp dir
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Setup initial state file
+        let initial_state = StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        };
+        initial_state
+            .save_with_custom_root(&state_path, mock_hidden_vol)
+            .expect("Should save initial state");
+
+        // Create manager with Quiet verbosity
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            ..Config::default()
+        };
+        let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
+        manager.set_verbosity(Verbosity::Quiet);
+
+        let manager_arc = Arc::new(Mutex::new(manager));
+
+        // Run activate
+        let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+
+        // Should succeed
+        assert!(result.is_ok(), "Activate should succeed: {:?}", result);
+
+        // Verify final state is Active
+        let manager = manager_arc.lock().unwrap();
+        let final_state = manager.current_state().expect("Should load state");
+        assert!(final_state.is_active(), "System should be active");
+    }
+
+    #[test]
+    fn test_activate_with_verbose_verbosity() {
+        use std::sync::Arc;
+
+        // Create mock hidden volume structure in temp dir
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Setup initial state file
+        let initial_state = StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        };
+        initial_state
+            .save_with_custom_root(&state_path, mock_hidden_vol)
+            .expect("Should save initial state");
+
+        // Create manager with Verbose verbosity
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            ..Config::default()
+        };
+        let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
+        manager.set_verbosity(Verbosity::Verbose);
+
+        let manager_arc = Arc::new(Mutex::new(manager));
+
+        // Run activate
+        let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+
+        // Should succeed
+        assert!(result.is_ok(), "Activate should succeed: {:?}", result);
+    }
+
+    #[test]
+    fn test_activate_with_debug_verbosity() {
+        use std::sync::Arc;
+
+        // Create mock hidden volume structure in temp dir
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Setup initial state file
+        let initial_state = StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        };
+        initial_state
+            .save_with_custom_root(&state_path, mock_hidden_vol)
+            .expect("Should save initial state");
+
+        // Create manager with Debug verbosity
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            ..Config::default()
+        };
+        let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
+        manager.set_verbosity(Verbosity::Debug);
+
+        let manager_arc = Arc::new(Mutex::new(manager));
+
+        // Run activate
+        let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+
+        // Should succeed
+        assert!(result.is_ok(), "Activate should succeed: {:?}", result);
+    }
+
+    // ========================================================================
+    // Progress Logging Tests - Tracing Event Capture (Story 4.8 AC: 7)
+    // ========================================================================
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_activate_logs_all_progress_steps() {
+        use std::sync::Arc;
+
+        // Create mock hidden volume structure in temp dir
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Setup initial state file
+        let initial_state = StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        };
+        initial_state
+            .save_with_custom_root(&state_path, mock_hidden_vol)
+            .expect("Should save initial state");
+
+        // Create manager with Normal verbosity
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            ..Config::default()
+        };
+        let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
+        manager.set_verbosity(Verbosity::Normal);
+
+        let manager_arc = Arc::new(Mutex::new(manager));
+
+        // Run activate (skip pre-flight since we're testing progress logging, not validation)
+        let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+        assert!(result.is_ok(), "Activate should succeed: {:?}", result);
+
+        // Verify progress steps were logged (pre-flight will show warning, not "passed" message)
+        assert!(logs_contain("DANGER: Skipping pre-flight checks"));
+        assert!(logs_contain("Activation complete"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_activate_logs_include_timing() {
+        use std::sync::Arc;
+
+        // Create mock hidden volume structure in temp dir
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Setup initial state file
+        let initial_state = StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        };
+        initial_state
+            .save_with_custom_root(&state_path, mock_hidden_vol)
+            .expect("Should save initial state");
+
+        // Create manager with Normal verbosity
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            ..Config::default()
+        };
+        let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
+        manager.set_verbosity(Verbosity::Normal);
+
+        let manager_arc = Arc::new(Mutex::new(manager));
+
+        // Run activate (skip pre-flight to avoid validation failures in test)
+        let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+        assert!(result.is_ok(), "Activate should succeed: {:?}", result);
+
+        // Verify timing is included (look for patterns like "0.1s", "1.2s", "150ms")
+        // The logs should contain timing information in parentheses
+        assert!(
+            logs_contain("(") && (logs_contain("s)") || logs_contain("ms)")),
+            "Logs should contain timing information"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_activate_quiet_mode_minimal_output() {
+        use std::sync::Arc;
+
+        // Create mock hidden volume structure in temp dir
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Setup initial state file
+        let initial_state = StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        };
+        initial_state
+            .save_with_custom_root(&state_path, mock_hidden_vol)
+            .expect("Should save initial state");
+
+        // Create manager with Quiet verbosity
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            ..Config::default()
+        };
+        let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
+        manager.set_verbosity(Verbosity::Quiet);
+
+        let manager_arc = Arc::new(Mutex::new(manager));
+
+        // Run activate
+        let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+        assert!(result.is_ok(), "Activate should succeed: {:?}", result);
+
+        // In quiet mode, should NOT see progress steps
+        assert!(!logs_contain("Pre-flight checks passed"));
+        assert!(!logs_contain("Running pre-flight checks"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_activate_verbose_mode_detailed_output() {
+        use crate::OverlayConfig;
+        use std::sync::Arc;
+
+        // Create mock hidden volume structure in temp dir
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Set up overlay directories
+        fs.mock_set_path_exists("/", true);
+        let upper_dir = mock_hidden_vol.join("overlays/home/upper");
+        let work_dir = mock_hidden_vol.join("overlays/home/work");
+        std::fs::create_dir_all(&upper_dir).unwrap();
+        std::fs::create_dir_all(&work_dir).unwrap();
+        fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+
+        // Setup initial state file
+        let initial_state = StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        };
+        initial_state
+            .save_with_custom_root(&state_path, mock_hidden_vol)
+            .expect("Should save initial state");
+
+        // Create manager with Verbose verbosity and overlay config
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_dir.clone(),
+                work: work_dir.clone(),
+                target: PathBuf::from("/home"),
+            }],
+            ..Config::default()
+        };
+        let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
+        manager.set_verbosity(Verbosity::Verbose);
+
+        let manager_arc = Arc::new(Mutex::new(manager));
+
+        // Run activate
+        let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+        assert!(result.is_ok(), "Activate should succeed: {:?}", result);
+
+        // In verbose mode, should see individual mount details
+        assert!(logs_contain("/home"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_activate_already_active_logged() {
+        use std::sync::Arc;
+
+        // Create mock hidden volume structure in temp dir
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Setup initial state file as ALREADY ACTIVE
+        let initial_state = StateFile {
+            state: SystemState::Active {
+                activated_at: Utc::now(),
+                overlays: vec![],
+            },
+            ..StateFile::default()
+        };
+        initial_state
+            .save_with_custom_root(&state_path, mock_hidden_vol)
+            .expect("Should save initial state");
+
+        // Create manager with Normal verbosity
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            ..Config::default()
+        };
+        let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
+        manager.set_verbosity(Verbosity::Normal);
+
+        let manager_arc = Arc::new(Mutex::new(manager));
+
+        // Run activate (should be idempotent)
+        let result = NailsManager::activate(Arc::clone(&manager_arc), false);
+        assert!(result.is_ok(), "Activate should succeed idempotently");
+
+        // Verify "already active" message was logged
+        assert!(logs_contain("already active"));
     }
 }

@@ -501,9 +501,10 @@ pub struct MockFilesystem {
     nixos_profiles: Arc<Mutex<HashSet<String>>>,
     current_profile: Arc<Mutex<Option<String>>>,
     mount_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Paths that should fail to mount
-    unmount_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Paths that should fail to unmount
-    nails_process_running: Arc<Mutex<bool>>,         // Whether nails processes are running
-    file_contents: Arc<Mutex<HashMap<PathBuf, String>>>, // Mock file contents
+    unmount_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Paths that should fail to unmount (both graceful and force)
+    unmount_graceful_fails: Arc<Mutex<HashSet<PathBuf>>>, // Paths where graceful unmount fails but force succeeds
+    nails_process_running: Arc<Mutex<bool>>,              // Whether nails processes are running
+    file_contents: Arc<Mutex<HashMap<PathBuf, String>>>,  // Mock file contents
     #[allow(clippy::type_complexity)]
     files_with_pattern: Arc<Mutex<HashMap<(PathBuf, String), Vec<PathBuf>>>>, // Mock pattern search results
     mounted_overlays: Arc<Mutex<HashMap<PathBuf, MountInfo>>>, // Track overlay mount metadata
@@ -539,6 +540,7 @@ impl MockFilesystem {
             current_profile: Arc::new(Mutex::new(None)),
             mount_should_fail: Arc::new(Mutex::new(HashSet::new())),
             unmount_should_fail: Arc::new(Mutex::new(HashSet::new())),
+            unmount_graceful_fails: Arc::new(Mutex::new(HashSet::new())),
             nails_process_running: Arc::new(Mutex::new(false)),
             file_contents: Arc::new(Mutex::new(HashMap::new())),
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
@@ -713,6 +715,44 @@ impl MockFilesystem {
     /// ```
     pub fn mock_set_unmount_should_fail(&self, path: &str, should_fail: bool) {
         let mut fail_set = self.unmount_should_fail.lock().unwrap();
+        if should_fail {
+            fail_set.insert(PathBuf::from(path));
+        } else {
+            fail_set.remove(&PathBuf::from(path));
+        }
+    }
+
+    /// Configure graceful unmount to fail for specific paths (force unmount will succeed)
+    ///
+    /// This is useful for testing the graceful-fail-then-force-succeed path in rollback.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path that should fail graceful unmount
+    /// * `should_fail` - If true, graceful unmount will fail (force will succeed)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_mounted(Path::new("/home"), true);
+    ///
+    /// // Configure graceful to fail, force to succeed
+    /// fs.mock_set_unmount_graceful_fails("/home", true);
+    ///
+    /// // Graceful unmount fails
+    /// let graceful_result = fs.unmount(Path::new("/home"), false);
+    /// assert!(graceful_result.is_err());
+    ///
+    /// // Force unmount succeeds
+    /// let force_result = fs.unmount(Path::new("/home"), true);
+    /// assert!(force_result.is_ok());
+    /// ```
+    pub fn mock_set_unmount_graceful_fails(&self, path: &str, should_fail: bool) {
+        let mut fail_set = self.unmount_graceful_fails.lock().unwrap();
         if should_fail {
             fail_set.insert(PathBuf::from(path));
         } else {
@@ -913,7 +953,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn unmount(&self, target: &Path, force: bool) -> Result<()> {
-        // Check if this unmount should fail (for testing rollback)
+        // Check if this unmount should always fail (for testing rollback)
         let fail_set = self.unmount_should_fail.lock().unwrap();
         if fail_set.contains(target) {
             return Err(NailsError::UnmountError {
@@ -922,6 +962,16 @@ impl Filesystem for MockFilesystem {
             });
         }
         drop(fail_set);
+
+        // Check if graceful unmount should fail (but force would succeed)
+        let graceful_fail_set = self.unmount_graceful_fails.lock().unwrap();
+        if graceful_fail_set.contains(target) && !force {
+            return Err(NailsError::UnmountError {
+                path: target.to_path_buf(),
+                reason: "Mock graceful unmount failure (force would succeed)".to_string(),
+            });
+        }
+        drop(graceful_fail_set);
 
         let mut mounts = self.mounted.lock().unwrap();
 

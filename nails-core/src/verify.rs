@@ -1034,4 +1034,179 @@ mod tests {
 
         // If it fails, CLI should exit with code 2 (documented in CLI code)
     }
+
+    // ========================================================================
+    // Additional Coverage Tests
+    // ========================================================================
+
+    #[test]
+    fn test_history_file_exists_but_unreadable() {
+        // Tests the error path when history file exists but can't be read (lines 362-375)
+        let fs = MockFilesystem::new();
+        let verifier = Verifier::new(fs.clone());
+
+        // Set up history file that exists but has no content set (will trigger read error)
+        fs.mock_set_path_exists("/root/.bash_history", true);
+        // Don't set file content - this will cause read_file_content to return an error
+
+        let result = verifier.run(true).unwrap();
+
+        // Should find an info-level finding about unreadable history
+        let info_findings: Vec<_> = result
+            .findings
+            .iter()
+            .filter(|f| f.message.contains("cannot read contents"))
+            .collect();
+        assert_eq!(info_findings.len(), 1);
+        assert_eq!(info_findings[0].severity, Severity::Info);
+        assert!(info_findings[0].fix_guidance.is_some());
+    }
+
+    #[test]
+    fn test_deep_scan_multiple_history_files_with_content() {
+        // Test multiple history files all containing nails commands
+        let fs = MockFilesystem::new();
+        let verifier = Verifier::new(fs.clone());
+
+        // Set up multiple history files with nails commands
+        fs.mock_set_path_exists("/root/.bash_history", true);
+        fs.mock_set_file_content("/root/.bash_history", "nails activate\nls\n");
+
+        fs.mock_set_path_exists("/root/.zsh_history", true);
+        fs.mock_set_file_content("/root/.zsh_history", "NAILS deactivate\ncd /home\n");
+
+        fs.mock_set_path_exists("/home/.bash_history", true);
+        fs.mock_set_file_content("/home/.bash_history", "nails status\n");
+
+        let result = verifier.run(true).unwrap();
+
+        // Should find all three history files with nails commands
+        let history_findings: Vec<_> = result
+            .findings
+            .iter()
+            .filter(|f| f.message.contains("Shell history contains nails commands"))
+            .collect();
+        assert_eq!(history_findings.len(), 3);
+
+        // All should be warnings with fix guidance
+        for finding in history_findings {
+            assert_eq!(finding.severity, Severity::Warn);
+            assert!(finding.fix_guidance.is_some());
+        }
+    }
+
+    #[test]
+    fn test_deep_scan_all_temp_directories() {
+        // Test that deep scan checks all temp directories
+        let fs = MockFilesystem::new();
+        let verifier = Verifier::new(fs.clone());
+
+        // Set up all deep scan paths as directories
+        fs.mock_set_path_exists("/tmp", true);
+        fs.mock_set_path_type("/tmp", "directory");
+        fs.mock_set_path_exists("/var/tmp", true);
+        fs.mock_set_path_type("/var/tmp", "directory");
+        fs.mock_set_path_exists("/var/log", true);
+        fs.mock_set_path_type("/var/log", "directory");
+
+        // Mock pattern search results for each directory
+        fs.mock_set_files_with_pattern(
+            "/tmp",
+            "nails",
+            &[std::path::Path::new("/tmp/nails-test.log")],
+        );
+        fs.mock_set_files_with_pattern(
+            "/var/tmp",
+            "nails",
+            &[std::path::Path::new("/var/tmp/nails-cache")],
+        );
+        fs.mock_set_files_with_pattern(
+            "/var/log",
+            "nails",
+            &[std::path::Path::new("/var/log/nails.log")],
+        );
+
+        let result = verifier.run(true).unwrap();
+
+        // Should find files from all three directories
+        let nails_file_findings: Vec<_> = result
+            .findings
+            .iter()
+            .filter(|f| f.message.contains("NAILS-related file found"))
+            .collect();
+        assert_eq!(nails_file_findings.len(), 3);
+    }
+
+    #[test]
+    fn test_check_all_overlay_mount_points() {
+        // Test that all three mount points are checked
+        let fs = MockFilesystem::new();
+        let verifier = Verifier::new(fs.clone());
+
+        // Set up all three overlay mount points
+        fs.mock_set_mounted(std::path::Path::new("/home"), true);
+        fs.mock_set_mounted(std::path::Path::new("/etc"), true);
+        fs.mock_set_mounted(std::path::Path::new("/root"), true);
+
+        let result = verifier.run(false).unwrap();
+
+        // Should find all three mount findings
+        let mount_findings: Vec<_> = result
+            .findings
+            .iter()
+            .filter(|f| f.category == "mount")
+            .collect();
+        assert_eq!(mount_findings.len(), 3);
+
+        // All should be critical with fix guidance
+        for finding in mount_findings {
+            assert_eq!(finding.severity, Severity::Critical);
+            assert!(finding.fix_guidance.is_some());
+            assert!(
+                finding
+                    .fix_guidance
+                    .as_ref()
+                    .unwrap()
+                    .contains("nails deactivate")
+            );
+        }
+    }
+
+    #[test]
+    fn test_check_all_artifact_paths() {
+        // Test that all artifact paths are checked
+        let fs = MockFilesystem::new();
+        let verifier = Verifier::new(fs.clone());
+
+        // Set up all artifact paths
+        let artifact_paths = [
+            "/tmp/nails.log",
+            "/tmp/nails.toml",
+            "/var/log/nails.log",
+            "/etc/nails",
+            "/home/.nails",
+            "/root/.nails",
+        ];
+
+        for path in &artifact_paths {
+            fs.mock_set_path_exists(path, true);
+        }
+
+        let result = verifier.run(false).unwrap();
+
+        // Should find all artifact files
+        let artifact_findings: Vec<_> = result
+            .findings
+            .iter()
+            .filter(|f| f.category == "file" && f.message.contains("Artifact file found"))
+            .collect();
+        assert_eq!(artifact_findings.len(), artifact_paths.len());
+
+        // All should be warnings with fix guidance containing "rm"
+        for finding in artifact_findings {
+            assert_eq!(finding.severity, Severity::Warn);
+            assert!(finding.fix_guidance.is_some());
+            assert!(finding.fix_guidance.as_ref().unwrap().contains("rm"));
+        }
+    }
 }
