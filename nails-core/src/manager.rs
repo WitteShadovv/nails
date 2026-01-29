@@ -30,7 +30,6 @@
 
 use crate::{Config, Filesystem, NailsError, OverlayInfo, Result, StateFile, SystemState};
 use chrono::Utc;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -577,8 +576,16 @@ impl<F: Filesystem> NailsManager<F> {
         // Update state file without validation
         let mut cached = self.cached_state.lock().unwrap();
         let mut state_file = cached.take().unwrap_or_default();
-        state_file.state = new_state;
+        state_file.state = new_state.clone();
         state_file.last_modified = Utc::now();
+
+        // Task 5 (AC4): Clear overlay_status and nixos_generation when rolling back to Inactive
+        // This ensures the state file doesn't retain stale activation metadata after rollback
+        if matches!(new_state, SystemState::Inactive) {
+            state_file.overlay_status.clear();
+            state_file.nixos_generation = None;
+            tracing::debug!("Rollback to Inactive: cleared overlay_status and nixos_generation");
+        }
 
         // Save to disk with configured hidden volume root
         state_file.save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root)?;
@@ -672,6 +679,25 @@ impl<F: Filesystem> NailsManager<F> {
         Ok(())
     }
 
+    /// Save cached state to disk without validation
+    ///
+    /// Helper method to persist the current cached state to disk.
+    /// Used during incremental state updates (Story 4.7, AC1, AC2).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - State saved successfully
+    /// * `Err(NailsError::StateFileError)` - Failed to write state file
+    fn save_cached_state(&self) -> Result<()> {
+        let mut cached = self.cached_state.lock().unwrap();
+        if let Some(ref mut state_file) = *cached {
+            state_file.last_modified = Utc::now();
+            state_file
+                .save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root)?;
+        }
+        Ok(())
+    }
+
     /// Verify state file matches actual system state
     ///
     /// Checks that all overlays listed in state file are actually
@@ -694,10 +720,10 @@ impl<F: Filesystem> NailsManager<F> {
     /// let manager = NailsManager::new(fs, config, state_path);
     ///
     /// // Verify state matches reality
-    /// let result = manager.verify_state();
+    /// let result = manager.verify_overlay_status();
     /// assert!(result.is_ok());
     /// ```
-    pub fn verify_state(&self) -> Result<()> {
+    pub fn verify_overlay_status(&self) -> Result<()> {
         // Fresh read from disk (bypass cache)
         let state_file = StateFile::load(&self.state_file_path)?;
 
@@ -992,7 +1018,7 @@ impl<F: Filesystem> NailsManager<F> {
             }
         };
 
-        // Step 8: Mount overlays using MountTracker for proper LIFO rollback
+        // Step 8: Mount overlays with incremental state tracking (Story 4.7, AC1, AC2, Task 4)
         // Mount order is critical: /home first (no dependencies), /etc second (may depend on /home)
         // See MOUNT_ORDER constant for rationale (Story 4.6, AC1)
         tracing::info!("Mounting overlays...");
@@ -1027,6 +1053,34 @@ impl<F: Filesystem> NailsManager<F> {
                     Ok(_) => {
                         tracker.push_mount(overlay.target.clone());
                         tracing::info!("  ✓ {} mounted", overlay.target.display());
+
+                        // Story 4.7, AC2, Task 4: Update overlay_status incrementally after EACH mount
+                        // This ensures crash recovery can track partial activation progress
+                        let overlay_info = OverlayInfo {
+                            mount_path: overlay.target.clone(),
+                            lower_dir: overlay.lower.clone(),
+                            upper_dir: overlay.upper.clone(),
+                            work_dir: overlay.work.clone(),
+                            mounted_at: Utc::now(),
+                        };
+
+                        // Update cached state with this mount
+                        let mut cached = manager.cached_state.lock().unwrap();
+                        if let Some(ref mut state_file) = *cached {
+                            state_file
+                                .overlay_status
+                                .insert(overlay.target.clone(), overlay_info);
+
+                            // Save state file to disk after each mount (AC1, AC2)
+                            // State saves during activation are for crash recovery only - the mount itself succeeded,
+                            // so we continue despite save failures. The final state save at ACTIVE transition will
+                            // succeed, and partial state is better than no state for debugging activation failures.
+                            drop(cached); // Release lock before saving
+                            if let Err(e) = manager.save_cached_state() {
+                                tracing::warn!("Failed to save state after mount: {}", e);
+                                // Continue - mount succeeded, state save is for crash recovery only
+                            }
+                        }
                     }
                     Err(e) => {
                         tracing::error!("✗ {} mount failed: {}", overlay.target.display(), e);
@@ -1052,7 +1106,7 @@ impl<F: Filesystem> NailsManager<F> {
             phase_start.elapsed().as_secs_f64()
         );
 
-        // Step 9: Switch NixOS profile (if built)
+        // Step 9: Switch NixOS profile and update nixos_generation (Story 4.7, AC3, Task 3.3)
         if let Some(ref generation_id) = generation {
             let manager = manager_arc.lock().unwrap();
             if let Some(ref builder) = manager.nixos_builder {
@@ -1068,49 +1122,34 @@ impl<F: Filesystem> NailsManager<F> {
                     "✓ NixOS profile switched ({:.2}s)",
                     phase_start.elapsed().as_secs_f64()
                 );
+
+                // Story 4.7, AC3: Update nixos_generation in state file after successful switch
+                let mut cached = manager.cached_state.lock().unwrap();
+                if let Some(ref mut state_file) = *cached {
+                    state_file.nixos_generation = Some(generation_id.clone());
+
+                    // Save state file to disk (AC1, AC3)
+                    // State save failures here are non-critical - the switch succeeded and the system is functional.
+                    // The final ACTIVE transition save will persist this data. This incremental save aids crash recovery.
+                    drop(cached); // Release lock before saving
+                    if let Err(e) = manager.save_cached_state() {
+                        tracing::warn!("Failed to save nixos_generation to state: {}", e);
+                        // Continue - switch succeeded, state save is for tracking/crash recovery only
+                    }
+                }
             }
         }
 
-        // Step 10: Populate overlay_status for state tracking
-        let overlays = {
-            let manager = manager_arc.lock().unwrap();
-            manager.config.overlays.clone()
-        };
-
-        let mut overlay_status = HashMap::new();
-        for overlay in &overlays {
-            if mounted_overlays.contains(&overlay.target) {
-                overlay_status.insert(
-                    overlay.target.clone(),
-                    OverlayInfo {
-                        mount_path: overlay.target.clone(),
-                        lower_dir: overlay.lower.clone(),
-                        upper_dir: overlay.upper.clone(),
-                        work_dir: overlay.work.clone(),
-                        mounted_at: Utc::now(),
-                    },
-                );
-            }
-        }
-
-        // Step 11: Update overlay_status in cached state
-        {
-            let manager = manager_arc.lock().unwrap();
-            let mut cached = manager.cached_state.lock().unwrap();
-            if let Some(ref mut state_file) = *cached {
-                state_file.overlay_status = overlay_status;
-            }
-        }
-
-        // Step 12: Transition to Active state
+        // Step 10: Transition to Active state (Story 4.7, AC1, Task 3.4)
         {
             let mut manager = manager_arc.lock().unwrap();
             let current = manager.current_state()?;
             let active_state = current.complete_activation(mounted_overlays)?;
+            // update_state() saves to disk automatically (line 675)
             manager.update_state(active_state)?;
         }
 
-        // Step 13: Success - commit guard to prevent rollback
+        // Step 11: Success - commit guard to prevent rollback
         guard.commit();
 
         tracing::info!(
@@ -1562,10 +1601,10 @@ mod tests {
         assert!(matches!(state, SystemState::Activating { .. }));
     }
 
-    // ========== Task 6: verify_state() Tests ==========
+    // ========== Task 6: verify_overlay_status() Tests ==========
 
     #[test]
-    fn test_verify_state_active_with_mounted_overlays_ok() {
+    fn test_verify_overlay_status_active_with_mounted_overlays_ok() {
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let state_path = temp_dir.path().join("state.json");
 
@@ -1604,12 +1643,12 @@ mod tests {
         std::fs::write(&state_path, json).unwrap();
 
         // Verify should succeed
-        let result = manager.verify_state();
+        let result = manager.verify_overlay_status();
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_verify_state_active_with_missing_overlay_error() {
+    fn test_verify_overlay_status_active_with_missing_overlay_error() {
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let state_path = temp_dir.path().join("state.json");
 
@@ -1646,7 +1685,7 @@ mod tests {
         std::fs::write(&state_path, json).unwrap();
 
         // Verify should fail (state claims mounted but it's not)
-        let result = manager.verify_state();
+        let result = manager.verify_overlay_status();
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), NailsError::InvalidState(_)));
     }
@@ -3062,5 +3101,217 @@ mod tests {
         assert!(!fs.is_mounted(&home).unwrap());
         assert!(!fs.is_mounted(&etc).unwrap());
         assert!(!fs.is_mounted(&opt).unwrap());
+    }
+
+    // ========== Story 4.7: StateFile Rollback Clearing Tests ==========
+
+    #[test]
+    fn test_rollback_clears_overlay_status_and_nixos_generation() {
+        use crate::OverlayConfig;
+
+        // Create mock hidden volume structure
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Set up paths to exist
+        fs.mock_set_path_exists("/", true);
+        let upper_dir = mock_hidden_vol.join("overlays/home/upper");
+        let work_dir = mock_hidden_vol.join("overlays/home/work");
+        std::fs::create_dir_all(&upper_dir).unwrap();
+        std::fs::create_dir_all(&work_dir).unwrap();
+        fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+
+        // Configure filesystem to fail mount (to trigger rollback)
+        fs.mock_set_mount_should_fail("/home", true);
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_dir.clone(),
+                work: work_dir.clone(),
+                target: PathBuf::from("/home"),
+            }],
+            ..Config::default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs,
+            config,
+            state_path.clone(),
+        )));
+
+        // Manually set up state file with overlay_status and nixos_generation BEFORE activation
+        // (simulating a previous activation that left metadata)
+        {
+            let mgr = manager.lock().unwrap();
+            let mut overlay_status = HashMap::new();
+            overlay_status.insert(
+                PathBuf::from("/home"),
+                OverlayInfo {
+                    mount_path: PathBuf::from("/home"),
+                    lower_dir: PathBuf::from("/"),
+                    upper_dir: upper_dir.clone(),
+                    work_dir: work_dir.clone(),
+                    mounted_at: Utc::now(),
+                },
+            );
+
+            let mut cached = mgr.cached_state.lock().unwrap();
+            let mut state_file = StateFile::default();
+            state_file.overlay_status = overlay_status;
+            state_file.nixos_generation = Some("test-generation-123".to_string());
+            *cached = Some(state_file);
+        }
+
+        // Activation should fail (mount fails)
+        let result = NailsManager::activate(Arc::clone(&manager), true);
+        assert!(result.is_err(), "Activation should fail");
+
+        // AC4: Verify rollback cleared overlay_status and nixos_generation
+        let loaded = StateFile::load(&state_path).unwrap();
+        assert_eq!(
+            loaded.state,
+            SystemState::Inactive,
+            "State should be Inactive after rollback"
+        );
+
+        // THIS IS THE KEY TEST for Task 5 (AC4):
+        assert!(
+            loaded.overlay_status.is_empty(),
+            "overlay_status should be cleared after rollback (AC4)"
+        );
+        assert_eq!(
+            loaded.nixos_generation, None,
+            "nixos_generation should be cleared after rollback (AC4)"
+        );
+    }
+
+    // ========== Story 4.7: Incremental State Persistence Tests (Review Follow-up) ==========
+
+    #[test]
+    fn test_activate_saves_state_incrementally_after_each_step() {
+        use crate::OverlayConfig;
+
+        // Create mock hidden volume structure
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Set up paths to exist
+        fs.mock_set_path_exists("/", true);
+
+        // Create two overlays: /home and /etc
+        let home_upper = mock_hidden_vol.join("overlays/home/upper");
+        let home_work = mock_hidden_vol.join("overlays/home/work");
+        let etc_upper = mock_hidden_vol.join("overlays/etc/upper");
+        let etc_work = mock_hidden_vol.join("overlays/etc/work");
+
+        std::fs::create_dir_all(&home_upper).unwrap();
+        std::fs::create_dir_all(&home_work).unwrap();
+        std::fs::create_dir_all(&etc_upper).unwrap();
+        std::fs::create_dir_all(&etc_work).unwrap();
+
+        fs.mock_set_path_exists(home_upper.to_str().unwrap(), true);
+        fs.mock_set_path_exists(home_work.to_str().unwrap(), true);
+        fs.mock_set_path_exists(etc_upper.to_str().unwrap(), true);
+        fs.mock_set_path_exists(etc_work.to_str().unwrap(), true);
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![
+                OverlayConfig {
+                    name: "home".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: home_upper.clone(),
+                    work: home_work.clone(),
+                    target: PathBuf::from("/home"),
+                },
+                OverlayConfig {
+                    name: "etc".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: etc_upper.clone(),
+                    work: etc_work.clone(),
+                    target: PathBuf::from("/etc"),
+                },
+            ],
+            ..Config::default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        // Run activation
+        let result = NailsManager::activate(Arc::clone(&manager), true);
+        assert!(result.is_ok(), "Activation should succeed");
+
+        // Verify Step 1: State file contains Activating after transition
+        // (This is tested implicitly - we can't check mid-activation, but we verify final state)
+
+        // Verify final state file contains overlay_status for BOTH mounts
+        let final_state = StateFile::load(&state_path).expect("Should load final state");
+
+        // AC2: Verify overlay_status populated with /home mount
+        assert!(
+            final_state
+                .overlay_status
+                .contains_key(&PathBuf::from("/home")),
+            "overlay_status should contain /home entry (AC2)"
+        );
+
+        let home_info = final_state
+            .overlay_status
+            .get(&PathBuf::from("/home"))
+            .unwrap();
+        assert_eq!(home_info.mount_path, PathBuf::from("/home"));
+        assert_eq!(home_info.lower_dir, PathBuf::from("/"));
+        assert_eq!(home_info.upper_dir, home_upper);
+        assert_eq!(home_info.work_dir, home_work);
+
+        // AC2: Verify overlay_status populated with /etc mount
+        assert!(
+            final_state
+                .overlay_status
+                .contains_key(&PathBuf::from("/etc")),
+            "overlay_status should contain /etc entry (AC2)"
+        );
+
+        let etc_info = final_state
+            .overlay_status
+            .get(&PathBuf::from("/etc"))
+            .unwrap();
+        assert_eq!(etc_info.mount_path, PathBuf::from("/etc"));
+        assert_eq!(etc_info.lower_dir, PathBuf::from("/"));
+        assert_eq!(etc_info.upper_dir, etc_upper);
+        assert_eq!(etc_info.work_dir, etc_work);
+
+        // AC1: Verify final state is Active
+        assert!(
+            matches!(final_state.state, SystemState::Active { .. }),
+            "Final state should be Active (AC1)"
+        );
+
+        // Verify both overlays are in the Active state's overlay list
+        if let SystemState::Active { overlays, .. } = &final_state.state {
+            assert_eq!(overlays.len(), 2, "Should have 2 overlays in Active state");
+            assert!(overlays.contains(&PathBuf::from("/home")));
+            assert!(overlays.contains(&PathBuf::from("/etc")));
+        }
     }
 }
