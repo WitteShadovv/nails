@@ -470,7 +470,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// // Activate with preflight checks (no_preflight = false)
     /// let result = NailsManager::activate(manager, false);
     /// ```
-    fn run_preflight_checks(&self) -> Result<()> {
+    pub fn run_preflight_checks(&self) -> Result<()> {
         use crate::preflight::{
             HiddenStorageStructureCheck, HiddenVolumeCheck, OverlayDirectoriesCheck,
             PreFlightRegistry, SpaceCheck, StateCheck, SwapCheck,
@@ -544,6 +544,30 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         Ok(())
+    }
+
+    /// Get reference to filesystem implementation
+    ///
+    /// Provides access to filesystem operations for advanced use cases like
+    /// ActivationOrchestrator (Story 4.5).
+    ///
+    /// # Returns
+    ///
+    /// Reference to the filesystem implementation (RealFilesystem or MockFilesystem)
+    pub fn filesystem(&self) -> &F {
+        &self.filesystem
+    }
+
+    /// Get reference to configuration
+    ///
+    /// Provides access to configuration for advanced use cases like
+    /// ActivationOrchestrator (Story 4.5).
+    ///
+    /// # Returns
+    ///
+    /// Reference to the configuration
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 
     /// Activate NAILS with automatic RAII rollback on failure

@@ -43,6 +43,12 @@ pub mod preflight;
 // Forensic validation system
 pub mod verify;
 
+// NixOS profile builder
+pub mod nixos;
+
+// Activation orchestrator
+pub mod orchestrator;
+
 // Re-export for convenience
 pub use config::{Config, OverlayConfig};
 pub use error::{NailsError, Result};
@@ -60,6 +66,12 @@ pub use preflight::{
 
 // Forensic validation exports
 pub use verify::{Finding, ScanDepth, Severity, Verifier, VerifyResult, VerifyStatus};
+
+// NixOS profile builder exports
+pub use nixos::NixOSBuilder;
+
+// Activation orchestrator exports
+pub use orchestrator::{ActivationOrchestrator, MountTracker};
 
 /// RAII guard for automatic state rollback on failure
 ///
