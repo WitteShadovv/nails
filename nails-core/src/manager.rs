@@ -34,6 +34,155 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// RAII mount tracker for automatic rollback on failure
+///
+/// Tracks mounted overlays in LIFO order and provides automatic rollback
+/// if the MountTracker is dropped without being committed.
+///
+/// # Architecture
+///
+/// - **LIFO Ordering**: Mounts are tracked in a `Vec<PathBuf>` and unmounted in reverse
+/// - **Best-Effort Rollback**: Continues unmounting even if individual unmounts fail
+/// - **RAII Pattern**: Automatic rollback on drop if not committed
+/// - **Graceful unmount first**: Tries graceful unmount (force=false) before forcing
+///
+/// # Example
+///
+/// ```no_run
+/// use nails_core::{MockFilesystem, MountTracker};
+/// use std::path::PathBuf;
+///
+/// let fs = MockFilesystem::new();
+/// let mut tracker = MountTracker::new(&fs);
+///
+/// // Track successful mounts
+/// tracker.push_mount(PathBuf::from("/home"));
+/// tracker.push_mount(PathBuf::from("/etc"));
+///
+/// // Commit to prevent rollback
+/// tracker.commit();
+///
+/// // If not committed, tracker will automatically rollback on drop
+/// ```
+pub struct MountTracker<'a, F: Filesystem> {
+    /// List of successfully mounted paths (LIFO order)
+    pub mounted: Vec<PathBuf>,
+    /// Filesystem reference for unmount operations
+    filesystem: &'a F,
+    /// Whether mounts have been committed (prevents rollback on drop)
+    pub committed: bool,
+}
+
+impl<'a, F: Filesystem> MountTracker<'a, F> {
+    /// Create a new MountTracker
+    ///
+    /// # Arguments
+    ///
+    /// - `filesystem`: Reference to filesystem for unmount operations
+    ///
+    /// # Returns
+    ///
+    /// New MountTracker instance with empty mount list
+    pub fn new(filesystem: &'a F) -> Self {
+        Self {
+            mounted: Vec::new(),
+            filesystem,
+            committed: false,
+        }
+    }
+
+    /// Track a successful mount
+    ///
+    /// Adds the mount path to the tracked list for potential rollback.
+    ///
+    /// # Arguments
+    ///
+    /// - `path`: Path of the successfully mounted overlay
+    pub fn push_mount(&mut self, path: PathBuf) {
+        self.mounted.push(path);
+    }
+
+    /// Commit mounts to prevent automatic rollback
+    ///
+    /// Mark the tracker as committed, preventing automatic rollback
+    /// when the tracker is dropped.
+    pub fn commit(&mut self) {
+        self.committed = true;
+    }
+
+    /// Rollback all mounts in reverse order (LIFO) with graceful unmount first
+    ///
+    /// Unmounts all tracked overlays in reverse order (last mounted, first unmounted).
+    /// Uses best-effort approach: continues unmounting even if some fail.
+    /// Tries graceful unmount (force=false) first, then force unmount if that fails.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` if all unmounts succeed
+    /// - `Err(NailsError)` with aggregate errors if any unmounts fail
+    ///
+    /// # Best-Effort Behavior
+    ///
+    /// Even if this method returns an error, it will have attempted to unmount
+    /// all tracked paths. The error contains details of all failures.
+    pub fn rollback_all(&mut self) -> Result<()> {
+        let mut errors: Vec<String> = Vec::new();
+
+        // LIFO: unmount in reverse order
+        for path in self.mounted.iter().rev() {
+            tracing::info!("↩ Unmounting {} (rollback)", path.display());
+
+            // Try graceful unmount first (Epic 4.2 requirement)
+            if let Err(e) = self.filesystem.unmount(path, false) {
+                tracing::warn!(
+                    "Graceful unmount failed for {}, trying force unmount: {}",
+                    path.display(),
+                    e
+                );
+
+                // If graceful fails, try force unmount
+                if let Err(force_err) = self.filesystem.unmount(path, true) {
+                    let msg = format!(
+                        "Failed to unmount {} (graceful and force both failed): {}",
+                        path.display(),
+                        force_err
+                    );
+                    tracing::warn!("{}", msg);
+                    errors.push(msg); // Collect error but continue (best-effort)
+                } else {
+                    tracing::info!("Force unmount succeeded for {}", path.display());
+                }
+            } else {
+                tracing::info!("✓ Graceful unmount succeeded for {}", path.display());
+            }
+        }
+
+        self.mounted.clear();
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(NailsError::OverlayError(format!(
+                "Rollback completed with errors: {}",
+                errors.join("; ")
+            )))
+        }
+    }
+}
+
+/// Automatic rollback on drop (RAII pattern)
+///
+/// If the MountTracker is dropped without being committed,
+/// it will automatically attempt to rollback all mounts.
+impl<'a, F: Filesystem> Drop for MountTracker<'a, F> {
+    fn drop(&mut self) {
+        if !self.committed && !self.mounted.is_empty() {
+            tracing::warn!("MountTracker dropped without commit, rolling back...");
+            let _ = self.rollback_all();
+        }
+    }
+}
+
 /// Central orchestrator for all NAILS operations
 ///
 /// NailsManager coordinates state transitions, filesystem operations,
@@ -58,7 +207,6 @@ use std::sync::{Arc, Mutex};
 /// - AR3: Core library contains all business logic
 /// - AR4: Testable without root via trait abstraction
 /// - AR44: Generic NailsManager<F: Filesystem> pattern
-#[derive(Debug)]
 pub struct NailsManager<F: Filesystem> {
     /// Filesystem implementation (real or mock)
     filesystem: F,
@@ -72,6 +220,26 @@ pub struct NailsManager<F: Filesystem> {
     /// Cached state file (lazy loaded, thread-safe)
     /// Arc<Mutex<_>> enables thread-safe access and clone implementation
     cached_state: Arc<Mutex<Option<StateFile>>>,
+
+    /// NixOS profile builder (optional, for activation with NixOS switching)
+    /// If None, activation will skip NixOS build/switch steps
+    nixos_builder: Option<crate::nixos::NixOSBuilder>,
+}
+
+// Manual Debug implementation because NixOSBuilder contains trait objects
+impl<F: Filesystem> std::fmt::Debug for NailsManager<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NailsManager")
+            .field("filesystem", &"<filesystem>")
+            .field("config", &self.config)
+            .field("state_file_path", &self.state_file_path)
+            .field("cached_state", &"<Arc<Mutex<...>>>")
+            .field(
+                "nixos_builder",
+                &self.nixos_builder.as_ref().map(|_| "<NixOSBuilder>"),
+            )
+            .finish()
+    }
 }
 
 impl<F: Filesystem> NailsManager<F> {
@@ -88,7 +256,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///
     /// # Returns
     ///
-    /// New NailsManager instance with unloaded state (None).
+    /// New NailsManager instance with unloaded state (None) and no NixOS builder.
     ///
     /// # Example
     ///
@@ -107,6 +275,54 @@ impl<F: Filesystem> NailsManager<F> {
             config,
             state_file_path,
             cached_state: Arc::new(Mutex::new(None)),
+            nixos_builder: None,
+        }
+    }
+
+    /// Create a new NailsManager with NixOS builder for full activation support
+    ///
+    /// Use this constructor when you need NixOS profile building and switching
+    /// during activation. The standard `new()` constructor creates a manager
+    /// without NixOS support (activation will skip NixOS steps).
+    ///
+    /// # Arguments
+    ///
+    /// * `filesystem` - Filesystem implementation (RealFilesystem or MockFilesystem)
+    /// * `config` - Application configuration
+    /// * `state_file_path` - Path to state file (must be on hidden volume)
+    /// * `nixos_builder` - NixOS profile builder instance
+    ///
+    /// # Returns
+    ///
+    /// New NailsManager instance with NixOS support enabled.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::{NailsManager, MockFilesystem, Config, NixOSBuilder};
+    /// use std::path::PathBuf;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// let config = Config::default();
+    /// let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+    /// let nixos_builder = NixOSBuilder::new(
+    ///     PathBuf::from("/mnt/hidden/nixos"),
+    ///     PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    /// );
+    /// let manager = NailsManager::with_nixos(fs, config, state_path, nixos_builder);
+    /// ```
+    pub fn with_nixos(
+        filesystem: F,
+        config: Config,
+        state_file_path: PathBuf,
+        nixos_builder: crate::nixos::NixOSBuilder,
+    ) -> Self {
+        Self {
+            filesystem,
+            config,
+            state_file_path,
+            cached_state: Arc::new(Mutex::new(None)),
+            nixos_builder: Some(nixos_builder),
         }
     }
 
@@ -617,83 +833,134 @@ impl<F: Filesystem> NailsManager<F> {
     /// ```
     pub fn activate(manager_arc: Arc<Mutex<Self>>, no_preflight: bool) -> Result<()> {
         use crate::StateGuard;
+        use std::time::Instant;
 
-        // Step 1: Run pre-flight checks (unless skipped)
-        if no_preflight {
-            tracing::warn!("DANGER: Skipping pre-flight checks. Activation may fail.");
-        } else {
-            // Run checks before creating StateGuard to avoid rollback overhead
-            let manager = manager_arc.lock().unwrap();
-            manager.run_preflight_checks()?;
-            // Drop lock before proceeding
-            drop(manager);
-        }
+        let start = Instant::now();
 
-        // Step 2: Capture current state for StateGuard BEFORE any modifications
+        // Step 1: Capture current state for idempotency check and StateGuard
         let previous_state = {
             let manager = manager_arc.lock().unwrap();
             manager.current_state()?
         };
 
-        // Step 3: Create StateGuard for automatic rollback on failure/panic
+        // Step 2: Idempotent check - if already active, return early (AC: 7)
+        if previous_state.is_active() {
+            tracing::info!("System already active, nothing to do");
+            return Ok(());
+        }
+
+        // Step 3: Run pre-flight checks (unless skipped)
+        if no_preflight {
+            tracing::warn!("DANGER: Skipping pre-flight checks. Activation may fail.");
+        } else {
+            tracing::info!("Running pre-flight checks...");
+            let phase_start = Instant::now();
+            // Run checks before creating StateGuard to avoid rollback overhead
+            let manager = manager_arc.lock().unwrap();
+            manager.run_preflight_checks()?;
+            // Drop lock before proceeding
+            drop(manager);
+            tracing::info!(
+                "✓ Pre-flight checks passed ({:.2}s)",
+                phase_start.elapsed().as_secs_f64()
+            );
+        }
+
+        // Step 4: Create StateGuard for automatic rollback on failure/panic
         // If we don't call guard.commit(), drop() will rollback to previous_state
         let guard = StateGuard::new(Arc::clone(&manager_arc), previous_state.clone());
 
-        // Step 4: Validate transition is allowed
+        // Step 5: Validate transition is allowed
         let activating_state = previous_state.begin_activation()?;
 
-        // Step 5: Transition to Activating state
+        // Step 6: Transition to Activating state
         {
             let mut manager = manager_arc.lock().unwrap();
             manager.update_state(activating_state)?;
         }
 
-        // Step 6: Mount overlays - collect mounted paths for Active state
-        let mut mounted_overlays = Vec::new();
+        // Step 7: Build NixOS profile (if NixOSBuilder configured)
+        let generation = {
+            let manager = manager_arc.lock().unwrap();
+            if let Some(ref builder) = manager.nixos_builder {
+                tracing::info!("Building NixOS profile...");
+                let phase_start = Instant::now();
+                let generation_id = builder.build_profile().map_err(|e| match e {
+                    NailsError::NixOSError(msg) => {
+                        NailsError::NixOSError(format!("NixOS build failed: {}", msg))
+                    }
+                    other => other,
+                })?;
+                tracing::info!(
+                    "✓ NixOS profile ready: generation {} ({:.2}s)",
+                    generation_id,
+                    phase_start.elapsed().as_secs_f64()
+                );
+                Some(generation_id)
+            } else {
+                None
+            }
+        };
+
+        // Step 8: Mount overlays using MountTracker for proper LIFO rollback
+        tracing::info!("Mounting overlays...");
+        let phase_start = Instant::now();
+        let mounted_overlays = {
+            let manager = manager_arc.lock().unwrap();
+            let mut tracker = MountTracker::new(&manager.filesystem);
+
+            for overlay in &manager.config.overlays {
+                manager
+                    .filesystem
+                    .mount_overlay(
+                        &overlay.lower,
+                        &overlay.upper,
+                        &overlay.work,
+                        &overlay.target,
+                    )
+                    .map_err(|e| {
+                        tracing::error!("Failed to mount overlay {}: {}", overlay.name, e);
+                        e
+                    })?;
+
+                tracker.push_mount(overlay.target.clone());
+                tracing::info!("  ✓ {} mounted", overlay.target.display());
+            }
+
+            // Commit tracker to prevent automatic rollback on drop
+            tracker.commit();
+            tracker.mounted.clone()
+        };
+        tracing::info!(
+            "✓ All overlays mounted ({:.2}s)",
+            phase_start.elapsed().as_secs_f64()
+        );
+
+        // Step 9: Switch NixOS profile (if built)
+        if let Some(ref generation_id) = generation {
+            let manager = manager_arc.lock().unwrap();
+            if let Some(ref builder) = manager.nixos_builder {
+                tracing::info!("Switching to NixOS profile...");
+                let phase_start = Instant::now();
+                builder.switch_profile(generation_id).map_err(|e| match e {
+                    NailsError::NixOSError(msg) => {
+                        NailsError::NixOSError(format!("NixOS switch failed: {}", msg))
+                    }
+                    other => other,
+                })?;
+                tracing::info!(
+                    "✓ NixOS profile switched ({:.2}s)",
+                    phase_start.elapsed().as_secs_f64()
+                );
+            }
+        }
+
+        // Step 10: Populate overlay_status for state tracking
         let overlays = {
             let manager = manager_arc.lock().unwrap();
             manager.config.overlays.clone()
         };
 
-        for overlay in &overlays {
-            let mount_result = {
-                let manager = manager_arc.lock().unwrap();
-                manager.filesystem.mount_overlay(
-                    &overlay.lower,
-                    &overlay.upper,
-                    &overlay.work,
-                    &overlay.target,
-                )
-            };
-
-            match mount_result {
-                Ok(()) => {
-                    mounted_overlays.push(overlay.target.clone());
-                    tracing::info!("Successfully mounted overlay: {}", overlay.name);
-                }
-                Err(e) => {
-                    // Mount failed - StateGuard will automatically rollback in drop()
-                    tracing::error!("Failed to mount overlay {}: {}", overlay.name, e);
-
-                    // Unmount any overlays we successfully mounted before rollback
-                    let manager = manager_arc.lock().unwrap();
-                    for mounted_path in &mounted_overlays {
-                        if let Err(unmount_err) = manager.filesystem.unmount(mounted_path, false) {
-                            tracing::error!(
-                                "Failed to unmount {} during rollback: {}",
-                                mounted_path.display(),
-                                unmount_err
-                            );
-                        }
-                    }
-
-                    // Return error - StateGuard drop() will restore previous state
-                    return Err(e);
-                }
-            }
-        }
-
-        // Step 6: Populate overlay_status for state tracking
         let mut overlay_status = HashMap::new();
         for overlay in &overlays {
             if mounted_overlays.contains(&overlay.target) {
@@ -710,7 +977,7 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
-        // Step 7: Update overlay_status in cached state
+        // Step 11: Update overlay_status in cached state
         {
             let manager = manager_arc.lock().unwrap();
             let mut cached = manager.cached_state.lock().unwrap();
@@ -719,7 +986,7 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
-        // Step 8: Transition to Active state
+        // Step 12: Transition to Active state
         {
             let mut manager = manager_arc.lock().unwrap();
             let current = manager.current_state()?;
@@ -727,8 +994,13 @@ impl<F: Filesystem> NailsManager<F> {
             manager.update_state(active_state)?;
         }
 
-        // Step 9: Success - commit guard to prevent rollback
+        // Step 13: Success - commit guard to prevent rollback
         guard.commit();
+
+        tracing::info!(
+            "✓ Activation complete ({:.2}s total)",
+            start.elapsed().as_secs_f64()
+        );
         Ok(())
     }
 
@@ -1349,10 +1621,19 @@ mod tests {
         // Force manager to reload state from disk
         *manager.lock().unwrap().cached_state.lock().unwrap() = None;
 
-        // activate() should fail from Active state
+        // AC7: activate() is idempotent - calling from Active state should succeed (no-op)
         let result = NailsManager::activate(Arc::clone(&manager), true);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), NailsError::InvalidState(_)));
+        assert!(
+            result.is_ok(),
+            "Activate should be idempotent and succeed from Active state"
+        );
+
+        // Verify state is still Active (unchanged)
+        let final_state = manager.lock().unwrap().current_state().unwrap();
+        assert!(
+            final_state.is_active(),
+            "State should remain Active after idempotent activate"
+        );
     }
 
     #[test]

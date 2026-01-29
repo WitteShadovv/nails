@@ -57,6 +57,22 @@ trait CommandExecutor {
     ///
     /// - `Ok((success, stdout, stderr))` with command output
     fn execute_nixos_rebuild(&self, args: &[&str]) -> Result<(bool, String, String)>;
+
+    /// Execute switch-to-configuration script
+    ///
+    /// # Arguments
+    ///
+    /// - `script_path`: Full path to switch-to-configuration script
+    /// - `args`: Arguments to pass to the script (e.g., ["switch"])
+    ///
+    /// # Returns
+    ///
+    /// - `Ok((success, stdout, stderr))` with command output
+    fn execute_switch_to_configuration(
+        &self,
+        script_path: &std::path::Path,
+        args: &[&str],
+    ) -> Result<(bool, String, String)>;
 }
 
 /// Real command executor for production use
@@ -65,6 +81,22 @@ struct RealCommandExecutor;
 impl CommandExecutor for RealCommandExecutor {
     fn execute_nixos_rebuild(&self, args: &[&str]) -> Result<(bool, String, String)> {
         let output = std::process::Command::new("nixos-rebuild")
+            .args(args)
+            .output()?;
+
+        let success = output.status.success();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        Ok((success, stdout, stderr))
+    }
+
+    fn execute_switch_to_configuration(
+        &self,
+        script_path: &std::path::Path,
+        args: &[&str],
+    ) -> Result<(bool, String, String)> {
+        let output = std::process::Command::new(script_path)
             .args(args)
             .output()?;
 
@@ -436,12 +468,22 @@ impl NixOSBuilder {
         // Track current generation for rollback
         let previous_gen = self.get_current_generation()?;
 
-        // Execute switch command
+        // Execute switch command using the profile's switch-to-configuration script
         tracing::info!("Switching to NixOS profile: generation {}", generation);
 
-        let (success, _stdout, stderr) =
-            self.executor
-                .execute_nixos_rebuild(&["switch", "--profile-name", generation])?;
+        // Construct path to the profile's activation script
+        // Profile path format: /nix/var/nix/profiles/nails-system-{generation}-link/bin/switch-to-configuration
+        let profile_generation_path = PathBuf::from(format!(
+            "{}-{}-link",
+            self.profile_path.to_string_lossy(),
+            generation
+        ));
+
+        let switch_script = profile_generation_path.join("bin/switch-to-configuration");
+
+        let (success, _stdout, stderr) = self
+            .executor
+            .execute_switch_to_configuration(&switch_script, &["switch"])?;
 
         if !success {
             // Attempt rollback to previous generation
@@ -472,9 +514,16 @@ impl NixOSBuilder {
     /// * `Ok(true)` if profile exists
     /// * `Ok(false)` if profile does not exist
     /// * `Err(...)` on filesystem errors
-    fn profile_exists(&self, _generation: &str) -> Result<bool> {
-        // Check if profile_path exists
-        Ok(self.profile_path.exists())
+    fn profile_exists(&self, generation: &str) -> Result<bool> {
+        // Check if the specific generation profile exists
+        // Profile path format: /nix/var/nix/profiles/nails-system-{generation}-link
+        let profile_generation_path = PathBuf::from(format!(
+            "{}-{}-link",
+            self.profile_path.to_string_lossy(),
+            generation
+        ));
+
+        Ok(profile_generation_path.exists())
     }
 
     /// Get current active generation
@@ -488,13 +537,22 @@ impl NixOSBuilder {
     /// * `Ok(None)` if no current generation (fresh system)
     /// * `Err(...)` on query errors
     fn get_current_generation(&self) -> Result<Option<String>> {
-        // Try to read current profile symlink
-        if !self.profile_path.exists() {
+        // Read the current system generation from /nix/var/nix/profiles/system
+        // This is the currently active NixOS system, not our custom profile
+        let system_profile = PathBuf::from("/nix/var/nix/profiles/system");
+
+        if !system_profile.exists() {
             return Ok(None);
         }
 
-        // Get cached generation (current active one)
-        self.get_cached_generation()
+        // Read symlink target to get current generation
+        let target = std::fs::read_link(&system_profile)?;
+
+        // Extract generation ID from system profile
+        match Self::extract_generation_id(&target) {
+            Ok(generation_id) => Ok(Some(generation_id)),
+            Err(_) => Ok(None), // If we can't parse, treat as no generation
+        }
     }
 
     /// Switch to specific generation (internal use for rollback)
@@ -510,9 +568,16 @@ impl NixOSBuilder {
     /// * `Ok(())` on successful switch
     /// * `Err(NailsError::NixOSError)` if switch fails
     fn switch_to_generation(&self, generation: &str) -> Result<()> {
-        let (success, _stdout, _stderr) =
-            self.executor
-                .execute_nixos_rebuild(&["switch", "--profile-name", generation])?;
+        // Construct path to the profile's activation script for rollback
+        // This uses the system profile path, not our custom nails profile
+        let system_profile_path =
+            PathBuf::from("/nix/var/nix/profiles").join(format!("system-{}-link", generation));
+
+        let switch_script = system_profile_path.join("bin/switch-to-configuration");
+
+        let (success, _stdout, _stderr) = self
+            .executor
+            .execute_switch_to_configuration(&switch_script, &["switch"])?;
 
         if !success {
             return Err(NailsError::NixOSError("Rollback switch failed".into()));
@@ -561,6 +626,16 @@ mod tests {
                 self.stdout.clone(),
                 self.stderr.clone(),
             ))
+        }
+
+        fn execute_switch_to_configuration(
+            &self,
+            _script_path: &std::path::Path,
+            _args: &[&str],
+        ) -> Result<(bool, String, String)> {
+            // For build tests, we don't actually call switch-to-configuration
+            // Return success by default
+            Ok((true, String::new(), String::new()))
         }
     }
 
@@ -870,6 +945,24 @@ mod tests {
                 Ok((true, String::new(), String::new()))
             }
         }
+
+        fn execute_switch_to_configuration(
+            &self,
+            _script_path: &std::path::Path,
+            args: &[&str],
+        ) -> Result<(bool, String, String)> {
+            // Check if this is a switch command
+            if args.contains(&"switch") {
+                Ok((
+                    self.switch_succeeds,
+                    String::new(),
+                    self.switch_stderr.clone(),
+                ))
+            } else {
+                // Default for other commands
+                Ok((true, String::new(), String::new()))
+            }
+        }
     }
 
     #[test]
@@ -878,13 +971,17 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let profile_path = temp_dir.path().join("nails-system-123-link");
+        // profile_path should be the BASE path, not the generation-specific path
+        let profile_path = temp_dir.path().join("nails-system");
 
-        // Create profile symlink (simulating existing profile)
-        let target = temp_dir.path().join("system-123-link");
-        std::fs::write(&target, "dummy").unwrap();
+        // Create the generation-specific profile path that would be created by build_profile()
+        let profile_generation_path = temp_dir.path().join("nails-system-123-link");
 
-        std::os::unix::fs::symlink(&target, &profile_path).unwrap();
+        // Create profile directory structure with switch-to-configuration script
+        let bin_dir = profile_generation_path.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let switch_script = bin_dir.join("switch-to-configuration");
+        std::fs::write(&switch_script, "#!/bin/sh\necho switching").unwrap();
 
         let builder = NixOSBuilder::new_with_executor(
             PathBuf::from("/mnt/hidden/nixos"),
@@ -897,6 +994,9 @@ mod tests {
 
         // Should successfully switch to profile
         let result = builder.switch_profile("123");
+        if let Err(ref e) = result {
+            eprintln!("Error: {:?}", e);
+        }
         assert!(result.is_ok());
     }
 
@@ -906,13 +1006,17 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let profile_path = temp_dir.path().join("nails-system-123-link");
+        // profile_path should be the BASE path
+        let profile_path = temp_dir.path().join("nails-system");
 
-        // Create profile symlink
-        let target = temp_dir.path().join("system-123-link");
-        std::fs::write(&target, "dummy").unwrap();
+        // Create the generation-specific profile path
+        let profile_generation_path = temp_dir.path().join("nails-system-123-link");
 
-        std::os::unix::fs::symlink(&target, &profile_path).unwrap();
+        // Create profile directory structure with switch-to-configuration script
+        let bin_dir = profile_generation_path.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let switch_script = bin_dir.join("switch-to-configuration");
+        std::fs::write(&switch_script, "#!/bin/sh\necho switching").unwrap();
 
         let builder = NixOSBuilder::new_with_executor(
             PathBuf::from("/mnt/hidden/nixos"),
@@ -969,13 +1073,17 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let profile_path = temp_dir.path().join("nails-system-123-link");
+        // profile_path should be the BASE path
+        let profile_path = temp_dir.path().join("nails-system");
 
-        // Create profile symlink
-        let target = temp_dir.path().join("system-123-link");
-        std::fs::write(&target, "dummy").unwrap();
+        // Create the generation-specific profile path
+        let profile_generation_path = temp_dir.path().join("nails-system-123-link");
 
-        std::os::unix::fs::symlink(&target, &profile_path).unwrap();
+        // Create profile directory structure with switch-to-configuration script
+        let bin_dir = profile_generation_path.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let switch_script = bin_dir.join("switch-to-configuration");
+        std::fs::write(&switch_script, "#!/bin/sh\necho switching").unwrap();
 
         let builder = NixOSBuilder::new_with_executor(
             PathBuf::from("/mnt/hidden/nixos"),

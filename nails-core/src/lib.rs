@@ -46,14 +46,11 @@ pub mod verify;
 // NixOS profile builder
 pub mod nixos;
 
-// Activation orchestrator
-pub mod orchestrator;
-
 // Re-export for convenience
 pub use config::{Config, OverlayConfig};
 pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
-pub use manager::NailsManager;
+pub use manager::{MountTracker, NailsManager};
 
 // State management exports
 pub use state::{HIDDEN_VOLUME_ROOT, OverlayInfo, StateFile, SystemState};
@@ -69,9 +66,6 @@ pub use verify::{Finding, ScanDepth, Severity, Verifier, VerifyResult, VerifySta
 
 // NixOS profile builder exports
 pub use nixos::NixOSBuilder;
-
-// Activation orchestrator exports
-pub use orchestrator::{ActivationOrchestrator, MountTracker};
 
 /// RAII guard for automatic state rollback on failure
 ///
