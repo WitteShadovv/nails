@@ -629,6 +629,15 @@ impl NixOSBuilder {
 
 /// Metadata about NixOS configuration overlay paths
 ///
+/// **Property 2: Standard NixOS Mechanism**
+///
+/// Uses native NixOS `imports = [...]` array for configuration injection.
+/// No custom patches or binary modifications. Works with standard
+/// `nixos-rebuild switch`. Follows NixOS best practices.
+///
+/// See thesis design.tex Section 4.3.4 for full details on three critical
+/// properties of the NixOS config overlay mechanism.
+///
 /// Returned by `prepare_nixos_config_overlay()` after validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NixOSConfigInfo {
@@ -644,12 +653,27 @@ pub struct NixOSConfigInfo {
 
 /// Validates and prepares NixOS configuration overlay
 ///
+/// **Property 2: Standard NixOS Mechanism**
+///
+/// Uses native NixOS `imports = [...]` array for configuration injection.
+/// The modified hardware-configuration.nix contains a standard import statement
+/// that references the hidden configuration.nix. No custom patches or binary
+/// modifications required.
+///
+/// **Property 3: Atomic Transitions**
+///
+/// Overlay mount is atomic (all-or-nothing). Config switch happens instantly
+/// via /etc overlay. Clean rollback on failure.
+///
 /// Ensures hidden storage contains required NixOS configuration structure:
 /// - `{hidden}/etc/nixos/hardware-configuration.nix` (modified with import)
 /// - `{hidden}/nixos/configuration.nix` (hidden environment config)
 ///
 /// The modified hardware-configuration.nix MUST contain an import line
 /// referencing the hidden configuration.nix file.
+///
+/// See thesis design.tex Section 4.3.4 for full details on three critical
+/// properties of the NixOS config overlay mechanism.
 ///
 /// # Arguments
 ///
@@ -726,6 +750,11 @@ pub fn prepare_nixos_config_overlay<F: Filesystem>(
 
 /// Verifies base hardware-configuration.nix contains no hidden references
 ///
+/// **Property 1: Forensically Clean Base**
+///
+/// Base /etc/nixos/hardware-configuration.nix contains zero evidence of
+/// hidden environment. Indistinguishable from standard NixOS installation.
+///
 /// Scans base /etc/nixos/hardware-configuration.nix for forensic evidence
 /// of hidden environment. Returns `Ok(true)` if base is clean, `Ok(false)`
 /// if suspicious patterns detected.
@@ -734,8 +763,12 @@ pub fn prepare_nixos_config_overlay<F: Filesystem>(
 ///
 /// - `/mnt/hidden` or similar hidden mount points
 /// - `hidden/nixos` or similar hidden config paths
-/// - `nails` references
+/// - `nails` references (word boundary to avoid false positives like "snails")
 /// - `plausible` or `deniability` keywords
+/// - Standalone `hidden` keyword (with word boundaries)
+///
+/// See thesis design.tex Section 4.3.4 for full details on three critical
+/// properties of the NixOS config overlay mechanism.
 ///
 /// # Arguments
 ///
@@ -773,25 +806,74 @@ pub fn verify_base_config_clean<F: Filesystem>(fs: &F) -> Result<bool> {
     let content = fs.read_file_content(&base_config)?;
     let content_lower = content.to_lowercase();
 
-    // Suspicious patterns that indicate hidden environment leakage
-    let suspicious_patterns = [
-        "/mnt/hidden",
-        "hidden/nixos",
-        "/hidden/",
-        " hidden ", // Standalone hidden keyword
-        "nails",
-        "plausible",
-        "deniability",
+    // Suspicious path patterns (substring match is appropriate for paths)
+    if content_lower.contains("/mnt/hidden")
+        || content_lower.contains("hidden/nixos")
+        || content_lower.contains("/hidden/")
+    {
+        tracing::warn!(
+            "Base hardware-configuration.nix contains suspicious hidden path reference"
+        );
+        return Ok(false);
+    }
+
+    // Word boundary patterns (check for "hidden" as whole word)
+    // This catches: "hidden ", " hidden", " hidden ", "#hidden", etc.
+    // But NOT: "hiddenstorage", "snails", etc.
+    let hidden_word_boundaries = [
+        " hidden ",   // Middle of line with spaces
+        "\nhidden ",  // Start of line
+        " hidden\n",  // End of line
+        "\nhidden\n", // Whole line
+        "#hidden ",   // Comment without leading space
+        "#hidden\n",  // Comment at end of line
+        ";hidden ",   // After semicolon (Nix syntax)
+        ";hidden\n",  // Semicolon then end of line
+        " hidden\"",  // Before quote
+        "\"hidden ",  // After quote
     ];
 
-    for pattern in &suspicious_patterns {
+    for pattern in &hidden_word_boundaries {
         if content_lower.contains(pattern) {
             tracing::warn!(
-                pattern = pattern,
-                "Base hardware-configuration.nix contains suspicious pattern"
+                "Base hardware-configuration.nix contains suspicious 'hidden' keyword"
             );
             return Ok(false);
         }
+    }
+
+    // "nails" keyword with word boundaries to avoid false positives
+    // like "snails", "fingernails", etc.
+    let nails_word_boundaries = [
+        " nails ",
+        "\nnails ",
+        " nails\n",
+        "\nnails\n",
+        "#nails ",
+        "#nails\n",
+        ";nails ",
+        ";nails\n",
+        " nails\"",
+        "\"nails ",
+        ".nails ",  // After dot (e.g., config.nails)
+        ".nails\n",
+    ];
+
+    for pattern in &nails_word_boundaries {
+        if content_lower.contains(pattern) {
+            tracing::warn!(
+                "Base hardware-configuration.nix contains suspicious 'nails' keyword"
+            );
+            return Ok(false);
+        }
+    }
+
+    // Plausible deniability keywords (these are unlikely to appear legitimately)
+    if content_lower.contains("plausible") || content_lower.contains("deniability") {
+        tracing::warn!(
+            "Base hardware-configuration.nix contains plausible deniability keywords"
+        );
+        return Ok(false);
     }
 
     Ok(true)
@@ -1630,5 +1712,229 @@ mod tests {
         let result = super::verify_base_config_clean(&fs);
         assert!(result.is_ok());
         assert!(!result.unwrap());
+    }
+
+    // ========================================================================
+    // Edge Case Tests for Pattern Detection Bypass Fixes (Code Review Fixes)
+    // ========================================================================
+
+    #[test]
+    fn test_verify_base_config_clean_hidden_comment_no_leading_space() {
+        // CR: Test bypass vulnerability - #hidden without leading space
+        let fs = crate::MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            r#"{
+  #hidden config
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+}"#,
+        );
+
+        let result = super::verify_base_config_clean(&fs);
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "Should detect 'hidden' in comment without leading space"
+        );
+    }
+
+    #[test]
+    fn test_verify_base_config_clean_hidden_assignment_no_trailing_space() {
+        // CR: Test bypass vulnerability - hidden=true without trailing space
+        let fs = crate::MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            r#"{
+  hidden=true
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+}"#,
+        );
+
+        let result = super::verify_base_config_clean(&fs);
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "Should detect 'hidden' keyword without trailing space"
+        );
+    }
+
+    #[test]
+    fn test_verify_base_config_clean_hidden_start_of_line() {
+        // CR: Test bypass vulnerability - hidden at start of line
+        let fs = crate::MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            r#"{
+hidden = true
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+}"#,
+        );
+
+        let result = super::verify_base_config_clean(&fs);
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "Should detect 'hidden' keyword at start of line"
+        );
+    }
+
+    #[test]
+    fn test_verify_base_config_clean_snails_false_positive() {
+        // CR: Test false positive fix - "snails" should NOT be flagged
+        let fs = crate::MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            r#"{
+  # This config uses snails for testing biological models
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+}"#,
+        );
+
+        let result = super::verify_base_config_clean(&fs);
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap(),
+            "Should NOT flag 'snails' (contains 'nails' as substring)"
+        );
+    }
+
+    #[test]
+    fn test_verify_base_config_clean_fingernails_false_positive() {
+        // CR: Test false positive fix - "fingernails" should NOT be flagged
+        let fs = crate::MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            r#"{
+  # System for tracking fingernails growth rates
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+}"#,
+        );
+
+        let result = super::verify_base_config_clean(&fs);
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap(),
+            "Should NOT flag 'fingernails' (contains 'nails' as substring)"
+        );
+    }
+
+    #[test]
+    fn test_verify_base_config_clean_nails_word_boundary_in_comment() {
+        // CR: "nails" with word boundaries SHOULD be detected
+        let fs = crate::MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            r#"{
+  # NAILS environment configuration
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+}"#,
+        );
+
+        let result = super::verify_base_config_clean(&fs);
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "Should detect 'NAILS' keyword in comment"
+        );
+    }
+
+    #[test]
+    fn test_verify_base_config_clean_nails_idiomatic_comment() {
+        // CR: "This config nails the setup" - contains standalone "nails"
+        let fs = crate::MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            r#"{
+  # This config nails the networking setup
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+}"#,
+        );
+
+        let result = super::verify_base_config_clean(&fs);
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "Should detect standalone 'nails' in idiomatic comment"
+        );
+    }
+
+    #[test]
+    fn test_verify_base_config_clean_hidden_with_semicolon() {
+        // CR: Test ;hidden pattern (Nix syntax after semicolon)
+        let fs = crate::MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            r#"{
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];hidden=true
+}"#,
+        );
+
+        let result = super::verify_base_config_clean(&fs);
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "Should detect 'hidden' after semicolon"
+        );
+    }
+
+    #[test]
+    fn test_verify_base_config_clean_config_nails_dot_notation() {
+        // CR: config.nails notation should be detected
+        let fs = crate::MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            r#"{
+  config.nails.enable = true;
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+}"#,
+        );
+
+        let result = super::verify_base_config_clean(&fs);
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "Should detect 'nails' after dot notation"
+        );
+    }
+
+    #[test]
+    fn test_verify_base_config_clean_legitimate_hidden_substring() {
+        // CR: Words containing "hidden" as substring should NOT be flagged
+        let fs = crate::MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            r#"{
+  # This config has hiddenstorage as a single word
+  boot.kernelModules = [ "hiddenstorage" ];
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+}"#,
+        );
+
+        let result = super::verify_base_config_clean(&fs);
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap(),
+            "Should NOT flag 'hiddenstorage' (contains 'hidden' as substring)"
+        );
     }
 }

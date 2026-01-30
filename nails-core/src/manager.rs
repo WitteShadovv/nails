@@ -1164,6 +1164,34 @@ impl<F: Filesystem> NailsManager<F> {
         // Step 8: Mount persistent overlays with incremental state tracking (Story 4.7, AC1, AC2, Task 4)
         // Mount order is critical: /home first (no dependencies), /etc second (may depend on /home)
         // See MOUNT_ORDER constant for rationale (Story 4.6, AC1)
+
+        // TODO(story-4-5): Integrate prepare_nixos_config_overlay() before mounting /etc overlay
+        //
+        // Story 4.12, Task 4 (DEFERRED): Before mounting /etc overlay, validate and prepare
+        // the NixOS configuration overlay structure by calling:
+        //
+        //   use crate::prepare_nixos_config_overlay;
+        //   let info = prepare_nixos_config_overlay(&fs, &hidden_path)?;
+        //
+        // This ensures the hidden storage contains the required NixOS config structure:
+        // - {hidden}/etc/nixos/hardware-configuration.nix (modified with hidden import)
+        // - {hidden}/nixos/configuration.nix (hidden environment config)
+        //
+        // The /etc overlay must include the hidden nixos/ directory to make the modified
+        // hardware-configuration.nix visible to the system.
+        //
+        // See: docs/sprint-artifacts/4-12-implement-nixos-hardware-configuration-nix-overlay-mechanism.md
+        //
+        // TODO(story-4-5): Write integration tests for full activation/deactivation cycle
+        //
+        // Story 4.12, Task 9 (DEFERRED): After integration is complete, add tests that verify:
+        // - Full activation shows modified config with hidden import
+        // - Full deactivation reverts to base config (no hidden import)
+        // - Simulated NixOS rebuild reads correct config in both states
+        // - No forensic traces remain after deactivation
+        //
+        // These tests require the NailsManager integration from Task 4 above.
+
         if verbosity >= Verbosity::Normal {
             tracing::info!("Mounting overlays...");
         }
