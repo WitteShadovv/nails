@@ -129,27 +129,86 @@ fn test_all_commands_have_help() {
     }
 }
 
-/// Test that activate command executes successfully (stub implementation)
+/// Test that activate command executes and fails without root/setup (expected)
 #[test]
-fn test_activate_command_executes() {
+fn test_activate_command_fails_without_setup() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.arg("activate")
         .assert()
-        .success()
-        .stdout(predicates::str::contains("Activate: no_preflight=false"));
+        .failure() // Expect failure without proper setup
+        .code(1); // Exit code 1 for activation errors
 }
 
-/// Test that activate command with --no-preflight flag executes successfully
+/// Test that activate command with --no-preflight flag also fails without setup
 #[test]
-fn test_activate_command_executes_with_force() {
+fn test_activate_command_fails_with_no_preflight() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["activate", "--no-preflight"])
         .assert()
+        .failure() // Expect failure without proper setup
+        .code(1); // Exit code 1 for activation errors
+}
+
+/// Test that activate command has --json flag in help
+#[test]
+fn test_activate_has_json_flag() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--help"])
+        .assert()
         .success()
-        .stdout(predicates::str::contains("Activate: no_preflight=true"))
-        .stderr(predicates::str::contains(
-            "DANGER: Skipping pre-flight checks",
-        ));
+        .stdout(predicates::str::contains("--json"))
+        .stdout(predicates::str::contains("Output results in JSON format"));
+}
+
+/// Test that activate command has --no-color flag in help
+#[test]
+fn test_activate_has_no_color_flag() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("--no-color"))
+        .stdout(predicates::str::contains("Disable colored output"));
+}
+
+/// Test that activate command with --json produces JSON output
+#[test]
+fn test_activate_json_output() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--json"])
+        .assert()
+        .failure() // Will fail without setup but should produce JSON
+        .stdout(predicates::str::contains("\"status\""))
+        .stdout(predicates::str::contains("\"duration\""))
+        .stdout(predicates::str::contains("\"state\""))
+        .stdout(predicates::str::contains("\"message\""));
+}
+
+/// Test that activate command with --no-color doesn't produce ANSI codes
+#[test]
+fn test_activate_no_color_output() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    // Verify: command fails (expected without setup) AND has no ANSI codes
+    cmd.args(["activate", "--no-color"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::is_match(r"\x1b\[").unwrap().not()); // No ANSI escape sequences
+}
+
+/// Test that activate command with verbosity flags are accepted
+#[test]
+fn test_activate_verbosity_flags() {
+    // Test -v flag
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "-v"]).assert().failure(); // Will fail without setup
+
+    // Test -vv flag
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "-vv"]).assert().failure(); // Will fail without setup
+
+    // Test --quiet flag
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--quiet"]).assert().failure(); // Will fail without setup
 }
 
 /// Test that deactivate command executes successfully (stub implementation)

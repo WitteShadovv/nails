@@ -37,6 +37,14 @@ pub mod cli {
             /// Verbose output (-v for detailed, -vv for debug)
             #[arg(short, long, action = clap::ArgAction::Count, conflicts_with = "quiet")]
             verbose: u8,
+
+            /// Output results in JSON format
+            #[arg(long)]
+            json: bool,
+
+            /// Disable colored output
+            #[arg(long)]
+            no_color: bool,
         },
         /// Deactivate and return to decoy state (unmount + cleanup)
         Deactivate {
@@ -74,9 +82,19 @@ pub mod cli {
                 no_preflight,
                 quiet,
                 verbose,
+                json,
+                no_color,
             } => {
+                use nails_core::{Config, NailsManager, RealFilesystem, Verbosity};
+                use std::sync::{Arc, Mutex};
+                use std::time::Instant;
+
+                // Configure color output (must be done before any colored output)
+                if no_color || std::env::var("NO_COLOR").is_ok() {
+                    colored::control::set_override(false);
+                }
+
                 // Convert CLI flags to Verbosity enum
-                use nails_core::Verbosity;
                 let verbosity = if quiet {
                     Verbosity::Quiet
                 } else {
@@ -87,33 +105,36 @@ pub mod cli {
                     }
                 };
 
-                // NOTE: Full NailsManager integration is deferred to Story 4-10 (implement-nails-activate-cli-command-integration)
-                // Story 4-8 implements the Verbosity enum and progress logging infrastructure in NailsManager::activate()
-                // Story 4-10 will wire up the CLI config loading, state path resolution, and manager instantiation.
-                //
-                // Integration code for Story 4-10:
-                // use nails_core::{NailsManager, RealFilesystem, Config};
-                // use std::path::PathBuf;
-                // use std::sync::{Arc, Mutex};
-                //
-                // let fs = RealFilesystem;
-                // let config = load_config_from_cli_args_or_file(); // Story 4-10
-                // let state_path = config.state_file_path.clone();
-                // let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
-                // manager.lock().unwrap().set_verbosity(verbosity);
-                // NailsManager::activate(manager, no_preflight)?;
+                // Create configuration (will be loaded from file in Epic 10)
+                let config = Config::default();
+                let state_path = config.state_file_path.clone();
 
-                // Temporary: Verbosity flags are parsed correctly (Story 4-8 AC: 3, 4, 5)
-                // but full activation awaits Story 4-10's CLI integration work.
-                if no_preflight {
-                    eprintln!("⚠️  DANGER: Skipping pre-flight checks. Activation may fail.");
+                // Create NailsManager with real filesystem
+                let filesystem = RealFilesystem;
+                let manager = Arc::new(Mutex::new(NailsManager::new(
+                    filesystem, config, state_path,
+                )));
+
+                // Set verbosity level
+                manager.lock().unwrap().set_verbosity(verbosity);
+
+                // Run activation and measure duration
+                let start = Instant::now();
+                let result = NailsManager::activate(manager.clone(), no_preflight);
+                let duration = start.elapsed().as_secs_f64();
+
+                // Output results based on flags
+                if json {
+                    print_activate_json(&result, duration, &manager);
+                } else {
+                    print_activate_human(&result, duration, &manager);
                 }
-                println!(
-                    "Activate: no_preflight={}, verbosity={:?}",
-                    no_preflight, verbosity
-                );
-                eprintln!("Note: Full CLI activation integration will be completed in Story 4-10");
-                Ok(())
+
+                // Return appropriate exit code
+                match result {
+                    Ok(_) => std::process::exit(0),
+                    Err(_) => std::process::exit(1),
+                }
             }
             Commands::Deactivate { fast } => {
                 println!("Deactivate: fast={}", fast);
@@ -240,76 +261,135 @@ pub mod cli {
             }
         }
     }
+
+    /// JSON output structure for activate command
+    #[derive(serde::Serialize)]
+    struct ActivateResult {
+        status: String,
+        duration: f64,
+        state: String,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failed_checks: Option<Vec<FailedCheckJson>>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct FailedCheckJson {
+        name: String,
+        reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fix: Option<String>,
+    }
+
+    /// Print activation result in JSON format
+    fn print_activate_json<F: nails_core::Filesystem>(
+        result: &Result<(), nails_core::NailsError>,
+        duration: f64,
+        manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+    ) {
+        use nails_core::NailsError;
+
+        let state = manager
+            .lock()
+            .unwrap()
+            .current_state()
+            .map(|s| format!("{:?}", s))
+            .unwrap_or_else(|_| "UNKNOWN".to_string());
+
+        let output = match result {
+            Ok(_) => ActivateResult {
+                status: "success".to_string(),
+                duration,
+                state,
+                message: format!("Activation complete in {:.1}s", duration),
+                failed_checks: None,
+            },
+            Err(e) => match e {
+                NailsError::PreFlightCheckFailed(failures) => ActivateResult {
+                    status: "error".to_string(),
+                    duration,
+                    state: state.clone(),
+                    message: "Pre-flight checks failed".to_string(),
+                    failed_checks: Some(
+                        failures
+                            .iter()
+                            .map(|(name, reason)| FailedCheckJson {
+                                name: name.clone(),
+                                reason: reason.clone(),
+                                fix: Some(
+                                    "Review system state and ensure hidden volume is mounted"
+                                        .to_string(),
+                                ),
+                            })
+                            .collect(),
+                    ),
+                },
+                _ => ActivateResult {
+                    status: "error".to_string(),
+                    duration,
+                    state,
+                    message: format!("Activation failed: {}", e),
+                    failed_checks: None,
+                },
+            },
+        };
+
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).expect("Failed to serialize JSON")
+        );
+    }
+
+    /// Print activation result in human-readable format
+    fn print_activate_human<F: nails_core::Filesystem>(
+        result: &Result<(), nails_core::NailsError>,
+        duration: f64,
+        manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+    ) {
+        use colored::Colorize;
+        use nails_core::NailsError;
+
+        match result {
+            Ok(_) => {
+                println!(
+                    "{}",
+                    format!("✓ Activation complete in {:.1}s", duration)
+                        .green()
+                        .bold()
+                );
+            }
+            Err(e) => match e {
+                NailsError::PreFlightCheckFailed(failures) => {
+                    eprintln!("{}", "✗ Pre-flight checks failed:".red().bold());
+                    for (name, reason) in failures {
+                        eprintln!("  • {}: {}", name.yellow(), reason);
+                    }
+                    eprintln!(
+                        "\n  {}",
+                        "Fix: Review system state and ensure hidden volume is mounted".yellow()
+                    );
+                }
+                _ => {
+                    eprintln!("{}", format!("✗ Activation failed: {}", e).red().bold());
+                    eprintln!("  {}", "Automatic rollback completed.".dimmed());
+                    if let Ok(state) = manager.lock().unwrap().current_state() {
+                        eprintln!("  {}: {:?}", "Current state".dimmed(), state);
+                    }
+                }
+            },
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::cli::*;
 
-    #[test]
-    fn test_execute_activate_command_without_no_preflight() {
-        let cli = Cli {
-            verbose: 0,
-            command: Commands::Activate {
-                no_preflight: false,
-                quiet: false,
-                verbose: 0,
-            },
-        };
-        assert!(execute_command(cli).is_ok());
-    }
-
-    #[test]
-    fn test_execute_activate_command_with_no_preflight() {
-        let cli = Cli {
-            verbose: 0,
-            command: Commands::Activate {
-                no_preflight: true,
-                quiet: false,
-                verbose: 0,
-            },
-        };
-        assert!(execute_command(cli).is_ok());
-    }
-
-    #[test]
-    fn test_execute_activate_command_with_quiet() {
-        let cli = Cli {
-            verbose: 0,
-            command: Commands::Activate {
-                no_preflight: false,
-                quiet: true,
-                verbose: 0,
-            },
-        };
-        assert!(execute_command(cli).is_ok());
-    }
-
-    #[test]
-    fn test_execute_activate_command_with_verbose() {
-        let cli = Cli {
-            verbose: 0,
-            command: Commands::Activate {
-                no_preflight: false,
-                quiet: false,
-                verbose: 1,
-            },
-        };
-        assert!(execute_command(cli).is_ok());
-    }
-
-    #[test]
-    fn test_execute_activate_command_with_debug() {
-        let cli = Cli {
-            verbose: 0,
-            command: Commands::Activate {
-                no_preflight: false,
-                quiet: false,
-                verbose: 2,
-            },
-        };
-        assert!(execute_command(cli).is_ok());
-    }
+    // Note: Tests for activate command have been moved to end-to-end tests
+    // in tests/ directory because the activate command calls std::process::exit()
+    // which would terminate the test process.
+    //
+    // The activate command can only be properly tested via E2E tests using assert_cmd.
 
     #[test]
     fn test_execute_deactivate_command_without_fast() {
