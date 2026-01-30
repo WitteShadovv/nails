@@ -66,15 +66,18 @@ pub use state::{HIDDEN_VOLUME_ROOT, OverlayInfo, StateFile, SystemState};
 
 // Pre-flight validation exports
 pub use preflight::{
-    CheckResult, HiddenStorageStructureCheck, HiddenVolumeCheck, OverlayDirectoriesCheck,
-    OverlayDirs, PreFlightCheck, PreFlightRegistry, SpaceCheck, StateCheck, SwapCheck,
+    CheckResult, HiddenStorageStructureCheck, HiddenVolumeCheck, NixOSConfigCheck,
+    OverlayDirectoriesCheck, OverlayDirs, PreFlightCheck, PreFlightRegistry, SpaceCheck,
+    StateCheck, SwapCheck,
 };
 
 // Forensic validation exports
 pub use verify::{Finding, ScanDepth, Severity, Verifier, VerifyResult, VerifyStatus};
 
 // NixOS profile builder exports
-pub use nixos::NixOSBuilder;
+pub use nixos::{
+    NixOSBuilder, NixOSConfigInfo, prepare_nixos_config_overlay, verify_base_config_clean,
+};
 
 // Timing utilities exports
 pub use timing::Stopwatch;
