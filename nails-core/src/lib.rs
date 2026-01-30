@@ -52,11 +52,14 @@ pub mod timing;
 // Verbosity configuration
 pub mod verbosity;
 
+// Overlay operations module (Story 4.11: Extended Overlay Strategy)
+pub mod overlay;
+
 // Re-export for convenience
-pub use config::{Config, OverlayConfig};
+pub use config::{Config, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig};
 pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
-pub use manager::{MountTracker, NailsManager};
+pub use manager::{MountInfo, MountTracker, MountType, NailsManager};
 
 // State management exports
 pub use state::{HIDDEN_VOLUME_ROOT, OverlayInfo, StateFile, SystemState};
@@ -78,6 +81,9 @@ pub use timing::Stopwatch;
 
 // Verbosity configuration exports
 pub use verbosity::Verbosity;
+
+// Overlay operations exports (Story 4.11: Extended Overlay Strategy)
+pub use overlay::{EphemeralMountInfo, mount_ephemeral_overlay, unmount_ephemeral_overlay};
 
 /// RAII guard for automatic state rollback on failure
 ///

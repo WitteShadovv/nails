@@ -113,6 +113,10 @@ pub struct Config {
 
     /// Minimum disk space required for activation (in MB)
     pub minimum_space_mb: u64,
+
+    /// Extended overlay configuration for ephemeral (tmpfs-backed) overlays (Story 4.11)
+    #[serde(default)]
+    pub extended_overlays: ExtendedOverlayConfig,
 }
 
 impl Default for Config {
@@ -125,6 +129,7 @@ impl Default for Config {
             state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
             overlays: vec![],
             minimum_space_mb: 500, // Default minimum: 500 MB
+            extended_overlays: ExtendedOverlayConfig::default(),
         }
     }
 }
@@ -136,6 +141,168 @@ impl Config {
     pub fn test_default() -> Self {
         Self::default()
     }
+}
+
+/// Extended overlay configuration for ephemeral (tmpfs-backed) overlays
+///
+/// Enables optional extended overlay mounting for high-activity directories
+/// (/var, /tmp, /srv, /opt) with tmpfs-backed upper layers.
+///
+/// This strategy provides defense-in-depth against forensic analysis by:
+/// - Storing runtime artifacts in RAM only (tmpfs)
+/// - Destroying data immediately on unmount
+/// - Preventing hidden storage capacity waste on transient files
+///
+/// # Forensic Rationale (Thesis Section 4.3.6)
+///
+/// - Persistent overlays (home/etc): Data on hidden encrypted storage
+/// - Ephemeral overlays (var/tmp): Data in RAM, destroyed on unmount
+/// - Different threat models for different data types
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::config::ExtendedOverlayConfig;
+///
+/// let config = ExtendedOverlayConfig::default();
+/// assert!(!config.enabled); // Disabled by default for safety
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtendedOverlayConfig {
+    /// Whether extended overlays are enabled
+    pub enabled: bool,
+
+    /// List of ephemeral overlay directories
+    #[serde(default)]
+    pub directories: Vec<EphemeralOverlayDir>,
+}
+
+impl Default for ExtendedOverlayConfig {
+    /// Extended overlays disabled by default for safety
+    ///
+    /// User must explicitly opt-in via configuration.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            directories: vec![],
+        }
+    }
+}
+
+/// Ephemeral overlay directory configuration
+///
+/// Defines a single ephemeral overlay with tmpfs-backed upper and work layers.
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::config::EphemeralOverlayDir;
+/// use std::path::PathBuf;
+///
+/// let dir = EphemeralOverlayDir {
+///     path: PathBuf::from("/var"),
+///     tmpfs_upper_size: "1G".to_string(),
+///     tmpfs_work_size: "512M".to_string(),
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EphemeralOverlayDir {
+    /// Target directory path to overlay (e.g., "/var", "/tmp")
+    pub path: PathBuf,
+
+    /// Tmpfs size for upper layer (e.g., "1G", "512M")
+    pub tmpfs_upper_size: String,
+
+    /// Tmpfs size for work layer (e.g., "512M", "256M")
+    pub tmpfs_work_size: String,
+}
+
+impl EphemeralOverlayDir {
+    /// Parse tmpfs size string to bytes
+    ///
+    /// Supports standard size suffixes:
+    /// - "M" or "MB" for megabytes
+    /// - "G" or "GB" for gigabytes
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::config::EphemeralOverlayDir;
+    /// use std::path::PathBuf;
+    ///
+    /// let dir = EphemeralOverlayDir {
+    ///     path: PathBuf::from("/var"),
+    ///     tmpfs_upper_size: "1G".to_string(),
+    ///     tmpfs_work_size: "512M".to_string(),
+    /// };
+    ///
+    /// assert_eq!(dir.parse_upper_size().unwrap(), 1024 * 1024 * 1024);
+    /// assert_eq!(dir.parse_work_size().unwrap(), 512 * 1024 * 1024);
+    /// ```
+    pub fn parse_upper_size(&self) -> Result<u64, String> {
+        parse_size(&self.tmpfs_upper_size)
+    }
+
+    /// Parse work directory tmpfs size to bytes
+    pub fn parse_work_size(&self) -> Result<u64, String> {
+        parse_size(&self.tmpfs_work_size)
+    }
+}
+
+/// Parse size string to bytes
+///
+/// Internal helper for parsing tmpfs size specifications.
+///
+/// # Supported Formats
+///
+/// - "512M", "512MB" → 512 megabytes
+/// - "1G", "1GB" → 1 gigabyte
+/// - Numbers only → bytes
+///
+/// # Errors
+///
+/// Returns error string if format is invalid.
+fn parse_size(size_str: &str) -> Result<u64, String> {
+    let trimmed = size_str.trim().to_uppercase();
+
+    // Check for gigabyte suffix
+    if let Some(num_str) = trimmed.strip_suffix("GB") {
+        let num: u64 = num_str
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid number in size: {}", size_str))?;
+        return Ok(num * 1024 * 1024 * 1024);
+    }
+
+    if let Some(num_str) = trimmed.strip_suffix('G') {
+        let num: u64 = num_str
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid number in size: {}", size_str))?;
+        return Ok(num * 1024 * 1024 * 1024);
+    }
+
+    // Check for megabyte suffix
+    if let Some(num_str) = trimmed.strip_suffix("MB") {
+        let num: u64 = num_str
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid number in size: {}", size_str))?;
+        return Ok(num * 1024 * 1024);
+    }
+
+    if let Some(num_str) = trimmed.strip_suffix('M') {
+        let num: u64 = num_str
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid number in size: {}", size_str))?;
+        return Ok(num * 1024 * 1024);
+    }
+
+    // No suffix, parse as bytes
+    trimmed
+        .parse::<u64>()
+        .map_err(|_| format!("Invalid size format: {}", size_str))
 }
 
 #[cfg(test)]
@@ -329,5 +496,244 @@ mod tests {
         assert_eq!(config.overlays.len(), 2);
         assert_eq!(config.overlays[0], overlay1);
         assert_eq!(config.overlays[1], overlay2);
+    }
+
+    #[test]
+    fn test_config_with_extended_overlays() {
+        let extended = ExtendedOverlayConfig {
+            enabled: true,
+            directories: vec![EphemeralOverlayDir {
+                path: PathBuf::from("/var"),
+                tmpfs_upper_size: "1G".to_string(),
+                tmpfs_work_size: "512M".to_string(),
+            }],
+        };
+
+        let config = Config {
+            hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
+            state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
+            overlays: vec![],
+            extended_overlays: extended.clone(),
+            ..Config::default()
+        };
+
+        assert_eq!(config.extended_overlays, extended);
+        assert!(config.extended_overlays.enabled);
+        assert_eq!(config.extended_overlays.directories.len(), 1);
+    }
+
+    #[test]
+    fn test_config_default_has_disabled_extended_overlays() {
+        let config = Config::default();
+        assert!(!config.extended_overlays.enabled);
+        assert!(config.extended_overlays.directories.is_empty());
+    }
+
+    #[test]
+    fn test_config_serialization_with_extended_overlays() {
+        let extended = ExtendedOverlayConfig {
+            enabled: true,
+            directories: vec![EphemeralOverlayDir {
+                path: PathBuf::from("/var"),
+                tmpfs_upper_size: "1G".to_string(),
+                tmpfs_work_size: "512M".to_string(),
+            }],
+        };
+
+        let config = Config {
+            hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
+            state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
+            overlays: vec![],
+            extended_overlays: extended,
+            ..Config::default()
+        };
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&config).expect("Should serialize");
+        assert!(json.contains("\"extended_overlays\""));
+        assert!(json.contains("\"enabled\""));
+
+        // Deserialize back
+        let deserialized: Config = serde_json::from_str(&json).expect("Should deserialize");
+        assert_eq!(deserialized, config);
+    }
+
+    // ========== ExtendedOverlayConfig Tests ==========
+
+    #[test]
+    fn test_extended_overlay_config_default() {
+        let config = ExtendedOverlayConfig::default();
+        assert!(!config.enabled);
+        assert!(config.directories.is_empty());
+    }
+
+    #[test]
+    fn test_extended_overlay_config_creation() {
+        let dir1 = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "1G".to_string(),
+            tmpfs_work_size: "512M".to_string(),
+        };
+
+        let dir2 = EphemeralOverlayDir {
+            path: PathBuf::from("/tmp"),
+            tmpfs_upper_size: "512M".to_string(),
+            tmpfs_work_size: "256M".to_string(),
+        };
+
+        let config = ExtendedOverlayConfig {
+            enabled: true,
+            directories: vec![dir1.clone(), dir2.clone()],
+        };
+
+        assert!(config.enabled);
+        assert_eq!(config.directories.len(), 2);
+        assert_eq!(config.directories[0], dir1);
+        assert_eq!(config.directories[1], dir2);
+    }
+
+    #[test]
+    fn test_extended_overlay_config_serialization() {
+        let dir = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "1G".to_string(),
+            tmpfs_work_size: "512M".to_string(),
+        };
+
+        let config = ExtendedOverlayConfig {
+            enabled: true,
+            directories: vec![dir],
+        };
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&config).expect("Should serialize");
+        assert!(json.contains("\"enabled\""));
+        assert!(json.contains("true"));
+        assert!(json.contains("\"directories\""));
+
+        // Deserialize back
+        let deserialized: ExtendedOverlayConfig =
+            serde_json::from_str(&json).expect("Should deserialize");
+        assert_eq!(deserialized, config);
+    }
+
+    // ========== EphemeralOverlayDir Tests ==========
+
+    #[test]
+    fn test_ephemeral_overlay_dir_creation() {
+        let dir = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "1G".to_string(),
+            tmpfs_work_size: "512M".to_string(),
+        };
+
+        assert_eq!(dir.path, PathBuf::from("/var"));
+        assert_eq!(dir.tmpfs_upper_size, "1G");
+        assert_eq!(dir.tmpfs_work_size, "512M");
+    }
+
+    #[test]
+    fn test_parse_size_megabytes() {
+        let dir = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "512M".to_string(),
+            tmpfs_work_size: "256MB".to_string(),
+        };
+
+        assert_eq!(dir.parse_upper_size().unwrap(), 512 * 1024 * 1024);
+        assert_eq!(dir.parse_work_size().unwrap(), 256 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_parse_size_gigabytes() {
+        let dir = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "1G".to_string(),
+            tmpfs_work_size: "2GB".to_string(),
+        };
+
+        assert_eq!(dir.parse_upper_size().unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(dir.parse_work_size().unwrap(), 2 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_parse_size_lowercase() {
+        let dir = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "1g".to_string(),
+            tmpfs_work_size: "512m".to_string(),
+        };
+
+        assert_eq!(dir.parse_upper_size().unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(dir.parse_work_size().unwrap(), 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_parse_size_bytes() {
+        let dir = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "1048576".to_string(), // 1 MB in bytes
+            tmpfs_work_size: "524288".to_string(),   // 512 KB in bytes
+        };
+
+        assert_eq!(dir.parse_upper_size().unwrap(), 1048576);
+        assert_eq!(dir.parse_work_size().unwrap(), 524288);
+    }
+
+    #[test]
+    fn test_parse_size_with_whitespace() {
+        let dir = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "  1G  ".to_string(),
+            tmpfs_work_size: " 512M ".to_string(),
+        };
+
+        assert_eq!(dir.parse_upper_size().unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(dir.parse_work_size().unwrap(), 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_parse_size_invalid_format() {
+        let dir = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "invalid".to_string(),
+            tmpfs_work_size: "1X".to_string(),
+        };
+
+        assert!(dir.parse_upper_size().is_err());
+        assert!(dir.parse_work_size().is_err());
+    }
+
+    #[test]
+    fn test_parse_size_invalid_number() {
+        let dir = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "abcM".to_string(),
+            tmpfs_work_size: "G".to_string(),
+        };
+
+        assert!(dir.parse_upper_size().is_err());
+        assert!(dir.parse_work_size().is_err());
+    }
+
+    #[test]
+    fn test_ephemeral_overlay_dir_serialization() {
+        let dir = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "1G".to_string(),
+            tmpfs_work_size: "512M".to_string(),
+        };
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&dir).expect("Should serialize");
+        assert!(json.contains("\"path\""));
+        assert!(json.contains("\"/var\""));
+        assert!(json.contains("\"tmpfs_upper_size\""));
+        assert!(json.contains("\"1G\""));
+
+        // Deserialize back
+        let deserialized: EphemeralOverlayDir =
+            serde_json::from_str(&json).expect("Should deserialize");
+        assert_eq!(deserialized, dir);
     }
 }

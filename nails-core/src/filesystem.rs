@@ -179,6 +179,76 @@ pub trait Filesystem: Send + Sync + Clone {
     fn swap_disable(&self) -> Result<()>;
 
     // ------------------------------------------------------------------------
+    // Tmpfs Operations (Story 4.11: Extended Overlay Strategy)
+    // ------------------------------------------------------------------------
+
+    /// Mount a tmpfs filesystem at target with specified size
+    ///
+    /// Creates a RAM-backed temporary filesystem for ephemeral overlay layers.
+    /// Used in extended overlay strategy (Story 4.11) to store runtime artifacts
+    /// in RAM for forensic safety.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - Directory where tmpfs will be mounted
+    /// * `size` - Maximum tmpfs size (e.g., "1G", "512M")
+    ///
+    /// # Security
+    ///
+    /// - Mounted with MS_NOSUID | MS_NODEV flags
+    /// - Data destroyed immediately on unmount
+    /// - No disk writes, only RAM storage
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::OverlayError` if mount fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/run/nails/var-upper", true);
+    ///
+    /// let result = fs.mount_tmpfs(Path::new("/run/nails/var-upper"), "1G");
+    /// assert!(result.is_ok());
+    /// ```
+    fn mount_tmpfs(&self, target: &Path, size: &str) -> Result<()>;
+
+    /// Unmount a tmpfs filesystem from target
+    ///
+    /// Destroys all data in the tmpfs (RAM-backed storage is lost).
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - Mount point to unmount
+    ///
+    /// # Idempotent
+    ///
+    /// Succeeds even if target is not currently mounted (no-op).
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::UnmountError` if unmount fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/run/nails/var-upper", true);
+    /// fs.mount_tmpfs(Path::new("/run/nails/var-upper"), "1G").unwrap();
+    ///
+    /// let result = fs.unmount_tmpfs(Path::new("/run/nails/var-upper"));
+    /// assert!(result.is_ok());
+    /// ```
+    fn unmount_tmpfs(&self, target: &Path) -> Result<()>;
+
+    // ------------------------------------------------------------------------
     // File System Operations
     // ------------------------------------------------------------------------
 
@@ -482,6 +552,7 @@ impl Default for PathInfo {
 /// - `busy`: HashSet of paths marked as busy (open files)
 /// - `nixos_profiles`: HashSet of built profile names
 /// - `current_profile`: Currently active profile
+/// - `tmpfs_mounts`: HashSet of paths with tmpfs mounted (Story 4.11)
 ///
 /// # Thread Safety & Clone Behavior
 ///
@@ -508,6 +579,7 @@ pub struct MockFilesystem {
     #[allow(clippy::type_complexity)]
     files_with_pattern: Arc<Mutex<HashMap<(PathBuf, String), Vec<PathBuf>>>>, // Mock pattern search results
     mounted_overlays: Arc<Mutex<HashMap<PathBuf, MountInfo>>>, // Track overlay mount metadata
+    tmpfs_mounts: Arc<Mutex<HashSet<PathBuf>>>,                // Track tmpfs mounts (Story 4.11)
 }
 
 impl MockFilesystem {
@@ -545,6 +617,7 @@ impl MockFilesystem {
             file_contents: Arc::new(Mutex::new(HashMap::new())),
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
             mounted_overlays: Arc::new(Mutex::new(HashMap::new())),
+            tmpfs_mounts: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -573,6 +646,7 @@ impl MockFilesystem {
         self.mount_should_fail.lock().unwrap().clear();
         self.unmount_should_fail.lock().unwrap().clear();
         self.mounted_overlays.lock().unwrap().clear();
+        self.tmpfs_mounts.lock().unwrap().clear();
     }
 
     // ========================================================================
@@ -1140,6 +1214,64 @@ impl Filesystem for MockFilesystem {
         let key = (dir.to_path_buf(), pattern.to_string());
         Ok(pattern_results.get(&key).cloned().unwrap_or_default())
     }
+
+    fn mount_tmpfs(&self, target: &Path, size: &str) -> Result<()> {
+        // Validate size format by parsing it
+        let test_dir = crate::config::EphemeralOverlayDir {
+            path: target.to_path_buf(),
+            tmpfs_upper_size: size.to_string(),
+            tmpfs_work_size: size.to_string(),
+        };
+
+        if test_dir.parse_upper_size().is_err() {
+            return Err(NailsError::OverlayError(format!(
+                "Invalid tmpfs size format: {}",
+                size
+            )));
+        }
+
+        // Check if target already has tmpfs mounted
+        if self.tmpfs_mounts.lock().unwrap().contains(target) {
+            return Err(NailsError::AlreadyMounted {
+                path: target.to_path_buf(),
+            });
+        }
+
+        // Create directory if it doesn't exist
+        if !self.path_exists(target)? {
+            self.create_directory(target)?;
+        }
+
+        // Track tmpfs mount
+        self.tmpfs_mounts
+            .lock()
+            .unwrap()
+            .insert(target.to_path_buf());
+        self.mounted.lock().unwrap().insert(target.to_path_buf());
+
+        Ok(())
+    }
+
+    fn unmount_tmpfs(&self, target: &Path) -> Result<()> {
+        // Idempotent: succeed if not mounted
+        if !self.tmpfs_mounts.lock().unwrap().contains(target) {
+            return Ok(());
+        }
+
+        // Check if unmount should fail (mock behavior)
+        if self.unmount_should_fail.lock().unwrap().contains(target) {
+            return Err(NailsError::UnmountError {
+                path: target.to_path_buf(),
+                reason: "Mock: unmount_tmpfs configured to fail".to_string(),
+            });
+        }
+
+        // Remove from tmpfs mounts and mounted sets
+        self.tmpfs_mounts.lock().unwrap().remove(target);
+        self.mounted.lock().unwrap().remove(target);
+
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -1468,6 +1600,65 @@ impl Filesystem for RealFilesystem {
         }
 
         Ok(matching_files)
+    }
+
+    fn mount_tmpfs(&self, target: &Path, size: &str) -> Result<()> {
+        // Validate size string format before attempting mount
+        // Valid formats: "512M", "1G", "2048K", etc.
+        // Use a temporary EphemeralOverlayDir to leverage existing validation
+        let temp_dir = crate::config::EphemeralOverlayDir {
+            path: target.to_path_buf(),
+            tmpfs_upper_size: size.to_string(),
+            tmpfs_work_size: "1M".to_string(), // Dummy value for validation
+        };
+        temp_dir.parse_upper_size().map_err(|e| {
+            NailsError::ConfigError(format!("Invalid tmpfs size '{}': {}", size, e))
+        })?;
+
+        // Create mount point if needed
+        std::fs::create_dir_all(target)?;
+
+        // Build mount options
+        let options = format!("size={}", size);
+
+        // Perform mount using nix crate
+        // MS_NOSUID: Prevent setuid/setgid bits from taking effect
+        // MS_NODEV: Prevent access to device files
+        nix::mount::mount(
+            Some("tmpfs"),
+            target,
+            Some("tmpfs"),
+            nix::mount::MsFlags::MS_NOSUID | nix::mount::MsFlags::MS_NODEV,
+            Some(options.as_str()),
+        )
+        .map_err(|e| {
+            if e == nix::errno::Errno::EACCES || e == nix::errno::Errno::EPERM {
+                NailsError::PermissionDenied("Tmpfs mount requires root privileges".to_string())
+            } else {
+                NailsError::OverlayError(format!(
+                    "Failed to mount tmpfs at {}: {}",
+                    target.display(),
+                    e
+                ))
+            }
+        })?;
+
+        Ok(())
+    }
+
+    fn unmount_tmpfs(&self, target: &Path) -> Result<()> {
+        // Idempotent: succeed if not mounted
+        if !self.is_mounted(target)? {
+            return Ok(());
+        }
+
+        // Perform unmount (regular unmount, not force)
+        nix::mount::umount(target).map_err(|e| NailsError::UnmountError {
+            path: target.to_path_buf(),
+            reason: format!("{}", e),
+        })?;
+
+        Ok(())
     }
 }
 
@@ -2145,5 +2336,180 @@ mod tests {
 
         // Cleanup
         fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    // ========================================================================
+    // Tests for Story 4.11: Tmpfs Operations for Extended Overlays
+    // ========================================================================
+
+    #[test]
+    fn test_mock_mount_tmpfs_success() {
+        // AC2: MockFilesystem tracks tmpfs mounts
+        let fs = MockFilesystem::new();
+
+        // Set up target directory
+        fs.mock_set_path_exists("/run/nails/var-upper", true);
+
+        // Mount tmpfs
+        let result = fs.mount_tmpfs(Path::new("/run/nails/var-upper"), "1G");
+        assert!(result.is_ok());
+
+        // Verify mount is tracked
+        assert!(fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
+    }
+
+    #[test]
+    fn test_mock_mount_tmpfs_validates_size_format() {
+        // AC1: Size validation rejects invalid formats
+        let fs = MockFilesystem::new();
+
+        // Set up directories as creatable
+        fs.mock_set_directory_creatable("/run/nails/test1", true);
+        fs.mock_set_directory_creatable("/run/nails/test2", true);
+        fs.mock_set_directory_creatable("/run/nails/test3", true);
+        fs.mock_set_directory_creatable("/run/nails/invalid", true);
+
+        // Valid sizes should succeed
+        assert!(fs.mount_tmpfs(Path::new("/run/nails/test1"), "1G").is_ok());
+        assert!(
+            fs.mount_tmpfs(Path::new("/run/nails/test2"), "512M")
+                .is_ok()
+        );
+        assert!(
+            fs.mount_tmpfs(Path::new("/run/nails/test3"), "1024")
+                .is_ok()
+        );
+
+        // Invalid size format should fail
+        let result = fs.mount_tmpfs(Path::new("/run/nails/invalid"), "invalid");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::OverlayError(msg) => {
+                assert!(msg.contains("Invalid tmpfs size format"));
+            }
+            _ => panic!("Expected OverlayError for invalid size"),
+        }
+    }
+
+    #[test]
+    fn test_mock_mount_tmpfs_rejects_already_mounted() {
+        // AC2: Cannot mount tmpfs on already-mounted path
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/run/nails/var-upper", true);
+
+        // First mount succeeds
+        assert!(
+            fs.mount_tmpfs(Path::new("/run/nails/var-upper"), "1G")
+                .is_ok()
+        );
+
+        // Second mount fails
+        let result = fs.mount_tmpfs(Path::new("/run/nails/var-upper"), "1G");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NailsError::AlreadyMounted { path } => {
+                assert_eq!(path, PathBuf::from("/run/nails/var-upper"));
+            }
+            _ => panic!("Expected AlreadyMounted error"),
+        }
+    }
+
+    #[test]
+    fn test_mock_mount_tmpfs_creates_directory() {
+        // AC2: Mount creates target directory if missing
+        let fs = MockFilesystem::new();
+
+        // Set parent writable to allow directory creation
+        fs.mock_set_directory_creatable("/run/nails/new-dir", true);
+
+        // Target doesn't exist yet
+        assert!(!fs.path_exists(Path::new("/run/nails/new-dir")).unwrap());
+
+        // Mount should create it
+        let result = fs.mount_tmpfs(Path::new("/run/nails/new-dir"), "512M");
+        assert!(result.is_ok());
+
+        // Verify directory was created
+        assert!(fs.path_exists(Path::new("/run/nails/new-dir")).unwrap());
+    }
+
+    #[test]
+    fn test_mock_unmount_tmpfs_success() {
+        // AC2: Unmount removes tmpfs mount
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/run/nails/var-upper", true);
+        fs.mount_tmpfs(Path::new("/run/nails/var-upper"), "1G")
+            .unwrap();
+
+        // Verify mounted
+        assert!(fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
+
+        // Unmount
+        let result = fs.unmount_tmpfs(Path::new("/run/nails/var-upper"));
+        assert!(result.is_ok());
+
+        // Verify unmounted
+        assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
+    }
+
+    #[test]
+    fn test_mock_unmount_tmpfs_idempotent() {
+        // AC2: Unmount succeeds even if not mounted
+        let fs = MockFilesystem::new();
+
+        // Unmount without mount should succeed (idempotent)
+        let result = fs.unmount_tmpfs(Path::new("/not/mounted"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_mock_tmpfs_multiple_mounts() {
+        // AC2: Can mount multiple tmpfs filesystems
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/run/nails/var-upper", true);
+        fs.mock_set_path_exists("/run/nails/tmp-upper", true);
+
+        // Mount first tmpfs
+        assert!(
+            fs.mount_tmpfs(Path::new("/run/nails/var-upper"), "1G")
+                .is_ok()
+        );
+
+        // Mount second tmpfs
+        assert!(
+            fs.mount_tmpfs(Path::new("/run/nails/tmp-upper"), "512M")
+                .is_ok()
+        );
+
+        // Both should be mounted
+        assert!(fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
+        assert!(fs.is_mounted(Path::new("/run/nails/tmp-upper")).unwrap());
+
+        // Unmount first
+        assert!(fs.unmount_tmpfs(Path::new("/run/nails/var-upper")).is_ok());
+
+        // First should be unmounted, second still mounted
+        assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
+        assert!(fs.is_mounted(Path::new("/run/nails/tmp-upper")).unwrap());
+    }
+
+    #[test]
+    fn test_mock_tmpfs_reset_clears_mounts() {
+        // Verify reset() clears tmpfs mounts
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/run/nails/var-upper", true);
+        fs.mount_tmpfs(Path::new("/run/nails/var-upper"), "1G")
+            .unwrap();
+
+        assert!(fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
+
+        // Reset should clear tmpfs mounts
+        fs.reset();
+
+        assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
     }
 }
