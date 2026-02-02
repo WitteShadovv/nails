@@ -123,23 +123,82 @@ impl Default for Config {
     /// Create default configuration with sensible test defaults
     ///
     /// Uses standard paths that work for testing with MockFilesystem.
+    /// Includes default overlays for /home and /etc for VM testing.
     fn default() -> Self {
+        let hidden_root = PathBuf::from("/mnt/hidden-volume");
+
         Self {
-            hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
-            state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
-            overlays: vec![],
+            hidden_volume_root: hidden_root.clone(),
+            state_file_path: hidden_root.join(".nails/state.json"),
+            overlays: vec![
+                OverlayConfig {
+                    name: "home".to_string(),
+                    lower: PathBuf::from("/home"),
+                    upper: hidden_root.join("home"),
+                    work: hidden_root.join(".work/home"),
+                    target: PathBuf::from("/home"),
+                },
+                OverlayConfig {
+                    name: "etc".to_string(),
+                    lower: PathBuf::from("/etc"),
+                    upper: hidden_root.join("etc"),
+                    work: hidden_root.join(".work/etc"),
+                    target: PathBuf::from("/etc"),
+                },
+            ],
             minimum_space_mb: 500, // Default minimum: 500 MB
-            extended_overlays: ExtendedOverlayConfig::default(),
+            // Ephemeral overlays enabled with pivot mount strategy (Story 4.11)
+            // Uses staging + bind mount to overlay active directories like /var
+            extended_overlays: ExtendedOverlayConfig {
+                enabled: true,
+                directories: vec![EphemeralOverlayDir {
+                    path: PathBuf::from("/var"),
+                    tmpfs_upper_size: "512M".to_string(),
+                    tmpfs_work_size: "128M".to_string(),
+                }],
+            },
         }
     }
 }
 
 impl Config {
-    /// Create test configuration with sensible defaults
+    /// Create test configuration with disabled extended overlays
     ///
-    /// Alias for Default::default() with clearer intent for test code.
+    /// This provides a minimal config for unit tests that don't need
+    /// ephemeral overlay functionality. Extended overlays are disabled
+    /// to avoid tests needing to set up pivot mount staging directories.
+    ///
+    /// For tests that specifically need extended overlays, configure
+    /// them explicitly in the test setup.
     pub fn test_default() -> Self {
-        Self::default()
+        let hidden_root = PathBuf::from("/mnt/hidden-volume");
+
+        Self {
+            hidden_volume_root: hidden_root.clone(),
+            state_file_path: hidden_root.join(".nails/state.json"),
+            overlays: vec![
+                OverlayConfig {
+                    name: "home".to_string(),
+                    lower: PathBuf::from("/home"),
+                    upper: hidden_root.join("home"),
+                    work: hidden_root.join(".work/home"),
+                    target: PathBuf::from("/home"),
+                },
+                OverlayConfig {
+                    name: "etc".to_string(),
+                    lower: PathBuf::from("/etc"),
+                    upper: hidden_root.join("etc"),
+                    work: hidden_root.join(".work/etc"),
+                    target: PathBuf::from("/etc"),
+                },
+            ],
+            minimum_space_mb: 500,
+            // Disabled for tests - avoids needing to set up pivot mount paths
+            extended_overlays: ExtendedOverlayConfig {
+                enabled: false,
+                directories: vec![],
+            },
+        }
     }
 }
 
@@ -396,16 +455,34 @@ mod tests {
             config.state_file_path,
             PathBuf::from("/mnt/hidden-volume/.nails/state.json")
         );
-        assert!(config.overlays.is_empty());
+        // Default config includes /home and /etc overlays for VM testing
+        assert_eq!(config.overlays.len(), 2);
+        assert_eq!(config.overlays[0].name, "home");
+        assert_eq!(config.overlays[1].name, "etc");
+        // Extended overlays enabled with /var using pivot mount strategy
+        assert!(config.extended_overlays.enabled);
+        assert_eq!(config.extended_overlays.directories.len(), 1);
+        assert_eq!(
+            config.extended_overlays.directories[0].path,
+            PathBuf::from("/var")
+        );
     }
 
     #[test]
     fn test_config_test_default() {
         let config = Config::test_default();
 
-        // test_default() should be identical to default()
-        let default_config = Config::default();
-        assert_eq!(config, default_config);
+        // test_default() should have overlays but extended_overlays disabled
+        assert_eq!(
+            config.hidden_volume_root,
+            PathBuf::from("/mnt/hidden-volume")
+        );
+        assert_eq!(config.overlays.len(), 2);
+        assert_eq!(config.overlays[0].name, "home");
+        assert_eq!(config.overlays[1].name, "etc");
+        // Extended overlays disabled in test_default for simpler testing
+        assert!(!config.extended_overlays.enabled);
+        assert!(config.extended_overlays.directories.is_empty());
     }
 
     #[test]
@@ -523,10 +600,15 @@ mod tests {
     }
 
     #[test]
-    fn test_config_default_has_disabled_extended_overlays() {
+    fn test_config_default_has_enabled_extended_overlays() {
         let config = Config::default();
-        assert!(!config.extended_overlays.enabled);
-        assert!(config.extended_overlays.directories.is_empty());
+        // Extended overlays enabled by default with pivot mount strategy
+        assert!(config.extended_overlays.enabled);
+        assert_eq!(config.extended_overlays.directories.len(), 1);
+        assert_eq!(
+            config.extended_overlays.directories[0].path,
+            PathBuf::from("/var")
+        );
     }
 
     #[test]

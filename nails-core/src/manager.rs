@@ -692,7 +692,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///     hidden_volume_root: mock_hidden_vol.to_path_buf(),
     ///     state_file_path: state_path.clone(),
     ///     overlays: vec![],
-    ///     ..Config::default()
+    ///     ..Config::test_default()
     /// };
     /// let mut manager = NailsManager::new(fs, config, state_path);
     ///
@@ -754,7 +754,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///     hidden_volume_root: mock_hidden_vol.to_path_buf(),
     ///     state_file_path: state_path.clone(),
     ///     overlays: vec![],
-    ///     ..Config::default()
+    ///     ..Config::test_default()
     /// };
     /// let mut manager = NailsManager::new(fs, config, state_path);
     ///
@@ -1306,17 +1306,24 @@ impl<F: Filesystem> NailsManager<F> {
                     );
                 }
 
-                // Use mount_ephemeral_overlay from overlay module
-                match crate::overlay::mount_ephemeral_overlay(
+                // Use pivot_ephemeral_mount for active directories (Story 4.11)
+                // Direct mount fails with EINVAL on busy directories like /var
+                // Pivot strategy: mount to staging → bind mount to target
+                match crate::overlay::pivot_ephemeral_mount(
                     &manager.filesystem,
                     ephemeral_dir,
                     &ephemeral_dir.path,
                 ) {
                     Ok(mount_info) => {
-                        // Track ephemeral mount with tmpfs paths for rollback
+                        // Track pivot mount with staging + tmpfs paths for rollback
+                        // Note: staging path is also needed for proper unmount
                         tracker.push_mount(MountInfo::ephemeral(
                             mount_info.target.clone(),
-                            vec![mount_info.upper.clone(), mount_info.work.clone()],
+                            vec![
+                                mount_info.staging.clone(), // staging (overlay mount point)
+                                mount_info.upper.clone(),   // tmpfs upper
+                                mount_info.work.clone(),    // tmpfs work
+                            ],
                         ));
 
                         if verbosity >= Verbosity::Verbose {
@@ -1525,33 +1532,28 @@ impl<F: Filesystem> NailsManager<F> {
                         ephemeral_dir.path.display()
                     );
 
-                    // Use unmount_ephemeral_overlay from overlay module
-                    // This unmounts the overlay AND the tmpfs filesystems
-                    let mount_info = crate::overlay::EphemeralMountInfo {
+                    // Use unmount_pivot_overlay from overlay module (Story 4.11)
+                    // Pivot mounts require: unmount bind → unmount staging → cleanup tmpfs
+                    let dir_name = ephemeral_dir
+                        .path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy();
+
+                    let mount_info = crate::overlay::PivotMountInfo {
                         target: ephemeral_dir.path.clone(),
-                        upper: PathBuf::from(format!(
-                            "/run/nails/{}-upper",
-                            ephemeral_dir
-                                .path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
+                        staging: PathBuf::from(format!(
+                            "{}/{}",
+                            crate::overlay::PIVOT_STAGING_BASE,
+                            dir_name
                         )),
-                        work: PathBuf::from(format!(
-                            "/run/nails/{}-work",
-                            ephemeral_dir
-                                .path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                        )),
-                        lower: PathBuf::from("/"), // Not used for unmount
+                        upper: PathBuf::from(format!("/run/nails/{}-upper", dir_name)),
+                        work: PathBuf::from(format!("/run/nails/{}-work", dir_name)),
+                        lower: ephemeral_dir.path.clone(), // Original directory
+                        is_ephemeral: true,
                     };
 
-                    match crate::overlay::unmount_ephemeral_overlay(
-                        &manager.filesystem,
-                        &mount_info,
-                    ) {
+                    match crate::overlay::unmount_pivot_overlay(&manager.filesystem, &mount_info) {
                         Ok(()) => {
                             tracing::info!(
                                 "✓ Ephemeral overlay unmounted: {}",
@@ -1668,7 +1670,7 @@ mod tests {
             hidden_volume_root: PathBuf::from("/mnt/test-hidden"),
             state_file_path: PathBuf::from("/mnt/test-hidden/.nails/state.json"),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let state_path = PathBuf::from("/mnt/test-hidden/.nails/state.json");
 
@@ -1826,7 +1828,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs, config, state_path.clone());
 
@@ -1859,7 +1861,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs, config, state_path.clone());
 
@@ -1890,7 +1892,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs, config, state_path.clone());
 
@@ -1924,7 +1926,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs, config, state_path.clone());
 
@@ -2068,7 +2070,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
@@ -2098,7 +2100,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let manager = Arc::new(Mutex::new(NailsManager::new(
             fs,
@@ -2167,7 +2169,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let fs_clone = fs.clone();
@@ -2217,7 +2219,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let fs_clone = fs.clone();
@@ -2306,7 +2308,7 @@ mod tests {
                     target: PathBuf::from("/etc"),
                 },
             ],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let fs_clone = fs.clone();
@@ -2374,7 +2376,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(
@@ -2442,7 +2444,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let fs_clone = fs.clone();
@@ -2555,7 +2557,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let fs_clone = fs.clone();
@@ -2631,7 +2633,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let manager = Arc::new(Mutex::new(NailsManager::new(
             fs,
@@ -2705,7 +2707,7 @@ mod tests {
                     target: PathBuf::from("/etc"),
                 },
             ],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(
@@ -2848,7 +2850,7 @@ mod tests {
                 work: work_dir_path.clone(),
                 target: PathBuf::from("/home"),
             }],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
@@ -2890,7 +2892,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(
@@ -2956,7 +2958,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
@@ -3042,7 +3044,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![], // No overlays to check
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
@@ -3086,7 +3088,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![], // No overlays to mount
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
@@ -3140,7 +3142,7 @@ mod tests {
                 work: work_dir_path.clone(),
                 target: PathBuf::from("/home"),
             }],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let fs_clone = fs.clone();
@@ -3484,7 +3486,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(
@@ -3814,7 +3816,7 @@ mod tests {
                     target: PathBuf::from("/etc"),
                 },
             ],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         let manager = Arc::new(Mutex::new(NailsManager::new(
@@ -3982,7 +3984,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
         manager.set_verbosity(Verbosity::Normal);
@@ -4028,7 +4030,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
         manager.set_verbosity(Verbosity::Quiet);
@@ -4074,7 +4076,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
         manager.set_verbosity(Verbosity::Verbose);
@@ -4115,7 +4117,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
         manager.set_verbosity(Verbosity::Debug);
@@ -4161,7 +4163,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
         manager.set_verbosity(Verbosity::Normal);
@@ -4205,7 +4207,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
         manager.set_verbosity(Verbosity::Normal);
@@ -4252,7 +4254,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
         manager.set_verbosity(Verbosity::Quiet);
@@ -4312,7 +4314,7 @@ mod tests {
                 work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
         manager.set_verbosity(Verbosity::Verbose);
@@ -4358,7 +4360,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![],
-            ..Config::default()
+            ..Config::test_default()
         };
         let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
         manager.set_verbosity(Verbosity::Normal);
@@ -4420,7 +4422,7 @@ mod tests {
                     target: PathBuf::from("/etc"),
                 },
             ],
-            ..Config::default()
+            ..Config::test_default()
         };
 
         // Set up required paths in MockFilesystem
@@ -5003,7 +5005,7 @@ mod tests {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
             overlays: vec![], // No overlays
-            ..Config::default()
+            ..Config::test_default()
         };
 
         fs.mock_set_path_exists("/", true);

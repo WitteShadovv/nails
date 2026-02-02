@@ -811,9 +811,7 @@ pub fn verify_base_config_clean<F: Filesystem>(fs: &F) -> Result<bool> {
         || content_lower.contains("hidden/nixos")
         || content_lower.contains("/hidden/")
     {
-        tracing::warn!(
-            "Base hardware-configuration.nix contains suspicious hidden path reference"
-        );
+        tracing::warn!("Base hardware-configuration.nix contains suspicious hidden path reference");
         return Ok(false);
     }
 
@@ -829,15 +827,17 @@ pub fn verify_base_config_clean<F: Filesystem>(fs: &F) -> Result<bool> {
         "#hidden\n",  // Comment at end of line
         ";hidden ",   // After semicolon (Nix syntax)
         ";hidden\n",  // Semicolon then end of line
+        ";hidden=",   // After semicolon with assignment (e.g., ;hidden=true)
         " hidden\"",  // Before quote
         "\"hidden ",  // After quote
+        " hidden=",   // Assignment without space (e.g., hidden=true)
+        "=hidden ",   // Assignment value
+        "=hidden\n",  // Assignment value at end of line
     ];
 
     for pattern in &hidden_word_boundaries {
         if content_lower.contains(pattern) {
-            tracing::warn!(
-                "Base hardware-configuration.nix contains suspicious 'hidden' keyword"
-            );
+            tracing::warn!("Base hardware-configuration.nix contains suspicious 'hidden' keyword");
             return Ok(false);
         }
     }
@@ -855,24 +855,22 @@ pub fn verify_base_config_clean<F: Filesystem>(fs: &F) -> Result<bool> {
         ";nails\n",
         " nails\"",
         "\"nails ",
-        ".nails ",  // After dot (e.g., config.nails)
+        ".nails ", // After dot (e.g., config.nails)
         ".nails\n",
+        ".nails.", // Dot notation (e.g., config.nails.enable)
+        ".nails=", // Assignment (e.g., config.nails=true)
     ];
 
     for pattern in &nails_word_boundaries {
         if content_lower.contains(pattern) {
-            tracing::warn!(
-                "Base hardware-configuration.nix contains suspicious 'nails' keyword"
-            );
+            tracing::warn!("Base hardware-configuration.nix contains suspicious 'nails' keyword");
             return Ok(false);
         }
     }
 
     // Plausible deniability keywords (these are unlikely to appear legitimately)
     if content_lower.contains("plausible") || content_lower.contains("deniability") {
-        tracing::warn!(
-            "Base hardware-configuration.nix contains plausible deniability keywords"
-        );
+        tracing::warn!("Base hardware-configuration.nix contains plausible deniability keywords");
         return Ok(false);
     }
 
@@ -1844,10 +1842,7 @@ hidden = true
 
         let result = super::verify_base_config_clean(&fs);
         assert!(result.is_ok());
-        assert!(
-            !result.unwrap(),
-            "Should detect 'NAILS' keyword in comment"
-        );
+        assert!(!result.unwrap(), "Should detect 'NAILS' keyword in comment");
     }
 
     #[test]
@@ -1887,10 +1882,7 @@ hidden = true
 
         let result = super::verify_base_config_clean(&fs);
         assert!(result.is_ok());
-        assert!(
-            !result.unwrap(),
-            "Should detect 'hidden' after semicolon"
-        );
+        assert!(!result.unwrap(), "Should detect 'hidden' after semicolon");
     }
 
     #[test]
@@ -1909,10 +1901,7 @@ hidden = true
 
         let result = super::verify_base_config_clean(&fs);
         assert!(result.is_ok());
-        assert!(
-            !result.unwrap(),
-            "Should detect 'nails' after dot notation"
-        );
+        assert!(!result.unwrap(), "Should detect 'nails' after dot notation");
     }
 
     #[test]

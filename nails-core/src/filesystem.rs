@@ -179,6 +179,71 @@ pub trait Filesystem: Send + Sync + Clone {
     fn swap_disable(&self) -> Result<()>;
 
     // ------------------------------------------------------------------------
+    // Bind Mount Operations (Pivot Mount Strategy)
+    // ------------------------------------------------------------------------
+
+    /// Bind mount a source path to a target path
+    ///
+    /// Creates a VFS entry that makes the content at `source` appear at `target`.
+    /// The original content at `target` becomes "hidden" but still exists.
+    /// New accesses to `target` see the source content.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - Path to bind from (e.g., "/mnt/nails-pivot/var")
+    /// * `target` - Path to bind to (e.g., "/var")
+    ///
+    /// # Use Case
+    ///
+    /// Used in pivot mount strategy for overlaying active directories like `/var`:
+    /// 1. Mount overlay to staging location (always succeeds)
+    /// 2. Bind mount staging to target (handles active-use cases)
+    ///
+    /// # Process Impact
+    ///
+    /// - Existing file descriptors continue to reference original content
+    /// - Processes with cwd in target keep their original reference
+    /// - NEW path resolutions through target see the bound content
+    /// - This "split view" is forensically beneficial
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::OverlayError` if bind mount fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/mnt/nails-pivot/var", true);
+    /// fs.mock_set_path_exists("/var", true);
+    ///
+    /// let result = fs.bind_mount(
+    ///     Path::new("/mnt/nails-pivot/var"),
+    ///     Path::new("/var")
+    /// );
+    /// assert!(result.is_ok());
+    /// ```
+    fn bind_mount(&self, source: &Path, target: &Path) -> Result<()>;
+
+    /// Unmount a bind mount from target
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - Bind mount point to unmount
+    ///
+    /// # Idempotent
+    ///
+    /// Succeeds even if target is not currently mounted (no-op).
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::UnmountError` if unmount fails.
+    fn unmount_bind(&self, target: &Path) -> Result<()>;
+
+    // ------------------------------------------------------------------------
     // Tmpfs Operations (Story 4.11: Extended Overlay Strategy)
     // ------------------------------------------------------------------------
 
@@ -553,6 +618,7 @@ impl Default for PathInfo {
 /// - `nixos_profiles`: HashSet of built profile names
 /// - `current_profile`: Currently active profile
 /// - `tmpfs_mounts`: HashSet of paths with tmpfs mounted (Story 4.11)
+/// - `bind_mounts`: HashMap tracking bind mount source→target relationships
 ///
 /// # Thread Safety & Clone Behavior
 ///
@@ -580,6 +646,7 @@ pub struct MockFilesystem {
     files_with_pattern: Arc<Mutex<HashMap<(PathBuf, String), Vec<PathBuf>>>>, // Mock pattern search results
     mounted_overlays: Arc<Mutex<HashMap<PathBuf, MountInfo>>>, // Track overlay mount metadata
     tmpfs_mounts: Arc<Mutex<HashSet<PathBuf>>>,                // Track tmpfs mounts (Story 4.11)
+    bind_mounts: Arc<Mutex<HashMap<PathBuf, PathBuf>>>,        // Track bind mounts: target → source
 }
 
 impl MockFilesystem {
@@ -618,6 +685,7 @@ impl MockFilesystem {
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
             mounted_overlays: Arc::new(Mutex::new(HashMap::new())),
             tmpfs_mounts: Arc::new(Mutex::new(HashSet::new())),
+            bind_mounts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -647,6 +715,7 @@ impl MockFilesystem {
         self.unmount_should_fail.lock().unwrap().clear();
         self.mounted_overlays.lock().unwrap().clear();
         self.tmpfs_mounts.lock().unwrap().clear();
+        self.bind_mounts.lock().unwrap().clear();
     }
 
     // ========================================================================
@@ -1272,6 +1341,63 @@ impl Filesystem for MockFilesystem {
 
         Ok(())
     }
+
+    fn bind_mount(&self, source: &Path, target: &Path) -> Result<()> {
+        // Check if this mount should fail (for testing rollback)
+        let fail_set = self.mount_should_fail.lock().unwrap();
+        if fail_set.contains(target) {
+            return Err(NailsError::OverlayError(format!(
+                "Mock bind mount failure for testing: {}",
+                target.display()
+            )));
+        }
+        drop(fail_set);
+
+        // Verify source exists (must have something to bind from)
+        if !self.path_exists(source)? {
+            return Err(NailsError::OverlayError(format!(
+                "Bind mount source not found: {}",
+                source.display()
+            )));
+        }
+
+        // Check if target already has a bind mount
+        if self.bind_mounts.lock().unwrap().contains_key(target) {
+            return Err(NailsError::AlreadyMounted {
+                path: target.to_path_buf(),
+            });
+        }
+
+        // Track bind mount: target → source
+        self.bind_mounts
+            .lock()
+            .unwrap()
+            .insert(target.to_path_buf(), source.to_path_buf());
+        self.mounted.lock().unwrap().insert(target.to_path_buf());
+
+        Ok(())
+    }
+
+    fn unmount_bind(&self, target: &Path) -> Result<()> {
+        // Idempotent: succeed if not mounted as bind
+        if !self.bind_mounts.lock().unwrap().contains_key(target) {
+            return Ok(());
+        }
+
+        // Check if unmount should fail (mock behavior)
+        if self.unmount_should_fail.lock().unwrap().contains(target) {
+            return Err(NailsError::UnmountError {
+                path: target.to_path_buf(),
+                reason: "Mock: unmount_bind configured to fail".to_string(),
+            });
+        }
+
+        // Remove from bind mounts and mounted sets
+        self.bind_mounts.lock().unwrap().remove(target);
+        self.mounted.lock().unwrap().remove(target);
+
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -1653,6 +1779,60 @@ impl Filesystem for RealFilesystem {
         }
 
         // Perform unmount (regular unmount, not force)
+        nix::mount::umount(target).map_err(|e| NailsError::UnmountError {
+            path: target.to_path_buf(),
+            reason: format!("{}", e),
+        })?;
+
+        Ok(())
+    }
+
+    fn bind_mount(&self, source: &Path, target: &Path) -> Result<()> {
+        // Verify source exists
+        if !source.exists() {
+            return Err(NailsError::OverlayError(format!(
+                "Bind mount source not found: {}",
+                source.display()
+            )));
+        }
+
+        // Perform bind mount using nix crate
+        // MS_BIND: Create a bind mount
+        nix::mount::mount(
+            Some(source),
+            target,
+            None::<&str>,
+            nix::mount::MsFlags::MS_BIND,
+            None::<&str>,
+        )
+        .map_err(|e| {
+            if e == nix::errno::Errno::EACCES || e == nix::errno::Errno::EPERM {
+                NailsError::PermissionDenied("Bind mount requires root privileges".to_string())
+            } else if e == nix::errno::Errno::EBUSY {
+                NailsError::MountBusy {
+                    path: target.to_path_buf(),
+                    suggestion: "Target directory has active references".to_string(),
+                }
+            } else {
+                NailsError::OverlayError(format!(
+                    "Failed to bind mount {} to {}: {}",
+                    source.display(),
+                    target.display(),
+                    e
+                ))
+            }
+        })?;
+
+        Ok(())
+    }
+
+    fn unmount_bind(&self, target: &Path) -> Result<()> {
+        // Idempotent: succeed if not mounted
+        if !self.is_mounted(target)? {
+            return Ok(());
+        }
+
+        // Perform unmount (regular unmount for bind mounts)
         nix::mount::umount(target).map_err(|e| NailsError::UnmountError {
             path: target.to_path_buf(),
             reason: format!("{}", e),

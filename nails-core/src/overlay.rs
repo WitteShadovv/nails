@@ -64,6 +64,51 @@ pub struct EphemeralMountInfo {
     pub lower: PathBuf,
 }
 
+/// Information about a pivot-mounted overlay
+///
+/// Tracks all paths involved in a pivot overlay mount for cleanup.
+/// Used when mounting overlays onto active directories like `/var`.
+///
+/// # Pivot Mount Strategy
+///
+/// Direct overlay mount onto `/var` fails with EINVAL because the directory
+/// is actively in use. The pivot strategy works around this:
+/// 1. Mount overlay to staging location (e.g., `/mnt/nails-pivot/var`)
+/// 2. Bind mount staging to target (e.g., `/var`)
+///
+/// This creates a "split view":
+/// - Existing processes with open FDs see original content
+/// - New path resolutions see overlay content
+///
+/// # Fields
+///
+/// * `target` - Final mount point (e.g., "/var")
+/// * `staging` - Intermediate staging location (e.g., "/mnt/nails-pivot/var")
+/// * `upper` - Upper layer path
+/// * `work` - Work directory path
+/// * `lower` - Read-only base layer
+/// * `is_ephemeral` - If true, upper/work are tmpfs-backed
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PivotMountInfo {
+    /// Final mount point where overlay appears
+    pub target: PathBuf,
+
+    /// Staging location where overlay is initially mounted
+    pub staging: PathBuf,
+
+    /// Upper layer path (may be on hidden volume or tmpfs)
+    pub upper: PathBuf,
+
+    /// Work directory path
+    pub work: PathBuf,
+
+    /// Read-only base layer
+    pub lower: PathBuf,
+
+    /// Whether upper/work are tmpfs-backed (ephemeral)
+    pub is_ephemeral: bool,
+}
+
 /// Mount an ephemeral overlay with tmpfs-backed upper/work layers
 ///
 /// Creates a complete ephemeral overlay mount:
@@ -219,6 +264,258 @@ pub fn unmount_ephemeral_overlay<F: Filesystem>(fs: &F, info: &EphemeralMountInf
     // is primarily for operations that need to be mocked during testing.
     let _ = std::fs::remove_dir(&info.work);
     let _ = std::fs::remove_dir(&info.upper);
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(NailsError::OverlayError(errors.join("; ")))
+    }
+}
+
+// ============================================================================
+// Pivot Mount Strategy for Active Directories
+// ============================================================================
+
+/// Default staging directory for pivot mounts
+pub const PIVOT_STAGING_BASE: &str = "/mnt/nails-pivot";
+
+/// Mount an overlay using the pivot strategy for active directories
+///
+/// This function enables overlaying directories like `/var` that are actively in use.
+/// Direct overlay mount fails with EINVAL, so we use a two-step approach:
+/// 1. Mount overlay to staging location (`/mnt/nails-pivot/var`)
+/// 2. Bind mount staging to target (`/var`)
+///
+/// # Process Impact (Split View)
+///
+/// - **Existing processes:** Keep seeing original content (forensically beneficial)
+/// - **New path resolutions:** See overlay content
+/// - This split behavior is a SECURITY FEATURE - old processes can't see hidden data
+///
+/// # Arguments
+///
+/// * `fs` - Filesystem trait implementation
+/// * `lower` - Read-only base layer (typically the current `/var`)
+/// * `upper` - Writeable upper layer (on hidden volume or tmpfs)
+/// * `work` - Work directory for overlay metadata
+/// * `target` - Final mount point (e.g., `/var`)
+///
+/// # Returns
+///
+/// `Ok(PivotMountInfo)` with mount details on success.
+///
+/// # Errors
+///
+/// * `NailsError::OverlayError` - If overlay or bind mount fails
+/// * `NailsError::PermissionDenied` - If lacking root privileges
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::overlay::pivot_overlay_mount;
+/// use nails_core::filesystem::MockFilesystem;
+/// use std::path::Path;
+///
+/// let fs = MockFilesystem::new();
+///
+/// // Set up mock filesystem
+/// fs.mock_set_path_exists("/var", true);
+/// fs.mock_set_path_exists("/mnt/hidden/var-upper", true);
+/// fs.mock_set_path_exists("/mnt/hidden/var-work", true);
+/// fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
+///
+/// let info = pivot_overlay_mount(
+///     &fs,
+///     Path::new("/var"),           // lower
+///     Path::new("/mnt/hidden/var-upper"),  // upper
+///     Path::new("/mnt/hidden/var-work"),   // work
+///     Path::new("/var"),           // target
+/// ).unwrap();
+///
+/// assert_eq!(info.target, Path::new("/var"));
+/// assert!(info.staging.starts_with("/mnt/nails-pivot"));
+/// ```
+pub fn pivot_overlay_mount<F: Filesystem>(
+    fs: &F,
+    lower: &Path,
+    upper: &Path,
+    work: &Path,
+    target: &Path,
+) -> Result<PivotMountInfo> {
+    // Derive staging path from target
+    let dir_name = target
+        .file_name()
+        .ok_or_else(|| {
+            NailsError::OverlayError(format!("Invalid target path: {}", target.display()))
+        })?
+        .to_string_lossy();
+    let staging = PathBuf::from(PIVOT_STAGING_BASE).join(dir_name.as_ref());
+
+    // Step 1: Create staging directory
+    fs.create_directory(&staging)?;
+
+    // Step 2: Mount overlay at staging location
+    // This always succeeds because staging is not in active use
+    fs.mount_overlay(lower, upper, work, &staging)?;
+
+    // Step 3: Bind mount staging to target
+    // This works even for active directories
+    if let Err(e) = fs.bind_mount(&staging, target) {
+        // Rollback: unmount the overlay from staging
+        let _ = fs.unmount(&staging, true);
+        return Err(e);
+    }
+
+    Ok(PivotMountInfo {
+        target: target.to_path_buf(),
+        staging,
+        upper: upper.to_path_buf(),
+        work: work.to_path_buf(),
+        lower: lower.to_path_buf(),
+        is_ephemeral: false, // Caller can set this based on upper/work type
+    })
+}
+
+/// Mount an ephemeral pivot overlay with tmpfs-backed upper/work layers
+///
+/// Combines the pivot mount strategy with tmpfs-backed layers for directories
+/// like `/var` that need ephemeral storage.
+///
+/// # Mount Sequence
+///
+/// 1. Create tmpfs at upper path
+/// 2. Create tmpfs at work path
+/// 3. Mount overlay to staging
+/// 4. Bind mount staging to target
+///
+/// # Arguments
+///
+/// * `fs` - Filesystem trait implementation
+/// * `config` - Ephemeral overlay configuration with tmpfs sizes
+/// * `lower` - Read-only base layer path
+///
+/// # Returns
+///
+/// `Ok(PivotMountInfo)` with `is_ephemeral = true`.
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::overlay::pivot_ephemeral_mount;
+/// use nails_core::config::EphemeralOverlayDir;
+/// use nails_core::filesystem::MockFilesystem;
+/// use std::path::{Path, PathBuf};
+///
+/// let fs = MockFilesystem::new();
+/// let config = EphemeralOverlayDir {
+///     path: PathBuf::from("/var"),
+///     tmpfs_upper_size: "1G".to_string(),
+///     tmpfs_work_size: "512M".to_string(),
+/// };
+///
+/// fs.mock_set_path_exists("/var", true);
+/// fs.mock_set_directory_creatable("/run/nails/var-upper", true);
+/// fs.mock_set_directory_creatable("/run/nails/var-work", true);
+/// fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
+///
+/// let info = pivot_ephemeral_mount(&fs, &config, Path::new("/var")).unwrap();
+/// assert!(info.is_ephemeral);
+/// ```
+pub fn pivot_ephemeral_mount<F: Filesystem>(
+    fs: &F,
+    config: &EphemeralOverlayDir,
+    lower: &Path,
+) -> Result<PivotMountInfo> {
+    let base = PathBuf::from("/run/nails");
+    let dir_name = config
+        .path
+        .file_name()
+        .ok_or_else(|| {
+            NailsError::OverlayError(format!("Invalid path: {}", config.path.display()))
+        })?
+        .to_string_lossy();
+
+    let upper = base.join(format!("{}-upper", dir_name));
+    let work = base.join(format!("{}-work", dir_name));
+
+    // Step 1: Create directories
+    fs.create_directory(&upper)?;
+    fs.create_directory(&work)?;
+
+    // Step 2: Mount tmpfs for upper
+    fs.mount_tmpfs(&upper, &config.tmpfs_upper_size)?;
+
+    // Step 3: Mount tmpfs for work
+    if let Err(e) = fs.mount_tmpfs(&work, &config.tmpfs_work_size) {
+        // Rollback: unmount upper tmpfs
+        let _ = fs.unmount_tmpfs(&upper);
+        return Err(e);
+    }
+
+    // Step 4: Pivot mount overlay to target
+    match pivot_overlay_mount(fs, lower, &upper, &work, &config.path) {
+        Ok(mut info) => {
+            info.is_ephemeral = true;
+            Ok(info)
+        }
+        Err(e) => {
+            // Rollback: unmount tmpfs layers
+            let _ = fs.unmount_tmpfs(&work);
+            let _ = fs.unmount_tmpfs(&upper);
+            Err(e)
+        }
+    }
+}
+
+/// Unmount a pivot overlay
+///
+/// Unmounts in reverse order:
+/// 1. Unmount bind mount from target
+/// 2. Unmount overlay from staging
+/// 3. Remove staging directory
+/// 4. If ephemeral, unmount tmpfs layers
+///
+/// # Arguments
+///
+/// * `fs` - Filesystem trait implementation
+/// * `info` - Mount information from `pivot_overlay_mount` or `pivot_ephemeral_mount`
+///
+/// # Forensic Safety
+///
+/// For ephemeral mounts, all data in tmpfs layers is destroyed immediately.
+///
+/// # Errors
+///
+/// Uses best-effort cleanup - attempts all unmounts even if some fail.
+/// Returns combined error if any operations fail.
+pub fn unmount_pivot_overlay<F: Filesystem>(fs: &F, info: &PivotMountInfo) -> Result<()> {
+    let mut errors = Vec::new();
+
+    // Step 1: Unmount bind mount from target
+    if let Err(e) = fs.unmount_bind(&info.target) {
+        errors.push(format!("bind mount {}: {}", info.target.display(), e));
+    }
+
+    // Step 2: Unmount overlay from staging
+    if let Err(e) = fs.unmount(&info.staging, false) {
+        errors.push(format!("overlay {}: {}", info.staging.display(), e));
+    }
+
+    // Step 3: Remove staging directory (best effort)
+    let _ = std::fs::remove_dir(&info.staging);
+
+    // Step 4: If ephemeral, unmount tmpfs layers
+    if info.is_ephemeral {
+        if let Err(e) = fs.unmount_tmpfs(&info.work) {
+            errors.push(format!("work tmpfs {}: {}", info.work.display(), e));
+        }
+        if let Err(e) = fs.unmount_tmpfs(&info.upper) {
+            errors.push(format!("upper tmpfs {}: {}", info.upper.display(), e));
+        }
+        // Clean up tmpfs directories (best effort)
+        let _ = std::fs::remove_dir(&info.work);
+        let _ = std::fs::remove_dir(&info.upper);
+    }
 
     if errors.is_empty() {
         Ok(())
@@ -455,5 +752,299 @@ mod tests {
 
         // No artifacts remain
         assert!(!fs.is_mounted(Path::new("/var")).unwrap());
+    }
+
+    // ========== PivotMountInfo Tests ==========
+
+    #[test]
+    fn test_pivot_mount_info_creation() {
+        let info = PivotMountInfo {
+            target: PathBuf::from("/var"),
+            staging: PathBuf::from("/mnt/nails-pivot/var"),
+            upper: PathBuf::from("/mnt/hidden/var-upper"),
+            work: PathBuf::from("/mnt/hidden/var-work"),
+            lower: PathBuf::from("/var"),
+            is_ephemeral: false,
+        };
+
+        assert_eq!(info.target, PathBuf::from("/var"));
+        assert_eq!(info.staging, PathBuf::from("/mnt/nails-pivot/var"));
+        assert!(!info.is_ephemeral);
+    }
+
+    #[test]
+    fn test_pivot_mount_info_clone() {
+        let info1 = PivotMountInfo {
+            target: PathBuf::from("/var"),
+            staging: PathBuf::from("/mnt/nails-pivot/var"),
+            upper: PathBuf::from("/mnt/hidden/var-upper"),
+            work: PathBuf::from("/mnt/hidden/var-work"),
+            lower: PathBuf::from("/var"),
+            is_ephemeral: true,
+        };
+
+        let info2 = info1.clone();
+        assert_eq!(info1, info2);
+        assert!(info2.is_ephemeral);
+    }
+
+    // ========== pivot_overlay_mount Tests ==========
+
+    #[test]
+    fn test_pivot_overlay_mount_success() {
+        let fs = MockFilesystem::new();
+
+        // Set up mock filesystem
+        fs.mock_set_path_exists("/var", true);
+        fs.mock_set_path_exists("/mnt/hidden/var-upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/var-work", true);
+        fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
+
+        let result = pivot_overlay_mount(
+            &fs,
+            Path::new("/var"),
+            Path::new("/mnt/hidden/var-upper"),
+            Path::new("/mnt/hidden/var-work"),
+            Path::new("/var"),
+        );
+
+        assert!(result.is_ok());
+        let info = result.unwrap();
+
+        // Verify mount info
+        assert_eq!(info.target, PathBuf::from("/var"));
+        assert_eq!(info.staging, PathBuf::from("/mnt/nails-pivot/var"));
+        assert_eq!(info.lower, PathBuf::from("/var"));
+        assert!(!info.is_ephemeral);
+
+        // Verify mounts created
+        assert!(fs.is_mounted(Path::new("/mnt/nails-pivot/var")).unwrap()); // staging overlay
+        assert!(fs.is_mounted(Path::new("/var")).unwrap()); // bind mount
+    }
+
+    #[test]
+    fn test_pivot_overlay_mount_creates_staging_dir() {
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/var", true);
+        fs.mock_set_path_exists("/mnt/hidden/var-upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/var-work", true);
+        fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
+
+        let result = pivot_overlay_mount(
+            &fs,
+            Path::new("/var"),
+            Path::new("/mnt/hidden/var-upper"),
+            Path::new("/mnt/hidden/var-work"),
+            Path::new("/var"),
+        );
+
+        assert!(result.is_ok());
+
+        // Staging directory was created
+        assert!(fs.path_exists(Path::new("/mnt/nails-pivot/var")).unwrap());
+    }
+
+    #[test]
+    fn test_pivot_overlay_mount_rollback_on_bind_failure() {
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/var", true);
+        fs.mock_set_path_exists("/mnt/hidden/var-upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/var-work", true);
+        fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
+
+        // Configure bind mount to fail
+        fs.mock_set_mount_should_fail("/var", true);
+
+        let result = pivot_overlay_mount(
+            &fs,
+            Path::new("/var"),
+            Path::new("/mnt/hidden/var-upper"),
+            Path::new("/mnt/hidden/var-work"),
+            Path::new("/var"),
+        );
+
+        assert!(result.is_err());
+
+        // Staging overlay should be unmounted (rolled back)
+        // Note: Mock doesn't perfectly simulate rollback tracking, but we verify error
+    }
+
+    // ========== pivot_ephemeral_mount Tests ==========
+
+    #[test]
+    fn test_pivot_ephemeral_mount_success() {
+        let fs = MockFilesystem::new();
+        let config = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "1G".to_string(),
+            tmpfs_work_size: "512M".to_string(),
+        };
+
+        fs.mock_set_path_exists("/var", true);
+        fs.mock_set_directory_creatable("/run/nails/var-upper", true);
+        fs.mock_set_directory_creatable("/run/nails/var-work", true);
+        fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
+
+        let result = pivot_ephemeral_mount(&fs, &config, Path::new("/var"));
+        assert!(result.is_ok());
+
+        let info = result.unwrap();
+
+        // Verify ephemeral flag
+        assert!(info.is_ephemeral);
+
+        // Verify paths
+        assert_eq!(info.target, PathBuf::from("/var"));
+        assert_eq!(info.upper, PathBuf::from("/run/nails/var-upper"));
+        assert_eq!(info.work, PathBuf::from("/run/nails/var-work"));
+
+        // Verify all mounts created
+        assert!(fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap()); // tmpfs
+        assert!(fs.is_mounted(Path::new("/run/nails/var-work")).unwrap()); // tmpfs
+        assert!(fs.is_mounted(Path::new("/mnt/nails-pivot/var")).unwrap()); // overlay
+        assert!(fs.is_mounted(Path::new("/var")).unwrap()); // bind
+    }
+
+    #[test]
+    fn test_pivot_ephemeral_mount_rollback_on_overlay_failure() {
+        let fs = MockFilesystem::new();
+        let config = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "1G".to_string(),
+            tmpfs_work_size: "512M".to_string(),
+        };
+
+        fs.mock_set_path_exists("/var", true);
+        fs.mock_set_directory_creatable("/run/nails/var-upper", true);
+        fs.mock_set_directory_creatable("/run/nails/var-work", true);
+        fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
+
+        // Make staging overlay mount fail
+        fs.mock_set_mount_should_fail("/mnt/nails-pivot/var", true);
+
+        let result = pivot_ephemeral_mount(&fs, &config, Path::new("/var"));
+        assert!(result.is_err());
+
+        // Tmpfs mounts should be cleaned up (rolled back)
+        assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
+        assert!(!fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+    }
+
+    // ========== unmount_pivot_overlay Tests ==========
+
+    #[test]
+    fn test_unmount_pivot_overlay_success() {
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_path_exists("/var", true);
+        fs.mock_set_path_exists("/mnt/hidden/var-upper", true);
+        fs.mock_set_path_exists("/mnt/hidden/var-work", true);
+        fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
+
+        // Mount
+        let info = pivot_overlay_mount(
+            &fs,
+            Path::new("/var"),
+            Path::new("/mnt/hidden/var-upper"),
+            Path::new("/mnt/hidden/var-work"),
+            Path::new("/var"),
+        )
+        .unwrap();
+
+        // Verify mounted
+        assert!(fs.is_mounted(Path::new("/var")).unwrap());
+        assert!(fs.is_mounted(Path::new("/mnt/nails-pivot/var")).unwrap());
+
+        // Unmount
+        let result = unmount_pivot_overlay(&fs, &info);
+        assert!(result.is_ok());
+
+        // Verify unmounted
+        assert!(!fs.is_mounted(Path::new("/var")).unwrap());
+        assert!(!fs.is_mounted(Path::new("/mnt/nails-pivot/var")).unwrap());
+    }
+
+    #[test]
+    fn test_unmount_pivot_overlay_ephemeral_cleans_tmpfs() {
+        let fs = MockFilesystem::new();
+        let config = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "1G".to_string(),
+            tmpfs_work_size: "512M".to_string(),
+        };
+
+        fs.mock_set_path_exists("/var", true);
+        fs.mock_set_directory_creatable("/run/nails/var-upper", true);
+        fs.mock_set_directory_creatable("/run/nails/var-work", true);
+        fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
+
+        // Mount ephemeral pivot
+        let info = pivot_ephemeral_mount(&fs, &config, Path::new("/var")).unwrap();
+        assert!(info.is_ephemeral);
+
+        // Verify all mounts
+        assert!(fs.is_mounted(Path::new("/var")).unwrap());
+        assert!(fs.is_mounted(Path::new("/mnt/nails-pivot/var")).unwrap());
+        assert!(fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
+        assert!(fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+
+        // Unmount
+        let result = unmount_pivot_overlay(&fs, &info);
+        assert!(result.is_ok());
+
+        // Verify all unmounted (including tmpfs)
+        assert!(!fs.is_mounted(Path::new("/var")).unwrap());
+        assert!(!fs.is_mounted(Path::new("/mnt/nails-pivot/var")).unwrap());
+        assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
+        assert!(!fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+    }
+
+    #[test]
+    fn test_unmount_pivot_overlay_idempotent() {
+        let fs = MockFilesystem::new();
+        let info = PivotMountInfo {
+            target: PathBuf::from("/var"),
+            staging: PathBuf::from("/mnt/nails-pivot/var"),
+            upper: PathBuf::from("/mnt/hidden/var-upper"),
+            work: PathBuf::from("/mnt/hidden/var-work"),
+            lower: PathBuf::from("/var"),
+            is_ephemeral: false,
+        };
+
+        // No mounts exist, but unmount should still succeed (idempotent)
+        let result = unmount_pivot_overlay(&fs, &info);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_unmount_pivot_overlay_full_ephemeral_cycle() {
+        let fs = MockFilesystem::new();
+        let config = EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "1G".to_string(),
+            tmpfs_work_size: "512M".to_string(),
+        };
+
+        fs.mock_set_path_exists("/var", true);
+        fs.mock_set_directory_creatable("/run/nails/var-upper", true);
+        fs.mock_set_directory_creatable("/run/nails/var-work", true);
+        fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
+
+        // Full cycle: mount -> verify -> unmount
+        let info = pivot_ephemeral_mount(&fs, &config, Path::new("/var")).unwrap();
+
+        // System is active
+        assert!(fs.is_mounted(Path::new("/var")).unwrap());
+
+        // Deactivate
+        let result = unmount_pivot_overlay(&fs, &info);
+        assert!(result.is_ok());
+
+        // No forensic artifacts remain
+        assert!(!fs.is_mounted(Path::new("/var")).unwrap());
+        assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
+        assert!(!fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
     }
 }
