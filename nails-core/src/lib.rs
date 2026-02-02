@@ -65,7 +65,9 @@ pub mod activate_options;
 pub mod prompts;
 
 // Re-export for convenience
-pub use config::{Config, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig};
+pub use config::{
+    Config, ConfigBuilder, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig,
+};
 pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
 pub use manager::{MountInfo, MountTracker, MountType, NailsManager};
