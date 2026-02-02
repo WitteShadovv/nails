@@ -58,6 +58,12 @@ pub mod overlay;
 // Process detection and classification module (Story 4.13: Process Detection)
 pub mod process;
 
+// Activation options module (Story 4.15: User Prompts and CLI Flags)
+pub mod activate_options;
+
+// User prompts module (Story 4.15: User Prompts and CLI Flags)
+pub mod prompts;
+
 // Re-export for convenience
 pub use config::{Config, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig};
 pub use error::{NailsError, Result};
@@ -89,7 +95,9 @@ pub use timing::Stopwatch;
 pub use verbosity::Verbosity;
 
 // Overlay operations exports (Story 4.11: Extended Overlay Strategy)
-pub use overlay::{EphemeralMountInfo, mount_ephemeral_overlay, unmount_ephemeral_overlay};
+pub use overlay::{
+    EphemeralMountInfo, OverlayStrategyOptions, mount_ephemeral_overlay, unmount_ephemeral_overlay,
+};
 
 // Process detection and classification exports (Story 4.13: Process Detection)
 pub use process::{
@@ -108,6 +116,15 @@ pub use process::{
     prompt_session_kill_confirmation,
     restart_display_manager,
     restart_processes,
+};
+
+// Activation options exports (Story 4.15: User Prompts and CLI Flags)
+pub use activate_options::ActivateOptions;
+
+// User prompts exports (Story 4.15: User Prompts and CLI Flags)
+pub use prompts::{
+    display_abort_message, prompt_pivot_mount_acceptance, prompt_risky_process_restart,
+    prompt_yes_no,
 };
 
 /// RAII guard for automatic state rollback on failure

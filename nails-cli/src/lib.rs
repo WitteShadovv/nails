@@ -45,6 +45,22 @@ pub mod cli {
             /// Disable colored output
             #[arg(long)]
             no_color: bool,
+
+            /// Kill graphical session before activation (enables all direct mounts)
+            #[arg(long)]
+            kill_session: bool,
+
+            /// Accept pivot mount fallback for any volume (degraded security)
+            #[arg(long, conflicts_with = "no_pivot")]
+            accept_pivot_risks: bool,
+
+            /// Abort if any volume requires pivot mount (strict security)
+            #[arg(long, conflicts_with = "accept_pivot_risks")]
+            no_pivot: bool,
+
+            /// Skip all confirmation prompts (auto-accept)
+            #[arg(short = 'y', long)]
+            yes: bool,
         },
         /// Deactivate and return to decoy state (unmount + cleanup)
         Deactivate {
@@ -84,8 +100,14 @@ pub mod cli {
                 verbose,
                 json,
                 no_color,
+                kill_session,
+                accept_pivot_risks,
+                no_pivot,
+                yes,
             } => {
-                use nails_core::{Config, NailsManager, RealFilesystem, Verbosity};
+                use nails_core::{
+                    ActivateOptions, Config, NailsManager, RealFilesystem, Verbosity,
+                };
                 use std::sync::{Arc, Mutex};
                 use std::time::Instant;
 
@@ -105,6 +127,24 @@ pub mod cli {
                     }
                 };
 
+                // Build ActivateOptions from CLI flags
+                let options = ActivateOptions {
+                    kill_session,
+                    accept_pivot_risks,
+                    no_pivot,
+                    yes,
+                    quiet,
+                    verbosity: verbose,
+                    json,
+                    no_color,
+                };
+
+                // Validate options (check for conflicting flags)
+                if let Err(e) = options.validate() {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(2);
+                }
+
                 // Create configuration (will be loaded from file in Epic 10)
                 let config = Config::default();
                 let state_path = config.state_file_path.clone();
@@ -118,9 +158,10 @@ pub mod cli {
                 // Set verbosity level
                 manager.lock().unwrap().set_verbosity(verbosity);
 
-                // Run activation and measure duration
+                // Run activation with options and measure duration
                 let start = Instant::now();
-                let result = NailsManager::activate(manager.clone(), no_preflight);
+                let result =
+                    NailsManager::activate_with_options(manager.clone(), options, no_preflight);
                 let duration = start.elapsed().as_secs_f64();
 
                 // Output results based on flags

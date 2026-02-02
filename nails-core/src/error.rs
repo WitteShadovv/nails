@@ -72,6 +72,13 @@ pub enum NailsError {
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
+    /// Invalid command-line argument or option
+    ///
+    /// Used when CLI flags or options are invalid or conflicting.
+    /// Story 4.15: User Prompts and CLI Flags for Overlay Strategy
+    #[error("Invalid argument: {0}")]
+    InvalidArgument(String),
+
     /// Target is already mounted
     #[error("Already mounted: {path}")]
     AlreadyMounted { path: std::path::PathBuf },
@@ -229,29 +236,30 @@ mod tests {
         let _err5 =
             NailsError::PreFlightCheckFailed(vec![("test-check".to_string(), "test".to_string())]);
         let _err6 = NailsError::ConfigError("test".into());
-        let _err7 = NailsError::IoError(std::io::Error::other("test"));
+        let _err7 = NailsError::InvalidArgument("test".into());
+        let _err8 = NailsError::IoError(std::io::Error::other("test"));
 
         // Filesystem-specific error variants
         use std::path::PathBuf;
-        let _err8 = NailsError::AlreadyMounted {
+        let _err9 = NailsError::AlreadyMounted {
             path: PathBuf::from("/test"),
         };
-        let _err9 = NailsError::MountBusy {
+        let _err10 = NailsError::MountBusy {
             path: PathBuf::from("/test"),
             suggestion: "Close open files".into(),
         };
-        let _err10 = NailsError::UnmountError {
+        let _err11 = NailsError::UnmountError {
             path: PathBuf::from("/test"),
             reason: "Test reason".into(),
         };
-        let _err11 = NailsError::SwapDisableFailed;
-        let _err12 = NailsError::NixOSProfileNotFound {
+        let _err12 = NailsError::SwapDisableFailed;
+        let _err13 = NailsError::NixOSProfileNotFound {
             profile: "test-profile".into(),
         };
-        let _err13 = NailsError::NixOSBuildFailed {
+        let _err14 = NailsError::NixOSBuildFailed {
             profile: "test-profile".into(),
         };
-        let _err14 = NailsError::NixOSSwitchFailed {
+        let _err15 = NailsError::NixOSSwitchFailed {
             profile: "test-profile".into(),
         };
     }

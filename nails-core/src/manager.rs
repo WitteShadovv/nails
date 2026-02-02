@@ -1075,9 +1075,57 @@ impl<F: Filesystem> NailsManager<F> {
     /// let result = NailsManager::activate(Arc::clone(&manager), false);
     /// ```
     pub fn activate(manager_arc: Arc<Mutex<Self>>, no_preflight: bool) -> Result<()> {
+        // Use default options for backward compatibility with tests
+        let options = crate::ActivateOptions::default();
+        Self::activate_with_options(manager_arc, options, no_preflight)
+    }
+
+    /// Activate overlays with custom activation options
+    ///
+    /// Extended version of activate() that accepts ActivateOptions for controlling:
+    /// - Session management (--kill-session)
+    /// - Process restart behavior (risky process prompts)
+    /// - Pivot mount policy (--accept-pivot-risks, --no-pivot)
+    /// - User interaction (--yes to skip prompts)
+    ///
+    /// Story 4.15: User Prompts and CLI Flags for Overlay Strategy
+    ///
+    /// # Arguments
+    ///
+    /// * `manager_arc` - Shared reference to NailsManager
+    /// * `options` - Activation options controlling behavior
+    /// * `no_preflight` - Skip pre-flight checks (expert override)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::{ActivateOptions, NailsManager, MockFilesystem, Config};
+    /// use std::path::PathBuf;
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// let fs = MockFilesystem::new();
+    /// let config = Config::default();
+    /// let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+    /// let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    ///
+    /// let options = ActivateOptions {
+    ///     no_pivot: true,  // Strict security mode
+    ///     ..Default::default()
+    /// };
+    ///
+    /// let result = NailsManager::activate_with_options(Arc::clone(&manager), options, false);
+    /// ```
+    pub fn activate_with_options(
+        manager_arc: Arc<Mutex<Self>>,
+        options: crate::ActivateOptions,
+        no_preflight: bool,
+    ) -> Result<()> {
         use crate::{StateGuard, Stopwatch, Verbosity};
 
         let total_timer = Stopwatch::start();
+
+        // Validate options first
+        options.validate()?;
 
         // Step 1: Capture current state and verbosity for progress logging
         let (previous_state, verbosity) = {
@@ -1092,6 +1140,77 @@ impl<F: Filesystem> NailsManager<F> {
             }
             return Ok(());
         }
+
+        // Step 2.5: Handle --kill-session flag (Story 4.15, AC8)
+        // Kill graphical session BEFORE pre-flight checks to ensure optimal activation
+        // This enables all direct overlay mounts without pivot mount fallback
+        let killed_display_manager = if options.kill_session {
+            use crate::process::{
+                SessionType, detect_session_type, kill_graphical_session,
+                prompt_session_kill_confirmation,
+            };
+
+            if verbosity >= Verbosity::Normal {
+                tracing::info!("Detecting session type for --kill-session...");
+            }
+
+            let session = detect_session_type()?;
+
+            match session {
+                SessionType::GraphicalUser {
+                    ref display_manager,
+                    ..
+                } => {
+                    // Prompt for confirmation unless --yes flag
+                    prompt_session_kill_confirmation(&session, options.yes)?;
+
+                    if verbosity >= Verbosity::Normal {
+                        tracing::info!("Killing graphical session ({})", display_manager);
+                    }
+
+                    let kill_result = kill_graphical_session(&session)?;
+
+                    if verbosity >= Verbosity::Verbose {
+                        tracing::info!(
+                            "  ✓ Session killed: {} processes terminated, {} force-killed",
+                            kill_result.processes_terminated,
+                            kill_result.processes_force_killed
+                        );
+                    }
+
+                    // Store display manager name for restart later
+                    Some(display_manager.clone())
+                }
+                SessionType::Tty => {
+                    if verbosity >= Verbosity::Verbose {
+                        tracing::info!("Running in TTY - no session to kill");
+                    }
+                    None
+                }
+                SessionType::Ssh => {
+                    if verbosity >= Verbosity::Verbose {
+                        tracing::info!("Running over SSH - no local session to kill");
+                    }
+                    None
+                }
+                SessionType::GraphicalRoot => {
+                    if verbosity >= Verbosity::Normal {
+                        tracing::warn!(
+                            "Running as root in graphical session - cannot kill session"
+                        );
+                    }
+                    None
+                }
+                SessionType::Unknown => {
+                    if verbosity >= Verbosity::Normal {
+                        tracing::warn!("Could not detect session type - skipping session kill");
+                    }
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Step 3: Run pre-flight checks (unless skipped)
         if no_preflight {
@@ -1202,7 +1321,20 @@ impl<F: Filesystem> NailsManager<F> {
         let manager = manager_arc.lock().unwrap();
         let mut tracker = MountTracker::new(&manager.filesystem);
 
-        // Step 8a: Mount persistent overlays (/home, /etc)
+        // Build OverlayStrategyOptions from ActivateOptions (Story 4.15, AC8)
+        let strategy_options = crate::overlay::OverlayStrategyOptions {
+            auto_restart_safe: true,        // Always restart safe processes automatically
+            prompt_for_risky: !options.yes, // Skip risky prompts if --yes flag
+            allow_pivot: !options.no_pivot, // Respect --no-pivot flag
+            auto_accept_pivot: options.accept_pivot_risks, // Auto-accept if --accept-pivot-risks
+            skip_process_detection: cfg!(test), // Skip process detection in test builds
+        };
+
+        // Track mount methods for logging
+        let mut direct_mounts = 0;
+        let mut pivot_mounts = 0;
+
+        // Step 8a: Mount persistent overlays (/home, /etc) using universal algorithm (Story 4.15)
         for target_name in MOUNT_ORDER {
             let overlay = match manager
                 .config
@@ -1220,17 +1352,46 @@ impl<F: Filesystem> NailsManager<F> {
                 }
             };
 
-            match manager.filesystem.mount_overlay(
+            // Use universal overlay mounting algorithm (Story 4.15, AC8)
+            // This replaces the direct filesystem.mount_overlay() call with a 4-phase algorithm:
+            // 1. Detect blocking processes
+            // 2. Classify and restart processes
+            // 3. Try direct mount
+            // 4. Fallback to pivot mount with user consent
+            match crate::overlay::mount_overlay_with_strategy(
+                &manager.filesystem,
                 &overlay.lower,
                 &overlay.upper,
                 &overlay.work,
                 &overlay.target,
+                &strategy_options,
             ) {
-                Ok(_) => {
-                    tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
-                    if verbosity >= Verbosity::Verbose {
-                        tracing::info!("  ✓ {} mounted", overlay.target.display());
+                Ok(mount_method) => {
+                    use crate::overlay::MountMethod;
+
+                    // Track mount type for logging
+                    match mount_method {
+                        MountMethod::Direct => {
+                            direct_mounts += 1;
+                            if verbosity >= Verbosity::Verbose {
+                                tracing::info!(
+                                    "  ✓ {} mounted (direct, optimal security)",
+                                    overlay.target.display()
+                                );
+                            }
+                        }
+                        MountMethod::Pivot => {
+                            pivot_mounts += 1;
+                            if verbosity >= Verbosity::Verbose {
+                                tracing::warn!(
+                                    "  ⚠️  {} mounted (pivot, degraded security)",
+                                    overlay.target.display()
+                                );
+                            }
+                        }
                     }
+
+                    tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
 
                     // Story 4.7, AC2, Task 4: Update overlay_status incrementally after EACH mount
                     // This ensures crash recovery can track partial activation progress
@@ -1367,11 +1528,22 @@ impl<F: Filesystem> NailsManager<F> {
         drop(manager);
 
         if verbosity >= Verbosity::Normal {
+            let security_status = if pivot_mounts == 0 {
+                "OPTIMAL"
+            } else {
+                "DEGRADED"
+            };
+
             tracing::info!(
                 step = "mount_overlays",
                 duration_ms = mount_timer.elapsed().as_millis() as u64,
-                "✓ All overlays mounted ({})",
-                mount_timer
+                direct_mounts = direct_mounts,
+                pivot_mounts = pivot_mounts,
+                "✓ All overlays mounted ({}) - {} direct, {} pivot - Security: {}",
+                mount_timer,
+                direct_mounts,
+                pivot_mounts,
+                security_status
             );
         }
 
@@ -1424,6 +1596,30 @@ impl<F: Filesystem> NailsManager<F> {
             let active_state = current.complete_activation(mounted_overlays)?;
             // update_state() saves to disk automatically (line 675)
             manager.update_state(active_state)?;
+        }
+
+        // Step 10.5: Restart display manager if session was killed (Story 4.15, AC8)
+        if let Some(ref dm_name) = killed_display_manager {
+            use crate::process::{DisplayManager, restart_display_manager};
+
+            if verbosity >= Verbosity::Normal {
+                tracing::info!("Restarting display manager ({})...", dm_name);
+            }
+
+            let dm = match dm_name.as_str() {
+                "gdm" => DisplayManager::Gdm,
+                "sddm" => DisplayManager::Sddm,
+                "lightdm" => DisplayManager::LightDm,
+                "greetd" => DisplayManager::Greetd,
+                "ly" => DisplayManager::Ly,
+                other => DisplayManager::Other(other.to_string()),
+            };
+
+            restart_display_manager(&dm)?;
+
+            if verbosity >= Verbosity::Normal {
+                tracing::info!("  ✓ Display manager restarted - login screen should appear");
+            }
         }
 
         // Step 11: Success - commit guard to prevent rollback
