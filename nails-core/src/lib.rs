@@ -96,7 +96,8 @@ pub use verbosity::Verbosity;
 
 // Overlay operations exports (Story 4.11: Extended Overlay Strategy)
 pub use overlay::{
-    EphemeralMountInfo, OverlayStrategyOptions, mount_ephemeral_overlay, unmount_ephemeral_overlay,
+    EphemeralMountInfo, MountMethod, OverlayStrategyOptions, mount_ephemeral_overlay,
+    unmount_ephemeral_overlay,
 };
 
 // Process detection and classification exports (Story 4.13: Process Detection)
