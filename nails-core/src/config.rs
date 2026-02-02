@@ -21,6 +21,47 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// CLI argument overrides for configuration
+///
+/// All fields are Option to distinguish "not specified" from "explicitly set".
+/// Only Some values override the loaded config.
+///
+/// # Priority Order (UXR26)
+///
+/// Configuration values are resolved in this priority order:
+/// 1. CLI flags (highest priority)
+/// 2. Config file values
+/// 3. Default values (lowest priority)
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::CliOverrides;
+///
+/// let overrides = CliOverrides {
+///     preflight_checks: Some(false), // --no-preflight flag
+///     verbosity: Some("debug".to_string()), // -vv flag
+///     ..Default::default()
+/// };
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct CliOverrides {
+    /// Override preflight_checks (--no-preflight sets to false)
+    pub preflight_checks: Option<bool>,
+
+    /// Override clear_history (--no-clear-history sets to false)
+    pub clear_history: Option<bool>,
+
+    /// Override default_verbosity (from -q, -v, -vv flags)
+    pub verbosity: Option<String>,
+
+    /// Override color_output (--no-color sets to false)
+    pub color_output: Option<bool>,
+
+    /// Override verify_on_deactivate (--no-verify sets to false)
+    pub verify_on_deactivate: Option<bool>,
+}
+
 /// Overlay filesystem configuration
 ///
 /// Defines the paths for a single overlay mount point. OverlayFS combines
@@ -643,6 +684,93 @@ retention_days: 7
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Apply CLI flag overrides to this config
+    ///
+    /// Priority order: CLI flags > Config file > Defaults (UXR26)
+    /// Only overrides values that are explicitly set (Some).
+    ///
+    /// # Arguments
+    ///
+    /// * `overrides` - CLI overrides to apply
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::{Config, CliOverrides};
+    ///
+    /// let mut config = Config::default();
+    /// let overrides = CliOverrides {
+    ///     preflight_checks: Some(false),
+    ///     verbosity: Some("debug".to_string()),
+    ///     ..Default::default()
+    /// };
+    ///
+    /// config.apply_cli_overrides(&overrides);
+    /// assert!(!config.preflight_checks);
+    /// assert_eq!(config.default_verbosity, "debug");
+    /// ```
+    pub fn apply_cli_overrides(&mut self, overrides: &CliOverrides) {
+        if let Some(v) = overrides.preflight_checks {
+            self.preflight_checks = v;
+        }
+        if let Some(v) = overrides.clear_history {
+            self.clear_history = v;
+        }
+        if let Some(v) = &overrides.verbosity {
+            self.default_verbosity = v.clone();
+        }
+        if let Some(v) = overrides.color_output {
+            self.color_output = v;
+        }
+        if let Some(v) = overrides.verify_on_deactivate {
+            self.verify_on_deactivate = v;
+        }
+    }
+
+    /// Load config from file and apply CLI overrides
+    ///
+    /// This is the primary entry point for CLI applications.
+    ///
+    /// # Priority Order (UXR26)
+    /// 1. CLI flags (highest priority)
+    /// 2. Config file values
+    /// 3. Default values (lowest priority)
+    ///
+    /// # Arguments
+    ///
+    /// * `config_path` - Path to YAML config file (uses defaults if missing)
+    /// * `overrides` - CLI argument overrides
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::ConfigError` for malformed YAML or missing required fields.
+    /// Missing config file is not an error (uses defaults).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::{Config, CliOverrides};
+    /// use std::path::PathBuf;
+    ///
+    /// let overrides = CliOverrides {
+    ///     preflight_checks: Some(false),
+    ///     ..Default::default()
+    /// };
+    ///
+    /// let config = Config::from_file_and_cli(
+    ///     &PathBuf::from("~/.nails/config.yaml"),
+    ///     &overrides,
+    /// ).expect("Failed to load config");
+    /// ```
+    pub fn from_file_and_cli(
+        config_path: &std::path::Path,
+        overrides: &CliOverrides,
+    ) -> crate::error::Result<Self> {
+        let mut config = Self::load_or_default(config_path)?;
+        config.apply_cli_overrides(overrides);
+        Ok(config)
     }
 
     /// Create test configuration with disabled extended overlays
@@ -1738,5 +1866,213 @@ clear_history: false
         let config = Config::load(file.path()).unwrap();
         assert_eq!(config.hidden_volume_root, PathBuf::from("/mnt/alias-test"));
         assert!(!config.clear_history);
+    }
+
+    // ========== CliOverrides Tests (Story 10.3) ==========
+
+    #[test]
+    fn test_cli_overrides_default() {
+        let overrides = CliOverrides::default();
+        assert!(overrides.preflight_checks.is_none());
+        assert!(overrides.clear_history.is_none());
+        assert!(overrides.verbosity.is_none());
+        assert!(overrides.color_output.is_none());
+        assert!(overrides.verify_on_deactivate.is_none());
+    }
+
+    #[test]
+    fn test_apply_cli_overrides_preflight_checks() {
+        let mut config = Config::default();
+        assert!(config.preflight_checks); // Default is true
+
+        let overrides = CliOverrides {
+            preflight_checks: Some(false),
+            ..Default::default()
+        };
+
+        config.apply_cli_overrides(&overrides);
+        assert!(!config.preflight_checks); // CLI override applied
+    }
+
+    #[test]
+    fn test_apply_cli_overrides_clear_history() {
+        let mut config = Config::default();
+        assert!(config.clear_history); // Default is true
+
+        let overrides = CliOverrides {
+            clear_history: Some(false),
+            ..Default::default()
+        };
+
+        config.apply_cli_overrides(&overrides);
+        assert!(!config.clear_history); // CLI override applied
+    }
+
+    #[test]
+    fn test_apply_cli_overrides_verbosity() {
+        let mut config = Config::default();
+        assert_eq!(config.default_verbosity, "info");
+
+        let overrides = CliOverrides {
+            verbosity: Some("debug".to_string()),
+            ..Default::default()
+        };
+
+        config.apply_cli_overrides(&overrides);
+        assert_eq!(config.default_verbosity, "debug");
+    }
+
+    #[test]
+    fn test_apply_cli_overrides_verbosity_single_v_to_info() {
+        // Test AC4: -v flag maps to "info" (not "verbose")
+        let mut config = Config::default();
+
+        let overrides = CliOverrides {
+            verbosity: Some("info".to_string()), // Single -v flag
+            ..Default::default()
+        };
+
+        config.apply_cli_overrides(&overrides);
+        assert_eq!(config.default_verbosity, "info");
+    }
+
+    #[test]
+    fn test_apply_cli_overrides_color_output() {
+        let mut config = Config::default();
+        assert!(config.color_output); // Default is true
+
+        let overrides = CliOverrides {
+            color_output: Some(false),
+            ..Default::default()
+        };
+
+        config.apply_cli_overrides(&overrides);
+        assert!(!config.color_output);
+    }
+
+    #[test]
+    fn test_apply_cli_overrides_verify_on_deactivate() {
+        let mut config = Config::default();
+        assert!(config.verify_on_deactivate); // Default is true
+
+        let overrides = CliOverrides {
+            verify_on_deactivate: Some(false),
+            ..Default::default()
+        };
+
+        config.apply_cli_overrides(&overrides);
+        assert!(!config.verify_on_deactivate);
+    }
+
+    #[test]
+    fn test_apply_cli_overrides_priority_order() {
+        // Start with config that has clear_history = true
+        let mut config = Config::default();
+        assert!(config.clear_history);
+
+        // CLI says --no-clear-history (false)
+        let overrides = CliOverrides {
+            clear_history: Some(false),
+            ..Default::default()
+        };
+
+        config.apply_cli_overrides(&overrides);
+
+        // CLI wins (Priority: CLI > Config > Defaults)
+        assert!(!config.clear_history);
+    }
+
+    #[test]
+    fn test_apply_cli_overrides_unset_preserves_config() {
+        // Simulate config file with clear_history: false
+        let mut config = Config {
+            clear_history: false,
+            ..Default::default()
+        };
+
+        // CLI doesn't specify clear_history
+        let overrides = CliOverrides::default();
+
+        config.apply_cli_overrides(&overrides);
+
+        // Config file value preserved
+        assert!(!config.clear_history);
+    }
+
+    #[test]
+    fn test_apply_cli_overrides_multiple_simultaneously() {
+        let mut config = Config::default();
+
+        let overrides = CliOverrides {
+            preflight_checks: Some(false),
+            verbosity: Some("debug".to_string()),
+            color_output: Some(false),
+            ..Default::default()
+        };
+
+        config.apply_cli_overrides(&overrides);
+
+        assert!(!config.preflight_checks);
+        assert_eq!(config.default_verbosity, "debug");
+        assert!(!config.color_output);
+        // Unspecified fields remain at defaults
+        assert!(config.clear_history);
+        assert!(config.verify_on_deactivate);
+    }
+
+    #[test]
+    fn test_from_file_and_cli_with_nonexistent_file() {
+        let overrides = CliOverrides {
+            preflight_checks: Some(false),
+            verbosity: Some("quiet".to_string()),
+            ..Default::default()
+        };
+
+        let config =
+            Config::from_file_and_cli(&PathBuf::from("/nonexistent/config.yaml"), &overrides)
+                .unwrap();
+
+        // Defaults used, then CLI overrides applied
+        assert_eq!(
+            config.hidden_volume_root,
+            PathBuf::from("/mnt/hidden-volume")
+        );
+        assert!(!config.preflight_checks); // CLI override
+        assert_eq!(config.default_verbosity, "quiet"); // CLI override
+        assert!(config.clear_history); // Default (no override)
+    }
+
+    #[test]
+    fn test_from_file_and_cli_with_existing_file() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+hidden_volume_path: /mnt/test-volume
+clear_history: true
+preflight_checks: true
+default_verbosity: info
+"#
+        )
+        .unwrap();
+
+        let overrides = CliOverrides {
+            preflight_checks: Some(false),        // Override config file
+            verbosity: Some("debug".to_string()), // Override config file
+            ..Default::default()
+        };
+
+        let config = Config::from_file_and_cli(file.path(), &overrides).unwrap();
+
+        // Config file values
+        assert_eq!(config.hidden_volume_root, PathBuf::from("/mnt/test-volume"));
+        assert!(config.clear_history); // From config file (no override)
+
+        // CLI overrides win
+        assert!(!config.preflight_checks); // CLI override beats config
+        assert_eq!(config.default_verbosity, "debug"); // CLI override beats config
     }
 }

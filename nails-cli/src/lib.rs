@@ -46,6 +46,10 @@ pub mod cli {
             #[arg(long)]
             no_color: bool,
 
+            /// Skip clearing shell history on deactivation
+            #[arg(long)]
+            no_clear_history: bool,
+
             /// Kill graphical session before activation (enables all direct mounts)
             #[arg(long)]
             kill_session: bool,
@@ -100,14 +104,16 @@ pub mod cli {
                 verbose,
                 json,
                 no_color,
+                no_clear_history,
                 kill_session,
                 accept_pivot_risks,
                 no_pivot,
                 yes,
             } => {
                 use nails_core::{
-                    ActivateOptions, Config, NailsManager, RealFilesystem, Verbosity,
+                    ActivateOptions, CliOverrides, Config, NailsManager, RealFilesystem, Verbosity,
                 };
+                use std::path::PathBuf;
                 use std::sync::{Arc, Mutex};
                 use std::time::Instant;
 
@@ -145,8 +151,34 @@ pub mod cli {
                     std::process::exit(2);
                 }
 
-                // Create configuration (will be loaded from file in Epic 10)
-                let config = Config::default();
+                // Build CLI overrides from parsed arguments (Story 10.3)
+                let cli_overrides = CliOverrides {
+                    preflight_checks: if no_preflight { Some(false) } else { None },
+                    clear_history: if no_clear_history { Some(false) } else { None },
+                    verbosity: if quiet {
+                        Some("quiet".to_string())
+                    } else if verbose >= 2 {
+                        Some("debug".to_string())
+                    } else if verbose == 1 {
+                        Some("info".to_string()) // AC4: -v maps to "info"
+                    } else {
+                        None // Use config file or default
+                    },
+                    color_output: if no_color { Some(false) } else { None },
+                    ..Default::default()
+                };
+
+                // Load config with CLI overrides (Story 10.3)
+                let config_path = dirs::home_dir()
+                    .map(|h| h.join(".nails/config.yaml"))
+                    .unwrap_or_else(|| PathBuf::from("~/.nails/config.yaml"));
+
+                let config = Config::from_file_and_cli(&config_path, &cli_overrides)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error loading config: {}", e);
+                        std::process::exit(2);
+                    });
+
                 let state_path = config.state_file_path.clone();
 
                 // Create NailsManager with real filesystem

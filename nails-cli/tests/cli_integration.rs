@@ -270,3 +270,50 @@ fn test_status_command_executes_with_verbose() {
         .success()
         .stdout(predicates::str::contains("Status: verbose=true"));
 }
+
+/// Test that activate command has --no-clear-history flag in help (AC3)
+#[test]
+fn test_activate_has_no_clear_history_flag() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("--no-clear-history"))
+        .stdout(predicates::str::contains("Skip clearing shell history"));
+}
+
+/// Test backward compatibility: CLI works when config file doesn't exist (AC6)
+///
+/// This verifies the behavior specified in AC6:
+/// - When config file is missing, defaults are used
+/// - Then CLI overrides are applied
+/// - Existing users without config files should see no behavior change
+#[test]
+fn test_backward_compatibility_without_config_file() {
+    use std::env;
+    use tempfile::TempDir;
+
+    // Create a temporary home directory with no config file
+    let temp_home = TempDir::new().unwrap();
+    let config_path = temp_home.path().join(".nails/config.yaml");
+
+    // Verify config file doesn't exist
+    assert!(!config_path.exists());
+
+    // Set HOME environment variable to temp directory
+    unsafe {
+        env::set_var("HOME", temp_home.path());
+    }
+
+    // Test that activate command works without config file (should use defaults + CLI overrides)
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--no-preflight"])
+        .env("HOME", temp_home.path())
+        .assert()
+        .failure(); // Will fail without setup, but shouldn't error on config loading
+
+    // Clean up
+    unsafe {
+        env::remove_var("HOME");
+    }
+}

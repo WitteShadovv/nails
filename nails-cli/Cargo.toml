@@ -29,6 +29,9 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# Home directory detection (Story 10.3)
+dirs = "5.0"
+
 # Core library
 nails-core = { path = "../nails-core" }
 
@@ -36,3 +39,4 @@ nails-core = { path = "../nails-core" }
 # Workspace testing dependencies
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+tempfile = "3"
