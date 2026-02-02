@@ -55,6 +55,9 @@ pub mod verbosity;
 // Overlay operations module (Story 4.11: Extended Overlay Strategy)
 pub mod overlay;
 
+// Process detection and classification module (Story 4.13: Process Detection)
+pub mod process;
+
 // Re-export for convenience
 pub use config::{Config, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig};
 pub use error::{NailsError, Result};
@@ -87,6 +90,12 @@ pub use verbosity::Verbosity;
 
 // Overlay operations exports (Story 4.11: Extended Overlay Strategy)
 pub use overlay::{EphemeralMountInfo, mount_ephemeral_overlay, unmount_ephemeral_overlay};
+
+// Process detection and classification exports (Story 4.13: Process Detection)
+pub use process::{
+    ProcessInfo, RestartMethod, RestartStrategy, RestartedProcess, classify_process,
+    detect_processes_using, restart_processes,
+};
 
 /// RAII guard for automatic state rollback on failure
 ///
