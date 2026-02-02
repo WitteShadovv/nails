@@ -16,6 +16,7 @@
 //! - **Detection** (`detection.rs`): Parse `/proc` to find processes using target directories
 //! - **Classification** (`classification.rs`): Classify processes by restart safety
 //! - **Restart** (`restart.rs`): Stop and restart processes using systemd or signals
+//! - **Session** (`session.rs`): Detect and manage graphical sessions for `--kill-session` flag
 //!
 //! # Example
 //!
@@ -42,11 +43,17 @@
 pub mod classification;
 pub mod detection;
 pub mod restart;
+pub mod session;
 
 // Re-export public API
 pub use classification::{RestartStrategy, classify_process};
 pub use detection::{ProcessInfo, detect_processes_using};
 pub use restart::{RestartMethod, RestartedProcess, restart_processes};
+pub use session::{
+    DisplayManager, RealSessionCommandExecutor, SessionCommandExecutor, SessionKillResult,
+    SessionType, detect_session_type, kill_graphical_session, prompt_session_kill_confirmation,
+    restart_display_manager,
+};
 
 #[cfg(test)]
 mod tests {

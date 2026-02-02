@@ -93,8 +93,21 @@ pub use overlay::{EphemeralMountInfo, mount_ephemeral_overlay, unmount_ephemeral
 
 // Process detection and classification exports (Story 4.13: Process Detection)
 pub use process::{
-    ProcessInfo, RestartMethod, RestartStrategy, RestartedProcess, classify_process,
-    detect_processes_using, restart_processes,
+    // Story 4.14: Session Detection and Shutdown Support
+    DisplayManager,
+    ProcessInfo,
+    RestartMethod,
+    RestartStrategy,
+    RestartedProcess,
+    SessionKillResult,
+    SessionType,
+    classify_process,
+    detect_processes_using,
+    detect_session_type,
+    kill_graphical_session,
+    prompt_session_kill_confirmation,
+    restart_display_manager,
+    restart_processes,
 };
 
 /// RAII guard for automatic state rollback on failure
