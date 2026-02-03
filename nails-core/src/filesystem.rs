@@ -156,6 +156,56 @@ pub trait Filesystem: Send + Sync + Clone {
     /// `Ok(true)` if mounted, `Ok(false)` if not mounted.
     fn is_mounted(&self, target: &Path) -> Result<bool>;
 
+    /// Get mount info for a currently mounted overlay
+    ///
+    /// Retrieves the mount metadata (lower, upper, work, target paths) for an overlay
+    /// that was previously mounted via `mount_overlay()`. This is used during rollback
+    /// to remount overlays that were unmounted during a failed deactivation.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - Path of the mounted overlay
+    ///
+    /// # Returns
+    ///
+    /// `Some(MountInfo)` if the overlay is tracked, `None` if not found.
+    ///
+    /// # Requirements
+    ///
+    /// - AC6: Partial unmount rollback (remount requires mount info)
+    /// - AC9: rollback_on_unmount_failure() needs mount metadata
+    /// - FR51: Remount overlays if cleanup fails
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/", true);
+    /// fs.mock_set_path_exists("/mnt/hidden/upper", true);
+    /// fs.mock_set_path_exists("/mnt/hidden/work", true);
+    /// fs.mock_set_path_exists("/home", true);
+    /// fs.mock_set_path_type("/", "directory");
+    /// fs.mock_set_path_type("/mnt/hidden/upper", "directory");
+    /// fs.mock_set_path_type("/mnt/hidden/work", "directory");
+    /// fs.mock_set_path_type("/home", "directory");
+    /// fs.mock_set_writable("/mnt/hidden/upper", true);
+    /// fs.mock_set_writable("/mnt/hidden/work", true);
+    ///
+    /// fs.mount_overlay(
+    ///     Path::new("/"),
+    ///     Path::new("/mnt/hidden/upper"),
+    ///     Path::new("/mnt/hidden/work"),
+    ///     Path::new("/home")
+    /// ).unwrap();
+    ///
+    /// let info = fs.get_mount_info(Path::new("/home"));
+    /// assert!(info.is_some());
+    /// ```
+    fn get_mount_info(&self, target: &Path) -> Option<MountInfo>;
+
     // ------------------------------------------------------------------------
     // Swap Management
     // ------------------------------------------------------------------------
@@ -467,6 +517,47 @@ pub trait Filesystem: Send + Sync + Clone {
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()>;
 
     // ------------------------------------------------------------------------
+    // Directory Listing Operations (Story 5.4: Log Cleanup)
+    // ------------------------------------------------------------------------
+
+    /// List files and directories in a directory
+    ///
+    /// Returns paths to all entries in the directory (files and subdirectories).
+    /// Does NOT recursively descend into subdirectories.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - Directory path to list
+    ///
+    /// # Returns
+    ///
+    /// Vec of PathBuf for each entry in the directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if directory doesn't exist or can't be read.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_directory_contents(
+    ///     &PathBuf::from("/mnt/hidden/logs"),
+    ///     vec![
+    ///         PathBuf::from("/mnt/hidden/logs/nails.log"),
+    ///         PathBuf::from("/mnt/hidden/logs/nails.log.1"),
+    ///     ]
+    /// );
+    ///
+    /// let entries = fs.list_directory(Path::new("/mnt/hidden/logs")).unwrap();
+    /// assert_eq!(entries.len(), 2);
+    /// ```
+    fn list_directory(&self, dir: &Path) -> Result<Vec<PathBuf>>;
+
+    // ------------------------------------------------------------------------
     // File Removal Operations (Story 5.3: Temporary Files Cleanup)
     // ------------------------------------------------------------------------
 
@@ -774,6 +865,8 @@ pub struct MockFilesystem {
     bind_mounts: Arc<Mutex<HashMap<PathBuf, PathBuf>>>,        // Track bind mounts: target → source
     written_files: Arc<Mutex<HashMap<PathBuf, String>>>,       // Track files written (Story 5.2)
     remove_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Track paths that should fail removal (Story 5.3)
+    directory_contents: Arc<Mutex<HashMap<PathBuf, Vec<PathBuf>>>>, // Track directory contents for list_directory (Story 5.4)
+    write_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Track paths that should fail write (Story 5.5)
 }
 
 impl MockFilesystem {
@@ -815,6 +908,8 @@ impl MockFilesystem {
             bind_mounts: Arc::new(Mutex::new(HashMap::new())),
             written_files: Arc::new(Mutex::new(HashMap::new())),
             remove_should_fail: Arc::new(Mutex::new(HashSet::new())),
+            directory_contents: Arc::new(Mutex::new(HashMap::new())),
+            write_should_fail: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -847,6 +942,8 @@ impl MockFilesystem {
         self.bind_mounts.lock().unwrap().clear();
         self.written_files.lock().unwrap().clear();
         self.remove_should_fail.lock().unwrap().clear();
+        self.directory_contents.lock().unwrap().clear();
+        self.write_should_fail.lock().unwrap().clear();
     }
 
     // ========================================================================
@@ -1086,6 +1183,37 @@ impl MockFilesystem {
         written.get(path).cloned()
     }
 
+    /// Set whether a write operation should fail for a specific path (Story 5.5)
+    ///
+    /// This is useful for testing cleanup failure scenarios where file writes fail.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - File path that should fail to write
+    /// * `should_fail` - If true, write_file_content for this path will fail
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_write_should_fail("/root/.bash_history", true);
+    ///
+    /// // This will now fail
+    /// let result = fs.write_file_content(Path::new("/root/.bash_history"), "content");
+    /// assert!(result.is_err());
+    /// ```
+    pub fn mock_set_write_should_fail(&self, path: &str, should_fail: bool) {
+        let mut fail_set = self.write_should_fail.lock().unwrap();
+        if should_fail {
+            fail_set.insert(PathBuf::from(path));
+        } else {
+            fail_set.remove(&PathBuf::from(path));
+        }
+    }
+
     /// Set mock results for pattern-based file searches
     ///
     /// # Arguments
@@ -1225,6 +1353,35 @@ impl MockFilesystem {
             parent_entry.is_writable = creatable;
         }
     }
+
+    /// Set mock directory contents for list_directory tests
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - Directory path
+    /// * `contents` - List of paths that should be returned by list_directory
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::MockFilesystem;
+    /// use std::path::PathBuf;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_directory_contents(
+    ///     &PathBuf::from("/mnt/hidden/logs"),
+    ///     vec![
+    ///         PathBuf::from("/mnt/hidden/logs/nails.log"),
+    ///         PathBuf::from("/mnt/hidden/logs/nails.log.1"),
+    ///     ]
+    /// );
+    /// ```
+    pub fn mock_set_directory_contents(&self, dir: &Path, contents: Vec<PathBuf>) {
+        self.directory_contents
+            .lock()
+            .unwrap()
+            .insert(dir.to_path_buf(), contents);
+    }
 }
 
 impl Default for MockFilesystem {
@@ -1315,6 +1472,10 @@ impl Filesystem for MockFilesystem {
 
     fn is_mounted(&self, target: &Path) -> Result<bool> {
         Ok(self.mounted.lock().unwrap().contains(target))
+    }
+
+    fn get_mount_info(&self, target: &Path) -> Option<MountInfo> {
+        self.mounted_overlays.lock().unwrap().get(target).cloned()
     }
 
     fn swap_is_enabled(&self) -> Result<bool> {
@@ -1457,6 +1618,14 @@ impl Filesystem for MockFilesystem {
     }
 
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {
+        // Check if write should fail for this path (Story 5.5 cleanup failure testing)
+        if self.write_should_fail.lock().unwrap().contains(path) {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("Mock write failure for {}", path.display()),
+            )));
+        }
+
         // Store the written content for test verification
         let mut written = self.written_files.lock().unwrap();
         written.insert(path.to_path_buf(), content.to_string());
@@ -1627,6 +1796,23 @@ impl Filesystem for MockFilesystem {
 
         Ok(())
     }
+
+    fn list_directory(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        // Check if directory contents have been mocked
+        let contents = self.directory_contents.lock().unwrap();
+        if let Some(entries) = contents.get(&dir.to_path_buf()) {
+            return Ok(entries.clone());
+        }
+
+        // If not mocked, return error (directory not found/not set up for tests)
+        Err(NailsError::IoError(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "Mock: directory contents not configured for {}",
+                dir.display()
+            ),
+        )))
+    }
 }
 
 // ============================================================================
@@ -1742,6 +1928,53 @@ impl Filesystem for RealFilesystem {
         }
 
         Ok(false)
+    }
+
+    fn get_mount_info(&self, target: &Path) -> Option<MountInfo> {
+        // For RealFilesystem, parse /proc/mounts to find mount info
+        // Note: Linux /proc/mounts only shows mount point and type, not overlay paths
+        // For proper rollback support, mount info should be persisted in state file
+        // during activation. This is a best-effort implementation for now.
+        let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
+        let canonical_target = target.canonicalize().ok()?;
+
+        for line in mounts.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let mount_point = PathBuf::from(parts[1]).canonicalize().ok()?;
+                let fs_type = parts[2];
+
+                if mount_point == canonical_target && fs_type == "overlay" {
+                    // Parse overlay options (lowerdir=...,upperdir=...,workdir=...)
+                    let options = parts[3];
+                    let mut lower = None;
+                    let mut upper = None;
+                    let mut work = None;
+
+                    for opt in options.split(',') {
+                        if let Some(path) = opt.strip_prefix("lowerdir=") {
+                            lower = Some(PathBuf::from(path.split(':').next()?));
+                        } else if let Some(path) = opt.strip_prefix("upperdir=") {
+                            upper = Some(PathBuf::from(path));
+                        } else if let Some(path) = opt.strip_prefix("workdir=") {
+                            work = Some(PathBuf::from(path));
+                        }
+                    }
+
+                    if let (Some(l), Some(u), Some(w)) = (lower, upper, work) {
+                        return Some(MountInfo {
+                            lower: l,
+                            upper: u,
+                            work: w,
+                            target: canonical_target,
+                            mounted_at: chrono::Utc::now(), // Approximation
+                        });
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     fn swap_is_enabled(&self) -> Result<bool> {
@@ -2135,6 +2368,28 @@ impl Filesystem for RealFilesystem {
                 format!("Failed to remove directory {}: {}", path.display(), e),
             ))
         })
+    }
+
+    fn list_directory(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        let entries = std::fs::read_dir(dir).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to read directory {}: {}", dir.display(), e),
+            ))
+        })?;
+
+        let mut paths = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| {
+                NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to read directory entry in {}: {}", dir.display(), e),
+                ))
+            })?;
+            paths.push(entry.path());
+        }
+
+        Ok(paths)
     }
 }
 

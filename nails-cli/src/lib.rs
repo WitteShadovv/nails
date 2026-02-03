@@ -68,9 +68,28 @@ pub mod cli {
         },
         /// Deactivate and return to decoy state (unmount + cleanup)
         Deactivate {
-            /// Quick cleanup mode (skip thorough wipe)
-            #[arg(short, long)]
-            fast: bool,
+            /// Skip shell history cleanup
+            ///
+            /// By default, deactivation removes all 'nails' commands from shell history.
+            /// Use this flag to preserve history (not recommended for forensic safety).
+            #[arg(long)]
+            no_clear_history: bool,
+
+            /// Suppress output except errors
+            #[arg(short, long, conflicts_with = "verbose")]
+            quiet: bool,
+
+            /// Increase verbosity (-v for details, -vv for debug)
+            #[arg(short, long, action = clap::ArgAction::Count, conflicts_with = "quiet")]
+            verbose: u8,
+
+            /// Output results in JSON format
+            #[arg(long)]
+            json: bool,
+
+            /// Disable colored output
+            #[arg(long)]
+            no_color: bool,
         },
         /// Emergency mode: rapid deactivation with countdown
         Emergency {
@@ -209,10 +228,85 @@ pub mod cli {
                     Err(_) => std::process::exit(1),
                 }
             }
-            Commands::Deactivate { fast } => {
-                println!("Deactivate: fast={}", fast);
-                // TODO: Call nails-core deactivation logic
-                Ok(())
+            Commands::Deactivate {
+                no_clear_history,
+                quiet,
+                verbose,
+                json,
+                no_color,
+            } => {
+                use nails_core::{
+                    CleanupConfig, Config, DeactivationOrchestrator, NailsManager, RealFilesystem,
+                    Verbosity,
+                };
+                use std::path::PathBuf;
+                use std::sync::{Arc, Mutex};
+                use std::time::Instant;
+
+                // Configure color output (must be done before any colored output)
+                if no_color || std::env::var("NO_COLOR").is_ok() {
+                    colored::control::set_override(false);
+                }
+
+                // Convert CLI flags to Verbosity enum
+                let verbosity = if quiet {
+                    Verbosity::Quiet
+                } else {
+                    match verbose {
+                        0 => Verbosity::Normal,
+                        1 => Verbosity::Verbose,
+                        _ => Verbosity::Debug, // 2+ maps to Debug
+                    }
+                };
+
+                // Create cleanup config from args
+                let mut cleanup_config = CleanupConfig::default();
+                if no_clear_history {
+                    cleanup_config.clear_history = false;
+                    if verbosity >= Verbosity::Normal && !json {
+                        println!("Skipping history cleanup (--no-clear-history)");
+                    }
+                }
+
+                // Load configuration
+                let config_path = dirs::home_dir()
+                    .map(|h| h.join(".nails/config.yaml"))
+                    .unwrap_or_else(|| PathBuf::from("~/.nails/config.yaml"));
+
+                let config = Config::load_or_default(&config_path)
+                    .unwrap_or_else(|_| Config::test_default());
+
+                let state_path = config.state_file_path.clone();
+
+                // Create NailsManager with real filesystem
+                let filesystem = RealFilesystem;
+                let manager = Arc::new(Mutex::new(NailsManager::new(
+                    filesystem, config, state_path,
+                )));
+
+                // Set verbosity level
+                manager.lock().unwrap().set_verbosity(verbosity);
+
+                // Create orchestrator and run deactivation
+                let start = Instant::now();
+                let orchestrator =
+                    DeactivationOrchestrator::new(Arc::clone(&manager), cleanup_config);
+
+                let result = orchestrator.run();
+                let duration = start.elapsed().as_secs_f64();
+
+                // Output results based on flags
+                if json {
+                    print_deactivate_json(&result, duration, &manager);
+                } else {
+                    print_deactivate_human(&result, duration, verbosity, no_color);
+                }
+
+                // Return appropriate exit code
+                match result {
+                    Ok(_) => std::process::exit(0),
+                    Err(_) => std::process::exit(1),
+                }
             }
             Commands::Emergency { delay } => {
                 println!("Emergency: delay={}s", delay);
@@ -452,34 +546,329 @@ pub mod cli {
             },
         }
     }
+
+    /// JSON output structure for deactivate command (AC7)
+    #[derive(serde::Serialize)]
+    struct DeactivateJsonOutput {
+        status: String,
+        duration: f64,
+        state: String,
+        cleaned_items: Vec<String>,
+        errors: Vec<String>,
+    }
+
+    /// Print deactivation result in JSON format (AC7)
+    fn print_deactivate_json<F: nails_core::Filesystem>(
+        result: &Result<nails_core::DeactivationReport, nails_core::NailsError>,
+        duration: f64,
+        manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+    ) {
+        let state = manager
+            .lock()
+            .unwrap()
+            .current_state()
+            .map(|s| format!("{:?}", s))
+            .unwrap_or_else(|_| "UNKNOWN".to_string());
+
+        let output = match result {
+            Ok(report) => DeactivateJsonOutput {
+                status: if report.is_successful() {
+                    "success"
+                } else {
+                    "error"
+                }
+                .to_string(),
+                duration,
+                state: format!("{:?}", report.final_state),
+                cleaned_items: report.cleanup_report.cleaned_items.clone(),
+                errors: report.cleanup_report.errors.clone(),
+            },
+            Err(e) => DeactivateJsonOutput {
+                status: "error".to_string(),
+                duration,
+                state,
+                cleaned_items: vec![],
+                errors: vec![e.to_string()],
+            },
+        };
+
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).expect("Failed to serialize JSON")
+        );
+    }
+
+    /// Print deactivation result in human-readable format (AC3, AC4, AC5)
+    fn print_deactivate_human(
+        result: &Result<nails_core::DeactivationReport, nails_core::NailsError>,
+        duration: f64,
+        verbosity: nails_core::Verbosity,
+        no_color: bool,
+    ) {
+        use colored::Colorize;
+        use nails_core::{NailsError, Verbosity};
+
+        match result {
+            Ok(report) => {
+                let check = if no_color { "[OK]" } else { "✓" };
+
+                if report.was_already_inactive {
+                    println!("{} Already inactive - no action needed", check);
+                    return;
+                }
+
+                // AC3: Print success message with duration
+                if no_color {
+                    println!("[OK] Deactivation complete in {:.1}s", duration);
+                } else {
+                    println!(
+                        "{}",
+                        format!("✓ Deactivation complete in {:.1}s", duration)
+                            .green()
+                            .bold()
+                    );
+                }
+
+                // AC3: Print cleanup summary with cleaned items (UXR13)
+                if verbosity >= Verbosity::Normal && !report.cleanup_report.cleaned_items.is_empty()
+                {
+                    println!();
+                    println!("Cleanup Summary:");
+                    for item in &report.cleanup_report.cleaned_items {
+                        println!("  {} {}", check, item);
+                    }
+                }
+
+                // Show unmounted overlays
+                if verbosity >= Verbosity::Normal && !report.unmounted_overlays.is_empty() {
+                    println!();
+                    println!("Unmounted Overlays:");
+                    for overlay in &report.unmounted_overlays {
+                        println!("  {} {}", check, overlay);
+                    }
+                }
+
+                // AC8: -vv shows debug info including state transitions
+                if verbosity >= Verbosity::Debug {
+                    println!();
+                    println!("Final State: {:?}", report.final_state);
+                }
+            }
+            Err(e) => {
+                let cross = if no_color { "[FAIL]" } else { "✗" };
+
+                // AC4, AC5: Detect error type and show appropriate message
+                let (category, details, guidance) = match e {
+                    NailsError::PermissionDenied(msg) => (
+                        "cleanup error",
+                        msg.clone(),
+                        "Check file permissions and retry with sudo".to_string(),
+                    ),
+                    NailsError::MountBusy { path, suggestion } => (
+                        "unmount error",
+                        format!("Overlay busy: {}", path.display()),
+                        suggestion.clone(),
+                    ),
+                    NailsError::UnmountError { path, reason } => (
+                        "unmount error",
+                        format!("{}: {}", path.display(), reason),
+                        "Check if overlay is in use and retry".to_string(),
+                    ),
+                    NailsError::InvalidState(msg) => (
+                        "state error",
+                        msg.clone(),
+                        "Verify system is in ACTIVE state".to_string(),
+                    ),
+                    _ => (
+                        "deactivation error",
+                        e.to_string(),
+                        "Check system state and retry".to_string(),
+                    ),
+                };
+
+                // Print error message
+                if no_color {
+                    eprintln!("[FAIL] Deactivation failed: {}", category);
+                } else {
+                    eprintln!(
+                        "{}",
+                        format!("{} Deactivation failed: {}", cross, category)
+                            .red()
+                            .bold()
+                    );
+                }
+
+                eprintln!();
+                eprintln!("Details: {}", details);
+                eprintln!();
+
+                // AC4, AC5: Show state (ACTIVE after rollback)
+                eprintln!("State: ACTIVE (rollback occurred)");
+                eprintln!("Overlays: Remain mounted (safe state preserved)");
+                eprintln!();
+
+                // Show fix guidance
+                if no_color {
+                    eprintln!("Fix: {}", guidance);
+                } else {
+                    eprintln!("Fix: {}", guidance.yellow());
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::cli::*;
+    use clap::Parser;
 
     // Note: Tests for activate command have been moved to end-to-end tests
     // in tests/ directory because the activate command calls std::process::exit()
     // which would terminate the test process.
     //
     // The activate command can only be properly tested via E2E tests using assert_cmd.
+    //
+    // Note: Tests for deactivate command have also been moved to E2E tests
+    // because the deactivate command calls std::process::exit().
+
+    // ========================================================================
+    // Deactivate Command Argument Parsing Tests (AC1, AC6, AC8)
+    // ========================================================================
 
     #[test]
-    fn test_execute_deactivate_command_without_fast() {
-        let cli = Cli {
-            verbose: 0,
-            command: Commands::Deactivate { fast: false },
-        };
-        assert!(execute_command(cli).is_ok());
+    fn test_deactivate_args_parsing_defaults() {
+        // AC1: Test default args parsing
+        let cli = Cli::try_parse_from(["nails", "deactivate"]).unwrap();
+        if let Commands::Deactivate {
+            no_clear_history,
+            quiet,
+            verbose,
+            json,
+            no_color,
+        } = cli.command
+        {
+            assert!(!no_clear_history);
+            assert!(!quiet);
+            assert_eq!(verbose, 0);
+            assert!(!json);
+            assert!(!no_color);
+        } else {
+            panic!("Expected Deactivate command");
+        }
     }
 
     #[test]
-    fn test_execute_deactivate_command_with_fast() {
-        let cli = Cli {
-            verbose: 0,
-            command: Commands::Deactivate { fast: true },
-        };
-        assert!(execute_command(cli).is_ok());
+    fn test_deactivate_no_clear_history_flag() {
+        // AC6: Test --no-clear-history flag
+        let cli = Cli::try_parse_from(["nails", "deactivate", "--no-clear-history"]).unwrap();
+        if let Commands::Deactivate {
+            no_clear_history, ..
+        } = cli.command
+        {
+            assert!(no_clear_history);
+        } else {
+            panic!("Expected Deactivate command");
+        }
+    }
+
+    #[test]
+    fn test_deactivate_quiet_flag() {
+        // AC1: Test --quiet flag
+        let cli = Cli::try_parse_from(["nails", "deactivate", "--quiet"]).unwrap();
+        if let Commands::Deactivate { quiet, .. } = cli.command {
+            assert!(quiet);
+        } else {
+            panic!("Expected Deactivate command");
+        }
+    }
+
+    #[test]
+    fn test_deactivate_quiet_short_flag() {
+        // AC1: Test -q short flag
+        let cli = Cli::try_parse_from(["nails", "deactivate", "-q"]).unwrap();
+        if let Commands::Deactivate { quiet, .. } = cli.command {
+            assert!(quiet);
+        } else {
+            panic!("Expected Deactivate command");
+        }
+    }
+
+    #[test]
+    fn test_deactivate_verbose_flag_counting() {
+        // AC8: Test -v flag (verbosity level 1)
+        let cli = Cli::try_parse_from(["nails", "deactivate", "-v"]).unwrap();
+        if let Commands::Deactivate { verbose, .. } = cli.command {
+            assert_eq!(verbose, 1);
+        } else {
+            panic!("Expected Deactivate command");
+        }
+    }
+
+    #[test]
+    fn test_deactivate_verbose_vv_flag() {
+        // AC8: Test -vv flag (verbosity level 2 = debug)
+        let cli = Cli::try_parse_from(["nails", "deactivate", "-vv"]).unwrap();
+        if let Commands::Deactivate { verbose, .. } = cli.command {
+            assert_eq!(verbose, 2);
+        } else {
+            panic!("Expected Deactivate command");
+        }
+    }
+
+    #[test]
+    fn test_deactivate_json_flag() {
+        // AC7: Test --json flag
+        let cli = Cli::try_parse_from(["nails", "deactivate", "--json"]).unwrap();
+        if let Commands::Deactivate { json, .. } = cli.command {
+            assert!(json);
+        } else {
+            panic!("Expected Deactivate command");
+        }
+    }
+
+    #[test]
+    fn test_deactivate_no_color_flag() {
+        // AC1: Test --no-color flag
+        let cli = Cli::try_parse_from(["nails", "deactivate", "--no-color"]).unwrap();
+        if let Commands::Deactivate { no_color, .. } = cli.command {
+            assert!(no_color);
+        } else {
+            panic!("Expected Deactivate command");
+        }
+    }
+
+    #[test]
+    fn test_deactivate_multiple_flags() {
+        // Test combining multiple flags
+        let cli = Cli::try_parse_from([
+            "nails",
+            "deactivate",
+            "--no-clear-history",
+            "--json",
+            "--no-color",
+        ])
+        .unwrap();
+        if let Commands::Deactivate {
+            no_clear_history,
+            json,
+            no_color,
+            ..
+        } = cli.command
+        {
+            assert!(no_clear_history);
+            assert!(json);
+            assert!(no_color);
+        } else {
+            panic!("Expected Deactivate command");
+        }
+    }
+
+    #[test]
+    fn test_deactivate_quiet_verbose_conflict() {
+        // AC1: Test that --quiet and --verbose conflict
+        let result = Cli::try_parse_from(["nails", "deactivate", "--quiet", "-v"]);
+        assert!(result.is_err());
     }
 
     #[test]

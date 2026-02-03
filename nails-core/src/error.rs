@@ -113,6 +113,21 @@ pub enum NailsError {
     #[error("NixOS switch failed for profile: {profile}")]
     NixOSSwitchFailed { profile: String },
 
+    /// Cleanup operation failed
+    ///
+    /// Used when artifact cleanup fails during deactivation.
+    /// Per AC4: cleanup failures trigger rollback to ACTIVE state.
+    ///
+    /// # Example
+    /// ```
+    /// # use nails_core::NailsError;
+    /// let err = NailsError::CleanupError(
+    ///     "Failed to remove history files: permission denied".to_string()
+    /// );
+    /// ```
+    #[error("Cleanup failed: {0}")]
+    CleanupError(String),
+
     /// I/O error (transparently converted from std::io::Error)
     ///
     /// This variant has #[from] attribute, enabling automatic conversion

@@ -67,6 +67,9 @@ pub mod prompts;
 // Cleanup management module (Story 5.1: CleanupManager with Thorough and Fast Modes)
 pub mod cleanup;
 
+// Deactivation orchestrator module (Story 5.5: DeactivationOrchestrator with Cleanup + Unmount + Rollback)
+pub mod deactivation;
+
 // Re-export for convenience
 pub use config::{
     CliOverrides, Config, ConfigBuilder, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig,
@@ -139,9 +142,13 @@ pub use cleanup::{
     CleanupManager,
     CleanupMode,
     CleanupReport,
-    history::{HistoryCleaner, ShellType}, // Story 5.2
-    temp_files::TempFilesCleaner,         // Story 5.3
+    history::{HistoryCleaner, ShellType}, // Story 5.2 - nested to access private imports
+    logs::LogCleaner,                     // Story 5.4 - nested to access private imports
+    temp_files::TempFilesCleaner,         // Story 5.3 - nested to access private imports
 };
+
+// Deactivation orchestrator exports (Story 5.5: DeactivationOrchestrator with Cleanup + Unmount + Rollback)
+pub use deactivation::{DeactivationOrchestrator, DeactivationReport};
 
 /// RAII guard for automatic state rollback on failure
 ///

@@ -49,15 +49,18 @@ fn test_activate_command_force_flag() {
         .stdout(predicates::str::contains("Skip pre-flight checks"));
 }
 
-/// Test that deactivate command accepts --fast flag
+/// Test that deactivate command accepts new flags (Story 5.7)
 #[test]
-fn test_deactivate_command_fast_flag() {
+fn test_deactivate_command_flags_help() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["deactivate", "--help"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("--fast"))
-        .stdout(predicates::str::contains("Quick cleanup mode"));
+        .stdout(predicates::str::contains("--no-clear-history"))
+        .stdout(predicates::str::contains("--quiet"))
+        .stdout(predicates::str::contains("--verbose"))
+        .stdout(predicates::str::contains("--json"))
+        .stdout(predicates::str::contains("--no-color"));
 }
 
 /// Test that emergency command accepts --delay flag with default
@@ -211,24 +214,56 @@ fn test_activate_verbosity_flags() {
     cmd.args(["activate", "--quiet"]).assert().failure(); // Will fail without setup
 }
 
-/// Test that deactivate command executes successfully (stub implementation)
+/// Test that deactivate command executes (idempotent when inactive - AC7/FR62)
 #[test]
 fn test_deactivate_command_executes() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.arg("deactivate")
         .assert()
         .success()
-        .stdout(predicates::str::contains("Deactivate: fast=false"));
+        .stdout(predicates::str::contains("inactive").or(predicates::str::contains("Inactive")));
 }
 
-/// Test that deactivate command with --fast flag executes successfully
+/// Test that deactivate command with --no-clear-history flag executes (AC6)
 #[test]
-fn test_deactivate_command_executes_with_fast() {
+fn test_deactivate_command_executes_with_no_clear_history() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["deactivate", "--fast"])
+    cmd.args(["deactivate", "--no-clear-history"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("Deactivate: fast=true"));
+        .stdout(predicates::str::contains("Skipping history cleanup"));
+}
+
+/// Test that deactivate command with --json flag produces JSON output (AC7)
+#[test]
+fn test_deactivate_json_output() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["deactivate", "--json"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"status\""))
+        .stdout(predicates::str::contains("\"duration\""))
+        .stdout(predicates::str::contains("\"state\""));
+}
+
+/// Test that deactivate command with --no-color uses text markers instead of symbols
+#[test]
+fn test_deactivate_no_color_output() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["deactivate", "--no-color"])
+        .assert()
+        .success()
+        // In no-color mode, we use [OK] instead of ✓
+        .stdout(
+            predicates::str::contains("[OK]").or(predicates::str::contains("Already inactive")),
+        );
+}
+
+/// Test that deactivate command exit code is 0 on success (AC3)
+#[test]
+fn test_deactivate_exit_code_success() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.arg("deactivate").assert().success().code(0);
 }
 
 /// Test that emergency command executes successfully (stub implementation)

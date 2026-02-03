@@ -180,11 +180,7 @@ impl<F: Filesystem> LogCleaner<F> {
                 }
                 Err(e) => {
                     // Best-effort: log warning but continue
-                    eprintln!(
-                        "Warning: Failed to remove {}: {}",
-                        file_path.display(),
-                        e
-                    );
+                    eprintln!("Warning: Failed to remove {}: {}", file_path.display(), e);
                 }
             }
         }
@@ -198,10 +194,7 @@ impl<F: Filesystem> LogCleaner<F> {
             // AC3/AC5: Return summary message with count and list
             let count = removed_files.len();
             let files_list = removed_files.join(", ");
-            Ok(vec![format!(
-                "Removed {} log files: {}",
-                count, files_list
-            )])
+            Ok(vec![format!("Removed {} log files: {}", count, files_list)])
         }
     }
 }
