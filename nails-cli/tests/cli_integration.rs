@@ -259,6 +259,8 @@ fn test_deactivate_no_color_output() {
         .stdout(
             predicates::str::contains("[OK]").or(predicates::str::contains("Already inactive")),
         );
+    // Note: Tracing logs may still contain ANSI codes (known issue).
+    // Our output properly respects --no-color flag.
 }
 
 /// Test that deactivate command exit code is 0 on success (AC3)

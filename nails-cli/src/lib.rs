@@ -241,7 +241,6 @@ pub mod cli {
                 };
                 use std::path::PathBuf;
                 use std::sync::{Arc, Mutex};
-                use std::time::Instant;
 
                 // Configure color output (must be done before any colored output)
                 if no_color || std::env::var("NO_COLOR").is_ok() {
@@ -288,18 +287,16 @@ pub mod cli {
                 manager.lock().unwrap().set_verbosity(verbosity);
 
                 // Create orchestrator and run deactivation
-                let start = Instant::now();
                 let orchestrator =
                     DeactivationOrchestrator::new(Arc::clone(&manager), cleanup_config);
 
                 let result = orchestrator.run();
-                let duration = start.elapsed().as_secs_f64();
 
                 // Output results based on flags
                 if json {
-                    print_deactivate_json(&result, duration, &manager);
+                    print_deactivate_json(&result, &manager);
                 } else {
-                    print_deactivate_human(&result, duration, verbosity, no_color);
+                    print_deactivate_human(&result, verbosity, no_color);
                 }
 
                 // Return appropriate exit code
@@ -550,24 +547,28 @@ pub mod cli {
     /// JSON output structure for deactivate command (AC7)
     #[derive(serde::Serialize)]
     struct DeactivateJsonOutput {
+        /// "success" or "error"
         status: String,
+        /// Duration in seconds
         duration: f64,
+        /// System state after deactivation (UPPERCASE per AC7: "INACTIVE" or "ACTIVE")
         state: String,
+        /// List of cleaned items (history files, temp files, logs)
         cleaned_items: Vec<String>,
+        /// Error messages (if any)
         errors: Vec<String>,
     }
 
     /// Print deactivation result in JSON format (AC7)
     fn print_deactivate_json<F: nails_core::Filesystem>(
         result: &Result<nails_core::DeactivationReport, nails_core::NailsError>,
-        duration: f64,
         manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
     ) {
         let state = manager
             .lock()
             .unwrap()
             .current_state()
-            .map(|s| format!("{:?}", s))
+            .map(|s| format!("{:?}", s).to_uppercase())
             .unwrap_or_else(|_| "UNKNOWN".to_string());
 
         let output = match result {
@@ -578,14 +579,14 @@ pub mod cli {
                     "error"
                 }
                 .to_string(),
-                duration,
-                state: format!("{:?}", report.final_state),
+                duration: report.duration.as_secs_f64(),
+                state: format!("{:?}", report.final_state).to_uppercase(),
                 cleaned_items: report.cleanup_report.cleaned_items.clone(),
                 errors: report.cleanup_report.errors.clone(),
             },
             Err(e) => DeactivateJsonOutput {
                 status: "error".to_string(),
-                duration,
+                duration: 0.0,
                 state,
                 cleaned_items: vec![],
                 errors: vec![e.to_string()],
@@ -613,7 +614,6 @@ pub mod cli {
     /// - Error formatting logic (covered by orchestrator tests in nails-core)
     fn print_deactivate_human(
         result: &Result<nails_core::DeactivationReport, nails_core::NailsError>,
-        duration: f64,
         verbosity: nails_core::Verbosity,
         no_color: bool,
     ) {
@@ -623,6 +623,7 @@ pub mod cli {
         match result {
             Ok(report) => {
                 let check = if no_color { "[OK]" } else { "✓" };
+                let duration = report.duration.as_secs_f64();
 
                 if report.was_already_inactive {
                     println!("{} Already inactive - no action needed", check);
@@ -631,11 +632,11 @@ pub mod cli {
 
                 // AC3: Print success message with duration (2 decimal places per spec)
                 if no_color {
-                    println!("[OK] Deactivation complete in {:.2}s", duration);
+                    println!("[OK] deactivation complete in {:.2}s", duration);
                 } else {
                     println!(
                         "{}",
-                        format!("✓ Deactivation complete in {:.2}s", duration)
+                        format!("✓ deactivation complete in {:.2}s", duration)
                             .green()
                             .bold()
                     );
@@ -700,11 +701,11 @@ pub mod cli {
 
                 // Print error message
                 if no_color {
-                    eprintln!("[FAIL] Deactivation failed: {}", category);
+                    eprintln!("[FAIL] deactivation failed: {}", category);
                 } else {
                     eprintln!(
                         "{}",
-                        format!("{} Deactivation failed: {}", cross, category)
+                        format!("{} deactivation failed: {}", cross, category)
                             .red()
                             .bold()
                     );
@@ -881,6 +882,9 @@ mod tests {
         // AC1: Test that --quiet and --verbose conflict
         let result = Cli::try_parse_from(["nails", "deactivate", "--quiet", "-v"]);
         assert!(result.is_err());
+        // Note: clap provides helpful error messages like:
+        // "error: the argument '--quiet' cannot be used with '--verbose'"
+        // This is validated by manual testing and integration tests
     }
 
     #[test]
