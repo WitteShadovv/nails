@@ -64,6 +64,9 @@ pub mod activate_options;
 // User prompts module (Story 4.15: User Prompts and CLI Flags)
 pub mod prompts;
 
+// Cleanup management module (Story 5.1: CleanupManager with Thorough and Fast Modes)
+pub mod cleanup;
+
 // Re-export for convenience
 pub use config::{
     CliOverrides, Config, ConfigBuilder, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig,
@@ -129,6 +132,9 @@ pub use prompts::{
     display_abort_message, prompt_pivot_mount_acceptance, prompt_risky_process_restart,
     prompt_yes_no,
 };
+
+// Cleanup management exports (Story 5.1: CleanupManager with Thorough and Fast Modes)
+pub use cleanup::{CleanupConfig, CleanupManager, CleanupMode, CleanupReport};
 
 /// RAII guard for automatic state rollback on failure
 ///

@@ -48,6 +48,7 @@ env/
 .project
 .classpath
 .settings/
+settings.json
 
 # Editor/tool config files
 .claude/
