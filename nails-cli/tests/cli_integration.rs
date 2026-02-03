@@ -243,7 +243,9 @@ fn test_deactivate_json_output() {
         .success()
         .stdout(predicates::str::contains("\"status\""))
         .stdout(predicates::str::contains("\"duration\""))
-        .stdout(predicates::str::contains("\"state\""));
+        .stdout(predicates::str::contains("\"state\""))
+        .stdout(predicates::str::contains("\"cleaned_items\""))
+        .stdout(predicates::str::contains("\"errors\""));
 }
 
 /// Test that deactivate command with --no-color uses text markers instead of symbols

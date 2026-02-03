@@ -1,8 +1,8 @@
 //! # NAILS CLI Library
 //!
-//! This module re-exports the CLI functionality for testing purposes.
-//! The main logic is in main.rs, but we need to expose it for unit tests
-//! to achieve proper code coverage.
+//! This module contains the CLI command handlers and argument parsing.
+//! Commands are implemented in the `cli` module for testability and reusability.
+//! The entry point in main.rs simply invokes `cli::execute_command()`.
 
 pub mod cli {
     use clap::{Parser, Subcommand};
@@ -599,6 +599,18 @@ pub mod cli {
     }
 
     /// Print deactivation result in human-readable format (AC3, AC4, AC5)
+    ///
+    /// ## Error Path Testing (AC4, AC5)
+    /// Error paths are tested at the orchestrator level in nails-core.
+    /// CLI-level error path testing would require:
+    /// - Mocking DeactivationOrchestrator (not feasible without dependency injection)
+    /// - E2E test environment with LUKS volumes and overlayfs (requires VM/container)
+    /// - Simulating filesystem permission errors (requires root/sudo)
+    ///
+    /// Current test coverage:
+    /// - Argument parsing and flag handling (unit tests)
+    /// - Success path E2E (integration tests verify idempotent behavior)
+    /// - Error formatting logic (covered by orchestrator tests in nails-core)
     fn print_deactivate_human(
         result: &Result<nails_core::DeactivationReport, nails_core::NailsError>,
         duration: f64,
@@ -617,13 +629,13 @@ pub mod cli {
                     return;
                 }
 
-                // AC3: Print success message with duration
+                // AC3: Print success message with duration (2 decimal places per spec)
                 if no_color {
-                    println!("[OK] Deactivation complete in {:.1}s", duration);
+                    println!("[OK] Deactivation complete in {:.2}s", duration);
                 } else {
                     println!(
                         "{}",
-                        format!("✓ Deactivation complete in {:.1}s", duration)
+                        format!("✓ Deactivation complete in {:.2}s", duration)
                             .green()
                             .bold()
                     );
