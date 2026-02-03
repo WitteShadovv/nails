@@ -140,6 +140,7 @@ pub use cleanup::{
     CleanupMode,
     CleanupReport,
     history::{HistoryCleaner, ShellType}, // Story 5.2
+    temp_files::TempFilesCleaner,         // Story 5.3
 };
 
 /// RAII guard for automatic state rollback on failure

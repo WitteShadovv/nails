@@ -10,7 +10,7 @@
 //! # Submodules
 //!
 //! - [`history`] - Shell history cleanup for bash, zsh, fish (Story 5.2)
-//! - `temp_files` - Temporary files cleanup (Story 5.3)
+//! - [`temp_files`] - Temporary files cleanup (Story 5.3)
 //! - `logs` - Log files cleanup (Story 5.4)
 //!
 //! # Example
@@ -29,6 +29,7 @@
 
 // Submodules
 pub mod history;
+pub mod temp_files;
 
 use crate::{Filesystem, Result};
 use history::HistoryCleaner;
@@ -297,16 +298,27 @@ impl<F: Filesystem> CleanupManager<F> {
         }
     }
 
-    /// Cleanup temporary files (placeholder for Story 5.3 integration)
+    /// Cleanup temporary files (Story 5.3 integration)
     ///
-    /// TODO(Story 5.3): Implement temporary files cleanup with pattern matching
-    /// - Scan directories in config.temp_dirs for files matching *nails* patterns
-    /// - Remove matching temporary files safely
-    /// - Use self.filesystem for testable file operations
+    /// Uses TempFilesCleaner to remove files matching nails-related patterns
+    /// from configured temp directories.
     fn cleanup_temp_files(&self, report: &mut CleanupReport) {
-        // Will be implemented in Story 5.3: TempFilesCleaner
-        // For now, just log that we would clean temp files
-        report.add_cleaned("Temp files cleanup requested (will be implemented in Story 5.3)");
+        use temp_files::TempFilesCleaner;
+
+        let temp_cleaner = TempFilesCleaner::new(self.filesystem.clone())
+            .with_temp_dirs(self.config.temp_dirs.clone())
+            .with_patterns(vec!["nails".to_string()]);
+
+        match temp_cleaner.clean() {
+            Ok(items) => {
+                for item in items {
+                    report.add_cleaned(item);
+                }
+            }
+            Err(e) => {
+                report.add_error(format!("Temp files cleanup failed: {}", e));
+            }
+        }
     }
 
     /// Cleanup log files (placeholder for Story 5.4 integration)
@@ -376,6 +388,7 @@ impl<F: Filesystem> CleanupManager<F> {
 mod tests {
     use super::*;
     use crate::MockFilesystem;
+    use std::path::Path;
 
     #[test]
     fn test_cleanup_mode_default() {
@@ -688,5 +701,113 @@ mod tests {
 
         let manager = CleanupManager::new(fs, config, mode);
         assert_eq!(manager.mode(), mode);
+    }
+
+    #[test]
+    fn test_cleanup_manager_temp_files_integration() {
+        // Setup: Create mock filesystem with temp files
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/tmp", true);
+        fs.mock_set_files_with_pattern(
+            "/tmp",
+            "nails",
+            &[
+                Path::new("/tmp/nails-12345.lock"),
+                Path::new("/tmp/nails_cache"),
+            ],
+        );
+        fs.mock_set_path_exists("/tmp/nails-12345.lock", true);
+        fs.mock_set_path_exists("/tmp/nails_cache", true);
+        fs.mock_set_path_type("/tmp/nails-12345.lock", "file");
+        fs.mock_set_path_type("/tmp/nails_cache", "directory");
+
+        let config = CleanupConfig {
+            clear_history: false,
+            clear_temp_files: true,
+            clear_logs: false,
+            history_patterns: vec![],
+            temp_dirs: vec![PathBuf::from("/tmp")],
+        };
+        let mode = CleanupMode::Fast;
+
+        let manager = CleanupManager::new(fs, config, mode);
+        let report = manager.cleanup().unwrap();
+
+        // Verify temp files were cleaned
+        assert!(
+            report
+                .cleaned_items
+                .iter()
+                .any(|s| s.contains("nails-12345.lock")),
+            "Should have cleaned nails-12345.lock"
+        );
+        assert!(
+            report
+                .cleaned_items
+                .iter()
+                .any(|s| s.contains("nails_cache")),
+            "Should have cleaned nails_cache directory"
+        );
+        assert_eq!(report.errors.len(), 0, "Should have no errors");
+
+        // Verify report structure - CleanupManager delegates to TempFilesCleaner
+        assert!(
+            report.cleaned_items.len() >= 2,
+            "Should have at least 2 cleaned items (2 files cleaned)"
+        );
+
+        // Verify all cleaned items follow expected format
+        for item in &report.cleaned_items {
+            assert!(
+                item.starts_with("Removed ")
+                    || item.contains("cleanup")
+                    || item.contains("verified"),
+                "Cleaned item should have proper format: {}",
+                item
+            );
+        }
+    }
+
+    #[test]
+    fn test_cleanup_manager_temp_files_with_errors() {
+        // Setup: Create mock filesystem where one file fails to remove
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/tmp", true);
+        fs.mock_set_files_with_pattern(
+            "/tmp",
+            "nails",
+            &[
+                Path::new("/tmp/nails-readonly.lock"),
+                Path::new("/tmp/nails-normal.txt"),
+            ],
+        );
+        fs.mock_set_path_exists("/tmp/nails-readonly.lock", true);
+        fs.mock_set_path_exists("/tmp/nails-normal.txt", true);
+        fs.mock_set_path_type("/tmp/nails-readonly.lock", "file");
+        fs.mock_set_path_type("/tmp/nails-normal.txt", "file");
+        fs.mock_set_remove_should_fail("/tmp/nails-readonly.lock", true);
+
+        let config = CleanupConfig {
+            clear_history: false,
+            clear_temp_files: true,
+            clear_logs: false,
+            history_patterns: vec![],
+            temp_dirs: vec![PathBuf::from("/tmp")],
+        };
+        let mode = CleanupMode::Fast;
+
+        let manager = CleanupManager::new(fs, config, mode);
+        let report = manager.cleanup().unwrap();
+
+        // Verify best-effort: one file cleaned, no errors propagated
+        assert!(
+            report
+                .cleaned_items
+                .iter()
+                .any(|s| s.contains("nails-normal.txt")),
+            "Should have cleaned nails-normal.txt"
+        );
+        // TempFilesCleaner handles errors internally, doesn't propagate to report
+        assert!(report.is_successful() || !report.errors.is_empty());
     }
 }

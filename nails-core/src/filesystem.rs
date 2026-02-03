@@ -465,6 +465,115 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Returns `NailsError::IoError` if write fails.
     /// Returns `NailsError::PermissionDenied` if target is not writable.
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()>;
+
+    // ------------------------------------------------------------------------
+    // File Removal Operations (Story 5.3: Temporary Files Cleanup)
+    // ------------------------------------------------------------------------
+
+    /// Remove a file
+    ///
+    /// Removes a single file from the filesystem.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the file to remove
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if file cannot be removed (doesn't exist, permission denied, etc.)
+    ///
+    /// # Examples
+    ///
+    /// **Basic usage:**
+    /// ```rust,ignore
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/tmp/nails.lock", true);
+    /// fs.remove_file(Path::new("/tmp/nails.lock")).unwrap();
+    /// ```
+    ///
+    /// **Error handling:**
+    /// ```rust,ignore
+    /// use nails_core::filesystem::Filesystem;
+    /// use std::path::Path;
+    ///
+    /// match fs.remove_file(Path::new("/tmp/protected.lock")) {
+    ///     Ok(()) => println!("File removed successfully"),
+    ///     Err(e) => eprintln!("Failed to remove file: {}", e),
+    /// }
+    /// ```
+    ///
+    /// **Integration with TempFilesCleaner:**
+    /// ```rust,ignore
+    /// use nails_core::{TempFilesCleaner, MockFilesystem};
+    /// use std::path::PathBuf;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_files_with_pattern("/tmp", "nails", &[
+    ///     Path::new("/tmp/nails-12345.lock"),
+    /// ]);
+    ///
+    /// let cleaner = TempFilesCleaner::new(fs);
+    /// // Internally uses remove_file() to clean matching files
+    /// let cleaned = cleaner.clean().unwrap();
+    /// ```
+    fn remove_file(&self, path: &Path) -> Result<()>;
+
+    /// Remove a directory and all its contents recursively
+    ///
+    /// Removes a directory and all files/subdirectories within it.
+    /// Equivalent to `rm -rf` on Unix systems.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the directory to remove
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if directory cannot be removed (doesn't exist, permission denied, etc.)
+    ///
+    /// # Examples
+    ///
+    /// **Basic usage:**
+    /// ```rust,ignore
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/tmp/nails-cache", true);
+    /// fs.mock_set_path_type("/tmp/nails-cache", "directory");
+    /// fs.remove_dir_all(Path::new("/tmp/nails-cache")).unwrap();
+    /// ```
+    ///
+    /// **Error handling:**
+    /// ```rust,ignore
+    /// use nails_core::filesystem::Filesystem;
+    /// use std::path::Path;
+    ///
+    /// match fs.remove_dir_all(Path::new("/tmp/nails-build/")) {
+    ///     Ok(()) => println!("Directory removed successfully"),
+    ///     Err(e) => eprintln!("Failed to remove directory: {}", e),
+    /// }
+    /// ```
+    ///
+    /// **Integration with TempFilesCleaner:**
+    /// ```rust,ignore
+    /// use nails_core::{TempFilesCleaner, MockFilesystem};
+    /// use std::path::{Path, PathBuf};
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_files_with_pattern("/tmp", "nails", &[
+    ///     Path::new("/tmp/nails_build_cache/"),
+    /// ]);
+    /// fs.mock_set_path_type("/tmp/nails_build_cache/", "directory");
+    ///
+    /// let cleaner = TempFilesCleaner::new(fs);
+    /// // Internally uses remove_dir_all() to recursively clean matching directories
+    /// let cleaned = cleaner.clean().unwrap();
+    /// ```
+    fn remove_dir_all(&self, path: &Path) -> Result<()>;
 }
 
 // ============================================================================
@@ -664,6 +773,7 @@ pub struct MockFilesystem {
     tmpfs_mounts: Arc<Mutex<HashSet<PathBuf>>>,                // Track tmpfs mounts (Story 4.11)
     bind_mounts: Arc<Mutex<HashMap<PathBuf, PathBuf>>>,        // Track bind mounts: target → source
     written_files: Arc<Mutex<HashMap<PathBuf, String>>>,       // Track files written (Story 5.2)
+    remove_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Track paths that should fail removal (Story 5.3)
 }
 
 impl MockFilesystem {
@@ -704,6 +814,7 @@ impl MockFilesystem {
             tmpfs_mounts: Arc::new(Mutex::new(HashSet::new())),
             bind_mounts: Arc::new(Mutex::new(HashMap::new())),
             written_files: Arc::new(Mutex::new(HashMap::new())),
+            remove_should_fail: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -735,6 +846,7 @@ impl MockFilesystem {
         self.tmpfs_mounts.lock().unwrap().clear();
         self.bind_mounts.lock().unwrap().clear();
         self.written_files.lock().unwrap().clear();
+        self.remove_should_fail.lock().unwrap().clear();
     }
 
     // ========================================================================
@@ -998,6 +1110,38 @@ impl MockFilesystem {
         let mut pattern_results = self.files_with_pattern.lock().unwrap();
         let key = (PathBuf::from(dir), pattern.to_string());
         pattern_results.insert(key, files.iter().map(|p| p.to_path_buf()).collect());
+    }
+
+    /// Set whether a file/directory removal should fail (Story 5.3)
+    ///
+    /// This is useful for testing error handling in cleanup operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path that should fail removal
+    /// * `should_fail` - If true, remove_file/remove_dir_all will fail for this path
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/tmp/readonly.lock", true);
+    /// fs.mock_set_remove_should_fail("/tmp/readonly.lock", true);
+    ///
+    /// // This will now fail
+    /// let result = fs.remove_file(Path::new("/tmp/readonly.lock"));
+    /// assert!(result.is_err());
+    /// ```
+    pub fn mock_set_remove_should_fail(&self, path: &str, should_fail: bool) {
+        let mut fail_set = self.remove_should_fail.lock().unwrap();
+        if should_fail {
+            fail_set.insert(PathBuf::from(path));
+        } else {
+            fail_set.remove(&PathBuf::from(path));
+        }
     }
 
     /// Get list of currently mounted paths
@@ -1435,6 +1579,51 @@ impl Filesystem for MockFilesystem {
         // Remove from bind mounts and mounted sets
         self.bind_mounts.lock().unwrap().remove(target);
         self.mounted.lock().unwrap().remove(target);
+
+        Ok(())
+    }
+
+    fn remove_file(&self, path: &Path) -> Result<()> {
+        // Check if removal should fail (mock behavior for testing)
+        if self.remove_should_fail.lock().unwrap().contains(path) {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "Mock: remove_file configured to fail for {}",
+                    path.display()
+                ),
+            )));
+        }
+
+        // Remove from paths tracking
+        let mut paths = self.paths.lock().unwrap();
+        paths.remove(path);
+
+        // Also remove from file_contents if present
+        let mut contents = self.file_contents.lock().unwrap();
+        contents.remove(path);
+
+        Ok(())
+    }
+
+    fn remove_dir_all(&self, path: &Path) -> Result<()> {
+        // Check if removal should fail (mock behavior for testing)
+        if self.remove_should_fail.lock().unwrap().contains(path) {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "Mock: remove_dir_all configured to fail for {}",
+                    path.display()
+                ),
+            )));
+        }
+
+        // Remove from paths tracking
+        let mut paths = self.paths.lock().unwrap();
+        paths.remove(path);
+
+        // In a real implementation, we'd also remove all children
+        // For mock purposes, just removing the directory entry is sufficient
 
         Ok(())
     }
@@ -1928,6 +2117,24 @@ impl Filesystem for RealFilesystem {
         })?;
 
         Ok(())
+    }
+
+    fn remove_file(&self, path: &Path) -> Result<()> {
+        std::fs::remove_file(path).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to remove file {}: {}", path.display(), e),
+            ))
+        })
+    }
+
+    fn remove_dir_all(&self, path: &Path) -> Result<()> {
+        std::fs::remove_dir_all(path).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to remove directory {}: {}", path.display(), e),
+            ))
+        })
     }
 }
 
