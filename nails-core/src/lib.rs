@@ -134,7 +134,13 @@ pub use prompts::{
 };
 
 // Cleanup management exports (Story 5.1: CleanupManager with Thorough and Fast Modes)
-pub use cleanup::{CleanupConfig, CleanupManager, CleanupMode, CleanupReport};
+pub use cleanup::{
+    CleanupConfig,
+    CleanupManager,
+    CleanupMode,
+    CleanupReport,
+    history::{HistoryCleaner, ShellType}, // Story 5.2
+};
 
 /// RAII guard for automatic state rollback on failure
 ///

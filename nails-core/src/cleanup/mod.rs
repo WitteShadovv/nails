@@ -7,6 +7,12 @@
 //! - **Thorough**: Complete cleanup with optional verification (normal deactivation)
 //! - **Fast**: Speed-priority cleanup without verification (emergency deactivation)
 //!
+//! # Submodules
+//!
+//! - [`history`] - Shell history cleanup for bash, zsh, fish (Story 5.2)
+//! - `temp_files` - Temporary files cleanup (Story 5.3)
+//! - `logs` - Log files cleanup (Story 5.4)
+//!
 //! # Example
 //!
 //! ```rust,ignore
@@ -21,7 +27,11 @@
 //! println!("{}", report);
 //! ```
 
+// Submodules
+pub mod history;
+
 use crate::{Filesystem, Result};
+use history::HistoryCleaner;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -241,7 +251,7 @@ impl<F: Filesystem> CleanupManager<F> {
         let start = Instant::now();
         let mut report = CleanupReport::new();
 
-        // Step 1: Clear history (placeholder for Story 5.2)
+        // Step 1: Clear history (Story 5.2)
         if self.config.clear_history {
             self.cleanup_history(&mut report);
         }
@@ -268,16 +278,23 @@ impl<F: Filesystem> CleanupManager<F> {
         Ok(report)
     }
 
-    /// Cleanup shell history (placeholder for Story 5.2 integration)
+    /// Cleanup shell history (Story 5.2 integration)
     ///
-    /// TODO(Story 5.2): Implement shell history cleanup for bash, zsh, fish
-    /// - Search for and remove lines containing patterns from config.history_patterns
-    /// - Handle all common shell history files (~/.bash_history, ~/.zsh_history, etc.)
-    /// - Use self.filesystem for testable file operations
+    /// Uses HistoryCleaner to remove lines containing patterns from shell history files.
     fn cleanup_history(&self, report: &mut CleanupReport) {
-        // Will be implemented in Story 5.2: HistoryCleaner
-        // For now, just log that we would clean history
-        report.add_cleaned("History cleanup requested (will be implemented in Story 5.2)");
+        let history_cleaner = HistoryCleaner::new(self.filesystem.clone())
+            .with_patterns(self.config.history_patterns.clone());
+
+        match history_cleaner.clean() {
+            Ok(cleaned_items) => {
+                for item in cleaned_items {
+                    report.add_cleaned(item);
+                }
+            }
+            Err(e) => {
+                report.add_error(format!("History cleanup failed: {}", e));
+            }
+        }
     }
 
     /// Cleanup temporary files (placeholder for Story 5.3 integration)
@@ -613,13 +630,8 @@ mod tests {
         let manager = CleanupManager::new(fs, config, mode);
         let report = manager.cleanup().unwrap();
 
-        // Only history cleanup should be requested
-        assert!(
-            report
-                .cleaned_items
-                .iter()
-                .any(|s| s.contains("History cleanup"))
-        );
+        // Only history cleanup should be requested (but no history files exist)
+        // So we should NOT have temp files or log cleanup
         assert!(
             !report
                 .cleaned_items

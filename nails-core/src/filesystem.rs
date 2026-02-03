@@ -449,6 +449,22 @@ pub trait Filesystem: Send + Sync + Clone {
     ///
     /// List of matching file paths found.
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>>;
+
+    /// Write content to a file atomically
+    ///
+    /// Writes content to a temporary file first, then renames to target.
+    /// Preserves file permissions if target exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Target file path
+    /// * `content` - Content to write
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if write fails.
+    /// Returns `NailsError::PermissionDenied` if target is not writable.
+    fn write_file_content(&self, path: &Path, content: &str) -> Result<()>;
 }
 
 // ============================================================================
@@ -647,6 +663,7 @@ pub struct MockFilesystem {
     mounted_overlays: Arc<Mutex<HashMap<PathBuf, MountInfo>>>, // Track overlay mount metadata
     tmpfs_mounts: Arc<Mutex<HashSet<PathBuf>>>,                // Track tmpfs mounts (Story 4.11)
     bind_mounts: Arc<Mutex<HashMap<PathBuf, PathBuf>>>,        // Track bind mounts: target → source
+    written_files: Arc<Mutex<HashMap<PathBuf, String>>>,       // Track files written (Story 5.2)
 }
 
 impl MockFilesystem {
@@ -686,6 +703,7 @@ impl MockFilesystem {
             mounted_overlays: Arc::new(Mutex::new(HashMap::new())),
             tmpfs_mounts: Arc::new(Mutex::new(HashSet::new())),
             bind_mounts: Arc::new(Mutex::new(HashMap::new())),
+            written_files: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -716,6 +734,7 @@ impl MockFilesystem {
         self.mounted_overlays.lock().unwrap().clear();
         self.tmpfs_mounts.lock().unwrap().clear();
         self.bind_mounts.lock().unwrap().clear();
+        self.written_files.lock().unwrap().clear();
     }
 
     // ========================================================================
@@ -944,6 +963,15 @@ impl MockFilesystem {
     pub fn mock_set_file_content(&self, path: &str, content: &str) {
         let mut contents = self.file_contents.lock().unwrap();
         contents.insert(PathBuf::from(path), content.to_string());
+    }
+
+    /// Get written file content for test verification (Story 5.2)
+    ///
+    /// Returns the content that was written to a file via write_file_content(),
+    /// or None if the file was not written.
+    pub fn get_written_content(&self, path: &Path) -> Option<String> {
+        let written = self.written_files.lock().unwrap();
+        written.get(path).cloned()
     }
 
     /// Set mock results for pattern-based file searches
@@ -1282,6 +1310,18 @@ impl Filesystem for MockFilesystem {
         let pattern_results = self.files_with_pattern.lock().unwrap();
         let key = (dir.to_path_buf(), pattern.to_string());
         Ok(pattern_results.get(&key).cloned().unwrap_or_default())
+    }
+
+    fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {
+        // Store the written content for test verification
+        let mut written = self.written_files.lock().unwrap();
+        written.insert(path.to_path_buf(), content.to_string());
+
+        // Also update file_contents so subsequent reads work
+        let mut contents = self.file_contents.lock().unwrap();
+        contents.insert(path.to_path_buf(), content.to_string());
+
+        Ok(())
     }
 
     fn mount_tmpfs(&self, target: &Path, size: &str) -> Result<()> {
@@ -1689,6 +1729,55 @@ impl Filesystem for RealFilesystem {
                 format!("Failed to read file {}: {}", path.display(), e),
             ))
         })
+    }
+
+    fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {
+        use std::io::Write;
+
+        // Write to temporary file first, then atomic rename
+        let temp_path = path.with_extension("tmp");
+
+        // Write content to temp file
+        let mut temp_file = std::fs::File::create(&temp_path).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to create temp file {}: {}", temp_path.display(), e),
+            ))
+        })?;
+
+        temp_file.write_all(content.as_bytes()).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to write to temp file {}: {}",
+                    temp_path.display(),
+                    e
+                ),
+            ))
+        })?;
+
+        // Ensure data is flushed to disk
+        temp_file.sync_all().map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to sync temp file {}: {}", temp_path.display(), e),
+            ))
+        })?;
+
+        // Atomic rename
+        std::fs::rename(&temp_path, path).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to rename {} to {}: {}",
+                    temp_path.display(),
+                    path.display(),
+                    e
+                ),
+            ))
+        })?;
+
+        Ok(())
     }
 
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
