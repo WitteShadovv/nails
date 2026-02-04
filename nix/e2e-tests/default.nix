@@ -1,21 +1,17 @@
 { self, pkgs }:
 
 let
-  # Base VM test runner using NixOS VM testing
-  runTest = testName: testScript:
-    pkgs.testers.runNixOSTest {
-      name = "e2e-${testName}";
+  # Load individual test modules
+  importTest = path: import path { inherit self pkgs; };
 
-      # VM configuration will be defined in individual tests
-      nodes.machine = { ... }: {
-        imports = [ ./lib/vm-config.nix ];
-
-        # Inject NAILS binary into VM
-        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-      };
-
-      inherit testScript;
-    };
+  # Individual test suites (each is a complete test module)
+  tests = {
+    basic-workflow = pkgs.testers.runNixOSTest (importTest ./tests/01-basic-workflow.nix);
+    emergency = pkgs.testers.runNixOSTest (importTest ./tests/03-emergency.nix);
+    forensic-clean = pkgs.testers.runNixOSTest (importTest ./tests/04-forensic-clean.nix);
+    snapshot-diff = pkgs.testers.runNixOSTest (importTest ./tests/06-snapshot-diff.nix);
+    performance = pkgs.testers.runNixOSTest (importTest ./tests/07-performance.nix);
+  };
 
   # Interactive test driver (for debugging)
   interactive-driver = pkgs.writeShellScriptBin "interactive-test" ''
@@ -27,44 +23,14 @@ let
     nix run .#checks.x86_64-linux.e2e-basic-workflow --interactive || true
   '';
 
-in {
-  # Individual test suites
-  basic-workflow =
-    runTest "basic-workflow" (builtins.readFile ./tests/01-basic-workflow.nix);
-  emergency = runTest "emergency" (builtins.readFile ./tests/03-emergency.nix);
-  forensic-clean =
-    runTest "forensic-clean" (builtins.readFile ./tests/04-forensic-clean.nix);
-  snapshot-diff =
-    runTest "snapshot-diff" (builtins.readFile ./tests/06-snapshot-diff.nix);
-  performance =
-    runTest "performance" (builtins.readFile ./tests/07-performance.nix);
-
+in tests // {
   # Run all tests
   all = pkgs.linkFarm "e2e-all" [
-    {
-      name = "basic-workflow";
-      path = runTest "basic-workflow"
-        (builtins.readFile ./tests/01-basic-workflow.nix);
-    }
-    {
-      name = "emergency";
-      path = runTest "emergency" (builtins.readFile ./tests/03-emergency.nix);
-    }
-    {
-      name = "forensic-clean";
-      path = runTest "forensic-clean"
-        (builtins.readFile ./tests/04-forensic-clean.nix);
-    }
-    {
-      name = "snapshot-diff";
-      path = runTest "snapshot-diff"
-        (builtins.readFile ./tests/06-snapshot-diff.nix);
-    }
-    {
-      name = "performance";
-      path =
-        runTest "performance" (builtins.readFile ./tests/07-performance.nix);
-    }
+    { name = "basic-workflow"; path = tests.basic-workflow; }
+    { name = "emergency"; path = tests.emergency; }
+    { name = "forensic-clean"; path = tests.forensic-clean; }
+    { name = "snapshot-diff"; path = tests.snapshot-diff; }
+    { name = "performance"; path = tests.performance; }
   ];
 
   # Interactive driver
