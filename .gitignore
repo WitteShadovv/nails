@@ -10,7 +10,6 @@ __pycache__/
 
 # Rust specific
 target/
-Cargo.lock
 **/*.rs.bk
 *.pdb
 
