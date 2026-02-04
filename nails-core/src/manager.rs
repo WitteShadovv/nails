@@ -38,12 +38,13 @@ use std::sync::{Arc, Mutex};
 /// **Rationale:**
 /// - `/home` mounts first: user data has no system dependencies
 /// - `/etc` mounts second: system config may reference /home paths
+/// - `/var` mounts third: used by system services, must be handled carefully
 ///
-/// **Unmount order is LIFO (reverse):** /etc unmounts first, /home unmounts last
+/// **Unmount order is LIFO (reverse):** /var unmounts first, /etc second, /home last
 ///
 /// This ordering ensures dependency safety during both mounting and rollback.
 /// (Story 4.6, AC1, FR10-FR12)
-const MOUNT_ORDER: &[&str] = &["/home", "/etc"];
+const MOUNT_ORDER: &[&str] = &["/home", "/etc", "/var"];
 
 /// Type of mount being tracked
 ///
@@ -3535,9 +3536,10 @@ mod tests {
     #[test]
     fn test_mount_order_constant_enforces_home_then_etc() {
         // Verify MOUNT_ORDER constant has correct order
-        assert_eq!(MOUNT_ORDER.len(), 2, "Should have 2 mount targets");
+        assert_eq!(MOUNT_ORDER.len(), 3, "Should have 3 mount targets");
         assert_eq!(MOUNT_ORDER[0], "/home", "First mount should be /home");
         assert_eq!(MOUNT_ORDER[1], "/etc", "Second mount should be /etc");
+        assert_eq!(MOUNT_ORDER[2], "/var", "Third mount should be /var");
     }
 
     #[test]
