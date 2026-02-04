@@ -1,4 +1,4 @@
-{ self, pkgs, impermanence }:
+{ self, pkgs }:
 
 let
   # Base VM test runner using NixOS VM testing
@@ -8,8 +8,7 @@ let
 
       # VM configuration will be defined in individual tests
       nodes.machine = { ... }: {
-        imports =
-          [ impermanence.nixosModules.impermanence ./lib/vm-config.nix ];
+        imports = [ ./lib/vm-config.nix ];
 
         # Inject NAILS binary into VM
         environment.systemPackages = [ self.packages.x86_64-linux.nails ];

@@ -4,10 +4,9 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    impermanence.url = "github:nix-community/impermanence";
   };
 
-  outputs = { self, nixpkgs, flake-utils, impermanence, ... }:
+  outputs = { self, nixpkgs, flake-utils, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -37,8 +36,8 @@
           doCheck = false; # Tests run separately in checks
         };
 
-        # Import E2E tests
-        e2e-tests = import ./nix/e2e-tests { inherit self pkgs impermanence; };
+        # Import E2E tests (impermanence is now local)
+        e2e-tests = import ./nix/e2e-tests { inherit self pkgs; };
 
       in {
         # Packages
