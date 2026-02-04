@@ -42,6 +42,8 @@ in {
     machine.succeed("su - testuser -c 'echo \"sensitive_command_1\" >> ~/.bash_history'")
     machine.succeed("su - testuser -c 'echo \"secret_key_export\" >> ~/.bash_history'")
     machine.succeed("su - testuser -c 'echo \"password_entry\" >> ~/.bash_history'")
+    # Verify shell history was created
+    machine.succeed("su - testuser -c 'test -f ~/.bash_history && test -s ~/.bash_history'")
     print("✓ Added shell history entries")
 
     # Verify data exists before emergency
@@ -83,21 +85,27 @@ in {
     machine.fail("su - testuser -c 'test -f ~/secret_100.txt'")
     print("✓ All secret files removed")
 
+    # Verify shell history is cleaned
+    history_check = machine.succeed("su - testuser -c 'cat ~/.bash_history 2>/dev/null || echo \"gone\"'")
+    assert "sensitive_command_1" not in history_check, "Shell history not cleaned - sensitive commands found"
+    assert "secret_key_export" not in history_check, "Shell history not cleaned - secret key export found"
+    print("✓ Shell history cleaned")
+
     # Verify NAILS status reports INACTIVE
     status = machine.succeed("nails status")
     assert "INACTIVE" in status, f"Expected INACTIVE, got: {status}"
     print("✓ NAILS status reports INACTIVE")
 
     # ============================================================================
-    # STATISTICAL VALIDATION - 5 Cycles (AC: #4)
+    # STATISTICAL VALIDATION - 20 Cycles for meaningful p95 (AC: #4)
     # ============================================================================
 
-    print("\n=== Running Statistical Validation (5 cycles) ===")
+    print("\n=== Running Statistical Validation (20 cycles) ===")
 
     emergency_times = []
 
-    for cycle in range(1, 6):
-        print(f"\nCycle {cycle}/5:")
+    for cycle in range(1, 21):
+        print(f"\nCycle {cycle}/20:")
 
         # Reactivate
         machine.succeed("sudo nails activate")
@@ -123,15 +131,17 @@ in {
     max_time = emergency_times_sorted[-1]
     avg_time = sum(emergency_times) / len(emergency_times)
 
-    # Calculate p95 (95th percentile)
-    p95_index = int(len(emergency_times_sorted) * 0.95)
+    # Calculate p95 (95th percentile) using proper method
+    # For 20 samples, p95 is at index: int((20-1) * 0.95) = 18
+    p95_index = int((len(emergency_times_sorted) - 1) * 0.95)
     p95_time = emergency_times_sorted[p95_index]
 
     print(f"\n=== Emergency Timing Statistics ===")
+    print(f"Samples: {len(emergency_times)}")
     print(f"Min:    {min_time:.3f}s")
     print(f"Max:    {max_time:.3f}s")
     print(f"Average: {avg_time:.3f}s")
-    print(f"P95:    {p95_time:.3f}s")
+    print(f"P95:    {p95_time:.3f}s (index {p95_index})")
 
     # CRITICAL: p95 must be < 3.0s (AC: #4)
     assert p95_time < 3.0, f"FAIL: P95 emergency time {p95_time:.3f}s exceeds 3.0s limit"
