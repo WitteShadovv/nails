@@ -28,8 +28,9 @@ in {
 
     print("\n=== Testing Pre-Conditions ===")
 
-    # Setup hidden volume
-    machine.succeed("${hiddenVolume.setupHiddenVolume}")
+    # Setup hidden volume with error handling
+    setup_result = machine.succeed("${hiddenVolume.setupHiddenVolume} || echo 'Setup failed with code $?'")
+    assert "Setup failed" not in setup_result, f"Hidden volume setup failed: {setup_result}"
 
     # Verify hidden volume is mounted
     machine.succeed("test -d /mnt/hidden-volume")
@@ -54,7 +55,7 @@ in {
 
     # Run nails activate and measure time
     start_time = time.time()
-    machine.succeed("nails activate")
+    machine.succeed("sudo nails activate")
     activation_time = time.time() - start_time
     print(f"Activation completed in {activation_time:.2f}s")
 
@@ -62,12 +63,15 @@ in {
     assert activation_time < 60, f"Activation too slow: {activation_time:.2f}s (limit: 60s)"
     print(f"✓ Activation completed in <60s ({activation_time:.2f}s)")
 
-    # Verify overlays are mounted on /home and /etc
+    # Verify overlays are mounted on /home and /etc with correct options
     home_mount = machine.succeed("mount | grep 'overlay on /home' || true")
     etc_mount = machine.succeed("mount | grep 'overlay on /etc' || true")
     assert "overlay" in home_mount, "Overlay not mounted on /home"
     assert "overlay" in etc_mount, "Overlay not mounted on /etc"
-    print("✓ Overlays mounted on /home and /etc")
+    # Verify overlay points to hidden volume upper/work directories
+    assert "/mnt/hidden-volume/nails/overlay/home/upper" in home_mount, "Overlay upperdir not pointing to hidden volume"
+    assert "/mnt/hidden-volume/nails/overlay/etc/upper" in etc_mount, "Overlay upperdir not pointing to hidden volume"
+    print("✓ Overlays mounted on /home and /etc with correct upperdir")
 
     # Verify NAILS status reports ACTIVE state
     status = machine.succeed("nails status")
@@ -109,7 +113,7 @@ in {
 
     # Run nails deactivate and measure time
     start_time = time.time()
-    machine.succeed("nails deactivate")
+    machine.succeed("sudo nails deactivate")
     deactivation_time = time.time() - start_time
     print(f"Deactivation completed in {deactivation_time:.2f}s")
 
@@ -143,8 +147,11 @@ in {
     machine.succeed("test -d /mnt/hidden-volume/nails/overlay/home/upper/testuser/hidden-project")
     print("✓ Data preserved in hidden volume")
 
-    # Cleanup
+    # Cleanup - verify LUKS device is properly closed
     machine.succeed("${hiddenVolume.unmountHiddenVolume}")
+    # Verify LUKS device is actually closed
+    machine.fail("test -e /dev/mapper/hidden-volume")
+    print("✓ LUKS device properly closed")
 
     print("\n=== All Tests Passed ===")
   '';
