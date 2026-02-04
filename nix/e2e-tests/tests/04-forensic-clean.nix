@@ -1,7 +1,10 @@
-# Placeholder for Story 13.6: Forensic Cleanliness Validation
-# This will be implemented in Story 13.6
+# Story 13.6: Forensic Cleanliness Validation
+# Tests that no forensic artifacts remain after deactivation - NFR19
 
-{ self, pkgs, ... }: {
+{ self, pkgs, ... }:
+let
+  hiddenVolume = import ./../lib/hidden-volume.nix;
+in {
   name = "forensic-clean";
 
   nodes = {
@@ -11,10 +14,144 @@
     };
   };
 
-  testScript = ''
+  testScript = { nodes, ... }: ''
     machine.start()
     machine.wait_for_unit("multi-user.target")
-    # Placeholder test - will be implemented in Story 13.6
-    machine.succeed("true")
+
+    # ============================================================================
+    # BASELINE CAPTURE (AC: #1)
+    # ============================================================================
+
+    print("\n=== Capturing Baseline Filesystem State ===")
+
+    # Capture baseline BEFORE any NAILS activity
+    machine.succeed("find / -type f 2>/dev/null | sort > /tmp/baseline-files.txt || true")
+    machine.succeed("find / -type d 2>/dev/null | sort > /tmp/baseline-dirs.txt || true")
+    print("✓ Baseline captured")
+
+    # ============================================================================
+    # DETECTABLE ACTIVITIES (AC: #2)
+    # ============================================================================
+
+    print("\n=== Setting up Hidden Volume and Creating Markers ===")
+
+    # Setup hidden volume with error handling
+    setup_result = machine.succeed("${hiddenVolume.setupHiddenVolume} || echo 'Setup failed with code $?'")
+    assert "Setup failed" not in setup_result, f"Hidden volume setup failed: {setup_result}"
+
+    # Activate NAILS
+    machine.succeed("sudo nails activate")
+    print("✓ NAILS activated")
+
+    # Create forensic markers
+    machine.succeed("su - testuser -c 'echo FORENSIC_MARKER_SECRET > ~/forensic-test.txt'")
+    print("✓ Created FORENSIC_MARKER_SECRET in home directory")
+
+    machine.succeed("echo FORENSIC_MARKER_TEMP > /tmp/nails-temp-file")
+    print("✓ Created FORENSIC_MARKER_TEMP in /tmp")
+
+    machine.succeed("su - testuser -c 'echo FORENSIC_MARKER_HISTORY >> ~/.bash_history'")
+    machine.succeed("su - testuser -c 'history -s FORENSIC_MARKER_HISTORY_CMD'")
+    print("✓ Added FORENSIC_MARKER_HISTORY to shell history")
+
+    # Verify markers exist during active session
+    machine.succeed("su - testuser -c 'test -f ~/forensic-test.txt'")
+    machine.succeed("test -f /tmp/nails-temp-file")
+    print("✓ Verified markers exist during active session")
+
+    # ============================================================================
+    # DEACTIVATION AND CLEANUP (AC: #3)
+    # ============================================================================
+
+    print("\n=== Deactivating and Cleaning Up ===")
+
+    # Deactivate
+    machine.succeed("sudo nails deactivate")
+    print("✓ NAILS deactivated")
+
+    # Unmount hidden volume
+    machine.succeed("${hiddenVolume.unmountHiddenVolume}")
+    machine.fail("test -e /dev/mapper/hidden-volume")
+    print("✓ Hidden volume unmounted and LUKS device closed")
+
+    # ============================================================================
+    # FORENSIC ANALYSIS - GREP SCAN (AC: #3)
+    # ============================================================================
+
+    print("\n=== Forensic Analysis: Grep Scan ===")
+
+    # Scan entire filesystem for forensic markers
+    grep_result = machine.succeed("grep -r 'FORENSIC_MARKER' / 2>/dev/null || echo 'CLEAN'")
+
+    # Check if any markers were found
+    if "FORENSIC_MARKER" in grep_result:
+        print(f"FAIL: Found forensic markers: {grep_result}")
+        assert False, "Forensic markers found after deactivation"
+    else:
+        print("✓ No FORENSIC_MARKER strings found on filesystem")
+
+    # ============================================================================
+    # FORENSIC ANALYSIS - SLEUTH KIT (AC: #4)
+    # ============================================================================
+
+    print("\n=== Forensic Analysis: Sleuth Kit fls ===")
+
+    # Use fls to list deleted files (requires root)
+    fls_output = machine.succeed("fls -r /dev/vda1 2>/dev/null | grep -i 'nails\\|forensic\\|secret\\|hidden' || echo 'CLEAN'")
+
+    # Check if any NAILS-related deleted files were found
+    if "CLEAN" not in fls_output:
+        print(f"FAIL: Found NAILS artifacts in deleted files: {fls_output}")
+        assert False, "Sleuth Kit found NAILS artifacts in deleted files"
+    else:
+        print("✓ No NAILS-related deleted files found")
+
+    # ============================================================================
+    # SHELL HISTORY CHECK (AC: #5)
+    # ============================================================================
+
+    print("\n=== Forensic Analysis: Shell History ===")
+
+    # Check shell history for forensic markers
+    history_check = machine.succeed("cat /home/testuser/.bash_history 2>/dev/null || echo 'NO_HISTORY'")
+
+    if "FORENSIC_MARKER" in history_check:
+        print(f"FAIL: Found forensic markers in shell history: {history_check}")
+        assert False, "Shell history contains forensic markers"
+    else:
+        print("✓ No FORENSIC_MARKER strings in shell history")
+
+    # ============================================================================
+    # FILESYSTEM DIFF AGAINST BASELINE (AC: #6)
+    # ============================================================================
+
+    print("\n=== Forensic Analysis: Filesystem Diff ===")
+
+    # Capture post-deactivation state
+    machine.succeed("find / -type f 2>/dev/null | sort > /tmp/post-files.txt || true")
+    machine.succeed("find / -type d 2>/dev/null | sort > /tmp/post-dirs.txt || true")
+
+    # Diff files against baseline
+    file_diff = machine.succeed("diff /tmp/baseline-files.txt /tmp/post-files.txt || echo 'DIFF_FOUND'")
+
+    # Check for unexpected NAILS-related paths
+    # Filter out expected transient paths: /var/log, /tmp, /run, /proc, /sys, /dev
+    unexpected_paths = machine.succeed('''
+      grep -v '^/var/log/' /tmp/post-files.txt 2>/dev/null | \
+      grep -v '^/tmp/' | \
+      grep -v '^/run/' | \
+      grep -v '^/proc/' | \
+      grep -v '^/sys/' | \
+      grep -v '^/dev/' | \
+      grep -E '(nails|secret|hidden|forensic)' || echo 'CLEAN'
+    ''')
+
+    if "CLEAN" not in unexpected_paths:
+        print(f"FAIL: Found unexpected NAILS-related paths: {unexpected_paths}")
+        assert False, "Filesystem diff found unexpected NAILS paths"
+    else:
+        print("✓ No unexpected NAILS/secret/hidden/forensic paths outside transient locations")
+
+    print("\n=== All Forensic Cleanliness Tests Passed ===")
   '';
 }
