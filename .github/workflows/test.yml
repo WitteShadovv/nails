@@ -155,12 +155,21 @@ jobs:
 
       - name: Run coverage analysis
         run: |
+          mkdir -p coverage
           cargo llvm-cov \
-            --lcov --output-path ./coverage/lcov.info \
-            --html --output-dir ./coverage/html \
-            --cobertura --output-path ./coverage/cobertura.xml \
             --all-features \
-            --workspace
+            --workspace \
+            --lcov --output-path ./coverage/lcov.info
+          cargo llvm-cov \
+            --all-features \
+            --workspace \
+            --html --output-dir ./coverage/html \
+            --no-run
+          cargo llvm-cov \
+            --all-features \
+            --workspace \
+            --cobertura --output-path ./coverage/cobertura.xml \
+            --no-run
 
       - name: Enforce 85% coverage threshold
         run: |
