@@ -3054,10 +3054,10 @@ mod tests {
 
         // Mount overlay
         let result = fs.mount_overlay(&lower, &upper, &work, &target);
-        if result.is_err() {
+        if let Err(e) = result {
             // Clean up on failure
             let _ = fs::remove_dir_all(&test_dir);
-            panic!("Overlay mount failed: {:?}", result.unwrap_err());
+            panic!("Overlay mount failed: {:?}", e);
         }
 
         // Verify merged view: both files should be visible in target
