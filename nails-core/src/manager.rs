@@ -1328,7 +1328,9 @@ impl<F: Filesystem> NailsManager<F> {
             prompt_for_risky: !options.yes, // Skip risky prompts if --yes flag
             allow_pivot: !options.no_pivot, // Respect --no-pivot flag
             auto_accept_pivot: options.accept_pivot_risks, // Auto-accept if --accept-pivot-risks
-            skip_process_detection: cfg!(test), // Skip process detection in test builds
+            skip_process_detection: options
+                .skip_process_detection_override
+                .unwrap_or(cfg!(test)), // Allow tests to override
         };
 
         // Track mount methods for logging
@@ -1607,13 +1609,13 @@ impl<F: Filesystem> NailsManager<F> {
                 tracing::info!("Restarting display manager ({})...", dm_name);
             }
 
-            let dm = match dm_name.as_str() {
+            let dm = match dm_name.to_lowercase().as_str() {
                 "gdm" => DisplayManager::Gdm,
                 "sddm" => DisplayManager::Sddm,
                 "lightdm" => DisplayManager::LightDm,
                 "greetd" => DisplayManager::Greetd,
                 "ly" => DisplayManager::Ly,
-                other => DisplayManager::Other(other.to_string()),
+                _ => DisplayManager::Other(dm_name.clone()), // Preserve original case for Other
             };
 
             restart_display_manager(&dm)?;

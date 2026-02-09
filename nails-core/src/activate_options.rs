@@ -68,6 +68,15 @@ pub struct ActivateOptions {
 
     /// Disable colored output
     pub no_color: bool,
+
+    /// Override skip_process_detection behavior (for testing)
+    ///
+    /// This field is hidden from public documentation and is intended for
+    /// internal testing purposes only. When None (default), process detection
+    /// is skipped in test builds (cfg!(test)). Set to Some(false) in tests
+    /// that need to verify process detection logic.
+    #[doc(hidden)]
+    pub skip_process_detection_override: Option<bool>,
 }
 
 impl ActivateOptions {
@@ -239,7 +248,18 @@ mod tests {
             verbosity: 2,
             json: true,
             no_color: true,
+            skip_process_detection_override: None,
         };
         assert!(opts.validate().is_ok());
+    }
+
+    #[test]
+    fn test_skip_process_detection_override() {
+        // Test that skip_process_detection_override can be set
+        let opts = ActivateOptions {
+            skip_process_detection_override: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(opts.skip_process_detection_override, Some(false));
     }
 }

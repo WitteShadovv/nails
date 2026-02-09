@@ -162,6 +162,7 @@ pub mod cli {
                     verbosity: verbose,
                     json,
                     no_color,
+                    skip_process_detection_override: None, // Use default test behavior
                 };
 
                 // Validate options (check for conflicting flags)
