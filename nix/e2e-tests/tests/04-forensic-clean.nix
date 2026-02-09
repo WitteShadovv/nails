@@ -1,9 +1,8 @@
 # Story 13.6: Forensic Cleanliness Validation
 # Tests that no forensic artifacts remain after deactivation - NFR19
 
-{ self, pkgs, ... }:
-let
-  hiddenVolume = import ./../lib/hidden-volume.nix;
+{ self, ... }:
+let hiddenVolume = import ./../lib/hidden-volume.nix;
 in {
   name = "forensic-clean";
 
@@ -14,7 +13,7 @@ in {
     };
   };
 
-  testScript = { nodes, ... }: ''
+  testScript = _: ''
     machine.start()
     machine.wait_for_unit("multi-user.target")
 

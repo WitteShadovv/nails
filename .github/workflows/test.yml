@@ -140,6 +140,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2.8.2
@@ -148,16 +150,15 @@ jobs:
           cache-targets: "true"
           cache-all-crates: "true"
 
-      - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --locked
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
 
       - name: Run coverage analysis
         run: |
-          cargo tarpaulin \
-            --out Xml \
-            --out Html \
-            --output-dir ./coverage \
-            --timeout 300 \
+          cargo llvm-cov \
+            --lcov --output-path ./coverage/lcov.info \
+            --html --output-dir ./coverage/html \
+            --cobertura --output-path ./coverage/cobertura.xml \
             --all-features \
             --workspace
 

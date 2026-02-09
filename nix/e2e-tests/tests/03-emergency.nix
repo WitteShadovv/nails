@@ -1,9 +1,8 @@
 # Story 13.5: Emergency Deactivation Test (<3s)
 # Tests emergency deactivation speed requirement - critical NFR3
 
-{ self, pkgs, ... }:
-let
-  hiddenVolume = import ./../lib/hidden-volume.nix;
+{ self, ... }:
+let hiddenVolume = import ./../lib/hidden-volume.nix;
 in {
   name = "emergency";
 
@@ -14,7 +13,7 @@ in {
     };
   };
 
-  testScript = { nodes, ... }: ''
+  testScript = _: ''
     import time
 
     machine.start()

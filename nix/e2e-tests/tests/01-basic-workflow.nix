@@ -1,7 +1,7 @@
 # Story 13.4: Basic Workflow Test (activate/deactivate)
 # Tests the happy path: activate → user activities → deactivate
 
-{ self, pkgs, ... }:
+{ self, ... }:
 let hiddenVolume = import ./../lib/hidden-volume.nix;
 in {
   name = "basic-workflow";
@@ -15,7 +15,7 @@ in {
     };
   };
 
-  testScript = { nodes, ... }: ''
+  testScript = _: ''
     import time
 
     machine.start()

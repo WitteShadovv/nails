@@ -1,11 +1,11 @@
 # Minimal impermanence module for E2E tests
 # Simplified version to support basic persistence needs
 
-{ config, lib, ... }:
+{ lib, ... }:
 
 {
   options.environment.persistence = lib.mkOption {
-    type = lib.types.attrsOf (lib.types.submodule ({ ... }: {
+    type = lib.types.attrsOf (lib.types.submodule (_: {
       options = {
         hideMounts = lib.mkOption {
           type = lib.types.bool;

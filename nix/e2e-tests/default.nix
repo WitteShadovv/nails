@@ -6,11 +6,15 @@ let
 
   # Individual test suites (each is a complete test module)
   tests = {
-    basic-workflow = pkgs.testers.runNixOSTest (importTest ./tests/01-basic-workflow.nix);
+    basic-workflow =
+      pkgs.testers.runNixOSTest (importTest ./tests/01-basic-workflow.nix);
     emergency = pkgs.testers.runNixOSTest (importTest ./tests/03-emergency.nix);
-    forensic-clean = pkgs.testers.runNixOSTest (importTest ./tests/04-forensic-clean.nix);
-    snapshot-diff = pkgs.testers.runNixOSTest (importTest ./tests/06-snapshot-diff.nix);
-    performance = pkgs.testers.runNixOSTest (importTest ./tests/07-performance.nix);
+    forensic-clean =
+      pkgs.testers.runNixOSTest (importTest ./tests/04-forensic-clean.nix);
+    snapshot-diff =
+      pkgs.testers.runNixOSTest (importTest ./tests/06-snapshot-diff.nix);
+    performance =
+      pkgs.testers.runNixOSTest (importTest ./tests/07-performance.nix);
   };
 
   # Interactive test driver (for debugging)
@@ -26,11 +30,26 @@ let
 in tests // {
   # Run all tests
   all = pkgs.linkFarm "e2e-all" [
-    { name = "basic-workflow"; path = tests.basic-workflow; }
-    { name = "emergency"; path = tests.emergency; }
-    { name = "forensic-clean"; path = tests.forensic-clean; }
-    { name = "snapshot-diff"; path = tests.snapshot-diff; }
-    { name = "performance"; path = tests.performance; }
+    {
+      name = "basic-workflow";
+      path = tests.basic-workflow;
+    }
+    {
+      name = "emergency";
+      path = tests.emergency;
+    }
+    {
+      name = "forensic-clean";
+      path = tests.forensic-clean;
+    }
+    {
+      name = "snapshot-diff";
+      path = tests.snapshot-diff;
+    }
+    {
+      name = "performance";
+      path = tests.performance;
+    }
   ];
 
   # Interactive driver

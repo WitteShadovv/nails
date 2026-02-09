@@ -150,20 +150,51 @@ repos:
           - -c
           - |
             echo "🔍 Checking test coverage (85% required)..."
-            if command -v cargo-tarpaulin &> /dev/null; then
-              cargo tarpaulin --fail-under 85 || {
-                echo "❌ Test coverage below 85% - commit blocked"
-                echo "💡 Run 'cargo tarpaulin --out Html' to see coverage report"
-                exit 1
-              }
-              echo "✅ Test coverage: 85%"
+
+            # Function to run coverage
+            run_coverage() {
+              export LLVM_COV=$(command -v llvm-cov 2>/dev/null || echo "")
+              export LLVM_PROFDATA=$(command -v llvm-profdata 2>/dev/null || echo "")
+              cargo llvm-cov --workspace --all-features --all-targets 2>&1
+            }
+
+            # Check if we're already in nix-shell (IN_NIX_SHELL env var is set)
+            if [ -n "$IN_NIX_SHELL" ]; then
+              coverage_output=$(run_coverage)
+              coverage_status=$?
             else
-              echo "❌ CRITICAL: cargo-tarpaulin not installed - coverage enforcement REQUIRED"
-              echo "💡 Run: nix-shell"
-              echo "💡 Or install with: cargo install cargo-tarpaulin"
-              echo "❌ Commit blocked - 85% test coverage is mandatory for security-critical system"
+              # Not in nix-shell, so enter it
+              coverage_output=$(nix-shell --run 'bash -c '"'"'
+                export LLVM_COV=$(command -v llvm-cov 2>/dev/null || echo "")
+                export LLVM_PROFDATA=$(command -v llvm-profdata 2>/dev/null || echo "")
+                cargo llvm-cov --workspace --all-features --all-targets 2>&1
+              '"'"'')
+              coverage_status=$?
+            fi
+
+            if [ $coverage_status -ne 0 ]; then
+              echo "❌ Coverage check failed"
+              echo "$coverage_output"
               exit 1
             fi
+
+            # Extract line coverage percentage from TOTAL line
+            line_coverage=$(echo "$coverage_output" | grep "^TOTAL" | awk '{print $NF}' | sed 's/%//')
+
+            if [ -z "$line_coverage" ]; then
+              echo "❌ Could not parse coverage percentage"
+              echo "$coverage_output"
+              exit 1
+            fi
+
+            # Check if coverage meets threshold (85%)
+            if (( $(echo "$line_coverage < 85" | bc -l) )); then
+              echo "❌ Test coverage below 85% (current: ${line_coverage}%) - commit blocked"
+              echo "💡 Run 'nix-shell --run \"cargo llvm-cov --html\"' to see detailed coverage report"
+              exit 1
+            fi
+
+            echo "✅ Test coverage: ${line_coverage}%"
 
       # Conventional commit message validation (AR20, AR21, AR22)
       # Ensures commits follow "<type>[optional scope]: <description>" format

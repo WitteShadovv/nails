@@ -1614,7 +1614,23 @@ impl Filesystem for MockFilesystem {
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
         let pattern_results = self.files_with_pattern.lock().unwrap();
         let key = (dir.to_path_buf(), pattern.to_string());
-        Ok(pattern_results.get(&key).cloned().unwrap_or_default())
+        let files = pattern_results.get(&key).cloned().unwrap_or_default();
+
+        // Filter out files that have been explicitly removed
+        // Files are removed by setting exists=false in the paths map
+        // If a file isn't in the paths map, it was never set up with mock_set_path_exists,
+        // so we should still return it (it's implicitly considered to exist)
+        let paths = self.paths.lock().unwrap();
+        let existing_files: Vec<PathBuf> = files
+            .into_iter()
+            .filter(|path| {
+                // If path is in the map, check exists flag
+                // If path is not in the map, assume it exists (wasn't set up, so keep it)
+                paths.get(path).map(|info| info.exists).unwrap_or(true)
+            })
+            .collect();
+
+        Ok(existing_files)
     }
 
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {
@@ -1764,9 +1780,13 @@ impl Filesystem for MockFilesystem {
             )));
         }
 
-        // Remove from paths tracking
+        // Mark file as non-existent instead of removing entry entirely
+        // This allows find_files_with_pattern to filter out removed files
         let mut paths = self.paths.lock().unwrap();
-        paths.remove(path);
+        if let Some(info) = paths.get_mut(path) {
+            info.exists = false;
+        }
+        // If path isn't in map, it was never set up, so nothing to do
 
         // Also remove from file_contents if present
         let mut contents = self.file_contents.lock().unwrap();
@@ -1787,12 +1807,16 @@ impl Filesystem for MockFilesystem {
             )));
         }
 
-        // Remove from paths tracking
+        // Mark directory as non-existent instead of removing entry entirely
+        // This allows find_files_with_pattern to filter out removed directories
         let mut paths = self.paths.lock().unwrap();
-        paths.remove(path);
+        if let Some(info) = paths.get_mut(path) {
+            info.exists = false;
+        }
+        // If path isn't in map, it was never set up, so nothing to do
 
         // In a real implementation, we'd also remove all children
-        // For mock purposes, just removing the directory entry is sufficient
+        // For mock purposes, just marking the directory entry is sufficient
 
         Ok(())
     }

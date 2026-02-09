@@ -1,9 +1,8 @@
 # Story 13.7: Snapshot Comparison Test
 # Tests that system returns to exact initial state after full workflow
 
-{ self, pkgs, ... }:
-let
-  hiddenVolume = import ./../lib/hidden-volume.nix;
+{ self, ... }:
+let hiddenVolume = import ./../lib/hidden-volume.nix;
 in {
   name = "snapshot-diff";
 
@@ -14,7 +13,7 @@ in {
     };
   };
 
-  testScript = { nodes, ... }: ''
+  testScript = _: ''
     machine.start()
     machine.wait_for_unit("multi-user.target")
 

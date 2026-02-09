@@ -1,9 +1,8 @@
 # Story 13.8: Performance Validation Test
 # Tests all performance requirements with statistical rigor
 
-{ self, pkgs, ... }:
-let
-  hiddenVolume = import ./../lib/hidden-volume.nix;
+{ self, ... }:
+let hiddenVolume = import ./../lib/hidden-volume.nix;
 in {
   name = "performance";
 
@@ -14,7 +13,7 @@ in {
     };
   };
 
-  testScript = { nodes, ... }: ''
+  testScript = _: ''
     import time
 
     machine.start()

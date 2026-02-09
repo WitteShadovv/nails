@@ -353,9 +353,10 @@ impl<F: Filesystem> CleanupManager<F> {
     fn cleanup_temp_files(&self, report: &mut CleanupReport) {
         use temp_files::TempFilesCleaner;
 
+        // Note: TempFilesCleaner uses default patterns ["nails"] which is different
+        // from history_patterns. Temp files are always cleaned using "nails" pattern.
         let temp_cleaner = TempFilesCleaner::new(self.filesystem.clone())
-            .with_temp_dirs(self.config.temp_dirs.clone())
-            .with_patterns(self.config.history_patterns.clone());
+            .with_temp_dirs(self.config.temp_dirs.clone());
 
         match temp_cleaner.clean() {
             Ok(items) => {

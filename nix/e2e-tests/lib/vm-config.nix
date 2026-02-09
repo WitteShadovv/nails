@@ -1,7 +1,7 @@
 # Base VM Configuration for E2E Tests
 # Fully configured for Story 13.2 with impermanence
 
-{ config, lib, pkgs, ... }: {
+{ lib, pkgs, ... }: {
   # Virtual hardware configuration
   virtualisation = {
     memorySize = 4096; # 4GB RAM
@@ -14,7 +14,7 @@
     # Boot configuration
     useBootLoader = true;
     useEFIBoot = true; # UEFI boot mode
-    mountHostNixStore = true; # Mount host's /nix/store for performance
+    mountHostNixStore = true; # Mount host Nix store for performance
   };
 
   # Impermanence module configuration
@@ -55,14 +55,8 @@
   # Impermanence: persistent directories and files
   environment.persistence."/persist" = {
     hideMounts = true;
-    directories = [
-      "/var/log"
-      "/var/lib/nixos"
-      "/var/lib/systemd"
-    ];
-    files = [
-      "/etc/machine-id"
-    ];
+    directories = [ "/var/log" "/var/lib/nixos" "/var/lib/systemd" ];
+    files = [ "/etc/machine-id" ];
   };
 
   # No swap for forensic safety

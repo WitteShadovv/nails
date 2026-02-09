@@ -24,8 +24,9 @@ pkgs.mkShell {
     # Rust security auditing
     cargo-audit
 
-    # Coverage enforcement (TDD workflow)
-    cargo-tarpaulin
+    # Coverage enforcement (TDD workflow) - switched from tarpaulin to llvm-cov
+    cargo-llvm-cov
+    llvmPackages_latest.llvm
 
     # Rust linter
     clippy

@@ -63,6 +63,8 @@
             rustfmt
             clippy
             cargo-tarpaulin
+            cargo-llvm-cov
+            llvmPackages_latest.llvm
           ];
         };
 
