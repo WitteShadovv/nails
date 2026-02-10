@@ -471,7 +471,9 @@ pub mod cli {
                 plain,
                 verbose,
             } => {
-                use nails_core::{Config, RealFilesystem, StatusCommand};
+                use nails_core::{
+                    Config, NailsError, RealFilesystem, StatusCommand, status::SecurityPosture,
+                };
                 use std::path::PathBuf;
 
                 // Configure color output (must be done before any colored output)
@@ -479,10 +481,15 @@ pub mod cli {
                     colored::control::set_override(false);
                 }
 
-                // Load configuration
-                let config_path = dirs::home_dir()
-                    .map(|h| h.join(".nails/config.yaml"))
-                    .unwrap_or_else(|| PathBuf::from("~/.nails/config.yaml"));
+                // Load configuration (FIX #3: Proper home directory handling)
+                let config_path = match dirs::home_dir() {
+                    Some(home) => home.join(".nails/config.yaml"),
+                    None => {
+                        // No home directory available - use fallback in /tmp for error message
+                        // Config loading will fail gracefully and use test_default()
+                        PathBuf::from("/tmp/.nails/config.yaml")
+                    }
+                };
 
                 let config = Config::load_or_default(&config_path)
                     .unwrap_or_else(|_| Config::test_default());
@@ -491,25 +498,61 @@ pub mod cli {
 
                 // Create StatusCommand and run
                 let filesystem = RealFilesystem;
-                let command = StatusCommand::new(filesystem, config, state_path);
+                let command = StatusCommand::new(filesystem, config, state_path.clone());
 
                 // Always succeed - even if state file is missing, show status (FR63)
                 let report = match command.run() {
                     Ok(report) => report,
-                    Err(_) => {
-                        // State file missing or corrupted - show INACTIVE status
+                    // FIX #4 & #7: Better error context with specific messages
+                    Err(e) => {
+                        // State file error - show INACTIVE status with error details
                         // FR63: Status always succeeds (exit code 0)
+                        let error_msg = match e {
+                            NailsError::IoError(ref io_err) => {
+                                if io_err.kind() == std::io::ErrorKind::NotFound {
+                                    format!("State file not found: {}", state_path.display())
+                                } else {
+                                    format!(
+                                        "I/O error reading state file {}: {}",
+                                        state_path.display(),
+                                        io_err
+                                    )
+                                }
+                            }
+                            NailsError::PermissionDenied(ref msg) => {
+                                format!(
+                                    "Permission denied accessing state file {}: {}",
+                                    state_path.display(),
+                                    msg
+                                )
+                            }
+                            NailsError::ConfigError(ref msg) => {
+                                format!(
+                                    "State file corrupted or invalid at {}: {}",
+                                    state_path.display(),
+                                    msg
+                                )
+                            }
+                            _ => {
+                                format!("Error reading state file {}: {}", state_path.display(), e)
+                            }
+                        };
+
+                        // FIX #5: Use SecurityPosture constant instead of duplicated strings
+                        let posture = SecurityPosture::Critical;
+
                         if json {
                             println!(
-                                "{{\"state\":\"INACTIVE\",\"security_posture\":\"critical\",\"message\":\"State file not found or corrupted\"}}"
+                                "{{\"state\":\"INACTIVE\",\"security_posture\":\"critical\",\"error\":\"{}\"}}",
+                                error_msg.replace('"', "\\\"")
                             );
                         } else if plain {
                             println!("=== NAILS Status Report ===");
                             println!();
                             println!("State:              INACTIVE [CRITICAL]");
-                            println!(
-                                "Security Posture:   CRITICAL: Decoy system active - no sensitive data accessible"
-                            );
+                            println!("Security Posture:   {}", posture.to_plain());
+                            println!();
+                            println!("Error: {}", error_msg);
                             println!();
                             println!("Run 'nails activate' to mount hidden environment");
                         } else {
@@ -518,9 +561,9 @@ pub mod cli {
                             println!("╰─────────────────────────────────────╯");
                             println!();
                             println!("State:              INACTIVE 🔴");
-                            println!(
-                                "Security Posture:   🔴 CRITICAL: Decoy system active - no sensitive data accessible"
-                            );
+                            println!("Security Posture:   {}", posture);
+                            println!();
+                            println!("Error: {}", error_msg);
                             println!();
                             println!("Run 'nails activate' to mount hidden environment");
                         }
@@ -532,9 +575,9 @@ pub mod cli {
                 if json {
                     print_status_json(&report);
                 } else if plain {
-                    print_status_ascii(&report, verbose);
+                    print_status_ascii(&report, verbose, &config_path, &state_path);
                 } else {
-                    print_status_human(&report, verbose);
+                    print_status_human(&report, verbose, &config_path, &state_path);
                 }
 
                 // FR63: Status always succeeds (exit code 0)
@@ -1142,6 +1185,21 @@ pub mod cli {
     }
 
     /// Print status result in JSON format (AC5)
+    ///
+    /// Outputs a JSON object with all status fields including:
+    /// - state (system state)
+    /// - security_posture (secure/warning/critical)
+    /// - activated_at (ISO 8601 timestamp)
+    /// - uptime_seconds (duration in seconds)
+    /// - uptime_formatted (human-readable uptime)
+    /// - overlays (array of overlay paths with status)
+    /// - overlay_verification (verification result)
+    /// - nixos_generation (current generation if available)
+    /// - opsec_reminders (array of reminders with severity and message)
+    ///
+    /// # Arguments
+    ///
+    /// * `report` - Status report from StatusCommand
     fn print_status_json(report: &nails_core::status::StatusReport) {
         use nails_core::status::*;
 
@@ -1191,7 +1249,27 @@ pub mod cli {
     }
 
     /// Print status result in human-readable format with emojis (AC3, AC4, AC8, AC10)
-    fn print_status_human(report: &nails_core::status::StatusReport, verbose: bool) {
+    ///
+    /// # Arguments
+    ///
+    /// * `report` - Status report from StatusCommand
+    /// * `verbose` - Whether to show detailed overlay information
+    /// * `config_path` - Path to config file (shown in verbose mode)
+    /// * `state_path` - Path to state file (shown in verbose mode)
+    ///
+    /// # Verbose Mode (AC8)
+    ///
+    /// When `verbose` is true, displays:
+    /// - Full overlay mount details (lower, upper, work directories)
+    /// - State file path
+    /// - Config file path
+    /// - Mount timestamps for each overlay
+    fn print_status_human(
+        report: &nails_core::status::StatusReport,
+        verbose: bool,
+        config_path: &std::path::Path,
+        state_path: &std::path::Path,
+    ) {
         use nails_core::SystemState;
 
         // Print header with box drawing
@@ -1251,11 +1329,24 @@ pub mod cli {
         if verbose && matches!(report.state, SystemState::Active { .. }) {
             println!();
             println!("Verbose Details:");
-            // Note: Full overlay info (lower, upper, work dirs) requires access to
-            // state_file.overlay_status which is not exposed in StatusReport.
-            // This is a known limitation - the report focuses on user-facing info.
-            if let Some(ref generation) = report.nixos_generation {
-                println!("  NixOS Generation: {}", generation);
+            println!("  Config file:        {}", config_path.display());
+            println!("  State file:         {}", state_path.display());
+            println!();
+
+            // Show detailed overlay mount information
+            if let Some(ref overlay_details) = report.overlay_details {
+                println!("  Overlay Mount Details:");
+                for (mount_path, info) in overlay_details.iter() {
+                    println!();
+                    println!("    Mount:     {}", mount_path.display());
+                    println!("    Lower:     {}", info.lower_dir.display());
+                    println!("    Upper:     {}", info.upper_dir.display());
+                    println!("    Work:      {}", info.work_dir.display());
+                    println!(
+                        "    Mounted:   {}",
+                        info.mounted_at.format("%Y-%m-%d %H:%M:%S UTC")
+                    );
+                }
             }
         }
 
@@ -1269,7 +1360,19 @@ pub mod cli {
     }
 
     /// Print status result in ASCII-only format (AC6)
-    fn print_status_ascii(report: &nails_core::status::StatusReport, verbose: bool) {
+    ///
+    /// # Arguments
+    ///
+    /// * `report` - Status report from StatusCommand
+    /// * `verbose` - Whether to show detailed overlay information
+    /// * `config_path` - Path to config file (shown in verbose mode)
+    /// * `state_path` - Path to state file (shown in verbose mode)
+    fn print_status_ascii(
+        report: &nails_core::status::StatusReport,
+        verbose: bool,
+        config_path: &std::path::Path,
+        state_path: &std::path::Path,
+    ) {
         use nails_core::SystemState;
 
         // Print ASCII header (no box drawing)
@@ -1329,8 +1432,24 @@ pub mod cli {
         if verbose && matches!(report.state, SystemState::Active { .. }) {
             println!();
             println!("Verbose Details:");
-            if let Some(ref generation) = report.nixos_generation {
-                println!("  NixOS Generation: {}", generation);
+            println!("  Config file:        {}", config_path.display());
+            println!("  State file:         {}", state_path.display());
+            println!();
+
+            // Show detailed overlay mount information
+            if let Some(ref overlay_details) = report.overlay_details {
+                println!("  Overlay Mount Details:");
+                for (mount_path, info) in overlay_details.iter() {
+                    println!();
+                    println!("    Mount:     {}", mount_path.display());
+                    println!("    Lower:     {}", info.lower_dir.display());
+                    println!("    Upper:     {}", info.upper_dir.display());
+                    println!("    Work:      {}", info.work_dir.display());
+                    println!(
+                        "    Mounted:   {}",
+                        info.mounted_at.format("%Y-%m-%d %H:%M:%S UTC")
+                    );
+                }
             }
         }
 

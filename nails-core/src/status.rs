@@ -490,6 +490,7 @@ impl fmt::Display for SecurityPosture {
 /// - **uptime**: How long the system has been active (None for inactive/transitional)
 /// - **formatted_uptime**: Human-readable uptime string (empty for inactive/transitional)
 /// - **opsec_reminders**: OpSec reminders based on uptime thresholds
+/// - **overlay_details**: Full overlay mount details (for verbose mode, None for inactive/transitional)
 ///
 /// # Example
 ///
@@ -506,6 +507,7 @@ impl fmt::Display for SecurityPosture {
 ///     uptime: None,
 ///     formatted_uptime: String::new(),
 ///     opsec_reminders: vec![],
+///     overlay_details: None,
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -533,6 +535,12 @@ pub struct StatusReport {
 
     /// OpSec reminders based on uptime thresholds
     pub opsec_reminders: Vec<OpSecReminder>,
+
+    /// Full overlay mount details including lower/upper/work directories
+    /// Only populated for Active state, None for inactive/transitional
+    /// Used by CLI verbose mode to show detailed overlay information
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_details: Option<std::collections::HashMap<PathBuf, crate::OverlayInfo>>,
 }
 
 impl StatusReport {
@@ -562,6 +570,7 @@ impl StatusReport {
     ///     uptime: None,
     ///     formatted_uptime: String::new(),
     ///     opsec_reminders: vec![],
+    ///     overlay_details: None,
     /// };
     ///
     /// assert_eq!(report.security_posture(), SecurityPosture::Critical);
@@ -714,6 +723,14 @@ impl<F: Filesystem> StatusCommand<F> {
         // Verify overlays
         let overlay_verification = self.verify_overlays(&state_file)?;
 
+        // Include overlay details for Active state (used by verbose mode)
+        let overlay_details = match &state_file.state {
+            SystemState::Active { .. } if !state_file.overlay_status.is_empty() => {
+                Some(state_file.overlay_status.clone())
+            }
+            _ => None,
+        };
+
         // Build report
         let report = StatusReport {
             state: state_file.state,
@@ -724,6 +741,7 @@ impl<F: Filesystem> StatusCommand<F> {
             uptime,
             formatted_uptime,
             opsec_reminders,
+            overlay_details,
         };
 
         Ok(report)
@@ -850,6 +868,7 @@ impl Default for StatusReport {
             uptime: None,
             formatted_uptime: String::new(),
             opsec_reminders: vec![],
+            overlay_details: None,
         }
     }
 }
@@ -1192,6 +1211,7 @@ mod tests {
             uptime: None,
             formatted_uptime: String::new(),
             opsec_reminders: vec![],
+            overlay_details: None,
         };
 
         let json = serde_json::to_string(&report).unwrap();
