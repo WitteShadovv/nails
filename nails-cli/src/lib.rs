@@ -438,21 +438,16 @@ pub mod cli {
                     ForkStrategy::Fork,
                 );
 
-                // Parent process: handle result
-                // Note: fork_and_execute returns Ok(()) in two cases:
-                // 1. Fork succeeded - parent exits here while child continues
-                // 2. Fork failed and fallback direct execution succeeded
+                // Parent process: handle result from fork_and_execute
+                // Returns Ok(()) when: (1) fork succeeded, or (2) fork failed but fallback succeeded
                 match result {
                     Ok(()) => {
                         // Fork succeeded (parent) OR fallback execution succeeded
-                        // Parent exits cleanly - child process (if forked) handles output
-                        // Using exit() instead of return: parent must exit immediately after fork
-                        // to prevent race conditions with child process
+                        // Using exit() instead of return: prevents race conditions with child process
                         std::process::exit(0);
                     }
                     Err(e) => {
-                        // Fork failed AND fallback execution also failed
-                        // This is a true failure (not just fork degradation)
+                        // Fork failed AND fallback execution also failed (true failure)
                         eprintln!("Emergency deactivation failed: {}", e);
                         std::process::exit(1);
                     }
@@ -1023,14 +1018,9 @@ mod tests {
     use super::cli::*;
     use clap::Parser;
 
-    // Note: Tests for activate command have been moved to end-to-end tests
-    // in tests/ directory because the activate command calls std::process::exit()
-    // which would terminate the test process.
-    //
-    // The activate command can only be properly tested via E2E tests using assert_cmd.
-    //
-    // Note: Tests for deactivate command have also been moved to E2E tests
-    // because the deactivate command calls std::process::exit().
+    // Note: activate/deactivate tests moved to E2E (tests/ directory)
+    // because these commands call std::process::exit() which terminates test processes.
+    // Use assert_cmd E2E tests for full command validation.
 
     // ========================================================================
     // Deactivate Command Argument Parsing Tests (AC1, AC6, AC8)
