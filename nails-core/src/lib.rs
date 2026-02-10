@@ -73,6 +73,9 @@ pub mod deactivation;
 // Emergency deactivation module (Story 6.1: Emergency Countdown with Ctrl+C Abort)
 pub mod emergency;
 
+// Status command module (Story 7.1: State Query with Overlay Verification)
+pub mod status;
+
 // Re-export for convenience
 pub use config::{
     CliOverrides, Config, ConfigBuilder, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig,
@@ -156,6 +159,12 @@ pub use deactivation::{DeactivationOrchestrator, DeactivationReport};
 // Emergency deactivation exports (Story 6.1-6.3: Countdown, Fork, Orchestrator)
 pub use emergency::{
     EmergencyCountdown, EmergencyOrchestrator, EmergencyReport, ForkStrategy, fork_and_execute,
+};
+
+// Status command exports (Story 7.1: State Query with Overlay Verification)
+pub use status::{
+    OpSecReminder, ReminderSeverity, SecurityPosture, StatusCommand, StatusReport,
+    VerificationStatus,
 };
 
 /// RAII guard for automatic state rollback on failure

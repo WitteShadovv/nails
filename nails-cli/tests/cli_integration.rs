@@ -298,14 +298,15 @@ fn test_emergency_command_executes_no_countdown_json() {
         .success(); // Parent exits 0 after fork
 }
 
-/// Test that status command executes successfully (stub implementation)
+/// Test that status command executes successfully
 #[test]
 fn test_status_command_executes() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.arg("status")
         .assert()
         .success()
-        .stdout(predicates::str::contains("Status: verbose=false"));
+        .stdout(predicates::str::contains("NAILS Status Report"))
+        .stdout(predicates::str::contains("State:"));
 }
 
 /// Test that status command with --verbose flag executes successfully
@@ -315,7 +316,8 @@ fn test_status_command_executes_with_verbose() {
     cmd.args(["status", "--verbose"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("Status: verbose=true"));
+        .stdout(predicates::str::contains("NAILS Status Report"))
+        .stdout(predicates::str::contains("State:"));
 }
 
 /// Test that activate command has --no-clear-history flag in help (AC3)

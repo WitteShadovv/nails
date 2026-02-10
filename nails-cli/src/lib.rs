@@ -115,6 +115,18 @@ pub mod cli {
         },
         /// Show current status and uptime
         Status {
+            /// Output results in JSON format
+            #[arg(long)]
+            json: bool,
+
+            /// Disable colored output
+            #[arg(long)]
+            no_color: bool,
+
+            /// ASCII-only output (no Unicode box drawing or emoji)
+            #[arg(long)]
+            plain: bool,
+
             /// Display detailed overlay mount information
             #[arg(short, long)]
             verbose: bool,
@@ -453,10 +465,80 @@ pub mod cli {
                     }
                 }
             }
-            Commands::Status { verbose } => {
-                println!("Status: verbose={}", verbose);
-                // TODO: Call nails-core status logic
-                Ok(())
+            Commands::Status {
+                json,
+                no_color,
+                plain,
+                verbose,
+            } => {
+                use nails_core::{Config, RealFilesystem, StatusCommand};
+                use std::path::PathBuf;
+
+                // Configure color output (must be done before any colored output)
+                if no_color || std::env::var("NO_COLOR").is_ok() {
+                    colored::control::set_override(false);
+                }
+
+                // Load configuration
+                let config_path = dirs::home_dir()
+                    .map(|h| h.join(".nails/config.yaml"))
+                    .unwrap_or_else(|| PathBuf::from("~/.nails/config.yaml"));
+
+                let config = Config::load_or_default(&config_path)
+                    .unwrap_or_else(|_| Config::test_default());
+
+                let state_path = config.state_file_path.clone();
+
+                // Create StatusCommand and run
+                let filesystem = RealFilesystem;
+                let command = StatusCommand::new(filesystem, config, state_path);
+
+                // Always succeed - even if state file is missing, show status (FR63)
+                let report = match command.run() {
+                    Ok(report) => report,
+                    Err(_) => {
+                        // State file missing or corrupted - show INACTIVE status
+                        // FR63: Status always succeeds (exit code 0)
+                        if json {
+                            println!(
+                                "{{\"state\":\"INACTIVE\",\"security_posture\":\"critical\",\"message\":\"State file not found or corrupted\"}}"
+                            );
+                        } else if plain {
+                            println!("=== NAILS Status Report ===");
+                            println!();
+                            println!("State:              INACTIVE [CRITICAL]");
+                            println!(
+                                "Security Posture:   CRITICAL: Decoy system active - no sensitive data accessible"
+                            );
+                            println!();
+                            println!("Run 'nails activate' to mount hidden environment");
+                        } else {
+                            println!("╭─────────────────────────────────────╮");
+                            println!("│  NAILS Status Report                │");
+                            println!("╰─────────────────────────────────────╯");
+                            println!();
+                            println!("State:              INACTIVE 🔴");
+                            println!(
+                                "Security Posture:   🔴 CRITICAL: Decoy system active - no sensitive data accessible"
+                            );
+                            println!();
+                            println!("Run 'nails activate' to mount hidden environment");
+                        }
+                        std::process::exit(0); // FR63: Always exit 0
+                    }
+                };
+
+                // Format output based on flags
+                if json {
+                    print_status_json(&report);
+                } else if plain {
+                    print_status_ascii(&report, verbose);
+                } else {
+                    print_status_human(&report, verbose);
+                }
+
+                // FR63: Status always succeeds (exit code 0)
+                std::process::exit(0);
             }
             Commands::Verify { deep, json } => {
                 use nails_core::{RealFilesystem, Verifier};
@@ -1011,6 +1093,255 @@ pub mod cli {
             }
         }
     }
+
+    // ========================================================================
+    // Status Command Output Formatting (Story 7.4)
+    // ========================================================================
+
+    /// JSON output structure for status command (AC5)
+    #[derive(serde::Serialize)]
+    struct StatusJsonOutput {
+        /// System state (ACTIVE, INACTIVE, etc.)
+        state: String,
+        /// Security posture level (secure, warning, critical)
+        security_posture: String,
+        /// When the system was activated (ISO 8601)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        activated_at: Option<String>,
+        /// Uptime in seconds
+        #[serde(skip_serializing_if = "Option::is_none")]
+        uptime_seconds: Option<i64>,
+        /// Human-readable uptime string
+        #[serde(skip_serializing_if = "Option::is_none")]
+        uptime_formatted: Option<String>,
+        /// Overlay list with status
+        overlays: Vec<OverlayJsonEntry>,
+        /// Overlay verification result
+        overlay_verification: String,
+        /// NixOS generation (if available)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        nixos_generation: Option<String>,
+        /// OpSec reminders
+        opsec_reminders: Vec<OpSecReminderJson>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct OverlayJsonEntry {
+        /// Overlay mount path
+        path: String,
+        /// Mount status
+        status: String,
+    }
+
+    #[derive(serde::Serialize)]
+    struct OpSecReminderJson {
+        /// Reminder severity
+        severity: String,
+        /// Reminder message
+        message: String,
+    }
+
+    /// Print status result in JSON format (AC5)
+    fn print_status_json(report: &nails_core::status::StatusReport) {
+        use nails_core::status::*;
+
+        let output = StatusJsonOutput {
+            state: format!("{:?}", report.state),
+            security_posture: match report.security_posture() {
+                SecurityPosture::Secure => "secure".to_string(),
+                SecurityPosture::Warning => "warning".to_string(),
+                SecurityPosture::Critical => "critical".to_string(),
+            },
+            activated_at: report.activated_at.map(|dt| dt.to_rfc3339()),
+            uptime_seconds: report.uptime.map(|d| d.num_seconds()),
+            uptime_formatted: if report.formatted_uptime.is_empty() {
+                None
+            } else {
+                Some(report.formatted_uptime.clone())
+            },
+            overlays: report
+                .overlays
+                .iter()
+                .map(|p| OverlayJsonEntry {
+                    path: p.display().to_string(),
+                    status: "mounted".to_string(),
+                })
+                .collect(),
+            overlay_verification: match report.overlay_verification {
+                VerificationStatus::Verified => "verified".to_string(),
+                VerificationStatus::Mismatch { .. } => "mismatch".to_string(),
+                VerificationStatus::Skipped => "skipped".to_string(),
+                VerificationStatus::NotApplicable => "not_applicable".to_string(),
+            },
+            nixos_generation: report.nixos_generation.clone(),
+            opsec_reminders: report
+                .opsec_reminders
+                .iter()
+                .map(|r| OpSecReminderJson {
+                    severity: format!("{}", r.severity),
+                    message: r.message.clone(),
+                })
+                .collect(),
+        };
+
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).expect("Failed to serialize JSON")
+        );
+    }
+
+    /// Print status result in human-readable format with emojis (AC3, AC4, AC8, AC10)
+    fn print_status_human(report: &nails_core::status::StatusReport, verbose: bool) {
+        use nails_core::SystemState;
+
+        // Print header with box drawing
+        println!("╭─────────────────────────────────────╮");
+        println!("│  NAILS Status Report                │");
+        println!("╰─────────────────────────────────────╯");
+        println!();
+
+        // Format state with emoji indicator
+        let state_emoji = match report.state {
+            SystemState::Active { .. } => "🟢",
+            SystemState::Inactive => "🔴",
+            SystemState::Activating { .. } => "🟡",
+            SystemState::Deactivating { .. } => "🟡",
+            SystemState::Emergency { .. } => "🔴",
+        };
+        println!("State:              {:?} {}", report.state, state_emoji);
+
+        // Format security posture with Display trait
+        let posture = report.security_posture();
+        println!("Security Posture:   {}", posture);
+
+        // Print activation details for ACTIVE state
+        if let SystemState::Active { .. } = report.state {
+            if let Some(activated_at) = report.activated_at {
+                println!(
+                    "Activated at:       {}",
+                    activated_at.format("%Y-%m-%d %H:%M:%S UTC")
+                );
+            }
+
+            if !report.formatted_uptime.is_empty() {
+                println!("Uptime:             {}", report.formatted_uptime);
+            }
+
+            println!();
+
+            // Print overlay list with checkmarks
+            if !report.overlays.is_empty() {
+                println!("Overlays:");
+                for overlay in &report.overlays {
+                    println!("  ✓ {} (mounted)", overlay.display());
+                }
+            }
+
+            // Print NixOS generation if available
+            if let Some(ref generation) = report.nixos_generation {
+                println!();
+                println!("NixOS Generation:   {}", generation);
+            }
+        } else if let SystemState::Inactive = report.state {
+            println!();
+            println!("Run 'nails activate' to mount hidden environment");
+        }
+
+        // Verbose mode: show detailed overlay info (AC8)
+        if verbose && matches!(report.state, SystemState::Active { .. }) {
+            println!();
+            println!("Verbose Details:");
+            // Note: Full overlay info (lower, upper, work dirs) requires access to
+            // state_file.overlay_status which is not exposed in StatusReport.
+            // This is a known limitation - the report focuses on user-facing info.
+            if let Some(ref generation) = report.nixos_generation {
+                println!("  NixOS Generation: {}", generation);
+            }
+        }
+
+        // Print OpSec reminders if present (AC10)
+        if !report.opsec_reminders.is_empty() {
+            println!();
+            for reminder in &report.opsec_reminders {
+                println!("{}", reminder);
+            }
+        }
+    }
+
+    /// Print status result in ASCII-only format (AC6)
+    fn print_status_ascii(report: &nails_core::status::StatusReport, verbose: bool) {
+        use nails_core::SystemState;
+
+        // Print ASCII header (no box drawing)
+        println!("=======================================");
+        println!("  NAILS Status Report");
+        println!("=======================================");
+        println!();
+
+        // Format state with ASCII indicator
+        let state_indicator = match report.state {
+            SystemState::Active { .. } => "[SECURE]",
+            SystemState::Inactive => "[CRITICAL]",
+            SystemState::Activating { .. } => "[WARNING]",
+            SystemState::Deactivating { .. } => "[WARNING]",
+            SystemState::Emergency { .. } => "[CRITICAL]",
+        };
+        println!("State:              {:?} {}", report.state, state_indicator);
+
+        // Format security posture with to_plain()
+        let posture = report.security_posture();
+        println!("Security Posture:   {}", posture.to_plain());
+
+        // Print activation details for ACTIVE state
+        if let SystemState::Active { .. } = report.state {
+            if let Some(activated_at) = report.activated_at {
+                println!(
+                    "Activated at:       {}",
+                    activated_at.format("%Y-%m-%d %H:%M:%S UTC")
+                );
+            }
+
+            if !report.formatted_uptime.is_empty() {
+                println!("Uptime:             {}", report.formatted_uptime);
+            }
+
+            println!();
+
+            // Print overlay list with [OK] markers
+            if !report.overlays.is_empty() {
+                println!("Overlays:");
+                for overlay in &report.overlays {
+                    println!("  [OK] {} (mounted)", overlay.display());
+                }
+            }
+
+            // Print NixOS generation if available
+            if let Some(ref generation) = report.nixos_generation {
+                println!();
+                println!("NixOS Generation:   {}", generation);
+            }
+        } else if let SystemState::Inactive = report.state {
+            println!();
+            println!("Run 'nails activate' to mount hidden environment");
+        }
+
+        // Verbose mode: show detailed info
+        if verbose && matches!(report.state, SystemState::Active { .. }) {
+            println!();
+            println!("Verbose Details:");
+            if let Some(ref generation) = report.nixos_generation {
+                println!("  NixOS Generation: {}", generation);
+            }
+        }
+
+        // Print OpSec reminders in ASCII format
+        if !report.opsec_reminders.is_empty() {
+            println!();
+            for reminder in &report.opsec_reminders {
+                println!("{}", reminder.to_plain());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1408,7 +1739,12 @@ mod tests {
     fn test_execute_status_command_without_verbose() {
         let cli = Cli {
             verbose: 0,
-            command: Commands::Status { verbose: false },
+            command: Commands::Status {
+                json: false,
+                no_color: false,
+                plain: false,
+                verbose: false,
+            },
         };
         assert!(execute_command(cli).is_ok());
     }
@@ -1417,7 +1753,12 @@ mod tests {
     fn test_execute_status_command_with_verbose() {
         let cli = Cli {
             verbose: 0,
-            command: Commands::Status { verbose: true },
+            command: Commands::Status {
+                json: false,
+                no_color: false,
+                plain: false,
+                verbose: true,
+            },
         };
         assert!(execute_command(cli).is_ok());
     }
@@ -1426,9 +1767,177 @@ mod tests {
     fn test_verbose_flag_values() {
         let cli = Cli {
             verbose: 3,
-            command: Commands::Status { verbose: false },
+            command: Commands::Status {
+                json: false,
+                no_color: false,
+                plain: false,
+                verbose: false,
+            },
         };
         assert_eq!(cli.verbose, 3);
+    }
+
+    // ========================================================================
+    // Status Command Argument Parsing Tests (Story 7.4, AC: 11)
+    // ========================================================================
+
+    #[test]
+    fn test_status_args_parsing_defaults() {
+        // Test default args parsing (all flags false)
+        let cli = Cli::try_parse_from(["nails", "status"]).unwrap();
+        if let Commands::Status {
+            json,
+            no_color,
+            plain,
+            verbose,
+        } = cli.command
+        {
+            assert!(!json);
+            assert!(!no_color);
+            assert!(!plain);
+            assert!(!verbose);
+        } else {
+            panic!("Expected Status command");
+        }
+    }
+
+    #[test]
+    fn test_status_json_flag() {
+        // Test --json flag
+        let cli = Cli::try_parse_from(["nails", "status", "--json"]).unwrap();
+        if let Commands::Status { json, .. } = cli.command {
+            assert!(json);
+        } else {
+            panic!("Expected Status command");
+        }
+    }
+
+    #[test]
+    fn test_status_no_color_flag() {
+        // Test --no-color flag
+        let cli = Cli::try_parse_from(["nails", "status", "--no-color"]).unwrap();
+        if let Commands::Status { no_color, .. } = cli.command {
+            assert!(no_color);
+        } else {
+            panic!("Expected Status command");
+        }
+    }
+
+    #[test]
+    fn test_status_plain_flag() {
+        // Test --plain flag
+        let cli = Cli::try_parse_from(["nails", "status", "--plain"]).unwrap();
+        if let Commands::Status { plain, .. } = cli.command {
+            assert!(plain);
+        } else {
+            panic!("Expected Status command");
+        }
+    }
+
+    #[test]
+    fn test_status_verbose_flag() {
+        // Test -v flag
+        let cli = Cli::try_parse_from(["nails", "status", "-v"]).unwrap();
+        if let Commands::Status { verbose, .. } = cli.command {
+            assert!(verbose);
+        } else {
+            panic!("Expected Status command");
+        }
+    }
+
+    #[test]
+    fn test_status_verbose_long_flag() {
+        // Test --verbose flag
+        let cli = Cli::try_parse_from(["nails", "status", "--verbose"]).unwrap();
+        if let Commands::Status { verbose, .. } = cli.command {
+            assert!(verbose);
+        } else {
+            panic!("Expected Status command");
+        }
+    }
+
+    #[test]
+    fn test_status_multiple_flags() {
+        // Test combining multiple flags
+        let cli = Cli::try_parse_from(["nails", "status", "--json", "--plain", "--no-color", "-v"])
+            .unwrap();
+        if let Commands::Status {
+            json,
+            no_color,
+            plain,
+            verbose,
+        } = cli.command
+        {
+            assert!(json);
+            assert!(no_color);
+            assert!(plain);
+            assert!(verbose);
+        } else {
+            panic!("Expected Status command");
+        }
+    }
+
+    #[test]
+    fn test_status_json_and_plain_flags() {
+        // Test --json with --plain (JSON should take precedence in handler)
+        let cli = Cli::try_parse_from(["nails", "status", "--json", "--plain"]).unwrap();
+        if let Commands::Status {
+            json,
+            plain,
+            no_color,
+            verbose,
+        } = cli.command
+        {
+            assert!(json);
+            assert!(plain);
+            assert!(!no_color);
+            assert!(!verbose);
+        } else {
+            panic!("Expected Status command");
+        }
+    }
+
+    #[test]
+    fn test_status_no_color_with_plain() {
+        // Test --no-color with --plain
+        let cli = Cli::try_parse_from(["nails", "status", "--no-color", "--plain"]).unwrap();
+        if let Commands::Status {
+            no_color, plain, ..
+        } = cli.command
+        {
+            assert!(no_color);
+            assert!(plain);
+        } else {
+            panic!("Expected Status command");
+        }
+    }
+
+    #[test]
+    fn test_status_all_flags() {
+        // Test all flags together
+        let cli = Cli::try_parse_from([
+            "nails",
+            "status",
+            "--json",
+            "--no-color",
+            "--plain",
+            "--verbose",
+        ])
+        .unwrap();
+        if let Commands::Status {
+            json,
+            no_color,
+            plain,
+            verbose,
+        } = cli.command
+        {
+            assert!(json);
+            assert!(no_color);
+            assert!(plain);
+            assert!(verbose);
+        } else {
+            panic!("Expected Status command");
+        }
     }
 
     #[test]

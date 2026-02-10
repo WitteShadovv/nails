@@ -190,6 +190,10 @@ pub struct Config {
     #[serde(default = "default_milestone_tips")]
     pub milestone_tips: bool,
 
+    /// Whether to show OpSec reminders based on uptime thresholds
+    #[serde(default = "default_show_opsec_reminders")]
+    pub show_opsec_reminders: bool,
+
     /// Path to log file directory
     #[serde(default = "default_log_path")]
     pub log_path: PathBuf,
@@ -237,6 +241,10 @@ fn default_milestone_tips() -> bool {
     true
 }
 
+fn default_show_opsec_reminders() -> bool {
+    true
+}
+
 fn default_log_path() -> PathBuf {
     // Default will be derived from hidden_volume_root in builder
     PathBuf::from("/mnt/hidden-volume/logs")
@@ -281,6 +289,7 @@ pub struct ConfigBuilder {
     color_output: Option<bool>,
     verify_on_deactivate: Option<bool>,
     milestone_tips: Option<bool>,
+    show_opsec_reminders: Option<bool>,
     log_path: Option<PathBuf>,
     max_log_size_mb: Option<u64>,
     retention_days: Option<u64>,
@@ -382,6 +391,14 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set whether to show OpSec reminders based on uptime thresholds
+    ///
+    /// Default: `true`
+    pub fn show_opsec_reminders(mut self, enabled: bool) -> Self {
+        self.show_opsec_reminders = Some(enabled);
+        self
+    }
+
     /// Set log file directory path
     ///
     /// Default: `{hidden_volume_root}/logs`
@@ -446,6 +463,10 @@ impl ConfigBuilder {
 
         let milestone_tips = self.milestone_tips.unwrap_or_else(default_milestone_tips);
 
+        let show_opsec_reminders = self
+            .show_opsec_reminders
+            .unwrap_or_else(default_show_opsec_reminders);
+
         // Derive log_path from hidden_volume_root if not specified
         let log_path = self
             .log_path
@@ -467,6 +488,7 @@ impl ConfigBuilder {
             color_output,
             verify_on_deactivate,
             milestone_tips,
+            show_opsec_reminders,
             log_path,
             max_log_size_mb,
             retention_days,
@@ -521,6 +543,7 @@ impl Default for Config {
             color_output: default_color_output(),
             verify_on_deactivate: default_verify_on_deactivate(),
             milestone_tips: default_milestone_tips(),
+            show_opsec_reminders: default_show_opsec_reminders(),
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root
             max_log_size_mb: default_max_log_size_mb(),
             retention_days: default_retention_days(),
@@ -825,6 +848,7 @@ retention_days: 7
             color_output: default_color_output(),
             verify_on_deactivate: default_verify_on_deactivate(),
             milestone_tips: default_milestone_tips(),
+            show_opsec_reminders: default_show_opsec_reminders(),
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root
             max_log_size_mb: default_max_log_size_mb(),
             retention_days: default_retention_days(),
