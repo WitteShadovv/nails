@@ -391,31 +391,45 @@ pub enum SecurityPosture {
     Critical,
 }
 
-impl fmt::Display for SecurityPosture {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl SecurityPosture {
+    /// Get the emoji indicator for this security posture
+    ///
+    /// Returns the appropriate colored circle emoji for visual indication.
+    fn emoji(&self) -> &'static str {
         match self {
-            SecurityPosture::Secure => {
-                write!(f, "🟢 SECURE: Hidden environment active, overlays verified")
-            }
-            SecurityPosture::Warning => {
-                write!(
-                    f,
-                    "🟡 WARNING: System in transitional state or inconsistency detected"
-                )
-            }
-            SecurityPosture::Critical => {
-                write!(f, "🔴 CRITICAL: No protection or emergency state")
-            }
+            SecurityPosture::Secure => "🟢",
+            SecurityPosture::Warning => "🟡",
+            SecurityPosture::Critical => "🔴",
         }
     }
-}
 
-impl SecurityPosture {
+    /// Get the text level indicator
+    ///
+    /// Returns the uppercase text representation of the security level.
+    fn level(&self) -> &'static str {
+        match self {
+            SecurityPosture::Secure => "SECURE",
+            SecurityPosture::Warning => "WARNING",
+            SecurityPosture::Critical => "CRITICAL",
+        }
+    }
+
+    /// Get the descriptive message for this security posture
+    ///
+    /// Returns a human-readable description of what this posture means.
+    fn description(&self) -> &'static str {
+        match self {
+            SecurityPosture::Secure => "Hidden environment active, overlays verified",
+            SecurityPosture::Warning => "System in transitional state or inconsistency detected",
+            SecurityPosture::Critical => "No protection or emergency state",
+        }
+    }
+
     /// Get ASCII-only representation for plain output mode
     ///
     /// Returns a string without emoji indicators, suitable for:
     /// - `--plain` flag output
-    /// - NO_COLOR environment variable
+    /// - NO_COLOR environment variable (handled at CLI layer)
     /// - Terminal environments that don't support Unicode
     ///
     /// # Example
@@ -426,14 +440,20 @@ impl SecurityPosture {
     /// let posture = SecurityPosture::Secure;
     /// assert_eq!(posture.to_plain(), "[SECURE] Hidden environment active, overlays verified");
     /// ```
-    pub fn to_plain(&self) -> &'static str {
-        match self {
-            SecurityPosture::Secure => "[SECURE] Hidden environment active, overlays verified",
-            SecurityPosture::Warning => {
-                "[WARNING] System in transitional state or inconsistency detected"
-            }
-            SecurityPosture::Critical => "[CRITICAL] No protection or emergency state",
-        }
+    pub fn to_plain(&self) -> String {
+        format!("[{}] {}", self.level(), self.description())
+    }
+}
+
+impl fmt::Display for SecurityPosture {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {}: {}",
+            self.emoji(),
+            self.level(),
+            self.description()
+        )
     }
 }
 
@@ -1222,7 +1242,8 @@ mod tests {
         let posture = report.security_posture();
         assert_eq!(posture, SecurityPosture::Secure);
         assert!(format!("{}", posture).contains('🟢'));
-        assert!(posture.to_plain().contains("[SECURE]"));
+        let plain = posture.to_plain();
+        assert!(plain.contains("[SECURE]"));
     }
 
     #[test]
@@ -1241,7 +1262,8 @@ mod tests {
         let posture = report.security_posture();
         assert_eq!(posture, SecurityPosture::Warning);
         assert!(format!("{}", posture).contains('🟡'));
-        assert!(posture.to_plain().contains("[WARNING]"));
+        let plain = posture.to_plain();
+        assert!(plain.contains("[WARNING]"));
     }
 
     #[test]
@@ -1257,7 +1279,8 @@ mod tests {
         let posture = report.security_posture();
         assert_eq!(posture, SecurityPosture::Warning);
         assert!(format!("{}", posture).contains('🟡'));
-        assert!(posture.to_plain().contains("[WARNING]"));
+        let plain = posture.to_plain();
+        assert!(plain.contains("[WARNING]"));
     }
 
     #[test]
@@ -1273,7 +1296,8 @@ mod tests {
         let posture = report.security_posture();
         assert_eq!(posture, SecurityPosture::Warning);
         assert!(format!("{}", posture).contains('🟡'));
-        assert!(posture.to_plain().contains("[WARNING]"));
+        let plain = posture.to_plain();
+        assert!(plain.contains("[WARNING]"));
     }
 
     #[test]
@@ -1287,7 +1311,8 @@ mod tests {
         let posture = report.security_posture();
         assert_eq!(posture, SecurityPosture::Critical);
         assert!(format!("{}", posture).contains('🔴'));
-        assert!(posture.to_plain().contains("[CRITICAL]"));
+        let plain = posture.to_plain();
+        assert!(plain.contains("[CRITICAL]"));
     }
 
     #[test]
@@ -1303,7 +1328,8 @@ mod tests {
         let posture = report.security_posture();
         assert_eq!(posture, SecurityPosture::Critical);
         assert!(format!("{}", posture).contains('🔴'));
-        assert!(posture.to_plain().contains("[CRITICAL]"));
+        let plain = posture.to_plain();
+        assert!(plain.contains("[CRITICAL]"));
     }
 
     #[test]
@@ -1344,6 +1370,10 @@ mod tests {
         assert!(!plain.contains('🟢')); // No emoji
         assert!(plain.contains("[SECURE]"));
         assert!(plain.contains("Hidden environment active"));
+        assert_eq!(
+            plain,
+            "[SECURE] Hidden environment active, overlays verified"
+        );
     }
 
     #[test]
@@ -1354,6 +1384,10 @@ mod tests {
         assert!(!plain.contains('🟡')); // No emoji
         assert!(plain.contains("[WARNING]"));
         assert!(plain.contains("transitional state") || plain.contains("inconsistency"));
+        assert_eq!(
+            plain,
+            "[WARNING] System in transitional state or inconsistency detected"
+        );
     }
 
     #[test]
@@ -1364,6 +1398,7 @@ mod tests {
         assert!(!plain.contains('🔴')); // No emoji
         assert!(plain.contains("[CRITICAL]"));
         assert!(plain.contains("No protection") || plain.contains("emergency"));
+        assert_eq!(plain, "[CRITICAL] No protection or emergency state");
     }
 
     #[test]
