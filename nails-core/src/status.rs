@@ -109,9 +109,9 @@ impl OpSecReminder {
 impl fmt::Display for OpSecReminder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let emoji = match self.severity {
-            ReminderSeverity::Info => "⚠",
-            ReminderSeverity::Warning => "⚠",
-            ReminderSeverity::Critical => "⚠",
+            ReminderSeverity::Info => "💡",     // Info/lightbulb for awareness
+            ReminderSeverity::Warning => "⚠",   // Warning triangle
+            ReminderSeverity::Critical => "🛑", // Stop sign for critical
         };
         write!(f, "{} {}", emoji, self.message)
     }
@@ -185,17 +185,23 @@ impl ReminderSeverity {
 /// Format uptime duration as human-readable string
 ///
 /// Converts a duration to a human-readable format with appropriate units:
-/// - **<1 hour**: "X minutes" (e.g., "45 minutes")
-/// - **1-24 hours**: "X hours Y minutes" or "X hours" (e.g., "3 hours 30 minutes", "5 hours")
-/// - **>24 hours**: "X days Y hours" or "X days" (e.g., "2 days 5 hours", "3 days")
+/// - **<1 hour**: "X minute(s)" (e.g., "1 minute", "45 minutes")
+/// - **1-24 hours**: "X hour(s) Y minute(s)" or "X hour(s)" (e.g., "1 hour", "3 hours 30 minutes")
+/// - **>24 hours**: "X day(s) Y hour(s)" or "X day(s)" (e.g., "1 day", "2 days 5 hours")
 ///
 /// # Arguments
 ///
-/// * `duration` - Duration to format
+/// * `duration` - Duration to format (must be non-negative)
 ///
 /// # Returns
 ///
-/// Human-readable string representation
+/// Human-readable string representation with proper singular/plural forms
+///
+/// # Edge Cases
+///
+/// - **Negative durations**: Returns "0 minutes" (durations < 0 are clamped to zero)
+/// - **Zero duration**: Returns "0 minutes"
+/// - **Large durations**: Formats days correctly (e.g., "365 days" for one year)
 ///
 /// # Example
 ///
@@ -203,23 +209,36 @@ impl ReminderSeverity {
 /// use nails_core::status::format_uptime;
 /// use chrono::Duration;
 ///
+/// assert_eq!(format_uptime(Duration::minutes(1)), "1 minute");
 /// assert_eq!(format_uptime(Duration::minutes(45)), "45 minutes");
+/// assert_eq!(format_uptime(Duration::hours(1)), "1 hour");
 /// assert_eq!(format_uptime(Duration::hours(3) + Duration::minutes(30)), "3 hours 30 minutes");
 /// assert_eq!(format_uptime(Duration::hours(5)), "5 hours");
+/// assert_eq!(format_uptime(Duration::days(1)), "1 day");
 /// assert_eq!(format_uptime(Duration::days(2) + Duration::hours(5)), "2 days 5 hours");
 /// ```
 pub fn format_uptime(duration: Duration) -> String {
-    let total_minutes = duration.num_minutes();
+    // Guard against negative durations (clock skew protection)
+    let total_minutes = duration.num_minutes().max(0);
     let days = total_minutes / (24 * 60);
     let hours = (total_minutes % (24 * 60)) / 60;
     let minutes = total_minutes % 60;
 
+    // Helper to pluralize units
+    let plural = |n: i64, unit: &str| {
+        if n == 1 {
+            format!("{} {}", n, unit)
+        } else {
+            format!("{} {}s", n, unit)
+        }
+    };
+
     match (days, hours, minutes) {
-        (0, 0, m) => format!("{} minutes", m),
-        (0, h, 0) => format!("{} hours", h),
-        (0, h, m) => format!("{} hours {} minutes", h, m),
-        (d, 0, _) => format!("{} days", d),
-        (d, h, _) => format!("{} days {} hours", d, h),
+        (0, 0, m) => plural(m, "minute"),
+        (0, h, 0) => plural(h, "hour"),
+        (0, h, m) => format!("{} {}", plural(h, "hour"), plural(m, "minute")),
+        (d, 0, _) => plural(d, "day"),
+        (d, h, _) => format!("{} {}", plural(d, "day"), plural(h, "hour")),
     }
 }
 
@@ -286,8 +305,7 @@ pub fn generate_opsec_reminders(uptime: Duration, enabled: bool) -> Vec<OpSecRem
     if hours >= 24 {
         reminders.push(OpSecReminder {
             severity: ReminderSeverity::Critical,
-            message: "OPSEC WARNING: Session >24 hours - strongly recommend deactivation"
-                .to_string(),
+            message: "Session >24 hours - strongly recommend deactivation".to_string(),
         });
     }
 
@@ -1439,10 +1457,10 @@ mod tests {
 
     #[test]
     fn test_uptime_formatting_one_minute() {
-        // Test edge case: 1 minute
+        // Test edge case: 1 minute (singular)
         let duration = Duration::minutes(1);
         let formatted = format_uptime(duration);
-        assert_eq!(formatted, "1 minutes");
+        assert_eq!(formatted, "1 minute");
     }
 
     #[test]
@@ -1463,10 +1481,10 @@ mod tests {
 
     #[test]
     fn test_uptime_formatting_one_hour() {
-        // Test edge case: exactly 1 hour
+        // Test edge case: exactly 1 hour (singular)
         let duration = Duration::hours(1);
         let formatted = format_uptime(duration);
-        assert_eq!(formatted, "1 hours");
+        assert_eq!(formatted, "1 hour");
     }
 
     #[test]
@@ -1490,7 +1508,39 @@ mod tests {
         // Test rounding to nearest minute (Duration already handles this)
         let duration = Duration::seconds(90); // 1.5 minutes
         let formatted = format_uptime(duration);
-        assert_eq!(formatted, "1 minutes"); // rounds to 1 minute
+        assert_eq!(formatted, "1 minute"); // rounds to 1 minute (singular)
+    }
+
+    #[test]
+    fn test_uptime_formatting_one_day() {
+        // Test edge case: exactly 1 day (singular)
+        let duration = Duration::days(1);
+        let formatted = format_uptime(duration);
+        assert_eq!(formatted, "1 day");
+    }
+
+    #[test]
+    fn test_uptime_formatting_one_hour_one_minute() {
+        // Test edge case: 1 hour 1 minute (both singular)
+        let duration = Duration::hours(1) + Duration::minutes(1);
+        let formatted = format_uptime(duration);
+        assert_eq!(formatted, "1 hour 1 minute");
+    }
+
+    #[test]
+    fn test_uptime_formatting_negative_duration() {
+        // Test negative duration protection (clock skew)
+        let duration = Duration::minutes(-100);
+        let formatted = format_uptime(duration);
+        assert_eq!(formatted, "0 minutes"); // Clamps to zero
+    }
+
+    #[test]
+    fn test_uptime_formatting_zero_duration() {
+        // Test zero duration
+        let duration = Duration::zero();
+        let formatted = format_uptime(duration);
+        assert_eq!(formatted, "0 minutes");
     }
 
     // ========== OpSec Reminder Generation Tests (Story 7.3) ==========
@@ -1555,7 +1605,7 @@ mod tests {
             message: "Test message".to_string(),
         };
         let display = format!("{}", reminder);
-        assert!(display.contains('⚠'));
+        assert!(display.contains('💡')); // Info uses lightbulb emoji
         assert!(display.contains("Test message"));
     }
 
@@ -1566,7 +1616,7 @@ mod tests {
             message: "Warning message".to_string(),
         };
         let display = format!("{}", reminder);
-        assert!(display.contains('⚠'));
+        assert!(display.contains('⚠')); // Warning uses warning triangle
         assert!(display.contains("Warning message"));
     }
 
@@ -1577,7 +1627,7 @@ mod tests {
             message: "Critical message".to_string(),
         };
         let display = format!("{}", reminder);
-        assert!(display.contains('⚠'));
+        assert!(display.contains('🛑')); // Critical uses stop sign
         assert!(display.contains("Critical message"));
     }
 
