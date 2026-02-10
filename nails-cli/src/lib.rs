@@ -377,6 +377,8 @@ pub mod cli {
                                 "{{\"status\":\"aborted\",\"message\":\"Emergency deactivation aborted by user\"}}"
                             );
                         }
+                        // Exit immediately: user explicitly aborted, no cleanup needed
+                        // Using exit() instead of return to prevent any further processing
                         std::process::exit(0);
                     }
                     Ok(true) => {
@@ -384,7 +386,7 @@ pub mod cli {
                     }
                     Err(e) => {
                         eprintln!("Countdown error: {}", e);
-                        // Continue anyway — emergency should not be blocked
+                        // Continue anyway — emergency should not be blocked by countdown errors
                     }
                 }
 
@@ -421,20 +423,36 @@ pub mod cli {
                             print_emergency_human(&report, verbosity_clone, quiet_flag);
                         }
 
-                        // Exit with appropriate code
-                        if report.is_successful() && report.errors.is_empty() {
+                        // Exit with appropriate code (AC5: exit 1 when errors present)
+                        if report.errors.is_empty() {
+                            // No errors - clean shutdown
+                            // Using exit() instead of return: this code runs in forked child process,
+                            // we must exit directly to prevent returning to parent's CLI handler
                             std::process::exit(0);
                         } else {
+                            // Errors occurred during emergency - exit with error code
+                            // Using exit() instead of return: child process must terminate directly
                             std::process::exit(1);
                         }
                     },
                     ForkStrategy::Fork,
                 );
 
-                // Parent process: fork_and_execute returned Ok(()) — parent exits
+                // Parent process: handle result
+                // Note: fork_and_execute returns Ok(()) in two cases:
+                // 1. Fork succeeded - parent exits here while child continues
+                // 2. Fork failed and fallback direct execution succeeded
                 match result {
-                    Ok(()) => std::process::exit(0),
+                    Ok(()) => {
+                        // Fork succeeded (parent) OR fallback execution succeeded
+                        // Parent exits cleanly - child process (if forked) handles output
+                        // Using exit() instead of return: parent must exit immediately after fork
+                        // to prevent race conditions with child process
+                        std::process::exit(0);
+                    }
                     Err(e) => {
+                        // Fork failed AND fallback execution also failed
+                        // This is a true failure (not just fork degradation)
                         eprintln!("Emergency deactivation failed: {}", e);
                         std::process::exit(1);
                     }
@@ -873,6 +891,10 @@ pub mod cli {
         pub(crate) errors: Vec<String>,
         /// Recommendation (e.g., "Reboot recommended" or "none")
         pub(crate) recommendation: String,
+        /// Overlays that were successfully unmounted
+        pub(crate) unmounted_overlays: Vec<String>,
+        /// True if emergency ran when system was already INACTIVE (defensive cleanup)
+        pub(crate) was_defensive: bool,
     }
 
     impl From<&nails_core::EmergencyReport> for EmergencyJsonOutput {
@@ -886,6 +908,8 @@ pub mod cli {
                     .recommendation
                     .clone()
                     .unwrap_or_else(|| "none".to_string()),
+                unmounted_overlays: report.unmounted_overlays.clone(),
+                was_defensive: report.was_defensive,
             }
         }
     }
@@ -913,7 +937,9 @@ pub mod cli {
         if report.is_successful() && report.errors.is_empty() {
             // AC4: Successful emergency
             if quiet {
+                // AC7: Quiet mode shows countdown and final result (duration + final state)
                 println!("Emergency deactivation complete in {:.2}s", duration);
+                println!("Final state: {:?}", report.final_state);
             } else {
                 println!(
                     "{}",
@@ -935,12 +961,30 @@ pub mod cli {
                     }
                 }
 
-                // -vv: Debug mode — show full details
+                // -vv: Debug mode — show full details (AC8)
                 if verbosity >= Verbosity::Debug {
                     println!();
-                    println!("Final State: {:?}", report.final_state);
-                    println!("Duration: {:.4}s", duration);
-                    println!("Defensive: {}", report.was_defensive);
+                    println!("Debug Details:");
+                    println!("  Final State: {:?}", report.final_state);
+                    println!("  Duration: {:.4}s", duration);
+                    println!("  Defensive: {}", report.was_defensive);
+                    println!("  Unmounted overlays: {}", report.unmounted_overlays.len());
+
+                    // Show cleanup details if available (AC8: show each cleanup step)
+                    if !report.unmounted_overlays.is_empty() {
+                        println!();
+                        println!("  Unmount Details:");
+                        for (i, overlay) in report.unmounted_overlays.iter().enumerate() {
+                            println!("    {}. {} (force unmounted)", i + 1, overlay);
+                        }
+                    }
+
+                    // Show cleanup report details (history files, temp files, etc.)
+                    // Note: cleanup_report is private, but we can infer from report fields
+                    if report.was_defensive {
+                        println!();
+                        println!("  Note: Defensive cleanup - system was already INACTIVE");
+                    }
                 }
             }
         } else {
@@ -1275,13 +1319,19 @@ mod tests {
         assert!(result.is_err(), "--delay flag should no longer exist");
     }
 
+    // ========================================================================
+    // Emergency Output Formatting Tests (AC10)
+    // ========================================================================
+    // Note: Testing output formatting functions directly since execute_command
+    // calls std::process::exit() which terminates test process.
+
     #[test]
-    fn test_emergency_json_output_struct_from_report() {
-        // AC6: Test EmergencyJsonOutput conversion from EmergencyReport
-        use nails_core::SystemState;
+    fn test_emergency_json_output_success() {
+        // AC10: Test JSON output for successful emergency
+        use nails_core::{EmergencyReport, SystemState};
         use std::time::Duration;
 
-        let report = nails_core::EmergencyReport {
+        let report = EmergencyReport {
             cleanup_report: nails_core::CleanupReport::default(),
             unmounted_overlays: vec!["/home".to_string(), "/etc".to_string()],
             duration: Duration::from_millis(1500),
@@ -1293,41 +1343,75 @@ mod tests {
         };
 
         let json_output = EmergencyJsonOutput::from(&report);
+
+        // Verify all required fields (AC6)
         assert_eq!(json_output.status, "success");
         assert!((json_output.duration - 1.5).abs() < 0.01);
         assert_eq!(json_output.state, "Inactive");
         assert!(json_output.errors.is_empty());
         assert_eq!(json_output.recommendation, "none");
+        assert_eq!(json_output.unmounted_overlays.len(), 2);
+        assert!(!json_output.was_defensive);
 
-        // Verify serialization
-        let json_str = serde_json::to_string(&json_output).unwrap();
-        assert!(json_str.contains("\"status\":\"success\""));
+        // Verify JSON serialization
+        let json_str = serde_json::to_string_pretty(&json_output).unwrap();
+        assert!(json_str.contains("\"status\": \"success\""));
         assert!(json_str.contains("\"duration\""));
-        assert!(json_str.contains("\"state\":\"Inactive\""));
-        assert!(json_str.contains("\"recommendation\":\"none\""));
+        assert!(json_str.contains("\"state\": \"Inactive\""));
+        assert!(json_str.contains("\"recommendation\": \"none\""));
+        assert!(json_str.contains("\"unmounted_overlays\""));
+        assert!(json_str.contains("\"was_defensive\": false"));
     }
 
     #[test]
-    fn test_emergency_json_output_struct_with_errors() {
-        // AC6: Test EmergencyJsonOutput with errors
-        use nails_core::SystemState;
+    fn test_emergency_json_output_with_errors() {
+        // AC10: Test JSON output with errors
+        use nails_core::{EmergencyReport, SystemState};
         use std::time::Duration;
 
-        let report = nails_core::EmergencyReport {
+        let report = EmergencyReport {
             cleanup_report: nails_core::CleanupReport::default(),
-            unmounted_overlays: vec![],
+            unmounted_overlays: vec!["/etc".to_string()],
             duration: Duration::from_millis(2500),
             final_state: SystemState::Inactive,
-            errors: vec!["Force unmount failed for /home: busy".to_string()],
+            errors: vec![
+                "Force unmount failed for /home: busy".to_string(),
+                "Cleanup failed: permission denied".to_string(),
+            ],
             was_defensive: false,
             status: "error".to_string(),
             recommendation: Some("Reboot recommended".to_string()),
         };
 
         let json_output = EmergencyJsonOutput::from(&report);
+
         assert_eq!(json_output.status, "error");
-        assert_eq!(json_output.errors.len(), 1);
+        assert_eq!(json_output.errors.len(), 2);
         assert_eq!(json_output.recommendation, "Reboot recommended");
+        assert_eq!(json_output.unmounted_overlays.len(), 1);
+    }
+
+    #[test]
+    fn test_emergency_json_output_defensive() {
+        // AC10: Test JSON output for defensive emergency (already INACTIVE)
+        use nails_core::{EmergencyReport, SystemState};
+        use std::time::Duration;
+
+        let report = EmergencyReport {
+            cleanup_report: nails_core::CleanupReport::default(),
+            unmounted_overlays: vec![],
+            duration: Duration::from_millis(500),
+            final_state: SystemState::Inactive,
+            errors: vec![],
+            was_defensive: true,
+            status: "success".to_string(),
+            recommendation: None,
+        };
+
+        let json_output = EmergencyJsonOutput::from(&report);
+
+        assert!(json_output.was_defensive);
+        assert_eq!(json_output.unmounted_overlays.len(), 0);
     }
 
     #[test]
