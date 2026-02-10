@@ -93,9 +93,25 @@ pub mod cli {
         },
         /// Emergency mode: rapid deactivation with countdown
         Emergency {
-            /// Emergency delay in seconds (default: 10)
-            #[arg(short = 'd', long, default_value = "10")]
-            delay: u64,
+            /// Skip the 3-second countdown (proceed immediately)
+            #[arg(long)]
+            no_countdown: bool,
+
+            /// Suppress output except final result
+            #[arg(long, conflicts_with = "verbose")]
+            quiet: bool,
+
+            /// Increase verbosity (-v for details, -vv for debug)
+            #[arg(short, long, action = clap::ArgAction::Count, conflicts_with = "quiet")]
+            verbose: u8,
+
+            /// Output results in JSON format
+            #[arg(long)]
+            json: bool,
+
+            /// Disable colored output
+            #[arg(long)]
+            no_color: bool,
         },
         /// Show current status and uptime
         Status {
@@ -306,10 +322,123 @@ pub mod cli {
                     Err(_) => std::process::exit(1),
                 }
             }
-            Commands::Emergency { delay } => {
-                println!("Emergency: delay={}s", delay);
-                // TODO: Call nails-core emergency logic
-                Ok(())
+            Commands::Emergency {
+                no_countdown,
+                quiet,
+                verbose,
+                json,
+                no_color,
+            } => {
+                use nails_core::{
+                    CleanupConfig, Config, EmergencyCountdown, EmergencyOrchestrator, ForkStrategy,
+                    NailsManager, RealFilesystem, Verbosity, fork_and_execute,
+                };
+                use std::path::PathBuf;
+                use std::sync::{Arc, Mutex};
+
+                // Configure color output (must be done before any colored output)
+                if no_color || std::env::var("NO_COLOR").is_ok() {
+                    colored::control::set_override(false);
+                }
+
+                // Convert CLI flags to Verbosity enum
+                let verbosity = if quiet {
+                    Verbosity::Quiet
+                } else {
+                    match verbose {
+                        0 => Verbosity::Normal,
+                        1 => Verbosity::Verbose,
+                        _ => Verbosity::Debug, // 2+ maps to Debug
+                    }
+                };
+
+                // Load config with state path
+                let config_path = dirs::home_dir()
+                    .map(|h| h.join(".nails/config.yaml"))
+                    .unwrap_or_else(|| PathBuf::from("~/.nails/config.yaml"));
+                let config = Config::load_or_default(&config_path)
+                    .unwrap_or_else(|_| Config::test_default());
+                let state_path = config.state_file_path.clone();
+
+                // AC2: Create countdown (3 seconds fixed per AR33)
+                let countdown = EmergencyCountdown {
+                    countdown_seconds: 3,
+                    skip_countdown: no_countdown,
+                };
+
+                // Run countdown
+                match countdown.run() {
+                    Ok(false) => {
+                        // Aborted by user (Ctrl+C)
+                        if !json {
+                            println!("Emergency deactivation aborted");
+                        } else {
+                            println!(
+                                "{{\"status\":\"aborted\",\"message\":\"Emergency deactivation aborted by user\"}}"
+                            );
+                        }
+                        std::process::exit(0);
+                    }
+                    Ok(true) => {
+                        // Countdown completed — proceed with fork
+                    }
+                    Err(e) => {
+                        eprintln!("Countdown error: {}", e);
+                        // Continue anyway — emergency should not be blocked
+                    }
+                }
+
+                // Capture flags for use in the closure
+                let json_flag = json;
+                let quiet_flag = quiet;
+                let verbosity_clone = verbosity;
+
+                // AC3: Fork and execute emergency deactivation
+                let result = fork_and_execute(
+                    move || {
+                        // Child process: create fresh manager and orchestrator
+                        let filesystem = RealFilesystem;
+                        let config = Config::load_or_default(&config_path)
+                            .unwrap_or_else(|_| Config::test_default());
+                        let manager = Arc::new(Mutex::new(NailsManager::new(
+                            filesystem, config, state_path,
+                        )));
+
+                        // Set verbosity level
+                        manager.lock().unwrap().set_verbosity(verbosity_clone);
+
+                        // Create orchestrator and run
+                        let cleanup_config = CleanupConfig::default();
+                        let orchestrator =
+                            EmergencyOrchestrator::new(Arc::clone(&manager), cleanup_config);
+
+                        let report = orchestrator.run()?;
+
+                        // Format and output results
+                        if json_flag {
+                            print_emergency_json(&report);
+                        } else {
+                            print_emergency_human(&report, verbosity_clone, quiet_flag);
+                        }
+
+                        // Exit with appropriate code
+                        if report.is_successful() && report.errors.is_empty() {
+                            std::process::exit(0);
+                        } else {
+                            std::process::exit(1);
+                        }
+                    },
+                    ForkStrategy::Fork,
+                );
+
+                // Parent process: fork_and_execute returned Ok(()) — parent exits
+                match result {
+                    Ok(()) => std::process::exit(0),
+                    Err(e) => {
+                        eprintln!("Emergency deactivation failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
             }
             Commands::Status { verbose } => {
                 println!("Status: verbose={}", verbose);
@@ -730,6 +859,119 @@ pub mod cli {
             }
         }
     }
+
+    /// JSON output structure for emergency command (AC6)
+    #[derive(serde::Serialize)]
+    pub(crate) struct EmergencyJsonOutput {
+        /// "success", "error", or "aborted"
+        pub(crate) status: String,
+        /// Duration in seconds
+        pub(crate) duration: f64,
+        /// System state after emergency (e.g., "Inactive")
+        pub(crate) state: String,
+        /// Non-fatal errors collected during emergency
+        pub(crate) errors: Vec<String>,
+        /// Recommendation (e.g., "Reboot recommended" or "none")
+        pub(crate) recommendation: String,
+    }
+
+    impl From<&nails_core::EmergencyReport> for EmergencyJsonOutput {
+        fn from(report: &nails_core::EmergencyReport) -> Self {
+            Self {
+                status: report.status.clone(),
+                duration: report.duration.as_secs_f64(),
+                state: format!("{:?}", report.final_state),
+                errors: report.errors.clone(),
+                recommendation: report
+                    .recommendation
+                    .clone()
+                    .unwrap_or_else(|| "none".to_string()),
+            }
+        }
+    }
+
+    /// Print emergency result in JSON format (AC6)
+    fn print_emergency_json(report: &nails_core::EmergencyReport) {
+        let output = EmergencyJsonOutput::from(report);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).expect("Failed to serialize JSON")
+        );
+    }
+
+    /// Print emergency result in human-readable format (AC4, AC5, AC7, AC8)
+    fn print_emergency_human(
+        report: &nails_core::EmergencyReport,
+        verbosity: nails_core::Verbosity,
+        quiet: bool,
+    ) {
+        use colored::Colorize;
+        use nails_core::Verbosity;
+
+        let duration = report.duration.as_secs_f64();
+
+        if report.is_successful() && report.errors.is_empty() {
+            // AC4: Successful emergency
+            if quiet {
+                println!("Emergency deactivation complete in {:.2}s", duration);
+            } else {
+                println!(
+                    "{}",
+                    format!("✓ Emergency deactivation complete in {:.2}s", duration)
+                        .green()
+                        .bold()
+                );
+
+                if report.was_defensive {
+                    println!("{}", "  (defensive - system was already INACTIVE)".dimmed());
+                }
+
+                // Show unmounted overlays in normal+ mode
+                if verbosity >= Verbosity::Normal && !report.unmounted_overlays.is_empty() {
+                    println!();
+                    println!("Unmounted Overlays:");
+                    for overlay in &report.unmounted_overlays {
+                        println!("  ✓ {}", overlay);
+                    }
+                }
+
+                // -vv: Debug mode — show full details
+                if verbosity >= Verbosity::Debug {
+                    println!();
+                    println!("Final State: {:?}", report.final_state);
+                    println!("Duration: {:.4}s", duration);
+                    println!("Defensive: {}", report.was_defensive);
+                }
+            }
+        } else {
+            // AC5: Error-tolerant emergency
+            eprintln!(
+                "{}",
+                "Emergency deactivation completed with errors".red().bold()
+            );
+
+            if !report.errors.is_empty() {
+                eprintln!();
+                for error in &report.errors {
+                    eprintln!("  {} {}", "✗".red(), error);
+                }
+            }
+
+            eprintln!();
+            eprintln!(
+                "{}",
+                "Recommendation: Reboot system to ensure clean state"
+                    .yellow()
+                    .bold()
+            );
+
+            // Show state in verbose mode
+            if verbosity >= Verbosity::Normal {
+                eprintln!();
+                eprintln!("Final State: {:?}", report.final_state);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -888,22 +1130,204 @@ mod tests {
         // This is validated by manual testing and integration tests
     }
 
+    // ========================================================================
+    // Emergency Command Argument Parsing Tests (AC1, AC10)
+    // ========================================================================
+    //
+    // Note: The emergency command handler calls std::process::exit(),
+    // so we test argument parsing only. E2E tests cover full execution.
+
     #[test]
-    fn test_execute_emergency_command_default_delay() {
-        let cli = Cli {
-            verbose: 0,
-            command: Commands::Emergency { delay: 10 },
-        };
-        assert!(execute_command(cli).is_ok());
+    fn test_emergency_args_parsing_defaults() {
+        // AC1: Test default args parsing (no flags)
+        let cli = Cli::try_parse_from(["nails", "emergency"]).unwrap();
+        if let Commands::Emergency {
+            no_countdown,
+            quiet,
+            verbose,
+            json,
+            no_color,
+        } = cli.command
+        {
+            assert!(!no_countdown);
+            assert!(!quiet);
+            assert_eq!(verbose, 0);
+            assert!(!json);
+            assert!(!no_color);
+        } else {
+            panic!("Expected Emergency command");
+        }
     }
 
     #[test]
-    fn test_execute_emergency_command_custom_delay() {
-        let cli = Cli {
-            verbose: 0,
-            command: Commands::Emergency { delay: 30 },
+    fn test_emergency_no_countdown_flag() {
+        // AC9: Test --no-countdown flag
+        let cli = Cli::try_parse_from(["nails", "emergency", "--no-countdown"]).unwrap();
+        if let Commands::Emergency { no_countdown, .. } = cli.command {
+            assert!(no_countdown);
+        } else {
+            panic!("Expected Emergency command");
+        }
+    }
+
+    #[test]
+    fn test_emergency_quiet_flag() {
+        // AC7: Test --quiet flag (long only, no short)
+        let cli = Cli::try_parse_from(["nails", "emergency", "--quiet"]).unwrap();
+        if let Commands::Emergency { quiet, .. } = cli.command {
+            assert!(quiet);
+        } else {
+            panic!("Expected Emergency command");
+        }
+    }
+
+    #[test]
+    fn test_emergency_quiet_no_short_flag() {
+        // AC1: --quiet has NO short flag for emergency
+        let result = Cli::try_parse_from(["nails", "emergency", "-q"]);
+        assert!(
+            result.is_err(),
+            "Emergency --quiet should NOT have -q short flag"
+        );
+    }
+
+    #[test]
+    fn test_emergency_verbose_flag() {
+        // AC8: Test -v flag (verbosity level 1)
+        let cli = Cli::try_parse_from(["nails", "emergency", "-v"]).unwrap();
+        if let Commands::Emergency { verbose, .. } = cli.command {
+            assert_eq!(verbose, 1);
+        } else {
+            panic!("Expected Emergency command");
+        }
+    }
+
+    #[test]
+    fn test_emergency_verbose_vv_flag() {
+        // AC8: Test -vv flag (verbosity level 2 = debug)
+        let cli = Cli::try_parse_from(["nails", "emergency", "-vv"]).unwrap();
+        if let Commands::Emergency { verbose, .. } = cli.command {
+            assert_eq!(verbose, 2);
+        } else {
+            panic!("Expected Emergency command");
+        }
+    }
+
+    #[test]
+    fn test_emergency_json_flag() {
+        // AC6: Test --json flag
+        let cli = Cli::try_parse_from(["nails", "emergency", "--json"]).unwrap();
+        if let Commands::Emergency { json, .. } = cli.command {
+            assert!(json);
+        } else {
+            panic!("Expected Emergency command");
+        }
+    }
+
+    #[test]
+    fn test_emergency_no_color_flag() {
+        // AC1: Test --no-color flag
+        let cli = Cli::try_parse_from(["nails", "emergency", "--no-color"]).unwrap();
+        if let Commands::Emergency { no_color, .. } = cli.command {
+            assert!(no_color);
+        } else {
+            panic!("Expected Emergency command");
+        }
+    }
+
+    #[test]
+    fn test_emergency_quiet_verbose_conflict() {
+        // AC1: Test that --quiet and --verbose conflict
+        let result = Cli::try_parse_from(["nails", "emergency", "--quiet", "-v"]);
+        assert!(result.is_err(), "Quiet and verbose should conflict");
+    }
+
+    #[test]
+    fn test_emergency_multiple_flags() {
+        // Test combining multiple flags
+        let cli = Cli::try_parse_from([
+            "nails",
+            "emergency",
+            "--no-countdown",
+            "--json",
+            "--no-color",
+        ])
+        .unwrap();
+        if let Commands::Emergency {
+            no_countdown,
+            json,
+            no_color,
+            ..
+        } = cli.command
+        {
+            assert!(no_countdown);
+            assert!(json);
+            assert!(no_color);
+        } else {
+            panic!("Expected Emergency command");
+        }
+    }
+
+    #[test]
+    fn test_emergency_delay_flag_removed() {
+        // AC1: Verify --delay flag no longer exists (removed per AR33)
+        let result = Cli::try_parse_from(["nails", "emergency", "--delay", "10"]);
+        assert!(result.is_err(), "--delay flag should no longer exist");
+    }
+
+    #[test]
+    fn test_emergency_json_output_struct_from_report() {
+        // AC6: Test EmergencyJsonOutput conversion from EmergencyReport
+        use nails_core::SystemState;
+        use std::time::Duration;
+
+        let report = nails_core::EmergencyReport {
+            cleanup_report: nails_core::CleanupReport::default(),
+            unmounted_overlays: vec!["/home".to_string(), "/etc".to_string()],
+            duration: Duration::from_millis(1500),
+            final_state: SystemState::Inactive,
+            errors: vec![],
+            was_defensive: false,
+            status: "success".to_string(),
+            recommendation: None,
         };
-        assert!(execute_command(cli).is_ok());
+
+        let json_output = EmergencyJsonOutput::from(&report);
+        assert_eq!(json_output.status, "success");
+        assert!((json_output.duration - 1.5).abs() < 0.01);
+        assert_eq!(json_output.state, "Inactive");
+        assert!(json_output.errors.is_empty());
+        assert_eq!(json_output.recommendation, "none");
+
+        // Verify serialization
+        let json_str = serde_json::to_string(&json_output).unwrap();
+        assert!(json_str.contains("\"status\":\"success\""));
+        assert!(json_str.contains("\"duration\""));
+        assert!(json_str.contains("\"state\":\"Inactive\""));
+        assert!(json_str.contains("\"recommendation\":\"none\""));
+    }
+
+    #[test]
+    fn test_emergency_json_output_struct_with_errors() {
+        // AC6: Test EmergencyJsonOutput with errors
+        use nails_core::SystemState;
+        use std::time::Duration;
+
+        let report = nails_core::EmergencyReport {
+            cleanup_report: nails_core::CleanupReport::default(),
+            unmounted_overlays: vec![],
+            duration: Duration::from_millis(2500),
+            final_state: SystemState::Inactive,
+            errors: vec!["Force unmount failed for /home: busy".to_string()],
+            was_defensive: false,
+            status: "error".to_string(),
+            recommendation: Some("Reboot recommended".to_string()),
+        };
+
+        let json_output = EmergencyJsonOutput::from(&report);
+        assert_eq!(json_output.status, "error");
+        assert_eq!(json_output.errors.len(), 1);
+        assert_eq!(json_output.recommendation, "Reboot recommended");
     }
 
     #[test]

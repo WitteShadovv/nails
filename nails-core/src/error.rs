@@ -128,6 +128,21 @@ pub enum NailsError {
     #[error("Cleanup failed: {0}")]
     CleanupError(String),
 
+    /// Fork operation failed during emergency deactivation
+    ///
+    /// Used when the emergency shutdown cannot fork a child process.
+    /// The system falls back to executing in the current process (degraded resilience).
+    ///
+    /// # Example
+    /// ```
+    /// # use nails_core::NailsError;
+    /// let err = NailsError::ForkFailed(
+    ///     "Resource temporarily unavailable".to_string()
+    /// );
+    /// ```
+    #[error("Failed to fork emergency process: {0}")]
+    ForkFailed(String),
+
     /// I/O error (transparently converted from std::io::Error)
     ///
     /// This variant has #[from] attribute, enabling automatic conversion
@@ -198,6 +213,12 @@ mod tests {
 
         let err = NailsError::ConfigError("Missing config key".into());
         assert_eq!(err.to_string(), "Configuration error: Missing config key");
+
+        let err = NailsError::ForkFailed("Resource temporarily unavailable".into());
+        assert_eq!(
+            err.to_string(),
+            "Failed to fork emergency process: Resource temporarily unavailable"
+        );
     }
 
     #[test]
@@ -277,6 +298,7 @@ mod tests {
         let _err15 = NailsError::NixOSSwitchFailed {
             profile: "test-profile".into(),
         };
+        let _err16 = NailsError::ForkFailed("Resource temporarily unavailable".into());
     }
 
     #[test]

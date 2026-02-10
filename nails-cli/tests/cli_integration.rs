@@ -63,15 +63,25 @@ fn test_deactivate_command_flags_help() {
         .stdout(predicates::str::contains("--no-color"));
 }
 
-/// Test that emergency command accepts --delay flag with default
+/// Test that emergency command accepts new flags (Story 6.4)
 #[test]
-fn test_emergency_command_delay_flag() {
+fn test_emergency_command_flags_help() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["emergency", "--help"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("--delay"))
-        .stdout(predicates::str::contains("[default: 10]"));
+        .stdout(predicates::str::contains("--no-countdown"))
+        .stdout(predicates::str::contains("--quiet"))
+        .stdout(predicates::str::contains("--verbose"))
+        .stdout(predicates::str::contains("--json"))
+        .stdout(predicates::str::contains("--no-color"));
+}
+
+/// Test that emergency command no longer has --delay flag (AR33: fixed 3s countdown)
+#[test]
+fn test_emergency_command_no_delay_flag() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["emergency", "--delay", "10"]).assert().failure(); // --delay should not exist
 }
 
 /// Test that status command accepts --verbose flag
@@ -270,24 +280,22 @@ fn test_deactivate_exit_code_success() {
     cmd.arg("deactivate").assert().success().code(0);
 }
 
-/// Test that emergency command executes successfully (stub implementation)
+/// Test that emergency command with --no-countdown executes (no 3s wait)
+/// Note: This will fork and run the real emergency flow, which reaches INACTIVE
+/// from an already-inactive state (defensive mode). The parent exits 0 after fork.
 #[test]
-fn test_emergency_command_executes() {
+fn test_emergency_command_executes_no_countdown() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.arg("emergency")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("Emergency: delay=10s"));
+    cmd.args(["emergency", "--no-countdown"]).assert().success(); // Parent exits 0 after fork
 }
 
-/// Test that emergency command with custom --delay flag executes successfully
+/// Test that emergency command with --no-countdown --json executes
 #[test]
-fn test_emergency_command_executes_with_custom_delay() {
+fn test_emergency_command_executes_no_countdown_json() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["emergency", "--delay", "30"])
+    cmd.args(["emergency", "--no-countdown", "--json"])
         .assert()
-        .success()
-        .stdout(predicates::str::contains("Emergency: delay=30s"));
+        .success(); // Parent exits 0 after fork
 }
 
 /// Test that status command executes successfully (stub implementation)
