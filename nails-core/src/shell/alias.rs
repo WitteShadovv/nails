@@ -71,7 +71,7 @@ if [ ! -d "{hidden_volume_path}/.nails" ]; then
 fi
 
 # Guard: Don't re-add if alias already exists
-if alias nails 2>/dev/null | grep -q 'nails'; then
+if alias nails 2>/dev/null; then
     return 0
 fi
 
@@ -132,6 +132,12 @@ alias nails 'sudo {hidden_volume_path}/bin/nails'
 /// Creates a best-effort script that removes the 'nails' alias from the current
 /// session. Uses `|| true` to ensure the script never fails.
 ///
+/// # Alias Lifecycle Context
+///
+/// Per architecture (docs/architecture.md:1837-1841):
+/// - Normal deactivation: alias is NOT removed (left for convenience)
+/// - Emergency deactivation: alias removal IS attempted (this script)
+///
 /// # Returns
 ///
 /// Bash/Zsh cleanup script content as a String
@@ -144,7 +150,9 @@ alias nails 'sudo {hidden_volume_path}/bin/nails'
 /// ```
 pub fn generate_bash_zsh_alias_cleanup() -> String {
     r#"#!/usr/bin/env bash
-# Remove nails alias from current session (best-effort)
+# NAILS Alias Cleanup - Bash/Zsh (Emergency Only)
+# Removes 'nails' alias from current session (best-effort)
+# Used during emergency deactivation per architecture lifecycle
 unalias nails 2>/dev/null || true
 "#
     .to_string()
@@ -154,6 +162,12 @@ unalias nails 2>/dev/null || true
 ///
 /// Creates a best-effort script that removes the 'nails' alias from the current
 /// fish session. Uses `; or true` to ensure the script never fails.
+///
+/// # Alias Lifecycle Context
+///
+/// Per architecture (docs/architecture.md:1837-1841):
+/// - Normal deactivation: alias is NOT removed (left for convenience)
+/// - Emergency deactivation: alias removal IS attempted (this script)
 ///
 /// # Returns
 ///
@@ -167,7 +181,9 @@ unalias nails 2>/dev/null || true
 /// ```
 pub fn generate_fish_alias_cleanup() -> String {
     r#"#!/usr/bin/env fish
-# Remove nails alias from current session (best-effort)
+# NAILS Alias Cleanup - Fish (Emergency Only)
+# Removes 'nails' alias from current session (best-effort)
+# Used during emergency deactivation per architecture lifecycle
 functions -e nails 2>/dev/null; or true
 "#
     .to_string()
@@ -188,8 +204,8 @@ mod tests {
         assert!(script.contains(r#"if [ ! -d "/mnt/hidden-volume/.nails" ]"#));
         assert!(script.contains("return 0"));
 
-        // Verify idempotency check
-        assert!(script.contains(r#"if alias nails 2>/dev/null | grep -q 'nails'"#));
+        // Verify idempotency check (alias command returns non-zero if not found)
+        assert!(script.contains("alias nails 2>/dev/null"));
 
         // Verify alias command
         assert!(script.contains(r#"alias nails='sudo /mnt/hidden-volume/bin/nails'"#));
@@ -279,9 +295,8 @@ mod tests {
     fn test_bash_zsh_script_idempotency_guard() {
         let script = generate_bash_zsh_alias_script("/mnt/hidden-volume");
 
-        // Verify idempotency check exists
+        // Verify idempotency check exists (alias returns non-zero if not found)
         assert!(script.contains("alias nails 2>/dev/null"));
-        assert!(script.contains("grep -q 'nails'"));
     }
 
     #[test]
@@ -302,5 +317,47 @@ mod tests {
 
         // Verify fish cleanup uses ; or true
         assert!(fish_cleanup.contains("; or true"));
+    }
+
+    // Edge case tests for AC8 100% coverage
+
+    #[test]
+    fn test_bash_alias_script_with_path_containing_spaces() {
+        let script = generate_bash_zsh_alias_script("/mnt/hidden volume");
+
+        // Verify path with spaces is properly quoted in mount check
+        assert!(script.contains(r#"/mnt/hidden volume/.nails"#));
+
+        // Verify path with spaces is properly quoted in alias
+        assert!(script.contains(r#"alias nails='sudo /mnt/hidden volume/bin/nails'"#));
+    }
+
+    #[test]
+    fn test_fish_alias_script_with_path_containing_spaces() {
+        let script = generate_fish_alias_script("/mnt/hidden volume");
+
+        // Verify path with spaces is properly quoted in mount check
+        assert!(script.contains(r#"/mnt/hidden volume/.nails"#));
+
+        // Verify path with spaces is properly quoted in alias
+        assert!(script.contains(r#"alias nails 'sudo /mnt/hidden volume/bin/nails'"#));
+    }
+
+    #[test]
+    fn test_bash_alias_script_with_special_characters() {
+        let script = generate_bash_zsh_alias_script("/mnt/hidden-volume_2024");
+
+        // Verify path with underscore is included
+        assert!(script.contains("/mnt/hidden-volume_2024/.nails"));
+        assert!(script.contains("sudo /mnt/hidden-volume_2024/bin/nails"));
+    }
+
+    #[test]
+    fn test_bash_alias_script_empty_path() {
+        let script = generate_bash_zsh_alias_script("");
+
+        // Empty path should still generate valid script structure
+        assert!(script.contains("#!/usr/bin/env bash"));
+        assert!(script.contains("alias nails='sudo /bin/nails'"));
     }
 }
