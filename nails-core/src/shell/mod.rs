@@ -646,13 +646,13 @@ mod tests {
 
         // Scripts directory doesn't exist initially
         let scripts_dir = shell.scripts_dir();
-        assert_eq!(fs.path_exists(&scripts_dir).unwrap(), false);
+        assert!(!fs.path_exists(&scripts_dir).unwrap());
 
         // Write scripts
         shell.write_prompt_scripts().unwrap();
 
         // Scripts directory now exists
-        assert_eq!(fs.path_exists(&scripts_dir).unwrap(), true);
+        assert!(fs.path_exists(&scripts_dir).unwrap());
     }
 
     #[test]
@@ -731,8 +731,10 @@ mod tests {
     #[test]
     fn test_write_prompt_scripts_uses_custom_hidden_volume_path() {
         let fs = MockFilesystem::new();
-        let mut config = Config::default();
-        config.hidden_volume_root = "/custom/hidden".into();
+        let config = Config {
+            hidden_volume_root: "/custom/hidden".into(),
+            ..Default::default()
+        };
 
         // Mock the parent directory to exist
         fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
@@ -798,13 +800,13 @@ mod tests {
 
         // Scripts directory doesn't exist initially
         let scripts_dir = shell.scripts_dir();
-        assert_eq!(fs.path_exists(&scripts_dir).unwrap(), false);
+        assert!(!fs.path_exists(&scripts_dir).unwrap());
 
         // Write alias scripts
         shell.write_alias_scripts().unwrap();
 
         // Scripts directory now exists
-        assert_eq!(fs.path_exists(&scripts_dir).unwrap(), true);
+        assert!(fs.path_exists(&scripts_dir).unwrap());
     }
 
     #[test]
@@ -934,8 +936,10 @@ mod tests {
     #[test]
     fn test_alias_script_custom_hidden_volume_path() {
         let fs = MockFilesystem::new();
-        let mut config = Config::default();
-        config.hidden_volume_root = "/custom/hidden".into();
+        let config = Config {
+            hidden_volume_root: "/custom/hidden".into(),
+            ..Default::default()
+        };
 
         // Mock the parent directory to exist
         fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
@@ -1331,8 +1335,10 @@ mod tests {
     #[test]
     fn test_shell_setup_result_paths() {
         let fs = MockFilesystem::new();
-        let mut config = Config::default();
-        config.hidden_volume_root = "/test/hidden".into();
+        let config = Config {
+            hidden_volume_root: "/test/hidden".into(),
+            ..Default::default()
+        };
 
         // Mock the parent directory to exist
         fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
@@ -1354,13 +1360,17 @@ mod tests {
         let setup = result.unwrap().unwrap();
 
         // Verify paths point to correct scripts
-        assert!(setup
-            .prompt_script_path
-            .to_string_lossy()
-            .contains("/test/hidden/scripts/nails_prompt.bash"));
-        assert!(setup
-            .alias_script_path
-            .to_string_lossy()
-            .contains("/test/hidden/scripts/nails_alias.sh"));
+        assert!(
+            setup
+                .prompt_script_path
+                .to_string_lossy()
+                .contains("/test/hidden/scripts/nails_prompt.bash")
+        );
+        assert!(
+            setup
+                .alias_script_path
+                .to_string_lossy()
+                .contains("/test/hidden/scripts/nails_alias.sh")
+        );
     }
 }

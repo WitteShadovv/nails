@@ -871,10 +871,7 @@ pub mod cli {
                         if let Some(ref warn) = setup.warning {
                             // Script generation failed, show warning with reason
                             println!();
-                            println!(
-                                "{}",
-                                format!("Shell prompt not updated: {}", warn).yellow()
-                            );
+                            println!("{}", format!("Shell prompt not updated: {}", warn).yellow());
                             println!(
                                 "{}",
                                 "You can manually source scripts from the hidden volume if needed"
@@ -1085,32 +1082,31 @@ pub mod cli {
                 }
 
                 // Shell cleanup instructions (unless quiet mode)
-                if !quiet {
-                    if let Some(cleanup) = shell_cleanup {
-                        if let Some(_shell_type) = cleanup.shell_type {
-                            println!();
-                            if no_color {
-                                println!("Shell Cleanup:");
-                                println!(
-                                    "Note: Shell prompt may still show (NAILS-ACTIVE) until next login"
-                                );
-                                println!("To remove now, run:");
-                            } else {
-                                println!("{}", "Shell Cleanup:".cyan().bold());
-                                println!(
-                                    "{}",
-                                    "Note: Shell prompt may still show (NAILS-ACTIVE) until next login"
-                                        .dimmed()
-                                );
-                                println!("{}", "To remove now, run:".dimmed());
-                            }
-                            for cmd in &cleanup.instructions {
-                                if no_color {
-                                    println!("  {}", cmd);
-                                } else {
-                                    println!("  {}", cmd.bright_white());
-                                }
-                            }
+                if !quiet
+                    && let Some(cleanup) = shell_cleanup
+                    && let Some(_shell_type) = cleanup.shell_type
+                {
+                    println!();
+                    if no_color {
+                        println!("Shell Cleanup:");
+                        println!(
+                            "Note: Shell prompt may still show (NAILS-ACTIVE) until next login"
+                        );
+                        println!("To remove now, run:");
+                    } else {
+                        println!("{}", "Shell Cleanup:".cyan().bold());
+                        println!(
+                            "{}",
+                            "Note: Shell prompt may still show (NAILS-ACTIVE) until next login"
+                                .dimmed()
+                        );
+                        println!("{}", "To remove now, run:".dimmed());
+                    }
+                    for cmd in &cleanup.instructions {
+                        if no_color {
+                            println!("  {}", cmd);
+                        } else {
+                            println!("  {}", cmd.bright_white());
                         }
                     }
                 }
@@ -1309,18 +1305,17 @@ pub mod cli {
                 }
 
                 // Shell cleanup instructions (best-effort alias removal attempted)
-                if !quiet {
-                    if let Some(cleanup) = shell_cleanup {
-                        if cleanup.shell_type.is_some() {
-                            println!();
-                            println!("{}", "Shell Cleanup:".cyan().bold());
-                            println!("{}", "Alias removal attempted (best-effort)".dimmed());
-                            if verbosity >= Verbosity::Verbose {
-                                println!("{}", "To manually verify, run:".dimmed());
-                                for cmd in &cleanup.instructions {
-                                    println!("  {}", cmd.bright_white());
-                                }
-                            }
+                if !quiet
+                    && let Some(cleanup) = shell_cleanup
+                    && cleanup.shell_type.is_some()
+                {
+                    println!();
+                    println!("{}", "Shell Cleanup:".cyan().bold());
+                    println!("{}", "Alias removal attempted (best-effort)".dimmed());
+                    if verbosity >= Verbosity::Verbose {
+                        println!("{}", "To manually verify, run:".dimmed());
+                        for cmd in &cleanup.instructions {
+                            println!("  {}", cmd.bright_white());
                         }
                     }
                 }
