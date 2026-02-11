@@ -244,11 +244,29 @@ pub mod cli {
                     NailsManager::activate_with_options(manager.clone(), options, no_preflight);
                 let duration = start.elapsed().as_secs_f64();
 
+                // If activation succeeded, set up shell instrumentation (non-critical)
+                let shell_setup_result = if result.is_ok() {
+                    use nails_core::ShellInstrumentation;
+                    let mgr = manager.lock().unwrap();
+                    let shell =
+                        ShellInstrumentation::new(nails_core::RealFilesystem, mgr.config().clone());
+                    // shell_setup() never returns Err, only Ok(Some) or Ok(None)
+                    shell.shell_setup().ok().flatten()
+                } else {
+                    None
+                };
+
                 // Output results based on flags
                 if json {
-                    print_activate_json(&result, duration, &manager);
+                    print_activate_json(&result, duration, &manager, shell_setup_result.as_ref());
                 } else {
-                    print_activate_human(&result, duration, &manager);
+                    print_activate_human(
+                        &result,
+                        duration,
+                        &manager,
+                        shell_setup_result.as_ref(),
+                        quiet,
+                    );
                 }
 
                 // Return appropriate exit code
@@ -321,11 +339,29 @@ pub mod cli {
 
                 let result = orchestrator.run();
 
+                // Generate shell cleanup instructions after deactivation
+                // Note: Normal deactivation does NOT remove aliases (only prompt cleanup)
+                let shell_cleanup = if result.is_ok() {
+                    use nails_core::ShellInstrumentation;
+                    let mgr = manager.lock().unwrap();
+                    let shell =
+                        ShellInstrumentation::new(nails_core::RealFilesystem, mgr.config().clone());
+                    Some(shell.shell_cleanup(false)) // false = no alias removal
+                } else {
+                    None
+                };
+
                 // Output results based on flags
                 if json {
-                    print_deactivate_json(&result, &manager);
+                    print_deactivate_json(&result, &manager, shell_cleanup.as_ref());
                 } else {
-                    print_deactivate_human(&result, verbosity, no_color);
+                    print_deactivate_human(
+                        &result,
+                        verbosity,
+                        no_color,
+                        shell_cleanup.as_ref(),
+                        quiet,
+                    );
                 }
 
                 // Return appropriate exit code
@@ -428,11 +464,26 @@ pub mod cli {
 
                         let report = orchestrator.run()?;
 
+                        // Generate shell cleanup instructions (best-effort, include alias removal)
+                        // Emergency mode removes aliases per FR34
+                        let shell_cleanup = {
+                            use nails_core::ShellInstrumentation;
+                            let mgr = manager.lock().unwrap();
+                            let shell =
+                                ShellInstrumentation::new(RealFilesystem, mgr.config().clone());
+                            shell.shell_cleanup(true) // true = include alias removal for emergency
+                        };
+
                         // Format and output results
                         if json_flag {
-                            print_emergency_json(&report);
+                            print_emergency_json(&report, Some(&shell_cleanup));
                         } else {
-                            print_emergency_human(&report, verbosity_clone, quiet_flag);
+                            print_emergency_human(
+                                &report,
+                                verbosity_clone,
+                                quiet_flag,
+                                Some(&shell_cleanup),
+                            );
                         }
 
                         // Exit with appropriate code (AC5: exit 1 when errors present)
@@ -703,6 +754,16 @@ pub mod cli {
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         failed_checks: Option<Vec<FailedCheckJson>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        shell_instructions: Option<ShellInstructionsJson>,
+    }
+
+    #[derive(serde::Serialize)]
+    pub(crate) struct ShellInstructionsJson {
+        pub(crate) shell_type: String,
+        pub(crate) prompt_script: String,
+        pub(crate) alias_script: String,
+        pub(crate) instructions: Vec<String>,
     }
 
     #[derive(serde::Serialize)]
@@ -718,6 +779,7 @@ pub mod cli {
         result: &Result<(), nails_core::NailsError>,
         duration: f64,
         manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+        shell_setup: Option<&nails_core::ShellSetupResult>,
     ) {
         use nails_core::NailsError;
 
@@ -728,6 +790,14 @@ pub mod cli {
             .map(|s| format!("{:?}", s))
             .unwrap_or_else(|_| "UNKNOWN".to_string());
 
+        // Convert shell setup result to JSON structure
+        let shell_instructions_json = shell_setup.map(|setup| ShellInstructionsJson {
+            shell_type: format!("{:?}", setup.shell_type).to_lowercase(),
+            prompt_script: setup.prompt_script_path.display().to_string(),
+            alias_script: setup.alias_script_path.display().to_string(),
+            instructions: setup.instructions.clone(),
+        });
+
         let output = match result {
             Ok(_) => ActivateResult {
                 status: "success".to_string(),
@@ -735,6 +805,7 @@ pub mod cli {
                 state,
                 message: format!("Activation complete in {:.1}s", duration),
                 failed_checks: None,
+                shell_instructions: shell_instructions_json,
             },
             Err(e) => match e {
                 NailsError::PreFlightCheckFailed(failures) => ActivateResult {
@@ -755,6 +826,7 @@ pub mod cli {
                             })
                             .collect(),
                     ),
+                    shell_instructions: None,
                 },
                 _ => ActivateResult {
                     status: "error".to_string(),
@@ -762,6 +834,7 @@ pub mod cli {
                     state,
                     message: format!("Activation failed: {}", e),
                     failed_checks: None,
+                    shell_instructions: None,
                 },
             },
         };
@@ -777,6 +850,8 @@ pub mod cli {
         result: &Result<(), nails_core::NailsError>,
         duration: f64,
         manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+        shell_setup: Option<&nails_core::ShellSetupResult>,
+        quiet: bool,
     ) {
         use colored::Colorize;
         use nails_core::NailsError;
@@ -789,6 +864,39 @@ pub mod cli {
                         .green()
                         .bold()
                 );
+
+                // Print shell integration instructions (unless quiet mode)
+                if !quiet {
+                    if let Some(setup) = shell_setup {
+                        println!();
+                        println!("{}", "Shell Integration:".cyan().bold());
+                        println!(
+                            "{}",
+                            "To update your prompt and add the 'nails' alias, run:".dimmed()
+                        );
+                        for cmd in &setup.instructions {
+                            println!("  {}", cmd.bright_white());
+                        }
+                        println!();
+                        println!(
+                            "{}",
+                            "Tip: Add a shell function for automatic setup (see 'man nails')"
+                                .dimmed()
+                        );
+                    } else {
+                        // Shell setup was skipped (no supported shell or error)
+                        println!();
+                        println!(
+                            "{}",
+                            "Shell prompt not updated - shell instrumentation skipped".yellow()
+                        );
+                        println!(
+                            "{}",
+                            "You can manually source scripts from the hidden volume if needed"
+                                .dimmed()
+                        );
+                    }
+                }
             }
             Err(e) => match e {
                 NailsError::PreFlightCheckFailed(failures) => {
@@ -825,12 +933,23 @@ pub mod cli {
         cleaned_items: Vec<String>,
         /// Error messages (if any)
         errors: Vec<String>,
+        /// Shell cleanup instructions
+        #[serde(skip_serializing_if = "Option::is_none")]
+        shell_cleanup: Option<ShellCleanupJson>,
+    }
+
+    #[derive(serde::Serialize)]
+    pub(crate) struct ShellCleanupJson {
+        pub(crate) shell_type: String,
+        pub(crate) instructions: Vec<String>,
+        pub(crate) note: String,
     }
 
     /// Print deactivation result in JSON format (AC7)
     fn print_deactivate_json<F: nails_core::Filesystem>(
         result: &Result<nails_core::DeactivationReport, nails_core::NailsError>,
         manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+        shell_cleanup: Option<&nails_core::ShellCleanupResult>,
     ) {
         let state = manager
             .lock()
@@ -838,6 +957,18 @@ pub mod cli {
             .current_state()
             .map(|s| format!("{:?}", s).to_uppercase())
             .unwrap_or_else(|_| "UNKNOWN".to_string());
+
+        // Convert shell cleanup result to JSON structure
+        let shell_cleanup_json = shell_cleanup.and_then(|cleanup| {
+            cleanup
+                .shell_type
+                .as_ref()
+                .map(|shell_type| ShellCleanupJson {
+                    shell_type: format!("{:?}", shell_type).to_lowercase(),
+                    instructions: cleanup.instructions.clone(),
+                    note: "Shell prompt may still show (NAILS-ACTIVE) until next login".to_string(),
+                })
+        });
 
         let output = match result {
             Ok(report) => DeactivateJsonOutput {
@@ -851,6 +982,7 @@ pub mod cli {
                 state: format!("{:?}", report.final_state).to_uppercase(),
                 cleaned_items: report.cleanup_report.cleaned_items.clone(),
                 errors: report.cleanup_report.errors.clone(),
+                shell_cleanup: shell_cleanup_json,
             },
             Err(e) => DeactivateJsonOutput {
                 status: "error".to_string(),
@@ -858,6 +990,7 @@ pub mod cli {
                 state,
                 cleaned_items: vec![],
                 errors: vec![e.to_string()],
+                shell_cleanup: None,
             },
         };
 
@@ -884,6 +1017,8 @@ pub mod cli {
         result: &Result<nails_core::DeactivationReport, nails_core::NailsError>,
         verbosity: nails_core::Verbosity,
         no_color: bool,
+        shell_cleanup: Option<&nails_core::ShellCleanupResult>,
+        quiet: bool,
     ) {
         use colored::Colorize;
         use nails_core::{NailsError, Verbosity};
@@ -933,6 +1068,37 @@ pub mod cli {
                 if verbosity >= Verbosity::Debug {
                     println!();
                     println!("Final State: {:?}", report.final_state);
+                }
+
+                // Shell cleanup instructions (unless quiet mode)
+                if !quiet {
+                    if let Some(cleanup) = shell_cleanup {
+                        if let Some(_shell_type) = cleanup.shell_type {
+                            println!();
+                            if no_color {
+                                println!("Shell Cleanup:");
+                                println!(
+                                    "Note: Shell prompt may still show (NAILS-ACTIVE) until next login"
+                                );
+                                println!("To remove now, run:");
+                            } else {
+                                println!("{}", "Shell Cleanup:".cyan().bold());
+                                println!(
+                                    "{}",
+                                    "Note: Shell prompt may still show (NAILS-ACTIVE) until next login"
+                                        .dimmed()
+                                );
+                                println!("{}", "To remove now, run:".dimmed());
+                            }
+                            for cmd in &cleanup.instructions {
+                                if no_color {
+                                    println!("  {}", cmd);
+                                } else {
+                                    println!("  {}", cmd.bright_white());
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -1015,6 +1181,9 @@ pub mod cli {
         pub(crate) unmounted_overlays: Vec<String>,
         /// True if emergency ran when system was already INACTIVE (defensive cleanup)
         pub(crate) was_defensive: bool,
+        /// Shell cleanup instructions
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(crate) shell_cleanup: Option<ShellCleanupJson>,
     }
 
     impl From<&nails_core::EmergencyReport> for EmergencyJsonOutput {
@@ -1030,13 +1199,30 @@ pub mod cli {
                     .unwrap_or_else(|| "none".to_string()),
                 unmounted_overlays: report.unmounted_overlays.clone(),
                 was_defensive: report.was_defensive,
+                shell_cleanup: None, // Will be set by print_emergency_json
             }
         }
     }
 
     /// Print emergency result in JSON format (AC6)
-    fn print_emergency_json(report: &nails_core::EmergencyReport) {
-        let output = EmergencyJsonOutput::from(report);
+    fn print_emergency_json(
+        report: &nails_core::EmergencyReport,
+        shell_cleanup: Option<&nails_core::ShellCleanupResult>,
+    ) {
+        let mut output = EmergencyJsonOutput::from(report);
+
+        // Add shell cleanup instructions if available
+        output.shell_cleanup = shell_cleanup.and_then(|cleanup| {
+            cleanup
+                .shell_type
+                .as_ref()
+                .map(|shell_type| ShellCleanupJson {
+                    shell_type: format!("{:?}", shell_type).to_lowercase(),
+                    instructions: cleanup.instructions.clone(),
+                    note: "Best-effort alias removal attempted during emergency".to_string(),
+                })
+        });
+
         println!(
             "{}",
             serde_json::to_string_pretty(&output).expect("Failed to serialize JSON")
@@ -1048,6 +1234,7 @@ pub mod cli {
         report: &nails_core::EmergencyReport,
         verbosity: nails_core::Verbosity,
         quiet: bool,
+        shell_cleanup: Option<&nails_core::ShellCleanupResult>,
     ) {
         use colored::Colorize;
         use nails_core::Verbosity;
@@ -1104,6 +1291,23 @@ pub mod cli {
                     if report.was_defensive {
                         println!();
                         println!("  Note: Defensive cleanup - system was already INACTIVE");
+                    }
+                }
+
+                // Shell cleanup instructions (best-effort alias removal attempted)
+                if !quiet {
+                    if let Some(cleanup) = shell_cleanup {
+                        if cleanup.shell_type.is_some() {
+                            println!();
+                            println!("{}", "Shell Cleanup:".cyan().bold());
+                            println!("{}", "Alias removal attempted (best-effort)".dimmed());
+                            if verbosity >= Verbosity::Verbose {
+                                println!("{}", "To manually verify, run:".dimmed());
+                                for cmd in &cleanup.instructions {
+                                    println!("  {}", cmd.bright_white());
+                                }
+                            }
+                        }
                     }
                 }
             }

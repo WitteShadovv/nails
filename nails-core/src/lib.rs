@@ -76,6 +76,9 @@ pub mod emergency;
 // Status command module (Story 7.1: State Query with Overlay Verification)
 pub mod status;
 
+// Shell instrumentation module (Story 8.1: Shell Prompt Instrumentation Scripts)
+pub mod shell;
+
 // Re-export for convenience
 pub use config::{
     CliOverrides, Config, ConfigBuilder, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig,
@@ -166,6 +169,9 @@ pub use status::{
     OpSecReminder, ReminderSeverity, SecurityPosture, StatusCommand, StatusReport,
     VerificationStatus,
 };
+
+// Shell instrumentation exports (Story 8.1: Shell Prompt Instrumentation Scripts)
+pub use shell::{ShellCleanupResult, ShellInstrumentation, ShellSetupResult};
 
 /// RAII guard for automatic state rollback on failure
 ///
