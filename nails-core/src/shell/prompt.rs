@@ -42,9 +42,8 @@ fi
 export _NAILS_ORIG_PS1="$PS1"
 
 # Apply prefix with optional color
-# Note: {{{{ below escapes to {{ in Rust format! to produce ${NO_COLOR+x} in bash
-# ${{NO_COLOR+x}} expands to 'x' if NO_COLOR is set, empty if not set
-# -z tests if empty, so color is used when NO_COLOR is NOT set
+# Braces below are escaped for Rust format! macro
+# NO_COLOR check: if NO_COLOR is unset, use green color; otherwise plain text
 if [ -z "${{NO_COLOR+x}}" ]; then
     PS1="\[\033[32m\](NAILS-ACTIVE)\[\033[0m\] $PS1"
 else
@@ -107,9 +106,8 @@ fi
 export _NAILS_ORIG_PROMPT="$PROMPT"
 
 # Apply prefix with optional color
-# Note: {{{{ below escapes to {{ in Rust format! to produce ${NO_COLOR+x} in bash
-# ${{NO_COLOR+x}} expands to 'x' if NO_COLOR is set, empty if not set
-# -z tests if empty, so color is used when NO_COLOR is NOT set
+# Braces below are escaped for Rust format! macro
+# NO_COLOR check: if NO_COLOR is unset, use green color; otherwise plain text
 if [ -z "${{NO_COLOR+x}}" ]; then
     PROMPT="%F{{green}}(NAILS-ACTIVE)%f $PROMPT"
 else

@@ -414,41 +414,42 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         };
 
         // Generate and write scripts (best-effort, log failures)
-        let mut warning = None;
+        let mut warnings = Vec::new();
 
         // Try to write prompt scripts
         if let Err(e) = self.write_prompt_scripts() {
-            // Failed to write prompt scripts
-            warning = Some(format!(
-                "Shell prompt scripts could not be generated: {}",
-                e
-            ));
+            let msg = format!("Shell prompt scripts could not be generated: {}", e);
+            tracing::warn!("Shell instrumentation failed: {}", msg);
+            warnings.push(msg);
         }
 
         // Try to write alias scripts
         if let Err(e) = self.write_alias_scripts() {
-            // Failed to write alias scripts
-            if warning.is_none() {
-                warning = Some(format!("Shell alias scripts could not be generated: {}", e));
-            }
-        }
-
-        // If we have warnings, it means script generation failed
-        // Return None to indicate no setup was successful
-        if warning.is_some() {
-            return Ok(None);
+            let msg = format!("Shell alias scripts could not be generated: {}", e);
+            tracing::warn!("Shell instrumentation failed: {}", msg);
+            warnings.push(msg);
         }
 
         // Build result with source instructions
         let prompt_script = self.prompt_script_path(shell_type);
         let alias_script = self.alias_script_path(shell_type);
 
+        // If script generation failed, return result with warning but no instructions
+        if !warnings.is_empty() {
+            let warning_msg = warnings.join("; ");
+            return Ok(Some(ShellSetupResult {
+                shell_type,
+                prompt_script_path: prompt_script,
+                alias_script_path: alias_script,
+                instructions: Vec::new(),
+                warning: Some(warning_msg),
+            }));
+        }
+
         let instructions = vec![
             format!("source {}", prompt_script.display()),
             format!("source {}", alias_script.display()),
         ];
-
-        // Shell prompt and alias scripts generated successfully
 
         Ok(Some(ShellSetupResult {
             shell_type,
@@ -902,7 +903,7 @@ mod tests {
         // Verify script has required guards
         assert!(script_content.contains(".nails"));
         assert!(script_content.contains("return 0"));
-        assert!(script_content.contains("alias nails 2>/dev/null"));
+        assert!(script_content.contains("alias nails >/dev/null 2>&1"));
         assert!(script_content.contains("alias nails='sudo"));
     }
 

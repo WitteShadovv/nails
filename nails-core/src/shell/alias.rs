@@ -70,8 +70,8 @@ if [ ! -d "{hidden_volume_path}/.nails" ]; then
     return 0
 fi
 
-# Guard: Don't re-add if alias already exists
-if alias nails 2>/dev/null; then
+# Guard: Don't re-add if alias exists
+if alias nails >/dev/null 2>&1; then
     return 0
 fi
 
@@ -205,7 +205,7 @@ mod tests {
         assert!(script.contains("return 0"));
 
         // Verify idempotency check (alias command returns non-zero if not found)
-        assert!(script.contains("alias nails 2>/dev/null"));
+        assert!(script.contains("alias nails >/dev/null 2>&1"));
 
         // Verify alias command
         assert!(script.contains(r#"alias nails='sudo /mnt/hidden-volume/bin/nails'"#));
@@ -296,7 +296,7 @@ mod tests {
         let script = generate_bash_zsh_alias_script("/mnt/hidden-volume");
 
         // Verify idempotency check exists (alias returns non-zero if not found)
-        assert!(script.contains("alias nails 2>/dev/null"));
+        assert!(script.contains("alias nails >/dev/null 2>&1"));
     }
 
     #[test]

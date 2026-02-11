@@ -38,3 +38,4 @@ assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = "0.2"
+serial_test = "3.1"

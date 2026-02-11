@@ -868,27 +868,41 @@ pub mod cli {
                 // Print shell integration instructions (unless quiet mode)
                 if !quiet {
                     if let Some(setup) = shell_setup {
-                        println!();
-                        println!("{}", "Shell Integration:".cyan().bold());
-                        println!(
-                            "{}",
-                            "To update your prompt and add the 'nails' alias, run:".dimmed()
-                        );
-                        for cmd in &setup.instructions {
-                            println!("  {}", cmd.bright_white());
+                        if let Some(ref warn) = setup.warning {
+                            // Script generation failed, show warning with reason
+                            println!();
+                            println!(
+                                "{}",
+                                format!("Shell prompt not updated: {}", warn).yellow()
+                            );
+                            println!(
+                                "{}",
+                                "You can manually source scripts from the hidden volume if needed"
+                                    .dimmed()
+                            );
+                        } else {
+                            println!();
+                            println!("{}", "Shell Integration:".cyan().bold());
+                            println!(
+                                "{}",
+                                "To update your prompt and add the 'nails' alias, run:".dimmed()
+                            );
+                            for cmd in &setup.instructions {
+                                println!("  {}", cmd.bright_white());
+                            }
+                            println!();
+                            println!(
+                                "{}",
+                                "Tip: Add a shell function for automatic setup (see 'man nails')"
+                                    .dimmed()
+                            );
                         }
-                        println!();
-                        println!(
-                            "{}",
-                            "Tip: Add a shell function for automatic setup (see 'man nails')"
-                                .dimmed()
-                        );
                     } else {
-                        // Shell setup was skipped (no supported shell or error)
+                        // No shell detected or unsupported shell
                         println!();
                         println!(
                             "{}",
-                            "Shell prompt not updated - shell instrumentation skipped".yellow()
+                            "Shell prompt not updated - no supported shell detected".yellow()
                         );
                         println!(
                             "{}",
