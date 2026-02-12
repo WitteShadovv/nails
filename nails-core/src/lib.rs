@@ -79,6 +79,9 @@ pub mod status;
 // Shell instrumentation module (Story 8.1: Shell Prompt Instrumentation Scripts)
 pub mod shell;
 
+// Logging infrastructure module (Story 9.1: Logging with Hidden Volume Validation)
+pub mod logging;
+
 // Re-export for convenience
 pub use config::{
     CliOverrides, Config, ConfigBuilder, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig,
@@ -172,6 +175,9 @@ pub use status::{
 
 // Shell instrumentation exports (Story 8.1: Shell Prompt Instrumentation Scripts)
 pub use shell::{ShellCleanupResult, ShellInstrumentation, ShellSetupResult};
+
+// Logging infrastructure exports (Story 9.1: Logging with Hidden Volume Validation)
+pub use logging::{LoggingConfig, LoggingManager};
 
 /// RAII guard for automatic state rollback on failure
 ///

@@ -381,6 +381,23 @@ pub trait Filesystem: Send + Sync + Clone {
     /// * `path` - Path to check
     fn is_directory(&self, path: &Path) -> Result<bool>;
 
+    /// Check if a path is a symbolic link
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to check
+    ///
+    /// # Returns
+    ///
+    /// `Ok(true)` if path is a symlink, `Ok(false)` otherwise.
+    ///
+    /// # Security
+    ///
+    /// Used to prevent bypassing hidden volume validation via symlink attacks.
+    /// An attacker could create a symlink from hidden volume to external
+    /// location to redirect logs outside hidden volume.
+    fn is_symlink(&self, path: &Path) -> Result<bool>;
+
     /// Get free space in bytes for a filesystem path
     ///
     /// # Arguments
@@ -803,6 +820,7 @@ pub fn verify_mount_preconditions<F: Filesystem>(
 struct PathInfo {
     exists: bool,
     is_directory: bool,
+    is_symlink: bool,
     is_readable: bool,
     is_writable: bool,
     free_space: u64,
@@ -813,6 +831,7 @@ impl Default for PathInfo {
         Self {
             exists: false,
             is_directory: false,
+            is_symlink: false,
             is_readable: true,
             is_writable: true,
             free_space: u64::MAX,
@@ -1002,6 +1021,14 @@ impl MockFilesystem {
         let mut paths = self.paths.lock().unwrap();
         let entry = paths.entry(PathBuf::from(path)).or_default();
         entry.is_readable = readable;
+    }
+
+    /// Set whether a path is a symbolic link
+    pub fn mock_set_is_symlink(&self, path: &str, is_symlink: bool) {
+        let mut paths = self.paths.lock().unwrap();
+        let entry = paths.entry(PathBuf::from(path)).or_default();
+        entry.exists = true;
+        entry.is_symlink = is_symlink;
     }
 
     /// Set free space for a path
@@ -1499,6 +1526,11 @@ impl Filesystem for MockFilesystem {
             .get(path)
             .map(|info| info.is_directory)
             .unwrap_or(false))
+    }
+
+    fn is_symlink(&self, path: &Path) -> Result<bool> {
+        let paths = self.paths.lock().unwrap();
+        Ok(paths.get(path).map(|info| info.is_symlink).unwrap_or(false))
     }
 
     fn get_free_space(&self, path: &Path) -> Result<u64> {
@@ -2029,6 +2061,10 @@ impl Filesystem for RealFilesystem {
 
     fn is_directory(&self, path: &Path) -> Result<bool> {
         Ok(path.is_dir())
+    }
+
+    fn is_symlink(&self, path: &Path) -> Result<bool> {
+        Ok(path.is_symlink())
     }
 
     fn get_free_space(&self, path: &Path) -> Result<u64> {
