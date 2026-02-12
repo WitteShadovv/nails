@@ -575,6 +575,70 @@ pub trait Filesystem: Send + Sync + Clone {
     fn list_directory(&self, dir: &Path) -> Result<Vec<PathBuf>>;
 
     // ------------------------------------------------------------------------
+    // File Size and Rename Operations (Story 9.2: Log Rotation)
+    // ------------------------------------------------------------------------
+
+    /// Get the size of a file in bytes
+    ///
+    /// Returns the size of the file at the specified path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the file
+    ///
+    /// # Returns
+    ///
+    /// File size in bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if file doesn't exist or cannot be accessed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/mnt/hidden/logs/nails.log", true);
+    /// fs.mock_set_file_size("/mnt/hidden/logs/nails.log", 10485760); // 10MB
+    ///
+    /// let size = fs.file_size(Path::new("/mnt/hidden/logs/nails.log")).unwrap();
+    /// assert_eq!(size, 10485760);
+    /// ```
+    fn file_size(&self, path: &Path) -> Result<u64>;
+
+    /// Rename a file from source to destination
+    ///
+    /// Moves/renames a file atomically. Overwrites destination if it exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - Source file path
+    /// * `to` - Destination file path
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if rename fails (source doesn't exist, permission denied, etc.)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/mnt/hidden/logs/nails.log", true);
+    ///
+    /// fs.rename_file(
+    ///     Path::new("/mnt/hidden/logs/nails.log"),
+    ///     Path::new("/mnt/hidden/logs/nails.log.1")
+    /// ).unwrap();
+    /// ```
+    fn rename_file(&self, from: &Path, to: &Path) -> Result<()>;
+
+    // ------------------------------------------------------------------------
     // File Removal Operations (Story 5.3: Temporary Files Cleanup)
     // ------------------------------------------------------------------------
 
@@ -682,6 +746,74 @@ pub trait Filesystem: Send + Sync + Clone {
     /// let cleaned = cleaner.clean().unwrap();
     /// ```
     fn remove_dir_all(&self, path: &Path) -> Result<()>;
+
+    // ------------------------------------------------------------------------
+    // Directory Operations (Story 9.x: Log Rotation)
+    // ------------------------------------------------------------------------
+
+    /// Read the contents of a directory
+    ///
+    /// Returns an iterator over the entries in a directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the directory to read
+    ///
+    /// # Returns
+    ///
+    /// A vector of directory entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if the directory cannot be read
+    /// (doesn't exist, permission denied, not a directory, etc.)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/mnt/hidden/logs", true);
+    ///
+    /// let entries = fs.read_directory(Path::new("/mnt/hidden/logs")).unwrap();
+    /// for entry in entries {
+    ///     println!("{}", entry.path().display());
+    /// }
+    /// ```
+    fn read_directory(&self, path: &Path) -> Result<Vec<std::fs::DirEntry>>;
+
+    /// Get the modification time of a file
+    ///
+    /// Returns the last modified timestamp of a file.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the file
+    ///
+    /// # Returns
+    ///
+    /// The modification time as a UTC DateTime.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if the modification time cannot be determined
+    /// (file doesn't exist, permission denied, etc.)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/mnt/hidden/logs/nails.log", true);
+    ///
+    /// let modified = fs.modified_time(Path::new("/mnt/hidden/logs/nails.log")).unwrap();
+    /// println!("Last modified: {}", modified);
+    /// ```
+    fn modified_time(&self, path: &Path) -> Result<chrono::DateTime<chrono::Utc>>;
 }
 
 // ============================================================================
@@ -886,6 +1018,9 @@ pub struct MockFilesystem {
     remove_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Track paths that should fail removal (Story 5.3)
     directory_contents: Arc<Mutex<HashMap<PathBuf, Vec<PathBuf>>>>, // Track directory contents for list_directory (Story 5.4)
     write_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Track paths that should fail write (Story 5.5)
+    rename_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Track paths that should fail rename (Story 9.2)
+    explicit_file_sizes: Arc<Mutex<HashSet<PathBuf>>>, // Track paths with explicitly set file sizes (Story 9.2)
+    modified_times: Arc<Mutex<HashMap<PathBuf, chrono::DateTime<chrono::Utc>>>>, // Track mock modification times (Story 9.2)
 }
 
 impl MockFilesystem {
@@ -929,6 +1064,9 @@ impl MockFilesystem {
             remove_should_fail: Arc::new(Mutex::new(HashSet::new())),
             directory_contents: Arc::new(Mutex::new(HashMap::new())),
             write_should_fail: Arc::new(Mutex::new(HashSet::new())),
+            rename_should_fail: Arc::new(Mutex::new(HashSet::new())),
+            explicit_file_sizes: Arc::new(Mutex::new(HashSet::new())),
+            modified_times: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -963,6 +1101,9 @@ impl MockFilesystem {
         self.remove_should_fail.lock().unwrap().clear();
         self.directory_contents.lock().unwrap().clear();
         self.write_should_fail.lock().unwrap().clear();
+        self.rename_should_fail.lock().unwrap().clear();
+        self.explicit_file_sizes.lock().unwrap().clear();
+        self.modified_times.lock().unwrap().clear();
     }
 
     // ========================================================================
@@ -1199,6 +1340,111 @@ impl MockFilesystem {
     pub fn mock_set_file_content(&self, path: &str, content: &str) {
         let mut contents = self.file_contents.lock().unwrap();
         contents.insert(PathBuf::from(path), content.to_string());
+    }
+
+    /// Set mock file size for file_size() tests (Story 9.2)
+    ///
+    /// Sets the size that will be returned by file_size() for a specific path.
+    /// Note: If file content is also set via mock_set_file_content(), the content
+    /// length takes precedence over this size value.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - File path
+    /// * `size` - Size in bytes to return from file_size()
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/mnt/hidden/logs/nails.log", true);
+    /// fs.mock_set_file_size("/mnt/hidden/logs/nails.log", 10485760); // 10MB
+    ///
+    /// let size = fs.file_size(Path::new("/mnt/hidden/logs/nails.log")).unwrap();
+    /// assert_eq!(size, 10485760);
+    /// ```
+    pub fn mock_set_file_size(&self, path: &str, size: u64) {
+        let mut paths = self.paths.lock().unwrap();
+        let entry = paths.entry(PathBuf::from(path)).or_default();
+        entry.exists = true;
+        entry.free_space = size; // Reuse free_space field to store file size
+        drop(paths);
+
+        // Track that this path's size was explicitly set
+        self.explicit_file_sizes
+            .lock()
+            .unwrap()
+            .insert(PathBuf::from(path));
+    }
+
+    /// Set whether rename operations should fail for a specific path (Story 9.2)
+    ///
+    /// This is useful for testing rotation failure scenarios where file renames fail.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - File path that should fail to rename
+    /// * `should_fail` - If true, rename_file for this path will fail with PermissionDenied
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/mnt/hidden/logs/nails.log", true);
+    /// fs.mock_set_rename_should_fail("/mnt/hidden/logs/nails.log", true);
+    ///
+    /// // This will now fail with permission denied
+    /// let result = fs.rename_file(
+    ///     Path::new("/mnt/hidden/logs/nails.log"),
+    ///     Path::new("/mnt/hidden/logs/nails.log.1")
+    /// );
+    /// assert!(result.is_err());
+    /// ```
+    pub fn mock_set_rename_should_fail(&self, path: &str, should_fail: bool) {
+        let mut fails = self.rename_should_fail.lock().unwrap();
+        if should_fail {
+            fails.insert(PathBuf::from(path));
+        } else {
+            fails.remove(&PathBuf::from(path));
+        }
+    }
+
+    /// Set the modification time for a file (Story 9.2)
+    ///
+    /// Allows tests to control file ages for timestamp-based log retention.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the file
+    /// * `modified_time` - Modification timestamp to return
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    /// use chrono::{Utc, Duration};
+    ///
+    /// let fs = MockFilesystem::new();
+    /// let old_time = Utc::now() - Duration::days(10);
+    /// fs.mock_set_modified_time(Path::new("/mnt/hidden/logs/nails.log.8"), old_time);
+    ///
+    /// // This file will now be considered 10 days old
+    /// let modified = fs.modified_time(Path::new("/mnt/hidden/logs/nails.log.8")).unwrap();
+    /// ```
+    pub fn mock_set_modified_time(
+        &self,
+        path: &Path,
+        modified_time: chrono::DateTime<chrono::Utc>,
+    ) {
+        let mut times = self.modified_times.lock().unwrap();
+        times.insert(path.to_path_buf(), modified_time);
     }
 
     /// Get written file content for test verification (Story 5.2)
@@ -1674,6 +1920,12 @@ impl Filesystem for MockFilesystem {
             )));
         }
 
+        // Mark path as existing
+        let mut paths = self.paths.lock().unwrap();
+        let entry = paths.entry(path.to_path_buf()).or_default();
+        entry.exists = true;
+        drop(paths);
+
         // Store the written content for test verification
         let mut written = self.written_files.lock().unwrap();
         written.insert(path.to_path_buf(), content.to_string());
@@ -1800,6 +2052,82 @@ impl Filesystem for MockFilesystem {
         Ok(())
     }
 
+    fn file_size(&self, path: &Path) -> Result<u64> {
+        let paths = self.paths.lock().unwrap();
+        if let Some(info) = paths.get(path) {
+            if !info.exists {
+                return Err(NailsError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("File not found: {}", path.display()),
+                )));
+            }
+
+            // Store the size value before dropping paths lock
+            let size_value = info.free_space;
+            drop(paths);
+
+            // Check if size was explicitly set via mock_set_file_size
+            // Use explicit_file_sizes tracking to distinguish "set to 0" from "not set"
+            let explicit_sizes = self.explicit_file_sizes.lock().unwrap();
+            if explicit_sizes.contains(path) {
+                // Return the stored size (even if it's 0)
+                return Ok(size_value);
+            }
+            drop(explicit_sizes);
+
+            // Fall back to file content length if available
+            let contents = self.file_contents.lock().unwrap();
+            if let Some(content) = contents.get(path) {
+                return Ok(content.len() as u64);
+            }
+
+            // No size or content available, return 0
+            Ok(0)
+        } else {
+            Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("File not found: {}", path.display()),
+            )))
+        }
+    }
+
+    fn rename_file(&self, from: &Path, to: &Path) -> Result<()> {
+        // Check if rename should fail (for testing permission denied scenarios)
+        if self.rename_should_fail.lock().unwrap().contains(from) {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "Mock: rename_file configured to fail for {}",
+                    from.display()
+                ),
+            )));
+        }
+
+        // Check if source exists
+        let mut paths = self.paths.lock().unwrap();
+        if !paths.get(from).is_some_and(|info| info.exists) {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Source file not found: {}", from.display()),
+            )));
+        }
+
+        // Move path info from source to destination
+        if let Some(mut info) = paths.remove(from) {
+            info.exists = true; // Ensure destination is marked as existing
+            paths.insert(to.to_path_buf(), info);
+        }
+        drop(paths);
+
+        // Move file contents if present
+        let mut contents = self.file_contents.lock().unwrap();
+        if let Some(content) = contents.remove(from) {
+            contents.insert(to.to_path_buf(), content);
+        }
+
+        Ok(())
+    }
+
     fn remove_file(&self, path: &Path) -> Result<()> {
         // Check if removal should fail (mock behavior for testing)
         if self.remove_should_fail.lock().unwrap().contains(path) {
@@ -1868,6 +2196,41 @@ impl Filesystem for MockFilesystem {
                 dir.display()
             ),
         )))
+    }
+
+    fn read_directory(&self, path: &Path) -> Result<Vec<std::fs::DirEntry>> {
+        // For mock filesystem, we need to check what entries exist in the path
+        let paths = self.paths.lock().unwrap();
+
+        // Collect all paths that start with the given directory
+        let entries = Vec::new();
+        for (p, info) in paths.iter() {
+            // Check if this path is a direct child of the directory
+            if let Some(parent) = p.parent()
+                && parent == path
+                && info.exists
+            {
+                // Create a mock DirEntry
+                // Since std::fs::DirEntry can't be constructed directly,
+                // we'll return an error for now - this needs a proper mock implementation
+                return Err(NailsError::IoError(std::io::Error::other(
+                    "Mock: read_directory not fully implemented for MockFilesystem",
+                )));
+            }
+        }
+
+        Ok(entries)
+    }
+
+    fn modified_time(&self, path: &Path) -> Result<chrono::DateTime<chrono::Utc>> {
+        // Check if a mock modification time was set for this path
+        let times = self.modified_times.lock().unwrap();
+        if let Some(modified) = times.get(&path.to_path_buf()) {
+            return Ok(*modified);
+        }
+
+        // Default to current time if no mock time was set
+        Ok(chrono::Utc::now())
     }
 }
 
@@ -2412,6 +2775,30 @@ impl Filesystem for RealFilesystem {
         Ok(())
     }
 
+    fn file_size(&self, path: &Path) -> Result<u64> {
+        let metadata = std::fs::metadata(path).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to get file size for {}: {}", path.display(), e),
+            ))
+        })?;
+        Ok(metadata.len())
+    }
+
+    fn rename_file(&self, from: &Path, to: &Path) -> Result<()> {
+        std::fs::rename(from, to).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to rename {} to {}: {}",
+                    from.display(),
+                    to.display(),
+                    e
+                ),
+            ))
+        })
+    }
+
     fn remove_file(&self, path: &Path) -> Result<()> {
         std::fs::remove_file(path).map_err(|e| {
             NailsError::IoError(std::io::Error::new(
@@ -2450,6 +2837,56 @@ impl Filesystem for RealFilesystem {
         }
 
         Ok(paths)
+    }
+
+    fn read_directory(&self, path: &Path) -> Result<Vec<std::fs::DirEntry>> {
+        let entries = std::fs::read_dir(path).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to read directory {}: {}", path.display(), e),
+            ))
+        })?;
+
+        let mut result = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| {
+                NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to read directory entry in {}: {}",
+                        path.display(),
+                        e
+                    ),
+                ))
+            })?;
+            result.push(entry);
+        }
+
+        Ok(result)
+    }
+
+    fn modified_time(&self, path: &Path) -> Result<chrono::DateTime<chrono::Utc>> {
+        let metadata = std::fs::metadata(path).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to get metadata for {}: {}", path.display(), e),
+            ))
+        })?;
+
+        let modified = metadata.modified().map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to get modification time for {}: {}",
+                    path.display(),
+                    e
+                ),
+            ))
+        })?;
+
+        // Convert SystemTime to DateTime<Utc>
+        let datetime: chrono::DateTime<chrono::Utc> = modified.into();
+        Ok(datetime)
     }
 }
 
