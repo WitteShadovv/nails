@@ -693,6 +693,8 @@ impl<F: Filesystem> StatusCommand<F> {
         // Load state file
         let state_file = StateFile::load(&self.state_file_path)?;
 
+        tracing::debug!(state = ?state_file.state, phase = "status", "Status query executed");
+
         // Extract data from state file
         let (overlays, activated_at) = match &state_file.state {
             SystemState::Inactive => (vec![], None),
@@ -722,6 +724,12 @@ impl<F: Filesystem> StatusCommand<F> {
 
         // Verify overlays
         let overlay_verification = self.verify_overlays(&state_file)?;
+
+        tracing::debug!(
+            verification_result = ?overlay_verification,
+            phase = "status",
+            "Overlay verification performed"
+        );
 
         // Include overlay details for Active state (used by verbose mode)
         let overlay_details = match &state_file.state {
@@ -1916,5 +1924,63 @@ mod tests {
             }
             _ => panic!("Expected Mismatch verification status"),
         }
+    }
+
+    // ============================================================================
+    // Story 9.3: Structured Logging Tests for Status
+    // ============================================================================
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_status_emits_structured_debug_events() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+        let state_file = StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        };
+        let temp_file = create_temp_state_file(&state_file);
+
+        let cmd = StatusCommand::new(fs, config, temp_file.path().to_path_buf());
+        let result = cmd.run();
+        assert!(result.is_ok(), "Status should succeed");
+
+        // Verify structured debug events (AC implicit)
+        assert!(logs_contain("Status query executed"));
+        assert!(logs_contain("state") || logs_contain("Inactive"));
+        assert!(logs_contain("phase") || logs_contain("status"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_status_logs_verification_result() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_mounted(Path::new("/home"), true);
+
+        let config = Config::default();
+        let activated_at = Utc::now();
+        let overlays = vec![PathBuf::from("/home")];
+
+        let mut overlay_status = std::collections::HashMap::new();
+        overlay_status.insert(PathBuf::from("/home"), create_overlay_info("/home"));
+
+        let state_file = StateFile {
+            state: SystemState::Active {
+                activated_at,
+                overlays,
+            },
+            overlay_status,
+            ..StateFile::default()
+        };
+        let temp_file = create_temp_state_file(&state_file);
+
+        let cmd = StatusCommand::new(fs, config, temp_file.path().to_path_buf());
+        let result = cmd.run();
+        assert!(result.is_ok(), "Status should succeed");
+
+        // Verify verification result is logged with structured fields
+        assert!(logs_contain("Overlay verification performed"));
+        assert!(logs_contain("verification_result"));
+        assert!(logs_contain("phase") || logs_contain("status"));
     }
 }

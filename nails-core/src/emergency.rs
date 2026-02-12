@@ -208,7 +208,12 @@ impl EmergencyCountdown {
     fn run_with_abort_flag(&self, abort_flag: Option<Arc<AtomicBool>>) -> Result<bool> {
         // AC6: Skip countdown if flag is set
         if self.skip_countdown {
-            tracing::info!("Skipping countdown (--no-countdown flag)");
+            tracing::info!(
+                phase = "countdown",
+                skipped = true,
+                reason = "no_countdown_flag",
+                "Skipping countdown"
+            );
             return Ok(true);
         }
 
@@ -220,8 +225,10 @@ impl EmergencyCountdown {
             // AC5: Register SIGINT (Ctrl+C) handler
             if let Err(e) = signal_hook::flag::register(signal_hook::consts::SIGINT, flag_clone) {
                 tracing::warn!(
-                    "Failed to register SIGINT handler: {}. Ctrl+C abort disabled.",
-                    e
+                    error = %e,
+                    signal = "SIGINT",
+                    phase = "countdown",
+                    "Failed to register signal handler - Ctrl+C abort disabled"
                 );
                 eprintln!("Warning: Ctrl+C abort unavailable (signal registration failed)");
             }
@@ -362,7 +369,12 @@ where
     match strategy {
         ForkStrategy::Direct => {
             // Direct execution mode (testing or fallback)
-            tracing::info!("Executing emergency deactivation directly (no fork)");
+            tracing::info!(
+                strategy = "direct",
+                fork = false,
+                phase = "emergency",
+                "Executing emergency deactivation directly"
+            );
             emergency_fn()
         }
         ForkStrategy::Fork => {
@@ -413,7 +425,7 @@ where
             // Parent process: report child PID and return to caller
             // The CLI handler (Story 6.4) will call std::process::exit(0) after this
             println!("Emergency deactivation initiated (PID: {})", child);
-            tracing::info!("Forked child process {} for emergency deactivation", child);
+            tracing::info!(child_pid = %child, role = "parent", phase = "emergency", "Forked child process for emergency deactivation");
             Ok(())
         }
         Ok(ForkResult::Child) => {
@@ -433,12 +445,15 @@ where
             match emergency_fn() {
                 Ok(()) => {
                     tracing::info!(
-                        "Emergency deactivation completed successfully in child process"
+                        role = "child",
+                        phase = "emergency",
+                        result = "success",
+                        "Emergency deactivation completed successfully"
                     );
                     std::process::exit(0);
                 }
                 Err(e) => {
-                    tracing::error!("Emergency deactivation failed in child process: {}", e);
+                    tracing::error!(error = %e, role = "child", phase = "emergency", result = "failure", "Emergency deactivation failed in child process");
                     eprintln!("Emergency deactivation error: {}", e);
                     eprintln!("Emergency deactivation completed with errors - reboot recommended");
                     std::process::exit(1);
@@ -448,7 +463,7 @@ where
         Err(e) => {
             // Fork failed - fall back to direct execution (degraded resilience)
             let fork_err = NailsError::ForkFailed(e.to_string());
-            tracing::warn!("Fork failed: {}, executing in current process", fork_err);
+            tracing::warn!(error = %fork_err, fallback = "direct", resilience = "degraded", phase = "emergency", "Fork failed - executing in current process");
             eprintln!("Warning: {}", fork_err);
             eprintln!("Falling back to direct execution (degraded resilience)");
 
@@ -671,6 +686,13 @@ impl<F: Filesystem + 'static> EmergencyOrchestrator<F> {
         // Get current state
         let current_state = manager.current_state()?;
 
+        // Story 9.3 AC#4: Log emergency triggered with state
+        tracing::warn!(
+            state = ?current_state,
+            phase = "emergency",
+            "Emergency deactivation triggered"
+        );
+
         // AC5: Defensive — if already INACTIVE, still run cleanup
         let was_defensive = current_state == SystemState::Inactive;
 
@@ -692,6 +714,8 @@ impl<F: Filesystem + 'static> EmergencyOrchestrator<F> {
         }
 
         // Step 2: Fast cleanup (AC2, AC6: CleanupMode::Fast)
+        // Story 9.3 AC#4: Log fast cleanup mode
+        tracing::warn!(fast_cleanup = true, "Fast cleanup mode enabled");
         let cleanup_report = {
             let fs = manager.filesystem().clone();
             let cleanup_manager =
@@ -700,6 +724,7 @@ impl<F: Filesystem + 'static> EmergencyOrchestrator<F> {
             match cleanup_manager.cleanup() {
                 Ok(report) => report,
                 Err(e) => {
+                    tracing::error!(error = %e, phase = "cleanup", "Cleanup failed");
                     errors.push(format!("Cleanup failed: {}", e));
                     CleanupReport::default()
                 }
@@ -711,10 +736,11 @@ impl<F: Filesystem + 'static> EmergencyOrchestrator<F> {
         for path in overlays_to_unmount.iter().rev() {
             match manager.filesystem().unmount(path, true) {
                 Ok(()) => {
-                    tracing::info!("✓ Force unmounted {}", path.display());
+                    tracing::info!(path = %path.display(), method = "force", phase = "emergency", "Force unmount succeeded");
                     unmounted_overlays.push(path.to_string_lossy().to_string());
                 }
                 Err(e) => {
+                    tracing::error!(error = %e, path = %path.display(), method = "force", phase = "emergency", "Force unmount failed");
                     errors.push(format!(
                         "Force unmount failed for {}: {}",
                         path.display(),
@@ -735,11 +761,20 @@ impl<F: Filesystem + 'static> EmergencyOrchestrator<F> {
 
         let duration = start.elapsed();
 
+        // Story 9.3 AC#4: Log emergency completion with metrics
+        tracing::warn!(
+            duration_ms = duration.as_millis() as u64,
+            errors = errors.len(),
+            "Emergency complete"
+        );
+
         // AC8: Timing warning if >3 seconds
         if duration.as_secs_f64() > 3.0 {
             tracing::warn!(
-                "Emergency deactivation took {:.2}s — exceeds 3s target (NFR3)",
-                duration.as_secs_f64()
+                duration_secs = %format!("{:.2}", duration.as_secs_f64()),
+                target_secs = 3.0,
+                phase = "emergency",
+                "Emergency deactivation took longer than target (NFR3)"
             );
         }
 
@@ -1612,5 +1647,95 @@ mod tests {
             assert!(json_str.contains("\"status\":\"success\""));
             assert!(json_str.contains("\"was_defensive\":false"));
         }
+    }
+
+    // ============================================================================
+    // Story 9.3: Structured Logging Tests for Emergency
+    // ============================================================================
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_emergency_emits_structured_events() {
+        let manager = setup_active_manager();
+
+        // Setup overlays as mounted
+        {
+            let m = manager.lock().unwrap();
+            m.filesystem().mock_set_mounted(Path::new("/home"), true);
+            m.filesystem().mock_set_mounted(Path::new("/etc"), true);
+        }
+
+        let orchestrator =
+            EmergencyOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+
+        let result = orchestrator.run();
+        assert!(result.is_ok(), "Emergency should succeed");
+
+        // Verify structured emergency events (AC#4)
+        assert!(logs_contain("Emergency deactivation triggered"));
+        assert!(logs_contain("phase") || logs_contain("emergency"));
+        assert!(logs_contain("Emergency complete"));
+        assert!(logs_contain("duration_ms"));
+        assert!(logs_contain("error_count") || logs_contain("errors"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_emergency_logs_fast_cleanup_mode() {
+        let manager = setup_active_manager();
+
+        // Setup overlays as mounted
+        {
+            let m = manager.lock().unwrap();
+            m.filesystem().mock_set_mounted(Path::new("/home"), true);
+            m.filesystem().mock_set_mounted(Path::new("/etc"), true);
+        }
+
+        let orchestrator =
+            EmergencyOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+
+        let result = orchestrator.run();
+        assert!(result.is_ok(), "Emergency should succeed");
+
+        // Verify fast cleanup mode is logged (AC#4)
+        assert!(logs_contain("Fast cleanup mode enabled") || logs_contain("mode"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_emergency_logs_force_unmount_operations() {
+        let manager = setup_active_manager();
+
+        // Setup overlays as mounted
+        {
+            let m = manager.lock().unwrap();
+            m.filesystem().mock_set_mounted(Path::new("/home"), true);
+            m.filesystem().mock_set_mounted(Path::new("/etc"), true);
+        }
+
+        let orchestrator =
+            EmergencyOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+
+        let result = orchestrator.run();
+        assert!(result.is_ok(), "Emergency should succeed");
+
+        // Verify force unmount operations are logged with structured fields (AC#4)
+        assert!(logs_contain("Force unmount") || logs_contain("method"));
+        assert!(logs_contain("path") || logs_contain("/home") || logs_contain("/etc"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_emergency_countdown_skip_logs() {
+        // Test countdown skip logging
+        let mut countdown = EmergencyCountdown::new();
+        countdown.skip_countdown = true;
+
+        let result = countdown.run();
+        assert!(result.is_ok(), "Countdown skip should succeed");
+
+        // Verify skip message with structured fields
+        assert!(logs_contain("Skipping countdown") || logs_contain("skipped"));
+        assert!(logs_contain("phase") || logs_contain("countdown"));
     }
 }

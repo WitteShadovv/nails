@@ -15,8 +15,16 @@ pub mod cli {
     #[command(about = "NixOS Anti-forensics Isolation & Layering System", long_about = None)]
     pub struct Cli {
         /// Verbose output (-v, -vv, -vvv)
-        #[arg(short, long, action = clap::ArgAction::Count)]
+        #[arg(short, long, action = clap::ArgAction::Count, conflicts_with = "quiet")]
         pub verbose: u8,
+
+        /// Quiet mode: only show errors and warnings
+        #[arg(short = 'q', long, conflicts_with = "verbose")]
+        pub quiet: bool,
+
+        /// Skip file logging (only log to stdout)
+        #[arg(long)]
+        pub no_logs: bool,
 
         #[command(subcommand)]
         pub command: Commands,
@@ -669,6 +677,212 @@ pub mod cli {
                 }
             }
         }
+    }
+
+    /// Initialize dual-layer tracing subscriber with file + stdout logging
+    ///
+    /// Sets up a two-layer subscriber:
+    /// 1. **File layer** (JSON): Captures ALL events (TRACE+) to `{hidden_volume}/logs/nails.log`
+    /// 2. **Stdout layer** (fmt): Human-readable output filtered by verbosity level
+    ///
+    /// Implements graceful fallback: if hidden volume is not mounted or LoggingManager
+    /// initialization fails, continues with stdout-only logging (no errors raised).
+    ///
+    /// # Arguments
+    ///
+    /// * `verbose_count` - Number of `-v` flags passed (0, 1, 2+)
+    ///
+    /// # Levels (Stdout Layer)
+    ///
+    /// - 0 (normal): INFO and above (ERROR, WARN, INFO)
+    /// - 1 (`-v`): DEBUG and above
+    /// - 2+ (`-vv`): TRACE and above
+    ///
+    /// # File Layer
+    ///
+    /// Always captures TRACE+ regardless of user verbosity (full audit trail).
+    ///
+    /// # Graceful Fallback (AC: Story 9.3, Task 2.4)
+    ///
+    /// If hidden volume not mounted or LoggingManager fails:
+    /// - Logs warning to stderr
+    /// - Continues with stdout-only logging
+    /// - Does NOT fail the command
+    ///
+    /// # Parameters
+    ///
+    /// - `verbose_count`: Verbosity level (0 = INFO, 1 = DEBUG, 2+ = TRACE)
+    /// - `quiet`: Quiet mode - only show WARN and ERROR (AC: Story 9.3, AC #5)
+    /// - `no_logs`: Skip file logging entirely (AC: Story 9.3, Task 2.5)
+    pub fn init_stdout_subscriber(verbose_count: u8, quiet: bool, no_logs: bool) {
+        use tracing_subscriber::Layer;
+        use tracing_subscriber::filter::LevelFilter;
+        use tracing_subscriber::fmt;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt; // Required for .with_filter()
+
+        // Map CLI flags to tracing level (AC #5)
+        let stdout_level = if quiet {
+            LevelFilter::WARN // Quiet mode: only WARN and ERROR
+        } else {
+            match verbose_count {
+                0 => LevelFilter::INFO,  // Normal mode: INFO, WARN, ERROR
+                1 => LevelFilter::DEBUG, // Verbose mode: DEBUG + INFO + WARN + ERROR
+                _ => LevelFilter::TRACE, // Debug mode: TRACE + all above
+            }
+        };
+
+        // Skip file layer if --no-logs flag is set (AC: Story 9.3, Task 2.5)
+        if no_logs {
+            // Stdout-only logging (no file layer)
+            tracing_subscriber::fmt()
+                .with_target(false)
+                .with_thread_ids(false)
+                .with_thread_names(false)
+                .with_file(false)
+                .with_line_number(false)
+                .with_level(true)
+                .with_max_level(stdout_level)
+                .init();
+            return;
+        }
+
+        // Try to initialize LoggingManager for file logging (Task 2.1)
+        let file_layer_result = init_file_layer();
+
+        match file_layer_result {
+            Ok(Some(file_layer)) => {
+                // Dual-layer subscriber: file (JSON, all events) + stdout (fmt, filtered)
+                let stdout_layer = fmt::layer()
+                    .with_target(false)
+                    .with_thread_ids(false)
+                    .with_thread_names(false)
+                    .with_file(false)
+                    .with_line_number(false)
+                    .with_level(true)
+                    .with_filter(stdout_level);
+
+                tracing_subscriber::registry()
+                    .with(file_layer)
+                    .with(stdout_layer)
+                    .init();
+            }
+            Ok(None) | Err(_) => {
+                // Graceful fallback: stdout-only logging (Task 2.4)
+                tracing_subscriber::fmt()
+                    .with_target(false)
+                    .with_thread_ids(false)
+                    .with_thread_names(false)
+                    .with_file(false)
+                    .with_line_number(false)
+                    .with_level(true)
+                    .with_max_level(stdout_level)
+                    .init();
+            }
+        }
+    }
+
+    /// Initialize file logging layer with LoggingManager
+    ///
+    /// Creates JSON file layer that writes to `{hidden_volume}/logs/nails.log`.
+    /// Implements graceful fallback if hidden volume is not mounted.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(layer))` - File layer successfully created
+    /// - `Ok(None)` - Hidden volume not available, logged warning to stderr
+    /// - `Err(_)` - Unexpected error during initialization
+    ///
+    /// # Implementation (Task 2.1-2.4)
+    ///
+    /// - Task 2.1: Create LoggingManager with config paths
+    /// - Task 2.2: Call LoggingManager::init() for validation
+    /// - Task 2.3: Build JSON file layer that captures ALL events
+    /// - Task 2.4: Graceful fallback if hidden volume not mounted
+    #[allow(clippy::type_complexity)]
+    fn init_file_layer() -> Result<
+        Option<
+            tracing_subscriber::filter::Filtered<
+                tracing_subscriber::fmt::Layer<
+                    tracing_subscriber::Registry,
+                    tracing_subscriber::fmt::format::JsonFields,
+                    tracing_subscriber::fmt::format::Format<tracing_subscriber::fmt::format::Json>,
+                    std::sync::Mutex<std::fs::File>,
+                >,
+                tracing_subscriber::filter::LevelFilter,
+                tracing_subscriber::Registry,
+            >,
+        >,
+        Box<dyn std::error::Error>,
+    > {
+        use nails_core::{LoggingManager, RealFilesystem};
+        use std::fs::OpenOptions;
+        use std::path::PathBuf;
+        use tracing_subscriber::Layer;
+        use tracing_subscriber::filter::LevelFilter;
+        use tracing_subscriber::fmt; // Required for .with_filter()
+
+        // Determine hidden volume and log paths (Task 2.1)
+        // Use standard NAILS paths from Config
+        let hidden_volume_path = PathBuf::from("/mnt/nails-hidden");
+        let log_path = hidden_volume_path.join("logs");
+
+        // Create LoggingManager (Task 2.1)
+        let logging_manager = LoggingManager::new(log_path.clone(), hidden_volume_path.clone());
+
+        // Initialize LoggingManager with validation (Task 2.2)
+        let fs = RealFilesystem;
+        let logging_config = match logging_manager.init(&fs) {
+            Ok(config) => config,
+            Err(e) => {
+                // Distinguish hidden volume failure from other errors (AC #5)
+                use nails_core::NailsError;
+                match &e {
+                    NailsError::InvalidState(msg) if msg.contains("Hidden volume not mounted") => {
+                        // Graceful fallback: Hidden volume not mounted (Task 2.4)
+                        eprintln!("Warning: Hidden volume not available, file logging disabled");
+                        return Ok(None);
+                    }
+                    _ => {
+                        // Other unexpected errors
+                        eprintln!(
+                            "Error initializing file logging: {}, continuing with stdout-only logging",
+                            e
+                        );
+                        return Ok(None);
+                    }
+                }
+            }
+        };
+
+        // Open log file for appending (Task 2.3)
+        let log_file = match OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&logging_config.log_file_path)
+        {
+            Ok(file) => file,
+            Err(e) => {
+                eprintln!(
+                    "Failed to open log file: {}, continuing without file logging",
+                    e
+                );
+                return Ok(None);
+            }
+        };
+
+        // Build JSON file layer that captures ALL events (Task 2.3)
+        let file_writer = std::sync::Mutex::new(log_file);
+        let file_layer = fmt::layer()
+            .json()
+            .with_writer(file_writer)
+            .with_target(true)
+            .with_level(true)
+            .with_thread_ids(false)
+            .with_thread_names(false)
+            .with_filter(LevelFilter::TRACE); // Capture ALL events to file
+
+        Ok(Some(file_layer))
     }
 
     /// Print verification results in human-readable format
@@ -2071,6 +2285,8 @@ mod tests {
     fn test_execute_status_command_without_verbose() {
         let cli = Cli {
             verbose: 0,
+            quiet: false,
+            no_logs: false,
             command: Commands::Status {
                 json: false,
                 no_color: false,
@@ -2085,6 +2301,8 @@ mod tests {
     fn test_execute_status_command_with_verbose() {
         let cli = Cli {
             verbose: 0,
+            quiet: false,
+            no_logs: false,
             command: Commands::Status {
                 json: false,
                 no_color: false,
@@ -2099,6 +2317,8 @@ mod tests {
     fn test_verbose_flag_values() {
         let cli = Cli {
             verbose: 3,
+            quiet: false,
+            no_logs: false,
             command: Commands::Status {
                 json: false,
                 no_color: false,
@@ -2276,6 +2496,8 @@ mod tests {
     fn test_execute_verify_command_without_flags() {
         let cli = Cli {
             verbose: 0,
+            quiet: false,
+            no_logs: false,
             command: Commands::Verify {
                 deep: false,
                 json: false,
@@ -2290,6 +2512,8 @@ mod tests {
     fn test_execute_verify_command_with_deep() {
         let cli = Cli {
             verbose: 0,
+            quiet: false,
+            no_logs: false,
             command: Commands::Verify {
                 deep: true,
                 json: false,
@@ -2302,6 +2526,8 @@ mod tests {
     fn test_execute_verify_command_with_json() {
         let cli = Cli {
             verbose: 0,
+            quiet: false,
+            no_logs: false,
             command: Commands::Verify {
                 deep: false,
                 json: true,
@@ -2314,6 +2540,8 @@ mod tests {
     fn test_execute_verify_command_with_deep_and_json() {
         let cli = Cli {
             verbose: 0,
+            quiet: false,
+            no_logs: false,
             command: Commands::Verify {
                 deep: true,
                 json: true,

@@ -225,6 +225,9 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
     pub fn run(&self) -> Result<DeactivationReport> {
         let start = Instant::now();
 
+        // Story 9.3 AC#3: Log deactivation started with state
+        tracing::info!(phase = "deactivation", "Deactivation started");
+
         // Lock manager for the duration
         let mut manager = self
             .manager
@@ -234,6 +237,11 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
         // Step 0: Check if already inactive (idempotent) - AC7
         let current_state = manager.current_state()?;
         if current_state == SystemState::Inactive {
+            tracing::info!(
+                state = ?current_state,
+                already_inactive = true,
+                "System already inactive, nothing to do"
+            );
             return Ok(DeactivationReport {
                 cleanup_report: CleanupReport::default(),
                 unmounted_overlays: Vec::new(),
@@ -273,13 +281,25 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
         manager.update_state(deactivating_state)?;
 
         // Step 2: Cleanup artifacts - AC2, AC4
+        let cleanup_start = Instant::now();
         let cleanup_report = match self.execute_cleanup(&manager) {
-            Ok(report) => report,
+            Ok(report) => {
+                // Story 9.3 AC#3: Log cleanup completion with structured fields
+                tracing::info!(
+                    cleaned_items = report.cleaned_items.len(),
+                    duration_ms = cleanup_start.elapsed().as_millis() as u64,
+                    "Cleanup complete"
+                );
+                report
+            }
             Err(e) => {
-                // Cleanup failed - StateGuard will rollback to ACTIVE
+                // Story 9.3 AC#2: Structured error event for cleanup failure
                 tracing::error!(
-                    "Cleanup failed, keeping system ACTIVE. Overlays remain mounted: {}",
-                    e
+                    error = %e,
+                    state = ?current_state,
+                    rollback = true,
+                    phase = "cleanup",
+                    "Cleanup failed, keeping system ACTIVE with overlays mounted"
                 );
                 // IMPORTANT: Drop manager lock BEFORE returning so StateGuard can acquire it for rollback
                 drop(manager);
@@ -288,11 +308,27 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
         };
 
         // Step 3: Unmount overlays - AC2, AC5, AC6
+        let unmount_start = Instant::now();
         let unmounted = match self.unmount_overlays(&manager, &overlays_to_unmount) {
-            Ok(overlays) => overlays,
+            Ok(overlays) => {
+                // Story 9.3 AC#3: Log overlays unmounted with structured fields
+                // AC #3 specifies "unmounted_paths" for literal compliance
+                tracing::info!(
+                    unmounted_paths = ?overlays,
+                    duration_ms = unmount_start.elapsed().as_millis() as u64,
+                    "Overlays unmounted"
+                );
+                overlays
+            }
             Err(e) => {
-                // Unmount failed - StateGuard will rollback to ACTIVE
-                tracing::error!("Unmount failed, rolling back to ACTIVE: {}", e);
+                // Story 9.3 AC#2: Structured error event for unmount failure
+                tracing::error!(
+                    error = %e,
+                    state = ?current_state,
+                    rollback = true,
+                    phase = "unmount",
+                    "Unmount failed, rolling back to ACTIVE"
+                );
                 // IMPORTANT: Drop manager lock BEFORE returning so StateGuard can acquire it for rollback
                 drop(manager);
                 return Err(e);
@@ -304,6 +340,15 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
 
         // Step 5: Commit StateGuard (prevent rollback) - AC2
         guard.commit();
+
+        // Story 9.3 AC#3: Log deactivation complete with structured fields
+        let duration_ms = start.elapsed().as_millis() as u64;
+        tracing::info!(
+            duration_ms = duration_ms,
+            state_to = ?SystemState::Inactive,
+            unmounted_count = unmounted.len(),
+            "Deactivation complete"
+        );
 
         Ok(DeactivationReport {
             cleanup_report,
@@ -409,8 +454,13 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
                     unmounted.push(overlay_path.to_string_lossy().to_string());
                 }
                 Err(e) => {
-                    // Unmount failed - need to rollback
-                    tracing::error!("Unmount failed for {}: {}", overlay_path.display(), e);
+                    // Story 9.3 AC#2: Structured error event for single overlay unmount failure
+                    tracing::error!(
+                        error = %e,
+                        path = %overlay_path.display(),
+                        phase = "unmount",
+                        "Unmount failed for overlay"
+                    );
                     self.rollback_unmounts(manager, &unmounted)?;
                     return Err(e);
                 }
@@ -448,12 +498,20 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
         // Try graceful unmount first
         match manager.filesystem().unmount(path, false) {
             Ok(()) => {
-                tracing::info!("✓ Gracefully unmounted {}", path.display());
+                tracing::info!(
+                    path = %path.display(),
+                    method = "graceful",
+                    "Overlay unmounted"
+                );
                 Ok(())
             }
             Err(NailsError::MountBusy { .. }) => {
                 // Try force unmount
-                tracing::warn!("Mount busy for {}, trying force unmount", path.display());
+                tracing::warn!(
+                    path = %path.display(),
+                    reason = "mount_busy",
+                    "Mount busy, trying force unmount"
+                );
                 manager.filesystem().unmount(path, true)
             }
             Err(e) => Err(e),
@@ -488,8 +546,9 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
     /// - FR51: Remount overlays if cleanup fails
     fn rollback_unmounts(&self, manager: &NailsManager<F>, unmounted: &[String]) -> Result<()> {
         tracing::warn!(
-            "Rolling back unmounts - attempting to remount {} overlays",
-            unmounted.len()
+            overlay_count = unmounted.len(),
+            phase = "rollback",
+            "Rolling back unmounts - attempting to remount overlays"
         );
 
         let mut remounted_count = 0;
@@ -504,11 +563,12 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
             // For now, we use the filesystem's tracking (works for MockFilesystem tests)
             if let Some(mount_info) = manager.filesystem().get_mount_info(&overlay_path) {
                 tracing::info!(
-                    "Rollback: Remounting {} (lower={}, upper={}, work={})",
-                    overlay_str,
-                    mount_info.lower.display(),
-                    mount_info.upper.display(),
-                    mount_info.work.display()
+                    overlay = overlay_str,
+                    lower = %mount_info.lower.display(),
+                    upper = %mount_info.upper.display(),
+                    work = %mount_info.work.display(),
+                    phase = "rollback",
+                    "Remounting overlay"
                 );
 
                 match manager.filesystem().mount_overlay(
@@ -518,31 +578,39 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
                     &mount_info.target,
                 ) {
                     Ok(()) => {
-                        tracing::info!("✓ Successfully remounted {}", overlay_str);
+                        tracing::info!(
+                            overlay = overlay_str,
+                            phase = "rollback",
+                            "Successfully remounted overlay"
+                        );
                         remounted_count += 1;
                     }
                     Err(e) => {
-                        // Log but continue - best-effort rollback
+                        // Story 9.3 AC#2: Structured error for remount failure
                         tracing::warn!(
-                            "Warning: Failed to remount {} during rollback: {}",
-                            overlay_str,
-                            e
+                            overlay = overlay_str,
+                            error = %e,
+                            phase = "rollback",
+                            "Failed to remount overlay during rollback"
                         );
                     }
                 }
             } else {
                 // No mount info available - log warning but continue
                 tracing::warn!(
-                    "Rollback: Cannot remount {} - mount info not available (overlay may need manual recovery)",
-                    overlay_str
+                    overlay = overlay_str,
+                    phase = "rollback",
+                    recovery = "manual",
+                    "Cannot remount - mount info not available"
                 );
             }
         }
 
         tracing::info!(
-            "Rollback complete: Remounted {}/{} overlays",
-            remounted_count,
-            unmounted.len()
+            remounted = remounted_count,
+            total = unmounted.len(),
+            phase = "rollback",
+            "Rollback complete"
         );
 
         Ok(())
@@ -864,5 +932,110 @@ mod tests {
             fs.is_mounted(Path::new("/etc")).unwrap(),
             "AC4 violation: /etc should remain mounted after cleanup failure"
         );
+    }
+
+    // ============================================================================
+    // Story 9.3: Structured Logging Tests for Deactivation
+    // ============================================================================
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_deactivation_emits_structured_events() {
+        let manager = setup_active_manager();
+
+        // Setup overlays as mounted
+        {
+            let m = manager.lock().unwrap();
+            m.filesystem().mock_set_mounted(Path::new("/home"), true);
+            m.filesystem().mock_set_mounted(Path::new("/etc"), true);
+        }
+
+        let orchestrator =
+            DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+
+        let result = orchestrator.run();
+        assert!(result.is_ok(), "Deactivation should succeed");
+
+        // Verify structured deactivation events (AC#3)
+        assert!(logs_contain("Deactivation started"));
+        assert!(logs_contain("phase"));
+        assert!(logs_contain("Deactivation complete"));
+        assert!(logs_contain("duration_ms"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_deactivation_cleanup_event_includes_count() {
+        let manager = setup_active_manager();
+
+        // Setup overlays as mounted
+        {
+            let m = manager.lock().unwrap();
+            m.filesystem().mock_set_mounted(Path::new("/home"), true);
+            m.filesystem().mock_set_mounted(Path::new("/etc"), true);
+
+            // Add some cleanup items
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_string());
+            let bash_history = Path::new(&home).join(".bash_history");
+            let bash_history_str = bash_history.to_str().unwrap();
+            m.filesystem().mock_set_path_exists(bash_history_str, true);
+            m.filesystem()
+                .mock_set_file_content(bash_history_str, "nails activate\nsome command\n");
+        }
+
+        let orchestrator =
+            DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+
+        let result = orchestrator.run();
+        assert!(result.is_ok(), "Deactivation should succeed");
+
+        // Verify cleanup event includes count (AC#3)
+        assert!(logs_contain("Cleanup complete") || logs_contain("cleaned_items"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_deactivation_unmount_event_includes_overlay_list() {
+        let manager = setup_active_manager();
+
+        // Setup overlays as mounted
+        {
+            let m = manager.lock().unwrap();
+            m.filesystem().mock_set_mounted(Path::new("/home"), true);
+            m.filesystem().mock_set_mounted(Path::new("/etc"), true);
+        }
+
+        let orchestrator =
+            DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+
+        let result = orchestrator.run();
+        assert!(result.is_ok(), "Deactivation should succeed");
+
+        // Verify unmount event includes overlay list (AC#3)
+        assert!(logs_contain("Overlays unmounted") || logs_contain("overlays"));
+        assert!(logs_contain("count") || logs_contain("unmounted"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_deactivation_idempotent_log() {
+        // Test idempotent deactivation logging
+        let manager = setup_active_manager();
+
+        // Set state to Inactive
+        {
+            let mut m = manager.lock().unwrap();
+            m.force_state(SystemState::Inactive)
+                .expect("Should set inactive");
+        }
+
+        let orchestrator =
+            DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+
+        let result = orchestrator.run();
+        assert!(result.is_ok(), "Idempotent deactivation should succeed");
+
+        // Verify idempotent message with structured fields
+        assert!(logs_contain("Already inactive") || logs_contain("already_inactive"));
     }
 }
