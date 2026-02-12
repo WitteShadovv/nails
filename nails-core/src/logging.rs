@@ -10,23 +10,55 @@
 //! - **FR38**: Structured JSON logs (newline-delimited)
 //! - **AR26**: Pre-flight validation of hidden volume path before any write
 //!
-//! # Example
+//! # Usage Workflow
+//!
+//! ## 1. Initialize LoggingManager
 //!
 //! ```no_run
 //! use nails_core::logging::LoggingManager;
 //! use nails_core::{RealFilesystem, Verbosity};
 //! use std::path::PathBuf;
 //!
+//! // Create manager with log path and hidden volume path
 //! let manager = LoggingManager::new(
 //!     PathBuf::from("/mnt/hidden-volume/logs"),
 //!     PathBuf::from("/mnt/hidden-volume"),
 //! );
 //!
+//! // Validate and initialize (fail-safe: refuses if outside hidden volume)
 //! let fs = RealFilesystem;
 //! let config = manager.init(&fs).expect("Failed to initialize logging");
+//! ```
+//!
+//! ## 2. Install Subscriber
+//!
+//! ```no_run
+//! # use nails_core::logging::LoggingConfig;
+//! # use nails_core::Verbosity;
+//! # use std::path::PathBuf;
+//! # let config = LoggingConfig {
+//! #     log_file_path: PathBuf::from("/mnt/hidden-volume/logs/nails.log"),
+//! # };
 //! // Install with verbosity level
 //! config.build_and_install_with_verbosity(Verbosity::Normal)
 //!     .expect("Failed to install subscriber");
+//! ```
+//!
+//! ## 3. Use Tracing Events
+//!
+//! ```no_run
+//! // Now all tracing events are captured to the log file
+//! tracing::info!(user = "alice", state = "active", "System activated");
+//! tracing::error!(path = "/home", error = "busy", "Mount failed");
+//! ```
+//!
+//! ## JSON Output Format
+//!
+//! Logs are written as newline-delimited JSON:
+//!
+//! ```json
+//! {"timestamp":"2026-02-12T10:30:45.123Z","level":"INFO","message":"System activated","fields":{"user":"alice","state":"active"}}
+//! {"timestamp":"2026-02-12T10:30:46.456Z","level":"ERROR","message":"Mount failed","fields":{"path":"/home","error":"busy"}}
 //! ```
 
 use crate::{Filesystem, NailsError, Result, Verbosity};
@@ -211,7 +243,8 @@ impl LoggingConfig {
     ///
     /// # Returns
     ///
-    /// A `WorkerGuard` that must be kept alive for logs to flush.
+    /// `Ok(())` on success. The subscriber is installed globally and will
+    /// remain active for the program duration.
     ///
     /// # Errors
     ///
@@ -230,11 +263,11 @@ impl LoggingConfig {
     ///     log_file_path: PathBuf::from("/mnt/hidden-volume/logs/nails.log"),
     /// };
     ///
-    /// // The subscriber MUST be kept alive for the program duration
-    /// let _guard = config.build_and_install_subscriber(Verbosity::Normal.to_tracing_level())
+    /// // Install the subscriber
+    /// config.build_and_install_subscriber(Verbosity::Normal.to_tracing_level())
     ///     .expect("Failed to install logging");
     ///
-    /// // Program continues here - logs are automatically flushed when _guard drops
+    /// // Now all tracing events will be written to the log file
     /// ```
     pub fn build_and_install_subscriber(&self, max_level: tracing::Level) -> Result<()> {
         use std::fs::OpenOptions;
