@@ -808,6 +808,13 @@ impl<F: Filesystem + 'static> EmergencyOrchestrator<F> {
 mod tests {
     use super::*;
 
+    /// Helper function to check if logs contain a specific string
+    /// This works with tracing-test's captured output
+    #[allow(dead_code)]
+    fn logs_contain(s: &str) -> bool {
+        tracing_test::internal::logs_with_scope_contain("", s)
+    }
+
     // AC7: Test countdown completes when skip_countdown=false and no abort
     #[test]
     fn test_countdown_completes() {

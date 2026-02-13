@@ -1,62 +1,17 @@
 # Base VM Configuration for E2E Tests
-# Fully configured for Story 13.2 with impermanence
+# Simplified: let NixOS test framework handle boot/filesystems
+# Secondary disk (/dev/vdb) is available for LUKS hidden volume testing
 
 { lib, pkgs, ... }: {
   # Virtual hardware configuration
   virtualisation = {
     memorySize = 4096; # 4GB RAM
     cores = 4; # 4 CPU cores
-    diskSize = 20480; # 20GB primary disk (default)
+    diskSize = 20480; # 20GB primary disk
 
     # Secondary disk for hidden volume simulation (2GB)
+    # Available as /dev/vdb inside the VM
     emptyDiskImages = [ 2048 ];
-
-    # Boot configuration
-    useBootLoader = true;
-    useEFIBoot = true; # UEFI boot mode
-    mountHostNixStore = true; # Mount host Nix store for performance
-  };
-
-  # Impermanence module configuration
-  imports = [ (import ./impermanence.nix) ];
-
-  # Filesystem configuration
-  fileSystems = {
-    # Root filesystem is tmpfs (ephemeral)
-    "/" = {
-      device = "tmpfs";
-      fsType = "tmpfs";
-      options = [ "defaults" "size=4G" "mode=755" ];
-    };
-
-    # /nix on persistent storage (needed for boot)
-    "/nix" = {
-      device = "/dev/disk/by-label/nix";
-      fsType = "ext4";
-      options = [ "defaults" ];
-      neededForBoot = true;
-    };
-
-    # /persist on persistent storage (needed for boot)
-    "/persist" = {
-      device = "/dev/disk/by-label/persist";
-      fsType = "ext4";
-      options = [ "defaults" ];
-      neededForBoot = true;
-    };
-  };
-
-  # Ensure disks are labeled for the mount points above
-  boot.initrd.services.udev.rules = ''
-    ACTION=="add|change", SUBSYSTEM=="block", ENV{ID_SERIAL}=="*disk1", SYMLINK+="disk/by-label/nix%n"
-    ACTION=="add|change", SUBSYSTEM=="block", ENV{ID_SERIAL}=="*disk2", SYMLINK+="disk/by-label/persist%n"
-  '';
-
-  # Impermanence: persistent directories and files
-  environment.persistence."/persist" = {
-    hideMounts = true;
-    directories = [ "/var/log" "/var/lib/nixos" "/var/lib/systemd" ];
-    files = [ "/etc/machine-id" ];
   };
 
   # No swap for forensic safety

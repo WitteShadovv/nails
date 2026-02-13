@@ -73,6 +73,11 @@ pub struct ProcessInfo {
 pub fn detect_processes_using(target: &Path) -> Result<Vec<ProcessInfo>> {
     let mut blocking = Vec::new();
 
+    // Build set of PIDs to exclude: current process and all ancestors.
+    // This prevents nails from killing its own process tree (e.g., the sudo
+    // that invoked nails, or the test backdoor service in NixOS VM tests).
+    let exclude_pids = collect_ancestor_pids();
+
     // Iterate over /proc entries
     let proc_dir = Path::new("/proc");
     if !proc_dir.exists() {
@@ -97,6 +102,11 @@ pub fn detect_processes_using(target: &Path) -> Result<Vec<ProcessInfo>> {
             Ok(p) => p,
             Err(_) => continue, // Skip invalid PIDs
         };
+
+        // Skip our own process tree to avoid killing ourselves
+        if exclude_pids.contains(&pid) {
+            continue;
+        }
 
         let proc_path = proc_dir.join(&file_name);
 
@@ -127,6 +137,52 @@ pub fn detect_processes_using(target: &Path) -> Result<Vec<ProcessInfo>> {
     }
 
     Ok(blocking)
+}
+
+/// Collect the current process PID and all ancestor PIDs up to PID 1.
+///
+/// Walks the process tree via `/proc/{pid}/stat` to find PPIDs.
+/// Returns a set containing the current PID and all parent PIDs.
+fn collect_ancestor_pids() -> std::collections::HashSet<u32> {
+    let mut pids = std::collections::HashSet::new();
+    let mut current = std::process::id();
+
+    loop {
+        pids.insert(current);
+        if current <= 1 {
+            break;
+        }
+        match read_ppid(current) {
+            Some(ppid) if ppid != current => {
+                current = ppid;
+            }
+            _ => break,
+        }
+    }
+
+    pids
+}
+
+/// Read the parent PID from `/proc/{pid}/stat`.
+///
+/// The stat file format has PPID as the 4th field. We parse carefully
+/// because the process name (field 2) can contain spaces and parentheses.
+fn read_ppid(pid: u32) -> Option<u32> {
+    let stat_path = format!("/proc/{}/stat", pid);
+    let content = fs::read_to_string(stat_path).ok()?;
+
+    // Field 2 (comm) is enclosed in parentheses and may contain spaces/parens.
+    // Find the last ')' to skip past it, then parse field 4 (PPID).
+    let after_comm = content.rfind(')')? + 1;
+    let remainder = &content[after_comm..];
+    let fields: Vec<&str> = remainder.split_whitespace().collect();
+
+    // fields[0] = state, fields[1] = ppid
+    if fields.len() >= 2 {
+        fields[1].parse().ok()
+    } else {
+        None
+    }
 }
 
 /// Check if process current working directory is in target

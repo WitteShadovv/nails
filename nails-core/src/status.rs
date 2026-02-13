@@ -890,6 +890,13 @@ mod tests {
     use std::path::Path;
     use tempfile::NamedTempFile;
 
+    /// Helper function to check if logs contain a specific string
+    /// This works with tracing-test's captured output
+    #[allow(dead_code)]
+    fn logs_contain(s: &str) -> bool {
+        tracing_test::internal::logs_with_scope_contain("", s)
+    }
+
     /// Helper to create a temporary state file
     fn create_temp_state_file(state_file: &StateFile) -> NamedTempFile {
         let mut temp_file = NamedTempFile::new().unwrap();

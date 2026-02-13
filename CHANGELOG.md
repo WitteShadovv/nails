@@ -53,7 +53,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - **feat(story-1.1)**: Cargo workspace with CLI and core crates (Story 1.1)
   - Workspace structure: nails-cli (binary) and nails-core (library)
   - Rust 1.91+ with 2021 edition
-  - Project metadata: AGPL-3.0 license, author, repository links
+  - Project metadata: GPL-3.0 license, author, repository links
   - Foundation for test-driven development from Day 1
 
 ### Fixed
@@ -129,6 +129,6 @@ All changes must meet the Definition of Done criteria documented in [docs/defini
 ---
 
 **Project:** NAILS - NixOS Anti-forensics Isolation & Layering System
-**License:** AGPL-3.0
+**License:** GPL-3.0
 **Maintainer:** WitteShadovv
 **Status:** Active Development (Thesis Project)

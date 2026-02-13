@@ -1979,6 +1979,13 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
+    /// Helper function to check if logs contain a specific string
+    /// This works with tracing-test's captured output
+    #[allow(dead_code)]
+    fn logs_contain(s: &str) -> bool {
+        tracing_test::internal::logs_with_scope_contain("", s)
+    }
+
     fn create_test_manager() -> NailsManager<MockFilesystem> {
         let fs = MockFilesystem::new();
         let config = Config::default();

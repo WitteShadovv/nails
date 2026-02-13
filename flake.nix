@@ -4,15 +4,24 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
-  outputs = { self, nixpkgs, flake-utils, ... }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        overlays = [ (import rust-overlay) ];
+        pkgs = import nixpkgs { inherit system overlays; };
+
+        # Rust toolchain pinned to 1.93.0
+        rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
+          extensions = [ "rust-src" "rust-analyzer" ];
+        };
+
+        pkgsMusl = pkgs.pkgsCross.musl64;
 
         # NAILS binary with static musl linking
-        nails = pkgs.rustPlatform.buildRustPackage rec {
+        nails = pkgsMusl.rustPlatform.buildRustPackage rec {
           pname = "nails";
           version = "0.1.0";
 
@@ -24,14 +33,8 @@
 
           cargoLock = { lockFile = ./Cargo.lock; };
 
-          # Musl static linking for VM portability
-          cargoBuildFlags =
-            [ "--release" "--target x86_64-unknown-linux-musl" ];
-
           # Configure for static linking
           CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
-
-          nativeBuildInputs = with pkgs; [ rustc cargo ];
 
           doCheck = false; # Tests run separately in checks
         };
@@ -57,11 +60,7 @@
         # Dev shell
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            rustc
-            cargo
-            rust-analyzer
-            rustfmt
-            clippy
+            rustToolchain
             cargo-tarpaulin
             cargo-llvm-cov
             llvmPackages_latest.llvm

@@ -1,6 +1,6 @@
 # NAILS - NixOS Anti-forensics Isolation & Layering System
 
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust 1.91+](https://img.shields.io/badge/rust-1.91+-orange.svg)](https://www.rust-lang.org/)
 [![NixOS](https://img.shields.io/badge/NixOS-supported-blue.svg)](https://nixos.org/)
 [![Test Pipeline](https://github.com/witteshadovv/nails/actions/workflows/test.yml/badge.svg)](https://github.com/witteshadovv/nails/actions/workflows/test.yml)

@@ -528,6 +528,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
 mod tests {
     use super::*;
     use crate::MockFilesystem;
+    use serial_test::serial;
 
     fn create_test_shell() -> ShellInstrumentation<MockFilesystem> {
         let fs = MockFilesystem::new();
@@ -536,6 +537,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_detect_bash_shell() {
         unsafe {
             std::env::set_var("SHELL", "/bin/bash");
@@ -549,6 +551,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_detect_zsh_shell() {
         unsafe {
             std::env::set_var("SHELL", "/usr/bin/zsh");
@@ -562,6 +565,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_detect_fish_shell() {
         unsafe {
             std::env::set_var("SHELL", "/usr/local/bin/fish");
@@ -575,6 +579,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_detect_unsupported_shell() {
         unsafe {
             std::env::set_var("SHELL", "/bin/tcsh");
