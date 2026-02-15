@@ -420,6 +420,18 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Returns `NailsError::PermissionDenied` if parent is not writable.
     fn create_directory(&self, path: &Path) -> Result<()>;
 
+    /// Set Unix permissions on a path
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to set permissions on
+    /// * `mode` - Unix permission mode (e.g., 0o700)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if path doesn't exist or permissions cannot be set.
+    fn set_permissions(&self, path: &Path, mode: u32) -> Result<()>;
+
     /// Check if a path is readable
     ///
     /// # Arguments
@@ -1021,6 +1033,7 @@ pub struct MockFilesystem {
     rename_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Track paths that should fail rename (Story 9.2)
     explicit_file_sizes: Arc<Mutex<HashSet<PathBuf>>>, // Track paths with explicitly set file sizes (Story 9.2)
     modified_times: Arc<Mutex<HashMap<PathBuf, chrono::DateTime<chrono::Utc>>>>, // Track mock modification times (Story 9.2)
+    permissions: Arc<Mutex<HashMap<PathBuf, u32>>>, // Track Unix permissions set on paths (Story 14.4)
 }
 
 impl MockFilesystem {
@@ -1067,6 +1080,7 @@ impl MockFilesystem {
             rename_should_fail: Arc::new(Mutex::new(HashSet::new())),
             explicit_file_sizes: Arc::new(Mutex::new(HashSet::new())),
             modified_times: Arc::new(Mutex::new(HashMap::new())),
+            permissions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1104,6 +1118,7 @@ impl MockFilesystem {
         self.rename_should_fail.lock().unwrap().clear();
         self.explicit_file_sizes.lock().unwrap().clear();
         self.modified_times.lock().unwrap().clear();
+        self.permissions.lock().unwrap().clear();
     }
 
     // ========================================================================
@@ -1655,6 +1670,13 @@ impl MockFilesystem {
             .unwrap()
             .insert(dir.to_path_buf(), contents);
     }
+
+    /// Get the permissions that were set on a path via `set_permissions`
+    ///
+    /// Returns `None` if no permissions were explicitly set on this path.
+    pub fn mock_get_permissions(&self, path: &Path) -> Option<u32> {
+        self.permissions.lock().unwrap().get(path).copied()
+    }
 }
 
 impl Default for MockFilesystem {
@@ -1788,18 +1810,53 @@ impl Filesystem for MockFilesystem {
     }
 
     fn create_directory(&self, path: &Path) -> Result<()> {
-        // Check parent is writable
+        // Simulate create_dir_all by creating parent directories recursively
+        // This matches RealFilesystem behavior which uses std::fs::create_dir_all
         if let Some(parent) = path.parent() {
-            let paths = self.paths.lock().unwrap();
-            let parent_writable = paths
-                .get(parent)
-                .map(|info| info.is_writable)
-                .unwrap_or(false);
-            if !parent_writable {
-                return Err(NailsError::PermissionDenied(format!(
-                    "Parent directory not writable: {}",
-                    parent.display()
-                )));
+            // Check if parent exists
+            let parent_exists = {
+                let paths = self.paths.lock().unwrap();
+                paths.get(parent).map(|info| info.exists).unwrap_or(false)
+            };
+
+            // If parent doesn't exist, create it first (recursive)
+            if !parent_exists {
+                // Check if parent's parent is writable for the parent creation
+                if let Some(grandparent) = parent.parent() {
+                    let paths = self.paths.lock().unwrap();
+                    let grandparent_writable = paths
+                        .get(grandparent)
+                        .map(|info| info.is_writable)
+                        .unwrap_or(false);
+                    drop(paths);
+                    if !grandparent_writable {
+                        return Err(NailsError::PermissionDenied(format!(
+                            "Parent directory not writable: {}",
+                            grandparent.display()
+                        )));
+                    }
+                }
+                // Create parent directory
+                self.create_directory(parent)?;
+                // Mark newly created parent as writable so children can be created
+                let mut paths = self.paths.lock().unwrap();
+                if let Some(entry) = paths.get_mut(parent) {
+                    entry.is_writable = true;
+                }
+            } else {
+                // Parent exists, check if it's writable
+                let paths = self.paths.lock().unwrap();
+                let parent_writable = paths
+                    .get(parent)
+                    .map(|info| info.is_writable)
+                    .unwrap_or(false);
+                drop(paths);
+                if !parent_writable {
+                    return Err(NailsError::PermissionDenied(format!(
+                        "Parent directory not writable: {}",
+                        parent.display()
+                    )));
+                }
             }
         }
 
@@ -1808,6 +1865,22 @@ impl Filesystem for MockFilesystem {
         let entry = paths.entry(path.to_path_buf()).or_default();
         entry.exists = true;
         entry.is_directory = true;
+        Ok(())
+    }
+
+    fn set_permissions(&self, path: &Path, mode: u32) -> Result<()> {
+        let paths = self.paths.lock().unwrap();
+        if !paths.get(path).map(|info| info.exists).unwrap_or(false) {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Path does not exist: {}", path.display()),
+            )));
+        }
+        drop(paths);
+        self.permissions
+            .lock()
+            .unwrap()
+            .insert(path.to_path_buf(), mode);
         Ok(())
     }
 
@@ -2440,6 +2513,13 @@ impl Filesystem for RealFilesystem {
 
     fn create_directory(&self, path: &Path) -> Result<()> {
         std::fs::create_dir_all(path)?;
+        Ok(())
+    }
+
+    fn set_permissions(&self, path: &Path, mode: u32) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(mode);
+        std::fs::set_permissions(path, perms)?;
         Ok(())
     }
 
