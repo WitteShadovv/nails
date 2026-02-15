@@ -7,11 +7,12 @@
 //! # Example
 //!
 //! ```rust
+//! use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 //! use nails_core::ConfigBuilder;
 //! use std::path::PathBuf;
 //!
 //! let config = ConfigBuilder::new()
-//!     .hidden_volume_path(PathBuf::from("/mnt/hidden-volume"))
+//!     .hidden_volume_path(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT))
 //!     .clear_history(false)
 //!     .default_verbosity("debug")
 //!     .build()
@@ -79,14 +80,15 @@ pub struct CliOverrides {
 /// # Example
 ///
 /// ```rust
+/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::config::OverlayConfig;
 /// use std::path::PathBuf;
 ///
 /// let overlay = OverlayConfig {
 ///     name: "home".to_string(),
 ///     lower: PathBuf::from("/home"),
-///     upper: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
-///     work: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+///     upper: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/upper"),
+///     work: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/work"),
 ///     target: PathBuf::from("/home"),
 /// };
 /// ```
@@ -129,6 +131,7 @@ impl Default for OverlayConfig {
 /// # Example
 ///
 /// ```rust
+/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::config::Config;
 /// use std::path::PathBuf;
 ///
@@ -137,8 +140,8 @@ impl Default for OverlayConfig {
 ///
 /// // Or create custom config
 /// let config = Config {
-///     hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
-///     state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
+///     hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+///     state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
 ///     overlays: vec![],
 ///     ..Config::default()
 /// };
@@ -207,10 +210,19 @@ pub struct Config {
     pub retention_days: u64,
 }
 
+/// Default hidden volume root path (single source of truth)
+///
+/// # Note
+///
+/// This constant is public for use in documentation examples and tests.
+/// Production code should use `Config::hidden_volume_root` field instead of
+/// hardcoding this value.
+pub const DEFAULT_HIDDEN_VOLUME_ROOT: &str = "/mnt/hidden-volume";
+
 // Serde default functions for new user-configurable fields
 fn default_state_file_path() -> PathBuf {
     // This will be overridden in load() to use the actual hidden_volume_root
-    PathBuf::from("/mnt/hidden-volume/.nails/state.json")
+    PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json")
 }
 
 fn default_minimum_space_mb() -> u64 {
@@ -247,7 +259,7 @@ fn default_show_opsec_reminders() -> bool {
 
 fn default_log_path() -> PathBuf {
     // Default will be derived from hidden_volume_root in builder
-    PathBuf::from("/mnt/hidden-volume/logs")
+    PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs")
 }
 
 fn default_max_log_size_mb() -> u64 {
@@ -344,11 +356,12 @@ pub fn discover_config_path(config_override: Option<&std::path::Path>) -> PathBu
 /// # Example
 ///
 /// ```rust
+/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::config::ConfigBuilder;
 /// use std::path::PathBuf;
 ///
 /// let config = ConfigBuilder::new()
-///     .hidden_volume_path(PathBuf::from("/mnt/hidden-volume"))
+///     .hidden_volume_path(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT))
 ///     .clear_history(false)
 ///     .default_verbosity("debug")
 ///     .build()
@@ -580,7 +593,7 @@ impl Default for Config {
     /// Uses standard paths that work for testing with MockFilesystem.
     /// Includes default overlays for /home, /etc, and /var for VM testing.
     fn default() -> Self {
-        let hidden_root = PathBuf::from("/mnt/hidden-volume");
+        let hidden_root = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
 
         Self {
             hidden_volume_root: hidden_root.clone(),
@@ -698,7 +711,9 @@ impl Config {
         }
 
         // Derive state_file_path from hidden_volume_root if it's still the default
-        if config.state_file_path.as_os_str() == "/mnt/hidden-volume/.nails/state.json" {
+        let default_state_path =
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json");
+        if config.state_file_path == default_state_path {
             config.state_file_path = config.hidden_volume_root.join(".nails/state.json");
         }
 
@@ -886,7 +901,7 @@ retention_days: 7
     /// For tests that specifically need extended overlays, configure
     /// them explicitly in the test setup.
     pub fn test_default() -> Self {
-        let hidden_root = PathBuf::from("/mnt/hidden-volume");
+        let hidden_root = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
 
         Self {
             hidden_volume_root: hidden_root.clone(),
@@ -1108,8 +1123,8 @@ mod tests {
         let overlay = OverlayConfig {
             name: "home".to_string(),
             lower: PathBuf::from("/home"),
-            upper: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
-            work: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+            upper: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/upper"),
+            work: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/work"),
             target: PathBuf::from("/home"),
         };
 
@@ -1117,11 +1132,11 @@ mod tests {
         assert_eq!(overlay.lower, PathBuf::from("/home"));
         assert_eq!(
             overlay.upper,
-            PathBuf::from("/mnt/hidden-volume/overlays/home/upper")
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/upper")
         );
         assert_eq!(
             overlay.work,
-            PathBuf::from("/mnt/hidden-volume/overlays/home/work")
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/work")
         );
         assert_eq!(overlay.target, PathBuf::from("/home"));
     }
@@ -1141,8 +1156,8 @@ mod tests {
         let overlay1 = OverlayConfig {
             name: "home".to_string(),
             lower: PathBuf::from("/home"),
-            upper: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
-            work: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+            upper: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/upper"),
+            work: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/work"),
             target: PathBuf::from("/home"),
         };
 
@@ -1155,8 +1170,8 @@ mod tests {
         let overlay = OverlayConfig {
             name: "home".to_string(),
             lower: PathBuf::from("/home"),
-            upper: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
-            work: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+            upper: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/upper"),
+            work: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/work"),
             target: PathBuf::from("/home"),
         };
 
@@ -1182,11 +1197,11 @@ mod tests {
 
         assert_eq!(
             config.hidden_volume_root,
-            PathBuf::from("/mnt/hidden-volume")
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
         );
         assert_eq!(
             config.state_file_path,
-            PathBuf::from("/mnt/hidden-volume/.nails/state.json")
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json")
         );
         // Default config includes /home, /etc, and /var overlays
         assert_eq!(config.overlays.len(), 3);
@@ -1202,7 +1217,10 @@ mod tests {
         assert!(config.color_output);
         assert!(config.verify_on_deactivate);
         assert!(config.milestone_tips);
-        assert_eq!(config.log_path, PathBuf::from("/mnt/hidden-volume/logs"));
+        assert_eq!(
+            config.log_path,
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs")
+        );
         assert_eq!(config.max_log_size_mb, 10);
         assert_eq!(config.retention_days, 7);
     }
@@ -1214,7 +1232,7 @@ mod tests {
         // test_default() should have overlays but extended_overlays disabled
         assert_eq!(
             config.hidden_volume_root,
-            PathBuf::from("/mnt/hidden-volume")
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
         );
         assert_eq!(config.overlays.len(), 3);
         assert_eq!(config.overlays[0].name, "home");
@@ -1230,7 +1248,10 @@ mod tests {
         assert!(config.color_output);
         assert!(config.verify_on_deactivate);
         assert!(config.milestone_tips);
-        assert_eq!(config.log_path, PathBuf::from("/mnt/hidden-volume/logs"));
+        assert_eq!(
+            config.log_path,
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs")
+        );
         assert_eq!(config.max_log_size_mb, 10);
         assert_eq!(config.retention_days, 7);
     }
@@ -1240,14 +1261,14 @@ mod tests {
         let overlay = OverlayConfig {
             name: "home".to_string(),
             lower: PathBuf::from("/home"),
-            upper: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
-            work: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+            upper: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/upper"),
+            work: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/work"),
             target: PathBuf::from("/home"),
         };
 
         let config = Config {
-            hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
-            state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
+            hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
             overlays: vec![overlay.clone()],
             ..Config::default()
         };
@@ -1259,8 +1280,8 @@ mod tests {
     #[test]
     fn test_config_clone() {
         let config1 = Config {
-            hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
-            state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
+            hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
             overlays: vec![],
             ..Config::default()
         };
@@ -1272,13 +1293,13 @@ mod tests {
     #[test]
     fn test_config_serialization() {
         let config = Config {
-            hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
-            state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
+            hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/home"),
-                upper: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
-                work: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+                upper: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/upper"),
+                work: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/work"),
                 target: PathBuf::from("/home"),
             }],
             ..Config::default()
@@ -1300,22 +1321,22 @@ mod tests {
         let overlay1 = OverlayConfig {
             name: "home".to_string(),
             lower: PathBuf::from("/home"),
-            upper: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
-            work: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+            upper: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/upper"),
+            work: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/work"),
             target: PathBuf::from("/home"),
         };
 
         let overlay2 = OverlayConfig {
             name: "etc".to_string(),
             lower: PathBuf::from("/etc"),
-            upper: PathBuf::from("/mnt/hidden-volume/overlays/etc/upper"),
-            work: PathBuf::from("/mnt/hidden-volume/overlays/etc/work"),
+            upper: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/etc/upper"),
+            work: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/etc/work"),
             target: PathBuf::from("/etc"),
         };
 
         let config = Config {
-            hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
-            state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
+            hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
             overlays: vec![overlay1.clone(), overlay2.clone()],
             ..Config::default()
         };
@@ -1337,8 +1358,8 @@ mod tests {
         };
 
         let config = Config {
-            hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
-            state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
+            hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
             overlays: vec![],
             extended_overlays: extended.clone(),
             ..Config::default()
@@ -1373,8 +1394,8 @@ mod tests {
         };
 
         let config = Config {
-            hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
-            state_file_path: PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
+            hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
             overlays: vec![],
             extended_overlays: extended,
             ..Config::default()
@@ -1737,23 +1758,27 @@ mod tests {
     #[test]
     fn test_config_backward_compatibility_with_old_configs() {
         // Simulate old config JSON without new fields
-        let old_json = r#"{
-            "hidden_volume_root": "/mnt/hidden-volume",
-            "state_file_path": "/mnt/hidden-volume/.nails/state.json",
+        let state_file = format!("{}/.nails/state.json", DEFAULT_HIDDEN_VOLUME_ROOT);
+        let old_json = format!(
+            r#"{{
+            "hidden_volume_root": "{}",
+            "state_file_path": "{}",
             "overlays": [],
             "minimum_space_mb": 500,
-            "extended_overlays": {
+            "extended_overlays": {{
                 "enabled": false,
                 "directories": []
-            }
-        }"#;
+            }}
+        }}"#,
+            DEFAULT_HIDDEN_VOLUME_ROOT, state_file
+        );
 
         // Should deserialize successfully with defaults for missing fields
-        let config: Config = serde_json::from_str(old_json).expect("Should deserialize");
+        let config: Config = serde_json::from_str(&old_json).expect("Should deserialize");
 
         assert_eq!(
             config.hidden_volume_root,
-            PathBuf::from("/mnt/hidden-volume")
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
         );
         assert!(config.clear_history); // Default applied
         assert!(config.preflight_checks); // Default applied
@@ -1761,7 +1786,10 @@ mod tests {
         assert!(config.color_output); // Default applied
         assert!(config.verify_on_deactivate); // Default applied
         assert!(config.milestone_tips); // Default applied
-        assert_eq!(config.log_path, PathBuf::from("/mnt/hidden-volume/logs")); // Default applied
+        assert_eq!(
+            config.log_path,
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs")
+        ); // Default applied
         assert_eq!(config.max_log_size_mb, 10); // Default applied
         assert_eq!(config.retention_days, 7); // Default applied
     }
@@ -1951,7 +1979,7 @@ clear_history: false
         // Should return Config::default()
         assert_eq!(
             config.hidden_volume_root,
-            PathBuf::from("/mnt/hidden-volume")
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
         );
         assert!(config.clear_history);
     }
@@ -2144,7 +2172,7 @@ clear_history: false
         // Defaults used, then CLI overrides applied
         assert_eq!(
             config.hidden_volume_root,
-            PathBuf::from("/mnt/hidden-volume")
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
         );
         assert!(!config.preflight_checks); // CLI override
         assert_eq!(config.default_verbosity, "quiet"); // CLI override
@@ -2268,6 +2296,68 @@ default_verbosity: info
         assert!(
             result.is_absolute() || result.starts_with("."),
             "Path should be absolute or start with '.' for fallback"
+        );
+    }
+
+    #[test]
+    fn test_integration_custom_hidden_volume_root_workflow() {
+        // AC9 Integration test: Verify custom hidden_volume_root works end-to-end
+        // Story 14.2 - Eliminate hardcoded /mnt/hidden-volume constant
+
+        // Step 1: Create config with custom hidden_volume_root
+        use crate::state::is_on_hidden_volume;
+        use std::path::Path;
+
+        let custom_root = "/tmp";
+        let config = Config {
+            hidden_volume_root: PathBuf::from(custom_root),
+            state_file_path: PathBuf::from("/tmp/.nails/state.json"),
+            log_path: PathBuf::from("/tmp/logs"),
+            ..Config::default()
+        };
+
+        // Step 2: Verify config uses custom root
+        assert_eq!(config.hidden_volume_root, PathBuf::from(custom_root));
+
+        // Step 3: Verify state file validation respects custom root
+        let valid_state_path = Path::new("/tmp/.nails/state.json");
+        let invalid_state_path = Path::new("/mnt/hidden-volume/.nails/state.json");
+
+        assert!(
+            is_on_hidden_volume(valid_state_path, custom_root),
+            "State file at /tmp should be valid with custom root /tmp"
+        );
+        assert!(
+            !is_on_hidden_volume(invalid_state_path, custom_root),
+            "State file at /mnt/hidden-volume should be invalid with custom root /tmp"
+        );
+
+        // Step 4: Verify default state_file_path is re-derived from custom root
+        let default_path = default_state_file_path();
+        assert!(
+            default_path.starts_with(DEFAULT_HIDDEN_VOLUME_ROOT),
+            "Default state path should use DEFAULT_HIDDEN_VOLUME_ROOT before config load"
+        );
+
+        // Step 5: Verify that config paths can be completely customized
+        let another_custom_root = "/mnt/secure";
+        let config2 = Config {
+            hidden_volume_root: PathBuf::from(another_custom_root),
+            state_file_path: PathBuf::from("/mnt/secure/.nails/state.json"),
+            log_path: PathBuf::from("/mnt/secure/logs"),
+            ..Config::default()
+        };
+
+        assert_eq!(
+            config2.hidden_volume_root,
+            PathBuf::from(another_custom_root)
+        );
+        assert!(
+            is_on_hidden_volume(
+                Path::new("/mnt/secure/.nails/state.json"),
+                another_custom_root
+            ),
+            "Should accept custom mount point /mnt/secure"
         );
     }
 }

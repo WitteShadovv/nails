@@ -807,6 +807,7 @@ impl<F: Filesystem + 'static> EmergencyOrchestrator<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 
     /// Helper function to check if logs contain a specific string
     /// This works with tracing-test's captured output
@@ -1191,9 +1192,9 @@ mod tests {
     fn setup_active_manager() -> Arc<Mutex<NailsManager<MockFilesystem>>> {
         let fs = MockFilesystem::new();
 
-        fs.mock_set_path_exists("/mnt/hidden-volume", true);
+        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
         fs.mock_set_path_exists("/mnt/hidden-volume/.nails", true);
-        fs.mock_set_path_type("/mnt/hidden-volume", "directory");
+        fs.mock_set_path_type(DEFAULT_HIDDEN_VOLUME_ROOT, "directory");
         fs.mock_set_path_type("/mnt/hidden-volume/.nails", "directory");
 
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1225,9 +1226,9 @@ mod tests {
     fn setup_inactive_manager() -> Arc<Mutex<NailsManager<MockFilesystem>>> {
         let fs = MockFilesystem::new();
 
-        fs.mock_set_path_exists("/mnt/hidden-volume", true);
+        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
         fs.mock_set_path_exists("/mnt/hidden-volume/.nails", true);
-        fs.mock_set_path_type("/mnt/hidden-volume", "directory");
+        fs.mock_set_path_type(DEFAULT_HIDDEN_VOLUME_ROOT, "directory");
         fs.mock_set_path_type("/mnt/hidden-volume/.nails", "directory");
 
         let temp_dir = tempfile::tempdir().unwrap();

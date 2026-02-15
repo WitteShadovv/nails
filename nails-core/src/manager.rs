@@ -1972,7 +1972,7 @@ mod tests {
     use super::*;
     use crate::{
         EphemeralOverlayDir, ExtendedOverlayConfig, MockFilesystem, OverlayConfig, StateFile,
-        Stopwatch, SystemState, Verbosity,
+        Stopwatch, SystemState, Verbosity, config::DEFAULT_HIDDEN_VOLUME_ROOT,
     };
     use chrono::Utc;
     use std::collections::HashMap;
@@ -6317,7 +6317,7 @@ mod tests {
         fs.mock_set_path_exists("/", true);
         fs.mock_set_path_exists("/home", true);
         fs.mock_set_path_exists("/etc", true);
-        fs.mock_set_path_exists("/mnt/hidden-volume", true);
+        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
         fs.mock_set_path_exists("/mnt/hidden-volume/.nails", true);
         fs.mock_set_path_exists("/mnt/hidden-volume/.nails/home-upper", true);
         fs.mock_set_path_exists("/mnt/hidden-volume/.nails/home-work", true);

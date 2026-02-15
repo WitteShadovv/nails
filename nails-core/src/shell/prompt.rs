@@ -208,34 +208,35 @@ end
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 
     #[test]
     fn test_bash_script_contains_mount_check() {
-        let script = generate_bash_prompt_script("/mnt/hidden-volume");
+        let script = generate_bash_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains("if [ ! -d \"/mnt/hidden-volume/.nails\" ]"));
     }
 
     #[test]
     fn test_bash_script_contains_idempotency_check() {
-        let script = generate_bash_prompt_script("/mnt/hidden-volume");
+        let script = generate_bash_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains(r#"if [[ "$PS1" == *"NAILS-ACTIVE"* ]]"#));
     }
 
     #[test]
     fn test_bash_script_contains_no_color_check() {
-        let script = generate_bash_prompt_script("/mnt/hidden-volume");
+        let script = generate_bash_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains(r#"if [ -z "${NO_COLOR+x}" ]"#));
     }
 
     #[test]
     fn test_bash_script_contains_color_codes() {
-        let script = generate_bash_prompt_script("/mnt/hidden-volume");
+        let script = generate_bash_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains(r#"\[\033[32m\](NAILS-ACTIVE)\[\033[0m\]"#));
     }
 
     #[test]
     fn test_bash_script_saves_original_ps1() {
-        let script = generate_bash_prompt_script("/mnt/hidden-volume");
+        let script = generate_bash_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains("export _NAILS_ORIG_PS1="));
     }
 
@@ -248,31 +249,31 @@ mod tests {
 
     #[test]
     fn test_zsh_script_contains_mount_check() {
-        let script = generate_zsh_prompt_script("/mnt/hidden-volume");
+        let script = generate_zsh_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains("if [ ! -d \"/mnt/hidden-volume/.nails\" ]"));
     }
 
     #[test]
     fn test_zsh_script_contains_idempotency_check() {
-        let script = generate_zsh_prompt_script("/mnt/hidden-volume");
+        let script = generate_zsh_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains(r#"if [[ "$PROMPT" == *"NAILS-ACTIVE"* ]]"#));
     }
 
     #[test]
     fn test_zsh_script_contains_no_color_check() {
-        let script = generate_zsh_prompt_script("/mnt/hidden-volume");
+        let script = generate_zsh_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains(r#"if [ -z "${NO_COLOR+x}" ]"#));
     }
 
     #[test]
     fn test_zsh_script_contains_color_codes() {
-        let script = generate_zsh_prompt_script("/mnt/hidden-volume");
+        let script = generate_zsh_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains(r#"%F{green}(NAILS-ACTIVE)%f"#));
     }
 
     #[test]
     fn test_zsh_script_saves_original_prompt() {
-        let script = generate_zsh_prompt_script("/mnt/hidden-volume");
+        let script = generate_zsh_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains("export _NAILS_ORIG_PROMPT="));
     }
 
@@ -285,32 +286,32 @@ mod tests {
 
     #[test]
     fn test_fish_script_contains_mount_check() {
-        let script = generate_fish_prompt_script("/mnt/hidden-volume");
+        let script = generate_fish_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains("if not test -d \"/mnt/hidden-volume/.nails\""));
     }
 
     #[test]
     fn test_fish_script_contains_idempotency_check() {
-        let script = generate_fish_prompt_script("/mnt/hidden-volume");
+        let script = generate_fish_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains("if functions -q _nails_orig_prompt"));
     }
 
     #[test]
     fn test_fish_script_contains_no_color_check() {
-        let script = generate_fish_prompt_script("/mnt/hidden-volume");
+        let script = generate_fish_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains("if set -q NO_COLOR"));
     }
 
     #[test]
     fn test_fish_script_contains_color_command() {
-        let script = generate_fish_prompt_script("/mnt/hidden-volume");
+        let script = generate_fish_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains("set_color green"));
         assert!(script.contains("set_color normal"));
     }
 
     #[test]
     fn test_fish_script_saves_original_function() {
-        let script = generate_fish_prompt_script("/mnt/hidden-volume");
+        let script = generate_fish_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(script.contains("functions -c fish_prompt _nails_orig_prompt"));
     }
 
@@ -343,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_bash_script_syntax_valid() {
-        let script = generate_bash_prompt_script("/mnt/hidden-volume");
+        let script = generate_bash_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
 
         // Write script to a temp file and validate with bash -n
         use std::io::Write;
@@ -373,7 +374,7 @@ mod tests {
 
     #[test]
     fn test_zsh_script_syntax_valid() {
-        let script = generate_zsh_prompt_script("/mnt/hidden-volume");
+        let script = generate_zsh_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
 
         // Write script to a temp file and validate with zsh -n
         use std::io::Write;
@@ -403,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_fish_script_syntax_valid() {
-        let script = generate_fish_prompt_script("/mnt/hidden-volume");
+        let script = generate_fish_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
 
         // Write script to a temp file and validate with fish --no-execute
         use std::io::Write;

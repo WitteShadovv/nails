@@ -35,7 +35,7 @@
 //! let results = registry.run_all(&fs);
 //! ```
 
-use crate::{Filesystem, NailsError, Result, SystemState};
+use crate::{Filesystem, NailsError, Result, SystemState, config::DEFAULT_HIDDEN_VOLUME_ROOT};
 use colored::Colorize;
 use std::env;
 use std::fmt;
@@ -380,17 +380,18 @@ impl<F: Filesystem> Default for PreFlightRegistry<F> {
 /// # Example
 ///
 /// ```rust
+/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::preflight::{HiddenVolumeCheck, PreFlightCheck};
 /// use nails_core::filesystem::MockFilesystem;
 /// use std::path::PathBuf;
 ///
 /// let fs = MockFilesystem::new();
-/// let check = HiddenVolumeCheck::new(PathBuf::from("/mnt/hidden-volume"));
+/// let check = HiddenVolumeCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT));
 ///
 /// // Set up mock state
-/// fs.mock_set_path_exists("/mnt/hidden-volume", true);
-/// fs.mock_set_mounted(std::path::Path::new("/mnt/hidden-volume"), true);
-/// fs.mock_set_writable("/mnt/hidden-volume", true);
+/// fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+/// fs.mock_set_mounted(std::path::Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
+/// fs.mock_set_writable(DEFAULT_HIDDEN_VOLUME_ROOT, true);
 ///
 /// let result = check.run(&fs).unwrap();
 /// assert!(result.is_pass());
@@ -412,10 +413,10 @@ impl HiddenVolumeCheck {
 }
 
 impl Default for HiddenVolumeCheck {
-    /// Create check with default hidden volume path (/mnt/hidden-volume)
+    /// Create check with default hidden volume path
     fn default() -> Self {
         Self {
-            hidden_volume_path: PathBuf::from("/mnt/hidden-volume"),
+            hidden_volume_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
         }
     }
 }
@@ -506,12 +507,13 @@ const REQUIRED_DIRS: &[&str] = &[
 /// # Example
 ///
 /// ```rust,no_run
+/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::preflight::{HiddenStorageStructureCheck, PreFlightCheck};
 /// use nails_core::filesystem::MockFilesystem;
 /// use std::path::PathBuf;
 ///
 /// let fs = MockFilesystem::new();
-/// let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+/// let check = HiddenStorageStructureCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT));
 ///
 /// // Set up mock directory structure - all required directories
 /// fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
@@ -552,10 +554,10 @@ impl HiddenStorageStructureCheck {
 }
 
 impl Default for HiddenStorageStructureCheck {
-    /// Create check with default hidden volume path (/mnt/hidden-volume)
+    /// Create check with default hidden volume path
     fn default() -> Self {
         Self {
-            hidden_volume_path: PathBuf::from("/mnt/hidden-volume"),
+            hidden_volume_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
         }
     }
 }
@@ -696,15 +698,16 @@ impl<F: Filesystem> PreFlightCheck<F> for SwapCheck {
 /// # Example
 ///
 /// ```rust
+/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::preflight::{SpaceCheck, PreFlightCheck};
 /// use nails_core::filesystem::MockFilesystem;
 /// use std::path::PathBuf;
 ///
 /// let fs = MockFilesystem::new();
-/// let check = SpaceCheck::new(PathBuf::from("/mnt/hidden-volume"), 1024);
+/// let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 1024);
 ///
 /// // Simulate 2GB available
-/// fs.mock_set_free_space(std::path::Path::new("/mnt/hidden-volume"), 2 * 1024 * 1024 * 1024);
+/// fs.mock_set_free_space(std::path::Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 2 * 1024 * 1024 * 1024);
 ///
 /// let result = check.run(&fs).unwrap();
 /// assert!(result.is_pass());
@@ -771,7 +774,7 @@ impl Default for SpaceCheck {
     /// Create check with default hidden volume path and 1024 MB minimum
     fn default() -> Self {
         Self {
-            hidden_volume_path: PathBuf::from("/mnt/hidden-volume"),
+            hidden_volume_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
             minimum_space_mb: 1024, // 1 GB default
         }
     }
@@ -1264,6 +1267,7 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
     use crate::filesystem::MockFilesystem;
     use std::path::Path;
 
@@ -1791,7 +1795,7 @@ mod tests {
         let check = HiddenVolumeCheck::default();
         assert_eq!(
             check.hidden_volume_path,
-            PathBuf::from("/mnt/hidden-volume")
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
         );
     }
 
@@ -1822,9 +1826,9 @@ mod tests {
         let check = HiddenVolumeCheck::default();
 
         // Set up: volume exists, is mounted, and writable
-        fs.mock_set_path_exists("/mnt/hidden-volume", true);
-        fs.mock_set_mounted(Path::new("/mnt/hidden-volume"), true);
-        fs.mock_set_writable("/mnt/hidden-volume", true);
+        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+        fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
+        fs.mock_set_writable(DEFAULT_HIDDEN_VOLUME_ROOT, true);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_pass());
@@ -1840,7 +1844,7 @@ mod tests {
         let check = HiddenVolumeCheck::default();
 
         // Volume path does not exist
-        fs.mock_set_path_exists("/mnt/hidden-volume", false);
+        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, false);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
@@ -1858,8 +1862,8 @@ mod tests {
         let check = HiddenVolumeCheck::default();
 
         // Volume exists but is NOT mounted
-        fs.mock_set_path_exists("/mnt/hidden-volume", true);
-        fs.mock_set_mounted(Path::new("/mnt/hidden-volume"), false);
+        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+        fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), false);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
@@ -1873,9 +1877,9 @@ mod tests {
         let check = HiddenVolumeCheck::default();
 
         // Volume exists and is mounted but NOT writable
-        fs.mock_set_path_exists("/mnt/hidden-volume", true);
-        fs.mock_set_mounted(Path::new("/mnt/hidden-volume"), true);
-        fs.mock_set_writable("/mnt/hidden-volume", false);
+        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+        fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
+        fs.mock_set_writable(DEFAULT_HIDDEN_VOLUME_ROOT, false);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
@@ -1914,7 +1918,7 @@ mod tests {
     fn test_hidden_storage_structure_check_all_directories_exist_pass() {
         // AC 3, 7: All required directories exist -> Pass
         let fs = MockFilesystem::new();
-        let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+        let check = HiddenStorageStructureCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT));
 
         // Set up all required directories
         fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
@@ -1944,7 +1948,7 @@ mod tests {
     fn test_hidden_storage_structure_check_single_directory_missing_fail() {
         // AC 4, 8: Single directory missing -> Fail with that directory
         let fs = MockFilesystem::new();
-        let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+        let check = HiddenStorageStructureCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT));
 
         // Set up all directories except etc/
         fs.mock_set_path_exists("/mnt/hidden-volume/etc", false);
@@ -1978,7 +1982,7 @@ mod tests {
     fn test_hidden_storage_structure_check_multiple_directories_missing_fail() {
         // AC 5, 8: Multiple directories missing -> Fail listing all
         let fs = MockFilesystem::new();
-        let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+        let check = HiddenStorageStructureCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT));
 
         // Only set up some directories, missing config/ and nixos/
         fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
@@ -2007,7 +2011,7 @@ mod tests {
     fn test_hidden_storage_structure_check_directory_is_file_fail() {
         // AC 8: Directory exists but is a file -> Fail
         let fs = MockFilesystem::new();
-        let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+        let check = HiddenStorageStructureCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT));
 
         // etc/ exists but is a file, not a directory
         fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
@@ -2037,7 +2041,7 @@ mod tests {
     fn test_hidden_storage_structure_check_optional_nix_missing_pass() {
         // AC 8: Optional nix/ missing -> Pass (it's optional)
         let fs = MockFilesystem::new();
-        let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+        let check = HiddenStorageStructureCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT));
 
         // Set up all required directories (nix/ is optional, can be missing)
         fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
@@ -2068,7 +2072,7 @@ mod tests {
     #[test]
     fn test_hidden_storage_structure_check_trait_metadata() {
         // AC 1: Verify trait implementation
-        let check = HiddenStorageStructureCheck::new(PathBuf::from("/mnt/hidden-volume"));
+        let check = HiddenStorageStructureCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT));
 
         assert_eq!(
             <HiddenStorageStructureCheck as PreFlightCheck<MockFilesystem>>::name(&check),
@@ -2443,10 +2447,10 @@ mod tests {
     #[test]
     fn test_space_check_struct_with_fields() {
         // AC 1: Create SpaceCheck struct with minimum_space_mb and hidden_volume_path fields
-        let check = SpaceCheck::new(PathBuf::from("/mnt/hidden-volume"), 2048);
+        let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 2048);
         assert_eq!(
             check.hidden_volume_path,
-            PathBuf::from("/mnt/hidden-volume")
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
         );
         assert_eq!(check.minimum_space_mb, 2048);
     }
@@ -2457,7 +2461,7 @@ mod tests {
         let check = SpaceCheck::default();
         assert_eq!(
             check.hidden_volume_path,
-            PathBuf::from("/mnt/hidden-volume")
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
         );
         assert_eq!(check.minimum_space_mb, 1024);
     }
@@ -2484,7 +2488,10 @@ mod tests {
         let check = SpaceCheck::default(); // 1024 MB minimum
 
         // Set up 2GB available (2048 MB)
-        fs.mock_set_free_space(Path::new("/mnt/hidden-volume"), 2 * 1024 * 1024 * 1024);
+        fs.mock_set_free_space(
+            Path::new(DEFAULT_HIDDEN_VOLUME_ROOT),
+            2 * 1024 * 1024 * 1024,
+        );
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_pass());
@@ -2499,7 +2506,7 @@ mod tests {
         let check = SpaceCheck::default(); // 1024 MB minimum
 
         // Set up exactly 1GB available (1024 MB)
-        fs.mock_set_free_space(Path::new("/mnt/hidden-volume"), 1024 * 1024 * 1024);
+        fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 1024 * 1024 * 1024);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_pass());
@@ -2514,7 +2521,7 @@ mod tests {
         let check = SpaceCheck::default(); // 1024 MB minimum
 
         // Set up 800MB available (between 512-1024 MB = warn range)
-        fs.mock_set_free_space(Path::new("/mnt/hidden-volume"), 800 * 1024 * 1024);
+        fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 800 * 1024 * 1024);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_warn());
@@ -2534,7 +2541,7 @@ mod tests {
         let check = SpaceCheck::default(); // 1024 MB minimum
 
         // Set up exactly 512MB available (50% of 1024 MB)
-        fs.mock_set_free_space(Path::new("/mnt/hidden-volume"), 512 * 1024 * 1024);
+        fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 512 * 1024 * 1024);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_warn());
@@ -2548,7 +2555,7 @@ mod tests {
         let check = SpaceCheck::default(); // 1024 MB minimum
 
         // Set up 300MB available (< 512 MB = fail)
-        fs.mock_set_free_space(Path::new("/mnt/hidden-volume"), 300 * 1024 * 1024);
+        fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 300 * 1024 * 1024);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
@@ -2567,7 +2574,7 @@ mod tests {
         let check = SpaceCheck::default(); // 1024 MB minimum
 
         // Set up 511MB available (just below 512 MB threshold)
-        fs.mock_set_free_space(Path::new("/mnt/hidden-volume"), 511 * 1024 * 1024);
+        fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 511 * 1024 * 1024);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
@@ -2581,7 +2588,7 @@ mod tests {
         let check = SpaceCheck::default(); // 1024 MB minimum
 
         // Set up 100MB available (10% of 1024 MB)
-        fs.mock_set_free_space(Path::new("/mnt/hidden-volume"), 100 * 1024 * 1024);
+        fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 100 * 1024 * 1024);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
@@ -2595,7 +2602,7 @@ mod tests {
         let check = SpaceCheck::default(); // 1024 MB minimum
 
         // Set up 0 bytes available
-        fs.mock_set_free_space(Path::new("/mnt/hidden-volume"), 0);
+        fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 0);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
@@ -2606,10 +2613,13 @@ mod tests {
     fn test_space_check_custom_minimum() {
         // AC 6: Custom minimum value works
         let fs = MockFilesystem::new();
-        let check = SpaceCheck::new(PathBuf::from("/mnt/hidden-volume"), 2048); // 2GB minimum
+        let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 2048); // 2GB minimum
 
         // Set up 3GB available
-        fs.mock_set_free_space(Path::new("/mnt/hidden-volume"), 3 * 1024 * 1024 * 1024);
+        fs.mock_set_free_space(
+            Path::new(DEFAULT_HIDDEN_VOLUME_ROOT),
+            3 * 1024 * 1024 * 1024,
+        );
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_pass());
@@ -2620,10 +2630,10 @@ mod tests {
     fn test_space_check_custom_minimum_warn_threshold() {
         // AC 6: Custom minimum affects warn threshold (50% rule)
         let fs = MockFilesystem::new();
-        let check = SpaceCheck::new(PathBuf::from("/mnt/hidden-volume"), 2048); // 2GB minimum
+        let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 2048); // 2GB minimum
 
         // Set up 1.5GB available (between 1GB and 2GB = warn range)
-        fs.mock_set_free_space(Path::new("/mnt/hidden-volume"), 1536 * 1024 * 1024);
+        fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 1536 * 1024 * 1024);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_warn());

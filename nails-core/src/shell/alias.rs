@@ -28,7 +28,7 @@
 //! ```rust,ignore
 //! use nails_core::shell::alias::{generate_bash_zsh_alias_script, generate_fish_alias_script};
 //!
-//! let hidden_volume = "/mnt/hidden-volume";
+//! let hidden_volume = DEFAULT_HIDDEN_VOLUME_ROOT;
 //!
 //! // Generate bash/zsh alias script
 //! let bash_script = generate_bash_zsh_alias_script(hidden_volume);
@@ -47,7 +47,7 @@
 ///
 /// # Arguments
 ///
-/// * `hidden_volume_path` - Path to the hidden volume root (e.g., "/mnt/hidden-volume")
+/// * `hidden_volume_path` - Path to the hidden volume root (e.g., DEFAULT_HIDDEN_VOLUME_ROOT)
 ///
 /// # Returns
 ///
@@ -56,7 +56,7 @@
 /// # Example
 ///
 /// ```rust,ignore
-/// let script = generate_bash_zsh_alias_script("/mnt/hidden-volume");
+/// let script = generate_bash_zsh_alias_script(DEFAULT_HIDDEN_VOLUME_ROOT);
 /// // Script checks for /mnt/hidden-volume/.nails before adding alias
 /// ```
 pub fn generate_bash_zsh_alias_script(hidden_volume_path: &str) -> String {
@@ -92,7 +92,7 @@ alias nails='sudo {hidden_volume_path}/bin/nails'
 ///
 /// # Arguments
 ///
-/// * `hidden_volume_path` - Path to the hidden volume root (e.g., "/mnt/hidden-volume")
+/// * `hidden_volume_path` - Path to the hidden volume root (e.g., DEFAULT_HIDDEN_VOLUME_ROOT)
 ///
 /// # Returns
 ///
@@ -101,7 +101,7 @@ alias nails='sudo {hidden_volume_path}/bin/nails'
 /// # Example
 ///
 /// ```rust,ignore
-/// let script = generate_fish_alias_script("/mnt/hidden-volume");
+/// let script = generate_fish_alias_script(DEFAULT_HIDDEN_VOLUME_ROOT);
 /// // Script checks for /mnt/hidden-volume/.nails before adding alias
 /// ```
 pub fn generate_fish_alias_script(hidden_volume_path: &str) -> String {
@@ -192,10 +192,11 @@ functions -e nails 2>/dev/null; or true
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 
     #[test]
     fn test_bash_zsh_alias_script_content() {
-        let script = generate_bash_zsh_alias_script("/mnt/hidden-volume");
+        let script = generate_bash_zsh_alias_script(DEFAULT_HIDDEN_VOLUME_ROOT);
 
         // Verify shebang
         assert!(script.starts_with("#!/usr/bin/env bash"));
@@ -224,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_fish_alias_script_content() {
-        let script = generate_fish_alias_script("/mnt/hidden-volume");
+        let script = generate_fish_alias_script(DEFAULT_HIDDEN_VOLUME_ROOT);
 
         // Verify shebang
         assert!(script.starts_with("#!/usr/bin/env fish"));
@@ -275,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_bash_zsh_script_has_mount_guard() {
-        let script = generate_bash_zsh_alias_script("/mnt/hidden-volume");
+        let script = generate_bash_zsh_alias_script(DEFAULT_HIDDEN_VOLUME_ROOT);
 
         // Verify the script checks mount before proceeding
         assert!(script.contains(".nails"));
@@ -284,7 +285,7 @@ mod tests {
 
     #[test]
     fn test_fish_script_has_mount_guard() {
-        let script = generate_fish_alias_script("/mnt/hidden-volume");
+        let script = generate_fish_alias_script(DEFAULT_HIDDEN_VOLUME_ROOT);
 
         // Verify the script checks mount before proceeding
         assert!(script.contains(".nails"));
@@ -293,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_bash_zsh_script_idempotency_guard() {
-        let script = generate_bash_zsh_alias_script("/mnt/hidden-volume");
+        let script = generate_bash_zsh_alias_script(DEFAULT_HIDDEN_VOLUME_ROOT);
 
         // Verify idempotency check exists (alias returns non-zero if not found)
         assert!(script.contains("alias nails >/dev/null 2>&1"));
@@ -301,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_fish_script_idempotency_guard() {
-        let script = generate_fish_alias_script("/mnt/hidden-volume");
+        let script = generate_fish_alias_script(DEFAULT_HIDDEN_VOLUME_ROOT);
 
         // Verify idempotency check exists
         assert!(script.contains("functions -q nails"));

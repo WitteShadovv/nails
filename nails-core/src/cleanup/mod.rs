@@ -32,7 +32,7 @@ pub mod history;
 pub mod logs;
 pub mod temp_files;
 
-use crate::{Filesystem, HIDDEN_VOLUME_ROOT, Result};
+use crate::{Filesystem, Result, config::DEFAULT_HIDDEN_VOLUME_ROOT};
 use history::HistoryCleaner;
 pub use history::ShellType;
 use logs::LogCleaner;
@@ -105,7 +105,7 @@ pub struct CleanupConfig {
 
 impl Default for CleanupConfig {
     fn default() -> Self {
-        let hidden_volume = PathBuf::from(HIDDEN_VOLUME_ROOT);
+        let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
         Self {
             clear_history: true,
             clear_temp_files: true,
@@ -488,6 +488,7 @@ impl<F: Filesystem> CleanupManager<F> {
 mod tests {
     use super::*;
     use crate::MockFilesystem;
+    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
     use std::path::Path;
 
     #[test]
@@ -674,7 +675,7 @@ mod tests {
     fn test_cleanup_manager_thorough_mode_with_verification_includes_verification_entry() {
         let fs = MockFilesystem::new();
         // Setup mock filesystem so verification passes (no artifacts found)
-        let log_path = PathBuf::from(HIDDEN_VOLUME_ROOT).join("logs");
+        let log_path = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs");
         fs.mock_set_directory_contents(&log_path, vec![]); // Empty log directory
         fs.mock_set_files_with_pattern("/tmp", "nails", &[]); // No nails temp files
 
@@ -746,7 +747,7 @@ mod tests {
     #[test]
     fn test_cleanup_manager_selective_cleanup() {
         let fs = MockFilesystem::new();
-        let hidden_volume = PathBuf::from("/mnt/hidden-volume");
+        let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
         let config = CleanupConfig {
             clear_history: true,
             clear_temp_files: false,
@@ -793,7 +794,7 @@ mod tests {
     #[test]
     fn test_cleanup_manager_config_accessor() {
         let fs = MockFilesystem::new();
-        let hidden_volume = PathBuf::from("/mnt/hidden-volume");
+        let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
         let config = CleanupConfig {
             clear_history: false,
             clear_temp_files: true,
@@ -842,7 +843,7 @@ mod tests {
         fs.mock_set_path_type("/tmp/nails-12345.lock", "file");
         fs.mock_set_path_type("/tmp/nails_cache", "directory");
 
-        let hidden_volume = PathBuf::from("/mnt/hidden-volume");
+        let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
         let config = CleanupConfig {
             clear_history: false,
             clear_temp_files: true,
@@ -913,7 +914,7 @@ mod tests {
         fs.mock_set_path_type("/tmp/nails-normal.txt", "file");
         fs.mock_set_remove_should_fail("/tmp/nails-readonly.lock", true);
 
-        let hidden_volume = PathBuf::from("/mnt/hidden-volume");
+        let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
         let config = CleanupConfig {
             clear_history: false,
             clear_temp_files: true,
@@ -953,7 +954,7 @@ mod tests {
     fn test_full_cleanup_cycle_all_cleaners_invoked() {
         // Setup: Create comprehensive mock filesystem with data for all three cleaners
         let fs = MockFilesystem::new();
-        let hidden_volume = PathBuf::from("/mnt/hidden-volume");
+        let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
 
         // 1. Setup history files (for HistoryCleaner)
         let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/home/testuser".to_string());

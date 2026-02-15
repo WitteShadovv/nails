@@ -91,7 +91,7 @@ pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
 pub use manager::{MountInfo, MountTracker, MountType, NailsManager};
 
 // State management exports
-pub use state::{HIDDEN_VOLUME_ROOT, OverlayInfo, StateFile, SystemState};
+pub use state::{OverlayInfo, StateFile, SystemState};
 
 // Pre-flight validation exports
 pub use preflight::{

@@ -39,21 +39,20 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// Default hidden volume mount point
-///
-/// State file MUST be written to a path within this directory.
-/// Enforces anti-forensics invariant: state never leaks to decoy system.
-pub const HIDDEN_VOLUME_ROOT: &str = "/mnt/hidden-volume";
-
 /// Check if a path is within the hidden volume
 ///
-/// Validates that the given path is within HIDDEN_VOLUME_ROOT to prevent
+/// Validates that the given path is within the configured hidden_volume_root to prevent
 /// forensic leakage of state information to the decoy system.
 ///
 /// # Arguments
 ///
 /// * `path` - Path to validate
-/// * `hidden_volume_root` - Optional custom hidden volume root (for testing)
+/// * `hidden_volume_root` - Root path of the hidden volume (typically from Config::hidden_volume_root)
+///
+/// # Note
+///
+/// Story 14.2 removed the HIDDEN_VOLUME_ROOT constant. Callers must pass the hidden_volume_root
+/// parameter explicitly, usually derived from Config.
 ///
 /// # Security Considerations
 ///
@@ -115,10 +114,27 @@ fn is_on_hidden_volume_internal(path: &Path, hidden_volume_root: &str) -> bool {
 
 /// Check if a path is within the hidden volume (production version)
 ///
-/// This is a wrapper around `is_on_hidden_volume_internal` that uses the
-/// default HIDDEN_VOLUME_ROOT constant.
-fn is_on_hidden_volume(path: &Path) -> bool {
-    is_on_hidden_volume_internal(path, HIDDEN_VOLUME_ROOT)
+/// Validates that the given path is within the specified hidden volume root to prevent
+/// forensic leakage of state information to the decoy system.
+///
+/// # Arguments
+///
+/// * `path` - Path to validate
+/// * `hidden_volume_root` - Root path of the hidden volume (from config)
+///
+/// # Security Considerations
+///
+/// - Uses canonicalize() to resolve symlinks (prevents symlink attacks)
+/// - Handles paths that don't exist yet (for initial save)
+/// - Rejects similar-looking paths like "/mnt/hidden-volume-fake"
+/// - Rejects path traversal attempts like "../etc/state.json"
+///
+/// # Returns
+///
+/// * `true` if path is within hidden volume
+/// * `false` otherwise
+pub fn is_on_hidden_volume(path: &Path, hidden_volume_root: &str) -> bool {
+    is_on_hidden_volume_internal(path, hidden_volume_root)
 }
 
 /// System state enum with type-safe transitions
@@ -490,7 +506,7 @@ impl StateFile {
     /// # Hidden Volume Validation (AR26)
     ///
     /// **CRITICAL**: State file MUST be on hidden volume. This method will
-    /// return an error if the path is outside HIDDEN_VOLUME_ROOT.
+    /// return an error if the path is outside the configured hidden_volume_root.
     ///
     /// # Security
     ///
@@ -501,6 +517,7 @@ impl StateFile {
     /// # Arguments
     ///
     /// * `path` - Path to write state file (must be on hidden volume)
+    /// * `hidden_volume_root` - Root path of hidden volume for validation
     ///
     /// # Returns
     ///
@@ -512,14 +529,18 @@ impl StateFile {
     ///
     /// ```no_run
     /// use nails_core::StateFile;
+    /// use nails_core::config::Config;
     /// use std::path::Path;
     ///
+    /// let config = Config::default();
     /// let state = StateFile::default();
-    /// state.save(Path::new("/mnt/hidden-volume/.nails/state.json"))?;
+    /// // Pass hidden_volume_root from config to ensure validation uses correct path
+    /// let root = config.hidden_volume_root.to_string_lossy();
+    /// state.save(Path::new("/mnt/hidden-volume/.nails/state.json"), &root)?;
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
-    pub fn save(&self, path: &Path) -> Result<()> {
-        self.save_with_root(path, HIDDEN_VOLUME_ROOT)
+    pub fn save(&self, path: &Path, hidden_volume_root: &str) -> Result<()> {
+        self.save_with_root(path, hidden_volume_root)
     }
 
     /// Save state file with custom hidden volume root path
@@ -539,15 +560,17 @@ impl StateFile {
     /// use std::path::{Path, PathBuf};
     ///
     /// let state = StateFile::default();
-    /// let hidden_root = PathBuf::from("/mnt/custom-hidden");
-    /// let state_path = hidden_root.join(".nails/state.json");
-    /// state.save_with_custom_root(&state_path, &hidden_root)?;
+    /// let custom_root = PathBuf::from("/tmp");
+    /// state.save_with_custom_root(Path::new("/tmp/.nails/state.json"), &custom_root)?;
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
     pub fn save_with_custom_root(&self, path: &Path, hidden_volume_root: &Path) -> Result<()> {
+        use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
         self.save_with_root(
             path,
-            hidden_volume_root.to_str().unwrap_or(HIDDEN_VOLUME_ROOT),
+            hidden_volume_root
+                .to_str()
+                .unwrap_or(DEFAULT_HIDDEN_VOLUME_ROOT),
         )
     }
 
@@ -574,12 +597,11 @@ impl StateFile {
     /// Save state file with default hidden volume root (production)
     #[cfg(not(test))]
     fn save_with_root(&self, path: &Path, hidden_volume_root: &str) -> Result<()> {
-        // In production, always use HIDDEN_VOLUME_ROOT constant
-        let _ = hidden_volume_root; // Suppress unused warning
-        if !is_on_hidden_volume(path) {
+        // In production, use the configured hidden_volume_root from Config
+        if !is_on_hidden_volume(path, hidden_volume_root) {
             return Err(NailsError::InvalidState(format!(
                 "State file must be on hidden volume ({}), but attempted to write to: {}",
-                HIDDEN_VOLUME_ROOT,
+                hidden_volume_root,
                 path.display()
             )));
         }
@@ -1147,49 +1169,64 @@ mod tests {
     #[test]
     fn test_hidden_volume_validation_valid_path() {
         // Test that paths within hidden volume are accepted
-        assert!(is_on_hidden_volume(Path::new(
-            "/mnt/hidden-volume/.nails/state.json"
-        )));
-        assert!(is_on_hidden_volume(Path::new(
-            "/mnt/hidden-volume/subdir/state.json"
-        )));
-        assert!(is_on_hidden_volume(Path::new(
-            "/mnt/hidden-volume/a/b/c/state.json"
-        )));
+        use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
+        assert!(is_on_hidden_volume(
+            Path::new("/mnt/hidden-volume/.nails/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+        assert!(is_on_hidden_volume(
+            Path::new("/mnt/hidden-volume/subdir/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+        assert!(is_on_hidden_volume(
+            Path::new("/mnt/hidden-volume/a/b/c/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
     }
 
     #[test]
     fn test_hidden_volume_validation_invalid_paths() {
         // Test that paths outside hidden volume are rejected
-        assert!(!is_on_hidden_volume(Path::new("/etc/nails/state.json")));
-        assert!(!is_on_hidden_volume(Path::new(
-            "/home/user/.nails/state.json"
-        )));
-        assert!(!is_on_hidden_volume(Path::new(
-            "/mnt/hidden-volume-fake/state.json"
-        )));
-        assert!(!is_on_hidden_volume(Path::new(
-            "/tmp/test-hidden-volume/state.json"
-        )));
+        use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
+        assert!(!is_on_hidden_volume(
+            Path::new("/etc/nails/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+        assert!(!is_on_hidden_volume(
+            Path::new("/home/user/.nails/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+        assert!(!is_on_hidden_volume(
+            Path::new("/mnt/hidden-volume-fake/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+        assert!(!is_on_hidden_volume(
+            Path::new("/tmp/test-hidden-volume/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
     }
 
     #[test]
     fn test_hidden_volume_validation_traversal_attack() {
         // Test that path traversal attacks are rejected
-        assert!(!is_on_hidden_volume(Path::new(
-            "/mnt/hidden-volume/../etc/state.json"
-        )));
-        assert!(!is_on_hidden_volume(Path::new(
-            "/mnt/hidden-volume/../../tmp/state.json"
-        )));
+        use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
+        assert!(!is_on_hidden_volume(
+            Path::new("/mnt/hidden-volume/../etc/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+        assert!(!is_on_hidden_volume(
+            Path::new("/mnt/hidden-volume/../../tmp/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
     }
 
     #[test]
     fn test_save_rejects_path_outside_hidden_volume() {
+        use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
         let state = StateFile::default();
 
         // Try to save to /tmp (should fail)
-        let result = state.save(Path::new("/tmp/state.json"));
+        let result = state.save(Path::new("/tmp/state.json"), DEFAULT_HIDDEN_VOLUME_ROOT);
         assert!(result.is_err());
 
         match result {
@@ -1206,10 +1243,14 @@ mod tests {
 
     #[test]
     fn test_save_rejects_home_directory_path() {
+        use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
         let state = StateFile::default();
 
         // Try to save to home directory (should fail)
-        let result = state.save(Path::new("/home/user/.nails/state.json"));
+        let result = state.save(
+            Path::new("/home/user/.nails/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT,
+        );
         assert!(result.is_err());
 
         match result {
@@ -1443,30 +1484,84 @@ mod tests {
     #[test]
     fn test_path_validation_with_relative_path() {
         // Test that relative paths are rejected (not on hidden volume)
-        assert!(!is_on_hidden_volume(Path::new("relative/path/state.json")));
-        assert!(!is_on_hidden_volume(Path::new("./state.json")));
-        assert!(!is_on_hidden_volume(Path::new("../state.json")));
+        use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
+        assert!(!is_on_hidden_volume(
+            Path::new("relative/path/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+        assert!(!is_on_hidden_volume(
+            Path::new("./state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+        assert!(!is_on_hidden_volume(
+            Path::new("../state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
     }
 
     #[test]
     fn test_path_validation_with_non_canonical_paths() {
         // Test paths that need to be cleaned before checking
         // These test the non-canonical path logic (line 70-111)
-        assert!(!is_on_hidden_volume(Path::new(
-            "/mnt/hidden-volume/../etc/state.json"
-        )));
-        assert!(!is_on_hidden_volume(Path::new(
-            "/etc/../home/user/.nails/state.json"
-        )));
-        assert!(!is_on_hidden_volume(Path::new("/mnt/./other/state.json")));
+        use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
+        assert!(!is_on_hidden_volume(
+            Path::new("/mnt/hidden-volume/../etc/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+        assert!(!is_on_hidden_volume(
+            Path::new("/etc/../home/user/.nails/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+        assert!(!is_on_hidden_volume(
+            Path::new("/mnt/./other/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
 
         // Valid path with redundant components should still work
-        assert!(is_on_hidden_volume(Path::new(
-            "/mnt/hidden-volume/./subdir/state.json"
-        )));
-        assert!(is_on_hidden_volume(Path::new(
-            "/mnt/hidden-volume/subdir/../.nails/state.json"
-        )));
+        assert!(is_on_hidden_volume(
+            Path::new("/mnt/hidden-volume/./subdir/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+        assert!(is_on_hidden_volume(
+            Path::new("/mnt/hidden-volume/nested/../other/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+        assert!(is_on_hidden_volume(
+            Path::new("/mnt/hidden-volume/subdir/../.nails/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+    }
+
+    #[test]
+    fn test_custom_hidden_volume_root_tmp_validation() {
+        // AC3: When hidden_volume_root is configured as /tmp,
+        // state file at /tmp/.nails/state.json passes validation,
+        // and /mnt/hidden-volume/.nails/state.json fails
+        use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
+
+        // Test 1: /tmp/.nails/state.json should pass with /tmp as root
+        assert!(is_on_hidden_volume(
+            Path::new("/tmp/.nails/state.json"),
+            "/tmp"
+        ));
+
+        // Test 2: /mnt/hidden-volume/.nails/state.json should FAIL with /tmp as root
+        assert!(!is_on_hidden_volume(
+            Path::new("/mnt/hidden-volume/.nails/state.json"),
+            "/tmp"
+        ));
+
+        // Test 3: Validate default behavior still works
+        assert!(is_on_hidden_volume(
+            Path::new("/mnt/hidden-volume/.nails/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
+
+        // Test 4: /tmp should fail with default root
+        assert!(!is_on_hidden_volume(
+            Path::new("/tmp/.nails/state.json"),
+            DEFAULT_HIDDEN_VOLUME_ROOT
+        ));
     }
 
     #[test]
