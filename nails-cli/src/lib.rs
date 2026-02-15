@@ -14,6 +14,10 @@ pub mod cli {
     #[command(version)]
     #[command(about = "NixOS Anti-forensics Isolation & Layering System", long_about = None)]
     pub struct Cli {
+        /// Path to configuration file (overrides binary-relative discovery)
+        #[arg(long, global = true, value_name = "PATH")]
+        pub config: Option<std::path::PathBuf>,
+
         /// Verbose output (-v, -vv, -vvv)
         #[arg(short, long, action = clap::ArgAction::Count, conflicts_with = "quiet")]
         pub verbose: u8,
@@ -168,7 +172,7 @@ pub mod cli {
                 use nails_core::{
                     ActivateOptions, CliOverrides, Config, NailsManager, RealFilesystem, Verbosity,
                 };
-                use std::path::PathBuf;
+
                 use std::sync::{Arc, Mutex};
                 use std::time::Instant;
 
@@ -224,10 +228,8 @@ pub mod cli {
                     ..Default::default()
                 };
 
-                // Load config with CLI overrides (Story 10.3)
-                let config_path = dirs::home_dir()
-                    .map(|h| h.join(".nails/config.yaml"))
-                    .unwrap_or_else(|| PathBuf::from("~/.nails/config.yaml"));
+                // Load config with CLI overrides (Story 10.3, updated in Story 14.1)
+                let config_path = nails_core::config::discover_config_path(cli.config.as_deref());
 
                 let config = Config::from_file_and_cli(&config_path, &cli_overrides)
                     .unwrap_or_else(|e| {
@@ -294,7 +296,7 @@ pub mod cli {
                     CleanupConfig, Config, DeactivationOrchestrator, NailsManager, RealFilesystem,
                     Verbosity,
                 };
-                use std::path::PathBuf;
+
                 use std::sync::{Arc, Mutex};
 
                 // Configure color output (must be done before any colored output)
@@ -322,10 +324,8 @@ pub mod cli {
                     }
                 }
 
-                // Load configuration
-                let config_path = dirs::home_dir()
-                    .map(|h| h.join(".nails/config.yaml"))
-                    .unwrap_or_else(|| PathBuf::from("~/.nails/config.yaml"));
+                // Load configuration (Story 14.1)
+                let config_path = nails_core::config::discover_config_path(cli.config.as_deref());
 
                 let config = Config::load_or_default(&config_path)
                     .unwrap_or_else(|_| Config::test_default());
@@ -389,7 +389,7 @@ pub mod cli {
                     CleanupConfig, Config, EmergencyCountdown, EmergencyOrchestrator, ForkStrategy,
                     NailsManager, RealFilesystem, Verbosity, fork_and_execute,
                 };
-                use std::path::PathBuf;
+
                 use std::sync::{Arc, Mutex};
 
                 // Configure color output (must be done before any colored output)
@@ -408,10 +408,8 @@ pub mod cli {
                     }
                 };
 
-                // Load config with state path
-                let config_path = dirs::home_dir()
-                    .map(|h| h.join(".nails/config.yaml"))
-                    .unwrap_or_else(|| PathBuf::from("~/.nails/config.yaml"));
+                // Load config with state path (Story 14.1)
+                let config_path = nails_core::config::discover_config_path(cli.config.as_deref());
                 let config = Config::load_or_default(&config_path)
                     .unwrap_or_else(|_| Config::test_default());
                 let state_path = config.state_file_path.clone();
@@ -533,22 +531,14 @@ pub mod cli {
                 use nails_core::{
                     Config, NailsError, RealFilesystem, StatusCommand, status::SecurityPosture,
                 };
-                use std::path::PathBuf;
 
                 // Configure color output (must be done before any colored output)
                 if no_color || std::env::var("NO_COLOR").is_ok() {
                     colored::control::set_override(false);
                 }
 
-                // Load configuration (FIX #3: Proper home directory handling)
-                let config_path = match dirs::home_dir() {
-                    Some(home) => home.join(".nails/config.yaml"),
-                    None => {
-                        // No home directory available - use fallback in /tmp for error message
-                        // Config loading will fail gracefully and use test_default()
-                        PathBuf::from("/tmp/.nails/config.yaml")
-                    }
-                };
+                // Load configuration (Story 14.1)
+                let config_path = nails_core::config::discover_config_path(cli.config.as_deref());
 
                 let config = Config::load_or_default(&config_path)
                     .unwrap_or_else(|_| Config::test_default());
@@ -2284,6 +2274,7 @@ mod tests {
     #[test]
     fn test_execute_status_command_without_verbose() {
         let cli = Cli {
+            config: None,
             verbose: 0,
             quiet: false,
             no_logs: false,
@@ -2300,6 +2291,7 @@ mod tests {
     #[test]
     fn test_execute_status_command_with_verbose() {
         let cli = Cli {
+            config: None,
             verbose: 0,
             quiet: false,
             no_logs: false,
@@ -2316,6 +2308,7 @@ mod tests {
     #[test]
     fn test_verbose_flag_values() {
         let cli = Cli {
+            config: None,
             verbose: 3,
             quiet: false,
             no_logs: false,
@@ -2495,6 +2488,7 @@ mod tests {
     #[test]
     fn test_execute_verify_command_without_flags() {
         let cli = Cli {
+            config: None,
             verbose: 0,
             quiet: false,
             no_logs: false,
@@ -2511,6 +2505,7 @@ mod tests {
     #[test]
     fn test_execute_verify_command_with_deep() {
         let cli = Cli {
+            config: None,
             verbose: 0,
             quiet: false,
             no_logs: false,
@@ -2525,6 +2520,7 @@ mod tests {
     #[test]
     fn test_execute_verify_command_with_json() {
         let cli = Cli {
+            config: None,
             verbose: 0,
             quiet: false,
             no_logs: false,
@@ -2539,6 +2535,7 @@ mod tests {
     #[test]
     fn test_execute_verify_command_with_deep_and_json() {
         let cli = Cli {
+            config: None,
             verbose: 0,
             quiet: false,
             no_logs: false,

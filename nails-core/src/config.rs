@@ -258,6 +258,84 @@ fn default_retention_days() -> u64 {
     7
 }
 
+/// Discover configuration file path using binary-relative resolution
+///
+/// Priority order (Story 14.1):
+/// 1. --config CLI flag override (highest priority)
+/// 2. Binary-relative path: `{binary_dir}/config/nails.yaml` (symlinks resolved)
+/// 3. CWD fallback: `{current_dir}/config/nails.yaml` (if current_exe() fails)
+///
+/// # Symlink Handling
+///
+/// This function uses `canonicalize()` on the binary path to resolve symlinks.
+/// For example, if `/usr/local/bin/nails` is a symlink to `/mnt/hidden-volume/bin/nails`,
+/// the config will be resolved to `/mnt/hidden-volume/config/nails.yaml`.
+///
+/// # Fallback Behavior
+///
+/// If `current_exe()` fails (rare cases like proc not mounted on Linux),
+/// a warning is logged via `tracing::warn!` and the current working directory
+/// is used as fallback. If CWD also cannot be determined, `./config/nails.yaml` is returned.
+///
+/// # Arguments
+///
+/// * `config_override` - Optional path from `--config` CLI flag
+///
+/// # Returns
+///
+/// Resolved config path (always returns a path, never fails)
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::config::discover_config_path;
+/// use std::path::PathBuf;
+///
+/// // With CLI override
+/// let path = discover_config_path(Some(&PathBuf::from("/custom/config.yaml")));
+/// assert_eq!(path, PathBuf::from("/custom/config.yaml"));
+///
+/// // Binary-relative (most common case)
+/// let path = discover_config_path(None);
+/// // Returns {binary_dir}/config/nails.yaml
+/// ```
+pub fn discover_config_path(config_override: Option<&std::path::Path>) -> PathBuf {
+    // Priority 1: Explicit --config override
+    if let Some(override_path) = config_override {
+        return override_path.to_path_buf();
+    }
+
+    // Priority 2: Binary-relative path (preferred)
+    // Use canonicalize() to resolve symlinks before getting parent directory
+    // This handles the case where /usr/local/bin/nails is a symlink to
+    // /mnt/hidden-volume/bin/nails - we want config at the actual binary location
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Ok(resolved_path) = exe_path.canonicalize()
+        && let Some(exe_dir) = resolved_path.parent()
+    {
+        return exe_dir.join("config/nails.yaml");
+    }
+
+    // Priority 3: CWD fallback (when current_exe() or canonicalize() fails)
+    tracing::warn!(
+        "Failed to determine binary location for config discovery, trying current working directory"
+    );
+
+    let cwd = std::env::current_dir();
+    match cwd {
+        Ok(dir) => dir.join("config/nails.yaml"),
+        Err(e) => {
+            // Both current_exe() and current_dir() failed - this is very unusual
+            // Log error and return relative path as last resort
+            tracing::error!(
+                "Failed to determine current directory for config discovery: {}. Using fallback ./config/nails.yaml",
+                e
+            );
+            PathBuf::from("./config/nails.yaml")
+        }
+    }
+}
+
 /// Builder for Config with validation and smart defaults
 ///
 /// Provides fluent API for constructing Config instances with validation.
@@ -705,6 +783,7 @@ retention_days: 7
             Err(crate::error::NailsError::ConfigError(msg))
                 if msg.contains("Config file not found") =>
             {
+                tracing::info!("No config file found at {}, using defaults", path.display());
                 Ok(Self::default())
             }
             Err(e) => Err(e),
@@ -2104,5 +2183,91 @@ default_verbosity: info
         // CLI overrides win
         assert!(!config.preflight_checks); // CLI override beats config
         assert_eq!(config.default_verbosity, "debug"); // CLI override beats config
+    }
+
+    // ========== discover_config_path() Tests (Story 14.1) ==========
+
+    #[test]
+    fn test_discover_config_path_override_takes_priority() {
+        let override_path = PathBuf::from("/custom/config.yaml");
+        let result = discover_config_path(Some(&override_path));
+        assert_eq!(result, override_path);
+    }
+
+    #[test]
+    fn test_discover_config_path_binary_relative() {
+        // When no override, should use binary-relative path
+        // Expected: {binary_dir}/config/nails.yaml
+        let result = discover_config_path(None);
+
+        // Should end with /config/nails.yaml
+        assert!(result.to_str().unwrap().ends_with("/config/nails.yaml"));
+
+        // Should NOT contain .nails (the old home-dir path)
+        assert!(!result.to_str().unwrap().contains(".nails"));
+
+        // Verify it's actually binary-relative by checking against real binary location
+        let exe_path = std::env::current_exe().unwrap();
+        let resolved_exe = exe_path.canonicalize().unwrap();
+        let exe_dir = resolved_exe.parent().unwrap();
+        let expected = exe_dir.join("config/nails.yaml");
+        assert_eq!(result, expected, "Config path should be binary-relative");
+    }
+
+    #[test]
+    fn test_discover_config_path_priority_order() {
+        // Test: CLI override takes precedence over binary-relative
+        let override_path = PathBuf::from("/explicit/path.yaml");
+        let with_override = discover_config_path(Some(&override_path));
+        let without_override = discover_config_path(None);
+
+        // Override should always win
+        assert_eq!(with_override, override_path);
+        assert_ne!(without_override, override_path);
+
+        // Without override should be binary-relative
+        assert!(
+            without_override
+                .to_str()
+                .unwrap()
+                .ends_with("/config/nails.yaml")
+        );
+    }
+
+    #[test]
+    fn test_discover_config_path_cwd_fallback_format() {
+        // Test that CWD fallback produces correct path format
+        // Note: This test verifies the path format; actual CWD fallback behavior
+        // requires mocking current_exe() which is not easily done in standard Rust.
+        // The fallback path should always end with /config/nails.yaml
+        let result = discover_config_path(None);
+
+        // Path should always end with config/nails.yaml regardless of resolution path
+        assert!(
+            result.to_str().unwrap().ends_with("/config/nails.yaml"),
+            "Expected path to end with /config/nails.yaml, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_discover_config_path_uses_canonicalize() {
+        // Test that symlink resolution is attempted
+        // This verifies that the function uses canonicalize() on current_exe()
+        // to resolve symlinks before getting the parent directory.
+        //
+        // In production, if /usr/local/bin/nails is a symlink to
+        // /mnt/hidden-volume/bin/nails, config should be at
+        // /mnt/hidden-volume/config/nails.yaml, not /usr/local/bin/config/nails.yaml.
+        //
+        // This test verifies the function returns a valid path ending in config/nails.yaml
+        let result = discover_config_path(None);
+        assert!(result.to_str().unwrap().ends_with("/config/nails.yaml"));
+
+        // The path should be absolute (canonicalize produces absolute paths on success)
+        assert!(
+            result.is_absolute() || result.starts_with("."),
+            "Path should be absolute or start with '.' for fallback"
+        );
     }
 }

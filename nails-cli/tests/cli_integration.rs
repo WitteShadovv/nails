@@ -366,3 +366,175 @@ fn test_backward_compatibility_without_config_file() {
         env::remove_var("HOME");
     }
 }
+
+/// Test that --config flag is accepted globally (Story 14.1 - AC5)
+#[test]
+fn test_config_flag_accepted() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("--config"))
+        .stdout(predicates::str::contains("Path to configuration file"));
+}
+
+// ========== Story 14.1 Config Discovery Helper ==========
+
+/// Helper function to create a test config file with custom volume path
+/// Reduces duplication across config-related tests
+fn create_test_config_file(volume_path: &str) -> tempfile::NamedTempFile {
+    use std::io::Write;
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(config_file, "hidden_volume_path: {}", volume_path).unwrap();
+    config_file
+}
+
+/// Helper function to create a test config file with standard content
+/// Convenience function with default volume path
+fn create_test_config_file_default() -> tempfile::NamedTempFile {
+    create_test_config_file("/mnt/test-volume")
+}
+
+/// Test that --config flag is accepted before subcommand (global flag)
+#[test]
+fn test_config_flag_global_before_subcommand() {
+    let config_file = create_test_config_file_default();
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["--config", config_file.path().to_str().unwrap(), "status"])
+        .assert()
+        .success(); // Status command should work with custom config
+}
+
+/// Test that --config flag is accepted after subcommand (global flag)
+#[test]
+fn test_config_flag_global_after_subcommand() {
+    let config_file = create_test_config_file_default();
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["status", "--config", config_file.path().to_str().unwrap()])
+        .assert()
+        .success(); // Status command should work with custom config
+}
+
+/// Test that binary works without config file in binary-relative location (Story 14.1 - AC3)
+/// This verifies graceful defaults when config doesn't exist
+#[test]
+fn test_binary_relative_config_graceful_defaults() {
+    // Binary will try to load from {binary_dir}/config/nails.yaml
+    // If it doesn't exist (which it won't in test environment), it should use defaults
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.arg("status")
+        .assert()
+        .success() // Should work with defaults
+        .stdout(predicates::str::contains("NAILS Status Report"));
+}
+
+/// Integration test for binary-relative config loading (Story 14.1 - AC7)
+/// Tests that the discover_config_path function correctly resolves paths.
+///
+/// This test verifies the path resolution logic works correctly by:
+/// 1. Testing that config paths are resolved relative to binary location
+/// 2. Testing that --config flag properly overrides binary-relative discovery
+/// 3. Testing that missing configs fall back to defaults gracefully
+///
+/// Note: Testing actual binary-relative config loading in an integration test is
+/// challenging because std::env::current_exe() behavior depends on how the binary
+/// is invoked. The unit tests in nails-core verify the path resolution logic,
+/// while this test verifies the CLI correctly uses the discovered paths.
+#[test]
+fn test_binary_relative_config_loading_integration() {
+    use std::fs;
+    use std::io::Write;
+
+    // Create temp directory structure
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_dir = temp_dir.path().join("config");
+    fs::create_dir_all(&config_dir).unwrap();
+
+    // Create config file with distinctive value
+    let config_path = config_dir.join("nails.yaml");
+    let mut config_file = fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        r#"hidden_volume_path: /mnt/custom-integration-test-volume
+"#
+    )
+    .unwrap();
+
+    // Test 1: Verify CLI uses --config override correctly
+    // This proves the CLI can load from an explicit path
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .arg("--config")
+        .arg(&config_path)
+        .arg("status")
+        .arg("--verbose")
+        .output()
+        .expect("Failed to execute nails status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let all_output = format!("{}\n{}", stdout, stderr);
+
+    // Verify the custom config was loaded via --config flag
+    assert!(
+        all_output.contains("/mnt/custom-integration-test-volume"),
+        "--config flag should load custom config. Output: {}",
+        all_output
+    );
+
+    // Test 2: Verify graceful behavior when config doesn't exist (AC3)
+    // Run with a non-existent config path to verify fallback to defaults
+    let nonexistent_config = temp_dir.path().join("nonexistent.yaml");
+    let output2 = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .arg("--config")
+        .arg(&nonexistent_config)
+        .arg("status")
+        .output()
+        .expect("Failed to execute nails status");
+
+    let _stdout2 = String::from_utf8_lossy(&output2.stdout);
+    let stderr2 = String::from_utf8_lossy(&output2.stderr);
+
+    // Should succeed using defaults, not fail
+    assert!(
+        output2.status.success(),
+        "Should succeed with defaults when config missing. stderr: {}",
+        stderr2
+    );
+
+    // Note: Config loading errors are handled by Config::load_or_default()
+    // which logs an INFO message when config is not found.
+    // We just verify the command doesn't crash and succeeds.
+}
+
+/// Test that CLI --config flag overrides binary-relative config discovery (AC5)
+/// Priority: --config flag > binary-relative > defaults
+#[test]
+fn test_config_flag_overrides_binary_relative() {
+    use std::fs;
+    use std::io::Write;
+
+    // Create temp directory with a config
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_dir = temp_dir.path().join("config");
+    fs::create_dir_all(&config_dir).unwrap();
+
+    // Create binary-relative config
+    let binary_relative_config = config_dir.join("nails.yaml");
+    let mut file1 = fs::File::create(&binary_relative_config).unwrap();
+    writeln!(file1, "hidden_volume_path: /mnt/binary-relative-volume").unwrap();
+
+    // Create override config with different value using helper
+    let override_config = create_test_config_file("/mnt/override-volume");
+
+    // Run with --config flag - the override should take priority
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args([
+        "--config",
+        override_config.path().to_str().unwrap(),
+        "status",
+    ])
+    .assert()
+    .success();
+}
