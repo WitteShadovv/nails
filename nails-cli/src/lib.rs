@@ -704,7 +704,13 @@ pub mod cli {
     /// - `verbose_count`: Verbosity level (0 = INFO, 1 = DEBUG, 2+ = TRACE)
     /// - `quiet`: Quiet mode - only show WARN and ERROR (AC: Story 9.3, AC #5)
     /// - `no_logs`: Skip file logging entirely (AC: Story 9.3, Task 2.5)
-    pub fn init_stdout_subscriber(verbose_count: u8, quiet: bool, no_logs: bool) {
+    /// - `config_override`: Optional explicit config file path (from `--config` flag)
+    pub fn init_stdout_subscriber(
+        verbose_count: u8,
+        quiet: bool,
+        no_logs: bool,
+        config_override: Option<&std::path::Path>,
+    ) {
         use tracing_subscriber::Layer;
         use tracing_subscriber::filter::LevelFilter;
         use tracing_subscriber::fmt;
@@ -738,7 +744,7 @@ pub mod cli {
         }
 
         // Try to initialize LoggingManager for file logging (Task 2.1)
-        let file_layer_result = init_file_layer();
+        let file_layer_result = init_file_layer(config_override);
 
         match file_layer_result {
             Ok(Some(file_layer)) => {
@@ -790,7 +796,9 @@ pub mod cli {
     /// - Task 2.3: Build JSON file layer that captures ALL events
     /// - Task 2.4: Graceful fallback if hidden volume not mounted
     #[allow(clippy::type_complexity)]
-    fn init_file_layer() -> Result<
+    fn init_file_layer(
+        config_override: Option<&std::path::Path>,
+    ) -> Result<
         Option<
             tracing_subscriber::filter::Filtered<
                 tracing_subscriber::fmt::Layer<
@@ -812,36 +820,34 @@ pub mod cli {
         use tracing_subscriber::filter::LevelFilter;
         use tracing_subscriber::fmt; // Required for .with_filter()
 
-        // Determine hidden volume and log paths (Task 2.1)
-        // Use standard NAILS paths from Config
-        let hidden_volume_path = PathBuf::from("/mnt/nails-hidden");
+        // Determine hidden volume and log paths from config (Story 14.3: Task 5, AC #4)
+        let config_path = nails_core::config::discover_config_path(config_override);
+        let hidden_volume_path = nails_core::config::Config::load_or_default(&config_path)
+            .map(|c| c.hidden_volume_root)
+            .unwrap_or_else(|_| PathBuf::from(nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT));
         let log_path = hidden_volume_path.join("logs");
 
         // Create LoggingManager (Task 2.1)
         let logging_manager = LoggingManager::new(log_path.clone(), hidden_volume_path.clone());
 
         // Initialize LoggingManager with validation (Task 2.2)
+        // Returns Ok(None) for graceful degradation (hidden volume not available)
         let fs = RealFilesystem;
         let logging_config = match logging_manager.init(&fs) {
-            Ok(config) => config,
+            Ok(Some(config)) => config,
+            Ok(None) => {
+                // Graceful degradation: hidden volume not available (Story 14.3, AC #3)
+                return Ok(None);
+            }
             Err(e) => {
-                // Distinguish hidden volume failure from other errors (AC #5)
-                use nails_core::NailsError;
-                match &e {
-                    NailsError::InvalidState(msg) if msg.contains("Hidden volume not mounted") => {
-                        // Graceful fallback: Hidden volume not mounted (Task 2.4)
-                        eprintln!("Warning: Hidden volume not available, file logging disabled");
-                        return Ok(None);
-                    }
-                    _ => {
-                        // Other unexpected errors
-                        eprintln!(
-                            "Error initializing file logging: {}, continuing with stdout-only logging",
-                            e
-                        );
-                        return Ok(None);
-                    }
-                }
+                eprintln!(
+                    "{}",
+                    nails_core::logging::format_early_error(&format!(
+                        "Logging init failed: {}, continuing with stdout-only logging",
+                        e
+                    ))
+                );
+                return Ok(None);
             }
         };
 
@@ -854,8 +860,11 @@ pub mod cli {
             Ok(file) => file,
             Err(e) => {
                 eprintln!(
-                    "Failed to open log file: {}, continuing without file logging",
-                    e
+                    "{}",
+                    nails_core::logging::format_early_warning(&format!(
+                        "Failed to open log file: {}, continuing without file logging",
+                        e
+                    ))
                 );
                 return Ok(None);
             }

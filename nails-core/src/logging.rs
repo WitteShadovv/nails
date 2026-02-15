@@ -26,7 +26,8 @@
 //!
 //! // Validate and initialize (fail-safe: refuses if outside hidden volume)
 //! let fs = RealFilesystem;
-//! let config = manager.init(&fs).expect("Failed to initialize logging");
+//! let config = manager.init(&fs).expect("Failed to initialize logging")
+//!     .expect("Hidden volume not available");
 //! ```
 //!
 //! ## 2. Install Subscriber
@@ -61,6 +62,8 @@
 //! ```
 
 use crate::{Filesystem, NailsError, Result, Verbosity};
+use colored::Colorize;
+use std::env;
 use std::path::{Path, PathBuf};
 
 /// Default maximum log file size in megabytes
@@ -71,6 +74,45 @@ const DEFAULT_RETENTION_DAYS: u64 = 7;
 
 /// Log file name within the log directory
 const LOG_FILE_NAME: &str = "nails.log";
+
+/// Check if color output should be disabled
+///
+/// Returns true if `NO_COLOR` or `NAILS_NO_COLOR` environment variables are set.
+/// Follows the NO_COLOR convention (<https://no-color.org/>).
+fn should_disable_color() -> bool {
+    env::var("NO_COLOR").is_ok() || env::var("NAILS_NO_COLOR").is_ok()
+}
+
+/// Format an early error message for pre-logging output
+///
+/// Used for critical errors that occur before the tracing subscriber is initialized
+/// (e.g., during logging path validation). Matches the preflight check output format.
+///
+/// - With color: `✗ {msg}` (red)
+/// - Without color (NO_COLOR set): `[FAIL] {msg}`
+pub fn format_early_error(msg: &str) -> String {
+    if should_disable_color() {
+        format!("[FAIL] {}", msg)
+    } else {
+        format!("{} {}", "✗".red().bold(), msg.red())
+    }
+}
+
+/// Format an early warning message for pre-logging output
+///
+/// Used for non-critical warnings that occur before the tracing subscriber is initialized
+/// (e.g., graceful degradation when hidden volume is unavailable). Matches the preflight
+/// check output format.
+///
+/// - With color: `⚠ {msg}` (yellow)
+/// - Without color (NO_COLOR set): `[WARN] {msg}`
+pub fn format_early_warning(msg: &str) -> String {
+    if should_disable_color() {
+        format!("[WARN] {}", msg)
+    } else {
+        format!("{} {}", "⚠".yellow().bold(), msg.yellow())
+    }
+}
 
 /// Manages structured logging with hidden volume validation
 ///
@@ -153,7 +195,11 @@ impl LoggingManager {
         let cleaned_hidden = clean_path(&self.hidden_volume_path);
 
         if !cleaned_log.starts_with(&cleaned_hidden) {
-            eprintln!("CRITICAL: Refusing to log outside hidden volume");
+            // Security violation - use ERROR format (not WARNING)
+            eprintln!(
+                "{}",
+                format_early_error("Refusing to log outside hidden volume")
+            );
             return Err(NailsError::InvalidState(format!(
                 "Log path must be on hidden volume: {}",
                 self.log_path.display()
@@ -176,25 +222,28 @@ impl LoggingManager {
     ///
     /// # Returns
     ///
-    /// A `LoggingConfig` containing the validated log file path.
-    /// The caller is responsible for building and installing the subscriber.
+    /// - `Ok(Some(LoggingConfig))` - Logging initialized successfully
+    /// - `Ok(None)` - Hidden volume not available, gracefully degraded to stderr-only
+    /// - `Err(...)` - Security violation (log path outside hidden volume, symlink detected)
     ///
     /// # Errors
     ///
     /// Returns `NailsError::InvalidState` if:
     /// - Log path is outside the hidden volume (AR26, FR36)
-    /// - Hidden volume is not mounted (FR36)
+    /// - Log directory is a symlink (security bypass attempt)
     /// - Log directory cannot be created
-    pub fn init<F: Filesystem>(&self, fs: &F) -> Result<LoggingConfig> {
+    pub fn init<F: Filesystem>(&self, fs: &F) -> Result<Option<LoggingConfig>> {
         // Validate log path is within hidden volume (AR26)
         self.validate_log_path()?;
 
         // Verify hidden volume is mounted (FR36)
+        // Graceful degradation: if hidden volume is not mounted, return None (stderr-only mode)
         if !fs.path_exists(&self.hidden_volume_path)? {
-            eprintln!("CRITICAL: Hidden volume not mounted");
-            return Err(NailsError::InvalidState(
-                "Hidden volume not mounted".to_string(),
-            ));
+            eprintln!(
+                "{}",
+                format_early_warning("Hidden volume not available, file logging disabled")
+            );
+            return Ok(None);
         }
 
         // Verify log directory is not a symlink (prevents bypassing path validation)
@@ -204,7 +253,7 @@ impl LoggingManager {
         } else {
             // Path exists - verify it's not a symlink
             if fs.is_symlink(&self.log_path)? {
-                eprintln!("CRITICAL: Refusing to log to symlink path");
+                eprintln!("{}", format_early_error("Refusing to log to symlink path"));
                 return Err(NailsError::InvalidState(
                     "Log path must not be a symlink".to_string(),
                 ));
@@ -217,7 +266,7 @@ impl LoggingManager {
 
         let log_file_path = self.log_path.join(LOG_FILE_NAME);
 
-        Ok(LoggingConfig { log_file_path })
+        Ok(Some(LoggingConfig { log_file_path }))
     }
 
     /// Check if log rotation should be triggered
@@ -652,6 +701,7 @@ mod tests {
     use super::*;
     use crate::MockFilesystem;
     use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
+    use serial_test::serial;
 
     // ========================================================================
     // Task 1: LoggingManager struct tests
@@ -811,7 +861,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_init_fails_when_hidden_volume_not_mounted() {
+    fn test_init_graceful_degradation_when_hidden_volume_not_mounted() {
         let manager = LoggingManager::new(
             PathBuf::from("/mnt/hidden-volume/logs"),
             PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
@@ -819,17 +869,12 @@ mod tests {
         let fs = MockFilesystem::new();
         // hidden volume path does not exist in mock
 
-        let err = manager.init(&fs).unwrap_err();
-        match &err {
-            NailsError::InvalidState(msg) => {
-                assert!(
-                    msg.contains("Hidden volume not mounted"),
-                    "Unexpected message: {}",
-                    msg
-                );
-            }
-            _ => panic!("Expected InvalidState error, got: {:?}", err),
-        }
+        // Should return Ok(None) for graceful degradation, not an error
+        let result = manager.init(&fs).unwrap();
+        assert!(
+            result.is_none(),
+            "Expected None (graceful degradation) when hidden volume not mounted"
+        );
     }
 
     #[test]
@@ -889,7 +934,10 @@ mod tests {
         fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
         fs.mock_set_path_exists("/mnt/hidden-volume/logs", true);
 
-        let config = manager.init(&fs).unwrap();
+        let config = manager
+            .init(&fs)
+            .unwrap()
+            .expect("Expected Some(LoggingConfig)");
         assert_eq!(
             config.log_file_path,
             PathBuf::from("/mnt/hidden-volume/logs/nails.log")
@@ -932,11 +980,9 @@ mod tests {
         let err = manager.init(&fs).unwrap_err();
         match &err {
             NailsError::InvalidState(msg) => {
-                // Error should be about hidden volume not being mounted
                 assert!(
-                    msg.contains("Hidden volume not mounted")
-                        || msg.contains("Log path must be on hidden volume"),
-                    "Expected error about hidden volume or log path, got: {}",
+                    msg.contains("Log path must be on hidden volume"),
+                    "Expected error about log path, got: {}",
                     msg
                 );
             }
@@ -1402,5 +1448,173 @@ mod tests {
 
         // Verify warning was logged (we can't easily check tracing logs in unit tests,
         // but we verify the error propagation works correctly)
+    }
+
+    // ========================================================================
+    // Story 14.3 Task 1: Early output formatting helpers
+    // ========================================================================
+
+    // ========================================================================
+    // Story 14.3 Task 6: Configured path / graceful degradation tests
+    // ========================================================================
+
+    #[test]
+    fn test_init_respects_configured_path_no_false_positive() {
+        // AC #1: When hidden volume IS mounted at a non-default path (e.g., /tmp),
+        // no false "CRITICAL: Hidden volume not mounted" should occur
+        let manager = LoggingManager::new(
+            PathBuf::from("/tmp/logs"),
+            PathBuf::from("/tmp"), // Non-default hidden volume path
+        );
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/tmp", true);
+        fs.mock_set_path_exists("/tmp/logs", true);
+
+        let result = manager.init(&fs);
+        assert!(result.is_ok(), "Should not fail with configured path /tmp");
+        assert!(
+            result.unwrap().is_some(),
+            "Should return Some(LoggingConfig) when volume is mounted"
+        );
+    }
+
+    #[test]
+    fn test_init_graceful_degradation_returns_ok_none() {
+        // AC #3: When hidden volume is genuinely not mounted, graceful degradation
+        // returns Ok(None) instead of an error
+        let manager = LoggingManager::new(
+            PathBuf::from("/mnt/hidden-volume/logs"),
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+        );
+        let fs = MockFilesystem::new();
+        // hidden volume not mounted - no paths set
+
+        let result = manager.init(&fs);
+        assert!(
+            result.is_ok(),
+            "Graceful degradation should not return an error"
+        );
+        assert!(
+            result.unwrap().is_none(),
+            "Should return None (stderr-only mode)"
+        );
+    }
+
+    #[test]
+    fn test_init_with_custom_hidden_volume_root() {
+        // AC #4: LoggingConfigBuilder receives hidden_volume_path from config
+        let custom_root = PathBuf::from("/mnt/custom-secret");
+        let manager = LoggingManager::new(custom_root.join("logs"), custom_root.clone());
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/mnt/custom-secret", true);
+        fs.mock_set_path_exists("/mnt/custom-secret/logs", true);
+
+        let config = manager
+            .init(&fs)
+            .unwrap()
+            .expect("Expected Some(LoggingConfig)");
+        assert_eq!(
+            config.log_file_path,
+            PathBuf::from("/mnt/custom-secret/logs/nails.log")
+        );
+    }
+
+    #[test]
+    fn test_init_with_realistic_custom_hidden_volume_path() {
+        // Realistic scenario: user configures backup hidden volume path
+        let custom_root = PathBuf::from("/mnt/backup-nails");
+        let manager = LoggingManager::new(custom_root.join("logs"), custom_root.clone());
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/mnt/backup-nails", true);
+        fs.mock_set_path_exists("/mnt/backup-nails/logs", true);
+
+        let result = manager.init(&fs);
+        assert!(result.is_ok(), "Should succeed with realistic custom path");
+        assert!(
+            result.unwrap().is_some(),
+            "Should return Some(LoggingConfig) when volume is mounted"
+        );
+    }
+
+    // ========================================================================
+    // Story 14.3 Task 1: Early output formatting helpers
+    // ========================================================================
+
+    #[test]
+    #[serial]
+    fn test_format_early_error_with_color() {
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+            std::env::remove_var("NAILS_NO_COLOR");
+        }
+        let result = format_early_error("Something went wrong");
+        assert!(result.contains("Something went wrong"));
+        assert!(result.contains("✗"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_format_early_error_without_color() {
+        unsafe {
+            std::env::set_var("NO_COLOR", "1");
+        }
+        let result = format_early_error("Something went wrong");
+        assert_eq!(result, "[FAIL] Something went wrong");
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_format_early_warning_with_color() {
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+            std::env::remove_var("NAILS_NO_COLOR");
+        }
+        let result = format_early_warning("Volume not available");
+        assert!(result.contains("Volume not available"));
+        assert!(result.contains("⚠"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_format_early_warning_without_color() {
+        unsafe {
+            std::env::set_var("NO_COLOR", "1");
+        }
+        let result = format_early_warning("Volume not available");
+        assert_eq!(result, "[WARN] Volume not available");
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_format_early_error_respects_nails_no_color() {
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+            std::env::set_var("NAILS_NO_COLOR", "1");
+        }
+        let result = format_early_error("Test error");
+        assert_eq!(result, "[FAIL] Test error");
+        unsafe {
+            std::env::remove_var("NAILS_NO_COLOR");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_format_early_warning_respects_nails_no_color() {
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+            std::env::set_var("NAILS_NO_COLOR", "1");
+        }
+        let result = format_early_warning("Test warning");
+        assert_eq!(result, "[WARN] Test warning");
+        unsafe {
+            std::env::remove_var("NAILS_NO_COLOR");
+        }
     }
 }

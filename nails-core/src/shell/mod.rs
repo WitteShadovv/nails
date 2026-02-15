@@ -1075,6 +1075,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_shell_setup_with_zsh() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1111,6 +1112,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_shell_setup_with_fish() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1147,6 +1149,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_shell_setup_no_shell_detected() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1168,6 +1171,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_shell_setup_unsupported_shell() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1193,6 +1197,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_shell_setup_to_source_commands() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1259,6 +1264,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_shell_cleanup_emergency_deactivation() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1288,6 +1294,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_shell_cleanup_no_shell_detected() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1312,6 +1319,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_shell_cleanup_with_fish() {
         let fs = MockFilesystem::new();
         let config = Config::default();

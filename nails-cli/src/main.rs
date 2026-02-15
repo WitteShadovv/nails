@@ -13,7 +13,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Initialize tracing subscriber with verbosity-aware filtering
     // Story 9.3: Wire verbosity flags to tracing subscriber (AC #5)
-    nails::cli::init_stdout_subscriber(cli.verbose, cli.quiet, cli.no_logs);
+    nails::cli::init_stdout_subscriber(cli.verbose, cli.quiet, cli.no_logs, cli.config.as_deref());
 
     execute_command(cli)
 }
