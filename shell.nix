@@ -9,12 +9,14 @@ let
   # Rust toolchain pinned to 1.93.0
   rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
     extensions = [ "rust-src" "rust-analyzer" ];
+    targets = [ "x86_64-unknown-linux-musl" ];
   };
 
 in pkgs.mkShell {
   buildInputs = with pkgs; [
     # Rust toolchain (pinned to 1.93.0)
     rustToolchain
+    rustup
 
     # Development tools
     pre-commit
@@ -35,6 +37,9 @@ in pkgs.mkShell {
 
     # Shell script linting
     shellcheck
+
+    # musl toolchain for static linking
+    pkgsStatic.stdenv.cc
   ];
 
   shellHook = ''
