@@ -165,7 +165,46 @@ veracrypt --dismount /media/hidden
 
 ## ⚙️ Configuration
 
-The hidden system configuration extends your base NixOS setup:
+### Zero-Config Operation
+
+NAILS supports **zero-config operation** out of the box. Simply place the `nails` binary on your hidden volume, and it will automatically detect the hidden volume root from the binary's parent directory.
+
+```bash
+# Place binary on hidden volume - no config needed!
+mnt/hidden-volume/nails activate  # Automatically detects /mnt/hidden-volume as root
+```
+
+The hidden volume root is auto-derived with the following priority:
+1. **Config file value** (if `hidden_volume_root` is explicitly set)
+2. **Binary location** (binary's parent directory)
+3. **Fallback constant** (`/mnt/hidden-volume`)
+
+This means you can:
+- Copy the binary to `/custom/mount/nails` → NAILS uses `/custom/mount` as root
+- Symlink `/usr/local/bin/nails → /mnt/hidden-volume/nails` → NAILS correctly resolves to `/mnt/hidden-volume`
+
+### Manual Configuration
+
+For advanced customization, create a `config/nails.yaml` file on your hidden volume:
+
+```yaml
+# config/nails.yaml
+hidden_volume_root: /custom/mount  # Optional: explicit override (highest priority)
+state_file_path: /custom/mount/.nails/state.json
+log_path: /custom/mount/logs
+
+# Overlay configuration
+overlays:
+  - name: home
+    lower: /home
+    upper: /custom/mount/home
+    work: /custom/mount/.work/home
+    target: /home
+```
+
+### NixOS Configuration
+
+The hidden system NixOS configuration extends your base setup:
 
 ```nix
 # config/configuration.nix

@@ -279,7 +279,10 @@ impl Default for DecoyProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     /// Root of hidden volume
-    #[serde(alias = "hidden_volume_path")]
+    ///
+    /// Auto-derived from binary location if not specified in config file (Story 14.9).
+    /// Priority: config file value > binary-derived > DEFAULT_HIDDEN_VOLUME_ROOT
+    #[serde(alias = "hidden_volume_path", default = "default_hidden_volume_root")]
     pub hidden_volume_root: PathBuf,
 
     /// Path to state file (on hidden volume)
@@ -353,7 +356,103 @@ pub struct Config {
 /// hardcoding this value.
 pub const DEFAULT_HIDDEN_VOLUME_ROOT: &str = "/mnt/hidden-volume";
 
+/// Derive hidden volume root from binary location
+///
+/// Automatically determines the hidden volume root by extracting the parent
+/// directory of the nails binary (after symlink resolution). This enables
+/// zero-config operation where users can simply place the binary on the
+/// hidden volume and everything "just works" without explicit configuration.
+///
+/// # Returns
+///
+/// The parent directory of the nails binary (after symlink resolution).
+/// Falls back to `DEFAULT_HIDDEN_VOLUME_ROOT` if binary path cannot be determined.
+///
+/// # Algorithm
+///
+/// 1. Call `std::env::current_exe()` to get binary path
+/// 2. Call `.canonicalize()` to resolve all symlinks
+/// 3. Extract parent directory with `.parent()`
+/// 4. Return parent, or fallback to `DEFAULT_HIDDEN_VOLUME_ROOT` on any error
+///
+/// # Logging
+///
+/// - DEBUG: Logs detected binary path and canonical path
+/// - INFO: Logs successfully derived path when successful
+/// - WARN: Logs fallback when `current_exe()` fails
+/// - WARN: Logs fallback when `canonicalize()` fails (uses original path)
+/// - WARN: Logs fallback when `parent()` returns None (binary at root)
+///
+/// # Example
+///
+/// Binary at `/mnt/hidden-volume/nails` → returns `/mnt/hidden-volume`
+/// Binary at `/custom/nails` → returns `/custom`
+/// Symlink at `/usr/local/bin/nails` → `/mnt/hidden-volume/nails` → returns `/mnt/hidden-volume`
+///
+/// # Errors
+///
+/// Does not return `Result`. All errors handled internally with fallback.
+/// This design ensures config loading never fails due to binary path resolution.
+///
+/// # Priority Order
+///
+/// This function provides the middle-priority default:
+/// 1. Config file value (explicit user intent - highest priority)
+/// 2. **Binary-derived default (smart inference - this function)**
+/// 3. `DEFAULT_HIDDEN_VOLUME_ROOT` constant (hardcoded fallback - lowest priority)
+pub fn derive_hidden_volume_root() -> PathBuf {
+    match std::env::current_exe() {
+        Ok(exe_path) => {
+            tracing::debug!("Binary path detected: {}", exe_path.display());
+
+            // Resolve symlinks
+            let canonical_path = exe_path.canonicalize().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Failed to canonicalize binary path {:?}: {}. Using original path.",
+                    exe_path,
+                    e
+                );
+                exe_path.clone()
+            });
+
+            tracing::debug!("Canonical binary path: {}", canonical_path.display());
+
+            // Extract parent directory
+            match canonical_path.parent() {
+                Some(parent) => {
+                    let parent_path = parent.to_path_buf();
+                    tracing::info!(
+                        "Derived hidden volume root from binary location: {}",
+                        parent_path.display()
+                    );
+                    parent_path
+                }
+                None => {
+                    tracing::warn!(
+                        "Binary at root directory (no parent): {}. Falling back to {}",
+                        canonical_path.display(),
+                        DEFAULT_HIDDEN_VOLUME_ROOT
+                    );
+                    PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to determine binary location: {}. Falling back to {}",
+                e,
+                DEFAULT_HIDDEN_VOLUME_ROOT
+            );
+            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
+        }
+    }
+}
+
 // Serde default functions for new user-configurable fields
+fn default_hidden_volume_root() -> PathBuf {
+    derive_hidden_volume_root()
+}
+
 fn default_state_file_path() -> PathBuf {
     // This will be overridden in load() to use the actual hidden_volume_root
     PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json")
@@ -679,12 +778,11 @@ impl ConfigBuilder {
     ///
     /// Returns `NailsError::ConfigError` if required fields are missing.
     pub fn build(self) -> crate::error::Result<Config> {
-        use crate::error::NailsError;
-
-        // Validate required field
-        let hidden_volume_root = self.hidden_volume_root.ok_or_else(|| {
-            NailsError::ConfigError("Missing required field: hidden_volume_path".into())
-        })?;
+        // Use explicit value if set, otherwise derive from binary (Story 14.9)
+        // Priority order: explicit value > binary-derived > DEFAULT_HIDDEN_VOLUME_ROOT
+        let hidden_volume_root = self
+            .hidden_volume_root
+            .unwrap_or_else(derive_hidden_volume_root);
 
         // Apply smart defaults for optional fields
         let state_file_path = self
@@ -752,10 +850,11 @@ impl ConfigBuilder {
 impl Default for Config {
     /// Create default configuration with sensible test defaults
     ///
-    /// Uses standard paths that work for testing with MockFilesystem.
+    /// Uses binary-derived hidden volume root for zero-config operation.
     /// Includes default overlays for /home, /etc, and /var for VM testing.
     fn default() -> Self {
-        let hidden_root = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+        // Auto-derive hidden volume root from binary location (Story 14.9)
+        let hidden_root = derive_hidden_volume_root();
 
         Self {
             hidden_volume_root: hidden_root.clone(),
@@ -866,11 +965,11 @@ impl Config {
             ))
         })?;
 
-        // Validate required field
+        // If hidden_volume_root not specified in YAML, derive from binary (Story 14.9)
+        // Priority order: config file value > binary-derived > DEFAULT_HIDDEN_VOLUME_ROOT
         if config.hidden_volume_root.as_os_str().is_empty() {
-            return Err(NailsError::ConfigError(
-                "Missing required field: hidden_volume_path".into(),
-            ));
+            tracing::info!("Config file missing hidden_volume_root, deriving from binary location");
+            config.hidden_volume_root = derive_hidden_volume_root();
         }
 
         // Derive state_file_path from hidden_volume_root if it's still the default
@@ -878,6 +977,14 @@ impl Config {
             PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json");
         if config.state_file_path == default_state_path {
             config.state_file_path = config.hidden_volume_root.join(".nails/state.json");
+        }
+
+        // Derive log_path from hidden_volume_root if it's still the default
+        // When hidden_volume_root is auto-derived, log_path still gets the constant default
+        // via serde default function. This ensures log_path matches the derived root.
+        let default_log_path = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs");
+        if config.log_path == default_log_path {
+            config.log_path = config.hidden_volume_root.join("logs");
         }
 
         Ok(config)
@@ -1368,13 +1475,12 @@ mod tests {
     fn test_config_default() {
         let config = Config::default();
 
-        assert_eq!(
-            config.hidden_volume_root,
-            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
-        );
+        // hidden_volume_root should be auto-derived (not empty)
+        assert!(!config.hidden_volume_root.as_os_str().is_empty());
+        // state_file_path should be derived from hidden_volume_root
         assert_eq!(
             config.state_file_path,
-            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json")
+            config.hidden_volume_root.join(".nails/state.json")
         );
         // Default config includes /home, /etc, and /var overlays
         assert_eq!(config.overlays.len(), 3);
@@ -1390,10 +1496,8 @@ mod tests {
         assert!(config.color_output);
         assert!(config.verify_on_deactivate);
         assert!(config.milestone_tips);
-        assert_eq!(
-            config.log_path,
-            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs")
-        );
+        // log_path should be derived from hidden_volume_root
+        assert_eq!(config.log_path, config.hidden_volume_root.join("logs"));
         assert_eq!(config.max_log_size_mb, 10);
         assert_eq!(config.retention_days, 7);
     }
@@ -1853,16 +1957,16 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_missing_required_field_returns_error() {
+    fn test_builder_auto_derives_when_field_not_set() {
+        // Story 14.9: hidden_volume_root is no longer required, it auto-derives
         let result = ConfigBuilder::new().build();
 
-        assert!(result.is_err());
-        match result {
-            Err(crate::error::NailsError::ConfigError(msg)) => {
-                assert!(msg.contains("Missing required field: hidden_volume_path"));
-            }
-            _ => panic!("Expected ConfigError"),
-        }
+        assert!(result.is_ok());
+        let config = result.unwrap();
+
+        // Should have auto-derived hidden_volume_root
+        assert!(!config.hidden_volume_root.as_os_str().is_empty());
+        assert_ne!(config.hidden_volume_root, PathBuf::default());
     }
 
     #[test]
@@ -2055,7 +2159,7 @@ clear_history: [this, is, invalid
         use tempfile::NamedTempFile;
 
         let mut file = NamedTempFile::new().unwrap();
-        // Write empty YAML or YAML without hidden_volume_path
+        // Write YAML without hidden_volume_path - should now succeed with auto-derived default
         writeln!(
             file,
             r#"
@@ -2065,20 +2169,20 @@ preflight_checks: true
         )
         .unwrap();
 
+        // With auto-derivation, missing hidden_volume_root should succeed
         let result = Config::load(file.path());
-        assert!(result.is_err());
+        assert!(
+            result.is_ok(),
+            "Config should load successfully with auto-derived hidden_volume_root"
+        );
 
-        match result {
-            Err(crate::error::NailsError::ConfigError(msg)) => {
-                // Could be serde error for missing field or our validation
-                assert!(
-                    msg.contains("hidden_volume_path")
-                        || msg.contains("hidden_volume_root")
-                        || msg.contains("Missing required field")
-                );
-            }
-            _ => panic!("Expected ConfigError for missing required field"),
-        }
+        let config = result.unwrap();
+        assert!(config.clear_history);
+        assert!(config.preflight_checks);
+        assert!(
+            !config.hidden_volume_root.as_os_str().is_empty(),
+            "Should have auto-derived root"
+        );
     }
 
     #[test]
@@ -2149,11 +2253,8 @@ clear_history: false
     fn test_load_or_default_with_nonexistent_file() {
         let config = Config::load_or_default(&PathBuf::from("/nonexistent/config.yaml")).unwrap();
 
-        // Should return Config::default()
-        assert_eq!(
-            config.hidden_volume_root,
-            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
-        );
+        // Should return Config::default() with auto-derived root
+        assert!(!config.hidden_volume_root.as_os_str().is_empty());
         assert!(config.clear_history);
     }
 
@@ -2342,11 +2443,8 @@ clear_history: false
             Config::from_file_and_cli(&PathBuf::from("/nonexistent/config.yaml"), &overrides)
                 .unwrap();
 
-        // Defaults used, then CLI overrides applied
-        assert_eq!(
-            config.hidden_volume_root,
-            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
-        );
+        // Defaults used (auto-derived root), then CLI overrides applied
+        assert!(!config.hidden_volume_root.as_os_str().is_empty());
         assert!(!config.preflight_checks); // CLI override
         assert_eq!(config.default_verbosity, "quiet"); // CLI override
         assert!(config.clear_history); // Default (no override)
@@ -2598,5 +2696,272 @@ default_verbosity: info
             serde_json::from_str(&json).expect("Should deserialize");
         assert_eq!(deserialized.hidden.background, "#2e3440");
         assert_eq!(deserialized.hidden.foreground, "#d8dee9");
+    }
+
+    // ========== Auto-Derive Hidden Volume Root Tests (Story 14-9) ==========
+
+    #[test]
+    fn test_derive_hidden_volume_root_success() {
+        // Test that we can derive from current executable
+        let derived = derive_hidden_volume_root();
+
+        // Should return a non-empty path
+        assert!(!derived.as_os_str().is_empty());
+
+        // Should be a valid directory path (has components)
+        assert!(derived.components().count() >= 1);
+
+        // Should not panic on multiple calls (idempotent)
+        let derived2 = derive_hidden_volume_root();
+        assert_eq!(derived, derived2);
+    }
+
+    #[test]
+    fn test_config_default_uses_derived_root() {
+        let config = Config::default();
+
+        // Should have non-empty hidden_volume_root
+        assert!(!config.hidden_volume_root.as_os_str().is_empty());
+
+        // State file should be derived from root
+        assert!(
+            config
+                .state_file_path
+                .starts_with(&config.hidden_volume_root)
+        );
+
+        // Log path should be derived from root
+        assert!(config.log_path.starts_with(&config.hidden_volume_root));
+
+        // Overlay paths should be derived from root
+        for overlay in &config.overlays {
+            assert!(
+                overlay.upper.starts_with(&config.hidden_volume_root),
+                "Overlay {} upper path should start with hidden_volume_root",
+                overlay.name
+            );
+            assert!(
+                overlay.work.starts_with(&config.hidden_volume_root),
+                "Overlay {} work path should start with hidden_volume_root",
+                overlay.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_config_load_overrides_derived_root() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+
+        // Write config with explicit hidden_volume_root
+        let yaml_content = r#"
+hidden_volume_root: /custom/mount
+state_file_path: /custom/mount/.nails/state.json
+"#;
+        temp_file
+            .write_all(yaml_content.as_bytes())
+            .expect("Failed to write config");
+
+        // Load config
+        let config = Config::load(temp_file.path()).expect("Failed to load config");
+
+        // Should use explicit value from YAML, not derived
+        assert_eq!(config.hidden_volume_root, PathBuf::from("/custom/mount"));
+    }
+
+    #[test]
+    fn test_config_load_derives_when_missing() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+
+        // Write config WITHOUT hidden_volume_root
+        let yaml_content = r#"
+clear_history: false
+preflight_checks: true
+"#;
+        temp_file
+            .write_all(yaml_content.as_bytes())
+            .expect("Failed to write config");
+
+        // Load config
+        let config = Config::load(temp_file.path()).expect("Failed to load config");
+
+        // Should derive from binary location
+        assert!(!config.hidden_volume_root.as_os_str().is_empty());
+
+        // Should NOT be empty default
+        assert_ne!(config.hidden_volume_root, PathBuf::default());
+    }
+
+    #[test]
+    fn test_config_builder_uses_explicit_value() {
+        let explicit_root = PathBuf::from("/explicit/path");
+
+        let config = ConfigBuilder::new()
+            .hidden_volume_path(explicit_root.clone())
+            .build()
+            .expect("Failed to build config");
+
+        // Should use explicit value, not derived
+        assert_eq!(config.hidden_volume_root, explicit_root);
+    }
+
+    #[test]
+    fn test_config_builder_derives_when_not_set() {
+        let config = ConfigBuilder::new()
+            .clear_history(false)
+            .build()
+            .expect("Failed to build config");
+
+        // Should derive from binary location
+        assert!(!config.hidden_volume_root.as_os_str().is_empty());
+        assert_ne!(config.hidden_volume_root, PathBuf::default());
+    }
+
+    #[test]
+    fn test_priority_order() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Priority order: config file > binary-derived > DEFAULT_HIDDEN_VOLUME_ROOT
+
+        // 1. Config file value wins
+        let mut temp_file1 = NamedTempFile::new().expect("Failed to create temp file");
+        temp_file1
+            .write_all(b"hidden_volume_root: /config/wins\n")
+            .expect("Failed to write");
+        let config1 = Config::load(temp_file1.path()).expect("Failed to load config");
+        assert_eq!(config1.hidden_volume_root, PathBuf::from("/config/wins"));
+
+        // 2. Binary-derived when config missing
+        let mut temp_file2 = NamedTempFile::new().expect("Failed to create temp file");
+        temp_file2
+            .write_all(b"clear_history: false\n")
+            .expect("Failed to write");
+        let config2 = Config::load(temp_file2.path()).expect("Failed to load config");
+        assert_ne!(config2.hidden_volume_root, PathBuf::default());
+
+        // 3. DEFAULT_HIDDEN_VOLUME_ROOT as ultimate fallback (tested via function)
+        // (Cannot easily test current_exe() failure in unit test, covered by code review)
+    }
+
+    #[test]
+    fn test_all_paths_derive_from_root() {
+        let custom_root = PathBuf::from("/custom/hidden");
+
+        let config = ConfigBuilder::new()
+            .hidden_volume_path(custom_root.clone())
+            .build()
+            .expect("Failed to build config");
+
+        // Verify all paths start with custom root
+        assert_eq!(config.hidden_volume_root, custom_root);
+        assert!(config.state_file_path.starts_with(&custom_root));
+        assert!(config.log_path.starts_with(&custom_root));
+
+        // Test that manually creating overlays with a custom root works
+        let overlay = OverlayConfig {
+            name: "test".to_string(),
+            lower: "/home".into(),
+            target: "/home".into(),
+            upper: custom_root.join(".nails/overlays/test/upper"),
+            work: custom_root.join(".nails/overlays/test/work"),
+        };
+
+        assert!(
+            overlay.upper.starts_with(&custom_root),
+            "Overlay upper path should start with custom root"
+        );
+        assert!(
+            overlay.work.starts_with(&custom_root),
+            "Overlay work path should start with custom root"
+        );
+    }
+
+    #[test]
+    fn test_derived_paths_consistency() {
+        // Test that auto-derived root produces consistent derived paths
+        let config = Config::default();
+
+        // All derived paths should use the same hidden_volume_root
+        let root = &config.hidden_volume_root;
+
+        assert_eq!(config.state_file_path, root.join(".nails/state.json"));
+        assert_eq!(config.log_path, root.join("logs"));
+
+        // Check overlay paths
+        assert_eq!(config.overlays[0].upper, root.join("home"));
+        assert_eq!(config.overlays[0].work, root.join(".work/home"));
+        assert_eq!(config.overlays[1].upper, root.join("etc"));
+        assert_eq!(config.overlays[1].work, root.join(".work/etc"));
+        assert_eq!(config.overlays[2].upper, root.join("var"));
+        assert_eq!(config.overlays[2].work, root.join(".work/var"));
+    }
+
+    #[test]
+    fn test_config_load_derives_dependent_paths() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+
+        // Write minimal config - all paths should be derived
+        let yaml_content = r#"
+hidden_volume_root: /test/volume
+"#;
+        temp_file
+            .write_all(yaml_content.as_bytes())
+            .expect("Failed to write config");
+
+        let config = Config::load(temp_file.path()).expect("Failed to load config");
+
+        // Verify explicit hidden_volume_root used
+        assert_eq!(config.hidden_volume_root, PathBuf::from("/test/volume"));
+
+        // Verify derived paths updated to match
+        assert_eq!(
+            config.state_file_path,
+            PathBuf::from("/test/volume/.nails/state.json")
+        );
+        assert_eq!(config.log_path, PathBuf::from("/test/volume/logs"));
+    }
+
+    #[test]
+    fn test_symlink_resolution_documented() {
+        // This test documents expected symlink behavior
+        // Actual symlink testing would require filesystem setup
+
+        // If binary is at: /usr/local/bin/nails -> /mnt/hidden-volume/nails
+        // Then canonicalize() should resolve to: /mnt/hidden-volume/nails
+        // And derive_hidden_volume_root() should return: /mnt/hidden-volume
+
+        // This is tested implicitly by test_derive_hidden_volume_root_success()
+        // which calls the actual derive function that does symlink resolution
+
+        let derived = derive_hidden_volume_root();
+        assert!(!derived.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn test_builder_respects_explicit_derived_paths() {
+        let custom_root = PathBuf::from("/builder/test");
+        let custom_state = PathBuf::from("/builder/test/custom/state.json");
+        let custom_log = PathBuf::from("/builder/test/custom/logs");
+
+        let config = ConfigBuilder::new()
+            .hidden_volume_path(custom_root.clone())
+            .state_file_path(custom_state.clone())
+            .log_path(custom_log.clone())
+            .build()
+            .expect("Failed to build config");
+
+        // All explicit values should be preserved
+        assert_eq!(config.hidden_volume_root, custom_root);
+        assert_eq!(config.state_file_path, custom_state);
+        assert_eq!(config.log_path, custom_log);
     }
 }
