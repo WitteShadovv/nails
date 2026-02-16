@@ -82,6 +82,9 @@ pub mod shell;
 // Logging infrastructure module (Story 9.1: Logging with Hidden Volume Validation)
 pub mod logging;
 
+// Structured CLI output formatting module (Story 14.7: Standardize CLI Output)
+pub mod output;
+
 // Re-export for convenience
 pub use config::{
     CliOverrides, Config, ConfigBuilder, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig,
@@ -177,6 +180,9 @@ pub use shell::{ShellCleanupResult, ShellInstrumentation, ShellSetupResult};
 
 // Logging infrastructure exports (Story 9.1: Logging with Hidden Volume Validation)
 pub use logging::{LoggingConfig, LoggingManager};
+
+// Structured CLI output exports (Story 14.7: Standardize CLI Output)
+pub use output::{error, format_error, format_info, format_warn, info, set_plain_mode, warn};
 
 /// RAII guard for automatic state rollback on failure
 ///

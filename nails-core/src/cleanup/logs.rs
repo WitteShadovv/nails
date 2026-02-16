@@ -29,7 +29,7 @@
 //! *Note: This example is marked with `ignore` because it uses MockFilesystem
 //! which is only available in test configuration. Real usage would use RealFilesystem.*
 
-use crate::{Filesystem, NailsError, Result, config::DEFAULT_HIDDEN_VOLUME_ROOT};
+use crate::{Filesystem, NailsError, Result, config::DEFAULT_HIDDEN_VOLUME_ROOT, output};
 use std::path::PathBuf;
 
 /// Cleans NAILS log files from the hidden volume
@@ -180,7 +180,7 @@ impl<F: Filesystem> LogCleaner<F> {
                 }
                 Err(e) => {
                     // Best-effort: log warning but continue
-                    eprintln!("Warning: Failed to remove {}: {}", file_path.display(), e);
+                    output::warn(&format!("Failed to remove {}: {}", file_path.display(), e));
                 }
             }
         }

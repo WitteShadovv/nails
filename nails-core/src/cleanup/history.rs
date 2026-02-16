@@ -21,7 +21,7 @@
 //! }
 //! ```
 
-use crate::{Filesystem, NailsError, Result};
+use crate::{Filesystem, NailsError, Result, output};
 use std::path::PathBuf;
 
 /// Supported shell types for history cleanup
@@ -148,16 +148,16 @@ impl<F: Filesystem> HistoryCleaner<F> {
                 Ok(None) => {} // No history file found, skip
                 Err(e) => {
                     // Log warning but continue (best-effort)
-                    eprintln!("Warning: Failed to clean {:?} history: {}", shell, e);
+                    output::warn(&format!("Failed to clean {:?} history: {}", shell, e));
                 }
             }
 
             // Clean in-memory history (best-effort)
             if let Err(e) = self.clean_in_memory_history(*shell) {
-                eprintln!(
-                    "Warning: Failed to clear {:?} in-memory history: {}",
+                output::warn(&format!(
+                    "Failed to clear {:?} in-memory history: {}",
                     shell, e
-                );
+                ));
             }
         }
 

@@ -62,7 +62,7 @@
 
 use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError,
-    NailsManager, Result, SystemState,
+    NailsManager, Result, SystemState, output,
 };
 use chrono::Utc;
 use nix::unistd::{ForkResult, fork, setsid};
@@ -230,7 +230,7 @@ impl EmergencyCountdown {
                     phase = "countdown",
                     "Failed to register signal handler - Ctrl+C abort disabled"
                 );
-                eprintln!("Warning: Ctrl+C abort unavailable (signal registration failed)");
+                output::warn("Ctrl+C abort unavailable (signal registration failed)");
             }
             flag
         });
@@ -434,7 +434,7 @@ where
             // Become session leader - immune to terminal signals sent to parent's session
             // Ignore setsid errors (non-fatal - we still continue with deactivation)
             if let Err(e) = setsid() {
-                eprintln!("Warning: setsid() failed: {} (continuing anyway)", e);
+                output::warn(&format!("setsid() failed: {} (continuing anyway)", e));
             }
 
             // TODO(Epic 9): Configure tracing subscriber to append to {hidden_volume}/logs/nails.log
@@ -454,8 +454,10 @@ where
                 }
                 Err(e) => {
                     tracing::error!(error = %e, role = "child", phase = "emergency", result = "failure", "Emergency deactivation failed in child process");
-                    eprintln!("Emergency deactivation error: {}", e);
-                    eprintln!("Emergency deactivation completed with errors - reboot recommended");
+                    output::error(&format!("Emergency deactivation error: {}", e));
+                    output::error(
+                        "Emergency deactivation completed with errors - reboot recommended",
+                    );
                     std::process::exit(1);
                 }
             }
@@ -464,8 +466,8 @@ where
             // Fork failed - fall back to direct execution (degraded resilience)
             let fork_err = NailsError::ForkFailed(e.to_string());
             tracing::warn!(error = %fork_err, fallback = "direct", resilience = "degraded", phase = "emergency", "Fork failed - executing in current process");
-            eprintln!("Warning: {}", fork_err);
-            eprintln!("Falling back to direct execution (degraded resilience)");
+            output::warn(&format!("{}", fork_err));
+            output::warn("Falling back to direct execution (degraded resilience)");
 
             // Execute emergency_fn directly despite fork failure
             emergency_fn()

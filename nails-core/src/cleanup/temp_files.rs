@@ -29,7 +29,7 @@
 //! *Note: This example is marked with `ignore` because it uses MockFilesystem
 //! which is only available in test configuration. Real usage would use RealFilesystem.*
 
-use crate::{Filesystem, NailsError, Result};
+use crate::{Filesystem, NailsError, Result, output};
 use std::path::{Path, PathBuf};
 
 /// Forbidden paths that must never be cleaned
@@ -230,7 +230,7 @@ impl<F: Filesystem> TempFilesCleaner<F> {
 
         // Log errors as warnings (best-effort cleanup)
         for error in &errors {
-            eprintln!("Warning: {}", error);
+            output::warn(error);
         }
 
         Ok(cleaned)

@@ -58,6 +58,10 @@ pub mod cli {
             #[arg(long)]
             no_color: bool,
 
+            /// ASCII-only output (no Unicode symbols)
+            #[arg(long)]
+            plain: bool,
+
             /// Skip clearing shell history on deactivation
             #[arg(long)]
             no_clear_history: bool,
@@ -102,6 +106,10 @@ pub mod cli {
             /// Disable colored output
             #[arg(long)]
             no_color: bool,
+
+            /// ASCII-only output (no Unicode symbols)
+            #[arg(long)]
+            plain: bool,
         },
         /// Emergency mode: rapid deactivation with countdown
         Emergency {
@@ -124,6 +132,10 @@ pub mod cli {
             /// Disable colored output
             #[arg(long)]
             no_color: bool,
+
+            /// ASCII-only output (no Unicode symbols)
+            #[arg(long)]
+            plain: bool,
         },
         /// Show current status and uptime
         Status {
@@ -163,6 +175,7 @@ pub mod cli {
                 verbose,
                 json,
                 no_color,
+                plain,
                 no_clear_history,
                 kill_session,
                 accept_pivot_risks,
@@ -177,8 +190,10 @@ pub mod cli {
                 use std::time::Instant;
 
                 // Configure color output (must be done before any colored output)
-                if no_color || std::env::var("NO_COLOR").is_ok() {
-                    colored::control::set_override(false);
+                // Story 14.7: Integrate output module with NO_COLOR/--no-color/--plain support
+                // Note: set_plain_mode() already handles colored::control::set_override()
+                if no_color || plain || std::env::var("NO_COLOR").is_ok() {
+                    nails_core::set_plain_mode(true);
                 }
 
                 // Convert CLI flags to Verbosity enum
@@ -291,6 +306,7 @@ pub mod cli {
                 verbose,
                 json,
                 no_color,
+                plain,
             } => {
                 use nails_core::{
                     CleanupConfig, Config, DeactivationOrchestrator, NailsManager, RealFilesystem,
@@ -300,8 +316,10 @@ pub mod cli {
                 use std::sync::{Arc, Mutex};
 
                 // Configure color output (must be done before any colored output)
-                if no_color || std::env::var("NO_COLOR").is_ok() {
-                    colored::control::set_override(false);
+                // Story 14.7: Integrate output module with NO_COLOR/--no-color/--plain support
+                // Note: set_plain_mode() already handles colored::control::set_override()
+                if no_color || plain || std::env::var("NO_COLOR").is_ok() {
+                    nails_core::set_plain_mode(true);
                 }
 
                 // Convert CLI flags to Verbosity enum
@@ -384,6 +402,7 @@ pub mod cli {
                 verbose,
                 json,
                 no_color,
+                plain,
             } => {
                 use nails_core::{
                     CleanupConfig, Config, EmergencyCountdown, EmergencyOrchestrator, ForkStrategy,
@@ -393,8 +412,10 @@ pub mod cli {
                 use std::sync::{Arc, Mutex};
 
                 // Configure color output (must be done before any colored output)
-                if no_color || std::env::var("NO_COLOR").is_ok() {
-                    colored::control::set_override(false);
+                // Story 14.7: Integrate output module with NO_COLOR/--no-color/--plain support
+                // Note: set_plain_mode() already handles colored::control::set_override()
+                if no_color || plain || std::env::var("NO_COLOR").is_ok() {
+                    nails_core::set_plain_mode(true);
                 }
 
                 // Convert CLI flags to Verbosity enum
@@ -533,8 +554,10 @@ pub mod cli {
                 };
 
                 // Configure color output (must be done before any colored output)
-                if no_color || std::env::var("NO_COLOR").is_ok() {
-                    colored::control::set_override(false);
+                // Story 14.7: Integrate output module with NO_COLOR/--no-color/--plain support
+                // Note: set_plain_mode() already handles colored::control::set_override()
+                if no_color || plain || std::env::var("NO_COLOR").is_ok() {
+                    nails_core::set_plain_mode(true);
                 }
 
                 // Load configuration (Story 14.1)
@@ -1899,6 +1922,7 @@ mod tests {
             verbose,
             json,
             no_color,
+            plain,
         } = cli.command
         {
             assert!(!no_clear_history);
@@ -1906,6 +1930,7 @@ mod tests {
             assert_eq!(verbose, 0);
             assert!(!json);
             assert!(!no_color);
+            assert!(!plain);
         } else {
             panic!("Expected Deactivate command");
         }
@@ -2044,6 +2069,7 @@ mod tests {
             verbose,
             json,
             no_color,
+            plain,
         } = cli.command
         {
             assert!(!no_countdown);
@@ -2051,6 +2077,7 @@ mod tests {
             assert_eq!(verbose, 0);
             assert!(!json);
             assert!(!no_color);
+            assert!(!plain);
         } else {
             panic!("Expected Emergency command");
         }

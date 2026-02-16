@@ -61,6 +61,7 @@
 //! {"timestamp":"2026-02-12T10:30:46.456Z","level":"ERROR","message":"Mount failed","fields":{"path":"/home","error":"busy"}}
 //! ```
 
+use crate::output;
 use crate::{Filesystem, NailsError, Result, Verbosity};
 use colored::Colorize;
 use std::env;
@@ -196,10 +197,7 @@ impl LoggingManager {
 
         if !cleaned_log.starts_with(&cleaned_hidden) {
             // Security violation - use ERROR format (not WARNING)
-            eprintln!(
-                "{}",
-                format_early_error("Refusing to log outside hidden volume")
-            );
+            output::error("Refusing to log outside hidden volume");
             return Err(NailsError::InvalidState(format!(
                 "Log path must be on hidden volume: {}",
                 self.log_path.display()
@@ -239,10 +237,7 @@ impl LoggingManager {
         // Verify hidden volume is mounted (FR36)
         // Graceful degradation: if hidden volume is not mounted, return None (stderr-only mode)
         if !fs.path_exists(&self.hidden_volume_path)? {
-            eprintln!(
-                "{}",
-                format_early_warning("Hidden volume not available, file logging disabled")
-            );
+            output::warn("Hidden volume not available, file logging disabled");
             return Ok(None);
         }
 
@@ -253,7 +248,7 @@ impl LoggingManager {
         } else {
             // Path exists - verify it's not a symlink
             if fs.is_symlink(&self.log_path)? {
-                eprintln!("{}", format_early_error("Refusing to log to symlink path"));
+                output::error("Refusing to log to symlink path");
                 return Err(NailsError::InvalidState(
                     "Log path must not be a symlink".to_string(),
                 ));

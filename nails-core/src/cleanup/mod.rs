@@ -32,7 +32,7 @@ pub mod history;
 pub mod logs;
 pub mod temp_files;
 
-use crate::{Filesystem, Result, config::DEFAULT_HIDDEN_VOLUME_ROOT};
+use crate::{Filesystem, Result, config::DEFAULT_HIDDEN_VOLUME_ROOT, output};
 use history::HistoryCleaner;
 pub use history::ShellType;
 use logs::LogCleaner;
@@ -340,7 +340,7 @@ impl<F: Filesystem> CleanupManager<F> {
             }
             Err(e) => {
                 let msg = format!("History cleanup failed: {}", e);
-                eprintln!("Warning: {}", msg);
+                output::warn(&msg);
                 report.add_error(msg);
             }
         }
@@ -366,7 +366,7 @@ impl<F: Filesystem> CleanupManager<F> {
             }
             Err(e) => {
                 let msg = format!("Temp files cleanup failed: {}", e);
-                eprintln!("Warning: {}", msg);
+                output::warn(&msg);
                 report.add_error(msg);
             }
         }
@@ -385,7 +385,7 @@ impl<F: Filesystem> CleanupManager<F> {
             Ok(items) => report.extend_cleaned(items),
             Err(e) => {
                 let msg = format!("Log cleanup failed: {}", e);
-                eprintln!("Warning: {}", msg);
+                output::warn(&msg);
                 report.add_error(msg);
             }
         }
