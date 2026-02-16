@@ -588,17 +588,17 @@ pub mod cli {
                         };
 
                         // FIX #5: Use SecurityPosture constant instead of duplicated strings
-                        let posture = SecurityPosture::Critical;
+                        let posture = SecurityPosture::Decoy;
 
                         if json {
                             println!(
-                                "{{\"state\":\"INACTIVE\",\"security_posture\":\"critical\",\"error\":\"{}\"}}",
+                                "{{\"state\":\"INACTIVE\",\"security_posture\":\"decoy\",\"error\":\"{}\"}}",
                                 error_msg.replace('"', "\\\"")
                             );
                         } else if plain {
                             println!("=== NAILS Status Report ===");
                             println!();
-                            println!("State:              INACTIVE [CRITICAL]");
+                            println!("State:              INACTIVE");
                             println!("Security Posture:   {}", posture.to_plain());
                             println!();
                             println!("Error: {}", error_msg);
@@ -609,7 +609,7 @@ pub mod cli {
                             println!("│  NAILS Status Report                │");
                             println!("╰─────────────────────────────────────╯");
                             println!();
-                            println!("State:              INACTIVE 🔴");
+                            println!("State:              INACTIVE");
                             println!("Security Posture:   {}", posture);
                             println!();
                             println!("Error: {}", error_msg);
@@ -1634,6 +1634,7 @@ pub mod cli {
             security_posture: match report.security_posture() {
                 SecurityPosture::Secure => "secure".to_string(),
                 SecurityPosture::Warning => "warning".to_string(),
+                SecurityPosture::Decoy => "decoy".to_string(),
                 SecurityPosture::Critical => "critical".to_string(),
             },
             activated_at: report.activated_at.map(|dt| dt.to_rfc3339()),
@@ -1704,17 +1705,10 @@ pub mod cli {
         println!("╰─────────────────────────────────────╯");
         println!();
 
-        // Format state with emoji indicator
-        let state_emoji = match report.state {
-            SystemState::Active { .. } => "🟢",
-            SystemState::Inactive => "🔴",
-            SystemState::Activating { .. } => "🟡",
-            SystemState::Deactivating { .. } => "🟡",
-            SystemState::Emergency { .. } => "🔴",
-        };
-        println!("State:              {:?} {}", report.state, state_emoji);
+        // Format state without emoji (AC1: emoji only on Security Posture line)
+        println!("State:              {:?}", report.state);
 
-        // Format security posture with Display trait
+        // Format security posture with Display trait (includes emoji)
         let posture = report.security_posture();
         println!("Security Posture:   {}", posture);
 
@@ -1807,15 +1801,8 @@ pub mod cli {
         println!("=======================================");
         println!();
 
-        // Format state with ASCII indicator
-        let state_indicator = match report.state {
-            SystemState::Active { .. } => "[SECURE]",
-            SystemState::Inactive => "[CRITICAL]",
-            SystemState::Activating { .. } => "[WARNING]",
-            SystemState::Deactivating { .. } => "[WARNING]",
-            SystemState::Emergency { .. } => "[CRITICAL]",
-        };
-        println!("State:              {:?} {}", report.state, state_indicator);
+        // Format state without ASCII indicator (AC1: indicator only on Security Posture line)
+        println!("State:              {:?}", report.state);
 
         // Format security posture with to_plain()
         let posture = report.security_posture();

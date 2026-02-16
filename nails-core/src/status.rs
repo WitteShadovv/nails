@@ -399,13 +399,23 @@ pub enum SecurityPosture {
     /// Users should investigate the cause of the warning state.
     Warning,
 
-    /// System has no protection or is in emergency state
+    /// System is in decoy mode (inactive state)
     ///
     /// This indicates:
     /// - System is inactive (decoy environment only)
-    /// - Emergency shutdown has been triggered
+    /// - No sensitive data is accessible
+    /// - This is the normal, expected default state
     ///
-    /// In critical state, the hidden environment is not protecting the user.
+    /// The decoy state provides plausible deniability.
+    Decoy,
+
+    /// System is in emergency state requiring immediate attention
+    ///
+    /// This indicates:
+    /// - Emergency shutdown has been triggered
+    /// - System requires reboot to restore proper functionality
+    ///
+    /// In critical state, emergency deactivation has occurred.
     Critical,
 }
 
@@ -417,6 +427,7 @@ impl SecurityPosture {
         match self {
             SecurityPosture::Secure => "🟢",
             SecurityPosture::Warning => "🟡",
+            SecurityPosture::Decoy => "🔴",
             SecurityPosture::Critical => "🔴",
         }
     }
@@ -428,6 +439,7 @@ impl SecurityPosture {
         match self {
             SecurityPosture::Secure => "SECURE",
             SecurityPosture::Warning => "WARNING",
+            SecurityPosture::Decoy => "DECOY",
             SecurityPosture::Critical => "CRITICAL",
         }
     }
@@ -438,8 +450,9 @@ impl SecurityPosture {
     fn description(&self) -> &'static str {
         match self {
             SecurityPosture::Secure => "Hidden environment active, overlays verified",
-            SecurityPosture::Warning => "System in transitional state or inconsistency detected",
-            SecurityPosture::Critical => "No protection or emergency state",
+            SecurityPosture::Warning => "System in transitional state - wait for completion",
+            SecurityPosture::Decoy => "Decoy system - no sensitive data accessible",
+            SecurityPosture::Critical => "Emergency deactivation occurred - reboot recommended",
         }
     }
 
@@ -553,7 +566,8 @@ impl StatusReport {
     ///
     /// - **Secure**: Active state with verified overlays
     /// - **Warning**: Active state with mismatched overlays, or transitional state
-    /// - **Critical**: Inactive or Emergency state
+    /// - **Decoy**: Inactive state (normal decoy environment)
+    /// - **Critical**: Emergency state requiring immediate attention
     ///
     /// # Example
     ///
@@ -573,7 +587,7 @@ impl StatusReport {
     ///     overlay_details: None,
     /// };
     ///
-    /// assert_eq!(report.security_posture(), SecurityPosture::Critical);
+    /// assert_eq!(report.security_posture(), SecurityPosture::Decoy);
     /// ```
     pub fn security_posture(&self) -> SecurityPosture {
         match (&self.state, &self.overlay_verification) {
@@ -583,7 +597,7 @@ impl StatusReport {
             }
             (SystemState::Activating { .. }, _) => SecurityPosture::Warning,
             (SystemState::Deactivating { .. }, _) => SecurityPosture::Warning,
-            (SystemState::Inactive, _) => SecurityPosture::Critical,
+            (SystemState::Inactive, _) => SecurityPosture::Decoy,
             (SystemState::Emergency { .. }, _) => SecurityPosture::Critical,
             // Fallback for edge cases (e.g., Active with Skipped/NotApplicable verification)
             _ => SecurityPosture::Warning,
@@ -1362,10 +1376,14 @@ mod tests {
         };
 
         let posture = report.security_posture();
-        assert_eq!(posture, SecurityPosture::Critical);
+        assert_eq!(posture, SecurityPosture::Decoy);
         assert!(format!("{}", posture).contains('🔴'));
+        assert!(format!("{}", posture).contains("DECOY"));
+        assert!(format!("{}", posture).contains("Decoy system"));
+        assert!(!format!("{}", posture).contains("CRITICAL"));
         let plain = posture.to_plain();
-        assert!(plain.contains("[CRITICAL]"));
+        assert!(plain.contains("[DECOY]"));
+        assert!(!plain.contains("[CRITICAL]"));
     }
 
     #[test]
@@ -1381,6 +1399,8 @@ mod tests {
         let posture = report.security_posture();
         assert_eq!(posture, SecurityPosture::Critical);
         assert!(format!("{}", posture).contains('🔴'));
+        assert!(format!("{}", posture).contains("CRITICAL"));
+        assert!(format!("{}", posture).contains("Emergency deactivation"));
         let plain = posture.to_plain();
         assert!(plain.contains("[CRITICAL]"));
     }
@@ -1402,7 +1422,7 @@ mod tests {
 
         assert!(display.contains('🟡'));
         assert!(display.contains("WARNING"));
-        assert!(display.contains("transitional state") || display.contains("inconsistency"));
+        assert!(display.contains("transitional state"));
     }
 
     #[test]
@@ -1412,7 +1432,18 @@ mod tests {
 
         assert!(display.contains('🔴'));
         assert!(display.contains("CRITICAL"));
-        assert!(display.contains("No protection") || display.contains("emergency"));
+        assert!(display.contains("Emergency deactivation"));
+    }
+
+    #[test]
+    fn test_security_posture_display_decoy() {
+        let posture = SecurityPosture::Decoy;
+        let display = format!("{}", posture);
+
+        assert!(display.contains('🔴'));
+        assert!(display.contains("DECOY"));
+        assert!(display.contains("Decoy system"));
+        assert!(!display.contains("CRITICAL"));
     }
 
     #[test]
@@ -1436,11 +1467,23 @@ mod tests {
 
         assert!(!plain.contains('🟡')); // No emoji
         assert!(plain.contains("[WARNING]"));
-        assert!(plain.contains("transitional state") || plain.contains("inconsistency"));
+        assert!(plain.contains("transitional state"));
         assert_eq!(
             plain,
-            "[WARNING] System in transitional state or inconsistency detected"
+            "[WARNING] System in transitional state - wait for completion"
         );
+    }
+
+    #[test]
+    fn test_security_posture_to_plain_decoy() {
+        let posture = SecurityPosture::Decoy;
+        let plain = posture.to_plain();
+
+        assert!(!plain.contains('🔴')); // No emoji
+        assert!(plain.contains("[DECOY]"));
+        assert!(plain.contains("Decoy system"));
+        assert!(!plain.contains("[CRITICAL]"));
+        assert_eq!(plain, "[DECOY] Decoy system - no sensitive data accessible");
     }
 
     #[test]
@@ -1450,8 +1493,11 @@ mod tests {
 
         assert!(!plain.contains('🔴')); // No emoji
         assert!(plain.contains("[CRITICAL]"));
-        assert!(plain.contains("No protection") || plain.contains("emergency"));
-        assert_eq!(plain, "[CRITICAL] No protection or emergency state");
+        assert!(plain.contains("Emergency deactivation"));
+        assert_eq!(
+            plain,
+            "[CRITICAL] Emergency deactivation occurred - reboot recommended"
+        );
     }
 
     #[test]
@@ -1459,6 +1505,7 @@ mod tests {
         let postures = [
             SecurityPosture::Secure,
             SecurityPosture::Warning,
+            SecurityPosture::Decoy,
             SecurityPosture::Critical,
         ];
 
