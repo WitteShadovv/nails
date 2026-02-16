@@ -123,6 +123,136 @@ impl Default for OverlayConfig {
     }
 }
 
+/// Color scheme configuration for terminal appearance changes
+///
+/// Controls automatic terminal color scheme switching when entering/leaving
+/// the hidden environment. Provides visual feedback beyond the shell prompt.
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::config::ColorSchemeConfig;
+///
+/// let config = ColorSchemeConfig::default();
+/// assert!(config.enabled);
+/// assert_eq!(config.hidden.background, "#1a1a2e");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColorSchemeConfig {
+    /// Whether color scheme switching is enabled
+    #[serde(default = "default_color_scheme_enabled")]
+    pub enabled: bool,
+
+    /// Hidden environment color profile
+    #[serde(default)]
+    pub hidden: ColorProfile,
+
+    /// Decoy environment color profile
+    #[serde(default)]
+    pub decoy: DecoyProfile,
+}
+
+impl Default for ColorSchemeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_color_scheme_enabled(),
+            hidden: ColorProfile::default(),
+            decoy: DecoyProfile::default(),
+        }
+    }
+}
+
+/// Color profile for terminal appearance
+///
+/// Defines foreground and background colors using hex color format.
+///
+/// # Color Format
+///
+/// Colors should be specified in hex format (e.g., "#1a1a2e" or "#e0e0e0").
+/// The format is expected to be compatible with OSC (Operating System Command)
+/// escape sequences. Common formats include:
+/// - 6-digit hex: `#1a1a2e` (recommended)
+/// - 3-digit hex: `#abc` (may work with some terminals)
+/// - RGB: `rgb:1a/1a/2e` (alternative OSC format)
+///
+/// # Validation
+///
+/// **No format validation is performed** on color values. Invalid formats
+/// are passed directly to the terminal via OSC sequences. Terminals that
+/// don't recognize the format will silently ignore the sequences (per AC8).
+///
+/// This design choice prioritizes:
+/// 1. Flexibility: Support various terminal color formats without restriction
+/// 2. Simplicity: No complex regex validation or color parsing needed
+/// 3. Robustness: Invalid colors fail silently (terminal ignores them)
+///
+/// Users are responsible for providing valid hex color values. The default
+/// values provide working examples.
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::config::ColorProfile;
+///
+/// let profile = ColorProfile {
+///     background: "#1a1a2e".to_string(),
+///     foreground: "#e0e0e0".to_string(),
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColorProfile {
+    /// Background color (hex format, e.g., "#1a1a2e")
+    ///
+    /// No validation is performed. Invalid formats are passed to the terminal
+    /// and silently ignored if not supported.
+    #[serde(default = "default_hidden_background")]
+    pub background: String,
+
+    /// Foreground color (hex format, e.g., "#e0e0e0")
+    ///
+    /// No validation is performed. Invalid formats are passed to the terminal
+    /// and silently ignored if not supported.
+    #[serde(default = "default_hidden_foreground")]
+    pub foreground: String,
+}
+
+impl Default for ColorProfile {
+    fn default() -> Self {
+        Self {
+            background: default_hidden_background(),
+            foreground: default_hidden_foreground(),
+        }
+    }
+}
+
+/// Decoy profile configuration
+///
+/// Controls whether to reset terminal colors to defaults when
+/// returning to decoy environment.
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::config::DecoyProfile;
+///
+/// let profile = DecoyProfile::default();
+/// assert!(profile.reset);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecoyProfile {
+    /// Whether to reset terminal to defaults (true = use OSC reset sequences)
+    #[serde(default = "default_decoy_reset")]
+    pub reset: bool,
+}
+
+impl Default for DecoyProfile {
+    fn default() -> Self {
+        Self {
+            reset: default_decoy_reset(),
+        }
+    }
+}
+
 /// Application configuration
 ///
 /// Complete configuration management with file loading, validation, and builder pattern.
@@ -208,6 +338,10 @@ pub struct Config {
     /// Number of days to retain log files
     #[serde(default = "default_retention_days")]
     pub retention_days: u64,
+
+    /// Terminal color scheme configuration
+    #[serde(default)]
+    pub color_scheme: ColorSchemeConfig,
 }
 
 /// Default hidden volume root path (single source of truth)
@@ -268,6 +402,22 @@ fn default_max_log_size_mb() -> u64 {
 
 fn default_retention_days() -> u64 {
     7
+}
+
+fn default_color_scheme_enabled() -> bool {
+    true
+}
+
+fn default_hidden_background() -> String {
+    "#1a1a2e".to_string()
+}
+
+fn default_hidden_foreground() -> String {
+    "#e0e0e0".to_string()
+}
+
+fn default_decoy_reset() -> bool {
+    true
 }
 
 /// Discover configuration file path using binary-relative resolution
@@ -384,6 +534,7 @@ pub struct ConfigBuilder {
     log_path: Option<PathBuf>,
     max_log_size_mb: Option<u64>,
     retention_days: Option<u64>,
+    color_scheme: Option<ColorSchemeConfig>,
 }
 
 impl ConfigBuilder {
@@ -514,6 +665,14 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set terminal color scheme configuration
+    ///
+    /// Default: enabled with dark navy background
+    pub fn color_scheme(mut self, config: ColorSchemeConfig) -> Self {
+        self.color_scheme = Some(config);
+        self
+    }
+
     /// Build the Config with validation and smart defaults
     ///
     /// # Errors
@@ -567,6 +726,8 @@ impl ConfigBuilder {
 
         let retention_days = self.retention_days.unwrap_or_else(default_retention_days);
 
+        let color_scheme = self.color_scheme.unwrap_or_default();
+
         Ok(Config {
             hidden_volume_root,
             state_file_path,
@@ -583,6 +744,7 @@ impl ConfigBuilder {
             log_path,
             max_log_size_mb,
             retention_days,
+            color_scheme,
         })
     }
 }
@@ -638,6 +800,7 @@ impl Default for Config {
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root
             max_log_size_mb: default_max_log_size_mb(),
             retention_days: default_retention_days(),
+            color_scheme: ColorSchemeConfig::default(),
         }
     }
 }
@@ -734,7 +897,7 @@ impl Config {
     /// println!("{}", example);
     /// ```
     pub fn example_config() -> &'static str {
-        r#"# NAILS Configuration
+        r##"# NAILS Configuration
 # Required fields:
 hidden_volume_path: /mnt/hidden-volume
 
@@ -751,6 +914,15 @@ log_path: /mnt/hidden-volume/logs
 max_log_size_mb: 10
 retention_days: 7
 
+# Terminal color scheme configuration:
+color_scheme:
+  enabled: true
+  hidden:
+    background: "#1a1a2e"
+    foreground: "#e0e0e0"
+  decoy:
+    reset: true
+
 # Overlay configuration (advanced):
 # overlays:
 #   - name: home
@@ -766,7 +938,7 @@ retention_days: 7
 #     - path: /var
 #       tmpfs_upper_size: 512M
 #       tmpfs_work_size: 128M
-"#
+"##
     }
 
     /// Load configuration from file, or return default if file doesn't exist
@@ -946,6 +1118,7 @@ retention_days: 7
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root
             max_log_size_mb: default_max_log_size_mb(),
             retention_days: default_retention_days(),
+            color_scheme: ColorSchemeConfig::default(),
         }
     }
 }
@@ -2359,5 +2532,71 @@ default_verbosity: info
             ),
             "Should accept custom mount point /mnt/secure"
         );
+    }
+
+    // ========== ColorSchemeConfig Tests (Story 14-8) ==========
+
+    #[test]
+    fn test_color_scheme_config_serde_round_trip() {
+        // Test serialization and deserialization of ColorSchemeConfig
+        let config = ColorSchemeConfig {
+            enabled: true,
+            hidden: ColorProfile {
+                background: "#1a1a2e".to_string(),
+                foreground: "#e0e0e0".to_string(),
+            },
+            decoy: DecoyProfile { reset: true },
+        };
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&config).expect("Should serialize");
+        assert!(json.contains("\"enabled\""));
+        assert!(json.contains("\"hidden\""));
+        assert!(json.contains("\"background\""));
+        assert!(json.contains("\"foreground\""));
+        assert!(json.contains("\"decoy\""));
+        assert!(json.contains("\"reset\""));
+
+        // Deserialize back
+        let deserialized: ColorSchemeConfig =
+            serde_json::from_str(&json).expect("Should deserialize");
+        assert_eq!(deserialized, config);
+    }
+
+    #[test]
+    fn test_color_scheme_config_disabled() {
+        let config = ColorSchemeConfig {
+            enabled: false,
+            hidden: ColorProfile::default(),
+            decoy: DecoyProfile { reset: false },
+        };
+
+        let json = serde_json::to_string(&config).expect("Should serialize");
+        let deserialized: ColorSchemeConfig =
+            serde_json::from_str(&json).expect("Should deserialize");
+
+        assert!(!deserialized.enabled);
+        assert!(!deserialized.decoy.reset);
+    }
+
+    #[test]
+    fn test_color_scheme_config_custom_colors() {
+        let config = ColorSchemeConfig {
+            enabled: true,
+            hidden: ColorProfile {
+                background: "#2e3440".to_string(),
+                foreground: "#d8dee9".to_string(),
+            },
+            decoy: DecoyProfile { reset: true },
+        };
+
+        let json = serde_json::to_string(&config).expect("Should serialize");
+        assert!(json.contains("#2e3440"));
+        assert!(json.contains("#d8dee9"));
+
+        let deserialized: ColorSchemeConfig =
+            serde_json::from_str(&json).expect("Should deserialize");
+        assert_eq!(deserialized.hidden.background, "#2e3440");
+        assert_eq!(deserialized.hidden.foreground, "#d8dee9");
     }
 }
