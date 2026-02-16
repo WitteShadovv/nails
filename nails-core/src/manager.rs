@@ -956,11 +956,10 @@ impl<F: Filesystem> NailsManager<F> {
     /// # Pre-flight Checks Executed (Stories 3.1-3.7)
     ///
     /// 1. **HiddenVolumeCheck** - Validates hidden volume is mounted
-    /// 2. **HiddenStorageStructureCheck** - Validates directory structure exists
+    /// 2. **StorageReadinessCheck** - Validates directory structure + overlay accessibility
     /// 3. **SwapCheck** - Validates swap is disabled
     /// 4. **SpaceCheck** - Validates sufficient disk space
-    /// 5. **OverlayDirectoriesCheck** - Validates overlay directories exist
-    /// 6. **StateCheck** - Validates current state allows activation
+    /// 5. **StateCheck** - Validates current state allows activation
     ///
     /// # Returns
     ///
@@ -987,29 +986,19 @@ impl<F: Filesystem> NailsManager<F> {
     /// ```
     pub fn run_preflight_checks(&self) -> Result<()> {
         use crate::preflight::{
-            HiddenStorageStructureCheck, HiddenVolumeCheck, OverlayDirectoriesCheck,
-            PreFlightRegistry, SpaceCheck, StateCheck, SwapCheck,
+            HiddenVolumeCheck, PreFlightRegistry, SpaceCheck, StateCheck, StorageReadinessCheck,
+            SwapCheck,
         };
 
         let mut registry = PreFlightRegistry::new();
 
-        // Register all checks (Stories 3.1-3.7)
+        // Register all checks (Stories 3.1-3.7, merged in Story 14.5)
         registry.add_check(Box::new(HiddenVolumeCheck::new(
             self.config.hidden_volume_root.clone(),
         )));
 
-        registry.add_check(Box::new(HiddenStorageStructureCheck::new(
+        registry.add_check(Box::new(StorageReadinessCheck::new(
             self.config.hidden_volume_root.clone(),
-        )));
-
-        registry.add_check(Box::new(SwapCheck));
-
-        registry.add_check(Box::new(SpaceCheck::new(
-            self.config.hidden_volume_root.clone(),
-            self.config.minimum_space_mb,
-        )));
-
-        registry.add_check(Box::new(OverlayDirectoriesCheck::new(
             self.config
                 .overlays
                 .iter()
@@ -1022,6 +1011,13 @@ impl<F: Filesystem> NailsManager<F> {
                     )
                 })
                 .collect(),
+        )));
+
+        registry.add_check(Box::new(SwapCheck));
+
+        registry.add_check(Box::new(SpaceCheck::new(
+            self.config.hidden_volume_root.clone(),
+            self.config.minimum_space_mb,
         )));
 
         registry.add_check(Box::new(StateCheck::new(self.current_state()?)));
@@ -3337,7 +3333,7 @@ mod tests {
         fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
         fs.mock_set_mounted(mock_hidden_vol, true);
 
-        // Create minimal directory structure (all required dirs for HiddenStorageStructureCheck)
+        // Create minimal directory structure (all required dirs for StorageReadinessCheck)
         let overlays_dir = mock_hidden_vol.join("overlays");
         let etc_dir = mock_hidden_vol.join("etc");
         let home_dir = mock_hidden_vol.join("home");

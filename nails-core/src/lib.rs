@@ -95,9 +95,8 @@ pub use state::{OverlayInfo, StateFile, SystemState};
 
 // Pre-flight validation exports
 pub use preflight::{
-    CheckResult, HiddenStorageStructureCheck, HiddenVolumeCheck, NixOSConfigCheck,
-    OverlayDirectoriesCheck, OverlayDirs, PreFlightCheck, PreFlightRegistry, SpaceCheck,
-    StateCheck, SwapCheck,
+    CheckResult, HiddenVolumeCheck, NixOSConfigCheck, OverlayDirs, PreFlightCheck,
+    PreFlightRegistry, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
 };
 
 // Forensic validation exports
