@@ -79,6 +79,8 @@ work/
 overlay/
 *.baseline
 config/
+# Prevent accidental commits of state files created during testing in build dirs
+target/**/.nails/
 
 # Documentation temporary files
 docs/sprint-artifacts/

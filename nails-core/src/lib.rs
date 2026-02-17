@@ -88,13 +88,16 @@ pub mod output;
 // Re-export for convenience
 pub use config::{
     CliOverrides, Config, ConfigBuilder, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig,
+    OverlayMode,
 };
 pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
-pub use manager::{MountInfo, MountTracker, MountType, NailsManager};
+pub use manager::{
+    MountInfo, MountTracker, MountType, NailsManager, apply_exclusion_filter, build_overlay_targets,
+};
 
 // State management exports
-pub use state::{OverlayInfo, StateFile, SystemState};
+pub use state::{FailedOverlayInfo, OverlayInfo, StateFile, SystemState};
 
 // Pre-flight validation exports
 pub use preflight::{

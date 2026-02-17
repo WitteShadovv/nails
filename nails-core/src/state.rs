@@ -430,6 +430,34 @@ pub struct OverlayInfo {
     pub mounted_at: DateTime<Utc>,
 }
 
+/// Information about a failed overlay mount attempt (Story 14.10, AC9)
+///
+/// Tracks overlays that failed to mount during activation for debugging
+/// and status reporting. This helps users identify which directories
+/// couldn't be overlaid and why.
+///
+/// # Example
+///
+/// A mount failure for `/var` due to process activity would be recorded as:
+/// ```text
+/// FailedOverlayInfo {
+///     target: PathBuf::from("/var"),
+///     error_message: "Mount failed: device busy",
+///     failed_at: DateTime<Utc>,
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FailedOverlayInfo {
+    /// Target mount point that failed (e.g., /var, /tmp)
+    pub target: PathBuf,
+
+    /// Error message explaining why mount failed
+    pub error_message: String,
+
+    /// Timestamp when the mount attempt failed
+    pub failed_at: DateTime<Utc>,
+}
+
 /// State file for persistence to hidden volume
 ///
 /// The StateFile contains the current system state and all metadata needed
@@ -469,6 +497,12 @@ pub struct StateFile {
     /// Currently mounted overlays with their configuration
     pub overlay_status: std::collections::HashMap<PathBuf, OverlayInfo>,
 
+    /// Overlays that failed to mount during last activation (Story 14.10, AC9)
+    ///
+    /// Used for status reporting and debugging. Cleared on successful deactivation.
+    #[serde(default)]
+    pub failed_overlays: Vec<FailedOverlayInfo>,
+
     /// Timestamp of last state modification
     pub last_modified: DateTime<Utc>,
 
@@ -488,6 +522,7 @@ impl Default for StateFile {
             state: SystemState::Inactive,
             nixos_generation: None,
             overlay_status: std::collections::HashMap::new(),
+            failed_overlays: Vec::new(),
             last_modified: Utc::now(),
             checksum: None,
         }
@@ -1130,6 +1165,7 @@ mod tests {
             },
             nixos_generation: Some("abc123def456".to_string()),
             overlay_status,
+            failed_overlays: Vec::new(),
             last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:01Z")
                 .unwrap()
                 .with_timezone(&Utc),
@@ -1337,6 +1373,7 @@ mod tests {
             state: SystemState::Inactive,
             nixos_generation: None,
             overlay_status: std::collections::HashMap::new(),
+            failed_overlays: Vec::new(),
             last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
@@ -1381,6 +1418,7 @@ mod tests {
             },
             nixos_generation: Some("abc123def456".to_string()),
             overlay_status,
+            failed_overlays: Vec::new(),
             last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:01Z")
                 .unwrap()
                 .with_timezone(&Utc),
@@ -1432,6 +1470,7 @@ mod tests {
             },
             nixos_generation: Some("test123".to_string()),
             overlay_status,
+            failed_overlays: Vec::new(),
             last_modified: Utc::now(),
             checksum: None,
         };
@@ -1580,6 +1619,7 @@ mod tests {
             state: SystemState::Inactive,
             nixos_generation: Some("test-gen".to_string()),
             overlay_status: std::collections::HashMap::new(),
+            failed_overlays: Vec::new(),
             last_modified: Utc::now(),
             checksum: None,
         };
@@ -1656,6 +1696,7 @@ mod tests {
             },
             nixos_generation: None,
             overlay_status: std::collections::HashMap::new(),
+            failed_overlays: Vec::new(),
             last_modified: Utc::now(),
             checksum: None,
         };
@@ -1698,6 +1739,7 @@ mod tests {
             state,
             nixos_generation: None,
             overlay_status: std::collections::HashMap::new(),
+            failed_overlays: Vec::new(),
             last_modified: Utc::now(),
             checksum: None,
         };
@@ -2168,6 +2210,7 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
+            overlay_mode: crate::config::OverlayMode::Explicit,
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/"),

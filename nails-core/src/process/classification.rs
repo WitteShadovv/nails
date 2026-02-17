@@ -9,6 +9,11 @@
 //! - **`/etc`**: Config readers mostly safe, critical services risky
 //! - **`/home`**: GUI apps cannot restart (lose work), audio risky
 //! - **`/nix/store`**: Most safe, only `cwd` users risky
+//! - **Unknown volumes**: Generic overlay process classification (Story 14.10)
+//!
+//! With dynamic overlay enumeration (Story 14.10), any directory under `/` can
+//! be an overlay target. Unknown volumes use a conservative fallback that treats
+//! processes with `cwd` in the target as `Risky` and others as `Safe`.
 //!
 //! See `/docs/architecture/universal-overlay-mounting-strategy.md` for full rationale.
 //!
@@ -98,14 +103,37 @@ pub fn classify_process(proc: &ProcessInfo, target: &Path) -> RestartStrategy {
         "/etc" => classify_etc_process(proc),
         "/home" => classify_home_process(proc),
         "/nix/store" => classify_nix_store_process(proc),
-        _ => {
-            // Unknown volume - default to safe for system directories, risky for user
-            if target_str.starts_with("/home") {
-                RestartStrategy::NoRestart
-            } else {
-                RestartStrategy::Safe
-            }
-        }
+        _ => classify_generic_overlay_process(proc, &target_str),
+    }
+}
+
+/// Classify process for an arbitrary overlay target (Story 14.10)
+///
+/// With dynamic overlay enumeration, any directory under `/` can be an overlay
+/// target (e.g., `/tmp`, `/opt`, `/srv`, `/boot`, `/root`, `/usr`, `/nix`,
+/// `/persistent`). This provides a conservative fallback classification:
+///
+/// - **`/home` subdirectories**: NoRestart (user data, GUI apps)
+/// - **`/root`**: NoRestart (root user home directory)
+/// - **Processes with `cwd` in target**: Risky (may block mount)
+/// - **All other system directories**: Safe (generic overlay process)
+fn classify_generic_overlay_process(proc: &ProcessInfo, target_str: &str) -> RestartStrategy {
+    // Home subdirectories: treat like /home (user data, GUI apps)
+    if target_str.starts_with("/home") {
+        return RestartStrategy::NoRestart;
+    }
+
+    // /root is the root user's home directory - treat like /home
+    if target_str == "/root" {
+        return classify_home_process(proc);
+    }
+
+    // For any other system directory: processes with cwd in target are risky
+    // (they may block the overlay mount), others are safe
+    if proc.has_cwd_in_target {
+        RestartStrategy::Risky
+    } else {
+        RestartStrategy::Safe
     }
 }
 
@@ -380,7 +408,7 @@ mod tests {
         assert_eq!(strategy, RestartStrategy::Safe);
     }
 
-    // Tests for unknown volumes
+    // Tests for generic overlay process classification (Story 14.10)
     #[test]
     fn test_unknown_volume_user_no_restart() {
         let proc = make_test_process("some-app", 1234, true);
@@ -393,6 +421,84 @@ mod tests {
         let proc = make_test_process("some-daemon", 1234, false);
         let strategy = classify_process(&proc, Path::new("/opt"));
         assert_eq!(strategy, RestartStrategy::Safe);
+    }
+
+    #[test]
+    fn test_generic_overlay_tmp_safe() {
+        let proc = make_test_process("some-daemon", 1234, false);
+        let strategy = classify_process(&proc, Path::new("/tmp"));
+        assert_eq!(strategy, RestartStrategy::Safe);
+    }
+
+    #[test]
+    fn test_generic_overlay_srv_safe() {
+        let proc = make_test_process("httpd", 1234, false);
+        let strategy = classify_process(&proc, Path::new("/srv"));
+        assert_eq!(strategy, RestartStrategy::Safe);
+    }
+
+    #[test]
+    fn test_generic_overlay_usr_safe() {
+        let proc = make_test_process("some-binary", 1234, false);
+        let strategy = classify_process(&proc, Path::new("/usr"));
+        assert_eq!(strategy, RestartStrategy::Safe);
+    }
+
+    #[test]
+    fn test_generic_overlay_boot_safe() {
+        let proc = make_test_process("grub-probe", 1234, false);
+        let strategy = classify_process(&proc, Path::new("/boot"));
+        assert_eq!(strategy, RestartStrategy::Safe);
+    }
+
+    #[test]
+    fn test_generic_overlay_nix_safe() {
+        let proc = make_test_process("nix-build", 1234, false);
+        let strategy = classify_process(&proc, Path::new("/nix"));
+        assert_eq!(strategy, RestartStrategy::Safe);
+    }
+
+    #[test]
+    fn test_generic_overlay_persistent_safe() {
+        let proc = make_test_process("some-daemon", 1234, false);
+        let strategy = classify_process(&proc, Path::new("/persistent"));
+        assert_eq!(strategy, RestartStrategy::Safe);
+    }
+
+    #[test]
+    fn test_generic_overlay_cwd_in_target_risky() {
+        let proc = make_test_process("some-process", 1234, true);
+        let strategy = classify_process(&proc, Path::new("/opt"));
+        assert_eq!(strategy, RestartStrategy::Risky);
+    }
+
+    #[test]
+    fn test_generic_overlay_cwd_in_tmp_risky() {
+        let proc = make_test_process("build-runner", 1234, true);
+        let strategy = classify_process(&proc, Path::new("/tmp"));
+        assert_eq!(strategy, RestartStrategy::Risky);
+    }
+
+    #[test]
+    fn test_generic_overlay_root_homedir_uses_home_rules() {
+        // /root is root's home dir - firefox there should be NoRestart
+        let proc = make_test_process("firefox", 1234, true);
+        let strategy = classify_process(&proc, Path::new("/root"));
+        assert_eq!(strategy, RestartStrategy::NoRestart);
+    }
+
+    #[test]
+    fn test_generic_overlay_root_homedir_audio_risky() {
+        let proc = make_test_process("pulseaudio", 1234, false);
+        let strategy = classify_process(&proc, Path::new("/root"));
+        assert_eq!(strategy, RestartStrategy::Risky);
+    }
+
+    #[test]
+    fn test_generic_overlay_root_homedir_unknown_no_restart() {
+        let proc = make_test_process("unknown-app", 1234, false);
+        let strategy = classify_process(&proc, Path::new("/root"));
+        assert_eq!(strategy, RestartStrategy::NoRestart);
     }
 
     // Edge cases

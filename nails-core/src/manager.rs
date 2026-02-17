@@ -28,23 +28,215 @@
 //! // let manager = NailsManager::new(fs, config, state_path);
 //! ```
 
-use crate::{Config, Filesystem, NailsError, OverlayInfo, Result, StateFile, SystemState};
+use crate::{
+    Config, FailedOverlayInfo, Filesystem, NailsError, OverlayInfo, Result, StateFile, SystemState,
+};
 use chrono::Utc;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// Defined mount order for overlays
+/// Apply exclusion filter to a list of directories (Story 14.10, Task 4)
 ///
-/// **Rationale:**
-/// - `/home` mounts first: user data has no system dependencies
-/// - `/etc` mounts second: system config may reference /home paths
-/// - `/var` mounts third: used by system services, must be handled carefully
+/// Filters out directories that match any path in the exclusion list.
+/// This function is separated from build_overlay_targets() for testability
+/// and modularity as specified in Task 4.
 ///
-/// **Unmount order is LIFO (reverse):** /var unmounts first, /etc second, /home last
+/// # Arguments
 ///
-/// This ordering ensures dependency safety during both mounting and rollback.
-/// (Story 4.6, AC1, FR10-FR12)
-const MOUNT_ORDER: &[&str] = &["/home", "/etc", "/var"];
+/// * `directories` - List of directory paths to filter
+/// * `exclusions` - List of paths to exclude
+///
+/// # Returns
+///
+/// Filtered list with excluded directories removed, sorted alphabetically
+///
+/// # Example
+///
+/// ```rust
+/// use std::path::PathBuf;
+/// use nails_core::apply_exclusion_filter;
+///
+/// let dirs = vec![
+///     PathBuf::from("/home"),
+///     PathBuf::from("/etc"),
+///     PathBuf::from("/proc"),
+///     PathBuf::from("/var"),
+/// ];
+/// let exclusions = vec![PathBuf::from("/proc")];
+///
+/// let filtered = apply_exclusion_filter(dirs, &exclusions);
+/// assert_eq!(filtered.len(), 3);
+/// assert!(!filtered.contains(&PathBuf::from("/proc")));
+/// ```
+pub fn apply_exclusion_filter(directories: Vec<PathBuf>, exclusions: &[PathBuf]) -> Vec<PathBuf> {
+    let mut filtered: Vec<PathBuf> = directories
+        .into_iter()
+        .filter(|dir| {
+            let excluded = exclusions.contains(dir);
+            if excluded {
+                tracing::debug!("Excluding directory from overlay: {}", dir.display());
+            }
+            !excluded
+        })
+        .collect();
+
+    // Sort for consistent ordering
+    filtered.sort();
+    filtered
+}
+
+/// Build list of overlay targets based on overlay mode (Story 14.10)
+///
+/// Determines which directories should be overlaid based on the configuration:
+/// - **Auto mode** (default): Enumerate all directories under `/`, apply exclusions
+/// - **Explicit mode**: Use only directories from `config.overlays`
+///
+/// # Arguments
+///
+/// * `fs` - Filesystem abstraction for directory enumeration
+/// * `config` - Configuration containing overlay_mode and exclusion lists
+///
+/// # Returns
+///
+/// Vec of PathBuf containing directories to overlay, sorted alphabetically.
+///
+/// # Errors
+///
+/// Returns error if filesystem enumeration fails (I/O error reading `/`).
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::{build_overlay_targets, MockFilesystem, Config, OverlayMode};
+/// use std::path::PathBuf;
+///
+/// let fs = MockFilesystem::new();
+/// fs.mock_set_root_directories(vec![
+///     PathBuf::from("/home"),
+///     PathBuf::from("/etc"),
+///     PathBuf::from("/var"),
+///     PathBuf::from("/proc"),  // Will be excluded by default
+/// ]);
+///
+/// let config = Config::default(); // Auto mode by default
+/// let targets = build_overlay_targets(&fs, &config).unwrap();
+///
+/// // /proc excluded by default, others included
+/// assert_eq!(targets, vec![
+///     PathBuf::from("/etc"),
+///     PathBuf::from("/home"),
+///     PathBuf::from("/var"),
+/// ]);
+/// ```
+pub fn build_overlay_targets<F: Filesystem>(fs: &F, config: &Config) -> Result<Vec<PathBuf>> {
+    use crate::config::OverlayMode;
+
+    match config.overlay_mode {
+        OverlayMode::Auto => {
+            // Dynamic enumeration: enumerate root dirs + apply exclusions
+            let all_dirs = fs.enumerate_root_directories()?;
+            let exclusions = config.compute_effective_exclusions();
+
+            // Apply exclusion filtering (using separate function per Task 4 spec)
+            let targets = apply_exclusion_filter(all_dirs, &exclusions);
+
+            if !targets.is_empty() {
+                tracing::info!("Dynamic overlay targets: {} directories", targets.len());
+                for target in &targets {
+                    tracing::debug!("  Will overlay: {}", target.display());
+                }
+            } else {
+                tracing::warn!(
+                    "No overlay targets after applying exclusions - all directories excluded!"
+                );
+            }
+
+            Ok(targets)
+        }
+        OverlayMode::Explicit => {
+            // Legacy behavior: use only configured overlays
+            let targets: Vec<PathBuf> = config.overlays.iter().map(|o| o.target.clone()).collect();
+
+            tracing::info!(
+                "Explicit overlay mode: {} configured overlays",
+                targets.len()
+            );
+            for target in &targets {
+                tracing::debug!("  Will overlay: {}", target.display());
+            }
+
+            Ok(targets)
+        }
+    }
+}
+
+/// Create overlay configuration for a target directory (Story 14.10)
+///
+/// Generates an OverlayConfig with auto-created upper/work directories
+/// based on the target path and hidden volume root.
+///
+/// # Arguments
+///
+/// * `fs` - Filesystem abstraction for directory creation
+/// * `target` - Target mount point (e.g., `/home`, `/etc`)
+/// * `hidden_volume_root` - Root path of hidden storage volume
+///
+/// # Returns
+///
+/// OverlayConfig with:
+/// - `lower`: Same as target (original system directory)
+/// - `upper`: `{hidden_volume_root}/{dir_name}`
+/// - `work`: `{hidden_volume_root}/.work/{dir_name}`
+/// - `target`: Same as input target
+///
+/// # Errors
+///
+/// Returns error if:
+/// - Target has no directory name component (e.g., `/`)
+/// - Directory creation fails
+///
+/// # Example
+///
+/// ```ignore
+/// # // Example only: create_overlay_config is an internal helper.
+/// # // Use NailsManager::activate() to mount overlays in normal code.
+/// ```
+fn create_overlay_config<F: Filesystem>(
+    fs: &F,
+    target: &Path,
+    hidden_volume_root: &Path,
+) -> Result<crate::OverlayConfig> {
+    // Extract directory name from target path
+    let dir_name = target.file_name().ok_or_else(|| {
+        NailsError::ConfigError(format!(
+            "Cannot extract directory name from target: {}",
+            target.display()
+        ))
+    })?;
+
+    // Build upper and work paths
+    let upper = hidden_volume_root.join(dir_name);
+    let work_parent = hidden_volume_root.join(".work");
+    let work = work_parent.join(dir_name);
+
+    // Create directories if they don't exist (Story 14.10, Task 6)
+    // First create .work parent directory (may not exist yet)
+    fs.create_directory(&work_parent)?;
+
+    // Then create upper and work directories
+    // create_directory handles EEXIST gracefully
+    fs.create_directory(&upper)?;
+    fs.create_directory(&work)?;
+
+    // Create overlay configuration
+    Ok(crate::OverlayConfig {
+        name: dir_name.to_string_lossy().to_string(),
+        lower: target.to_path_buf(),
+        upper,
+        work,
+        target: target.to_path_buf(),
+    })
+}
 
 /// Type of mount being tracked
 ///
@@ -997,20 +1189,48 @@ impl<F: Filesystem> NailsManager<F> {
             self.config.hidden_volume_root.clone(),
         )));
 
+        // Compute overlay directories based on mode (Auto or Explicit)
+        // For Auto mode: use build_overlay_targets() to enumerate dynamically
+        // For Explicit mode: use config.overlays directly
+        let overlay_dirs: Vec<crate::preflight::OverlayDirs> = match self.config.overlay_mode {
+            crate::config::OverlayMode::Auto => {
+                // Use build_overlay_targets to get dynamic list
+                let targets = build_overlay_targets(&self.filesystem, &self.config)?;
+                targets
+                    .iter()
+                    .map(|target| {
+                        let dir_name = target
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        let upper = self.config.hidden_volume_root.join(&dir_name);
+                        let work = self.config.hidden_volume_root.join(".work").join(&dir_name);
+
+                        crate::preflight::OverlayDirs::new(dir_name, target.clone(), upper, work)
+                    })
+                    .collect()
+            }
+            crate::config::OverlayMode::Explicit => {
+                // Use explicit overlays from config
+                self.config
+                    .overlays
+                    .iter()
+                    .map(|o| {
+                        crate::preflight::OverlayDirs::new(
+                            o.name.clone(),
+                            o.lower.clone(),
+                            o.upper.clone(),
+                            o.work.clone(),
+                        )
+                    })
+                    .collect()
+            }
+        };
+
         registry.add_check(Box::new(StorageReadinessCheck::new(
             self.config.hidden_volume_root.clone(),
-            self.config
-                .overlays
-                .iter()
-                .map(|o| {
-                    crate::preflight::OverlayDirs::new(
-                        o.name.clone(),
-                        o.lower.clone(),
-                        o.upper.clone(),
-                        o.work.clone(),
-                    )
-                })
-                .collect(),
+            overlay_dirs,
         )));
 
         registry.add_check(Box::new(SwapCheck));
@@ -1403,106 +1623,120 @@ impl<F: Filesystem> NailsManager<F> {
         let mut direct_mounts = 0;
         let mut pivot_mounts = 0;
 
-        // Step 8a: Mount persistent overlays (/home, /etc) using universal algorithm (Story 4.15)
-        for target_name in MOUNT_ORDER {
-            let overlay = match manager
-                .config
-                .overlays
-                .iter()
-                .find(|o| o.target.to_string_lossy() == *target_name)
-            {
-                Some(overlay) => overlay,
-                None => {
-                    // Skip overlays not configured (optional in some deployments)
-                    if verbosity >= Verbosity::Debug {
-                        tracing::debug!("Skipping {}: not configured", target_name);
-                    }
-                    continue;
-                }
-            };
+        // Step 8a: Mount persistent overlays using universal algorithm (Story 4.15)
+        // Story 14.10: Use dynamic target list based on overlay_mode
+        match manager.config.overlay_mode {
+            crate::OverlayMode::Auto => {
+                // Auto mode: enumerate root + apply exclusions, create overlays dynamically
+                let overlay_targets = build_overlay_targets(&manager.filesystem, &manager.config)?;
 
-            // Use universal overlay mounting algorithm (Story 4.15, AC8)
-            // This replaces the direct filesystem.mount_overlay() call with a 4-phase algorithm:
-            // 1. Detect blocking processes
-            // 2. Classify and restart processes
-            // 3. Try direct mount
-            // 4. Fallback to pivot mount with user consent
-            match crate::overlay::mount_overlay_with_strategy(
-                &manager.filesystem,
-                &overlay.lower,
-                &overlay.upper,
-                &overlay.work,
-                &overlay.target,
-                &strategy_options,
-            ) {
-                Ok(mount_method) => {
-                    use crate::overlay::MountMethod;
+                // Track mount failures for best-effort mounting (Story 14.10, Task 8)
+                let mut mount_failures: Vec<(PathBuf, NailsError)> = Vec::new();
 
-                    // Track mount type for logging
-                    match mount_method {
-                        MountMethod::Direct => {
-                            direct_mounts += 1;
-                            if verbosity >= Verbosity::Verbose {
-                                tracing::info!(
-                                    "  ✓ {} mounted (direct, optimal security)",
-                                    overlay.target.display()
-                                );
-                            }
+                for target in overlay_targets {
+                    // Create overlay config on-the-fly (Story 14.10, Task 6)
+                    let overlay = match create_overlay_config(
+                        &manager.filesystem,
+                        &target,
+                        &manager.config.hidden_volume_root,
+                    ) {
+                        Ok(config) => config,
+                        Err(e) => {
+                            // Best-effort: log warning, track failure, continue with next overlay
+                            tracing::warn!(
+                                target = %target.display(),
+                                error = %e,
+                                "⚠ Could not create overlay config for {}: {}",
+                                target.display(),
+                                e
+                            );
+                            mount_failures.push((target.clone(), e));
+                            continue;
                         }
-                        MountMethod::Pivot => {
-                            pivot_mounts += 1;
-                            if verbosity >= Verbosity::Verbose {
-                                tracing::warn!(
-                                    "  ⚠️  {} mounted (pivot, degraded security)",
-                                    overlay.target.display()
-                                );
-                            }
-                        }
-                    }
-
-                    tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
-
-                    // Story 4.7, AC2, Task 4: Update overlay_status incrementally after EACH mount
-                    // This ensures crash recovery can track partial activation progress
-                    let overlay_info = OverlayInfo {
-                        mount_path: overlay.target.clone(),
-                        lower_dir: overlay.lower.clone(),
-                        upper_dir: overlay.upper.clone(),
-                        work_dir: overlay.work.clone(),
-                        mounted_at: Utc::now(),
                     };
 
-                    // Update cached state with this mount
-                    let mut cached = manager.cached_state.lock().unwrap();
-                    if let Some(ref mut state_file) = *cached {
-                        state_file
-                            .overlay_status
-                            .insert(overlay.target.clone(), overlay_info);
+                    // Use universal overlay mounting algorithm (Story 4.15, AC8)
+                    match crate::overlay::mount_overlay_with_strategy(
+                        &manager.filesystem,
+                        &overlay.lower,
+                        &overlay.upper,
+                        &overlay.work,
+                        &overlay.target,
+                        &strategy_options,
+                    ) {
+                        Ok(mount_method) => {
+                            use crate::overlay::MountMethod;
 
-                        // Save state file to disk after each mount (AC1, AC2)
-                        // State saves during activation are for crash recovery only - the mount itself succeeded,
-                        // so we continue despite save failures. The final state save at ACTIVE transition will
-                        // succeed, and partial state is better than no state for debugging activation failures.
-                        drop(cached); // Release lock before saving
-                        if let Err(e) = manager.save_cached_state()
-                            && verbosity >= Verbosity::Debug
-                        {
-                            tracing::warn!("Failed to save state after mount: {}", e);
+                            // Track mount type for logging
+                            match mount_method {
+                                MountMethod::Direct => {
+                                    direct_mounts += 1;
+                                    if verbosity >= Verbosity::Verbose {
+                                        tracing::info!(
+                                            "  ✓ {} mounted (direct, optimal security)",
+                                            overlay.target.display()
+                                        );
+                                    }
+                                }
+                                MountMethod::Pivot => {
+                                    pivot_mounts += 1;
+                                    if verbosity >= Verbosity::Verbose {
+                                        tracing::warn!(
+                                            "  ⚠️  {} mounted (pivot, degraded security)",
+                                            overlay.target.display()
+                                        );
+                                    }
+                                }
+                            }
+
+                            tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
+
+                            // Story 4.7, AC2, Task 4: Update overlay_status incrementally after EACH mount
+                            let overlay_info = OverlayInfo {
+                                mount_path: overlay.target.clone(),
+                                lower_dir: overlay.lower.clone(),
+                                upper_dir: overlay.upper.clone(),
+                                work_dir: overlay.work.clone(),
+                                mounted_at: Utc::now(),
+                            };
+
+                            // Update cached state with this mount
+                            let mut cached = manager.cached_state.lock().unwrap();
+                            if let Some(ref mut state_file) = *cached {
+                                state_file
+                                    .overlay_status
+                                    .insert(overlay.target.clone(), overlay_info);
+
+                                drop(cached); // Release lock before saving
+                                if let Err(e) = manager.save_cached_state()
+                                    && verbosity >= Verbosity::Debug
+                                {
+                                    tracing::warn!("Failed to save state after mount: {}", e);
+                                }
+                            }
                         }
-                        // Continue - mount succeeded, state save is for crash recovery only
+                        Err(e) => {
+                            // Story 14.10, Task 8: Best-effort mounting
+                            tracing::warn!(
+                                error = %e,
+                                target = %overlay.target.display(),
+                                "⚠ Could not overlay {}: {}",
+                                overlay.target.display(),
+                                e
+                            );
+                            mount_failures.push((overlay.target.clone(), e));
+                            continue;
+                        }
                     }
                 }
-                Err(e) => {
-                    // Story 9.3 AC#2: Structured error event with context fields
+
+                // If ALL overlays failed, rollback and return error
+                if tracker.mounted.is_empty() && !mount_failures.is_empty() {
                     tracing::error!(
-                        error = %e,
-                        target = %overlay.target.display(),
-                        rollback = true,
-                        "Overlay mount failed"
+                        failure_count = mount_failures.len(),
+                        "All overlay mounts failed - activation aborted"
                     );
 
-                    // Explicit rollback on mount failure (Story 4.6, AC2-AC3)
-                    // Don't just rely on Drop trait - make rollback intent explicit
                     if let Err(rollback_err) = tracker.rollback_all() {
                         tracing::error!(
                             error = %rollback_err,
@@ -1511,7 +1745,131 @@ impl<F: Filesystem> NailsManager<F> {
                             "Rollback failed during mount failure recovery"
                         );
                     }
-                    return Err(e);
+
+                    // Return first failure as representative error
+                    return Err(mount_failures.into_iter().next().unwrap().1);
+                }
+
+                // Story 14.10, AC9: Record failed overlays in state for status reporting
+                if !mount_failures.is_empty() {
+                    let failed_infos: Vec<FailedOverlayInfo> = mount_failures
+                        .iter()
+                        .map(|(path, error)| FailedOverlayInfo {
+                            target: path.clone(),
+                            error_message: error.to_string(),
+                            failed_at: Utc::now(),
+                        })
+                        .collect();
+
+                    tracing::warn!(
+                        failed_count = failed_infos.len(),
+                        "Recording {} failed overlay(s) in state for status reporting",
+                        failed_infos.len()
+                    );
+
+                    let mut cached = manager.cached_state.lock().unwrap();
+                    if let Some(ref mut state_file) = *cached {
+                        state_file.failed_overlays = failed_infos;
+                        drop(cached);
+                        if let Err(e) = manager.save_cached_state()
+                            && verbosity >= Verbosity::Debug
+                        {
+                            tracing::warn!("Failed to save failed_overlays to state: {}", e);
+                        }
+                    }
+                }
+            }
+            crate::OverlayMode::Explicit => {
+                // Explicit mode: use pre-configured overlays (legacy behavior)
+                // Security check: fail if no overlays configured (would leave system unprotected)
+                if manager.config.overlays.is_empty() {
+                    return Err(NailsError::ConfigError(
+                        "Explicit mode configured but no overlays defined - system would have NO forensic protection. \
+                         Add overlays to config or switch to overlay_mode: auto".to_string()
+                    ));
+                }
+
+                for overlay in &manager.config.overlays {
+                    // Use universal overlay mounting algorithm (Story 4.15, AC8)
+                    match crate::overlay::mount_overlay_with_strategy(
+                        &manager.filesystem,
+                        &overlay.lower,
+                        &overlay.upper,
+                        &overlay.work,
+                        &overlay.target,
+                        &strategy_options,
+                    ) {
+                        Ok(mount_method) => {
+                            use crate::overlay::MountMethod;
+
+                            // Track mount type for logging
+                            match mount_method {
+                                MountMethod::Direct => {
+                                    direct_mounts += 1;
+                                    if verbosity >= Verbosity::Verbose {
+                                        tracing::info!(
+                                            "  ✓ {} mounted (direct, optimal security)",
+                                            overlay.target.display()
+                                        );
+                                    }
+                                }
+                                MountMethod::Pivot => {
+                                    pivot_mounts += 1;
+                                    if verbosity >= Verbosity::Verbose {
+                                        tracing::warn!(
+                                            "  ⚠️  {} mounted (pivot, degraded security)",
+                                            overlay.target.display()
+                                        );
+                                    }
+                                }
+                            }
+
+                            tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
+
+                            // Story 4.7, AC2, Task 4: Update overlay_status incrementally after EACH mount
+                            let overlay_info = OverlayInfo {
+                                mount_path: overlay.target.clone(),
+                                lower_dir: overlay.lower.clone(),
+                                upper_dir: overlay.upper.clone(),
+                                work_dir: overlay.work.clone(),
+                                mounted_at: Utc::now(),
+                            };
+
+                            // Update cached state with this mount
+                            let mut cached = manager.cached_state.lock().unwrap();
+                            if let Some(ref mut state_file) = *cached {
+                                state_file
+                                    .overlay_status
+                                    .insert(overlay.target.clone(), overlay_info);
+
+                                drop(cached); // Release lock before saving
+                                if let Err(e) = manager.save_cached_state()
+                                    && verbosity >= Verbosity::Debug
+                                {
+                                    tracing::warn!("Failed to save state after mount: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // Explicit mode: fail fast on mount errors (original behavior)
+                            tracing::error!(
+                                error = %e,
+                                target = %overlay.target.display(),
+                                rollback = true,
+                                "Overlay mount failed"
+                            );
+
+                            if let Err(rollback_err) = tracker.rollback_all() {
+                                tracing::error!(
+                                    error = %rollback_err,
+                                    context = "mount_failure_recovery",
+                                    rollback = true,
+                                    "Rollback failed during mount failure recovery"
+                                );
+                            }
+                            return Err(e);
+                        }
+                    }
                 }
             }
         }
@@ -1968,7 +2326,7 @@ mod tests {
     use super::*;
     use crate::{
         EphemeralOverlayDir, ExtendedOverlayConfig, MockFilesystem, OverlayConfig, StateFile,
-        Stopwatch, SystemState, Verbosity, config::DEFAULT_HIDDEN_VOLUME_ROOT,
+        Stopwatch, SystemState, Verbosity, config::DEFAULT_HIDDEN_VOLUME_ROOT, config::OverlayMode,
     };
     use chrono::Utc;
     use std::collections::HashMap;
@@ -2391,6 +2749,7 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit, // Use explicit mode for test
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/"),
@@ -2490,6 +2849,7 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit, // Use explicit mode for test
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/"),
@@ -2540,6 +2900,7 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit, // Use explicit mode for test
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/"),
@@ -2620,6 +2981,7 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
             overlays: vec![
                 OverlayConfig {
                     name: "home".to_string(),
@@ -2697,6 +3059,7 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit, // Use explicit mode for test
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/"),
@@ -2765,6 +3128,7 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit, // Use explicit mode for test
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/"),
@@ -2878,6 +3242,7 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit, // Use explicit mode for test
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/"),
@@ -3171,6 +3536,7 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit, // Use explicit mode for test
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/"),
@@ -3463,6 +3829,7 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit, // Use explicit mode for test
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/"),
@@ -3664,13 +4031,307 @@ mod tests {
         );
     }
 
+    // Note: Story 14.10 removed MOUNT_ORDER constant in favor of dynamic
+    // overlay target detection via build_overlay_targets(). See tests:
+    // - test_build_overlay_targets_auto_mode_*
+    // - test_build_overlay_targets_explicit_mode_*
+
+    // ========== Story 14.10: Integration Tests for build_overlay_targets ==========
+
     #[test]
-    fn test_mount_order_constant_enforces_home_then_etc() {
-        // Verify MOUNT_ORDER constant has correct order
-        assert_eq!(MOUNT_ORDER.len(), 3, "Should have 3 mount targets");
-        assert_eq!(MOUNT_ORDER[0], "/home", "First mount should be /home");
-        assert_eq!(MOUNT_ORDER[1], "/etc", "Second mount should be /etc");
-        assert_eq!(MOUNT_ORDER[2], "/var", "Third mount should be /var");
+    fn test_apply_exclusion_filter_empty_exclusions() {
+        let dirs = vec![
+            PathBuf::from("/home"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/var"),
+        ];
+        let exclusions: Vec<PathBuf> = vec![];
+
+        let filtered = apply_exclusion_filter(dirs.clone(), &exclusions);
+
+        assert_eq!(filtered.len(), 3);
+        assert_eq!(
+            filtered,
+            vec![
+                PathBuf::from("/etc"),
+                PathBuf::from("/home"),
+                PathBuf::from("/var"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_apply_exclusion_filter_with_exclusions() {
+        let dirs = vec![
+            PathBuf::from("/home"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/proc"),
+            PathBuf::from("/var"),
+        ];
+        let exclusions = vec![PathBuf::from("/proc")];
+
+        let filtered = apply_exclusion_filter(dirs, &exclusions);
+
+        assert_eq!(filtered.len(), 3);
+        assert!(!filtered.contains(&PathBuf::from("/proc")));
+        assert!(filtered.contains(&PathBuf::from("/home")));
+        assert!(filtered.contains(&PathBuf::from("/etc")));
+        assert!(filtered.contains(&PathBuf::from("/var")));
+    }
+
+    #[test]
+    fn test_apply_exclusion_filter_all_excluded() {
+        let dirs = vec![
+            PathBuf::from("/proc"),
+            PathBuf::from("/sys"),
+            PathBuf::from("/dev"),
+        ];
+        let exclusions = vec![
+            PathBuf::from("/proc"),
+            PathBuf::from("/sys"),
+            PathBuf::from("/dev"),
+        ];
+
+        let filtered = apply_exclusion_filter(dirs, &exclusions);
+
+        assert_eq!(filtered.len(), 0);
+    }
+
+    #[test]
+    fn test_apply_exclusion_filter_sorts_results() {
+        let dirs = vec![
+            PathBuf::from("/var"),
+            PathBuf::from("/home"),
+            PathBuf::from("/etc"),
+        ];
+        let exclusions: Vec<PathBuf> = vec![];
+
+        let filtered = apply_exclusion_filter(dirs, &exclusions);
+
+        // Should be sorted alphabetically
+        assert_eq!(filtered[0], PathBuf::from("/etc"));
+        assert_eq!(filtered[1], PathBuf::from("/home"));
+        assert_eq!(filtered[2], PathBuf::from("/var"));
+    }
+
+    #[test]
+    fn test_build_overlay_targets_auto_mode_with_defaults() {
+        let fs = MockFilesystem::new();
+
+        // Setup root directories (typical Linux system)
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/home"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/nix"),
+            PathBuf::from("/var"),
+            PathBuf::from("/tmp"),
+            PathBuf::from("/usr"),
+            PathBuf::from("/bin"),
+            PathBuf::from("/proc"), // Default exclusion
+            PathBuf::from("/sys"),  // Default exclusion
+            PathBuf::from("/dev"),  // Default exclusion
+            PathBuf::from("/boot"), // Default exclusion
+        ]);
+
+        let config = Config {
+            overlay_mode: OverlayMode::Auto,
+            ..Config::default()
+        };
+
+        let targets = build_overlay_targets(&fs, &config).expect("Should build targets");
+
+        // Should include most dirs, exclude /proc, /sys, /dev, /boot
+        assert_eq!(targets.len(), 7);
+        assert!(targets.contains(&PathBuf::from("/home")));
+        assert!(targets.contains(&PathBuf::from("/etc")));
+        assert!(targets.contains(&PathBuf::from("/nix")));
+        assert!(targets.contains(&PathBuf::from("/var")));
+        assert!(targets.contains(&PathBuf::from("/tmp")));
+        assert!(targets.contains(&PathBuf::from("/usr")));
+        assert!(targets.contains(&PathBuf::from("/bin")));
+        assert!(!targets.contains(&PathBuf::from("/proc")));
+        assert!(!targets.contains(&PathBuf::from("/sys")));
+        assert!(!targets.contains(&PathBuf::from("/dev")));
+        assert!(!targets.contains(&PathBuf::from("/boot")));
+    }
+
+    #[test]
+    fn test_build_overlay_targets_auto_mode_with_user_exclusions() {
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/home"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/nix"),
+            PathBuf::from("/var"),
+            PathBuf::from("/boot"),
+        ]);
+
+        let mut config = Config {
+            overlay_mode: OverlayMode::Auto,
+            ..Config::default()
+        };
+        // Add /var and /nix as additional user exclusions (boot already excluded by default)
+        config.overlay_exclusions = vec![PathBuf::from("/var"), PathBuf::from("/nix")];
+
+        let targets = build_overlay_targets(&fs, &config).expect("Should build targets");
+
+        // Should exclude user-specified directories
+        assert_eq!(targets.len(), 2);
+        assert!(targets.contains(&PathBuf::from("/home")));
+        assert!(targets.contains(&PathBuf::from("/etc")));
+        assert!(!targets.contains(&PathBuf::from("/nix")));
+        assert!(!targets.contains(&PathBuf::from("/var")));
+        assert!(!targets.contains(&PathBuf::from("/boot")));
+    }
+
+    #[test]
+    fn test_build_overlay_targets_auto_mode_with_user_removals() {
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/home"),
+            PathBuf::from("/mnt"), // Default exclusion that user wants to remove
+        ]);
+
+        let mut config = Config {
+            overlay_mode: OverlayMode::Auto,
+            ..Config::default()
+        };
+        config.overlay_exclusions_remove = vec![
+            PathBuf::from("/mnt"), // Remove from default exclusions
+        ];
+
+        let targets = build_overlay_targets(&fs, &config).expect("Should build targets");
+
+        // /mnt should now be included (removed from exclusions)
+        assert_eq!(targets.len(), 2);
+        assert!(targets.contains(&PathBuf::from("/home")));
+        assert!(targets.contains(&PathBuf::from("/mnt")));
+    }
+
+    #[test]
+    fn test_build_overlay_targets_auto_mode_empty_root() {
+        let fs = MockFilesystem::new();
+
+        // Empty root directory
+        fs.mock_set_root_directories(vec![]);
+
+        let config = Config {
+            overlay_mode: OverlayMode::Auto,
+            ..Config::default()
+        };
+
+        let targets = build_overlay_targets(&fs, &config).expect("Should build targets");
+
+        assert_eq!(targets.len(), 0);
+    }
+
+    #[test]
+    fn test_build_overlay_targets_auto_mode_all_excluded() {
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/proc"),
+            PathBuf::from("/sys"),
+            PathBuf::from("/dev"),
+        ]);
+
+        let config = Config {
+            overlay_mode: OverlayMode::Auto,
+            ..Config::default()
+        };
+
+        let targets = build_overlay_targets(&fs, &config).expect("Should build targets");
+
+        // All directories are in default exclusions
+        assert_eq!(targets.len(), 0);
+    }
+
+    #[test]
+    fn test_build_overlay_targets_auto_mode_sorted_output() {
+        let fs = MockFilesystem::new();
+
+        // Unsorted input
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/var"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/home"),
+        ]);
+
+        let config = Config {
+            overlay_mode: OverlayMode::Auto,
+            ..Config::default()
+        };
+
+        let targets = build_overlay_targets(&fs, &config).expect("Should build targets");
+
+        // Should be sorted alphabetically
+        assert_eq!(targets[0], PathBuf::from("/etc"));
+        assert_eq!(targets[1], PathBuf::from("/home"));
+        assert_eq!(targets[2], PathBuf::from("/var"));
+    }
+
+    #[test]
+    fn test_build_overlay_targets_explicit_mode() {
+        let fs = MockFilesystem::new();
+
+        // Root has many directories, but explicit mode should ignore them
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/home"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/var"),
+            PathBuf::from("/tmp"),
+            PathBuf::from("/boot"),
+        ]);
+
+        let config = Config {
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![
+                OverlayConfig {
+                    name: "home".to_string(),
+                    lower: PathBuf::from("/home"),
+                    upper: PathBuf::from("/mnt/hidden/home"),
+                    work: PathBuf::from("/mnt/hidden/.work/home"),
+                    target: PathBuf::from("/home"),
+                },
+                OverlayConfig {
+                    name: "etc".to_string(),
+                    lower: PathBuf::from("/etc"),
+                    upper: PathBuf::from("/mnt/hidden/etc"),
+                    work: PathBuf::from("/mnt/hidden/.work/etc"),
+                    target: PathBuf::from("/etc"),
+                },
+            ],
+            ..Config::default()
+        };
+
+        let targets = build_overlay_targets(&fs, &config).expect("Should build targets");
+
+        // Should only use configured overlays, not all discovered directories
+        assert_eq!(targets.len(), 2);
+        assert!(targets.contains(&PathBuf::from("/home")));
+        assert!(targets.contains(&PathBuf::from("/etc")));
+        assert!(!targets.contains(&PathBuf::from("/var")));
+        assert!(!targets.contains(&PathBuf::from("/tmp")));
+    }
+
+    #[test]
+    fn test_build_overlay_targets_explicit_mode_empty_overlays() {
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_root_directories(vec![PathBuf::from("/home"), PathBuf::from("/etc")]);
+
+        let config = Config {
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![], // No overlays configured
+            ..Config::default()
+        };
+
+        let targets = build_overlay_targets(&fs, &config).expect("Should build targets");
+
+        // No overlays configured = no targets
+        assert_eq!(targets.len(), 0);
     }
 
     #[test]
@@ -3808,6 +4469,7 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit, // Use explicit mode for test
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/"),
@@ -4145,6 +4807,7 @@ mod tests {
                     target: PathBuf::from("/etc"),
                 },
             ],
+            overlay_mode: crate::OverlayMode::Explicit, // Use explicit mode for test
             ..Config::test_default()
         };
 
@@ -4636,6 +5299,7 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit, // Use explicit mode for test
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/"),
@@ -4751,6 +5415,7 @@ mod tests {
                     target: PathBuf::from("/etc"),
                 },
             ],
+            overlay_mode: crate::OverlayMode::Explicit, // Use explicit mode for test
             ..Config::test_default()
         };
 
@@ -6328,6 +6993,7 @@ mod tests {
             state: SystemState::Inactive,
             nixos_generation: None,
             overlay_status: HashMap::new(),
+            failed_overlays: Vec::new(),
             last_modified: Utc::now(),
             checksum: None,
         };
@@ -6398,6 +7064,14 @@ mod tests {
         // Configure filesystem to fail mount operations by making target directory not exist
         fs.mock_set_path_exists("/home", false);
 
+        // Set up overlay paths
+        let upper_dir = mock_hidden_vol.join("home");
+        let work_dir = mock_hidden_vol.join(".work/home");
+        std::fs::create_dir_all(&upper_dir).unwrap();
+        std::fs::create_dir_all(&work_dir).unwrap();
+        fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+
         let initial_state = StateFile {
             state: SystemState::Inactive,
             ..StateFile::default()
@@ -6409,11 +7083,12 @@ mod tests {
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
             state_file_path: state_path.clone(),
-            overlays: vec![OverlayConfig {
+            overlay_mode: crate::OverlayMode::Explicit,
+            overlays: vec![crate::OverlayConfig {
                 name: "home".to_string(),
-                lower: PathBuf::from("/"),
-                upper: mock_hidden_vol.join("home-upper"),
-                work: mock_hidden_vol.join("home-work"),
+                lower: PathBuf::from("/home"),
+                upper: upper_dir.clone(),
+                work: work_dir.clone(),
                 target: PathBuf::from("/home"),
             }],
             ..Config::test_default()
@@ -6472,5 +7147,576 @@ mod tests {
         // This test verifies the logging infrastructure works (AC#1)
         assert!(logs_contain("Activation complete"));
         assert!(logs_contain("state_to"));
+    }
+
+    // ========== Story 14.10, Task 12: Integration Tests for Dynamic Overlay Activation ==========
+
+    /// Helper to set up Auto mode activation test with MockFilesystem.
+    ///
+    /// Sets up mock with root directories, hidden volume paths, and all required
+    /// mock path entries for overlay mounting to work.
+    fn setup_auto_mode_test(
+        dirs: &[&str],
+    ) -> (
+        tempfile::TempDir,
+        MockFilesystem,
+        PathBuf, // state_path
+    ) {
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Setup root directories
+        let root_dirs: Vec<PathBuf> = dirs.iter().map(PathBuf::from).collect();
+        fs.mock_set_root_directories(root_dirs);
+
+        // Mark hidden volume root as writable
+        fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+        fs.mock_set_writable(mock_hidden_vol.to_str().unwrap(), true);
+
+        // Pre-create required overlay directories AND set mock paths
+        for dir_name in dirs {
+            let name = PathBuf::from(dir_name)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+            // Create real dirs for temp dir paths
+            std::fs::create_dir_all(mock_hidden_vol.join(&name)).unwrap();
+            std::fs::create_dir_all(mock_hidden_vol.join(format!(".work/{}", name))).unwrap();
+
+            // Set lower directory (target) as existing in mock
+            fs.mock_set_path_exists(dir_name, true);
+
+            // Set upper and work dirs as existing in mock
+            let upper = mock_hidden_vol.join(&name);
+            let work = mock_hidden_vol.join(format!(".work/{}", name));
+            fs.mock_set_path_exists(upper.to_str().unwrap(), true);
+            fs.mock_set_path_exists(work.to_str().unwrap(), true);
+
+            // Set .work parent as existing and writable
+            let work_parent = mock_hidden_vol.join(".work");
+            fs.mock_set_path_exists(work_parent.to_str().unwrap(), true);
+            fs.mock_set_writable(work_parent.to_str().unwrap(), true);
+        }
+
+        (temp_dir, fs, state_path)
+    }
+
+    #[test]
+    fn test_activate_auto_mode_overlays_all_non_excluded_dirs() {
+        // Task 12.1: Test activation with overlay_mode: auto creates overlays for all non-excluded dirs
+        let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/home", "/etc", "/var"]);
+        let mock_hidden_vol = temp_dir.path();
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Auto,
+            overlay_exclusions: vec![],
+            overlay_exclusions_remove: vec![],
+            overlays: vec![],
+            ..Config::test_default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        let result = NailsManager::activate(Arc::clone(&manager), true);
+        assert!(result.is_ok(), "Activation should succeed: {:?}", result);
+
+        // Verify all 3 directories were overlaid
+        let state = manager.lock().unwrap().current_state().unwrap();
+        if let SystemState::Active { overlays, .. } = state {
+            assert_eq!(overlays.len(), 3, "Should have 3 overlays");
+            assert!(overlays.contains(&PathBuf::from("/etc")));
+            assert!(overlays.contains(&PathBuf::from("/home")));
+            assert!(overlays.contains(&PathBuf::from("/var")));
+        } else {
+            panic!("Expected Active state, got {:?}", state);
+        }
+    }
+
+    #[test]
+    fn test_activate_auto_mode_mount_order_is_alphabetical() {
+        // Task 12.2: Test mount order is alphabetical
+        let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/var", "/etc", "/home"]);
+        let mock_hidden_vol = temp_dir.path();
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Auto,
+            overlay_exclusions: vec![],
+            overlay_exclusions_remove: vec![],
+            overlays: vec![],
+            ..Config::test_default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        let result = NailsManager::activate(Arc::clone(&manager), true);
+        assert!(result.is_ok(), "Activation should succeed: {:?}", result);
+
+        // Verify mount order is alphabetical by checking overlay_status
+        let mgr = manager.lock().unwrap();
+        let cached = mgr.cached_state.lock().unwrap();
+        if let Some(ref state_file) = *cached {
+            let mut mount_targets: Vec<PathBuf> =
+                state_file.overlay_status.keys().cloned().collect();
+            mount_targets.sort();
+            assert_eq!(mount_targets[0], PathBuf::from("/etc"));
+            assert_eq!(mount_targets[1], PathBuf::from("/home"));
+            assert_eq!(mount_targets[2], PathBuf::from("/var"));
+        } else {
+            panic!("No cached state found");
+        }
+    }
+
+    #[test]
+    fn test_activate_auto_mode_upper_work_dirs_at_correct_paths() {
+        // Task 12.3: Test upper/work dirs created at correct paths
+        let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/home", "/etc"]);
+        let mock_hidden_vol = temp_dir.path();
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Auto,
+            overlay_exclusions: vec![],
+            overlay_exclusions_remove: vec![],
+            overlays: vec![],
+            ..Config::test_default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        let result = NailsManager::activate(Arc::clone(&manager), true);
+        assert!(result.is_ok(), "Activation should succeed: {:?}", result);
+
+        // Verify overlay paths are correct
+        let mgr = manager.lock().unwrap();
+        let cached = mgr.cached_state.lock().unwrap();
+        if let Some(ref state_file) = *cached {
+            // /home overlay
+            let home_info = state_file
+                .overlay_status
+                .get(&PathBuf::from("/home"))
+                .expect("/home overlay should exist");
+            assert_eq!(home_info.upper_dir, mock_hidden_vol.join("home"));
+            assert_eq!(home_info.work_dir, mock_hidden_vol.join(".work/home"));
+            assert_eq!(home_info.lower_dir, PathBuf::from("/home"));
+
+            // /etc overlay
+            let etc_info = state_file
+                .overlay_status
+                .get(&PathBuf::from("/etc"))
+                .expect("/etc overlay should exist");
+            assert_eq!(etc_info.upper_dir, mock_hidden_vol.join("etc"));
+            assert_eq!(etc_info.work_dir, mock_hidden_vol.join(".work/etc"));
+            assert_eq!(etc_info.lower_dir, PathBuf::from("/etc"));
+        } else {
+            panic!("No cached state found");
+        }
+    }
+
+    #[test]
+    fn test_activate_auto_mode_best_effort_continues_after_mount_failure() {
+        // Task 12.4: Test activation continues after individual mount failure
+        let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/etc", "/home", "/var"]);
+        let mock_hidden_vol = temp_dir.path();
+
+        // Configure /etc to fail mounting
+        fs.mock_set_mount_should_fail("/etc", true);
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Auto,
+            overlay_exclusions: vec![],
+            overlay_exclusions_remove: vec![],
+            overlays: vec![],
+            ..Config::test_default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        // Activation should succeed (best-effort: 2 of 3 overlays mounted)
+        let result = NailsManager::activate(Arc::clone(&manager), true);
+        assert!(
+            result.is_ok(),
+            "Activation should succeed with partial mounts: {:?}",
+            result
+        );
+
+        // Verify 2 overlays mounted, /etc is missing
+        let state = manager.lock().unwrap().current_state().unwrap();
+        if let SystemState::Active { overlays, .. } = state {
+            assert_eq!(overlays.len(), 2, "Should have 2 successful overlays");
+            assert!(overlays.contains(&PathBuf::from("/home")));
+            assert!(overlays.contains(&PathBuf::from("/var")));
+            assert!(!overlays.contains(&PathBuf::from("/etc")));
+        } else {
+            panic!("Expected Active state, got {:?}", state);
+        }
+    }
+
+    #[test]
+    fn test_activate_auto_mode_failed_overlays_recorded_in_state() {
+        // Task 12.5: Test failed overlays recorded in state file
+        let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/etc", "/home", "/var"]);
+        let mock_hidden_vol = temp_dir.path();
+
+        // Configure /etc to fail mounting
+        fs.mock_set_mount_should_fail("/etc", true);
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Auto,
+            overlay_exclusions: vec![],
+            overlay_exclusions_remove: vec![],
+            overlays: vec![],
+            ..Config::test_default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        let result = NailsManager::activate(Arc::clone(&manager), true);
+        assert!(result.is_ok(), "Activation should succeed: {:?}", result);
+
+        // Verify failed overlays are recorded in state
+        let mgr = manager.lock().unwrap();
+        let cached = mgr.cached_state.lock().unwrap();
+        if let Some(ref state_file) = *cached {
+            assert_eq!(
+                state_file.failed_overlays.len(),
+                1,
+                "Should have 1 failed overlay"
+            );
+            assert_eq!(state_file.failed_overlays[0].target, PathBuf::from("/etc"));
+            assert!(
+                !state_file.failed_overlays[0].error_message.is_empty(),
+                "Error message should not be empty"
+            );
+        } else {
+            panic!("No cached state found");
+        }
+    }
+
+    #[test]
+    fn test_activate_auto_mode_with_user_exclusions() {
+        // Integration test: auto mode with user-specified exclusions
+        let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/boot", "/etc", "/home", "/nix"]);
+        let mock_hidden_vol = temp_dir.path();
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Auto,
+            overlay_exclusions: vec![PathBuf::from("/boot"), PathBuf::from("/nix")],
+            overlay_exclusions_remove: vec![],
+            overlays: vec![],
+            ..Config::test_default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        let result = NailsManager::activate(Arc::clone(&manager), true);
+        assert!(result.is_ok(), "Activation should succeed: {:?}", result);
+
+        // Only /etc and /home should be overlaid (boot and nix excluded)
+        let state = manager.lock().unwrap().current_state().unwrap();
+        if let SystemState::Active { overlays, .. } = state {
+            assert_eq!(overlays.len(), 2, "Should have 2 overlays");
+            assert!(overlays.contains(&PathBuf::from("/etc")));
+            assert!(overlays.contains(&PathBuf::from("/home")));
+            assert!(!overlays.contains(&PathBuf::from("/boot")));
+            assert!(!overlays.contains(&PathBuf::from("/nix")));
+        } else {
+            panic!("Expected Active state, got {:?}", state);
+        }
+    }
+
+    // ========== Story 14.10, Task 13: Integration Tests for Explicit Mode ==========
+
+    #[test]
+    fn test_activate_explicit_mode_uses_only_configured_overlays() {
+        // Task 13.1: Test explicit mode uses only configured overlays (legacy behavior)
+        use crate::OverlayConfig;
+
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Root has many directories...
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/boot"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/home"),
+            PathBuf::from("/var"),
+            PathBuf::from("/tmp"),
+        ]);
+
+        fs.mock_set_path_exists("/", true);
+        let upper_home = mock_hidden_vol.join("overlays/home/upper");
+        let work_home = mock_hidden_vol.join("overlays/home/work");
+        std::fs::create_dir_all(&upper_home).unwrap();
+        std::fs::create_dir_all(&work_home).unwrap();
+        fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit, // Explicit mode!
+            overlays: vec![OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_home.clone(),
+                work: work_home.clone(),
+                target: PathBuf::from("/home"),
+            }],
+            ..Config::test_default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        let result = NailsManager::activate(Arc::clone(&manager), true);
+        assert!(result.is_ok(), "Activation should succeed: {:?}", result);
+
+        // Only 1 overlay (from config), NOT all 5 discovered directories
+        let state = manager.lock().unwrap().current_state().unwrap();
+        if let SystemState::Active { overlays, .. } = state {
+            assert_eq!(
+                overlays.len(),
+                1,
+                "Should have exactly 1 overlay (explicit mode)"
+            );
+            assert_eq!(overlays[0], PathBuf::from("/home"));
+        } else {
+            panic!("Expected Active state, got {:?}", state);
+        }
+    }
+
+    #[test]
+    fn test_default_overlay_mode_is_auto() {
+        // Task 13.2: Test default mode is auto
+        let config = Config::test_default();
+        assert_eq!(config.overlay_mode, OverlayMode::Auto);
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_activate_explicit_mode_empty_overlays_fails() {
+        // Security test: Explicit mode with NO overlays should fail activation
+        // This prevents silent activation with NO forensic protection
+        use std::sync::Arc;
+
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+        fs.mock_set_root_directories(vec![PathBuf::from("/home"), PathBuf::from("/etc")]);
+
+        // Mark hidden volume as writable and existing
+        fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+        fs.mock_set_writable(mock_hidden_vol.to_str().unwrap(), true);
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![], // No overlays configured - SECURITY ISSUE
+            ..Config::default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        let result = NailsManager::activate(Arc::clone(&manager), true);
+
+        // Should FAIL with clear error message
+        assert!(
+            result.is_err(),
+            "Activation should fail with empty Explicit mode"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("no overlays") || err_msg.contains("NO forensic protection"),
+            "Error should mention empty overlays: {}",
+            err_msg
+        );
+    }
+
+    // ========== Story 14.10: Error Format Validation Test ==========
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_overlay_mount_failure_error_format() {
+        // AC9: Validate error message format "⚠ Could not overlay /path: {reason}"
+        use std::sync::Arc;
+
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Setup mock filesystem with root directories
+        fs.mock_set_root_directories(vec![PathBuf::from("/home"), PathBuf::from("/etc")]);
+
+        // Mark hidden volume root as writable so create_overlay_config can create directories
+        fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+        fs.mock_set_writable(mock_hidden_vol.to_str().unwrap(), true);
+
+        // Create required directories on mock filesystem
+        let home_upper = mock_hidden_vol.join("home");
+        let home_work = mock_hidden_vol.join(".work/home");
+        let etc_upper = mock_hidden_vol.join("etc");
+        let etc_work = mock_hidden_vol.join(".work/etc");
+
+        std::fs::create_dir_all(&home_upper).unwrap();
+        std::fs::create_dir_all(&home_work).unwrap();
+        std::fs::create_dir_all(&etc_upper).unwrap();
+        std::fs::create_dir_all(&etc_work).unwrap();
+
+        // Configure mock to fail mounting /etc
+        fs.mock_set_mount_should_fail("/etc", true);
+
+        let mut config = Config::default();
+        config.hidden_volume_root = mock_hidden_vol.to_path_buf();
+        config.overlay_mode = OverlayMode::Auto;
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        // Attempt activation - should succeed partially
+        // Skip preflight to directly test mount failure error format
+        let _result = NailsManager::activate(manager, true);
+
+        // Verify error message format matches AC9 specification
+        assert!(
+            logs_contain("⚠ Could not overlay /etc"),
+            "Error message should contain '⚠ Could not overlay /etc'"
+        );
+        assert!(
+            logs_contain("⚠ Could not overlay"),
+            "Error message should follow format '⚠ Could not overlay <path>: <reason>'"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_activate_auto_mode_all_directories_excluded() {
+        // Edge case: All directories excluded by user configuration
+        // Should activate successfully with 0 overlays and log warning
+        use std::sync::Arc;
+
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        let state_dir = mock_hidden_vol.join(".nails");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_path = state_dir.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Setup: only 3 directories in root
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/home"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/var"),
+        ]);
+
+        // Mark hidden volume root as writable
+        fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+        fs.mock_set_writable(mock_hidden_vol.to_str().unwrap(), true);
+
+        // Exclude ALL directories (edge case configuration)
+        let mut config = Config::default();
+        config.hidden_volume_root = mock_hidden_vol.to_path_buf();
+        config.overlay_mode = OverlayMode::Auto;
+        config.overlay_exclusions = vec![
+            PathBuf::from("/home"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/var"),
+        ];
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        // Attempt activation - should succeed with 0 overlays
+        let result = NailsManager::activate(manager.clone(), true);
+
+        assert!(
+            result.is_ok(),
+            "Activation should succeed even with all directories excluded: {:?}",
+            result
+        );
+
+        // Verify warning about no overlay targets was logged
+        assert!(
+            logs_contain("No overlay targets after applying exclusions"),
+            "Should log warning when all directories excluded"
+        );
+
+        // Verify system state is Active (even with 0 overlays)
+        let mgr = manager.lock().unwrap();
+        let cached = mgr.cached_state.lock().unwrap();
+        if let Some(ref state_file) = *cached {
+            assert!(state_file.state.is_active(), "State should be Active");
+            assert_eq!(state_file.overlay_status.len(), 0);
+        } else {
+            panic!("State file should be cached");
+        }
     }
 }

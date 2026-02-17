@@ -253,6 +253,46 @@ impl Default for DecoyProfile {
     }
 }
 
+/// Overlay mode determines how overlay targets are selected
+///
+/// This enum controls whether NAILS automatically overlays all directories
+/// under `/` (auto mode) or only explicitly configured directories (explicit mode).
+///
+/// # Modes
+///
+/// - **Auto**: Dynamic enumeration - discovers all directories under `/` at runtime
+///   and overlays them (except exclusions). This is the default and recommended mode
+///   for maximum forensic protection.
+/// - **Explicit**: Legacy mode - only overlays directories explicitly listed in
+///   the `overlays` configuration. Use this if you need fine-grained control.
+///
+/// # Security Implications
+///
+/// Auto mode provides maximum forensic artifact protection by ensuring no directory
+/// on the base system can leak artifacts from the hidden environment. Explicit mode
+/// may leave some directories unprotected if not configured correctly.
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::config::OverlayMode;
+///
+/// let mode = OverlayMode::Auto;  // Default - overlay everything
+/// let legacy = OverlayMode::Explicit;  // Only overlay configured dirs
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayMode {
+    /// Auto mode: enumerate all directories under `/` and overlay them (except exclusions)
+    /// This is the default and recommended mode for maximum forensic protection.
+    #[default]
+    Auto,
+
+    /// Explicit mode: only overlay directories explicitly listed in `overlays` config
+    /// This preserves legacy behavior for users who want fine-grained control.
+    Explicit,
+}
+
 /// Application configuration
 ///
 /// Complete configuration management with file loading, validation, and builder pattern.
@@ -300,6 +340,65 @@ pub struct Config {
     /// Extended overlay configuration for ephemeral (tmpfs-backed) overlays (Story 4.11)
     #[serde(default)]
     pub extended_overlays: ExtendedOverlayConfig,
+
+    // ===== Dynamic Overlay Configuration (Story 14.10) =====
+    /// Overlay mode: determines how overlay targets are selected
+    ///
+    /// - **Auto** (default, recommended): Dynamically enumerate ALL directories under `/`
+    ///   and overlay them (except those in the exclusion list). Provides maximum forensic
+    ///   protection by ensuring no directory on the base system can leak artifacts.
+    ///
+    /// - **Explicit**: Only overlay directories explicitly listed in `overlays` field.
+    ///   Preserves legacy behavior for users who want fine-grained control.
+    ///
+    /// **Default**: `OverlayMode::Auto`
+    ///
+    /// **Example**:
+    /// ```yaml
+    /// overlay_mode: auto  # Use dynamic enumeration (default)
+    /// # OR
+    /// overlay_mode: explicit  # Use explicit overlay list
+    /// ```
+    #[serde(default)]
+    pub overlay_mode: OverlayMode,
+
+    /// User-specified additional exclusions (merged with defaults)
+    ///
+    /// Directories to exclude from overlay in Auto mode, in addition to the defaults.
+    /// These paths are merged with the default exclusion list.
+    ///
+    /// **Default exclusions**: `/proc`, `/sys`, `/dev`, `/run`, `/mnt`
+    ///
+    /// **Use case**: Exclude additional directories you don't want overlaid
+    /// (e.g., `/boot` for boot partition, `/nix` for Nix store performance).
+    ///
+    /// **Example**:
+    /// ```yaml
+    /// overlay_exclusions:
+    ///   - /boot
+    ///   - /nix
+    /// ```
+    #[serde(default)]
+    pub overlay_exclusions: Vec<PathBuf>,
+
+    /// User-specified exclusions to REMOVE from defaults
+    ///
+    /// Directories to remove from the default exclusion list. Provides full user control
+    /// over what gets overlaid - no mandatory exclusions.
+    ///
+    /// **Warning**: Removing default exclusions like `/proc`, `/sys`, `/dev` will likely
+    /// cause mount failures (they are pseudo-filesystems that cannot be overlaid).
+    /// Only remove if you understand the implications.
+    ///
+    /// **Use case**: Advanced users who want to overlay `/mnt` or other default exclusions.
+    ///
+    /// **Example**:
+    /// ```yaml
+    /// overlay_exclusions_remove:
+    ///   - /mnt  # I want /mnt overlaid (not excluded)
+    /// ```
+    #[serde(default)]
+    pub overlay_exclusions_remove: Vec<PathBuf>,
 
     // ===== User-Configurable Options (Epic 10) =====
     /// Whether to clear shell history during deactivation
@@ -421,6 +520,26 @@ pub fn derive_hidden_volume_root() -> PathBuf {
             match canonical_path.parent() {
                 Some(parent) => {
                     let parent_path = parent.to_path_buf();
+
+                    // TEST SAFETY GUARD (Layer 4): Detect build directories
+                    // Prevents tests from treating target/debug/ as a valid hidden volume
+                    // This is a defense-in-depth measure to protect against accidental
+                    // system operations during test execution.
+                    let path_str = parent_path.to_string_lossy();
+                    if path_str.contains("/target/debug")
+                        || path_str.contains("/target/release")
+                        || path_str.contains("/target/llvm-cov-target")
+                    {
+                        tracing::warn!(
+                            "Binary appears to be running from a build directory: {}. \
+                             Refusing to derive hidden volume root from build artifacts. \
+                             Falling back to {}",
+                            parent_path.display(),
+                            DEFAULT_HIDDEN_VOLUME_ROOT
+                        );
+                        return PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+                    }
+
                     tracing::info!(
                         "Derived hidden volume root from binary location: {}",
                         parent_path.display()
@@ -597,6 +716,105 @@ pub fn discover_config_path(config_override: Option<&std::path::Path>) -> PathBu
     }
 }
 
+/// Default exclusion list for dynamic overlay enumeration (Story 14.10)
+///
+/// These directories are excluded by default because they are:
+/// - Kernel-managed virtual filesystems (/proc, /sys, /dev)
+/// - Runtime state directories (/run)
+/// - Mount point directories (/mnt)
+/// - Bootloader directory (/boot)
+/// - System library symlinks common in NixOS (/lib, /lib64, /sbin)
+/// - Filesystem recovery directory (/lost+found)
+/// - Non-standard user directories (/Downloads)
+///
+/// Directories like /etc, /home, /nix, /var, /bin, /usr, /tmp, /srv, /root, /opt, /media
+/// ARE included by default for maximum forensic protection.
+///
+/// Users can add more exclusions via `overlay_exclusions` or remove
+/// defaults via `overlay_exclusions_remove` in config YAML.
+pub const DEFAULT_OVERLAY_EXCLUSIONS: &[&str] = &[
+    "/proc",
+    "/sys",
+    "/dev",
+    "/run",
+    "/mnt",
+    "/boot",
+    "/lib",
+    "/lib64",
+    "/sbin",
+    "/lost+found",
+    "/Downloads",
+];
+
+impl Config {
+    /// Compute effective exclusion list for dynamic overlay enumeration
+    ///
+    /// Combines default exclusions with user additions and removals:
+    /// 1. Start with DEFAULT_OVERLAY_EXCLUSIONS
+    /// 2. Add user-specified overlay_exclusions
+    /// 3. Remove user-specified overlay_exclusions_remove
+    /// 4. Deduplicate results
+    ///
+    /// # Returns
+    ///
+    /// Vec of PathBuf containing all effective exclusions (deduplicated)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::config::Config;
+    /// use std::path::PathBuf;
+    ///
+    /// let mut config = Config::default();
+    /// config.overlay_exclusions = vec![PathBuf::from("/tmp")];
+    /// config.overlay_exclusions_remove = vec![PathBuf::from("/mnt")];
+    ///
+    /// let exclusions = config.compute_effective_exclusions();
+    /// assert!(exclusions.contains(&PathBuf::from("/proc")));  // default
+    /// assert!(exclusions.contains(&PathBuf::from("/tmp")));   // user addition
+    /// assert!(!exclusions.contains(&PathBuf::from("/mnt")));  // user removal
+    /// ```
+    pub fn compute_effective_exclusions(&self) -> Vec<PathBuf> {
+        use std::collections::HashSet;
+
+        // Start with defaults converted to PathBuf
+        let mut exclusions: HashSet<PathBuf> = DEFAULT_OVERLAY_EXCLUSIONS
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+
+        // Warn if user is removing dangerous exclusions (pseudo-filesystems that cannot be overlaid)
+        let dangerous_exclusions = ["/proc", "/sys", "/dev", "/run"];
+        for dangerous in &dangerous_exclusions {
+            if self
+                .overlay_exclusions_remove
+                .contains(&PathBuf::from(dangerous))
+            {
+                tracing::warn!(
+                    exclusion = %dangerous,
+                    "Removing {} from exclusion list - mount will likely FAIL (pseudo-filesystem cannot be overlaid)",
+                    dangerous
+                );
+            }
+        }
+
+        // Add user-specified additions
+        for path in &self.overlay_exclusions {
+            exclusions.insert(path.clone());
+        }
+
+        // Remove user-specified removals
+        for path in &self.overlay_exclusions_remove {
+            exclusions.remove(path);
+        }
+
+        // Convert to Vec and sort for deterministic output
+        let mut result: Vec<PathBuf> = exclusions.into_iter().collect();
+        result.sort();
+        result
+    }
+}
+
 /// Builder for Config with validation and smart defaults
 ///
 /// Provides fluent API for constructing Config instances with validation.
@@ -623,6 +841,9 @@ pub struct ConfigBuilder {
     overlays: Option<Vec<OverlayConfig>>,
     minimum_space_mb: Option<u64>,
     extended_overlays: Option<ExtendedOverlayConfig>,
+    overlay_mode: Option<OverlayMode>,
+    overlay_exclusions: Option<Vec<PathBuf>>,
+    overlay_exclusions_remove: Option<Vec<PathBuf>>,
     clear_history: Option<bool>,
     preflight_checks: Option<bool>,
     default_verbosity: Option<String>,
@@ -795,6 +1016,12 @@ impl ConfigBuilder {
 
         let extended_overlays = self.extended_overlays.unwrap_or_default();
 
+        let overlay_mode = self.overlay_mode.unwrap_or_default();
+
+        let overlay_exclusions = self.overlay_exclusions.unwrap_or_default();
+
+        let overlay_exclusions_remove = self.overlay_exclusions_remove.unwrap_or_default();
+
         let clear_history = self.clear_history.unwrap_or_else(default_clear_history);
 
         let preflight_checks = self
@@ -832,6 +1059,9 @@ impl ConfigBuilder {
             overlays,
             minimum_space_mb,
             extended_overlays,
+            overlay_mode,
+            overlay_exclusions,
+            overlay_exclusions_remove,
             clear_history,
             preflight_checks,
             default_verbosity,
@@ -888,6 +1118,10 @@ impl Default for Config {
                 enabled: false,
                 directories: vec![],
             },
+            // Dynamic overlay configuration (Story 14.10)
+            overlay_mode: OverlayMode::Auto,
+            overlay_exclusions: vec![],
+            overlay_exclusions_remove: vec![],
             // User-configurable options with smart defaults (Epic 10)
             clear_history: default_clear_history(),
             preflight_checks: default_preflight_checks(),
@@ -1030,7 +1264,27 @@ color_scheme:
   decoy:
     reset: true
 
-# Overlay configuration (advanced):
+# Overlay mode configuration (Story 14.10):
+# overlay_mode: auto  # auto (default) or explicit
+#
+# Auto mode (recommended): Dynamically overlay ALL directories under /
+# except those in the exclusion list. Provides maximum forensic protection.
+#
+# Explicit mode: Only overlay directories listed in 'overlays' section below.
+# Use this for fine-grained control over what gets overlaid.
+
+# Overlay exclusion configuration (Auto mode only):
+# overlay_exclusions:
+#   - /boot        # Add custom exclusions (merged with defaults)
+#   - /nix
+#
+# overlay_exclusions_remove:
+#   - /mnt         # Remove from default exclusions if needed
+#
+# Default exclusions: /proc, /sys, /dev, /run, /mnt
+# (pseudo-filesystems that cannot/should not be overlaid)
+
+# Overlay configuration (Explicit mode only):
 # overlays:
 #   - name: home
 #     lower: /home
@@ -1214,6 +1468,11 @@ color_scheme:
                 enabled: false,
                 directories: vec![],
             },
+            // Dynamic overlay configuration (Story 14.10)
+            // Use Auto mode by default (test actual default behavior)
+            overlay_mode: OverlayMode::Auto,
+            overlay_exclusions: vec![],
+            overlay_exclusions_remove: vec![],
             // User-configurable options with smart defaults (Epic 10)
             clear_history: default_clear_history(),
             preflight_checks: default_preflight_checks(),
@@ -2963,5 +3222,181 @@ hidden_volume_root: /test/volume
         assert_eq!(config.hidden_volume_root, custom_root);
         assert_eq!(config.state_file_path, custom_state);
         assert_eq!(config.log_path, custom_log);
+    }
+
+    // ===== Tests for Story 14.10: Dynamic Full-Root Overlay =====
+
+    #[test]
+    fn test_overlay_mode_default_is_auto() {
+        let config = Config::default();
+        assert_eq!(config.overlay_mode, OverlayMode::Auto);
+    }
+
+    #[test]
+    fn test_overlay_mode_serialization() {
+        let auto_mode = OverlayMode::Auto;
+        let explicit_mode = OverlayMode::Explicit;
+
+        // Serialize to YAML
+        let auto_yaml = serde_yaml::to_string(&auto_mode).unwrap();
+        let explicit_yaml = serde_yaml::to_string(&explicit_mode).unwrap();
+
+        assert!(auto_yaml.contains("auto"));
+        assert!(explicit_yaml.contains("explicit"));
+
+        // Deserialize from YAML
+        let auto_parsed: OverlayMode = serde_yaml::from_str(&auto_yaml).unwrap();
+        let explicit_parsed: OverlayMode = serde_yaml::from_str(&explicit_yaml).unwrap();
+
+        assert_eq!(auto_parsed, OverlayMode::Auto);
+        assert_eq!(explicit_parsed, OverlayMode::Explicit);
+    }
+
+    #[test]
+    fn test_compute_effective_exclusions_defaults_only() {
+        let config = Config::default();
+
+        let exclusions = config.compute_effective_exclusions();
+
+        // Should return all 11 defaults
+        assert_eq!(exclusions.len(), 11);
+        assert!(exclusions.contains(&PathBuf::from("/proc")));
+        assert!(exclusions.contains(&PathBuf::from("/sys")));
+        assert!(exclusions.contains(&PathBuf::from("/dev")));
+        assert!(exclusions.contains(&PathBuf::from("/run")));
+        assert!(exclusions.contains(&PathBuf::from("/mnt")));
+        assert!(exclusions.contains(&PathBuf::from("/boot")));
+        assert!(exclusions.contains(&PathBuf::from("/lib")));
+        assert!(exclusions.contains(&PathBuf::from("/lib64")));
+        assert!(exclusions.contains(&PathBuf::from("/sbin")));
+    }
+
+    #[test]
+    fn test_compute_effective_exclusions_with_user_additions() {
+        let config = Config {
+            overlay_exclusions: vec![PathBuf::from("/custom1"), PathBuf::from("/custom2")],
+            ..Config::default()
+        };
+
+        let exclusions = config.compute_effective_exclusions();
+
+        // Should include defaults + user additions (11 + 2 = 13 total)
+        assert_eq!(exclusions.len(), 13);
+        assert!(exclusions.contains(&PathBuf::from("/proc")));
+        assert!(exclusions.contains(&PathBuf::from("/custom1")));
+        assert!(exclusions.contains(&PathBuf::from("/custom2")));
+    }
+
+    #[test]
+    fn test_compute_effective_exclusions_with_user_removals() {
+        let config = Config {
+            overlay_exclusions_remove: vec![
+                PathBuf::from("/mnt"),
+                PathBuf::from("/boot"),
+                PathBuf::from("/lib"),
+            ],
+            ..Config::default()
+        };
+
+        let exclusions = config.compute_effective_exclusions();
+
+        // Should include defaults minus removals (11 - 3 = 8 total)
+        assert_eq!(exclusions.len(), 8);
+        assert!(exclusions.contains(&PathBuf::from("/proc")));
+        assert!(exclusions.contains(&PathBuf::from("/sys")));
+        assert!(exclusions.contains(&PathBuf::from("/dev")));
+        assert!(!exclusions.contains(&PathBuf::from("/mnt")));
+        assert!(!exclusions.contains(&PathBuf::from("/boot")));
+        assert!(!exclusions.contains(&PathBuf::from("/lib")));
+    }
+
+    #[test]
+    fn test_compute_effective_exclusions_remove_all_defaults() {
+        let config = Config {
+            overlay_exclusions_remove: vec![
+                PathBuf::from("/proc"),
+                PathBuf::from("/sys"),
+                PathBuf::from("/dev"),
+                PathBuf::from("/run"),
+                PathBuf::from("/mnt"),
+                PathBuf::from("/boot"),
+                PathBuf::from("/lib"),
+                PathBuf::from("/lib64"),
+                PathBuf::from("/sbin"),
+                PathBuf::from("/lost+found"),
+                PathBuf::from("/Downloads"),
+            ],
+            ..Config::default()
+        };
+
+        let exclusions = config.compute_effective_exclusions();
+
+        // User has full control - can remove ALL exclusions
+        assert_eq!(exclusions.len(), 0);
+    }
+
+    #[test]
+    fn test_compute_effective_exclusions_combined_add_and_remove() {
+        let config = Config {
+            overlay_exclusions: vec![PathBuf::from("/custom")],
+            overlay_exclusions_remove: vec![PathBuf::from("/mnt")],
+            ..Config::default()
+        };
+
+        let exclusions = config.compute_effective_exclusions();
+
+        // Defaults (11) + /custom - /mnt = 11 items
+        assert_eq!(exclusions.len(), 11);
+        assert!(exclusions.contains(&PathBuf::from("/custom")));
+        assert!(!exclusions.contains(&PathBuf::from("/mnt")));
+        assert!(exclusions.contains(&PathBuf::from("/boot")));
+    }
+
+    #[test]
+    fn test_compute_effective_exclusions_no_duplicates() {
+        let config = Config {
+            overlay_exclusions: vec![
+                PathBuf::from("/proc"), // Already in defaults
+                PathBuf::from("/boot"),
+            ],
+            ..Config::default()
+        };
+
+        let exclusions = config.compute_effective_exclusions();
+
+        // Should not have duplicate /proc
+        let proc_count = exclusions
+            .iter()
+            .filter(|p| *p == &PathBuf::from("/proc"))
+            .count();
+        assert_eq!(proc_count, 1);
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_compute_effective_exclusions_warns_about_dangerous_removals() {
+        // Issue 8: Verify warnings are logged when removing dangerous exclusions
+        let config = Config {
+            overlay_exclusions_remove: vec![
+                PathBuf::from("/proc"), // Dangerous - pseudo-filesystem
+                PathBuf::from("/sys"),  // Dangerous - pseudo-filesystem
+                PathBuf::from("/dev"),  // Dangerous - pseudo-filesystem
+            ],
+            ..Config::default()
+        };
+
+        // This should log warnings but not fail
+        let exclusions = config.compute_effective_exclusions();
+
+        // /proc, /sys, /dev should be removed from exclusions
+        assert!(!exclusions.contains(&PathBuf::from("/proc")));
+        assert!(!exclusions.contains(&PathBuf::from("/sys")));
+        assert!(!exclusions.contains(&PathBuf::from("/dev")));
+
+        // Verify warnings were logged
+        assert!(logs_contain("Removing /proc"));
+        assert!(logs_contain("Removing /sys"));
+        assert!(logs_contain("Removing /dev"));
+        assert!(logs_contain("mount will likely FAIL"));
     }
 }

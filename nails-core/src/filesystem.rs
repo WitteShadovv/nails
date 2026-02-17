@@ -586,6 +586,43 @@ pub trait Filesystem: Send + Sync + Clone {
     /// ```
     fn list_directory(&self, dir: &Path) -> Result<Vec<PathBuf>>;
 
+    /// Enumerate all top-level directories under `/` (Story 14.10)
+    ///
+    /// Returns only real directories (not symlinks, not files) from the root directory,
+    /// sorted alphabetically for consistent mount order. Used for dynamic overlay
+    /// enumeration when `overlay_mode: auto` is configured.
+    ///
+    /// # Returns
+    ///
+    /// Vec of PathBuf containing all real directories under `/`, sorted alphabetically.
+    /// Symlinks (even if they point to directories) are excluded.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::FilesystemError` if root directory cannot be read.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::PathBuf;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_root_directories(vec![
+    ///     PathBuf::from("/home"),
+    ///     PathBuf::from("/etc"),
+    ///     PathBuf::from("/var"),
+    /// ]);
+    ///
+    /// let dirs = fs.enumerate_root_directories().unwrap();
+    /// assert_eq!(dirs, vec![
+    ///     PathBuf::from("/etc"),
+    ///     PathBuf::from("/home"),
+    ///     PathBuf::from("/var"),
+    /// ]);
+    /// ```
+    fn enumerate_root_directories(&self) -> Result<Vec<PathBuf>>;
+
     // ------------------------------------------------------------------------
     // File Size and Rename Operations (Story 9.2: Log Rotation)
     // ------------------------------------------------------------------------
@@ -1034,6 +1071,8 @@ pub struct MockFilesystem {
     explicit_file_sizes: Arc<Mutex<HashSet<PathBuf>>>, // Track paths with explicitly set file sizes (Story 9.2)
     modified_times: Arc<Mutex<HashMap<PathBuf, chrono::DateTime<chrono::Utc>>>>, // Track mock modification times (Story 9.2)
     permissions: Arc<Mutex<HashMap<PathBuf, u32>>>, // Track Unix permissions set on paths (Story 14.4)
+    root_directories: Arc<Mutex<Vec<PathBuf>>>, // Track root directory list for enumeration (Story 14.10)
+    root_symlinks: Arc<Mutex<Vec<PathBuf>>>,    // Track symlinks under / (Story 14.10)
 }
 
 impl MockFilesystem {
@@ -1081,6 +1120,8 @@ impl MockFilesystem {
             explicit_file_sizes: Arc::new(Mutex::new(HashSet::new())),
             modified_times: Arc::new(Mutex::new(HashMap::new())),
             permissions: Arc::new(Mutex::new(HashMap::new())),
+            root_directories: Arc::new(Mutex::new(Vec::new())),
+            root_symlinks: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1669,6 +1710,63 @@ impl MockFilesystem {
             .lock()
             .unwrap()
             .insert(dir.to_path_buf(), contents);
+    }
+
+    /// Set the list of root directories for enumeration (Story 14.10)
+    ///
+    /// Configures the list of real directories under `/` that will be returned
+    /// by `enumerate_root_directories()`. Symlinks should be set separately
+    /// via `mock_set_root_symlinks()`.
+    ///
+    /// # Arguments
+    ///
+    /// * `dirs` - List of real directory paths to return
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::PathBuf;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_root_directories(vec![
+    ///     PathBuf::from("/home"),
+    ///     PathBuf::from("/etc"),
+    ///     PathBuf::from("/var"),
+    /// ]);
+    ///
+    /// let dirs = fs.enumerate_root_directories().unwrap();
+    /// assert_eq!(dirs.len(), 3);
+    /// ```
+    pub fn mock_set_root_directories(&self, dirs: Vec<PathBuf>) {
+        *self.root_directories.lock().unwrap() = dirs;
+    }
+
+    /// Set the list of symlinks under `/` (Story 14.10)
+    ///
+    /// Configures which paths under `/` are symlinks (not real directories).
+    /// These will be excluded from `enumerate_root_directories()` results.
+    ///
+    /// # Arguments
+    ///
+    /// * `symlinks` - List of symlink paths to mark
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::PathBuf;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_root_symlinks(vec![
+    ///     PathBuf::from("/bin"),  // -> /nix/store/...
+    ///     PathBuf::from("/lib"),  // -> /nix/store/...
+    /// ]);
+    ///
+    /// // These won't appear in enumerate_root_directories()
+    /// ```
+    pub fn mock_set_root_symlinks(&self, symlinks: Vec<PathBuf>) {
+        *self.root_symlinks.lock().unwrap() = symlinks;
     }
 
     /// Get the permissions that were set on a path via `set_permissions`
@@ -2269,6 +2367,34 @@ impl Filesystem for MockFilesystem {
                 dir.display()
             ),
         )))
+    }
+
+    fn enumerate_root_directories(&self) -> Result<Vec<PathBuf>> {
+        // Get configured root directories (real directories, not symlinks)
+        let dirs = self.root_directories.lock().unwrap().clone();
+
+        // Get configured symlinks to exclude
+        let symlinks = self.root_symlinks.lock().unwrap().clone();
+
+        // Filter out symlinks and /run/nails from the directory list
+        let mut result: Vec<PathBuf> = dirs
+            .into_iter()
+            .filter(|d| !symlinks.contains(d))
+            .filter(|d| {
+                // Exclude /run/nails directory (Story 14.10, Issue 6)
+                if d.starts_with("/run/nails") {
+                    tracing::debug!("Skipping NAILS runtime directory: {}", d.display());
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
+
+        // Sort alphabetically for consistent order
+        result.sort();
+
+        Ok(result)
     }
 
     fn read_directory(&self, path: &Path) -> Result<Vec<std::fs::DirEntry>> {
@@ -2917,6 +3043,73 @@ impl Filesystem for RealFilesystem {
         }
 
         Ok(paths)
+    }
+
+    fn enumerate_root_directories(&self) -> Result<Vec<PathBuf>> {
+        let root = Path::new("/");
+
+        // Read all entries under /
+        let entries = std::fs::read_dir(root).map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to read /: {}", e),
+            ))
+        })?;
+
+        let mut directories = Vec::new();
+
+        for entry in entries {
+            let entry = entry.map_err(|e| {
+                NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to read directory entry: {}", e),
+                ))
+            })?;
+            let path = entry.path();
+
+            // Get metadata without following symlinks (using symlink_metadata)
+            let metadata = std::fs::symlink_metadata(&path).map_err(|e| {
+                NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to get metadata for {}: {}", path.display(), e),
+                ))
+            })?;
+
+            // Skip symlinks (even if they point to directories)
+            if metadata.is_symlink() {
+                tracing::debug!(
+                    "Skipping symlink: {} -> {:?}",
+                    path.display(),
+                    std::fs::read_link(&path)
+                );
+                continue;
+            }
+
+            // Skip non-directories
+            if !metadata.is_dir() {
+                continue;
+            }
+
+            // Skip /run/nails directory (Story 14.10, Issue 6)
+            // This is NAILS' own runtime directory and should never be overlaid
+            // to prevent nested overlay filesystem issues
+            if path.starts_with("/run/nails") {
+                tracing::debug!("Skipping NAILS runtime directory: {}", path.display());
+                continue;
+            }
+
+            directories.push(path);
+        }
+
+        // Sort alphabetically for consistent mount order (Story 14.10)
+        // Alphabetical sorting ensures deterministic behavior:
+        // - Mount order: /boot, /etc, /home, /var, ...
+        // - Unmount order: reverse of mount (LIFO stack)
+        // This is different from pre-14.10 hardcoded order (/home, /etc, /var)
+        // but provides better scalability for dynamic enumeration
+        directories.sort();
+
+        Ok(directories)
     }
 
     fn read_directory(&self, path: &Path) -> Result<Vec<std::fs::DirEntry>> {
@@ -3819,5 +4012,212 @@ mod tests {
         fs.reset();
 
         assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
+    }
+
+    // ========== Task 3: enumerate_root_directories() Tests (Story 14.10) ==========
+
+    #[test]
+    fn test_enumerate_root_directories_returns_sorted_list() {
+        // AC: Returns all root directories in alphabetical order
+        let fs = MockFilesystem::new();
+
+        // Configure mock root directories (unsorted)
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/var"),
+            PathBuf::from("/home"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/tmp"),
+        ]);
+
+        let dirs = fs.enumerate_root_directories().unwrap();
+
+        // Should be sorted alphabetically
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/etc"),
+                PathBuf::from("/home"),
+                PathBuf::from("/tmp"),
+                PathBuf::from("/var"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_enumerate_root_directories_excludes_symlinks() {
+        // AC: Symlinks are skipped (not returned)
+        let fs = MockFilesystem::new();
+
+        // Configure mix of real dirs and symlinks
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/home"), // real dir
+            PathBuf::from("/etc"),  // real dir
+        ]);
+
+        // Mark /bin as symlink (to /nix/store/...)
+        fs.mock_set_root_symlinks(vec![PathBuf::from("/bin"), PathBuf::from("/lib")]);
+
+        let dirs = fs.enumerate_root_directories().unwrap();
+
+        // Symlinks should NOT be included
+        assert_eq!(dirs, vec![PathBuf::from("/etc"), PathBuf::from("/home"),]);
+        assert!(!dirs.contains(&PathBuf::from("/bin")));
+        assert!(!dirs.contains(&PathBuf::from("/lib")));
+    }
+
+    #[test]
+    fn test_enumerate_root_directories_empty_root() {
+        // Edge case: empty root directory
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_root_directories(vec![]);
+
+        let dirs = fs.enumerate_root_directories().unwrap();
+
+        assert_eq!(dirs, Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn test_enumerate_root_directories_many_directories() {
+        // Realistic NixOS scenario with many directories
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/home"),
+            PathBuf::from("/root"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/var"),
+            PathBuf::from("/tmp"),
+            PathBuf::from("/boot"),
+            PathBuf::from("/nix"),
+            PathBuf::from("/srv"),
+            PathBuf::from("/opt"),
+            PathBuf::from("/usr"),
+            PathBuf::from("/persistent"),
+        ]);
+
+        let dirs = fs.enumerate_root_directories().unwrap();
+
+        // Should have 11 directories, sorted
+        assert_eq!(dirs.len(), 11);
+        assert_eq!(dirs[0], PathBuf::from("/boot"));
+        assert_eq!(dirs[10], PathBuf::from("/var"));
+
+        // Verify sorted order
+        for i in 1..dirs.len() {
+            assert!(
+                dirs[i - 1] < dirs[i],
+                "Directories not sorted: {:?} >= {:?}",
+                dirs[i - 1],
+                dirs[i]
+            );
+        }
+    }
+
+    // ========== Story 14.10: Symlink Edge Case Tests ==========
+
+    #[test]
+    fn test_enumerate_root_directories_symlink_to_directory_is_excluded() {
+        // AC3: Symlinks to directories should be excluded (not overlaid)
+        // Common NixOS case: /bin -> /nix/store/... (symlink to directory)
+        let fs = MockFilesystem::new();
+
+        // Configure: /bin is a symlink to /nix/store/...
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/home"), // real directory
+            PathBuf::from("/etc"),  // real directory
+        ]);
+        fs.mock_set_root_symlinks(vec![
+            PathBuf::from("/bin"), // symlink (should be excluded)
+            PathBuf::from("/lib"), // symlink (should be excluded)
+        ]);
+
+        let dirs = fs.enumerate_root_directories().unwrap();
+
+        // Only real directories should be included, not symlinks
+        assert_eq!(dirs.len(), 2);
+        assert!(dirs.contains(&PathBuf::from("/etc")));
+        assert!(dirs.contains(&PathBuf::from("/home")));
+        assert!(!dirs.contains(&PathBuf::from("/bin")));
+        assert!(!dirs.contains(&PathBuf::from("/lib")));
+    }
+
+    #[test]
+    fn test_enumerate_root_directories_all_symlinks_returns_empty() {
+        // Edge case: If all entries under / are symlinks, return empty list
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_root_directories(vec![]); // No real directories
+        fs.mock_set_root_symlinks(vec![
+            PathBuf::from("/bin"),
+            PathBuf::from("/lib"),
+            PathBuf::from("/sbin"),
+        ]);
+
+        let dirs = fs.enumerate_root_directories().unwrap();
+
+        assert_eq!(dirs.len(), 0);
+    }
+
+    #[test]
+    fn test_enumerate_root_directories_mixed_real_and_symlink() {
+        // Realistic scenario: mix of real dirs and symlinks (typical NixOS)
+        let fs = MockFilesystem::new();
+
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/home"),
+            PathBuf::from("/root"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/var"),
+            PathBuf::from("/tmp"),
+            PathBuf::from("/boot"),
+            PathBuf::from("/nix"), // Real Nix store directory
+            PathBuf::from("/srv"),
+            PathBuf::from("/opt"),
+        ]);
+        fs.mock_set_root_symlinks(vec![
+            PathBuf::from("/bin"),   // -> /nix/store/...
+            PathBuf::from("/lib"),   // -> /nix/store/...
+            PathBuf::from("/lib32"), // -> /nix/store/...
+            PathBuf::from("/lib64"), // -> /nix/store/...
+            PathBuf::from("/sbin"),  // -> /nix/store/...
+        ]);
+
+        let dirs = fs.enumerate_root_directories().unwrap();
+
+        // Should have 9 real directories, 0 symlinks
+        assert_eq!(dirs.len(), 9);
+        assert!(dirs.contains(&PathBuf::from("/home")));
+        assert!(dirs.contains(&PathBuf::from("/nix")));
+        assert!(!dirs.contains(&PathBuf::from("/bin")));
+        assert!(!dirs.contains(&PathBuf::from("/lib")));
+    }
+
+    #[test]
+    fn test_enumerate_root_directories_excludes_run_nails() {
+        // Issue 6: Verify /run/nails directory is excluded from enumeration
+        // This prevents nested overlay filesystem issues
+        let fs = MockFilesystem::new();
+
+        // Configure with /run/nails present
+        fs.mock_set_root_directories(vec![
+            PathBuf::from("/home"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/var"),
+            PathBuf::from("/run"),       // Should be included
+            PathBuf::from("/run/nails"), // Should be EXCLUDED
+        ]);
+
+        let dirs = fs.enumerate_root_directories().unwrap();
+
+        // /run should be included, /run/nails should be excluded
+        assert!(
+            dirs.contains(&PathBuf::from("/run")),
+            "/run should be included"
+        );
+        assert!(
+            !dirs.contains(&PathBuf::from("/run/nails")),
+            "/run/nails should be excluded"
+        );
     }
 }
