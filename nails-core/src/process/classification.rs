@@ -8,7 +8,7 @@
 //! - **`/var`**: Most processes safe to restart (logs, caches)
 //! - **`/etc`**: Config readers mostly safe, critical services risky
 //! - **`/home`**: GUI apps cannot restart (lose work), audio risky
-//! - **`/nix/store`**: Most safe, only `cwd` users risky
+//! - **`/nix`** (or `/nix/store`): `Skip` for read-only consumers, `Risky` for `cwd`, nix-daemon `Safe`
 //! - **Unknown volumes**: Generic overlay process classification (Story 14.10)
 //!
 //! With dynamic overlay enumeration (Story 14.10), any directory under `/` can
@@ -58,6 +58,18 @@ pub enum RestartStrategy {
     ///
     /// Examples: `firefox`, `sway`, `Xorg`, `vim`
     NoRestart,
+
+    /// Process uses the target but does not block mounting and must not be killed.
+    ///
+    /// Used for processes that only have open file descriptors or memory-mapped
+    /// files from the target directory (no cwd). These processes are read-only
+    /// consumers that do not prevent overlayfs mount and would cause system
+    /// failure if killed.
+    ///
+    /// Currently only used for `/nix` on NixOS, where every process has mmaps
+    /// from `/nix/store` (loaded binaries) but cannot write to it due to the
+    /// kernel-enforced read-only bind mount.
+    Skip,
 }
 
 /// Classify a process by restart safety
@@ -102,7 +114,7 @@ pub fn classify_process(proc: &ProcessInfo, target: &Path) -> RestartStrategy {
         "/var" => classify_var_process(proc),
         "/etc" => classify_etc_process(proc),
         "/home" => classify_home_process(proc),
-        "/nix/store" => classify_nix_store_process(proc),
+        "/nix/store" | "/nix" => classify_nix_process(proc),
         _ => classify_generic_overlay_process(proc, &target_str),
     }
 }
@@ -192,19 +204,30 @@ fn classify_home_process(proc: &ProcessInfo) -> RestartStrategy {
     }
 }
 
-/// Classify process using `/nix/store`
-fn classify_nix_store_process(proc: &ProcessInfo) -> RestartStrategy {
+/// Classify process using `/nix` or `/nix/store`
+///
+/// On NixOS, every process has memory-mapped files from `/nix/store` (loaded
+/// binaries and shared libraries). These processes are read-only consumers
+/// that do NOT block overlayfs mount and would cause catastrophic system
+/// failure if killed.
+///
+/// Only nix-daemon (the sole writer to `/nix`) and processes with cwd in
+/// the target need special handling.
+fn classify_nix_process(proc: &ProcessInfo) -> RestartStrategy {
     match proc.name.as_str() {
-        // Safe to restart
+        // nix-daemon is the only writer to /nix/store — safe to stop/restart
         "nix-daemon" => RestartStrategy::Safe,
 
         _ => {
-            // Check if process has cwd in /nix/store (blocks mount)
             if proc.has_cwd_in_target {
+                // Process has cwd in /nix — may block the mount
                 RestartStrategy::Risky
             } else {
-                // Just has files open - doesn't block direct mount
-                RestartStrategy::Safe
+                // Process just has mmaps/FDs from /nix/store (loaded binaries).
+                // /nix/store is read-only (kernel-enforced bind mount).
+                // /nix/var is only written by nix-daemon (stopped separately).
+                // Killing this process serves no purpose and may crash the system.
+                RestartStrategy::Skip
             }
         }
     }
@@ -401,11 +424,67 @@ mod tests {
     }
 
     #[test]
-    fn test_nix_store_only_open_files_safe() {
+    fn test_nix_store_only_open_files_skip() {
         let mut proc = make_test_process("any-binary", 456, false);
         proc.has_open_fds_in_target = true;
         let strategy = classify_process(&proc, Path::new("/nix/store"));
+        assert_eq!(strategy, RestartStrategy::Skip);
+    }
+
+    #[test]
+    fn test_nix_store_only_mmaps_skip() {
+        let mut proc = make_test_process("any-binary", 789, false);
+        proc.has_mmap_in_target = true;
+        let strategy = classify_process(&proc, Path::new("/nix/store"));
+        assert_eq!(strategy, RestartStrategy::Skip);
+    }
+
+    // Tests for /nix classification (routing to nix-specific classifier)
+    #[test]
+    fn test_nix_routes_to_nix_classifier() {
+        // /nix should NOT fall through to generic classifier
+        let proc = make_test_process("any-binary", 456, false);
+        let strategy = classify_process(&proc, Path::new("/nix"));
+        // Generic classifier would return Safe, nix classifier returns Skip
+        assert_eq!(strategy, RestartStrategy::Skip);
+    }
+
+    #[test]
+    fn test_nix_nix_daemon_safe() {
+        let proc = make_test_process("nix-daemon", 234, false);
+        let strategy = classify_process(&proc, Path::new("/nix"));
         assert_eq!(strategy, RestartStrategy::Safe);
+    }
+
+    #[test]
+    fn test_nix_cwd_in_target_risky() {
+        let proc = make_test_process("build-process", 345, true);
+        let strategy = classify_process(&proc, Path::new("/nix"));
+        assert_eq!(strategy, RestartStrategy::Risky);
+    }
+
+    #[test]
+    fn test_nix_only_mmaps_skip() {
+        let mut proc = make_test_process("firefox", 5678, false);
+        proc.has_mmap_in_target = true;
+        let strategy = classify_process(&proc, Path::new("/nix"));
+        assert_eq!(strategy, RestartStrategy::Skip);
+    }
+
+    #[test]
+    fn test_nix_only_fds_skip() {
+        let mut proc = make_test_process("bash", 1234, false);
+        proc.has_open_fds_in_target = true;
+        let strategy = classify_process(&proc, Path::new("/nix"));
+        assert_eq!(strategy, RestartStrategy::Skip);
+    }
+
+    #[test]
+    fn test_nix_no_references_skip() {
+        // Process detected as using /nix but has no cwd - should be Skip
+        let proc = make_test_process("systemd", 1, false);
+        let strategy = classify_process(&proc, Path::new("/nix"));
+        assert_eq!(strategy, RestartStrategy::Skip);
     }
 
     // Tests for generic overlay process classification (Story 14.10)
@@ -452,10 +531,11 @@ mod tests {
     }
 
     #[test]
-    fn test_generic_overlay_nix_safe() {
+    fn test_nix_uses_nix_classifier_not_generic() {
+        // /nix now routes to classify_nix_process, not generic
         let proc = make_test_process("nix-build", 1234, false);
         let strategy = classify_process(&proc, Path::new("/nix"));
-        assert_eq!(strategy, RestartStrategy::Safe);
+        assert_eq!(strategy, RestartStrategy::Skip);
     }
 
     #[test]
@@ -507,7 +587,10 @@ mod tests {
         assert_eq!(RestartStrategy::Safe, RestartStrategy::Safe);
         assert_eq!(RestartStrategy::Risky, RestartStrategy::Risky);
         assert_eq!(RestartStrategy::NoRestart, RestartStrategy::NoRestart);
+        assert_eq!(RestartStrategy::Skip, RestartStrategy::Skip);
         assert_ne!(RestartStrategy::Safe, RestartStrategy::Risky);
+        assert_ne!(RestartStrategy::Safe, RestartStrategy::Skip);
+        assert_ne!(RestartStrategy::Skip, RestartStrategy::NoRestart);
     }
 
     #[test]
@@ -515,5 +598,19 @@ mod tests {
         let strategy = RestartStrategy::Safe;
         let debug_str = format!("{:?}", strategy);
         assert_eq!(debug_str, "Safe");
+    }
+
+    #[test]
+    fn test_restart_strategy_skip_debug() {
+        let strategy = RestartStrategy::Skip;
+        let debug_str = format!("{:?}", strategy);
+        assert_eq!(debug_str, "Skip");
+    }
+
+    #[test]
+    fn test_restart_strategy_skip_clone_copy() {
+        let strategy = RestartStrategy::Skip;
+        let cloned = strategy;
+        assert_eq!(strategy, cloned);
     }
 }

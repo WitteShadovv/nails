@@ -367,7 +367,7 @@ pub struct Config {
     /// Directories to exclude from overlay in Auto mode, in addition to the defaults.
     /// These paths are merged with the default exclusion list.
     ///
-    /// **Default exclusions**: `/proc`, `/sys`, `/dev`, `/run`, `/mnt`
+    /// **Default exclusions**: `/proc`, `/sys`, `/dev`, `/run`, `/mnt`, `/boot`, `/bin`, `/usr`, `/lib`, `/lib64`, `/sbin`, `/lost+found`, `/Downloads`
     ///
     /// **Use case**: Exclude additional directories you don't want overlaid
     /// (e.g., `/boot` for boot partition, `/nix` for Nix store performance).
@@ -529,9 +529,10 @@ pub fn derive_hidden_volume_root() -> PathBuf {
                     if path_str.contains("/target/debug")
                         || path_str.contains("/target/release")
                         || path_str.contains("/target/llvm-cov-target")
+                        || path_str.starts_with("/nix/store")
                     {
                         tracing::warn!(
-                            "Binary appears to be running from a build directory: {}. \
+                            "Binary path not suitable for deriving hidden volume (build/store location): {}. \
                              Refusing to derive hidden volume root from build artifacts. \
                              Falling back to {}",
                             parent_path.display(),
@@ -727,7 +728,7 @@ pub fn discover_config_path(config_override: Option<&std::path::Path>) -> PathBu
 /// - Filesystem recovery directory (/lost+found)
 /// - Non-standard user directories (/Downloads)
 ///
-/// Directories like /etc, /home, /nix, /var, /bin, /usr, /tmp, /srv, /root, /opt, /media
+/// Directories like /etc, /home, /nix, /var, /tmp, /srv, /root, /opt, /media
 /// ARE included by default for maximum forensic protection.
 ///
 /// Users can add more exclusions via `overlay_exclusions` or remove
@@ -739,6 +740,8 @@ pub const DEFAULT_OVERLAY_EXCLUSIONS: &[&str] = &[
     "/run",
     "/mnt",
     "/boot",
+    "/bin",
+    "/usr",
     "/lib",
     "/lib64",
     "/sbin",
@@ -3258,14 +3261,16 @@ hidden_volume_root: /test/volume
 
         let exclusions = config.compute_effective_exclusions();
 
-        // Should return all 11 defaults
-        assert_eq!(exclusions.len(), 11);
+        // Should return all 13 defaults
+        assert_eq!(exclusions.len(), 13);
         assert!(exclusions.contains(&PathBuf::from("/proc")));
         assert!(exclusions.contains(&PathBuf::from("/sys")));
         assert!(exclusions.contains(&PathBuf::from("/dev")));
         assert!(exclusions.contains(&PathBuf::from("/run")));
         assert!(exclusions.contains(&PathBuf::from("/mnt")));
         assert!(exclusions.contains(&PathBuf::from("/boot")));
+        assert!(exclusions.contains(&PathBuf::from("/bin")));
+        assert!(exclusions.contains(&PathBuf::from("/usr")));
         assert!(exclusions.contains(&PathBuf::from("/lib")));
         assert!(exclusions.contains(&PathBuf::from("/lib64")));
         assert!(exclusions.contains(&PathBuf::from("/sbin")));
@@ -3280,8 +3285,8 @@ hidden_volume_root: /test/volume
 
         let exclusions = config.compute_effective_exclusions();
 
-        // Should include defaults + user additions (11 + 2 = 13 total)
-        assert_eq!(exclusions.len(), 13);
+        // Should include defaults + user additions (13 + 2 = 15 total)
+        assert_eq!(exclusions.len(), 15);
         assert!(exclusions.contains(&PathBuf::from("/proc")));
         assert!(exclusions.contains(&PathBuf::from("/custom1")));
         assert!(exclusions.contains(&PathBuf::from("/custom2")));
@@ -3300,8 +3305,8 @@ hidden_volume_root: /test/volume
 
         let exclusions = config.compute_effective_exclusions();
 
-        // Should include defaults minus removals (11 - 3 = 8 total)
-        assert_eq!(exclusions.len(), 8);
+        // Should include defaults minus removals (13 - 3 = 10 total)
+        assert_eq!(exclusions.len(), 10);
         assert!(exclusions.contains(&PathBuf::from("/proc")));
         assert!(exclusions.contains(&PathBuf::from("/sys")));
         assert!(exclusions.contains(&PathBuf::from("/dev")));
@@ -3320,6 +3325,8 @@ hidden_volume_root: /test/volume
                 PathBuf::from("/run"),
                 PathBuf::from("/mnt"),
                 PathBuf::from("/boot"),
+                PathBuf::from("/bin"),
+                PathBuf::from("/usr"),
                 PathBuf::from("/lib"),
                 PathBuf::from("/lib64"),
                 PathBuf::from("/sbin"),
@@ -3345,8 +3352,8 @@ hidden_volume_root: /test/volume
 
         let exclusions = config.compute_effective_exclusions();
 
-        // Defaults (11) + /custom - /mnt = 11 items
-        assert_eq!(exclusions.len(), 11);
+        // Defaults (13) + /custom - /mnt = 13 items
+        assert_eq!(exclusions.len(), 13);
         assert!(exclusions.contains(&PathBuf::from("/custom")));
         assert!(!exclusions.contains(&PathBuf::from("/mnt")));
         assert!(exclusions.contains(&PathBuf::from("/boot")));

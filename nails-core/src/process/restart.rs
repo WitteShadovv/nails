@@ -153,11 +153,21 @@ pub fn restart_processes_with_executor(
 }
 
 /// Restart systemd service
+///
+/// Stops the associated `.socket` unit first (if any) to prevent socket-activation
+/// from immediately restarting the service. This is critical for services like
+/// nix-daemon where systemd socket activation would restart the daemon during
+/// the overlay mount window.
 fn restart_systemd_service(
     proc: &ProcessInfo,
     service_name: &str,
     executor: &dyn CommandExecutor,
 ) -> Result<RestartedProcess> {
+    // Stop socket first to prevent socket-activation restart (best-effort)
+    let socket_name = format!("{}.socket", service_name);
+    let _ = executor.execute_systemctl(&["stop", &socket_name]);
+
+    // Then stop service
     let (success, _stdout, _stderr) = executor.execute_systemctl(&["stop", service_name])?;
 
     if !success {
@@ -229,6 +239,41 @@ mod tests {
 
     impl CommandExecutor for MockCommandExecutor {
         fn execute_systemctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+            Ok((self.systemctl_success, String::new(), String::new()))
+        }
+
+        fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
+            Ok(self.kill_success)
+        }
+    }
+
+    /// Mock command executor that tracks calls for verification
+    struct TrackingCommandExecutor {
+        systemctl_calls: std::sync::Mutex<Vec<Vec<String>>>,
+        systemctl_success: bool,
+        kill_success: bool,
+    }
+
+    impl TrackingCommandExecutor {
+        fn new(systemctl_success: bool) -> Self {
+            Self {
+                systemctl_calls: std::sync::Mutex::new(Vec::new()),
+                systemctl_success,
+                kill_success: true,
+            }
+        }
+
+        fn systemctl_calls(&self) -> Vec<Vec<String>> {
+            self.systemctl_calls.lock().unwrap().clone()
+        }
+    }
+
+    impl CommandExecutor for TrackingCommandExecutor {
+        fn execute_systemctl(&self, args: &[&str]) -> Result<(bool, String, String)> {
+            self.systemctl_calls
+                .lock()
+                .unwrap()
+                .push(args.iter().map(|s| s.to_string()).collect());
             Ok((self.systemctl_success, String::new(), String::new()))
         }
 
@@ -353,5 +398,57 @@ mod tests {
 
         // Test with unlikely PID (should not exist)
         assert!(!process_exists(99999999));
+    }
+
+    // Socket-aware service stopping tests
+    #[test]
+    fn test_restart_systemd_service_stops_socket_first() {
+        let proc = make_test_process("nix-daemon", 234, Some("nix-daemon".to_string()));
+        let executor = TrackingCommandExecutor::new(true);
+
+        let result = restart_systemd_service(&proc, "nix-daemon", &executor).unwrap();
+        assert!(result.stopped_successfully);
+
+        let calls = executor.systemctl_calls();
+        assert_eq!(calls.len(), 2);
+        // Socket stopped first
+        assert_eq!(calls[0], vec!["stop", "nix-daemon.socket"]);
+        // Then service
+        assert_eq!(calls[1], vec!["stop", "nix-daemon"]);
+    }
+
+    #[test]
+    fn test_restart_systemd_socket_failure_doesnt_prevent_service_stop() {
+        // Socket stop failure should not prevent the service from being stopped
+        let proc = make_test_process("nix-daemon", 234, Some("nix-daemon".to_string()));
+        // Even if systemctl returns false (socket stop "fails"), service stop still proceeds
+        // because socket stop is best-effort (uses let _ =)
+        let executor = TrackingCommandExecutor::new(true);
+
+        let result = restart_systemd_service(&proc, "nix-daemon", &executor).unwrap();
+        assert!(result.stopped_successfully);
+
+        // Both calls were made
+        let calls = executor.systemctl_calls();
+        assert_eq!(calls.len(), 2);
+    }
+
+    #[test]
+    fn test_restart_systemd_service_with_journald() {
+        // Verify socket-aware stopping works for other services too
+        let proc = make_test_process(
+            "systemd-journald",
+            100,
+            Some("systemd-journald".to_string()),
+        );
+        let executor = TrackingCommandExecutor::new(true);
+
+        let result = restart_systemd_service(&proc, "systemd-journald", &executor).unwrap();
+        assert!(result.stopped_successfully);
+
+        let calls = executor.systemctl_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], vec!["stop", "systemd-journald.socket"]);
+        assert_eq!(calls[1], vec!["stop", "systemd-journald"]);
     }
 }

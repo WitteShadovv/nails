@@ -13,15 +13,22 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
-        # Rust toolchain pinned to 1.93.0
+        # Rust toolchain pinned to 1.93.0 (with musl target)
         rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
           extensions = [ "rust-src" "rust-analyzer" ];
+          targets = [ "x86_64-unknown-linux-musl" ];
+        };
+
+        # Build with musl stdenv but keep the pinned Rust toolchain (1.93.0)
+        rustPlatformMusl = pkgs.makeRustPlatform {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
         };
 
         pkgsMusl = pkgs.pkgsCross.musl64;
 
         # NAILS binary with static musl linking
-        nails = pkgsMusl.rustPlatform.buildRustPackage rec {
+        nails = rustPlatformMusl.buildRustPackage rec {
           pname = "nails";
           version = "0.1.0";
 
@@ -32,6 +39,12 @@
           };
 
           cargoLock = { lockFile = ./Cargo.lock; };
+
+          # Use musl stdenv for static linking
+          inherit (pkgsMusl) stdenv;
+
+          # Cross target to musl
+          CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
 
           # Configure for static linking
           CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";

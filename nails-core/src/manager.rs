@@ -35,6 +35,16 @@ use chrono::Utc;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// Start a systemd service and its socket (socket first), best-effort.
+fn start_service_and_socket(service: &str) {
+    let _ = std::process::Command::new("systemctl")
+        .args(["start", &format!("{}.socket", service)])
+        .output();
+    let _ = std::process::Command::new("systemctl")
+        .args(["start", service])
+        .output();
+}
+
 /// Apply exclusion filter to a list of directories (Story 14.10, Task 4)
 ///
 /// Filters out directories that match any path in the exclusion list.
@@ -138,7 +148,12 @@ pub fn build_overlay_targets<F: Filesystem>(fs: &F, config: &Config) -> Result<V
             let exclusions = config.compute_effective_exclusions();
 
             // Apply exclusion filtering (using separate function per Task 4 spec)
-            let targets = apply_exclusion_filter(all_dirs, &exclusions);
+            let mut targets = apply_exclusion_filter(all_dirs, &exclusions);
+
+            // Safety: never overlay core binary roots even if exclusions are misconfigured.
+            // Overlaying /bin or /usr can hide shells/coreutils inside the VM (breaks tests).
+            let critical = [Path::new("/bin"), Path::new("/usr")];
+            targets.retain(|p| !critical.contains(&p.as_path()));
 
             if !targets.is_empty() {
                 tracing::info!("Dynamic overlay targets: {} directories", targets.len());
@@ -1394,6 +1409,92 @@ impl<F: Filesystem> NailsManager<F> {
     ) -> Result<()> {
         use crate::{StateGuard, Stopwatch, Verbosity};
 
+        // RAII guard: if we kill the display manager but exit early with an error,
+        // attempt to restart it so the user doesn't stay on a black screen.
+        struct DisplayManagerRestartGuard {
+            dm_name: Option<String>,
+            disarmed: bool,
+        }
+
+        impl DisplayManagerRestartGuard {
+            fn new(dm_name: Option<String>) -> Self {
+                Self {
+                    dm_name,
+                    disarmed: false,
+                }
+            }
+
+            /// Prevent the guard from restarting the DM (use after a successful restart).
+            fn disarm(&mut self) {
+                self.disarmed = true;
+            }
+        }
+
+        impl Drop for DisplayManagerRestartGuard {
+            fn drop(&mut self) {
+                if self.disarmed {
+                    return;
+                }
+
+                let dm_name = match self.dm_name.take() {
+                    Some(name) => name,
+                    None => return,
+                };
+
+                use crate::process::{DisplayManager, restart_display_manager};
+
+                let dm = match dm_name.to_lowercase().as_str() {
+                    "gdm" => DisplayManager::Gdm,
+                    "sddm" => DisplayManager::Sddm,
+                    "lightdm" => DisplayManager::LightDm,
+                    "greetd" => DisplayManager::Greetd,
+                    "ly" => DisplayManager::Ly,
+                    _ => DisplayManager::Other(dm_name.clone()),
+                };
+
+                if let Err(e) = restart_display_manager(&dm) {
+                    tracing::error!(
+                        error = %e,
+                        dm = %dm_name,
+                        "Failed to restart display manager after activation error"
+                    );
+                } else {
+                    tracing::warn!(
+                        dm = %dm_name,
+                        "Display manager restarted after activation error"
+                    );
+                }
+            }
+        }
+
+        // RAII guard: if we stop nix-daemon for /nix overlay but exit early,
+        // restart both socket and service so the system isn't left degraded.
+        struct NixDaemonGuard {
+            active: bool,
+            disarmed: bool,
+        }
+
+        impl NixDaemonGuard {
+            fn new(active: bool) -> Self {
+                Self {
+                    active,
+                    disarmed: false,
+                }
+            }
+            fn disarm(&mut self) {
+                self.disarmed = true;
+            }
+        }
+
+        impl Drop for NixDaemonGuard {
+            fn drop(&mut self) {
+                if !self.active || self.disarmed {
+                    return;
+                }
+                start_service_and_socket("nix-daemon");
+            }
+        }
+
         let total_timer = Stopwatch::start();
 
         // Validate options first
@@ -1486,6 +1587,9 @@ impl<F: Filesystem> NailsManager<F> {
         } else {
             None
         };
+
+        // Auto-restart display manager if we exit early with an error after killing it.
+        let mut dm_restart_guard = DisplayManagerRestartGuard::new(killed_display_manager.clone());
 
         // Step 3: Run pre-flight checks (unless skipped)
         if no_preflight {
@@ -1630,8 +1734,25 @@ impl<F: Filesystem> NailsManager<F> {
                 // Auto mode: enumerate root + apply exclusions, create overlays dynamically
                 let overlay_targets = build_overlay_targets(&manager.filesystem, &manager.config)?;
 
+                // Pre-overlay: stop nix-daemon if /nix will be overlaid
+                // Must happen BEFORE Phase 1 detection so nix-daemon doesn't appear
+                // in the blocking process list with its mount namespace references.
+                let nix_in_targets = overlay_targets.iter().any(|t| t == Path::new("/nix"));
+                let mut nix_guard = NixDaemonGuard::new(nix_in_targets);
+                if nix_in_targets {
+                    tracing::info!("Stopping nix-daemon before /nix overlay...");
+                    // Stop socket first (prevents socket-activation restart)
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["stop", "nix-daemon.socket"])
+                        .output();
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["stop", "nix-daemon.service"])
+                        .output();
+                }
+
                 // Track mount failures for best-effort mounting (Story 14.10, Task 8)
                 let mut mount_failures: Vec<(PathBuf, NailsError)> = Vec::new();
+                let mut nix_overlay_succeeded = false;
 
                 for target in overlay_targets {
                     // Create overlay config on-the-fly (Story 14.10, Task 6)
@@ -1664,11 +1785,11 @@ impl<F: Filesystem> NailsManager<F> {
                         &overlay.target,
                         &strategy_options,
                     ) {
-                        Ok(mount_method) => {
+                        Ok(mount_result) => {
                             use crate::overlay::MountMethod;
 
                             // Track mount type for logging
-                            match mount_method {
+                            match mount_result.method {
                                 MountMethod::Direct => {
                                     direct_mounts += 1;
                                     if verbosity >= Verbosity::Verbose {
@@ -1687,6 +1808,21 @@ impl<F: Filesystem> NailsManager<F> {
                                         );
                                     }
                                 }
+                            }
+
+                            // Post-mount: restart stopped services so they write to overlay
+                            for service in &mount_result.stopped_services {
+                                start_service_and_socket(service);
+                                tracing::info!(
+                                    service = %service,
+                                    target = %overlay.target.display(),
+                                    "Restarted {} (now writing to overlay)", service
+                                );
+                            }
+
+                            // Track if /nix overlay succeeded for post-mount lifecycle
+                            if overlay.target == Path::new("/nix") {
+                                nix_overlay_succeeded = true;
                             }
 
                             tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
@@ -1778,6 +1914,56 @@ impl<F: Filesystem> NailsManager<F> {
                         }
                     }
                 }
+
+                // Any failure should abort activation to avoid partially-active state.
+                if !mount_failures.is_empty() {
+                    return Err(NailsError::InvalidState(format!(
+                        "{} overlay(s) failed to mount",
+                        mount_failures.len()
+                    )));
+                }
+
+                // Post-overlay: if /nix was successfully overlaid, restore NixOS security model
+                if nix_overlay_succeeded {
+                    // Step 1: Recreate read-only bind mount on /nix/store
+                    // The overlay on /nix hides the boot-time bind mount; we recreate it
+                    // so regular processes see /nix/store as read-only (defense-in-depth)
+                    tracing::info!("Restoring read-only bind mount on /nix/store...");
+                    let nix_store = Path::new("/nix/store");
+                    if let Err(e) = manager.filesystem.bind_mount(nix_store, nix_store) {
+                        tracing::warn!(
+                            error = %e,
+                            "Could not recreate /nix/store bind mount (non-fatal)"
+                        );
+                    } else {
+                        // Remount as read-only (uses Command since Filesystem trait lacks remount_readonly)
+                        let remount_result = std::process::Command::new("mount")
+                            .args(["-o", "remount,ro,bind", "/nix/store"])
+                            .output();
+                        match remount_result {
+                            Ok(output) if output.status.success() => {
+                                tracing::info!("Read-only bind mount on /nix/store restored");
+                            }
+                            Ok(output) => {
+                                tracing::warn!(
+                                    stderr = %String::from_utf8_lossy(&output.stderr),
+                                    "Remount /nix/store as read-only failed (non-fatal)"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "Remount /nix/store command failed (non-fatal)"
+                                );
+                            }
+                        }
+                    }
+
+                    // Step 2: Restart nix-daemon (inherits overlay, creates own rw namespace)
+                    tracing::info!("Restarting nix-daemon (now writing to overlay)...");
+                    start_service_and_socket("nix-daemon");
+                    nix_guard.disarm();
+                }
             }
             crate::OverlayMode::Explicit => {
                 // Explicit mode: use pre-configured overlays (legacy behavior)
@@ -1787,6 +1973,16 @@ impl<F: Filesystem> NailsManager<F> {
                         "Explicit mode configured but no overlays defined - system would have NO forensic protection. \
                          Add overlays to config or switch to overlay_mode: auto".to_string()
                     ));
+                }
+
+                let critical = [Path::new("/bin"), Path::new("/usr")];
+                for overlay in &manager.config.overlays {
+                    if critical.contains(&overlay.target.as_path()) {
+                        return Err(NailsError::InvalidState(format!(
+                            "Overlaying critical system root {} is blocked for safety",
+                            overlay.target.display()
+                        )));
+                    }
                 }
 
                 for overlay in &manager.config.overlays {
@@ -1799,11 +1995,11 @@ impl<F: Filesystem> NailsManager<F> {
                         &overlay.target,
                         &strategy_options,
                     ) {
-                        Ok(mount_method) => {
+                        Ok(mount_result) => {
                             use crate::overlay::MountMethod;
 
                             // Track mount type for logging
-                            match mount_method {
+                            match mount_result.method {
                                 MountMethod::Direct => {
                                     direct_mounts += 1;
                                     if verbosity >= Verbosity::Verbose {
@@ -1822,6 +2018,16 @@ impl<F: Filesystem> NailsManager<F> {
                                         );
                                     }
                                 }
+                            }
+
+                            // Post-mount: restart stopped services so they write to overlay
+                            for service in &mount_result.stopped_services {
+                                start_service_and_socket(service);
+                                tracing::info!(
+                                    service = %service,
+                                    target = %overlay.target.display(),
+                                    "Restarted {} (now writing to overlay)", service
+                                );
                             }
 
                             tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
@@ -2072,6 +2278,7 @@ impl<F: Filesystem> NailsManager<F> {
             };
 
             restart_display_manager(&dm)?;
+            dm_restart_guard.disarm();
 
             if verbosity >= Verbosity::Normal {
                 tracing::info!("  ✓ Display manager restarted - login screen should appear");
@@ -2241,6 +2448,33 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
+        // Step 5c: Pre-unmount nix-daemon lifecycle
+        // If /nix is in the overlay list, stop nix-daemon and unmount our /nix/store bind mount
+        // BEFORE unmounting the /nix overlay itself.
+        let nix_was_overlaid = overlays_to_unmount.iter().any(|p| p == Path::new("/nix"));
+        if nix_was_overlaid {
+            tracing::info!("Stopping nix-daemon before /nix overlay unmount...");
+            let _ = std::process::Command::new("systemctl")
+                .args(["stop", "nix-daemon.socket"])
+                .output();
+            let _ = std::process::Command::new("systemctl")
+                .args(["stop", "nix-daemon.service"])
+                .output();
+
+            // Unmount our recreated read-only bind mount on /nix/store
+            // (the one we created during activation Task 7)
+            tracing::info!("Unmounting /nix/store bind mount...");
+            {
+                let manager = manager_arc.lock().unwrap();
+                if let Err(e) = manager.filesystem.unmount(Path::new("/nix/store"), false) {
+                    tracing::warn!(
+                        error = %e,
+                        "Could not unmount /nix/store bind mount (may not have been mounted)"
+                    );
+                }
+            }
+        }
+
         // Step 6: Unmount persistent overlays - if any fail, StateGuard will rollback
         for overlay_path in &overlays_to_unmount {
             let unmount_result = {
@@ -2294,6 +2528,14 @@ impl<F: Filesystem> NailsManager<F> {
                 path: unmount_errors[0].0.clone(),
                 reason: error_msg,
             });
+        }
+
+        // Step 6b: Post-unmount nix-daemon restart
+        // After /nix overlay is unmounted, the original boot-time bind mount is visible again.
+        // Restart nix-daemon so it sees the original /nix.
+        if nix_was_overlaid {
+            tracing::info!("Restarting nix-daemon (now using original /nix)...");
+            start_service_and_socket("nix-daemon");
         }
 
         // Step 7: Clear overlay_status in cached state (persistent overlays only)
@@ -4140,15 +4382,15 @@ mod tests {
 
         let targets = build_overlay_targets(&fs, &config).expect("Should build targets");
 
-        // Should include most dirs, exclude /proc, /sys, /dev, /boot
-        assert_eq!(targets.len(), 7);
+        // Should include most dirs, exclude /proc, /sys, /dev, /boot + critical /bin, /usr
+        assert_eq!(targets.len(), 5);
         assert!(targets.contains(&PathBuf::from("/home")));
         assert!(targets.contains(&PathBuf::from("/etc")));
         assert!(targets.contains(&PathBuf::from("/nix")));
         assert!(targets.contains(&PathBuf::from("/var")));
         assert!(targets.contains(&PathBuf::from("/tmp")));
-        assert!(targets.contains(&PathBuf::from("/usr")));
-        assert!(targets.contains(&PathBuf::from("/bin")));
+        assert!(!targets.contains(&PathBuf::from("/usr"))); // Critical binary root
+        assert!(!targets.contains(&PathBuf::from("/bin"))); // Critical binary root
         assert!(!targets.contains(&PathBuf::from("/proc")));
         assert!(!targets.contains(&PathBuf::from("/sys")));
         assert!(!targets.contains(&PathBuf::from("/dev")));
@@ -7336,8 +7578,8 @@ mod tests {
     }
 
     #[test]
-    fn test_activate_auto_mode_best_effort_continues_after_mount_failure() {
-        // Task 12.4: Test activation continues after individual mount failure
+    fn test_activate_auto_mode_stops_after_mount_failure() {
+        // Activation should abort if any overlay fails (safety over partial mounts)
         let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/etc", "/home", "/var"]);
         let mock_hidden_vol = temp_dir.path();
 
@@ -7360,29 +7602,22 @@ mod tests {
             state_path.clone(),
         )));
 
-        // Activation should succeed (best-effort: 2 of 3 overlays mounted)
+        // Activation should fail fast to avoid partial state
         let result = NailsManager::activate(Arc::clone(&manager), true);
-        assert!(
-            result.is_ok(),
-            "Activation should succeed with partial mounts: {:?}",
-            result
-        );
+        assert!(result.is_err(), "Activation should fail on mount error");
 
-        // Verify 2 overlays mounted, /etc is missing
+        // Verify state rolled back to Inactive and no overlays recorded
         let state = manager.lock().unwrap().current_state().unwrap();
-        if let SystemState::Active { overlays, .. } = state {
-            assert_eq!(overlays.len(), 2, "Should have 2 successful overlays");
-            assert!(overlays.contains(&PathBuf::from("/home")));
-            assert!(overlays.contains(&PathBuf::from("/var")));
-            assert!(!overlays.contains(&PathBuf::from("/etc")));
-        } else {
-            panic!("Expected Active state, got {:?}", state);
-        }
+        assert!(
+            matches!(state, SystemState::Inactive),
+            "State should roll back to Inactive: got {:?}",
+            state
+        );
     }
 
     #[test]
-    fn test_activate_auto_mode_failed_overlays_recorded_in_state() {
-        // Task 12.5: Test failed overlays recorded in state file
+    fn test_activate_auto_mode_failed_overlays_recorded_on_failure() {
+        // Failed overlays should be recorded even when activation aborts
         let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/etc", "/home", "/var"]);
         let mock_hidden_vol = temp_dir.path();
 
@@ -7406,7 +7641,7 @@ mod tests {
         )));
 
         let result = NailsManager::activate(Arc::clone(&manager), true);
-        assert!(result.is_ok(), "Activation should succeed: {:?}", result);
+        assert!(result.is_err(), "Activation should fail on mount error");
 
         // Verify failed overlays are recorded in state
         let mgr = manager.lock().unwrap();

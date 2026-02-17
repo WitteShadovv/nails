@@ -433,6 +433,7 @@ dependencies = [
  "clap",
  "colored",
  "nails-core",
+ "nix",
  "predicates",
  "serde",
  "serde_json",

@@ -5,7 +5,9 @@
 //! The entry point in main.rs simply invokes `cli::execute_command()`.
 
 pub mod cli {
+    mod detach;
     use clap::{Parser, Subcommand};
+    use detach::maybe_detach_for_session_kill;
 
     /// NixOS Anti-forensics Isolation & Layering System
     #[derive(Parser)]
@@ -332,6 +334,10 @@ pub mod cli {
 
                 // Set verbosity level
                 manager.lock().unwrap().set_verbosity(verbosity);
+
+                // Detach if we're about to kill the GUI session so the worker survives it
+                let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+                maybe_detach_for_session_kill(kill_session, &argv)?;
 
                 // Run activation with options and measure duration
                 let start = Instant::now();

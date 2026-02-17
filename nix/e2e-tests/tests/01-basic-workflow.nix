@@ -36,11 +36,12 @@ in {
     machine.succeed("test -d /mnt/hidden-volume/.work/home")
     print("✓ Hidden volume is mounted at /mnt/hidden-volume")
 
-    # Verify no overlays are mounted on /home, /etc, or /var
+    # Verify no overlays are mounted on /home, /etc, /var, or /nix
     machine.fail("mount | grep 'overlay on /home'")
     machine.fail("mount | grep 'overlay on /etc'")
     machine.fail("mount | grep 'overlay on /var'")
-    print("✓ No overlays mounted on /home, /etc, or /var")
+    machine.fail("mount | grep 'overlay on /nix'")
+    print("✓ No overlays mounted on /home, /etc, /var, or /nix")
 
     # Verify NAILS status command runs
     # TODO: Once status command is implemented, check for "INACTIVE" in output
@@ -63,18 +64,29 @@ in {
     assert activation_time < 60, f"Activation too slow: {activation_time:.2f}s (limit: 60s)"
     print(f"✓ Activation completed in <60s ({activation_time:.2f}s)")
 
-    # Verify overlays are mounted on /home, /etc, and /var with correct options
+    # Verify overlays are mounted on /home, /etc, /var, and /nix with correct options
     home_mount = machine.succeed("mount | grep 'overlay on /home' || true")
     etc_mount = machine.succeed("mount | grep 'overlay on /etc' || true")
     var_mount = machine.succeed("mount | grep 'overlay on /var' || true")
+    nix_mount = machine.succeed("mount | grep 'overlay on /nix' || true")
     assert "overlay" in home_mount, "Overlay not mounted on /home"
     assert "overlay" in etc_mount, "Overlay not mounted on /etc"
     assert "overlay" in var_mount, "Overlay not mounted on /var"
+    assert "overlay" in nix_mount, "Overlay not mounted on /nix"
     # Verify overlay points to hidden volume upper/work directories
     assert "/mnt/hidden-volume/home" in home_mount, "Overlay upperdir not pointing to hidden volume"
     assert "/mnt/hidden-volume/etc" in etc_mount, "Overlay upperdir not pointing to hidden volume"
     assert "/mnt/hidden-volume/var" in var_mount, "Overlay upperdir not pointing to hidden volume"
-    print("✓ Overlays mounted on /home, /etc, and /var with correct upperdir")
+    assert "/mnt/hidden-volume/nix" in nix_mount, "Overlay upperdir not pointing to hidden volume"
+    print("✓ Overlays mounted on /home, /etc, /var, and /nix with correct upperdir")
+
+    # Verify store path is read-only for regular processes (defense-in-depth)
+    machine.fail("touch ${builtins.storeDir}/test-write-should-fail")
+    print("✓ store path is read-only (EROFS)")
+
+    # Verify nix operations work during active session
+    machine.succeed("nix-instantiate --eval -E '1+1'")
+    print("✓ Nix operations work during active session")
 
     # Verify NAILS status command runs after activation
     # TODO: Once status command is implemented, check for "ACTIVE" in output
@@ -124,11 +136,16 @@ in {
     assert deactivation_time < 5, f"Deactivation too slow: {deactivation_time:.2f}s (limit: 5s)"
     print(f"✓ Deactivation completed in <5s ({deactivation_time:.2f}s)")
 
-    # Verify overlays are unmounted from /home, /etc, and /var
+    # Verify overlays are unmounted from /home, /etc, /var, and /nix
     machine.fail("mount | grep 'overlay on /home'")
     machine.fail("mount | grep 'overlay on /etc'")
     machine.fail("mount | grep 'overlay on /var'")
-    print("✓ Overlays unmounted from /home, /etc, and /var")
+    machine.fail("mount | grep 'overlay on /nix'")
+    print("✓ Overlays unmounted from /home, /etc, /var, and /nix")
+
+    # Verify original /nix is restored (nix operations still work)
+    machine.succeed("nix-instantiate --eval -E '1+1'")
+    print("✓ Original /nix restored after deactivation")
 
     # Verify NAILS status command runs after deactivation
     # TODO: Once status command is implemented, check for "INACTIVE" in output

@@ -26,10 +26,12 @@
     mkdir -p /mnt/hidden-volume/home
     mkdir -p /mnt/hidden-volume/etc
     mkdir -p /mnt/hidden-volume/var
+    mkdir -p /mnt/hidden-volume/nix
     # Work directories for overlays
     mkdir -p /mnt/hidden-volume/.work/home
     mkdir -p /mnt/hidden-volume/.work/etc
     mkdir -p /mnt/hidden-volume/.work/var
+    mkdir -p /mnt/hidden-volume/.work/nix
     # Additional required directories
     mkdir -p /mnt/hidden-volume/config
     mkdir -p /mnt/hidden-volume/nixos

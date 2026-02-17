@@ -898,9 +898,9 @@ impl<F: Filesystem> PreFlightCheck<F> for SpaceCheck {
         // Three-tier graduated response
         if available_mb >= minimum_mb {
             // PASS: >= minimum (safe to proceed)
-            let ratio = available_mb / minimum_mb;
+            let ratio = ((available_mb as f64) / (minimum_mb as f64)).min(9999.9);
             Ok(CheckResult::Pass(format!(
-                "{} available ({}x minimum required)",
+                "{} available ({:.1}x minimum required)",
                 Self::format_space(available_mb),
                 ratio
             )))
@@ -2529,7 +2529,7 @@ mod tests {
         let result = check.run(&fs).unwrap();
         assert!(result.is_pass());
         assert!(result.message().contains("2.0 GB available"));
-        assert!(result.message().contains("2x minimum required"));
+        assert!(result.message().contains("2.0x minimum required"));
     }
 
     #[test]
@@ -2544,7 +2544,7 @@ mod tests {
         let result = check.run(&fs).unwrap();
         assert!(result.is_pass());
         assert!(result.message().contains("1.0 GB available"));
-        assert!(result.message().contains("1x minimum required"));
+        assert!(result.message().contains("1.0x minimum required"));
     }
 
     #[test]

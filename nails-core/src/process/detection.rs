@@ -75,7 +75,7 @@ pub fn detect_processes_using(target: &Path) -> Result<Vec<ProcessInfo>> {
 
     // Build set of PIDs to exclude: current process and all ancestors.
     // This prevents nails from killing its own process tree (e.g., the sudo
-    // that invoked nails, or the test backdoor service in NixOS VM tests).
+    // that invoked nails, or the NixOS test-driver control channel in VM tests).
     let exclude_pids = collect_ancestor_pids();
 
     // Iterate over /proc entries
@@ -118,6 +118,7 @@ pub fn detect_processes_using(target: &Path) -> Result<Vec<ProcessInfo>> {
         if has_cwd || has_open_fds || has_mmap {
             // Process is using target - collect full info
             let name = read_comm(&proc_path).unwrap_or_else(|_| "unknown".to_string());
+
             let cmdline = read_cmdline(&proc_path).unwrap_or_else(|_| String::new());
             let service_name = extract_service_name(&proc_path).ok().flatten();
 

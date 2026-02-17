@@ -633,6 +633,33 @@ pub enum MountMethod {
     Pivot,
 }
 
+/// Full result of universal overlay mounting algorithm
+///
+/// Includes mount method and list of services that were stopped during Phase 2.
+/// Callers should restart these services after mount so they write to the overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountResult {
+    /// Which mount method was used
+    pub method: MountMethod,
+    /// Service names that were stopped in Phase 2 (should be restarted post-mount)
+    pub stopped_services: Vec<String>,
+}
+
+/// Best-effort restart of services that were stopped during Phase 2 when the
+/// mount ultimately fails. We start both the socket unit (if present) and the
+/// service unit to mirror the socket-aware stopping logic in process::restart.
+fn restart_services_after_failure(services: &[String]) {
+    for service in services {
+        // Start socket first (mirrors stop order)
+        let _ = std::process::Command::new("systemctl")
+            .args(["start", &format!("{}.socket", service)])
+            .output();
+        let _ = std::process::Command::new("systemctl")
+            .args(["start", service])
+            .output();
+    }
+}
+
 /// Mount overlay using the universal 4-phase algorithm
 ///
 /// This function implements the **Universal Overlay Mounting Strategy** from
@@ -656,8 +683,7 @@ pub enum MountMethod {
 ///
 /// # Returns
 ///
-/// * `Ok(MountMethod::Direct)` - Direct mount succeeded (optimal security)
-/// * `Ok(MountMethod::Pivot)` - Pivot mount succeeded (degraded security, user accepted)
+/// * `Ok(MountResult)` - Mount succeeded, includes method and stopped services
 /// * `Err(NailsError)` - Mount failed or user declined pivot
 ///
 /// # Security Implications
@@ -677,7 +703,7 @@ pub enum MountMethod {
 /// let fs = RealFilesystem;
 /// let options = OverlayStrategyOptions::default();
 ///
-/// let method = mount_overlay_with_strategy(
+/// let result = mount_overlay_with_strategy(
 ///     &fs,
 ///     Path::new("/home"),
 ///     Path::new("/mnt/hidden/home/.upper"),
@@ -686,7 +712,7 @@ pub enum MountMethod {
 ///     &options,
 /// )?;
 ///
-/// match method {
+/// match result.method {
 ///     MountMethod::Direct => println!("✓ Optimal security: direct mount"),
 ///     MountMethod::Pivot => println!("⚠️  Degraded security: pivot mount"),
 /// }
@@ -699,7 +725,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     work: &Path,
     target: &Path,
     options: &OverlayStrategyOptions,
-) -> Result<MountMethod> {
+) -> Result<MountResult> {
     use crate::process::{
         RestartStrategy, classify_process, detect_processes_using, restart_processes,
     };
@@ -713,7 +739,10 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
         match fs.mount_overlay(lower, upper, work, target) {
             Ok(()) => {
                 eprintln!("  ✓ Direct overlay mount succeeded (test mode)");
-                return Ok(MountMethod::Direct);
+                return Ok(MountResult {
+                    method: MountMethod::Direct,
+                    stopped_services: Vec::new(),
+                });
             }
             Err(e) => {
                 return Err(e);
@@ -729,6 +758,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     );
 
     let blocking = detect_processes_using(target)?;
+    let mut stopped_services: Vec<String> = Vec::new();
 
     if blocking.is_empty() {
         eprintln!("  Found 0 processes ✓");
@@ -759,20 +789,41 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
                     eprintln!("  → {} (PID {}) - Cannot restart", proc.name, proc.pid);
                     cannot_restart.push(proc);
                 }
+                RestartStrategy::Skip => {
+                    // Process uses target but doesn't block mount — leave it alone
+                    eprintln!(
+                        "  → {} (PID {}) - Skip (read-only consumer)",
+                        proc.name, proc.pid
+                    );
+                }
             }
         }
 
         // Restart Safe processes automatically
         if !to_restart_safe.is_empty() && options.auto_restart_safe {
             eprintln!("  Restarting {} safe processes...", to_restart_safe.len());
-            restart_processes(&to_restart_safe)?;
+            let results = restart_processes(&to_restart_safe)?;
+            for result in &results {
+                if result.stopped_successfully
+                    && let Some(ref svc) = result.info.service_name
+                {
+                    stopped_services.push(svc.clone());
+                }
+            }
         }
 
         // Prompt for Risky processes
         if !to_restart_risky.is_empty() && options.prompt_for_risky {
             if prompt_risky_process_restart(&to_restart_risky)? {
                 eprintln!("  Restarting {} risky processes...", to_restart_risky.len());
-                restart_processes(&to_restart_risky)?;
+                let results = restart_processes(&to_restart_risky)?;
+                for result in &results {
+                    if result.stopped_successfully
+                        && let Some(ref svc) = result.info.service_name
+                    {
+                        stopped_services.push(svc.clone());
+                    }
+                }
             } else {
                 eprintln!("  User declined restart, processes remain active");
             }
@@ -801,7 +852,10 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
                 "  ✓ Direct overlay mount succeeded for {}",
                 target.display()
             );
-            return Ok(MountMethod::Direct);
+            return Ok(MountResult {
+                method: MountMethod::Direct,
+                stopped_services,
+            });
         }
         Err(e) => {
             // Check if error is EINVAL (directory busy)
@@ -814,6 +868,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
                 // Continue to Phase 4
             } else {
                 // Other errors are fatal
+                restart_services_after_failure(&stopped_services);
                 return Err(e);
             }
         }
@@ -827,6 +882,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     if !options.allow_pivot {
         eprintln!("  ✗ Pivot mount not allowed (--no-pivot flag)");
         display_abort_message(target);
+        restart_services_after_failure(&stopped_services);
         return Err(NailsError::InvalidState(format!(
             "Pivot mount required for {} but --no-pivot flag specified",
             target.display()
@@ -840,6 +896,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     if !options.auto_accept_pivot && !prompt_pivot_mount_acceptance(target, &still_blocking)? {
         eprintln!("  ✗ User declined pivot mount for {}", target.display());
         display_abort_message(target);
+        restart_services_after_failure(&stopped_services);
         return Err(NailsError::InvalidState(format!(
             "User declined pivot mount for {}",
             target.display()
@@ -852,7 +909,13 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     );
 
     // Perform pivot mount
-    let pivot_info = pivot_overlay_mount(fs, lower, upper, work, target)?;
+    let pivot_info = match pivot_overlay_mount(fs, lower, upper, work, target) {
+        Ok(info) => info,
+        Err(e) => {
+            restart_services_after_failure(&stopped_services);
+            return Err(e);
+        }
+    };
 
     eprintln!(
         "  ⚠️  Pivot mount active for {} - split-view behavior enabled",
@@ -860,7 +923,10 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     );
     eprintln!("  Staging: {}", pivot_info.staging.display());
 
-    Ok(MountMethod::Pivot)
+    Ok(MountResult {
+        method: MountMethod::Pivot,
+        stopped_services,
+    })
 }
 
 #[cfg(test)]
