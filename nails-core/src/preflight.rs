@@ -597,6 +597,7 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
 
         // Phase 3: Validate overlay directories are accessible and auto-create if missing
         for overlay in &self.overlays {
+            let mut lower_ok = true;
             // Lower must exist and be readable
             if !fs.path_exists(&overlay.lower)? {
                 issues.push(format!(
@@ -604,30 +605,43 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
                     overlay.name,
                     overlay.lower.display()
                 ));
+                lower_ok = false;
             } else if !fs.is_readable(&overlay.lower)? {
                 issues.push(format!(
                     "{} lower directory not readable: {}",
                     overlay.name,
                     overlay.lower.display()
                 ));
+                lower_ok = false;
             }
 
+            // Upper permissions should mirror lower directory permissions
+            let desired_upper_mode = if lower_ok {
+                match fs.get_permissions(&overlay.lower) {
+                    Ok(mode) => Some(mode),
+                    Err(e) => {
+                        issues.push(format!(
+                            "{} lower permissions unreadable: {}",
+                            overlay.name, e
+                        ));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             // Upper: auto-create if missing
-            if !fs.path_exists(&overlay.upper)? {
+            let mut upper_exists = fs.path_exists(&overlay.upper)?;
+            if !upper_exists {
                 match fs.create_directory(&overlay.upper) {
                     Ok(()) => {
-                        if let Err(e) = fs.set_permissions(&overlay.upper, 0o700) {
-                            issues.push(format!(
-                                "{} upper directory: failed to set permissions: {}",
-                                overlay.name, e
-                            ));
-                        } else {
-                            tracing::info!(
-                                directory = %overlay.upper.display(),
-                                overlay = %overlay.name,
-                                "Created missing overlay upper directory"
-                            );
-                        }
+                        upper_exists = true;
+                        tracing::info!(
+                            directory = %overlay.upper.display(),
+                            overlay = %overlay.name,
+                            "Created missing overlay upper directory"
+                        );
                     }
                     Err(e) => {
                         issues.push(format!(
@@ -638,30 +652,37 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
                         ));
                     }
                 }
-            } else if !fs.is_writable(&overlay.upper)? {
-                issues.push(format!(
-                    "Not writable: {} upper ({})",
-                    overlay.name,
-                    overlay.upper.display()
-                ));
+            }
+
+            if upper_exists {
+                if let Some(mode) = desired_upper_mode {
+                    if let Err(e) = fs.set_permissions(&overlay.upper, mode) {
+                        issues.push(format!(
+                            "{} upper directory: failed to set permissions to match lower: {}",
+                            overlay.name, e
+                        ));
+                    }
+                }
+                if !fs.is_writable(&overlay.upper)? {
+                    issues.push(format!(
+                        "Not writable: {} upper ({})",
+                        overlay.name,
+                        overlay.upper.display()
+                    ));
+                }
             }
 
             // Work: auto-create if missing
-            if !fs.path_exists(&overlay.work)? {
+            let mut work_exists = fs.path_exists(&overlay.work)?;
+            if !work_exists {
                 match fs.create_directory(&overlay.work) {
                     Ok(()) => {
-                        if let Err(e) = fs.set_permissions(&overlay.work, 0o700) {
-                            issues.push(format!(
-                                "{} work directory: failed to set permissions: {}",
-                                overlay.name, e
-                            ));
-                        } else {
-                            tracing::info!(
-                                directory = %overlay.work.display(),
-                                overlay = %overlay.name,
-                                "Created missing overlay work directory"
-                            );
-                        }
+                        work_exists = true;
+                        tracing::info!(
+                            directory = %overlay.work.display(),
+                            overlay = %overlay.name,
+                            "Created missing overlay work directory"
+                        );
                     }
                     Err(e) => {
                         issues.push(format!(
@@ -672,12 +693,22 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
                         ));
                     }
                 }
-            } else if !fs.is_writable(&overlay.work)? {
-                issues.push(format!(
-                    "Not writable: {} work ({})",
-                    overlay.name,
-                    overlay.work.display()
-                ));
+            }
+
+            if work_exists {
+                if let Err(e) = fs.set_permissions(&overlay.work, 0o700) {
+                    issues.push(format!(
+                        "{} work directory: failed to set permissions: {}",
+                        overlay.name, e
+                    ));
+                }
+                if !fs.is_writable(&overlay.work)? {
+                    issues.push(format!(
+                        "Not writable: {} work ({})",
+                        overlay.name,
+                        overlay.work.display()
+                    ));
+                }
             }
         }
 
@@ -1935,6 +1966,26 @@ mod tests {
                 .message()
                 .contains("Hidden storage ready: all directories accessible")
         );
+    }
+
+    #[test]
+    fn test_storage_readiness_sets_upper_permissions_from_lower() {
+        // Upper permissions should mirror lower directory permissions
+        let fs = MockFilesystem::new();
+        let check = make_check_with_overlays();
+        setup_all_required_dirs(&fs);
+        setup_overlay_lower_dirs(&fs);
+
+        fs.set_permissions(Path::new("/home"), 0o750).unwrap();
+        fs.set_permissions(Path::new("/etc"), 0o755).unwrap();
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_pass());
+
+        let home_upper = fs.mock_get_permissions(Path::new("/mnt/hidden-volume/home"));
+        let etc_upper = fs.mock_get_permissions(Path::new("/mnt/hidden-volume/etc"));
+        assert_eq!(home_upper, Some(0o750));
+        assert_eq!(etc_upper, Some(0o755));
     }
 
     #[test]

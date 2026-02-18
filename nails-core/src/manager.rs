@@ -318,6 +318,11 @@ fn create_overlay_config<F: Filesystem>(
     fs.create_directory(&upper)?;
     fs.create_directory(&work)?;
 
+    // Ensure permissions are safe and usable regardless of umask or preflight state
+    let desired_upper_mode = fs.get_permissions(target)?;
+    fs.set_permissions(&upper, desired_upper_mode)?;
+    fs.set_permissions(&work, 0o700)?;
+
     // Create overlay configuration
     Ok(crate::OverlayConfig {
         name: dir_name.to_string_lossy().to_string(),

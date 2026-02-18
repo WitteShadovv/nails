@@ -432,6 +432,17 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Returns error if path doesn't exist or permissions cannot be set.
     fn set_permissions(&self, path: &Path, mode: u32) -> Result<()>;
 
+    /// Get Unix permissions on a path
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to read permissions from
+    ///
+    /// # Errors
+    ///
+    /// Returns error if path doesn't exist or permissions cannot be read.
+    fn get_permissions(&self, path: &Path) -> Result<u32>;
+
     /// Check if a path is readable
     ///
     /// # Arguments
@@ -1982,6 +1993,26 @@ impl Filesystem for MockFilesystem {
         Ok(())
     }
 
+    fn get_permissions(&self, path: &Path) -> Result<u32> {
+        let paths = self.paths.lock().unwrap();
+        if let Some(info) = paths.get(path) {
+            if !info.exists {
+                return Err(NailsError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Path does not exist: {}", path.display()),
+                )));
+            }
+        }
+        drop(paths);
+        Ok(self
+            .permissions
+            .lock()
+            .unwrap()
+            .get(path)
+            .copied()
+            .unwrap_or(0o755))
+    }
+
     fn is_readable(&self, path: &Path) -> Result<bool> {
         let paths = self.paths.lock().unwrap();
         Ok(paths
@@ -2647,6 +2678,12 @@ impl Filesystem for RealFilesystem {
         let perms = std::fs::Permissions::from_mode(mode);
         std::fs::set_permissions(path, perms)?;
         Ok(())
+    }
+
+    fn get_permissions(&self, path: &Path) -> Result<u32> {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)?.permissions().mode();
+        Ok(mode & 0o7777)
     }
 
     fn is_readable(&self, path: &Path) -> Result<bool> {
