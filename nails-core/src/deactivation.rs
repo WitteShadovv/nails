@@ -637,15 +637,14 @@ mod tests {
 
         // Setup mock filesystem for active state
         fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-        fs.mock_set_path_exists("/mnt/hidden-volume/.nails", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume", true);
         fs.mock_set_path_type(DEFAULT_HIDDEN_VOLUME_ROOT, "directory");
-        fs.mock_set_path_type("/mnt/hidden-volume/.nails", "directory");
+        fs.mock_set_path_type("/mnt/hidden-volume", "directory");
 
         let temp_dir = tempfile::tempdir().unwrap();
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
@@ -740,9 +739,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
@@ -776,9 +774,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),

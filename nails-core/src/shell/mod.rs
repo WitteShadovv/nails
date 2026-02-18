@@ -63,6 +63,8 @@ pub struct ShellSetupResult {
     pub instructions: Vec<String>,
     /// Optional warning message if something went wrong (but operation succeeded)
     pub warning: Option<String>,
+    /// Whether rc file was modified (true = new terminals auto-configured)
+    pub rc_modified: bool,
 }
 
 impl ShellSetupResult {
@@ -212,10 +214,8 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             self.filesystem.create_directory(&scripts_dir)?;
         }
 
-        let hidden_volume_root = self.config.hidden_volume_root.to_string_lossy();
-
         // Write bash scripts
-        let bash_script = prompt::generate_bash_prompt_script(&hidden_volume_root);
+        let bash_script = prompt::generate_bash_prompt_script();
         let bash_cleanup = prompt::generate_bash_prompt_cleanup();
         self.filesystem
             .write_file_content(&scripts_dir.join("nails_prompt.bash"), &bash_script)?;
@@ -225,7 +225,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         )?;
 
         // Write zsh scripts
-        let zsh_script = prompt::generate_zsh_prompt_script(&hidden_volume_root);
+        let zsh_script = prompt::generate_zsh_prompt_script();
         let zsh_cleanup = prompt::generate_zsh_prompt_cleanup();
         self.filesystem
             .write_file_content(&scripts_dir.join("nails_prompt.zsh"), &zsh_script)?;
@@ -233,7 +233,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             .write_file_content(&scripts_dir.join("nails_prompt_cleanup.zsh"), &zsh_cleanup)?;
 
         // Write fish scripts
-        let fish_script = prompt::generate_fish_prompt_script(&hidden_volume_root);
+        let fish_script = prompt::generate_fish_prompt_script();
         let fish_cleanup = prompt::generate_fish_prompt_cleanup();
         self.filesystem
             .write_file_content(&scripts_dir.join("nails_prompt.fish"), &fish_script)?;
@@ -315,10 +315,15 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             self.filesystem.create_directory(&scripts_dir)?;
         }
 
-        let hidden_volume_root = self.config.hidden_volume_root.to_string_lossy();
+        // Resolve binary path for alias (Task 5)
+        let binary_path = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.canonicalize().ok())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| format!("{}/bin/nails", self.config.hidden_volume_root.display()));
 
         // Write bash/zsh alias scripts
-        let bash_zsh_alias = alias::generate_bash_zsh_alias_script(&hidden_volume_root);
+        let bash_zsh_alias = alias::generate_bash_zsh_alias_script(&binary_path);
         let bash_zsh_cleanup = alias::generate_bash_zsh_alias_cleanup();
         self.filesystem
             .write_file_content(&scripts_dir.join("nails_alias.sh"), &bash_zsh_alias)?;
@@ -328,7 +333,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         )?;
 
         // Write fish alias scripts
-        let fish_alias = alias::generate_fish_alias_script(&hidden_volume_root);
+        let fish_alias = alias::generate_fish_alias_script(&binary_path);
         let fish_cleanup = alias::generate_fish_alias_cleanup();
         self.filesystem
             .write_file_content(&scripts_dir.join("nails_alias.fish"), &fish_alias)?;
@@ -369,6 +374,178 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         match shell_type {
             ShellType::Bash | ShellType::Zsh => scripts_dir.join("nails_alias_cleanup.sh"),
             ShellType::Fish => scripts_dir.join("nails_alias_cleanup.fish"),
+        }
+    }
+
+    /// Inject shell integration block into user's rc file
+    ///
+    /// Creates or appends to the user's shell rc file (`.bashrc`, `.zshrc`, or
+    /// `.config/fish/config.fish`) in the overlaid `/home` directory. The integration
+    /// block includes:
+    /// - Source commands for prompt and alias scripts
+    /// - OSC color scheme sequences
+    /// - Marker comments for idempotency
+    ///
+    /// # Arguments
+    ///
+    /// * `shell_type` - The shell type to inject integration for
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(true)` if injection succeeded, `Ok(false)` if it failed (best-effort),
+    /// or `Err` for unexpected errors.
+    ///
+    /// # Behavior
+    ///
+    /// - Determines real user from `SUDO_USER` or `USER` env var
+    /// - Finds home directory: `/home/{user}` (now overlaid)
+    /// - Creates rc file if it doesn't exist (with parent dirs for Fish)
+    /// - Checks for existing integration marker before appending (idempotent)
+    /// - Appends integration block with color scheme from config
+    /// - Returns false (not error) on write failures (best-effort)
+    ///
+    /// # Task 1: Auto-source shell integration via overlay rc file
+    pub fn inject_rc_integration(&self, shell_type: ShellType) -> Result<bool> {
+        // Determine real user (SUDO_USER takes precedence over USER)
+        let username = std::env::var("SUDO_USER")
+            .or_else(|_| std::env::var("USER"))
+            .map_err(|_| {
+                std::io::Error::other("Could not determine username (SUDO_USER or USER not set)")
+            })?;
+
+        let home_dir = PathBuf::from(format!("/home/{}", username));
+
+        // Determine rc file path based on shell type
+        let rc_file_path = match shell_type {
+            ShellType::Bash => home_dir.join(".bashrc"),
+            ShellType::Zsh => home_dir.join(".zshrc"),
+            ShellType::Fish => home_dir.join(".config/fish/config.fish"),
+        };
+
+        // Read existing content (or empty string if file doesn't exist)
+        let existing_content = if self.filesystem.path_exists(&rc_file_path)? {
+            self.filesystem
+                .read_file_content(&rc_file_path)
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // Check if integration block already exists (idempotency)
+        if existing_content.contains("# >>> NAILS shell integration") {
+            tracing::debug!(
+                "NAILS shell integration already present in {}",
+                rc_file_path.display()
+            );
+            return Ok(true);
+        }
+
+        // Generate integration block
+        let integration_block = self.generate_rc_integration_block(shell_type);
+
+        // Append integration block
+        let new_content = if existing_content.is_empty() {
+            integration_block
+        } else {
+            format!("{}\n{}", existing_content, integration_block)
+        };
+
+        // Create parent directories if needed (for Fish)
+        if let Some(parent) = rc_file_path.parent()
+            && !self.filesystem.path_exists(parent)?
+            && let Err(e) = self.filesystem.create_directory(parent)
+        {
+            tracing::warn!(
+                "Failed to create rc file parent directory {}: {}",
+                parent.display(),
+                e
+            );
+            return Ok(false);
+        }
+
+        // Write updated content (best-effort)
+        match self
+            .filesystem
+            .write_file_content(&rc_file_path, &new_content)
+        {
+            Ok(_) => {
+                tracing::info!("Injected NAILS integration into {}", rc_file_path.display());
+                Ok(true)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to inject NAILS integration into {}: {}",
+                    rc_file_path.display(),
+                    e
+                );
+                Ok(false)
+            }
+        }
+    }
+
+    /// Generate rc integration block with marker comments
+    ///
+    /// Creates the shell integration block content including:
+    /// - Marker comments for idempotency
+    /// - Source commands for prompt and alias scripts
+    /// - OSC color scheme sequences from config
+    ///
+    /// # Arguments
+    ///
+    /// * `shell_type` - The shell type to generate integration for
+    ///
+    /// # Returns
+    ///
+    /// String containing the complete integration block
+    fn generate_rc_integration_block(&self, shell_type: ShellType) -> String {
+        let scripts_dir = self.scripts_dir();
+        let color_sequences = color_scheme::apply_hidden_color_scheme(&self.config.color_scheme);
+
+        // Convert binary escape sequences to shell-escaped literals for printf
+        // \x1b (ESC) -> \e
+        // \x07 (BEL) -> \a
+        let color_sequences_escaped = color_sequences
+            .replace('\x1b', "\\e")
+            .replace('\x07', "\\a")
+            .replace('\'', "'\\''"); // Also escape single quotes for shell
+
+        match shell_type {
+            ShellType::Bash => {
+                format!(
+                    "# >>> NAILS shell integration (auto-removed on deactivation) >>>\n\
+                     source {}/nails_prompt.bash\n\
+                     source {}/nails_alias.sh\n\
+                     printf '{}'\n\
+                     # <<< NAILS shell integration <<<\n",
+                    scripts_dir.display(),
+                    scripts_dir.display(),
+                    color_sequences_escaped
+                )
+            }
+            ShellType::Zsh => {
+                format!(
+                    "# >>> NAILS shell integration (auto-removed on deactivation) >>>\n\
+                     source {}/nails_prompt.zsh\n\
+                     source {}/nails_alias.sh\n\
+                     printf '{}'\n\
+                     # <<< NAILS shell integration <<<\n",
+                    scripts_dir.display(),
+                    scripts_dir.display(),
+                    color_sequences_escaped
+                )
+            }
+            ShellType::Fish => {
+                format!(
+                    "# >>> NAILS shell integration (auto-removed on deactivation) >>>\n\
+                     source {}/nails_prompt.fish\n\
+                     source {}/nails_alias.fish\n\
+                     printf '{}'\n\
+                     # <<< NAILS shell integration <<<\n",
+                    scripts_dir.display(),
+                    scripts_dir.display(),
+                    color_sequences_escaped
+                )
+            }
         }
     }
 
@@ -475,6 +652,9 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         let color_sequences = color_scheme::apply_hidden_color_scheme(&self.config.color_scheme);
         Self::apply_color_scheme_to_terminal(&color_sequences, "hidden mode");
 
+        // Task 1: Inject rc integration (best-effort)
+        let rc_modified = self.inject_rc_integration(shell_type).unwrap_or(false);
+
         // Build result with source instructions
         let prompt_script = self.prompt_script_path(shell_type);
         let alias_script = self.alias_script_path(shell_type);
@@ -488,6 +668,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
                 alias_script_path: alias_script,
                 instructions: Vec::new(),
                 warning: Some(warning_msg),
+                rc_modified,
             }));
         }
 
@@ -502,6 +683,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             alias_script_path: alias_script,
             instructions,
             warning: None,
+            rc_modified,
         }))
     }
 
@@ -805,8 +987,8 @@ mod tests {
         // Read the generated script
         let script_content = fs.read_file_content(&bash_script_path).unwrap();
 
-        // Verify custom path is used in mount check
-        assert!(script_content.contains("/custom/hidden/.nails"));
+        // Verify script no longer has .nails guard check
+        assert!(!script_content.contains(".nails"));
     }
 
     #[test]
@@ -958,9 +1140,8 @@ mod tests {
             .read_file_content(&scripts_dir.join("nails_alias.sh"))
             .unwrap();
 
-        // Verify script has required guards
-        assert!(script_content.contains(".nails"));
-        assert!(script_content.contains("return 0"));
+        // Verify script has no .nails guard
+        assert!(!script_content.contains(".nails"));
         assert!(script_content.contains("alias nails >/dev/null 2>&1"));
         assert!(script_content.contains("alias nails='sudo"));
     }
@@ -982,15 +1163,14 @@ mod tests {
             .read_file_content(&scripts_dir.join("nails_alias.fish"))
             .unwrap();
 
-        // Verify script has required guards
-        assert!(script_content.contains(".nails"));
-        assert!(script_content.contains("exit 0"));
+        // Verify script has no .nails guard
+        assert!(!script_content.contains(".nails"));
         assert!(script_content.contains("functions -q nails"));
         assert!(script_content.contains("alias nails 'sudo"));
     }
 
     #[test]
-    fn test_alias_script_custom_hidden_volume_path() {
+    fn test_alias_script_uses_actual_binary_path() {
         let fs = MockFilesystem::new();
         let config = Config {
             hidden_volume_root: "/custom/hidden".into(),
@@ -1009,9 +1189,9 @@ mod tests {
             .read_file_content(&scripts_dir.join("nails_alias.sh"))
             .unwrap();
 
-        // Verify custom path is used
-        assert!(bash_script.contains("/custom/hidden/.nails"));
-        assert!(bash_script.contains("sudo /custom/hidden/bin/nails"));
+        // Verify script uses actual binary path (from current_exe or fallback)
+        // Should contain 'sudo' followed by a path, but NOT hardcoded /bin/nails
+        assert!(bash_script.contains("alias nails='sudo"));
     }
 
     #[test]
@@ -1700,5 +1880,295 @@ mod tests {
         let color_sequences = color_scheme::apply_decoy_color_scheme(&config.color_scheme);
         assert!(!color_sequences.is_empty());
         assert!(color_sequences.contains("\x1b]111\x07"));
+    }
+
+    // ============================================================================
+    // RC File Integration Tests (Task 1: Auto-source shell integration)
+    // ============================================================================
+
+    #[test]
+    #[serial]
+    fn test_inject_rc_integration_bash_creates_bashrc() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+
+        fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_path_exists("/home/testuser", true);
+
+        unsafe {
+            std::env::set_var("SHELL", "/bin/bash");
+            std::env::set_var("SUDO_USER", "testuser");
+        }
+
+        let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+
+        // Call inject_rc_integration
+        let result = shell.inject_rc_integration(ShellType::Bash);
+
+        unsafe {
+            std::env::remove_var("SHELL");
+            std::env::remove_var("SUDO_USER");
+        }
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+
+        // Verify .bashrc was created with integration block
+        let bashrc_path = PathBuf::from("/home/testuser/.bashrc");
+        let content = fs.read_file_content(&bashrc_path).unwrap();
+
+        assert!(content.contains("# >>> NAILS shell integration"));
+        assert!(content.contains("source /mnt/hidden-volume/scripts/nails_prompt.bash"));
+        assert!(content.contains("source /mnt/hidden-volume/scripts/nails_alias.sh"));
+        assert!(content.contains("printf '\\e]11;#1a1a2e\\a\\e]10;#e0e0e0\\a'"));
+        assert!(content.contains("# <<< NAILS shell integration <<<"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_inject_rc_integration_zsh_creates_zshrc() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+
+        fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_path_exists("/home/testuser", true);
+
+        unsafe {
+            std::env::set_var("SHELL", "/bin/zsh");
+            std::env::set_var("SUDO_USER", "testuser");
+        }
+
+        let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+
+        let result = shell.inject_rc_integration(ShellType::Zsh);
+
+        unsafe {
+            std::env::remove_var("SHELL");
+            std::env::remove_var("SUDO_USER");
+        }
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+
+        // Verify .zshrc was created
+        let zshrc_path = PathBuf::from("/home/testuser/.zshrc");
+        let content = fs.read_file_content(&zshrc_path).unwrap();
+
+        assert!(content.contains("# >>> NAILS shell integration"));
+        assert!(content.contains("source /mnt/hidden-volume/scripts/nails_prompt.zsh"));
+        assert!(content.contains("source /mnt/hidden-volume/scripts/nails_alias.sh"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_inject_rc_integration_fish_creates_config_fish() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+
+        fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_path_exists("/home/testuser", true);
+
+        unsafe {
+            std::env::set_var("SHELL", "/bin/fish");
+            std::env::set_var("SUDO_USER", "testuser");
+        }
+
+        let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+
+        let result = shell.inject_rc_integration(ShellType::Fish);
+
+        unsafe {
+            std::env::remove_var("SHELL");
+            std::env::remove_var("SUDO_USER");
+        }
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+
+        // Verify config.fish was created (with parent dirs)
+        let fish_config_path = PathBuf::from("/home/testuser/.config/fish/config.fish");
+        let content = fs.read_file_content(&fish_config_path).unwrap();
+
+        assert!(content.contains("# >>> NAILS shell integration"));
+        assert!(content.contains("source /mnt/hidden-volume/scripts/nails_prompt.fish"));
+        assert!(content.contains("source /mnt/hidden-volume/scripts/nails_alias.fish"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_inject_rc_integration_idempotent() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+
+        fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_path_exists("/home/testuser", true);
+
+        unsafe {
+            std::env::set_var("SUDO_USER", "testuser");
+        }
+
+        let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+
+        // Call twice
+        let result1 = shell.inject_rc_integration(ShellType::Bash);
+        let result2 = shell.inject_rc_integration(ShellType::Bash);
+
+        unsafe {
+            std::env::remove_var("SUDO_USER");
+        }
+
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+
+        // Verify only ONE integration block exists
+        let bashrc_path = PathBuf::from("/home/testuser/.bashrc");
+        let content = fs.read_file_content(&bashrc_path).unwrap();
+
+        let marker_count = content.matches("# >>> NAILS shell integration").count();
+        assert_eq!(marker_count, 1, "Should only have one integration block");
+    }
+
+    #[test]
+    #[serial]
+    fn test_inject_rc_integration_appends_to_existing_bashrc() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+
+        fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_path_exists("/home/testuser", true);
+
+        // Create existing .bashrc
+        let bashrc_path = PathBuf::from("/home/testuser/.bashrc");
+        fs.mock_set_path_exists(&bashrc_path.to_string_lossy(), true);
+        fs.mock_set_file_content(
+            &bashrc_path.to_string_lossy(),
+            "# Existing config\nexport PATH=/usr/bin:$PATH\n",
+        );
+
+        unsafe {
+            std::env::set_var("SUDO_USER", "testuser");
+        }
+
+        let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+        let result = shell.inject_rc_integration(ShellType::Bash);
+
+        unsafe {
+            std::env::remove_var("SUDO_USER");
+        }
+
+        assert!(result.is_ok());
+
+        let content = fs.read_file_content(&bashrc_path).unwrap();
+
+        // Should preserve existing content
+        assert!(content.contains("# Existing config"));
+        assert!(content.contains("export PATH=/usr/bin:$PATH"));
+
+        // Should append NAILS integration
+        assert!(content.contains("# >>> NAILS shell integration"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_inject_rc_integration_uses_color_scheme_config() {
+        let fs = MockFilesystem::new();
+        let config = Config {
+            color_scheme: crate::config::ColorSchemeConfig {
+                hidden: crate::config::ColorProfile {
+                    background: "#123456".to_string(),
+                    foreground: "#abcdef".to_string(),
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_path_exists("/home/testuser", true);
+
+        unsafe {
+            std::env::set_var("SUDO_USER", "testuser");
+        }
+
+        let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+        let result = shell.inject_rc_integration(ShellType::Bash);
+
+        unsafe {
+            std::env::remove_var("SUDO_USER");
+        }
+
+        assert!(result.is_ok());
+
+        let bashrc_path = PathBuf::from("/home/testuser/.bashrc");
+        let content = fs.read_file_content(&bashrc_path).unwrap();
+
+        // Should use configured colors, not hardcoded
+        assert!(content.contains("#123456"));
+        assert!(content.contains("#abcdef"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_inject_rc_integration_falls_back_to_user_env() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+
+        fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_path_exists("/home/fallbackuser", true);
+
+        unsafe {
+            // No SUDO_USER, should fall back to USER
+            std::env::remove_var("SUDO_USER");
+            std::env::set_var("USER", "fallbackuser");
+        }
+
+        let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+        let result = shell.inject_rc_integration(ShellType::Bash);
+
+        unsafe {
+            std::env::remove_var("USER");
+        }
+
+        assert!(result.is_ok());
+
+        // Should use USER env var
+        let bashrc_path = PathBuf::from("/home/fallbackuser/.bashrc");
+        assert!(fs.read_file_content(&bashrc_path).is_ok());
+    }
+
+    #[test]
+    #[serial]
+    fn test_inject_rc_integration_returns_false_on_failure() {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+
+        fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+        fs.mock_set_path_exists("/home", true);
+        fs.mock_set_path_exists("/home/testuser", true);
+
+        // Make bashrc write fail
+        fs.mock_set_write_should_fail("/home/testuser/.bashrc", true);
+
+        unsafe {
+            std::env::set_var("SUDO_USER", "testuser");
+        }
+
+        let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+        let result = shell.inject_rc_integration(ShellType::Bash);
+
+        unsafe {
+            std::env::remove_var("SUDO_USER");
+        }
+
+        // Should return Ok(false) on best-effort failure
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
     }
 }

@@ -15,23 +15,15 @@
 /// Creates a script that modifies PS1 to prepend "(NAILS-ACTIVE)" with
 /// optional green color.
 ///
-/// # Arguments
-///
-/// * `hidden_volume_root` - Path to hidden volume root for mount check
-///
 /// # Returns
 ///
-/// Complete bash script content as a String
-pub fn generate_bash_prompt_script(hidden_volume_root: &str) -> String {
+/// Complete bash prompt script content as a String
+#[allow(clippy::useless_format)] // format!() needed to escape {{ }} braces
+pub fn generate_bash_prompt_script() -> String {
     format!(
         r#"#!/usr/bin/env bash
 # NAILS Shell Prompt Instrumentation - Bash
 # Sourced during activation, adds (NAILS-ACTIVE) prefix to PS1
-
-# Guard: Only modify if hidden volume is mounted
-if [ ! -d "{hidden_volume_root}/.nails" ]; then
-    return 0
-fi
 
 # Guard: Don't double-prefix
 if [[ "$PS1" == *"NAILS-ACTIVE"* ]]; then
@@ -49,8 +41,7 @@ if [ -z "${{NO_COLOR+x}}" ]; then
 else
     PS1="(NAILS-ACTIVE) $PS1"
 fi
-"#,
-        hidden_volume_root = hidden_volume_root
+"#
     )
 }
 
@@ -79,23 +70,15 @@ fi
 /// Creates a script that modifies PROMPT to prepend "(NAILS-ACTIVE)" with
 /// optional green color using zsh color codes.
 ///
-/// # Arguments
-///
-/// * `hidden_volume_root` - Path to hidden volume root for mount check
-///
 /// # Returns
 ///
 /// Complete zsh script content as a String
-pub fn generate_zsh_prompt_script(hidden_volume_root: &str) -> String {
+#[allow(clippy::useless_format)] // format!() needed to escape {{ }} braces
+pub fn generate_zsh_prompt_script() -> String {
     format!(
         r#"#!/usr/bin/env zsh
 # NAILS Shell Prompt Instrumentation - Zsh
 # Sourced during activation, adds (NAILS-ACTIVE) prefix to PROMPT
-
-# Guard: Only modify if hidden volume is mounted
-if [ ! -d "{hidden_volume_root}/.nails" ]; then
-    return 0
-fi
 
 # Guard: Don't double-prefix
 if [[ "$PROMPT" == *"NAILS-ACTIVE"* ]]; then
@@ -113,8 +96,7 @@ if [ -z "${{NO_COLOR+x}}" ]; then
 else
     PROMPT="(NAILS-ACTIVE) $PROMPT"
 fi
-"#,
-        hidden_volume_root = hidden_volume_root
+"#
     )
 }
 
@@ -143,23 +125,13 @@ fi
 /// Creates a script that wraps the fish_prompt function to prepend
 /// "(NAILS-ACTIVE)" with optional green color using set_color.
 ///
-/// # Arguments
-///
-/// * `hidden_volume_root` - Path to hidden volume root for mount check
-///
 /// # Returns
 ///
 /// Complete fish script content as a String
-pub fn generate_fish_prompt_script(hidden_volume_root: &str) -> String {
-    format!(
-        r#"#!/usr/bin/env fish
+pub fn generate_fish_prompt_script() -> String {
+    r#"#!/usr/bin/env fish
 # NAILS Shell Prompt Instrumentation - Fish
 # Sourced during activation, adds (NAILS-ACTIVE) prefix to fish_prompt
-
-# Guard: Only modify if hidden volume is mounted
-if not test -d "{hidden_volume_root}/.nails"
-    exit 0
-end
 
 # Guard: Don't re-wrap if already wrapped
 if functions -q _nails_orig_prompt
@@ -180,9 +152,8 @@ function fish_prompt
     end
     _nails_orig_prompt
 end
-"#,
-        hidden_volume_root = hidden_volume_root
-    )
+"#
+    .to_string()
 }
 
 /// Generate fish prompt cleanup script
@@ -208,35 +179,28 @@ end
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
-
-    #[test]
-    fn test_bash_script_contains_mount_check() {
-        let script = generate_bash_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
-        assert!(script.contains("if [ ! -d \"/mnt/hidden-volume/.nails\" ]"));
-    }
 
     #[test]
     fn test_bash_script_contains_idempotency_check() {
-        let script = generate_bash_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_bash_prompt_script();
         assert!(script.contains(r#"if [[ "$PS1" == *"NAILS-ACTIVE"* ]]"#));
     }
 
     #[test]
     fn test_bash_script_contains_no_color_check() {
-        let script = generate_bash_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_bash_prompt_script();
         assert!(script.contains(r#"if [ -z "${NO_COLOR+x}" ]"#));
     }
 
     #[test]
     fn test_bash_script_contains_color_codes() {
-        let script = generate_bash_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_bash_prompt_script();
         assert!(script.contains(r#"\[\033[32m\](NAILS-ACTIVE)\[\033[0m\]"#));
     }
 
     #[test]
     fn test_bash_script_saves_original_ps1() {
-        let script = generate_bash_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_bash_prompt_script();
         assert!(script.contains("export _NAILS_ORIG_PS1="));
     }
 
@@ -248,32 +212,26 @@ mod tests {
     }
 
     #[test]
-    fn test_zsh_script_contains_mount_check() {
-        let script = generate_zsh_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
-        assert!(script.contains("if [ ! -d \"/mnt/hidden-volume/.nails\" ]"));
-    }
-
-    #[test]
     fn test_zsh_script_contains_idempotency_check() {
-        let script = generate_zsh_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_zsh_prompt_script();
         assert!(script.contains(r#"if [[ "$PROMPT" == *"NAILS-ACTIVE"* ]]"#));
     }
 
     #[test]
     fn test_zsh_script_contains_no_color_check() {
-        let script = generate_zsh_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_zsh_prompt_script();
         assert!(script.contains(r#"if [ -z "${NO_COLOR+x}" ]"#));
     }
 
     #[test]
     fn test_zsh_script_contains_color_codes() {
-        let script = generate_zsh_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_zsh_prompt_script();
         assert!(script.contains(r#"%F{green}(NAILS-ACTIVE)%f"#));
     }
 
     #[test]
     fn test_zsh_script_saves_original_prompt() {
-        let script = generate_zsh_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_zsh_prompt_script();
         assert!(script.contains("export _NAILS_ORIG_PROMPT="));
     }
 
@@ -285,33 +243,27 @@ mod tests {
     }
 
     #[test]
-    fn test_fish_script_contains_mount_check() {
-        let script = generate_fish_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
-        assert!(script.contains("if not test -d \"/mnt/hidden-volume/.nails\""));
-    }
-
-    #[test]
     fn test_fish_script_contains_idempotency_check() {
-        let script = generate_fish_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_fish_prompt_script();
         assert!(script.contains("if functions -q _nails_orig_prompt"));
     }
 
     #[test]
     fn test_fish_script_contains_no_color_check() {
-        let script = generate_fish_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_fish_prompt_script();
         assert!(script.contains("if set -q NO_COLOR"));
     }
 
     #[test]
     fn test_fish_script_contains_color_command() {
-        let script = generate_fish_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_fish_prompt_script();
         assert!(script.contains("set_color green"));
         assert!(script.contains("set_color normal"));
     }
 
     #[test]
     fn test_fish_script_saves_original_function() {
-        let script = generate_fish_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_fish_prompt_script();
         assert!(script.contains("functions -c fish_prompt _nails_orig_prompt"));
     }
 
@@ -323,28 +275,8 @@ mod tests {
     }
 
     #[test]
-    fn test_bash_script_uses_custom_hidden_volume_path() {
-        let script = generate_bash_prompt_script("/custom/path");
-        assert!(script.contains("if [ ! -d \"/custom/path/.nails\" ]"));
-    }
-
-    #[test]
-    fn test_zsh_script_uses_custom_hidden_volume_path() {
-        let script = generate_zsh_prompt_script("/custom/path");
-        assert!(script.contains("if [ ! -d \"/custom/path/.nails\" ]"));
-    }
-
-    #[test]
-    fn test_fish_script_uses_custom_hidden_volume_path() {
-        let script = generate_fish_prompt_script("/custom/path");
-        assert!(script.contains("if not test -d \"/custom/path/.nails\""));
-    }
-
-    // AC8: Integration tests - Syntax validation
-
-    #[test]
     fn test_bash_script_syntax_valid() {
-        let script = generate_bash_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_bash_prompt_script();
 
         // Write script to a temp file and validate with bash -n
         use std::io::Write;
@@ -374,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_zsh_script_syntax_valid() {
-        let script = generate_zsh_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_zsh_prompt_script();
 
         // Write script to a temp file and validate with zsh -n
         use std::io::Write;
@@ -404,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_fish_script_syntax_valid() {
-        let script = generate_fish_prompt_script(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let script = generate_fish_prompt_script();
 
         // Write script to a temp file and validate with fish --no-execute
         use std::io::Write;

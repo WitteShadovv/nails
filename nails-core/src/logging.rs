@@ -772,7 +772,7 @@ mod tests {
     #[test]
     fn test_validate_log_path_nested_valid() {
         let manager = LoggingManager::new(
-            PathBuf::from("/mnt/hidden-volume/.nails/logs"),
+            PathBuf::from("/mnt/hidden-volume/logs"),
             PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
         );
         assert!(manager.validate_log_path().is_ok());

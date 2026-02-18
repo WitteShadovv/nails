@@ -1205,7 +1205,22 @@ pub mod cli {
                                 "You can manually source scripts from the hidden volume if needed"
                                     .dimmed()
                             );
+                        } else if setup.rc_modified {
+                            // RC file was modified - new terminals auto-configured
+                            println!();
+                            println!("{}", "Shell Integration:".cyan().bold());
+                            println!(
+                                "{}",
+                                "✓ New terminals will automatically have prompt, alias, and color scheme."
+                                    .green()
+                            );
+                            println!();
+                            println!("{}", "To apply to this terminal now, run:".dimmed());
+                            for cmd in &setup.instructions {
+                                println!("  {}", cmd.bright_white());
+                            }
                         } else {
+                            // RC file not modified - show fallback instructions
                             println!();
                             println!("{}", "Shell Integration:".cyan().bold());
                             println!(
@@ -1215,12 +1230,6 @@ pub mod cli {
                             for cmd in &setup.instructions {
                                 println!("  {}", cmd.bright_white());
                             }
-                            println!();
-                            println!(
-                                "{}",
-                                "Tip: Add a shell function for automatic setup (see 'man nails')"
-                                    .dimmed()
-                            );
                         }
                     } else {
                         // No shell detected or unsupported shell
@@ -1417,18 +1426,15 @@ pub mod cli {
                     println!();
                     if no_color {
                         println!("Shell Cleanup:");
-                        println!(
-                            "Note: Shell prompt may still show (NAILS-ACTIVE) until next login"
-                        );
-                        println!("To remove now, run:");
+                        println!("Shell prompt will be restored in new terminals automatically.");
+                        println!("To remove from this terminal now, run:");
                     } else {
                         println!("{}", "Shell Cleanup:".cyan().bold());
                         println!(
                             "{}",
-                            "Note: Shell prompt may still show (NAILS-ACTIVE) until next login"
-                                .dimmed()
+                            "Shell prompt will be restored in new terminals automatically.".green()
                         );
-                        println!("{}", "To remove now, run:".dimmed());
+                        println!("{}", "To remove from this terminal now, run:".dimmed());
                     }
                     for cmd in &cleanup.instructions {
                         if no_color {
@@ -1842,11 +1848,15 @@ pub mod cli {
 
             println!();
 
-            // Print overlay list with checkmarks
-            if !report.overlays.is_empty() {
+            // Print overlay list with per-overlay mount status (Task 3)
+            if !report.overlay_mount_statuses.is_empty() {
                 println!("Overlays:");
-                for overlay in &report.overlays {
-                    println!("  ✓ {} (mounted)", overlay.display());
+                for status in &report.overlay_mount_statuses {
+                    if status.actually_mounted {
+                        println!("  ✓ {} (mounted)", status.path.display());
+                    } else {
+                        println!("  ✗ {} (NOT mounted)", status.path.display());
+                    }
                 }
             }
 
@@ -1938,11 +1948,15 @@ pub mod cli {
 
             println!();
 
-            // Print overlay list with [OK] markers
-            if !report.overlays.is_empty() {
+            // Print overlay list with per-overlay mount status (Task 3)
+            if !report.overlay_mount_statuses.is_empty() {
                 println!("Overlays:");
-                for overlay in &report.overlays {
-                    println!("  [OK] {} (mounted)", overlay.display());
+                for status in &report.overlay_mount_statuses {
+                    if status.actually_mounted {
+                        println!("  [OK] {} (mounted)", status.path.display());
+                    } else {
+                        println!("  [ERROR] {} (NOT mounted)", status.path.display());
+                    }
                 }
             }
 

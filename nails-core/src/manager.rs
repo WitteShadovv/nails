@@ -45,6 +45,81 @@ fn start_service_and_socket(service: &str) {
         .output();
 }
 
+/// Clean stale network configuration files from /etc overlay upper layer (Task 6: DNS preservation)
+///
+/// Before mounting the /etc overlay, remove stale `resolv.conf` and `nsswitch.conf` from the
+/// upper layer directory. This allows the real system files to show through the overlay's
+/// lower layer, preserving DNS resolution.
+///
+/// # Arguments
+///
+/// * `upper_dir` - Path to the /etc overlay's upper layer directory
+/// * `fs` - Filesystem abstraction
+///
+/// # Returns
+///
+/// * `Ok(())` - Cleanup succeeded or files didn't exist
+/// * `Err(NailsError)` - Failed to remove a stale file
+///
+/// # Behavior
+///
+/// - Best-effort: If files don't exist, no action taken
+/// - Logs each file removal at INFO level
+/// - Returns error only if removal fails (file exists but can't be deleted)
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::filesystem::{Filesystem, MockFilesystem};
+/// use std::path::PathBuf;
+///
+/// fn clean_stale_network_config<F: Filesystem>(
+///     upper_dir: &std::path::Path,
+///     fs: &F
+/// ) -> Result<(), nails_core::error::NailsError> {
+///     let stale_files = ["resolv.conf", "nsswitch.conf"];
+///     for filename in &stale_files {
+///         let path = upper_dir.join(filename);
+///         if fs.path_exists(&path)? {
+///             fs.remove_file(&path)?;
+///         }
+///     }
+///     Ok(())
+/// }
+///
+/// let fs = MockFilesystem::new();
+/// let upper_dir = PathBuf::from("/mnt/hidden/etc-upper");
+///
+/// // Create stale resolv.conf in upper layer
+/// let resolv_path = upper_dir.join("resolv.conf");
+/// fs.mock_set_path_exists(&resolv_path.to_string_lossy(), true);
+/// fs.mock_set_file_content(&resolv_path.to_string_lossy(), "nameserver 8.8.8.8");
+///
+/// // Clean it before mounting overlay
+/// clean_stale_network_config(&upper_dir, &fs).unwrap();
+///
+/// // File should be removed
+/// assert!(!fs.path_exists(&resolv_path).unwrap());
+/// ```
+fn clean_stale_network_config<F: Filesystem>(upper_dir: &Path, fs: &F) -> Result<()> {
+    let stale_files = ["resolv.conf", "nsswitch.conf"];
+
+    for filename in &stale_files {
+        let path = upper_dir.join(filename);
+        if fs.path_exists(&path)? {
+            fs.remove_file(&path)?;
+            tracing::info!(
+                file = filename,
+                upper_dir = %upper_dir.display(),
+                "Cleaned stale {} from /etc upper layer for DNS preservation",
+                filename
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Apply exclusion filter to a list of directories (Story 14.10, Task 4)
 ///
 /// Filters out directories that match any path in the exclusion list.
@@ -618,7 +693,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config::default();
-    /// let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+    /// let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
     /// let manager = NailsManager::new(fs, config, state_path);
     /// ```
     pub fn new(filesystem: F, config: Config, state_file_path: PathBuf) -> Self {
@@ -657,7 +732,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config::default();
-    /// let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+    /// let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
     /// let nixos_builder = NixOSBuilder::new(
     ///     PathBuf::from("/mnt/hidden/nixos"),
     ///     PathBuf::from("/nix/var/nix/profiles/nails-system"),
@@ -822,7 +897,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config::default();
-    /// let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+    /// let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
     /// let manager = NailsManager::new(fs, config, state_path);
     ///
     /// // First call loads from disk (lazy)
@@ -941,9 +1016,8 @@ impl<F: Filesystem> NailsManager<F> {
     ///
     /// let temp_dir = tempfile::tempdir().unwrap();
     /// let mock_hidden_vol = temp_dir.path();
-    /// let state_dir = mock_hidden_vol.join(".nails");
-    /// std::fs::create_dir_all(&state_dir).unwrap();
-    /// let state_path = state_dir.join("state.json");
+    /// std::fs::create_dir_all(mock_hidden_vol).unwrap();
+    /// let state_path = mock_hidden_vol.join("state.json");
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config {
@@ -1008,9 +1082,8 @@ impl<F: Filesystem> NailsManager<F> {
     ///
     /// let temp_dir = tempfile::tempdir().unwrap();
     /// let mock_hidden_vol = temp_dir.path();
-    /// let state_dir = mock_hidden_vol.join(".nails");
-    /// std::fs::create_dir_all(&state_dir).unwrap();
-    /// let state_path = state_dir.join("state.json");
+    /// std::fs::create_dir_all(mock_hidden_vol).unwrap();
+    /// let state_path = mock_hidden_vol.join("state.json");
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config {
@@ -1185,7 +1258,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config::default();
-    /// let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+    /// let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
     /// let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
     ///
     /// // Activate with preflight checks (no_preflight = false)
@@ -1355,7 +1428,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config::default();
-    /// let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+    /// let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
     /// let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
     ///
     /// // Activate overlays with pre-flight checks
@@ -1392,7 +1465,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config::default();
-    /// let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+    /// let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
     /// let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
     ///
     /// let options = ActivateOptions {
@@ -1776,6 +1849,19 @@ impl<F: Filesystem> NailsManager<F> {
                         }
                     };
 
+                    // Task 6: DNS preservation - clean stale network config before mounting /etc
+                    if target == Path::new("/etc")
+                        && let Err(e) =
+                            clean_stale_network_config(&overlay.upper, &manager.filesystem)
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to clean stale network config from /etc upper layer: {}",
+                            e
+                        );
+                        // Continue anyway - this is best-effort
+                    }
+
                     // Use universal overlay mounting algorithm (Story 4.15, AC8)
                     match crate::overlay::mount_overlay_with_strategy(
                         &manager.filesystem,
@@ -1986,6 +2072,19 @@ impl<F: Filesystem> NailsManager<F> {
                 }
 
                 for overlay in &manager.config.overlays {
+                    // Task 6: DNS preservation - clean stale network config before mounting /etc
+                    if overlay.target == Path::new("/etc")
+                        && let Err(e) =
+                            clean_stale_network_config(&overlay.upper, &manager.filesystem)
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to clean stale network config from /etc upper layer: {}",
+                            e
+                        );
+                        // Continue anyway - this is best-effort
+                    }
+
                     // Use universal overlay mounting algorithm (Story 4.15, AC8)
                     match crate::overlay::mount_overlay_with_strategy(
                         &manager.filesystem,
@@ -2585,7 +2684,7 @@ mod tests {
     fn create_test_manager() -> NailsManager<MockFilesystem> {
         let fs = MockFilesystem::new();
         let config = Config::default();
-        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
         NailsManager::new(fs, config, state_path)
     }
 
@@ -2596,11 +2695,11 @@ mod tests {
         let fs = MockFilesystem::new();
         let config = Config {
             hidden_volume_root: PathBuf::from("/mnt/test-hidden"),
-            state_file_path: PathBuf::from("/mnt/test-hidden/.nails/state.json"),
+            state_file_path: PathBuf::from("/mnt/test-hidden/state.json"),
             overlays: vec![],
             ..Config::test_default()
         };
-        let state_path = PathBuf::from("/mnt/test-hidden/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/test-hidden/state.json");
 
         let manager = NailsManager::new(fs, config.clone(), state_path.clone());
 
@@ -2639,7 +2738,7 @@ mod tests {
         // Test with MockFilesystem
         let mock_fs = MockFilesystem::new();
         let config = Config::default();
-        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
         let _mock_manager = NailsManager::new(mock_fs, config.clone(), state_path.clone());
 
         // Test with RealFilesystem (just verify compilation)
@@ -2747,9 +2846,8 @@ mod tests {
         // Use /tmp for testing (bypass hidden volume check for unit tests)
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
         let config = Config {
@@ -2780,9 +2878,8 @@ mod tests {
     fn test_update_state_invalid_transition_returns_error() {
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
         let config = Config {
@@ -2811,9 +2908,8 @@ mod tests {
     fn test_update_state_saves_to_disk() {
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
         let config = Config {
@@ -2845,9 +2941,8 @@ mod tests {
     fn test_update_state_updates_cache() {
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
         let config = Config {
@@ -2973,9 +3068,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -3020,9 +3114,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
         let config = Config {
@@ -3073,9 +3166,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -3121,9 +3213,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -3196,9 +3287,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -3280,9 +3370,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -3346,9 +3435,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -3463,9 +3551,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -3559,9 +3646,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
         let config = Config {
@@ -3595,9 +3681,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -3715,9 +3800,8 @@ mod tests {
         // Create mock hidden volume structure
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -3814,9 +3898,8 @@ mod tests {
         // Create mock hidden volume structure
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -3876,9 +3959,8 @@ mod tests {
         // Create mock hidden volume structure
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -3931,9 +4013,8 @@ mod tests {
         // Create mock hidden volume structure
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -4010,9 +4091,8 @@ mod tests {
         // Create mock hidden volume structure
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -4052,9 +4132,8 @@ mod tests {
         // Create mock hidden volume structure
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -4278,7 +4357,126 @@ mod tests {
     // - test_build_overlay_targets_auto_mode_*
     // - test_build_overlay_targets_explicit_mode_*
 
-    // ========== Story 14.10: Integration Tests for build_overlay_targets ==========
+    // ========== Task 6: DNS Preservation Tests ==========
+
+    #[test]
+    fn test_clean_stale_network_config_removes_resolv_conf() {
+        let fs = MockFilesystem::new();
+        let upper_dir = PathBuf::from("/mnt/hidden/etc-upper");
+
+        // Create stale resolv.conf
+        let resolv_path = upper_dir.join("resolv.conf");
+        fs.write_file_content(&resolv_path, "nameserver 8.8.8.8")
+            .unwrap();
+
+        // Clean it
+        let result = clean_stale_network_config(&upper_dir, &fs);
+        assert!(result.is_ok());
+
+        // File should be removed
+        assert!(!fs.path_exists(&resolv_path).unwrap());
+    }
+
+    #[test]
+    fn test_clean_stale_network_config_removes_nsswitch_conf() {
+        let fs = MockFilesystem::new();
+        let upper_dir = PathBuf::from("/mnt/hidden/etc-upper");
+
+        // Create stale nsswitch.conf
+        let nsswitch_path = upper_dir.join("nsswitch.conf");
+        fs.write_file_content(&nsswitch_path, "hosts: files dns")
+            .unwrap();
+
+        // Clean it
+        let result = clean_stale_network_config(&upper_dir, &fs);
+        assert!(result.is_ok());
+
+        // File should be removed
+        assert!(!fs.path_exists(&nsswitch_path).unwrap());
+    }
+
+    #[test]
+    fn test_clean_stale_network_config_removes_both_files() {
+        let fs = MockFilesystem::new();
+        let upper_dir = PathBuf::from("/mnt/hidden/etc-upper");
+
+        // Create both stale files
+        let resolv_path = upper_dir.join("resolv.conf");
+        let nsswitch_path = upper_dir.join("nsswitch.conf");
+        fs.write_file_content(&resolv_path, "nameserver 8.8.8.8")
+            .unwrap();
+        fs.write_file_content(&nsswitch_path, "hosts: files dns")
+            .unwrap();
+
+        // Clean them
+        let result = clean_stale_network_config(&upper_dir, &fs);
+        assert!(result.is_ok());
+
+        // Both files should be removed
+        assert!(!fs.path_exists(&resolv_path).unwrap());
+        assert!(!fs.path_exists(&nsswitch_path).unwrap());
+    }
+
+    #[test]
+    fn test_clean_stale_network_config_no_files_exists() {
+        let fs = MockFilesystem::new();
+        let upper_dir = PathBuf::from("/mnt/hidden/etc-upper");
+
+        // No files created - should succeed without error
+        let result = clean_stale_network_config(&upper_dir, &fs);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_clean_stale_network_config_logs_removal() {
+        let fs = MockFilesystem::new();
+        let upper_dir = PathBuf::from("/mnt/hidden/etc-upper");
+
+        // Create stale resolv.conf
+        let resolv_path = upper_dir.join("resolv.conf");
+        fs.write_file_content(&resolv_path, "nameserver 8.8.8.8")
+            .unwrap();
+
+        // Clean it
+        let result = clean_stale_network_config(&upper_dir, &fs);
+        assert!(result.is_ok());
+
+        // Should log the removal
+        assert!(logs_contain("Cleaned stale resolv.conf"));
+        assert!(logs_contain("DNS preservation"));
+    }
+
+    #[test]
+    fn test_clean_stale_network_config_does_not_remove_other_files() {
+        let fs = MockFilesystem::new();
+        let upper_dir = PathBuf::from("/mnt/hidden/etc-upper");
+
+        // Create files that should NOT be removed
+        let passwd_path = upper_dir.join("passwd");
+        let shadow_path = upper_dir.join("shadow");
+        let hostname_path = upper_dir.join("hostname");
+        fs.write_file_content(&passwd_path, "root:x:0:0").unwrap();
+        fs.write_file_content(&shadow_path, "root:*").unwrap();
+        fs.write_file_content(&hostname_path, "myhostname").unwrap();
+
+        // Also create one that should be removed
+        let resolv_path = upper_dir.join("resolv.conf");
+        fs.write_file_content(&resolv_path, "nameserver 8.8.8.8")
+            .unwrap();
+
+        // Clean
+        let result = clean_stale_network_config(&upper_dir, &fs);
+        assert!(result.is_ok());
+
+        // Only resolv.conf should be removed
+        assert!(!fs.path_exists(&resolv_path).unwrap());
+        assert!(fs.path_exists(&passwd_path).unwrap());
+        assert!(fs.path_exists(&shadow_path).unwrap());
+        assert!(fs.path_exists(&hostname_path).unwrap());
+    }
+
+    // ========== Helper Function Tests ==========
 
     #[test]
     fn test_apply_exclusion_filter_empty_exclusions() {
@@ -4690,9 +4888,8 @@ mod tests {
         // Create mock hidden volume structure
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -4854,7 +5051,7 @@ mod tests {
     fn test_nails_manager_debug_impl() {
         let fs = MockFilesystem::new();
         let config = Config::default();
-        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
         let manager = NailsManager::new(fs, config.clone(), state_path.clone());
 
         // Test Debug implementation (lines 242-252)
@@ -4889,7 +5086,7 @@ mod tests {
 
         let fs = MockFilesystem::new();
         let config = Config::default();
-        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
         let nixos_builder = NixOSBuilder::new(
             PathBuf::from("/mnt/hidden/nixos"),
             PathBuf::from("/nix/var/nix/profiles/nails-system"),
@@ -5005,9 +5202,8 @@ mod tests {
         // Create mock hidden volume structure
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -5198,9 +5394,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -5244,9 +5439,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -5290,9 +5484,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -5331,9 +5524,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -5377,9 +5569,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -5421,9 +5612,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -5468,9 +5658,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -5513,9 +5702,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -5572,9 +5760,8 @@ mod tests {
         // Create mock hidden volume structure in temp dir
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -5634,9 +5821,8 @@ mod tests {
     ) -> (Arc<Mutex<NailsManager<MockFilesystem>>>, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).expect("Should create .nails directory");
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).expect("Should create hidden volume directory");
+        let state_path = mock_hidden_vol.join("state.json");
 
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
@@ -5668,13 +5854,11 @@ mod tests {
 
         let hv_str = mock_hidden_vol.to_string_lossy();
         fs.mock_set_path_exists(&hv_str, true);
-        fs.mock_set_path_exists(&format!("{}/.nails", hv_str), true);
         fs.mock_set_path_exists(&format!("{}/home-upper", hv_str), true);
         fs.mock_set_path_exists(&format!("{}/home-work", hv_str), true);
         fs.mock_set_path_exists(&format!("{}/etc-upper", hv_str), true);
         fs.mock_set_path_exists(&format!("{}/etc-work", hv_str), true);
 
-        fs.mock_set_writable(&format!("{}/.nails", hv_str), true);
         fs.mock_set_writable(&hv_str, true);
         fs.mock_set_writable("/", true);
         fs.mock_set_readable("/", true);
@@ -6232,9 +6416,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).expect("Should create .nails");
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).expect("Should create hidden volume");
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
         let config = Config {
@@ -6667,8 +6850,8 @@ mod tests {
         config.overlays = vec![OverlayConfig {
             name: "home".to_string(),
             lower: PathBuf::from("/"),
-            upper: PathBuf::from("/mnt/hidden-volume/.nails/home-upper"),
-            work: PathBuf::from("/mnt/hidden-volume/.nails/home-work"),
+            upper: PathBuf::from("/mnt/hidden-volume/home-upper"),
+            work: PathBuf::from("/mnt/hidden-volume/home-work"),
             target: PathBuf::from("/home"),
         }];
 
@@ -6682,7 +6865,7 @@ mod tests {
             }],
         };
 
-        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
         let manager = Arc::new(Mutex::new(NailsManager::new(
             fs.clone(),
             config,
@@ -6721,8 +6904,8 @@ mod tests {
         config.overlays = vec![OverlayConfig {
             name: "home".to_string(),
             lower: PathBuf::from("/"),
-            upper: PathBuf::from("/mnt/hidden-volume/.nails/home-upper"),
-            work: PathBuf::from("/mnt/hidden-volume/.nails/home-work"),
+            upper: PathBuf::from("/mnt/hidden-volume/home-upper"),
+            work: PathBuf::from("/mnt/hidden-volume/home-work"),
             target: PathBuf::from("/home"),
         }];
 
@@ -6736,7 +6919,7 @@ mod tests {
             }],
         };
 
-        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
         let manager = Arc::new(Mutex::new(NailsManager::new(
             fs.clone(),
             config,
@@ -6774,8 +6957,8 @@ mod tests {
         config.overlays = vec![OverlayConfig {
             name: "home".to_string(),
             lower: PathBuf::from("/"),
-            upper: PathBuf::from("/mnt/hidden-volume/.nails/home-upper"),
-            work: PathBuf::from("/mnt/hidden-volume/.nails/home-work"),
+            upper: PathBuf::from("/mnt/hidden-volume/home-upper"),
+            work: PathBuf::from("/mnt/hidden-volume/home-work"),
             target: PathBuf::from("/home"),
         }];
 
@@ -6788,7 +6971,7 @@ mod tests {
             }],
         };
 
-        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
         let manager = Arc::new(Mutex::new(NailsManager::new(
             fs.clone(),
             config,
@@ -6833,8 +7016,8 @@ mod tests {
         config.overlays = vec![OverlayConfig {
             name: "home".to_string(),
             lower: PathBuf::from("/"),
-            upper: PathBuf::from("/mnt/hidden-volume/.nails/home-upper"),
-            work: PathBuf::from("/mnt/hidden-volume/.nails/home-work"),
+            upper: PathBuf::from("/mnt/hidden-volume/home-upper"),
+            work: PathBuf::from("/mnt/hidden-volume/home-work"),
             target: PathBuf::from("/home"),
         }];
 
@@ -6847,7 +7030,7 @@ mod tests {
             }],
         };
 
-        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
         let manager = Arc::new(Mutex::new(NailsManager::new(
             fs.clone(),
             config,
@@ -6889,8 +7072,8 @@ mod tests {
         config.overlays = vec![OverlayConfig {
             name: "home".to_string(),
             lower: PathBuf::from("/"),
-            upper: PathBuf::from("/mnt/hidden-volume/.nails/home-upper"),
-            work: PathBuf::from("/mnt/hidden-volume/.nails/home-work"),
+            upper: PathBuf::from("/mnt/hidden-volume/home-upper"),
+            work: PathBuf::from("/mnt/hidden-volume/home-work"),
             target: PathBuf::from("/home"),
         }];
 
@@ -6903,7 +7086,7 @@ mod tests {
             }],
         };
 
-        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
         let manager = Arc::new(Mutex::new(NailsManager::new(
             fs.clone(),
             config,
@@ -6945,15 +7128,15 @@ mod tests {
         config.overlays = vec![OverlayConfig {
             name: "home".to_string(),
             lower: PathBuf::from("/"),
-            upper: PathBuf::from("/mnt/hidden-volume/.nails/home-upper"),
-            work: PathBuf::from("/mnt/hidden-volume/.nails/home-work"),
+            upper: PathBuf::from("/mnt/hidden-volume/home-upper"),
+            work: PathBuf::from("/mnt/hidden-volume/home-work"),
             target: PathBuf::from("/home"),
         }];
 
         // Extended overlays disabled
         assert!(!config.extended_overlays.enabled);
 
-        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
         let manager = Arc::new(Mutex::new(NailsManager::new(
             fs.clone(),
             config,
@@ -6984,8 +7167,8 @@ mod tests {
         config.overlays = vec![OverlayConfig {
             name: "home".to_string(),
             lower: PathBuf::from("/"),
-            upper: PathBuf::from("/mnt/hidden-volume/.nails/home-upper"),
-            work: PathBuf::from("/mnt/hidden-volume/.nails/home-work"),
+            upper: PathBuf::from("/mnt/hidden-volume/home-upper"),
+            work: PathBuf::from("/mnt/hidden-volume/home-work"),
             target: PathBuf::from("/home"),
         }];
 
@@ -7010,7 +7193,7 @@ mod tests {
             ],
         };
 
-        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
         let manager = Arc::new(Mutex::new(NailsManager::new(
             fs.clone(),
             config,
@@ -7060,15 +7243,15 @@ mod tests {
             OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/"),
-                upper: PathBuf::from("/mnt/hidden-volume/.nails/home-upper"),
-                work: PathBuf::from("/mnt/hidden-volume/.nails/home-work"),
+                upper: PathBuf::from("/mnt/hidden-volume/home-upper"),
+                work: PathBuf::from("/mnt/hidden-volume/home-work"),
                 target: PathBuf::from("/home"),
             },
             OverlayConfig {
                 name: "etc".to_string(),
                 lower: PathBuf::from("/"),
-                upper: PathBuf::from("/mnt/hidden-volume/.nails/etc-upper"),
-                work: PathBuf::from("/mnt/hidden-volume/.nails/etc-work"),
+                upper: PathBuf::from("/mnt/hidden-volume/etc-upper"),
+                work: PathBuf::from("/mnt/hidden-volume/etc-work"),
                 target: PathBuf::from("/etc"),
             },
         ];
@@ -7090,7 +7273,7 @@ mod tests {
             ],
         };
 
-        let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+        let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
         let manager = Arc::new(Mutex::new(NailsManager::new(
             fs.clone(),
             config,
@@ -7221,13 +7404,11 @@ mod tests {
         fs.mock_set_path_exists("/home", true);
         fs.mock_set_path_exists("/etc", true);
         fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-        fs.mock_set_path_exists("/mnt/hidden-volume/.nails", true);
-        fs.mock_set_path_exists("/mnt/hidden-volume/.nails/home-upper", true);
-        fs.mock_set_path_exists("/mnt/hidden-volume/.nails/home-work", true);
-        fs.mock_set_path_exists("/mnt/hidden-volume/.nails/etc-upper", true);
-        fs.mock_set_path_exists("/mnt/hidden-volume/.nails/etc-work", true);
-        fs.mock_set_path_exists("/mnt/hidden-volume/.nails/state.json", true);
-        fs.mock_set_writable("/mnt/hidden-volume/.nails", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/home-upper", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/home-work", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/etc-upper", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/etc-work", true);
+        fs.mock_set_path_exists("/mnt/hidden-volume/state.json", true);
 
         // Setup initial state file with correct structure
         let initial_state = StateFile {
@@ -7241,7 +7422,7 @@ mod tests {
         };
 
         let state_json = serde_json::to_string(&initial_state).unwrap();
-        fs.mock_set_file_content("/mnt/hidden-volume/.nails/state.json", &state_json);
+        fs.mock_set_file_content("/mnt/hidden-volume/state.json", &state_json);
     }
 
     // ============================================================================
@@ -7255,9 +7436,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -7297,9 +7477,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -7355,9 +7534,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -7406,9 +7584,8 @@ mod tests {
     ) {
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -7709,9 +7886,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -7785,9 +7961,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
         fs.mock_set_root_directories(vec![PathBuf::from("/home"), PathBuf::from("/etc")]);
@@ -7835,9 +8010,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 
@@ -7896,9 +8070,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let state_path = state_dir.join("state.json");
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
 

@@ -521,8 +521,24 @@ impl fmt::Display for SecurityPosture {
 ///     formatted_uptime: String::new(),
 ///     opsec_reminders: vec![],
 ///     overlay_details: None,
+///     overlay_mount_statuses: vec![],
 /// };
 /// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OverlayMountStatus {
+    /// The overlay mount path
+    pub path: PathBuf,
+    /// Whether the overlay should be mounted based on state
+    pub expected_mounted: bool,
+    /// Whether the overlay is actually mounted (checked via filesystem.is_mounted)
+    pub actually_mounted: bool,
+}
+
+/// Status report for the NAILS system
+///
+/// Comprehensive status report containing all information about the current
+/// system state including overlays, verification results, uptime tracking,
+/// and OpSec reminders.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatusReport {
     /// Current system state from state file
@@ -554,6 +570,10 @@ pub struct StatusReport {
     /// Used by CLI verbose mode to show detailed overlay information
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlay_details: Option<std::collections::HashMap<PathBuf, crate::OverlayInfo>>,
+
+    /// Per-overlay mount status (Task 3: Fix status display)
+    /// Contains expected vs actual mount status for each overlay
+    pub overlay_mount_statuses: Vec<OverlayMountStatus>,
 }
 
 impl StatusReport {
@@ -585,6 +605,7 @@ impl StatusReport {
     ///     formatted_uptime: String::new(),
     ///     opsec_reminders: vec![],
     ///     overlay_details: None,
+    ///     overlay_mount_statuses: vec![],
     /// };
     ///
     /// assert_eq!(report.security_posture(), SecurityPosture::Decoy);
@@ -753,6 +774,28 @@ impl<F: Filesystem> StatusCommand<F> {
             _ => None,
         };
 
+        // Build per-overlay mount statuses for Active state
+        let overlay_mount_statuses = match &state_file.state {
+            SystemState::Active { overlays, .. } => {
+                let mut statuses = Vec::new();
+                for overlay_path in overlays {
+                    if let Some(overlay_info) = state_file.overlay_status.get(overlay_path) {
+                        let actually_mounted = self
+                            .filesystem
+                            .is_mounted(&overlay_info.mount_path)
+                            .unwrap_or(false);
+                        statuses.push(OverlayMountStatus {
+                            path: overlay_path.clone(),
+                            expected_mounted: true,
+                            actually_mounted,
+                        });
+                    }
+                }
+                statuses
+            }
+            _ => vec![],
+        };
+
         // Build report
         let report = StatusReport {
             state: state_file.state,
@@ -764,6 +807,7 @@ impl<F: Filesystem> StatusCommand<F> {
             formatted_uptime,
             opsec_reminders,
             overlay_details,
+            overlay_mount_statuses,
         };
 
         Ok(report)
@@ -891,6 +935,7 @@ impl Default for StatusReport {
             formatted_uptime: String::new(),
             opsec_reminders: vec![],
             overlay_details: None,
+            overlay_mount_statuses: vec![],
         }
     }
 }
@@ -1241,6 +1286,7 @@ mod tests {
             formatted_uptime: String::new(),
             opsec_reminders: vec![],
             overlay_details: None,
+            overlay_mount_statuses: vec![],
         };
 
         let json = serde_json::to_string(&report).unwrap();
@@ -2036,5 +2082,112 @@ mod tests {
         assert!(logs_contain("Overlay verification performed"));
         assert!(logs_contain("verification_result"));
         assert!(logs_contain("phase") || logs_contain("status"));
+    }
+
+    // ============================================================================
+    // Task 3: Per-Overlay Mount Status Display Tests
+    // ============================================================================
+
+    #[test]
+    fn test_overlay_mount_statuses_populated_for_active_state() {
+        // Test that overlay_mount_statuses is populated with actual mount status
+        let fs = MockFilesystem::new();
+        fs.mock_set_mounted(Path::new("/home"), true);
+        fs.mock_set_mounted(Path::new("/etc"), false); // Not mounted
+
+        let config = Config::default();
+        let activated_at = Utc::now();
+        let overlays = vec![PathBuf::from("/home"), PathBuf::from("/etc")];
+
+        let mut overlay_status = std::collections::HashMap::new();
+        overlay_status.insert(PathBuf::from("/home"), create_overlay_info("/home"));
+        overlay_status.insert(PathBuf::from("/etc"), create_overlay_info("/etc"));
+
+        let state_file = StateFile {
+            state: SystemState::Active {
+                activated_at,
+                overlays: overlays.clone(),
+            },
+            overlay_status,
+            ..StateFile::default()
+        };
+        let temp_file = create_temp_state_file(&state_file);
+
+        let cmd = StatusCommand::new(fs, config, temp_file.path().to_path_buf());
+        let report = cmd.run().unwrap();
+
+        // Verify overlay_mount_statuses is populated
+        assert_eq!(report.overlay_mount_statuses.len(), 2);
+
+        // Verify /home status (mounted)
+        let home_status = report
+            .overlay_mount_statuses
+            .iter()
+            .find(|s| s.path == Path::new("/home"))
+            .expect("/home should be in statuses");
+        assert!(home_status.expected_mounted);
+        assert!(home_status.actually_mounted);
+
+        // Verify /etc status (not mounted)
+        let etc_status = report
+            .overlay_mount_statuses
+            .iter()
+            .find(|s| s.path == Path::new("/etc"))
+            .expect("/etc should be in statuses");
+        assert!(etc_status.expected_mounted);
+        assert!(!etc_status.actually_mounted);
+    }
+
+    #[test]
+    fn test_overlay_mount_statuses_empty_for_inactive_state() {
+        // Test that overlay_mount_statuses is empty for Inactive state
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+
+        let state_file = StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        };
+        let temp_file = create_temp_state_file(&state_file);
+
+        let cmd = StatusCommand::new(fs, config, temp_file.path().to_path_buf());
+        let report = cmd.run().unwrap();
+
+        assert_eq!(report.overlay_mount_statuses.len(), 0);
+    }
+
+    #[test]
+    fn test_overlay_mount_statuses_empty_for_transitional_states() {
+        // Test that overlay_mount_statuses is empty for transitional states
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+
+        // Activating state
+        let state_file = StateFile {
+            state: SystemState::Activating {
+                started_at: Utc::now(),
+            },
+            ..StateFile::default()
+        };
+        let temp_file = create_temp_state_file(&state_file);
+
+        let cmd = StatusCommand::new(fs.clone(), config.clone(), temp_file.path().to_path_buf());
+        let report = cmd.run().unwrap();
+
+        assert_eq!(report.overlay_mount_statuses.len(), 0);
+
+        // Deactivating state
+        let state_file2 = StateFile {
+            state: SystemState::Deactivating {
+                started_at: Utc::now(),
+            },
+            ..StateFile::default()
+        };
+        let temp_file2 = create_temp_state_file(&state_file2);
+
+        let cmd2 = StatusCommand::new(fs.clone(), config.clone(), temp_file2.path().to_path_buf());
+        let report2 = cmd2.run().unwrap();
+
+        assert_eq!(report2.overlay_mount_statuses.len(), 0);
     }
 }

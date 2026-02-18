@@ -311,7 +311,7 @@ pub enum OverlayMode {
 /// // Or create custom config
 /// let config = Config {
 ///     hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
-///     state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
+///     state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json"),
 ///     overlays: vec![],
 ///     ..Config::default()
 /// };
@@ -575,7 +575,7 @@ fn default_hidden_volume_root() -> PathBuf {
 
 fn default_state_file_path() -> PathBuf {
     // This will be overridden in load() to use the actual hidden_volume_root
-    PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json")
+    PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json")
 }
 
 fn default_minimum_space_mb() -> u64 {
@@ -876,7 +876,7 @@ impl ConfigBuilder {
 
     /// Set the state file path
     ///
-    /// Default: `{hidden_volume_root}/.nails/state.json`
+    /// Default: `{hidden_volume_root}/state.json`
     pub fn state_file_path(mut self, path: PathBuf) -> Self {
         self.state_file_path = Some(path);
         self
@@ -1011,7 +1011,7 @@ impl ConfigBuilder {
         // Apply smart defaults for optional fields
         let state_file_path = self
             .state_file_path
-            .unwrap_or_else(|| hidden_volume_root.join(".nails/state.json"));
+            .unwrap_or_else(|| hidden_volume_root.join("state.json"));
 
         let overlays = self.overlays.unwrap_or_default();
 
@@ -1091,7 +1091,7 @@ impl Default for Config {
 
         Self {
             hidden_volume_root: hidden_root.clone(),
-            state_file_path: hidden_root.join(".nails/state.json"),
+            state_file_path: hidden_root.join("state.json"),
             overlays: vec![
                 OverlayConfig {
                     name: "home".to_string(),
@@ -1210,10 +1210,9 @@ impl Config {
         }
 
         // Derive state_file_path from hidden_volume_root if it's still the default
-        let default_state_path =
-            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json");
+        let default_state_path = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json");
         if config.state_file_path == default_state_path {
-            config.state_file_path = config.hidden_volume_root.join(".nails/state.json");
+            config.state_file_path = config.hidden_volume_root.join("state.json");
         }
 
         // Derive log_path from hidden_volume_root if it's still the default
@@ -1441,7 +1440,7 @@ color_scheme:
 
         Self {
             hidden_volume_root: hidden_root.clone(),
-            state_file_path: hidden_root.join(".nails/state.json"),
+            state_file_path: hidden_root.join("state.json"),
             overlays: vec![
                 OverlayConfig {
                     name: "home".to_string(),
@@ -1742,7 +1741,7 @@ mod tests {
         // state_file_path should be derived from hidden_volume_root
         assert_eq!(
             config.state_file_path,
-            config.hidden_volume_root.join(".nails/state.json")
+            config.hidden_volume_root.join("state.json")
         );
         // Default config includes /home, /etc, and /var overlays
         assert_eq!(config.overlays.len(), 3);
@@ -1807,7 +1806,7 @@ mod tests {
 
         let config = Config {
             hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
-            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
+            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json"),
             overlays: vec![overlay.clone()],
             ..Config::default()
         };
@@ -1820,7 +1819,7 @@ mod tests {
     fn test_config_clone() {
         let config1 = Config {
             hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
-            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
+            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json"),
             overlays: vec![],
             ..Config::default()
         };
@@ -1833,7 +1832,7 @@ mod tests {
     fn test_config_serialization() {
         let config = Config {
             hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
-            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
+            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json"),
             overlays: vec![OverlayConfig {
                 name: "home".to_string(),
                 lower: PathBuf::from("/home"),
@@ -1875,7 +1874,7 @@ mod tests {
 
         let config = Config {
             hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
-            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
+            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json"),
             overlays: vec![overlay1.clone(), overlay2.clone()],
             ..Config::default()
         };
@@ -1898,7 +1897,7 @@ mod tests {
 
         let config = Config {
             hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
-            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
+            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json"),
             overlays: vec![],
             extended_overlays: extended.clone(),
             ..Config::default()
@@ -1934,7 +1933,7 @@ mod tests {
 
         let config = Config {
             hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
-            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join(".nails/state.json"),
+            state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json"),
             overlays: vec![],
             extended_overlays: extended,
             ..Config::default()
@@ -2200,7 +2199,7 @@ mod tests {
         // Smart defaults
         assert_eq!(
             config.state_file_path,
-            PathBuf::from("/mnt/hidden/.nails/state.json")
+            PathBuf::from("/mnt/hidden/state.json")
         );
         assert!(config.overlays.is_empty());
         assert_eq!(config.minimum_space_mb, 500);
@@ -2297,7 +2296,7 @@ mod tests {
     #[test]
     fn test_config_backward_compatibility_with_old_configs() {
         // Simulate old config JSON without new fields
-        let state_file = format!("{}/.nails/state.json", DEFAULT_HIDDEN_VOLUME_ROOT);
+        let state_file = format!("{}/state.json", DEFAULT_HIDDEN_VOLUME_ROOT);
         let old_json = format!(
             r#"{{
             "hidden_volume_root": "{}",
@@ -2844,7 +2843,7 @@ default_verbosity: info
         let custom_root = "/tmp";
         let config = Config {
             hidden_volume_root: PathBuf::from(custom_root),
-            state_file_path: PathBuf::from("/tmp/.nails/state.json"),
+            state_file_path: PathBuf::from("/tmp/state.json"),
             log_path: PathBuf::from("/tmp/logs"),
             ..Config::default()
         };
@@ -2853,8 +2852,8 @@ default_verbosity: info
         assert_eq!(config.hidden_volume_root, PathBuf::from(custom_root));
 
         // Step 3: Verify state file validation respects custom root
-        let valid_state_path = Path::new("/tmp/.nails/state.json");
-        let invalid_state_path = Path::new("/mnt/hidden-volume/.nails/state.json");
+        let valid_state_path = Path::new("/tmp/state.json");
+        let invalid_state_path = Path::new("/mnt/hidden-volume/state.json");
 
         assert!(
             is_on_hidden_volume(valid_state_path, custom_root),
@@ -2876,7 +2875,7 @@ default_verbosity: info
         let another_custom_root = "/mnt/secure";
         let config2 = Config {
             hidden_volume_root: PathBuf::from(another_custom_root),
-            state_file_path: PathBuf::from("/mnt/secure/.nails/state.json"),
+            state_file_path: PathBuf::from("/mnt/secure/state.json"),
             log_path: PathBuf::from("/mnt/secure/logs"),
             ..Config::default()
         };
@@ -2886,10 +2885,7 @@ default_verbosity: info
             PathBuf::from(another_custom_root)
         );
         assert!(
-            is_on_hidden_volume(
-                Path::new("/mnt/secure/.nails/state.json"),
-                another_custom_root
-            ),
+            is_on_hidden_volume(Path::new("/mnt/secure/state.json"), another_custom_root),
             "Should accept custom mount point /mnt/secure"
         );
     }
@@ -3020,7 +3016,7 @@ default_verbosity: info
         // Write config with explicit hidden_volume_root
         let yaml_content = r#"
 hidden_volume_root: /custom/mount
-state_file_path: /custom/mount/.nails/state.json
+state_file_path: /custom/mount/state.json
 "#;
         temp_file
             .write_all(yaml_content.as_bytes())
@@ -3130,8 +3126,8 @@ preflight_checks: true
             name: "test".to_string(),
             lower: "/home".into(),
             target: "/home".into(),
-            upper: custom_root.join(".nails/overlays/test/upper"),
-            work: custom_root.join(".nails/overlays/test/work"),
+            upper: custom_root.join("overlays/test/upper"),
+            work: custom_root.join("overlays/test/work"),
         };
 
         assert!(
@@ -3152,7 +3148,7 @@ preflight_checks: true
         // All derived paths should use the same hidden_volume_root
         let root = &config.hidden_volume_root;
 
-        assert_eq!(config.state_file_path, root.join(".nails/state.json"));
+        assert_eq!(config.state_file_path, root.join("state.json"));
         assert_eq!(config.log_path, root.join("logs"));
 
         // Check overlay paths
@@ -3187,7 +3183,7 @@ hidden_volume_root: /test/volume
         // Verify derived paths updated to match
         assert_eq!(
             config.state_file_path,
-            PathBuf::from("/test/volume/.nails/state.json")
+            PathBuf::from("/test/volume/state.json")
         );
         assert_eq!(config.log_path, PathBuf::from("/test/volume/logs"));
     }

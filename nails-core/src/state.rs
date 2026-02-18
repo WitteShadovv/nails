@@ -466,7 +466,7 @@ pub struct FailedOverlayInfo {
 /// # Security Critical
 ///
 /// **INVARIANT**: State file MUST only exist at {hidden_volume}/.nails/state.json
-/// **NEVER** at: /home/user/.nails/state.json, /etc/nails/state.json, or ANY path
+/// **NEVER** at: /home/user/state.json, /etc/nails/state.json, or ANY path
 /// outside the hidden volume.
 ///
 /// Writing state to the decoy system would leak forensic evidence of hidden
@@ -571,7 +571,7 @@ impl StateFile {
     /// let state = StateFile::default();
     /// // Pass hidden_volume_root from config to ensure validation uses correct path
     /// let root = config.hidden_volume_root.to_string_lossy();
-    /// state.save(Path::new("/mnt/hidden-volume/.nails/state.json"), &root)?;
+    /// state.save(Path::new("/mnt/hidden-volume/state.json"), &root)?;
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
     pub fn save(&self, path: &Path, hidden_volume_root: &str) -> Result<()> {
@@ -596,7 +596,7 @@ impl StateFile {
     ///
     /// let state = StateFile::default();
     /// let custom_root = PathBuf::from("/tmp");
-    /// state.save_with_custom_root(Path::new("/tmp/.nails/state.json"), &custom_root)?;
+    /// state.save_with_custom_root(Path::new("/tmp/state.json"), &custom_root)?;
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
     pub fn save_with_custom_root(&self, path: &Path, hidden_volume_root: &Path) -> Result<()> {
@@ -677,7 +677,7 @@ impl StateFile {
             Err(e) => {
                 // If file exists, we have a race condition - try regular persist
                 if e.error.kind() == std::io::ErrorKind::AlreadyExists {
-                    tracing::warn!("State file already exists during atomic write, overwriting");
+                    tracing::info!("State file already exists during atomic write, overwriting");
                     e.file.persist(path).map_err(|e| {
                         std::io::Error::other(format!(
                             "Failed to persist after race condition: {}",
@@ -721,7 +721,7 @@ impl StateFile {
     /// use nails_core::StateFile;
     /// use std::path::Path;
     ///
-    /// let state = StateFile::load(Path::new("/mnt/hidden-volume/.nails/state.json"))?;
+    /// let state = StateFile::load(Path::new("/mnt/hidden-volume/state.json"))?;
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
     pub fn load(path: &Path) -> Result<StateFile> {
@@ -1192,7 +1192,7 @@ mod tests {
 
         // Create temporary directory that looks like hidden volume
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
-        let hidden_vol_path = temp_dir.path().join("mnt/hidden-volume/.nails");
+        let hidden_vol_path = temp_dir.path().join("mnt/hidden-volume");
         std::fs::create_dir_all(&hidden_vol_path).expect("Should create dirs");
 
         let _state_path = hidden_vol_path.join("state.json");
@@ -1207,7 +1207,7 @@ mod tests {
         // Test that paths within hidden volume are accepted
         use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
         assert!(is_on_hidden_volume(
-            Path::new("/mnt/hidden-volume/.nails/state.json"),
+            Path::new("/mnt/hidden-volume/state.json"),
             DEFAULT_HIDDEN_VOLUME_ROOT
         ));
         assert!(is_on_hidden_volume(
@@ -1229,7 +1229,7 @@ mod tests {
             DEFAULT_HIDDEN_VOLUME_ROOT
         ));
         assert!(!is_on_hidden_volume(
-            Path::new("/home/user/.nails/state.json"),
+            Path::new("/home/user/state.json"),
             DEFAULT_HIDDEN_VOLUME_ROOT
         ));
         assert!(!is_on_hidden_volume(
@@ -1284,7 +1284,7 @@ mod tests {
 
         // Try to save to home directory (should fail)
         let result = state.save(
-            Path::new("/home/user/.nails/state.json"),
+            Path::new("/home/user/state.json"),
             DEFAULT_HIDDEN_VOLUME_ROOT,
         );
         assert!(result.is_err());
@@ -1292,7 +1292,7 @@ mod tests {
         match result {
             Err(NailsError::InvalidState(msg)) => {
                 assert!(msg.contains("State file must be on hidden volume"));
-                assert!(msg.contains("/home/user/.nails/state.json")); // Should include actual path
+                assert!(msg.contains("/home/user/state.json")); // Should include actual path
             }
             _ => panic!("Expected InvalidState error"),
         }
@@ -1366,7 +1366,8 @@ mod tests {
         // Note: We can't actually save to /mnt/hidden-volume in tests,
         // but we can test the serialization/deserialization logic
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
-        let state_path = temp_dir.path().join("state.json");
+        let state_dir = temp_dir.path();
+        let state_path = state_dir.join("state.json");
 
         let original = StateFile {
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1392,7 +1393,8 @@ mod tests {
     #[test]
     fn test_save_load_round_trip_with_active_state() {
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
-        let state_path = temp_dir.path().join("state.json");
+        let state_dir = temp_dir.path();
+        let state_path = state_dir.join("state.json");
 
         let mut overlay_status = std::collections::HashMap::new();
         overlay_status.insert(
@@ -1440,7 +1442,8 @@ mod tests {
     #[test]
     fn test_save_load_multiple_overlays() {
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
-        let state_path = temp_dir.path().join("state.json");
+        let state_dir = temp_dir.path();
+        let state_path = state_dir.join("state.json");
 
         let mut overlay_status = std::collections::HashMap::new();
 
@@ -1548,7 +1551,7 @@ mod tests {
             DEFAULT_HIDDEN_VOLUME_ROOT
         ));
         assert!(!is_on_hidden_volume(
-            Path::new("/etc/../home/user/.nails/state.json"),
+            Path::new("/etc/../home/user/state.json"),
             DEFAULT_HIDDEN_VOLUME_ROOT
         ));
         assert!(!is_on_hidden_volume(
@@ -1566,7 +1569,7 @@ mod tests {
             DEFAULT_HIDDEN_VOLUME_ROOT
         ));
         assert!(is_on_hidden_volume(
-            Path::new("/mnt/hidden-volume/subdir/../.nails/state.json"),
+            Path::new("/mnt/hidden-volume/subdir/../state.json"),
             DEFAULT_HIDDEN_VOLUME_ROOT
         ));
     }
@@ -1574,31 +1577,28 @@ mod tests {
     #[test]
     fn test_custom_hidden_volume_root_tmp_validation() {
         // AC3: When hidden_volume_root is configured as /tmp,
-        // state file at /tmp/.nails/state.json passes validation,
-        // and /mnt/hidden-volume/.nails/state.json fails
+        // state file at /tmp/state.json passes validation,
+        // and /mnt/hidden-volume/state.json fails
         use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 
-        // Test 1: /tmp/.nails/state.json should pass with /tmp as root
-        assert!(is_on_hidden_volume(
-            Path::new("/tmp/.nails/state.json"),
-            "/tmp"
-        ));
+        // Test 1: /tmp/state.json should pass with /tmp as root
+        assert!(is_on_hidden_volume(Path::new("/tmp/state.json"), "/tmp"));
 
-        // Test 2: /mnt/hidden-volume/.nails/state.json should FAIL with /tmp as root
+        // Test 2: /mnt/hidden-volume/state.json should FAIL with /tmp as root
         assert!(!is_on_hidden_volume(
-            Path::new("/mnt/hidden-volume/.nails/state.json"),
+            Path::new("/mnt/hidden-volume/state.json"),
             "/tmp"
         ));
 
         // Test 3: Validate default behavior still works
         assert!(is_on_hidden_volume(
-            Path::new("/mnt/hidden-volume/.nails/state.json"),
+            Path::new("/mnt/hidden-volume/state.json"),
             DEFAULT_HIDDEN_VOLUME_ROOT
         ));
 
         // Test 4: /tmp should fail with default root
         assert!(!is_on_hidden_volume(
-            Path::new("/tmp/.nails/state.json"),
+            Path::new("/tmp/state.json"),
             DEFAULT_HIDDEN_VOLUME_ROOT
         ));
     }
@@ -1608,8 +1608,8 @@ mod tests {
         // Create a mock hidden volume in temp for testing
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol_root = temp_dir.path().to_str().unwrap();
-        let state_dir = temp_dir.path().join(".nails");
-        std::fs::create_dir_all(&state_dir).expect("Should create dirs");
+        let state_dir = temp_dir.path();
+        std::fs::create_dir_all(state_dir).expect("Should create dirs");
 
         let state_path = state_dir.join("state.json");
 
@@ -1663,7 +1663,8 @@ mod tests {
         // Test load() handling of I/O errors beyond just missing file
         // Create a directory with the same name as our target file (causes read error)
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
-        let dir_as_file = temp_dir.path().join("state.json");
+        let state_dir = temp_dir.path();
+        let dir_as_file = state_dir.join("state.json");
         std::fs::create_dir(&dir_as_file).expect("Should create dir");
 
         // Try to load directory as file (should fail gracefully)
@@ -1680,8 +1681,8 @@ mod tests {
         // Test that save_with_root handles race conditions properly
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol_root = temp_dir.path().to_str().unwrap();
-        let state_dir = temp_dir.path().join(".nails");
-        std::fs::create_dir_all(&state_dir).expect("Should create dirs");
+        let state_dir = temp_dir.path();
+        std::fs::create_dir_all(state_dir).expect("Should create dirs");
 
         let state_path = state_dir.join("state.json");
 
@@ -1729,8 +1730,8 @@ mod tests {
     ) {
         let temp_dir = tempfile::tempdir().expect("Should create temp dir");
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).expect("Should create dirs");
+        let state_dir = mock_hidden_vol;
+        std::fs::create_dir_all(state_dir).expect("Should create dirs");
         let state_path = state_dir.join("state.json");
 
         // Create initial state file
@@ -2194,8 +2195,8 @@ mod tests {
         // Setup: create mock filesystem with necessary paths
         let temp_dir = tempfile::tempdir().unwrap();
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_dir = mock_hidden_vol;
+        std::fs::create_dir_all(state_dir).unwrap();
         let state_path = state_dir.join("state.json");
 
         let fs = MockFilesystem::new();
@@ -2279,8 +2280,8 @@ mod tests {
         // Setup: create mock filesystem with necessary paths
         let temp_dir = tempfile::tempdir().unwrap();
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_dir = mock_hidden_vol;
+        std::fs::create_dir_all(state_dir).unwrap();
         let state_path = state_dir.join("state.json");
 
         let fs = MockFilesystem::new();
@@ -2405,8 +2406,8 @@ mod tests {
         let fs = MockFilesystem::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let mock_hidden_vol = temp_dir.path();
-        let state_dir = mock_hidden_vol.join(".nails");
-        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_dir = mock_hidden_vol;
+        std::fs::create_dir_all(state_dir).unwrap();
         let state_path = state_dir.join("state.json");
 
         let config = Config {
