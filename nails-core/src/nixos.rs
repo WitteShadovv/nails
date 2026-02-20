@@ -780,6 +780,8 @@ pub fn prepare_nixos_config_overlay<F: Filesystem>(
 /// * `Ok(false)` - Base config contains suspicious patterns
 /// * `Err` - Cannot read base config (filesystem error)
 ///
+/// If the file does not exist (non-NixOS system), this returns `Ok(true)` and logs a warning.
+///
 /// # Example
 ///
 /// ```no_run
@@ -797,10 +799,11 @@ pub fn verify_base_config_clean<F: Filesystem>(fs: &F) -> Result<bool> {
     let base_config = PathBuf::from("/etc/nixos/hardware-configuration.nix");
 
     if !fs.path_exists(&base_config)? {
-        return Err(NailsError::NixOSError(
-            "Base hardware-configuration.nix not found at /etc/nixos/hardware-configuration.nix"
-                .into(),
-        ));
+        // Non-NixOS systems may not have this file. Treat as clean to avoid false failure.
+        tracing::warn!(
+            "Base hardware-configuration.nix not found at /etc/nixos/hardware-configuration.nix; skipping clean check"
+        );
+        return Ok(true);
     }
 
     let content = fs.read_file_content(&base_config)?;
@@ -875,6 +878,229 @@ pub fn verify_base_config_clean<F: Filesystem>(fs: &F) -> Result<bool> {
     }
 
     Ok(true)
+}
+
+/// Injects a NAILS import block into the overlayed `/etc/nixos/hardware-configuration.nix`.
+///
+/// This function must be called **after** the `/etc` overlay has been mounted so that
+/// writes land in the overlay upper layer, leaving the base underlay forensically clean.
+///
+/// ## Injection behaviour
+///
+/// * If no `imports` attribute exists in the file, a complete block is **prepended**:
+///   ```nix
+///   # NAILS: injected import (do not edit)
+///   imports = [
+///     ./nails/configuration.nix
+///   ];
+///   ```
+/// * If an `imports = [` attribute already exists, `./nails/configuration.nix` is inserted
+///   as the **first** element without adding a second `imports` attribute.
+/// * If `./nails/configuration.nix` is already present the function is a **no-op**
+///   (idempotent).
+///
+/// ## Errors
+///
+/// Returns `Err(NailsError::NixOSError)` on permission or I/O failure.
+pub fn inject_import_block<F: Filesystem>(fs: &F) -> Result<()> {
+    let target = PathBuf::from("/etc/nixos/hardware-configuration.nix");
+
+    if !fs.path_exists(&target)? {
+        // Non-NixOS systems may not have this file — skip injection gracefully.
+        tracing::debug!(
+            "inject_import_block: /etc/nixos/hardware-configuration.nix not found, skipping (non-NixOS system?)"
+        );
+        return Ok(());
+    }
+
+    let content = fs.read_file_content(&target)?;
+
+    // Idempotency check — already injected outside comments/strings.
+    if contains_active_path(&content, "./nails/configuration.nix") {
+        tracing::debug!("inject_import_block: ./nails/configuration.nix already present, skipping");
+        return Ok(());
+    }
+
+    const NAILS_ENTRY: &str = "    ./nails/configuration.nix";
+    const INJECTED_BLOCK: &str =
+        "# NAILS: injected import (do not edit)\nimports = [\n  ./nails/configuration.nix\n];\n\n";
+
+    let new_content = if let Some(imports_pos) = find_imports_bracket(&content) {
+        // An imports = [ ... ] block exists — insert our entry as the first element.
+        let (before, after) = content.split_at(imports_pos);
+        format!("{}{}\n{}", before, NAILS_ENTRY, after)
+    } else {
+        // No imports block — prepend a complete one.
+        format!("{}{}", INJECTED_BLOCK, content)
+    };
+
+    fs.write_file_content(&target, &new_content)?;
+    tracing::info!(
+        "inject_import_block: injected ./nails/configuration.nix into {}",
+        target.display()
+    );
+    Ok(())
+}
+
+/// Returns the byte offset of the character **immediately after** the opening `[` of the
+/// first `imports = [` (or `imports=[`) attribute found in `content`, so that a new entry
+/// can be inserted there as the first element.
+///
+/// Returns `None` if no `imports` attribute is present.
+fn find_imports_bracket(content: &str) -> Option<usize> {
+    // Match `imports` followed by optional whitespace, `=`, optional whitespace, `[`
+    let bytes = content.as_bytes();
+    let search = b"imports";
+
+    let mut i = 0usize;
+    let mut in_string = false;
+    let mut in_comment = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if in_comment {
+            if b == b'\n' {
+                in_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_string {
+            if b == b'\\' {
+                // Skip escaped char in string
+                i = i.saturating_add(2);
+                continue;
+            }
+            if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'#' {
+            in_comment = true;
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+
+        if i + search.len() > bytes.len() {
+            break;
+        }
+
+        if &bytes[i..i + search.len()] != search {
+            i += 1;
+            continue;
+        }
+
+        // Ensure we're not matching a larger identifier or dotted access (e.g., config.imports)
+        let prev = if i == 0 { None } else { Some(bytes[i - 1]) };
+        if prev.is_some_and(|p| is_ident_char(p) || p == b'.') {
+            i += 1;
+            continue;
+        }
+        let next = bytes.get(i + search.len()).copied();
+        if next.is_some_and(is_ident_char) {
+            i += 1;
+            continue;
+        }
+
+        // Skip whitespace after "imports"
+        let mut j = i + search.len();
+        while j < bytes.len() && is_whitespace(bytes[j]) {
+            j += 1;
+        }
+        // Expect '='
+        if j >= bytes.len() || bytes[j] != b'=' {
+            i += 1;
+            continue;
+        }
+        j += 1;
+        // Skip whitespace after '='
+        while j < bytes.len() && is_whitespace(bytes[j]) {
+            j += 1;
+        }
+        // Expect '['
+        if j >= bytes.len() || bytes[j] != b'[' {
+            i += 1;
+            continue;
+        }
+        // Return position right after the '[', then skip to the next line start so our
+        // inserted entry appears on its own line.
+        j += 1; // move past '['
+        if j < bytes.len() && bytes[j] == b'\n' {
+            j += 1;
+        }
+        return Some(j);
+    }
+    None
+}
+
+fn contains_active_path(content: &str, path: &str) -> bool {
+    let bytes = content.as_bytes();
+    let needle = path.as_bytes();
+
+    let mut i = 0usize;
+    let mut in_string = false;
+    let mut in_comment = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if in_comment {
+            if b == b'\n' {
+                in_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_string {
+            if b == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'#' {
+            in_comment = true;
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+
+        if i + needle.len() <= bytes.len() && &bytes[i..i + needle.len()] == needle {
+            return true;
+        }
+
+        i += 1;
+    }
+
+    false
+}
+
+fn is_ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+fn is_whitespace(b: u8) -> bool {
+    b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
 }
 
 #[cfg(test)]
@@ -1676,18 +1902,10 @@ mod tests {
     fn test_verify_base_config_clean_missing_file() {
         let fs = crate::MockFilesystem::new();
 
-        // Test: Should return error when base config doesn't exist
+        // Test: Missing file is treated as clean (non-NixOS system)
         let result = super::verify_base_config_clean(&fs);
-        assert!(result.is_err());
-
-        let err = result.unwrap_err();
-        match err {
-            NailsError::NixOSError(msg) => {
-                assert!(msg.contains("not found"));
-                assert!(msg.contains("hardware-configuration.nix"));
-            }
-            _ => panic!("Expected NixOSError variant, got: {:?}", err),
-        }
+        assert!(result.is_ok());
+        assert!(result.unwrap());
     }
 
     #[test]
@@ -1924,6 +2142,246 @@ hidden = true
         assert!(
             result.unwrap(),
             "Should NOT flag 'hiddenstorage' (contains 'hidden' as substring)"
+        );
+    }
+
+    // ========================================================================
+    // inject_import_block tests (Story 15.1)
+    // ========================================================================
+
+    #[test]
+    fn test_inject_import_block_no_imports_prepends_full_block() {
+        // AC2: When no imports block exists, prepend the complete block.
+        let fs = crate::MockFilesystem::new();
+        let hw = "/etc/nixos/hardware-configuration.nix";
+        fs.mock_set_path_exists(hw, true);
+        fs.mock_set_path_type(hw, "file");
+        fs.mock_set_file_content(
+            hw,
+            r#"{ config, pkgs, ... }:
+{
+  boot.loader.systemd-boot.enable = true;
+}
+"#,
+        );
+
+        let result = super::inject_import_block(&fs);
+        assert!(
+            result.is_ok(),
+            "inject_import_block should succeed: {:?}",
+            result
+        );
+
+        let written = fs
+            .get_written_content(&PathBuf::from(hw))
+            .expect("File should have been written");
+
+        assert!(
+            written.starts_with("# NAILS: injected import (do not edit)\n"),
+            "Written content should start with NAILS comment, got:\n{}",
+            written
+        );
+        assert!(
+            written.contains("imports = [\n  ./nails/configuration.nix\n];"),
+            "Written content should contain full import block, got:\n{}",
+            written
+        );
+        assert!(
+            written.contains("boot.loader.systemd-boot.enable = true;"),
+            "Original content should be preserved, got:\n{}",
+            written
+        );
+    }
+
+    #[test]
+    fn test_inject_import_block_existing_imports_inserts_as_first() {
+        // AC2: When imports = [ ... ] exists, insert ./nails/configuration.nix as the first element.
+        let fs = crate::MockFilesystem::new();
+        let hw = "/etc/nixos/hardware-configuration.nix";
+        fs.mock_set_path_exists(hw, true);
+        fs.mock_set_path_type(hw, "file");
+        fs.mock_set_file_content(
+            hw,
+            r#"{ config, pkgs, ... }:
+{
+  imports = [
+    (modulesPath + "/installer/scan/not-detected.nix")
+  ];
+  boot.loader.grub.enable = true;
+}
+"#,
+        );
+
+        let result = super::inject_import_block(&fs);
+        assert!(
+            result.is_ok(),
+            "inject_import_block should succeed: {:?}",
+            result
+        );
+
+        let written = fs
+            .get_written_content(&PathBuf::from(hw))
+            .expect("File should have been written");
+
+        // ./nails/configuration.nix must appear before the existing entry
+        let nails_pos = written
+            .find("./nails/configuration.nix")
+            .expect("nails entry should be present");
+        let existing_pos = written
+            .find("modulesPath")
+            .expect("existing entry should still be present");
+        assert!(
+            nails_pos < existing_pos,
+            "nails entry should come before existing entry"
+        );
+
+        // Must not have a second `imports =` attribute
+        assert_eq!(
+            written.matches("imports =").count(),
+            1,
+            "Should not introduce a second imports attribute"
+        );
+    }
+
+    #[test]
+    fn test_inject_import_block_idempotent_when_already_injected() {
+        // AC2: When ./nails/configuration.nix is already present, do nothing.
+        let fs = crate::MockFilesystem::new();
+        let hw = "/etc/nixos/hardware-configuration.nix";
+        let original = r#"# NAILS: injected import (do not edit)
+imports = [
+  ./nails/configuration.nix
+];
+
+{ config, pkgs, ... }:
+{
+  boot.loader.grub.enable = true;
+}
+"#;
+        fs.mock_set_path_exists(hw, true);
+        fs.mock_set_path_type(hw, "file");
+        fs.mock_set_file_content(hw, original);
+
+        let result = super::inject_import_block(&fs);
+        assert!(
+            result.is_ok(),
+            "inject_import_block should succeed: {:?}",
+            result
+        );
+
+        // No write should have occurred
+        let written = fs.get_written_content(&PathBuf::from(hw));
+        assert!(
+            written.is_none(),
+            "No write should occur when already injected, but got:\n{:?}",
+            written
+        );
+    }
+
+    #[test]
+    fn test_inject_import_block_missing_file_returns_ok() {
+        // AC4 (non-NixOS): Missing file should skip gracefully (non-fatal) rather than error.
+        // The file is absent on non-NixOS systems; failing activation would be wrong.
+        let fs = crate::MockFilesystem::new();
+        // Deliberately do NOT set the path to exist
+
+        let result = super::inject_import_block(&fs);
+        assert!(
+            result.is_ok(),
+            "Should skip gracefully (Ok) when hardware-configuration.nix is absent"
+        );
+
+        // No write should have occurred
+        let written =
+            fs.get_written_content(&PathBuf::from("/etc/nixos/hardware-configuration.nix"));
+        assert!(
+            written.is_none(),
+            "No write should occur when file is absent"
+        );
+    }
+
+    #[test]
+    fn test_inject_import_block_write_failure_returns_error() {
+        // AC4: Permission/I/O errors should return a clear error.
+        let fs = crate::MockFilesystem::new();
+        let hw = "/etc/nixos/hardware-configuration.nix";
+        fs.mock_set_path_exists(hw, true);
+        fs.mock_set_path_type(hw, "file");
+        fs.mock_set_file_content(
+            hw,
+            r#"{ config, pkgs, ... }:
+{
+  boot.loader.systemd-boot.enable = true;
+}
+"#,
+        );
+        fs.mock_set_write_should_fail(hw, true);
+
+        let result = super::inject_import_block(&fs);
+        assert!(result.is_err(), "Write failure should propagate");
+    }
+
+    #[test]
+    fn test_inject_import_block_ignores_commented_nails_path() {
+        // Comment-only reference should NOT be treated as idempotent.
+        let fs = crate::MockFilesystem::new();
+        let hw = "/etc/nixos/hardware-configuration.nix";
+        fs.mock_set_path_exists(hw, true);
+        fs.mock_set_path_type(hw, "file");
+        fs.mock_set_file_content(
+            hw,
+            r#"{ config, pkgs, ... }:
+{
+  # ./nails/configuration.nix
+  boot.loader.systemd-boot.enable = true;
+}
+"#,
+        );
+
+        let result = super::inject_import_block(&fs);
+        assert!(result.is_ok(), "Injection should succeed");
+
+        let written = fs
+            .get_written_content(&PathBuf::from(hw))
+            .expect("File should have been written");
+        assert!(
+            written.contains("./nails/configuration.nix"),
+            "Injected path should be present"
+        );
+        assert!(
+            written.starts_with("# NAILS: injected import (do not edit)"),
+            "Should prepend injected block when only comment reference exists"
+        );
+    }
+
+    #[test]
+    fn test_inject_import_block_ignores_commented_imports_block() {
+        // Commented imports block should not be detected as real.
+        let fs = crate::MockFilesystem::new();
+        let hw = "/etc/nixos/hardware-configuration.nix";
+        fs.mock_set_path_exists(hw, true);
+        fs.mock_set_path_type(hw, "file");
+        fs.mock_set_file_content(
+            hw,
+            r#"{ config, pkgs, ... }:
+{
+  # imports = [
+  #   ./nails/configuration.nix
+  # ];
+  boot.loader.grub.enable = true;
+}
+"#,
+        );
+
+        let result = super::inject_import_block(&fs);
+        assert!(result.is_ok(), "Injection should succeed");
+
+        let written = fs
+            .get_written_content(&PathBuf::from(hw))
+            .expect("File should have been written");
+        assert!(
+            written.starts_with("# NAILS: injected import (do not edit)"),
+            "Should prepend injected block when only commented imports exist"
         );
     }
 }

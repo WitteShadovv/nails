@@ -30,6 +30,7 @@
 
 use crate::{
     Config, FailedOverlayInfo, Filesystem, NailsError, OverlayInfo, Result, StateFile, SystemState,
+    inject_import_block, verify_base_config_clean,
 };
 use chrono::Utc;
 use std::path::{Path, PathBuf};
@@ -1780,6 +1781,37 @@ impl<F: Filesystem> NailsManager<F> {
         //
         // These tests require the NailsManager integration from Task 4 above.
 
+        // Story 15.1, AC1: Verify base hardware-configuration.nix is forensically clean before
+        // any overlays are mounted. Fail activation if the base config already contains
+        // NAILS or hidden references that would betray the overlay approach.
+        {
+            let manager = manager_arc.lock().unwrap();
+            match verify_base_config_clean(&manager.filesystem) {
+                Ok(true) => {
+                    tracing::debug!("Base hardware-configuration.nix is clean — proceeding");
+                }
+                Ok(false) => {
+                    tracing::error!(
+                        "Base /etc/nixos/hardware-configuration.nix contains suspicious references \
+                         (NAILS or hidden paths). Activation aborted to preserve forensic integrity."
+                    );
+                    return Err(NailsError::NixOSError(
+                        "Base hardware-configuration.nix is not forensically clean — \
+                         contains NAILS or hidden references before overlay mount"
+                            .into(),
+                    ));
+                }
+                Err(e) => {
+                    // Treat unreadable base config as a hard failure to avoid unsafe activation.
+                    tracing::error!(
+                        error = %e,
+                        "Could not verify base hardware-configuration.nix; activation aborted"
+                    );
+                    return Err(e);
+                }
+            }
+        }
+
         if verbosity >= Verbosity::Normal {
             tracing::info!("Mounting overlays...");
         }
@@ -1917,6 +1949,29 @@ impl<F: Filesystem> NailsManager<F> {
                             }
 
                             tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
+
+                            // Story 15.1, AC2/AC4: After /etc overlay is mounted, inject the
+                            // NAILS import block into the overlayed hardware-configuration.nix.
+                            // Writes land in the upper layer — the base underlay is untouched (AC3).
+                            if overlay.target == Path::new("/etc")
+                                && let Err(e) = inject_import_block(&manager.filesystem)
+                            {
+                                tracing::error!(
+                                    error = %e,
+                                    rollback = true,
+                                    "Failed to inject NAILS import block into /etc/nixos/hardware-configuration.nix: {}",
+                                    e
+                                );
+                                if let Err(rollback_err) = tracker.rollback_all() {
+                                    tracing::error!(
+                                        error = %rollback_err,
+                                        context = "inject_import_block_failure",
+                                        rollback = true,
+                                        "Rollback failed after inject_import_block failure"
+                                    );
+                                }
+                                return Err(e);
+                            }
 
                             // Story 4.7, AC2, Task 4: Update overlay_status incrementally after EACH mount
                             let overlay_info = OverlayInfo {
@@ -2135,6 +2190,29 @@ impl<F: Filesystem> NailsManager<F> {
                             }
 
                             tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
+
+                            // Story 15.1, AC2/AC4: After /etc overlay is mounted, inject the
+                            // NAILS import block into the overlayed hardware-configuration.nix.
+                            // Writes land in the upper layer — the base underlay is untouched (AC3).
+                            if overlay.target == Path::new("/etc")
+                                && let Err(e) = inject_import_block(&manager.filesystem)
+                            {
+                                tracing::error!(
+                                    error = %e,
+                                    rollback = true,
+                                    "Failed to inject NAILS import block into /etc/nixos/hardware-configuration.nix: {}",
+                                    e
+                                );
+                                if let Err(rollback_err) = tracker.rollback_all() {
+                                    tracing::error!(
+                                        error = %rollback_err,
+                                        context = "inject_import_block_failure",
+                                        rollback = true,
+                                        "Rollback failed after inject_import_block failure"
+                                    );
+                                }
+                                return Err(e);
+                            }
 
                             // Story 4.7, AC2, Task 4: Update overlay_status incrementally after EACH mount
                             let overlay_info = OverlayInfo {
@@ -7955,6 +8033,94 @@ mod tests {
         // Task 13.2: Test default mode is auto
         let config = Config::test_default();
         assert_eq!(config.overlay_mode, OverlayMode::Auto);
+    }
+
+    // ========== Story 15.1: /etc hardware-configuration import injection ==========
+
+    #[test]
+    fn test_activation_injects_import_block_into_overlayed_hardware_config() {
+        use crate::OverlayConfig;
+
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Base hardware config must exist and be clean (AC1)
+        let base_content = r#"{ config, pkgs, modulesPath, ... }:
+{
+  imports = [
+    (modulesPath + "/installer/scan/not-detected.nix")
+  ];
+  boot.loader.grub.enable = true;
+}
+"#;
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content("/etc/nixos/hardware-configuration.nix", base_content);
+
+        // Overlay config for /etc
+        fs.mock_set_path_exists("/etc", true);
+        let upper_etc = mock_hidden_vol.join("etc");
+        let work_etc = mock_hidden_vol.join(".work/etc");
+        std::fs::create_dir_all(&upper_etc).unwrap();
+        std::fs::create_dir_all(&work_etc).unwrap();
+        fs.mock_set_path_exists(upper_etc.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
+        fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+
+        // Initial state file
+        let initial_state = StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        };
+        initial_state
+            .save_with_custom_root(&state_path, mock_hidden_vol)
+            .expect("Should save initial state");
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![OverlayConfig {
+                name: "etc".to_string(),
+                lower: PathBuf::from("/etc"),
+                upper: upper_etc.clone(),
+                work: work_etc.clone(),
+                target: PathBuf::from("/etc"),
+            }],
+            ..Config::test_default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        let result = NailsManager::activate(Arc::clone(&manager), true);
+        assert!(result.is_ok(), "Activation should succeed: {:?}", result);
+
+        let written = fs
+            .get_written_content(&PathBuf::from("/etc/nixos/hardware-configuration.nix"))
+            .expect("Injection should write overlayed hardware config");
+
+        // AC2: Injected import present and first in imports list
+        let nails_pos = written
+            .find("./nails/configuration.nix")
+            .expect("nails import should be injected");
+        let existing_pos = written
+            .find("installer/scan/not-detected.nix")
+            .expect("original imports should remain");
+        assert!(nails_pos < existing_pos, "nails import should be first");
+
+        // AC3: Base content preserved (underlay unchanged in effect)
+        assert!(
+            written.contains("boot.loader.grub.enable = true;"),
+            "Original hardware config should be preserved"
+        );
     }
 
     #[test]

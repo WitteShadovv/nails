@@ -110,7 +110,8 @@ pub use verify::{Finding, ScanDepth, Severity, Verifier, VerifyResult, VerifySta
 
 // NixOS profile builder exports
 pub use nixos::{
-    NixOSBuilder, NixOSConfigInfo, prepare_nixos_config_overlay, verify_base_config_clean,
+    NixOSBuilder, NixOSConfigInfo, inject_import_block, prepare_nixos_config_overlay,
+    verify_base_config_clean,
 };
 
 // Timing utilities exports

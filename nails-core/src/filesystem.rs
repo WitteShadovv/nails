@@ -1995,13 +1995,13 @@ impl Filesystem for MockFilesystem {
 
     fn get_permissions(&self, path: &Path) -> Result<u32> {
         let paths = self.paths.lock().unwrap();
-        if let Some(info) = paths.get(path) {
-            if !info.exists {
-                return Err(NailsError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("Path does not exist: {}", path.display()),
-                )));
-            }
+        if let Some(info) = paths.get(path)
+            && !info.exists
+        {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Path does not exist: {}", path.display()),
+            )));
         }
         drop(paths);
         Ok(self

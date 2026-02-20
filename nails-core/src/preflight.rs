@@ -655,13 +655,13 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
             }
 
             if upper_exists {
-                if let Some(mode) = desired_upper_mode {
-                    if let Err(e) = fs.set_permissions(&overlay.upper, mode) {
-                        issues.push(format!(
-                            "{} upper directory: failed to set permissions to match lower: {}",
-                            overlay.name, e
-                        ));
-                    }
+                if let Some(mode) = desired_upper_mode
+                    && let Err(e) = fs.set_permissions(&overlay.upper, mode)
+                {
+                    issues.push(format!(
+                        "{} upper directory: failed to set permissions to match lower: {}",
+                        overlay.name, e
+                    ));
                 }
                 if !fs.is_writable(&overlay.upper)? {
                     issues.push(format!(
