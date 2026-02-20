@@ -1239,13 +1239,14 @@ impl<F: Filesystem> NailsManager<F> {
     /// Creates a PreFlightRegistry, registers all validation checks, and executes them.
     /// Returns comprehensive error information if any checks fail.
     ///
-    /// # Pre-flight Checks Executed (Stories 3.1-3.7)
+    /// # Pre-flight Checks Executed (Stories 3.1-3.7, 4.12, 15.2)
     ///
     /// 1. **HiddenVolumeCheck** - Validates hidden volume is mounted
     /// 2. **StorageReadinessCheck** - Validates directory structure + overlay accessibility
-    /// 3. **SwapCheck** - Validates swap is disabled
-    /// 4. **SpaceCheck** - Validates sufficient disk space
-    /// 5. **StateCheck** - Validates current state allows activation
+    /// 3. **NixOSConfigCheck** - Validates NixOS config overlay structure
+    /// 4. **SwapCheck** - Validates swap is disabled
+    /// 5. **SpaceCheck** - Validates sufficient disk space
+    /// 6. **StateCheck** - Validates current state allows activation
     ///
     /// # Returns
     ///
@@ -1272,8 +1273,8 @@ impl<F: Filesystem> NailsManager<F> {
     /// ```
     pub fn run_preflight_checks(&self) -> Result<()> {
         use crate::preflight::{
-            HiddenVolumeCheck, PreFlightRegistry, SpaceCheck, StateCheck, StorageReadinessCheck,
-            SwapCheck,
+            HiddenVolumeCheck, NixOSConfigCheck, PreFlightRegistry, SpaceCheck, StateCheck,
+            StorageReadinessCheck, SwapCheck,
         };
 
         let mut registry = PreFlightRegistry::new();
@@ -1325,6 +1326,10 @@ impl<F: Filesystem> NailsManager<F> {
         registry.add_check(Box::new(StorageReadinessCheck::new(
             self.config.hidden_volume_root.clone(),
             overlay_dirs,
+        )));
+
+        registry.add_check(Box::new(NixOSConfigCheck::new(
+            self.config.hidden_volume_root.clone(),
         )));
 
         registry.add_check(Box::new(SwapCheck));
@@ -1670,6 +1675,29 @@ impl<F: Filesystem> NailsManager<F> {
         // Auto-restart display manager if we exit early with an error after killing it.
         let mut dm_restart_guard = DisplayManagerRestartGuard::new(killed_display_manager.clone());
 
+        // Step 2.75: Stage hidden config symlink before pre-flight checks (Story 15.2).
+        // This ensures NixOSConfigCheck can validate the staged link.
+        {
+            let manager = manager_arc.lock().unwrap();
+            if let Err(e) = crate::stage_hidden_config_symlink(
+                &manager.filesystem,
+                &manager.config.hidden_volume_root,
+            ) {
+                if no_preflight {
+                    tracing::warn!(
+                        error = %e,
+                        "Skipping staged config failure due to --no-preflight (activation may not use hidden config)"
+                    );
+                } else {
+                    tracing::error!(
+                        error = %e,
+                        "Failed to stage hidden config symlink before pre-flight checks"
+                    );
+                    return Err(e);
+                }
+            }
+        }
+
         // Step 3: Run pre-flight checks (unless skipped)
         if no_preflight {
             if verbosity >= Verbosity::Normal {
@@ -1764,7 +1792,7 @@ impl<F: Filesystem> NailsManager<F> {
         //
         // This ensures the hidden storage contains the required NixOS config structure:
         // - {hidden}/etc/nixos/hardware-configuration.nix (modified with hidden import)
-        // - {hidden}/nixos/configuration.nix (hidden environment config)
+        // - {hidden}/config/nixos/configuration.nix (hidden environment config)
         //
         // The /etc overlay must include the hidden nixos/ directory to make the modified
         // hardware-configuration.nix visible to the system.
@@ -2764,6 +2792,35 @@ mod tests {
         tracing_test::internal::logs_with_scope_contain("", s)
     }
 
+    fn setup_nixos_config_check(fs: &MockFilesystem, hidden_root: &Path) {
+        // Base hardware-configuration.nix must exist
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            "{ config, lib, pkgs, ... }:\n{ imports = [ ./nails/configuration.nix ]; }",
+        );
+
+        // Hidden overlay hardware config
+        let hidden_etc = hidden_root.join("etc/nixos");
+        let hidden_hw = hidden_etc.join("hardware-configuration.nix");
+        fs.mock_set_path_exists(hidden_etc.to_str().unwrap(), true);
+        fs.mock_set_path_type(hidden_etc.to_str().unwrap(), "directory");
+        fs.mock_set_writable(hidden_etc.to_str().unwrap(), true);
+        fs.mock_set_path_exists(hidden_hw.to_str().unwrap(), true);
+        fs.mock_set_path_type(hidden_hw.to_str().unwrap(), "file");
+        fs.mock_set_file_content(
+            hidden_hw.to_str().unwrap(),
+            "{ config, lib, pkgs, ... }:\n{ imports = [ ./nails/configuration.nix ]; }",
+        );
+
+        // Hidden config in new location
+        let hidden_config = hidden_root.join("config/nixos/configuration.nix");
+        fs.mock_set_path_exists(hidden_config.to_str().unwrap(), true);
+        fs.mock_set_path_type(hidden_config.to_str().unwrap(), "file");
+        fs.mock_set_file_content(hidden_config.to_str().unwrap(), "{ }");
+    }
+
     fn create_test_manager() -> NailsManager<MockFilesystem> {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -3179,7 +3236,11 @@ mod tests {
             ..Config::test_default()
         };
 
-        let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path,
+        )));
 
         // Activate should succeed
         let result = NailsManager::activate(Arc::clone(&manager), true);
@@ -3278,7 +3339,11 @@ mod tests {
         };
 
         let fs_clone = fs.clone();
-        let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path,
+        )));
 
         // Activate
         NailsManager::activate(Arc::clone(&manager), true).unwrap();
@@ -3891,6 +3956,7 @@ mod tests {
         // Set up all paths for pre-flight checks to pass
         fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
         fs.mock_set_mounted(mock_hidden_vol, true);
+        setup_nixos_config_check(&fs, mock_hidden_vol);
 
         // Create expected directory structure
         let overlays_dir = mock_hidden_vol.join("overlays");
@@ -3956,7 +4022,11 @@ mod tests {
             ..Config::test_default()
         };
 
-        let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path,
+        )));
 
         // Activate with pre-flight checks (no_preflight = false)
         let result = NailsManager::activate(Arc::clone(&manager), false);
@@ -3974,6 +4044,18 @@ mod tests {
             manager.lock().unwrap().current_state().unwrap(),
             SystemState::Active { .. }
         ));
+
+        // Verify hidden config symlink staged during activation
+        let symlink_path = mock_hidden_vol.join("etc/nixos/nails/configuration.nix");
+        assert!(
+            fs.is_symlink(&symlink_path).unwrap(),
+            "Hidden config symlink should be staged during activation"
+        );
+        let expected_target = mock_hidden_vol.join("config/nixos/configuration.nix");
+        assert_eq!(
+            fs.mock_get_symlink_target(&symlink_path),
+            Some(expected_target)
+        );
     }
 
     #[test]
@@ -3989,6 +4071,7 @@ mod tests {
         // DON'T mount hidden volume - this will cause HiddenVolumeCheck to fail
         fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
         fs.mock_set_mounted(mock_hidden_vol, false); // NOT MOUNTED
+        setup_nixos_config_check(&fs, mock_hidden_vol);
 
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
@@ -4051,6 +4134,7 @@ mod tests {
         // 1. Hidden volume not mounted
         fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
         fs.mock_set_mounted(mock_hidden_vol, false); // FAIL
+        setup_nixos_config_check(&fs, mock_hidden_vol);
 
         // 2. Swap enabled
         fs.mock_set_swap_enabled(true); // FAIL
@@ -4104,6 +4188,7 @@ mod tests {
         // Set up minimal passing conditions (may trigger warnings but not failures)
         fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
         fs.mock_set_mounted(mock_hidden_vol, true);
+        setup_nixos_config_check(&fs, mock_hidden_vol);
 
         // Create minimal directory structure (all required dirs for StorageReadinessCheck)
         let overlays_dir = mock_hidden_vol.join("overlays");
@@ -4182,6 +4267,7 @@ mod tests {
         // Set up FAILING conditions (hidden volume not mounted)
         fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
         fs.mock_set_mounted(mock_hidden_vol, false); // This WOULD fail preflight
+        setup_nixos_config_check(&fs, mock_hidden_vol);
 
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
@@ -4223,6 +4309,7 @@ mod tests {
         // Set up failing condition
         fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
         fs.mock_set_mounted(mock_hidden_vol, false); // Preflight will fail
+        setup_nixos_config_check(&fs, mock_hidden_vol);
 
         // Set up overlay paths
         let upper_dir = mock_hidden_vol.join("overlays/home/upper");
@@ -7506,6 +7593,9 @@ mod tests {
 
         let state_json = serde_json::to_string(&initial_state).unwrap();
         fs.mock_set_file_content("/mnt/hidden-volume/state.json", &state_json);
+
+        // Ensure NixOSConfigCheck prerequisites are satisfied for activation tests.
+        setup_nixos_config_check(fs, Path::new(DEFAULT_HIDDEN_VOLUME_ROOT));
     }
 
     // ============================================================================

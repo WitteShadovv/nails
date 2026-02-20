@@ -398,6 +398,23 @@ pub trait Filesystem: Send + Sync + Clone {
     /// location to redirect logs outside hidden volume.
     fn is_symlink(&self, path: &Path) -> Result<bool>;
 
+    /// Create a symbolic link
+    ///
+    /// Creates a symlink at `link` pointing to `target`.
+    /// Idempotent: if the symlink already exists and points to the same target,
+    /// this is a no-op. If a file/symlink already exists at `link` pointing
+    /// elsewhere, returns an error.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - Path the symlink should point to
+    /// * `link` - Path where the symlink will be created
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if the symlink cannot be created.
+    fn create_symlink(&self, target: &Path, link: &Path) -> Result<()>;
+
     /// Get free space in bytes for a filesystem path
     ///
     /// # Arguments
@@ -1084,6 +1101,7 @@ pub struct MockFilesystem {
     permissions: Arc<Mutex<HashMap<PathBuf, u32>>>, // Track Unix permissions set on paths (Story 14.4)
     root_directories: Arc<Mutex<Vec<PathBuf>>>, // Track root directory list for enumeration (Story 14.10)
     root_symlinks: Arc<Mutex<Vec<PathBuf>>>,    // Track symlinks under / (Story 14.10)
+    symlink_targets: Arc<Mutex<HashMap<PathBuf, PathBuf>>>, // Track symlink targets for create_symlink (Story 15.2)
 }
 
 impl MockFilesystem {
@@ -1133,6 +1151,7 @@ impl MockFilesystem {
             permissions: Arc::new(Mutex::new(HashMap::new())),
             root_directories: Arc::new(Mutex::new(Vec::new())),
             root_symlinks: Arc::new(Mutex::new(Vec::new())),
+            symlink_targets: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1171,6 +1190,7 @@ impl MockFilesystem {
         self.explicit_file_sizes.lock().unwrap().clear();
         self.modified_times.lock().unwrap().clear();
         self.permissions.lock().unwrap().clear();
+        self.symlink_targets.lock().unwrap().clear();
     }
 
     // ========================================================================
@@ -1786,6 +1806,13 @@ impl MockFilesystem {
     pub fn mock_get_permissions(&self, path: &Path) -> Option<u32> {
         self.permissions.lock().unwrap().get(path).copied()
     }
+
+    /// Get the symlink target recorded by `create_symlink` (Story 15.2)
+    ///
+    /// Returns `None` if no symlink was created at this path.
+    pub fn mock_get_symlink_target(&self, link: &Path) -> Option<PathBuf> {
+        self.symlink_targets.lock().unwrap().get(link).cloned()
+    }
 }
 
 impl Default for MockFilesystem {
@@ -1908,6 +1935,50 @@ impl Filesystem for MockFilesystem {
     fn is_symlink(&self, path: &Path) -> Result<bool> {
         let paths = self.paths.lock().unwrap();
         Ok(paths.get(path).map(|info| info.is_symlink).unwrap_or(false))
+    }
+
+    fn create_symlink(&self, target: &Path, link: &Path) -> Result<()> {
+        // Idempotent: if symlink already exists pointing to the same target, no-op
+        let paths = self.paths.lock().unwrap();
+        if let Some(info) = paths.get(link) {
+            if info.exists && info.is_symlink {
+                // Check stored symlink target
+                drop(paths);
+                let symlinks = self.symlink_targets.lock().unwrap();
+                if symlinks.get(link).map(|t| t == target).unwrap_or(false) {
+                    return Ok(());
+                }
+                return Err(NailsError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "Symlink at {} already exists pointing to a different target",
+                        link.display()
+                    ),
+                )));
+            } else if info.exists {
+                drop(paths);
+                return Err(NailsError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("Path already exists (not a symlink) at {}", link.display()),
+                )));
+            }
+        }
+        drop(paths);
+
+        // Create the symlink entry
+        let mut paths = self.paths.lock().unwrap();
+        let entry = paths.entry(link.to_path_buf()).or_default();
+        entry.exists = true;
+        entry.is_symlink = true;
+        drop(paths);
+
+        // Record the target
+        self.symlink_targets
+            .lock()
+            .unwrap()
+            .insert(link.to_path_buf(), target.to_path_buf());
+
+        Ok(())
     }
 
     fn get_free_space(&self, path: &Path) -> Result<u64> {
@@ -2658,6 +2729,30 @@ impl Filesystem for RealFilesystem {
 
     fn is_symlink(&self, path: &Path) -> Result<bool> {
         Ok(path.is_symlink())
+    }
+
+    fn create_symlink(&self, target: &Path, link: &Path) -> Result<()> {
+        // Idempotent: if symlink already exists pointing to the same target, no-op
+        if link.is_symlink() {
+            let existing_target = std::fs::read_link(link).map_err(NailsError::IoError)?;
+            if existing_target == target {
+                return Ok(());
+            }
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "Symlink at {} already exists pointing to a different target",
+                    link.display()
+                ),
+            )));
+        }
+        if link.exists() {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("Path already exists (not a symlink) at {}", link.display()),
+            )));
+        }
+        std::os::unix::fs::symlink(target, link).map_err(NailsError::IoError)
     }
 
     fn get_free_space(&self, path: &Path) -> Result<u64> {
