@@ -2591,6 +2591,7 @@ impl<F: Filesystem> NailsManager<F> {
                 Vec::new()
             }
         };
+        let etc_was_overlaid = overlays_to_unmount.iter().any(|p| p == Path::new("/etc"));
 
         // Step 5b: Unmount ephemeral overlays FIRST (LIFO: last mounted, first unmounted)
         // Story 4.11: Ephemeral overlays are RAM-backed and not tracked in state file
@@ -2766,6 +2767,51 @@ impl<F: Filesystem> NailsManager<F> {
             manager.update_state(inactive_state)?;
         }
 
+        // Step 8.5 (Story 15.3, AC3): After all overlays are unmounted, verify the base
+        // hardware-configuration.nix is forensically clean. Once the /etc overlay is gone the
+        // OS-visible file reverts to the underlay — this check confirms no hidden references
+        // survived on the underlay (which they never should, but we enforce it here).
+        let base_config_error = if etc_was_overlaid {
+            let manager = manager_arc.lock().unwrap();
+            match verify_base_config_clean(&manager.filesystem) {
+                Ok(true) => {
+                    tracing::debug!(
+                        "Post-deactivation: base hardware-configuration.nix is forensically clean"
+                    );
+                    None
+                }
+                Ok(false) => {
+                    tracing::error!(
+                        "Post-deactivation: base /etc/nixos/hardware-configuration.nix contains \
+                         hidden references — underlay may have been polluted"
+                    );
+                    Some(NailsError::NixOSError(
+                        "Base hardware-configuration.nix is not forensically clean after deactivation \
+                         — underlay contains NAILS or hidden references"
+                            .into(),
+                    ))
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "Could not verify base hardware-configuration.nix after deactivation"
+                    );
+                    Some(e)
+                }
+            }
+        } else {
+            tracing::debug!(
+                "Post-deactivation: /etc overlay was not mounted, skipping base config clean check"
+            );
+            None
+        };
+
+        if let Some(err) = base_config_error {
+            // Deactivation already transitioned to Inactive; commit to prevent rollback to Active.
+            guard.commit();
+            return Err(err);
+        }
+
         // Step 9: Success - commit guard to prevent rollback
         guard.commit();
         Ok(())
@@ -2776,6 +2822,7 @@ impl<F: Filesystem> NailsManager<F> {
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
     use super::*;
+    use crate::filesystem::MockOp;
     use crate::{
         EphemeralOverlayDir, ExtendedOverlayConfig, MockFilesystem, OverlayConfig, StateFile,
         Stopwatch, SystemState, Verbosity, config::DEFAULT_HIDDEN_VOLUME_ROOT, config::OverlayMode,
@@ -8387,5 +8434,549 @@ mod tests {
         } else {
             panic!("State file should be cached");
         }
+    }
+
+    // ========== Story 15.3: Switch to Hidden Config and Revert via Overlay Removal ==========
+
+    /// Helper: set up an Active state with a /etc overlay and /home overlay.
+    ///
+    /// Returns `(manager_arc, fs_clone, state_path, temp_dir)` so the caller can
+    /// manipulate filesystem mock content to simulate the post-unmount view.
+    fn setup_active_with_etc_overlay() -> (
+        Arc<Mutex<NailsManager<MockFilesystem>>>,
+        MockFilesystem,
+        PathBuf,
+        tempfile::TempDir,
+    ) {
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path().to_path_buf();
+        std::fs::create_dir_all(&mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Overlay dirs (needed for activate path, not used by deactivate directly)
+        let upper_etc = mock_hidden_vol.join("overlays/etc/upper");
+        let work_etc = mock_hidden_vol.join("overlays/etc/work");
+        std::fs::create_dir_all(&upper_etc).unwrap();
+        std::fs::create_dir_all(&work_etc).unwrap();
+
+        // Set up /etc overlay as mounted
+        fs.mock_set_mounted(Path::new("/etc"), true);
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.clone(),
+            state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit,
+            overlays: vec![crate::OverlayConfig {
+                name: "etc".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_etc.clone(),
+                work: work_etc.clone(),
+                target: PathBuf::from("/etc"),
+            }],
+            ..Config::test_default()
+        };
+
+        let fs_clone = fs.clone();
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs,
+            config,
+            state_path.clone(),
+        )));
+
+        // Force Active state
+        manager
+            .lock()
+            .unwrap()
+            .force_state(SystemState::Active {
+                activated_at: Utc::now(),
+                overlays: vec![PathBuf::from("/etc")],
+            })
+            .unwrap();
+
+        // Register /etc overlay in cached state
+        {
+            let mgr = manager.lock().unwrap();
+            let mut cached = mgr.cached_state.lock().unwrap();
+            if let Some(ref mut sf) = *cached {
+                sf.overlay_status.insert(
+                    PathBuf::from("/etc"),
+                    OverlayInfo {
+                        mount_path: PathBuf::from("/etc"),
+                        lower_dir: PathBuf::from("/"),
+                        upper_dir: upper_etc.clone(),
+                        work_dir: work_etc.clone(),
+                        mounted_at: Utc::now(),
+                    },
+                );
+            }
+        }
+
+        (manager, fs_clone, state_path, temp_dir)
+    }
+
+    /// Helper: set up an Active state with a /home overlay.
+    fn setup_active_with_home_overlay() -> (
+        Arc<Mutex<NailsManager<MockFilesystem>>>,
+        MockFilesystem,
+        PathBuf,
+        tempfile::TempDir,
+    ) {
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path().to_path_buf();
+        std::fs::create_dir_all(&mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
+
+        let fs = MockFilesystem::new();
+
+        // Overlay dirs
+        let upper_home = mock_hidden_vol.join("overlays/home/upper");
+        let work_home = mock_hidden_vol.join("overlays/home/work");
+        std::fs::create_dir_all(&upper_home).unwrap();
+        std::fs::create_dir_all(&work_home).unwrap();
+
+        // Set up /home overlay as mounted
+        fs.mock_set_mounted(Path::new("/home"), true);
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.clone(),
+            state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit,
+            overlays: vec![crate::OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_home.clone(),
+                work: work_home.clone(),
+                target: PathBuf::from("/home"),
+            }],
+            ..Config::test_default()
+        };
+
+        let fs_clone = fs.clone();
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs,
+            config,
+            state_path.clone(),
+        )));
+
+        // Force Active state
+        manager
+            .lock()
+            .unwrap()
+            .force_state(SystemState::Active {
+                activated_at: Utc::now(),
+                overlays: vec![PathBuf::from("/home")],
+            })
+            .unwrap();
+
+        // Register /home overlay in cached state
+        {
+            let mgr = manager.lock().unwrap();
+            let mut cached = mgr.cached_state.lock().unwrap();
+            if let Some(ref mut sf) = *cached {
+                sf.overlay_status.insert(
+                    PathBuf::from("/home"),
+                    OverlayInfo {
+                        mount_path: PathBuf::from("/home"),
+                        lower_dir: PathBuf::from("/"),
+                        upper_dir: upper_home.clone(),
+                        work_dir: work_home.clone(),
+                        mounted_at: Utc::now(),
+                    },
+                );
+            }
+        }
+
+        (manager, fs_clone, state_path, temp_dir)
+    }
+
+    /// AC1, Subtask 1.1 / 1.2:
+    /// inject_import_block() targets `/etc/nixos/hardware-configuration.nix` (the overlayed
+    /// path). The hidden underlay at `{hidden}/etc/nixos/hardware-configuration.nix` must
+    /// remain unmodified (no import injected).
+    ///
+    /// Verified by: running inject_import_block on a mock that serves a clean base config at
+    /// `/etc/nixos/hardware-configuration.nix`, then confirming the MockFilesystem only
+    /// modified that single path — the hidden underlay path is NOT written to.
+    #[test]
+    fn test_activation_inject_targets_overlayed_path_not_underlay() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden = temp_dir.path();
+        let fs = MockFilesystem::new();
+
+        // The overlayed (live) hardware config — no import yet (overlay is mounted, so this
+        // is what the OS sees at /etc/nixos/hardware-configuration.nix after mounting)
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            "{ config, lib, pkgs, ... }:\n{ }",
+        );
+
+        // The hidden underlay — also has no import initially
+        let underlay = hidden.join("etc/nixos/hardware-configuration.nix");
+        fs.mock_set_path_exists(underlay.to_str().unwrap(), true);
+        fs.mock_set_path_type(underlay.to_str().unwrap(), "file");
+        fs.mock_set_file_content(
+            underlay.to_str().unwrap(),
+            "{ config, lib, pkgs, ... }:\n{ }",
+        );
+
+        // inject_import_block writes to /etc/nixos/hardware-configuration.nix (overlayed path)
+        let result = inject_import_block(&fs);
+        assert!(
+            result.is_ok(),
+            "inject_import_block should succeed: {:?}",
+            result
+        );
+
+        // Overlayed path now contains the import
+        let overlayed_content = fs
+            .read_file_content(std::path::Path::new(
+                "/etc/nixos/hardware-configuration.nix",
+            ))
+            .unwrap();
+        assert!(
+            overlayed_content.contains("./nails/configuration.nix"),
+            "Overlayed hardware-configuration.nix should contain the injected import"
+        );
+
+        // Underlay path is UNTOUCHED — contains no import (AC1, subtask 1.2)
+        let underlay_content = fs.read_file_content(&underlay).unwrap();
+        assert!(
+            !underlay_content.contains("./nails/configuration.nix"),
+            "Hidden underlay hardware-configuration.nix must NOT be modified by inject_import_block (AC1)"
+        );
+
+        // Verify only the overlayed path was written
+        let ops = fs.mock_ops();
+        assert!(
+            ops.contains(&MockOp::WriteFile {
+                path: PathBuf::from("/etc/nixos/hardware-configuration.nix")
+            }),
+            "inject_import_block should write to the overlayed hardware config path"
+        );
+        assert!(
+            !ops.contains(&MockOp::WriteFile { path: underlay }),
+            "inject_import_block must not write to the hidden underlay path"
+        );
+    }
+
+    /// AC1, Subtask 1.1:
+    /// inject_import_block() must run AFTER the /etc overlay is mounted.
+    /// This test verifies ordering by inspecting the MockFilesystem operation log.
+    #[test]
+    fn test_activation_inject_happens_after_etc_overlay_mount() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mock_hidden_vol = temp_dir.path();
+        let state_path = mock_hidden_vol.join("state.json");
+        let fs = MockFilesystem::new();
+
+        // Base config clean so verify_base_config_clean() passes.
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            "{ config, lib, pkgs, ... }:\n{ }",
+        );
+
+        // Overlay dirs
+        let upper_home = mock_hidden_vol.join("overlays/home/upper");
+        let work_home = mock_hidden_vol.join("overlays/home/work");
+        let upper_etc = mock_hidden_vol.join("overlays/etc/upper");
+        let work_etc = mock_hidden_vol.join("overlays/etc/work");
+
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_type("/", "directory");
+        fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+        fs.mock_set_path_exists(upper_etc.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path,
+            overlay_mode: crate::OverlayMode::Explicit,
+            overlays: vec![
+                crate::OverlayConfig {
+                    name: "home".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: upper_home,
+                    work: work_home,
+                    target: PathBuf::from("/home"),
+                },
+                crate::OverlayConfig {
+                    name: "etc".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: upper_etc,
+                    work: work_etc,
+                    target: PathBuf::from("/etc"),
+                },
+            ],
+            ..Config::test_default()
+        };
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            mock_hidden_vol.join("state.json"),
+        )));
+
+        let result = NailsManager::activate(manager.clone(), true);
+        assert!(result.is_ok(), "Activation should succeed: {:?}", result);
+
+        let ops = fs.mock_ops();
+        let etc_mount_idx = ops.iter().position(
+            |op| matches!(op, MockOp::MountOverlay { target } if target == &PathBuf::from("/etc")),
+        );
+        let inject_idx = ops.iter().position(|op| {
+            matches!(op, MockOp::WriteFile { path } if path == &PathBuf::from("/etc/nixos/hardware-configuration.nix"))
+        });
+
+        assert!(
+            etc_mount_idx.is_some(),
+            "Expected /etc overlay mount operation in op log"
+        );
+        assert!(
+            inject_idx.is_some(),
+            "Expected inject_import_block write operation in op log"
+        );
+        assert!(
+            etc_mount_idx.unwrap() < inject_idx.unwrap(),
+            "inject_import_block must run after /etc overlay mount"
+        );
+    }
+
+    /// AC2, Subtask 2.1 + AC3, Subtask 2.2:
+    /// After deactivation, /etc overlay is unmounted, so /etc/nixos/hardware-configuration.nix
+    /// reverts to the base (clean) file. verify_base_config_clean() is called post-unmount and
+    /// confirms the base is clean. Deactivation succeeds.
+    #[test]
+    fn test_deactivation_succeeds_when_base_config_clean_after_unmount() {
+        let (manager, fs_clone, state_path, _temp_dir) = setup_active_with_etc_overlay();
+
+        // Simulate post-unmount view: base config is clean (no import, no hidden refs)
+        fs_clone.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs_clone.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs_clone.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            "{ config, lib, pkgs, ... }:\n{ }",
+        );
+
+        let result = NailsManager::deactivate(Arc::clone(&manager));
+        assert!(
+            result.is_ok(),
+            "Deactivation should succeed when base config is clean: {:?}",
+            result
+        );
+
+        // State must be Inactive
+        assert_eq!(
+            manager.lock().unwrap().current_state().unwrap(),
+            SystemState::Inactive
+        );
+
+        // State file on disk must be Inactive
+        let loaded = StateFile::load(&state_path).unwrap();
+        assert_eq!(loaded.state, SystemState::Inactive);
+
+        // /etc overlay must be unmounted
+        assert!(
+            !fs_clone.is_mounted(Path::new("/etc")).unwrap(),
+            "/etc overlay should be unmounted after deactivation"
+        );
+    }
+
+    /// AC3, Subtask 2.2:
+    /// If verify_base_config_clean() returns false after deactivation (base config is dirty),
+    /// deactivation returns an error. This enforces that the base underlay was never polluted.
+    #[test]
+    fn test_deactivation_fails_when_base_config_dirty_after_unmount() {
+        let (manager, fs_clone, _state_path, _temp_dir) = setup_active_with_etc_overlay();
+
+        // Simulate a dirty base config (contains a hidden path reference — should never happen
+        // in production on the base underlay, but if it does, deactivation must catch it).
+        fs_clone.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs_clone.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs_clone.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            "{ config, lib, pkgs, ... }:\n{ imports = [ /mnt/hidden/nixos/configuration.nix ]; }",
+        );
+
+        let result = NailsManager::deactivate(Arc::clone(&manager));
+        assert!(
+            result.is_err(),
+            "Deactivation should fail when base config is dirty after unmount (AC3)"
+        );
+
+        let err = result.unwrap_err();
+        match err {
+            NailsError::NixOSError(msg) => {
+                assert!(
+                    msg.contains("forensically clean")
+                        || msg.contains("dirty")
+                        || msg.contains("clean"),
+                    "Error message should reference config cleanliness: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected NixOSError, got: {:?}", other),
+        }
+
+        // Overlays were already unmounted; state should reflect Inactive even on error.
+        assert_eq!(
+            manager.lock().unwrap().current_state().unwrap(),
+            SystemState::Inactive,
+            "State should be Inactive after deactivation cleanliness failure"
+        );
+    }
+
+    /// Base config cleanliness check is only required when /etc overlay was mounted.
+    #[test]
+    fn test_deactivation_skips_base_check_when_etc_not_overlaid() {
+        let (manager, fs_clone, _state_path, _temp_dir) = setup_active_with_home_overlay();
+
+        // Dirty base config should not block deactivation when /etc wasn't overlaid.
+        fs_clone.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs_clone.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs_clone.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            "{ config, lib, pkgs, ... }:\n{ imports = [ /mnt/hidden/nixos/configuration.nix ]; }",
+        );
+
+        let result = NailsManager::deactivate(Arc::clone(&manager));
+        assert!(
+            result.is_ok(),
+            "Deactivation should succeed when /etc overlay was not mounted"
+        );
+
+        assert_eq!(
+            manager.lock().unwrap().current_state().unwrap(),
+            SystemState::Inactive,
+            "State should be Inactive after deactivation"
+        );
+    }
+
+    /// AC2-3, Subtask 4.1 (integration):
+    /// Full activation → deactivation cycle.
+    /// After deactivation the base config view is clean (no hidden import).
+    /// Uses Explicit mode with a /home overlay (avoids Auto-mode overlay discovery complexity).
+    #[test]
+    fn test_full_cycle_base_config_clean_after_deactivation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mock_hidden_vol = temp_dir.path();
+        let state_path = mock_hidden_vol.join("state.json");
+        let fs = MockFilesystem::new();
+
+        // Base hardware config: clean (AC1 pre-condition)
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            "{ config, lib, pkgs, ... }:\n{ }",
+        );
+
+        // Hidden config prerequisites for stage_hidden_config_symlink
+        let hidden_config = mock_hidden_vol.join("config/nixos/configuration.nix");
+        std::fs::create_dir_all(hidden_config.parent().unwrap()).unwrap();
+        std::fs::write(&hidden_config, "{ }").unwrap();
+        fs.mock_set_path_exists(hidden_config.to_str().unwrap(), true);
+        fs.mock_set_file_content(hidden_config.to_str().unwrap(), "{ }");
+
+        let nails_dir = mock_hidden_vol.join("etc/nixos/nails");
+        std::fs::create_dir_all(&nails_dir).unwrap();
+        let symlink_path = nails_dir.join("configuration.nix");
+        fs.mock_set_path_exists(nails_dir.to_str().unwrap(), true);
+        fs.mock_set_path_exists(symlink_path.to_str().unwrap(), true);
+
+        // Overlay dirs for /home and /etc
+        let upper_home = mock_hidden_vol.join("overlays/home/upper");
+        let work_home = mock_hidden_vol.join("overlays/home/work");
+        let upper_etc = mock_hidden_vol.join("overlays/etc/upper");
+        let work_etc = mock_hidden_vol.join("overlays/etc/work");
+        std::fs::create_dir_all(&upper_home).unwrap();
+        std::fs::create_dir_all(&work_home).unwrap();
+        std::fs::create_dir_all(&upper_etc).unwrap();
+        std::fs::create_dir_all(&work_etc).unwrap();
+        fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+        fs.mock_set_path_exists(upper_etc.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
+        fs.mock_set_path_exists("/", true);
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: crate::OverlayMode::Explicit,
+            overlays: vec![
+                crate::OverlayConfig {
+                    name: "home".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: upper_home.clone(),
+                    work: work_home.clone(),
+                    target: PathBuf::from("/home"),
+                },
+                crate::OverlayConfig {
+                    name: "etc".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: upper_etc.clone(),
+                    work: work_etc.clone(),
+                    target: PathBuf::from("/etc"),
+                },
+            ],
+            ..Config::test_default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        // === Activate ===
+        let activate_result = NailsManager::activate(manager.clone(), true);
+        assert!(
+            activate_result.is_ok(),
+            "Activation should succeed: {:?}",
+            activate_result
+        );
+        assert!(
+            manager.lock().unwrap().current_state().unwrap().is_active(),
+            "Should be Active after activation"
+        );
+
+        // Simulate post-deactivation view: base config is clean
+        // (In production, unmounting /etc overlay makes the base file visible again;
+        //  here we set the mock content directly since MockFs doesn't simulate overlay mechanics)
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            "{ config, lib, pkgs, ... }:\n{ }",
+        );
+
+        // === Deactivate ===
+        let deactivate_result = NailsManager::deactivate(Arc::clone(&manager));
+        assert!(
+            deactivate_result.is_ok(),
+            "Deactivation should succeed: {:?}",
+            deactivate_result
+        );
+
+        // State must be Inactive
+        assert_eq!(
+            manager.lock().unwrap().current_state().unwrap(),
+            SystemState::Inactive,
+            "State should be Inactive after deactivation"
+        );
+
+        // Base config must still be clean (verify_base_config_clean passed)
+        let base_content = fs
+            .read_file_content(std::path::Path::new(
+                "/etc/nixos/hardware-configuration.nix",
+            ))
+            .unwrap();
+        assert!(
+            !base_content.contains("./nails/configuration.nix"),
+            "Base hardware-configuration.nix must remain clean after full cycle (AC2, AC3)"
+        );
     }
 }

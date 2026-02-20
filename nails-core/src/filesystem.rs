@@ -1048,6 +1048,13 @@ impl Default for PathInfo {
     }
 }
 
+/// Operation log entries for MockFilesystem (test assertions)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MockOp {
+    MountOverlay { target: PathBuf },
+    WriteFile { path: PathBuf },
+}
+
 /// Mock filesystem for testing (no root privileges required)
 ///
 /// Uses in-memory state tracking to simulate filesystem operations.
@@ -1102,6 +1109,7 @@ pub struct MockFilesystem {
     root_directories: Arc<Mutex<Vec<PathBuf>>>, // Track root directory list for enumeration (Story 14.10)
     root_symlinks: Arc<Mutex<Vec<PathBuf>>>,    // Track symlinks under / (Story 14.10)
     symlink_targets: Arc<Mutex<HashMap<PathBuf, PathBuf>>>, // Track symlink targets for create_symlink (Story 15.2)
+    op_log: Arc<Mutex<Vec<MockOp>>>,                        // Operation log for test assertions
 }
 
 impl MockFilesystem {
@@ -1152,6 +1160,7 @@ impl MockFilesystem {
             root_directories: Arc::new(Mutex::new(Vec::new())),
             root_symlinks: Arc::new(Mutex::new(Vec::new())),
             symlink_targets: Arc::new(Mutex::new(HashMap::new())),
+            op_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1191,6 +1200,7 @@ impl MockFilesystem {
         self.modified_times.lock().unwrap().clear();
         self.permissions.lock().unwrap().clear();
         self.symlink_targets.lock().unwrap().clear();
+        self.op_log.lock().unwrap().clear();
     }
 
     // ========================================================================
@@ -1543,6 +1553,11 @@ impl MockFilesystem {
         written.get(path).cloned()
     }
 
+    /// Get operation log for verifying call ordering in tests
+    pub fn mock_ops(&self) -> Vec<MockOp> {
+        self.op_log.lock().unwrap().clone()
+    }
+
     /// Set whether a write operation should fail for a specific path (Story 5.5)
     ///
     /// This is useful for testing cleanup failure scenarios where file writes fail.
@@ -1851,6 +1866,10 @@ impl Filesystem for MockFilesystem {
             .lock()
             .unwrap()
             .insert(target.to_path_buf(), mount_info);
+
+        self.op_log.lock().unwrap().push(MockOp::MountOverlay {
+            target: target.to_path_buf(),
+        });
 
         Ok(())
     }
@@ -2206,6 +2225,10 @@ impl Filesystem for MockFilesystem {
         // Also update file_contents so subsequent reads work
         let mut contents = self.file_contents.lock().unwrap();
         contents.insert(path.to_path_buf(), content.to_string());
+
+        self.op_log.lock().unwrap().push(MockOp::WriteFile {
+            path: path.to_path_buf(),
+        });
 
         Ok(())
     }
