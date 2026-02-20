@@ -494,6 +494,14 @@ pub struct StateFile {
     /// NixOS generation hash when last activated (for profile rebuild detection)
     pub nixos_generation: Option<String>,
 
+    /// Config fingerprint after last successful activation (Story 15.4)
+    ///
+    /// 16-char hex FNV-1a hash of hardware-configuration.nix + configuration.nix content.
+    /// Used by the fast-path activation logic to skip rebuilds when the config has not changed.
+    /// `None` until the first successful activation with fingerprint tracking.
+    #[serde(default)]
+    pub config_fingerprint: Option<String>,
+
     /// Currently mounted overlays with their configuration
     pub overlay_status: std::collections::HashMap<PathBuf, OverlayInfo>,
 
@@ -521,6 +529,7 @@ impl Default for StateFile {
             version: env!("CARGO_PKG_VERSION").to_string(),
             state: SystemState::Inactive,
             nixos_generation: None,
+            config_fingerprint: None,
             overlay_status: std::collections::HashMap::new(),
             failed_overlays: Vec::new(),
             last_modified: Utc::now(),
@@ -1170,6 +1179,7 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
             checksum: None,
+            config_fingerprint: None,
         };
 
         // Serialize to JSON
@@ -1379,6 +1389,7 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
             checksum: None,
+            config_fingerprint: None,
         };
 
         // Serialize to JSON manually (since we can't use save with temp dir)
@@ -1425,6 +1436,7 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
             checksum: None,
+            config_fingerprint: None,
         };
 
         // Serialize manually
@@ -1476,6 +1488,7 @@ mod tests {
             failed_overlays: Vec::new(),
             last_modified: Utc::now(),
             checksum: None,
+            config_fingerprint: None,
         };
 
         // Serialize manually
@@ -1622,6 +1635,7 @@ mod tests {
             failed_overlays: Vec::new(),
             last_modified: Utc::now(),
             checksum: None,
+            config_fingerprint: None,
         };
 
         // Use save_with_root to test actual atomic write logic
@@ -1700,6 +1714,7 @@ mod tests {
             failed_overlays: Vec::new(),
             last_modified: Utc::now(),
             checksum: None,
+            config_fingerprint: None,
         };
 
         // save_with_root should handle the existing file (overwrite it)
@@ -1743,6 +1758,7 @@ mod tests {
             failed_overlays: Vec::new(),
             last_modified: Utc::now(),
             checksum: None,
+            config_fingerprint: None,
         };
         let json = serde_json::to_string_pretty(&state_file).unwrap();
         std::fs::write(&state_path, json).unwrap();

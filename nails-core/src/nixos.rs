@@ -43,6 +43,74 @@ use crate::error::{NailsError, Result};
 use crate::filesystem::Filesystem;
 use std::path::{Path, PathBuf};
 
+// ============================================================================
+// Config Fingerprint (Story 15.4)
+// ============================================================================
+
+/// Compute a stable fingerprint of NixOS config inputs (Story 15.4, AC1)
+///
+/// Hashes the content of the hardware configuration and hidden configuration
+/// using FNV-1a (64-bit). This is a deterministic, dependency-free hash that
+/// produces a stable hex string for comparing config inputs across activations.
+///
+/// # Volatile fields excluded
+///
+/// Only file *content* is hashed. Timestamps, temp paths, and process state
+/// are intentionally excluded so the fingerprint changes only when the config
+/// itself changes.
+///
+/// # Arguments
+///
+/// * `hardware_config_content` - Contents of `{hidden}/etc/nixos/hardware-configuration.nix`
+/// * `hidden_config_content`   - Contents of `{hidden}/config/nixos/configuration.nix`
+///
+/// # Returns
+///
+/// A lowercase 16-character hex string (64-bit FNV-1a hash).
+///
+/// # Example
+///
+/// ```
+/// use nails_core::nixos::compute_config_fingerprint;
+///
+/// let fp1 = compute_config_fingerprint("hardware = {}", "hidden = {}");
+/// let fp2 = compute_config_fingerprint("hardware = {}", "hidden = {}");
+/// assert_eq!(fp1, fp2, "Same inputs produce same fingerprint");
+///
+/// let fp3 = compute_config_fingerprint("hardware = { changed = true; }", "hidden = {}");
+/// assert_ne!(fp1, fp3, "Different inputs produce different fingerprint");
+/// ```
+pub fn compute_config_fingerprint(
+    hardware_config_content: &str,
+    hidden_config_content: &str,
+) -> String {
+    // FNV-1a 64-bit parameters
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+
+    // Hash hardware config content
+    for byte in hardware_config_content.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    // Separator to prevent concatenation collisions
+    for byte in b"\x00NAILS_SEP\x00" {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    // Hash hidden config content
+    for byte in hidden_config_content.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    format!("{:016x}", hash)
+}
+
 /// Trait for executing commands (for testability)
 ///
 /// Abstracts command execution to allow mocking in tests.
@@ -356,6 +424,87 @@ impl NixOSBuilder {
         );
 
         Ok(generation_id)
+    }
+
+    /// Build NixOS profile with config fingerprint fast-path (Story 15.4)
+    ///
+    /// Implements the fingerprint-based fast path:
+    ///
+    /// 1. If `stored_fingerprint` matches `current_fingerprint` **and** the cached
+    ///    profile exists → skip build, return cached generation (fast path).
+    /// 2. Otherwise → fall back to [`build_profile`], store new fingerprint on success.
+    ///
+    /// # Arguments
+    ///
+    /// * `current_fingerprint` - Freshly computed fingerprint of config inputs
+    ///   (see [`compute_config_fingerprint`]).
+    /// * `stored_fingerprint` - Fingerprint recorded after the previous successful
+    ///   activation (may be `None` on first run).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok((generation_id, new_fingerprint, fast_path_used))`:
+    ///   - `generation_id`    - Generation to switch to
+    ///   - `new_fingerprint`  - Fingerprint to persist (always equals `current_fingerprint`)
+    ///   - `fast_path_used`   - `true` if build was skipped, `false` if build ran
+    /// * `Err(NixOSError)` if build fails
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use nails_core::nixos::{NixOSBuilder, compute_config_fingerprint};
+    /// # use std::path::PathBuf;
+    /// let builder = NixOSBuilder::new(
+    ///     PathBuf::from("/mnt/hidden/nixos"),
+    ///     PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    /// );
+    ///
+    /// let fp = compute_config_fingerprint("hw = {}", "hidden = {}");
+    ///
+    /// // First run: no stored fingerprint → full build
+    /// let (generation_id, new_fp, fast) = builder.build_profile_with_fingerprint(&fp, None)?;
+    /// assert!(!fast);
+    ///
+    /// // Second run: fingerprint matches → fast path
+    /// let (gen2, _, fast2) = builder.build_profile_with_fingerprint(&fp, Some(&new_fp))?;
+    /// assert!(fast2);
+    /// # Ok::<(), nails_core::NailsError>(())
+    /// ```
+    pub fn build_profile_with_fingerprint(
+        &self,
+        current_fingerprint: &str,
+        stored_fingerprint: Option<&str>,
+    ) -> Result<(String, String, bool)> {
+        // AC2: Fast path – fingerprint matches and cached profile exists
+        if let Some(stored) = stored_fingerprint {
+            if stored == current_fingerprint {
+                if let Some(generation) = self.get_cached_generation()? {
+                    tracing::info!(
+                        fingerprint = current_fingerprint,
+                        generation = %generation,
+                        "Fast path: config fingerprint matches and profile exists — skipping build"
+                    );
+                    return Ok((generation, current_fingerprint.to_owned(), true));
+                }
+                // Fingerprint matched but profile is missing → fall through to build
+                tracing::warn!(
+                    fingerprint = current_fingerprint,
+                    "Fingerprint matches but cached profile is missing — rebuilding"
+                );
+            } else {
+                tracing::info!(
+                    stored_fingerprint = stored,
+                    current_fingerprint = current_fingerprint,
+                    "Config fingerprint mismatch — rebuilding NixOS profile"
+                );
+            }
+        } else {
+            tracing::info!("No stored fingerprint — building NixOS profile for the first time");
+        }
+
+        // AC3: Fall back to build
+        let generation = self.build_profile()?;
+        Ok((generation, current_fingerprint.to_owned(), false))
     }
 
     /// Parse generation ID from nixos-rebuild build output
@@ -2660,5 +2809,275 @@ imports = [
             written.starts_with("# NAILS: injected import (do not edit)"),
             "Should prepend injected block when only commented imports exist"
         );
+    }
+
+    // ========== Story 15.4: Config fingerprint & fast-path unit tests ==========
+
+    #[test]
+    fn test_compute_config_fingerprint_deterministic() {
+        // AC1: same inputs → same fingerprint
+        let fp1 = compute_config_fingerprint("hardware = {}", "hidden = {}");
+        let fp2 = compute_config_fingerprint("hardware = {}", "hidden = {}");
+        assert_eq!(fp1, fp2, "Same inputs must produce the same fingerprint");
+    }
+
+    #[test]
+    fn test_compute_config_fingerprint_hardware_change_detected() {
+        // AC1: changing hardware config changes fingerprint
+        let fp_base = compute_config_fingerprint("hardware = {}", "hidden = {}");
+        let fp_changed =
+            compute_config_fingerprint("hardware = { changed = true; }", "hidden = {}");
+        assert_ne!(
+            fp_base, fp_changed,
+            "Hardware config change must produce a different fingerprint"
+        );
+    }
+
+    #[test]
+    fn test_compute_config_fingerprint_hidden_config_change_detected() {
+        // AC1: changing hidden config changes fingerprint
+        let fp_base = compute_config_fingerprint("hardware = {}", "hidden = {}");
+        let fp_changed = compute_config_fingerprint("hardware = {}", "hidden = { extra = 1; }");
+        assert_ne!(
+            fp_base, fp_changed,
+            "Hidden config change must produce a different fingerprint"
+        );
+    }
+
+    #[test]
+    fn test_compute_config_fingerprint_no_separator_collision() {
+        // Ensure "ab" + "cd" != "a" + "bcd" (separator prevents prefix-collision)
+        let fp1 = compute_config_fingerprint("ab", "cd");
+        let fp2 = compute_config_fingerprint("a", "bcd");
+        assert_ne!(
+            fp1, fp2,
+            "Separator must prevent prefix-collision between the two inputs"
+        );
+    }
+
+    #[test]
+    fn test_compute_config_fingerprint_is_16_hex_chars() {
+        let fp = compute_config_fingerprint("hw", "cfg");
+        assert_eq!(
+            fp.len(),
+            16,
+            "Fingerprint must be 16 hex characters (64-bit)"
+        );
+        assert!(
+            fp.chars().all(|c| c.is_ascii_hexdigit()),
+            "Fingerprint must only contain lowercase hex digits"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_fingerprint_match_triggers_fast_path() {
+        // AC2: matching fingerprint + cached profile → fast path used, no build
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let profile_path = temp_dir.path().join("test-profile");
+        // Create a cached profile symlink pointing to a generation
+        let target = temp_dir.path().join("system-77-link");
+        std::fs::write(&target, "dummy").unwrap();
+        std::os::unix::fs::symlink(&target, &profile_path).unwrap();
+
+        let builder = NixOSBuilder::new_with_executor(
+            PathBuf::from("/mnt/hidden/nixos"),
+            profile_path,
+            Box::new(MockCommandExecutor::success()),
+        );
+
+        let fp = compute_config_fingerprint("hw = {}", "cfg = {}");
+
+        // Same fingerprint stored → fast path
+        let (generation_id, new_fp, fast) = builder
+            .build_profile_with_fingerprint(&fp, Some(&fp))
+            .unwrap();
+
+        assert!(fast, "Fast path should be used when fingerprint matches");
+        assert_eq!(generation_id, "77", "Should return cached generation");
+        assert_eq!(
+            new_fp, fp,
+            "Returned fingerprint must equal current fingerprint"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_fingerprint_mismatch_triggers_build() {
+        // AC3: different fingerprint → falls through to full build
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().to_path_buf();
+        let profile_path = temp_dir.path().join("nonexistent-profile");
+
+        // Create result symlink for the build output
+        let result_symlink = config_path.join("result");
+        let dummy_store = temp_dir.path().join("abcdef01-nixos-system-test-24.11");
+        std::fs::write(&dummy_store, "dummy").unwrap();
+        std::os::unix::fs::symlink(&dummy_store, &result_symlink).unwrap();
+
+        let builder = NixOSBuilder::new_with_executor(
+            config_path,
+            profile_path,
+            Box::new(MockCommandExecutor::success()),
+        );
+
+        let current_fp = compute_config_fingerprint("hw = { new = true; }", "cfg = {}");
+        let stored_fp = compute_config_fingerprint("hw = {}", "cfg = {}");
+
+        // Different stored fingerprint → build must run
+        let (generation_id, new_fp, fast) = builder
+            .build_profile_with_fingerprint(&current_fp, Some(&stored_fp))
+            .unwrap();
+
+        assert!(!fast, "Fast path must NOT be used when fingerprint differs");
+        assert_eq!(
+            generation_id, "abcdef01",
+            "Should return newly built generation"
+        );
+        assert_eq!(
+            new_fp, current_fp,
+            "Returned fingerprint must equal current (not stored) fingerprint"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_missing_profile_triggers_build_despite_matching_fingerprint() {
+        // AC2 guard: fingerprint matches but cached profile is gone → must rebuild
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().to_path_buf();
+        // Profile symlink does NOT exist
+        let profile_path = temp_dir.path().join("nonexistent-profile");
+
+        // Provide result symlink for the rebuild path
+        let result_symlink = config_path.join("result");
+        let dummy_store = temp_dir.path().join("deadbeef-nixos-system-test-24.11");
+        std::fs::write(&dummy_store, "dummy").unwrap();
+        std::os::unix::fs::symlink(&dummy_store, &result_symlink).unwrap();
+
+        let builder = NixOSBuilder::new_with_executor(
+            config_path,
+            profile_path,
+            Box::new(MockCommandExecutor::success()),
+        );
+
+        let fp = compute_config_fingerprint("hw = {}", "cfg = {}");
+
+        // Even with matching fingerprint, missing profile triggers build
+        let (generation_id, _new_fp, fast) = builder
+            .build_profile_with_fingerprint(&fp, Some(&fp))
+            .unwrap();
+
+        assert!(!fast, "Build must run when cached profile is missing");
+        assert_eq!(
+            generation_id, "deadbeef",
+            "Should return newly built generation"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_no_stored_fingerprint_triggers_build() {
+        // First-ever run: stored_fingerprint is None → must build
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().to_path_buf();
+        let profile_path = temp_dir.path().join("profile");
+
+        let result_symlink = config_path.join("result");
+        let dummy_store = temp_dir.path().join("cafebabe-nixos-system-test-24.11");
+        std::fs::write(&dummy_store, "dummy").unwrap();
+        std::os::unix::fs::symlink(&dummy_store, &result_symlink).unwrap();
+
+        let builder = NixOSBuilder::new_with_executor(
+            config_path,
+            profile_path,
+            Box::new(MockCommandExecutor::success()),
+        );
+
+        let fp = compute_config_fingerprint("hw = {}", "cfg = {}");
+
+        let (generation_id, _new_fp, fast) =
+            builder.build_profile_with_fingerprint(&fp, None).unwrap();
+
+        assert!(
+            !fast,
+            "Build must run on first activation (no stored fingerprint)"
+        );
+        assert_eq!(generation_id, "cafebabe");
+    }
+
+    // ========== Story 15.4: Integration test (two activations) ==========
+
+    #[test]
+    #[cfg(unix)]
+    fn test_two_activations_second_reuses_generation() {
+        // AC2: Run 1 builds; Run 2 (same fingerprint, profile exists) reuses it.
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().to_path_buf();
+        let profile_path = temp_dir.path().join("nails-system");
+
+        // Pre-create result symlink (build output from "run 1")
+        // Parser takes first 8 chars of the first '-'-separated segment as generation ID
+        let result_symlink = config_path.join("result");
+        let dummy_store = temp_dir.path().join("ab12cd34-nixos-system-test-24.11");
+        std::fs::write(&dummy_store, "dummy").unwrap();
+        std::os::unix::fs::symlink(&dummy_store, &result_symlink).unwrap();
+
+        let builder = NixOSBuilder::new_with_executor(
+            config_path.clone(),
+            profile_path.clone(),
+            Box::new(MockCommandExecutor::success()),
+        );
+
+        let hw = "hardware = { bootloader = grub; }";
+        let cfg = "{ environment.systemPackages = []; }";
+        let fp = compute_config_fingerprint(hw, cfg);
+
+        // --- Run 1: no stored fingerprint → full build ---
+        let (gen1, fp1, fast1) = builder.build_profile_with_fingerprint(&fp, None).unwrap();
+
+        assert!(!fast1, "Run 1 must perform a full build");
+        assert_eq!(gen1, "ab12cd34", "Run 1 should return 8-char hash prefix");
+        assert_eq!(fp1, fp);
+
+        // Simulate manager saving the profile symlink after switch.
+        // switch_profile() creates the {profile_path} symlink pointing to a
+        // NixOS profile in the format "system-{number}-link".
+        let profile_target = temp_dir.path().join("system-42-link");
+        std::fs::write(&profile_target, "dummy profile").unwrap();
+        std::os::unix::fs::symlink(&profile_target, &profile_path).unwrap();
+
+        // Create a fresh builder for run 2 (same profile_path, same executor)
+        let builder2 = NixOSBuilder::new_with_executor(
+            config_path,
+            profile_path,
+            Box::new(MockCommandExecutor::success()),
+        );
+
+        // --- Run 2: same fingerprint, profile exists → fast path ---
+        let (gen2, fp2, fast2) = builder2
+            .build_profile_with_fingerprint(&fp, Some(&fp1))
+            .unwrap();
+
+        assert!(
+            fast2,
+            "Run 2 must use the fast path (same config, profile exists)"
+        );
+        // Fast path returns the cached generation (from profile symlink = "42")
+        assert_eq!(
+            gen2, "42",
+            "Run 2 fast path returns generation from profile symlink"
+        );
+        assert_eq!(fp2, fp);
     }
 }

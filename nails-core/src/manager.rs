@@ -1736,45 +1736,97 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         // Step 7: Build NixOS profile (if NixOSBuilder configured)
-        let generation = {
+        //
+        // Story 15.4: Use fingerprint-based fast path.  We compute a fingerprint of the
+        // two NixOS config files that live in the hidden volume.  If the fingerprint
+        // matches the one we persisted after the last successful activation, the cached
+        // profile is reused and the expensive `nixos-rebuild` invocation is skipped.
+        // `new_fingerprint` is carried through to Step 9 so it can be persisted after a
+        // successful `switch-to-configuration`.
+        let (generation, new_fingerprint) = {
             let manager = manager_arc.lock().unwrap();
             if let Some(ref builder) = manager.nixos_builder {
                 if verbosity >= Verbosity::Normal {
                     tracing::info!("Building NixOS profile...");
                 }
+
+                // --- Story 15.4, AC1: compute config fingerprint ---
+                let hw_path = manager
+                    .config
+                    .hidden_volume_root
+                    .join("etc/nixos/hardware-configuration.nix");
+                let cfg_path = manager
+                    .config
+                    .hidden_volume_root
+                    .join("config/nixos/configuration.nix");
+
+                let hw_content = manager
+                    .filesystem
+                    .read_file_content(&hw_path)
+                    .unwrap_or_default();
+                let cfg_content = manager
+                    .filesystem
+                    .read_file_content(&cfg_path)
+                    .unwrap_or_default();
+
+                let current_fp =
+                    crate::nixos::compute_config_fingerprint(&hw_content, &cfg_content);
+
+                // Load stored fingerprint from persisted state (may be None on first run)
+                let stored_fp: Option<String> = {
+                    let cached = manager.cached_state.lock().unwrap();
+                    cached.as_ref().and_then(|sf| sf.config_fingerprint.clone())
+                };
+
                 let step_timer = Stopwatch::start();
-                let generation_id = builder.build_profile().map_err(|e| {
-                    // Story 9.3 AC#2: Structured error event for NixOS build failure
-                    let error_msg = match &e {
-                        NailsError::NixOSError(msg) => format!("NixOS build failed: {}", msg),
-                        other => format!("NixOS build failed: {}", other),
-                    };
 
-                    tracing::error!(
-                        error = %e,
-                        phase = "nixos_build",
-                        rollback = true,
-                        "NixOS profile build failed"
-                    );
+                // --- Story 15.4, AC2/AC3: fast-path decision ---
+                let (generation_id, fp_out, fast_path_used) = builder
+                    .build_profile_with_fingerprint(&current_fp, stored_fp.as_deref())
+                    .map_err(|e| {
+                        // Story 9.3 AC#2: Structured error event for NixOS build failure
+                        let error_msg = match &e {
+                            NailsError::NixOSError(msg) => format!("NixOS build failed: {}", msg),
+                            other => format!("NixOS build failed: {}", other),
+                        };
 
-                    match e {
-                        NailsError::NixOSError(_) => NailsError::NixOSError(error_msg),
-                        other => other,
-                    }
-                })?;
+                        tracing::error!(
+                            error = %e,
+                            phase = "nixos_build",
+                            rollback = true,
+                            "NixOS profile build failed"
+                        );
+
+                        match e {
+                            NailsError::NixOSError(_) => NailsError::NixOSError(error_msg),
+                            other => other,
+                        }
+                    })?;
+
                 if verbosity >= Verbosity::Normal {
-                    tracing::info!(
-                        step = "nixos_build",
-                        duration_ms = step_timer.elapsed().as_millis() as u64,
-                        generation = generation_id,
-                        "✓ NixOS profile ready: generation {} ({})",
-                        generation_id,
-                        step_timer
-                    );
+                    if fast_path_used {
+                        tracing::info!(
+                            step = "nixos_build",
+                            duration_ms = step_timer.elapsed().as_millis() as u64,
+                            generation = generation_id,
+                            "✓ NixOS profile ready (fast path): generation {} ({})",
+                            generation_id,
+                            step_timer
+                        );
+                    } else {
+                        tracing::info!(
+                            step = "nixos_build",
+                            duration_ms = step_timer.elapsed().as_millis() as u64,
+                            generation = generation_id,
+                            "✓ NixOS profile ready: generation {} ({})",
+                            generation_id,
+                            step_timer
+                        );
+                    }
                 }
-                Some(generation_id)
+                (Some(generation_id), Some(fp_out))
             } else {
-                None
+                (None, None)
             }
         };
 
@@ -2443,9 +2495,11 @@ impl<F: Filesystem> NailsManager<F> {
                 }
 
                 // Story 4.7, AC3: Update nixos_generation in state file after successful switch
+                // Story 15.4, AC4: Persist config_fingerprint so fast path works on next activation
                 let mut cached = manager.cached_state.lock().unwrap();
                 if let Some(ref mut state_file) = *cached {
                     state_file.nixos_generation = Some(generation_id.clone());
+                    state_file.config_fingerprint = new_fingerprint.clone();
 
                     // Save state file to disk (AC1, AC3)
                     // State save failures here are non-critical - the switch succeeded and the system is functional.
@@ -7636,6 +7690,7 @@ mod tests {
             failed_overlays: Vec::new(),
             last_modified: Utc::now(),
             checksum: None,
+            config_fingerprint: None,
         };
 
         let state_json = serde_json::to_string(&initial_state).unwrap();
