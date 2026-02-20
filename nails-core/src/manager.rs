@@ -1760,14 +1760,30 @@ impl<F: Filesystem> NailsManager<F> {
                     .hidden_volume_root
                     .join("config/nixos/configuration.nix");
 
-                let hw_content = manager
-                    .filesystem
-                    .read_file_content(&hw_path)
-                    .unwrap_or_default();
-                let cfg_content = manager
-                    .filesystem
-                    .read_file_content(&cfg_path)
-                    .unwrap_or_default();
+                // Read config files for fingerprint computation (Story 15.4, AC1)
+                // Log warnings but continue if files are missing - build will fail later if truly required
+                let hw_content = match manager.filesystem.read_file_content(&hw_path) {
+                    Ok(content) => content,
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %hw_path.display(),
+                            error = %e,
+                            "Failed to read hardware-configuration.nix for fingerprint, using empty content"
+                        );
+                        String::new()
+                    }
+                };
+                let cfg_content = match manager.filesystem.read_file_content(&cfg_path) {
+                    Ok(content) => content,
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %cfg_path.display(),
+                            error = %e,
+                            "Failed to read configuration.nix for fingerprint, using empty content"
+                        );
+                        String::new()
+                    }
+                };
 
                 let current_fp =
                     crate::nixos::compute_config_fingerprint(&hw_content, &cfg_content);
@@ -1812,7 +1828,7 @@ impl<F: Filesystem> NailsManager<F> {
                             step = "nixos_build",
                             duration_ms = step_timer.elapsed().as_millis() as u64,
                             generation = generation_id,
-                            "✓ NixOS profile ready (fast path): generation {} ({})",
+                            "⚡ NixOS profile ready (fast path): generation {} ({})",
                             generation_id,
                             step_timer
                         );
@@ -9036,5 +9052,120 @@ mod tests {
             !base_content.contains("./nails/configuration.nix"),
             "Base hardware-configuration.nix must remain clean after full cycle (AC2, AC3)"
         );
+    }
+
+    // ========== Story 15.4: Manager integration test for fingerprint persistence ==========
+
+    #[test]
+    fn test_config_fingerprint_field_persistence() {
+        // HIGH-2: Validate that config_fingerprint field is properly persisted to state file
+        // This test focuses on the state persistence mechanism, which is the integration gap
+        // between the manager and the state file. The fingerprint computation itself is
+        // well-tested in nixos.rs unit tests.
+        use std::sync::Arc;
+
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+
+        let state_path = mock_hidden_vol.join("state.json");
+        let fs = MockFilesystem::new();
+
+        // Setup mock filesystem paths
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+
+        // Create initial state file (INACTIVE, no fingerprint)
+        // Write to actual filesystem so manager can load it
+        let initial_state = StateFile {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            state: SystemState::Inactive,
+            nixos_generation: None,
+            config_fingerprint: None, // First activation - no fingerprint yet
+            overlay_status: HashMap::new(),
+            failed_overlays: Vec::new(),
+            last_modified: Utc::now(),
+            checksum: None,
+        };
+        let state_json = serde_json::to_string_pretty(&initial_state).unwrap();
+        std::fs::write(&state_path, state_json).unwrap();
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            ..Config::test_default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            fs.clone(),
+            config,
+            state_path.clone(),
+        )));
+
+        // === TEST 1: Verify fingerprint field loads correctly (None initially) ===
+        // Call current_state() to trigger lazy load from disk
+        {
+            let mgr = manager.lock().unwrap();
+            mgr.current_state().expect("State should load successfully");
+        }
+
+        {
+            let mgr = manager.lock().unwrap();
+            let state = mgr.cached_state.lock().unwrap();
+            assert!(
+                state.is_some(),
+                "State should be loaded after calling current_state()"
+            );
+            assert_eq!(
+                state.as_ref().unwrap().config_fingerprint,
+                None,
+                "Initial state should have no fingerprint"
+            );
+        }
+
+        // === TEST 2: Simulate fingerprint being saved (as happens in activation step 7+9) ===
+        let test_fingerprint = "abcd1234efgh5678".to_string();
+        {
+            let mgr = manager.lock().unwrap();
+            let mut cached = mgr.cached_state.lock().unwrap();
+            if let Some(ref mut state) = *cached {
+                state.config_fingerprint = Some(test_fingerprint.clone());
+                state.nixos_generation = Some("test-gen-123".to_string());
+            }
+        }
+
+        // Save state to disk (this is what manager does after successful activation)
+        {
+            let mgr = manager.lock().unwrap();
+            mgr.save_cached_state().expect("State save should succeed");
+        }
+
+        // === TEST 3: Verify fingerprint was persisted to actual file ===
+        let saved_content =
+            std::fs::read_to_string(&state_path).expect("State file should exist on disk");
+        let restored_state: StateFile =
+            serde_json::from_str(&saved_content).expect("Saved state should deserialize correctly");
+
+        assert_eq!(
+            restored_state.config_fingerprint,
+            Some(test_fingerprint.clone()),
+            "Fingerprint should be persisted to disk (AC4 requirement)"
+        );
+
+        // === TEST 4: Verify persisted fingerprint can be loaded back ===
+        // Deserialize directly from disk to verify persistence
+        let disk_content = std::fs::read_to_string(&state_path)
+            .expect("State file should exist on disk after save");
+        let loaded_state: StateFile =
+            serde_json::from_str(&disk_content).expect("State file should be valid JSON");
+
+        assert_eq!(
+            loaded_state.config_fingerprint,
+            Some(test_fingerprint),
+            "Fingerprint should be loaded correctly from disk (AC2 fast path prerequisite)"
+        );
+
+        // Test passes: config_fingerprint field is properly saved to disk and loaded back,
+        // validating the state persistence integration for Story 15.4
     }
 }

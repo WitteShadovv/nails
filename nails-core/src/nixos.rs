@@ -80,6 +80,21 @@ use std::path::{Path, PathBuf};
 /// let fp3 = compute_config_fingerprint("hardware = { changed = true; }", "hidden = {}");
 /// assert_ne!(fp1, fp3, "Different inputs produce different fingerprint");
 /// ```
+///
+/// # Design Trade-off: Fingerprint Before Nix Validation
+///
+/// This function computes the fingerprint **without** validating Nix syntax.
+///
+/// **Rationale:**
+/// - Performance: Syntax validation would require invoking `nix-instantiate` or similar,
+///   which defeats the purpose of the fast-path optimization (skipping expensive operations)
+/// - Simplicity: Hashing raw content is O(n) and uses only stdlib
+/// - Correctness: Invalid Nix will fail during the actual build step, so errors are still caught
+///
+/// **Edge case handled:** If config files are missing or unreadable, the fingerprint
+/// is computed from empty strings. This is intentional - the build step will fail with
+/// a clear error if the configs are truly required, while still allowing the fingerprint
+/// logic to complete for cases where configs might be optional (e.g., pre-flight checks).
 pub fn compute_config_fingerprint(
     hardware_config_content: &str,
     hidden_config_content: &str,
@@ -484,7 +499,7 @@ impl NixOSBuilder {
                     tracing::info!(
                         fingerprint = current_fingerprint,
                         generation = %generation,
-                        "Fast path: config fingerprint matches and profile exists — skipping build"
+                        "⚡ Fast path: config fingerprint matches and profile exists — skipping build (AC2)"
                     );
                     return Ok((generation, current_fingerprint.to_owned(), true));
                 }
@@ -3069,6 +3084,10 @@ imports = [
         let temp_dir = TempDir::new().unwrap();
         let profile_path = temp_dir.path().join("test-profile");
         // Create a cached profile symlink pointing to a generation
+        // Note: Test fixture uses simplified "system-77-link" format rather than
+        // full Nix store path format (e.g., "/nix/store/hash-nixos-system-hostname-77-link")
+        // because get_cached_generation() extracts the numeric component from any "system-{N}-link" pattern.
+        // This is sufficient for testing the fast-path logic without requiring realistic store paths.
         let target = temp_dir.path().join("system-77-link");
         std::fs::write(&target, "dummy").unwrap();
         std::os::unix::fs::symlink(&target, &profile_path).unwrap();

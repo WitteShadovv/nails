@@ -757,8 +757,51 @@ impl StateFile {
         };
 
         // Parse JSON
-        match serde_json::from_str(&contents) {
-            Ok(state_file) => Ok(state_file),
+        match serde_json::from_str::<StateFile>(&contents) {
+            Ok(mut state_file) => {
+                // Version compatibility check (Story 15.4 review finding: MEDIUM-3)
+                // Reject state files from incompatible future versions
+                let current_version = env!("CARGO_PKG_VERSION");
+                let stored_version = &state_file.version;
+
+                // Parse versions to compare major components
+                let current_major = current_version
+                    .split('.')
+                    .next()
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .unwrap_or(0);
+                let stored_major = stored_version
+                    .split('.')
+                    .next()
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .unwrap_or(0);
+
+                if stored_major > current_major {
+                    tracing::error!(
+                        current_version = %current_version,
+                        stored_version = %stored_version,
+                        path = %path.display(),
+                        "State file version is from a future major version - cannot load"
+                    );
+                    return Err(NailsError::InvalidState(format!(
+                        "State file version {} is incompatible with current version {} (stored version is from a future major version)",
+                        stored_version, current_version
+                    )));
+                }
+
+                // Log version mismatch warning for different minor/patch versions (but allow)
+                if stored_version != current_version {
+                    tracing::info!(
+                        current_version = %current_version,
+                        stored_version = %stored_version,
+                        "State file version differs from current version (loading anyway - compatible)"
+                    );
+                    // Update version to current on load
+                    state_file.version = current_version.to_string();
+                }
+
+                Ok(state_file)
+            }
             Err(e) => {
                 tracing::warn!(
                     "State file malformed at {}: {}, assuming INACTIVE",
