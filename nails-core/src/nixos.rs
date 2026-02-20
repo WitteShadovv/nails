@@ -402,10 +402,12 @@ impl NixOSBuilder {
         let start = std::time::Instant::now();
 
         // Execute nixos-rebuild build command
+        // AC1 (Story 15.5): --no-update-lock-file prevents any package version updates.
         let (success, stdout, stderr) = self.executor.execute_nixos_rebuild(&[
             "build",
             "--flake",
             &self.config_path.to_string_lossy(),
+            "--no-update-lock-file",
         ])?;
 
         // Check if build succeeded
@@ -502,9 +504,198 @@ impl NixOSBuilder {
             tracing::info!("No stored fingerprint — building NixOS profile for the first time");
         }
 
-        // AC3: Fall back to build
-        let generation = self.build_profile()?;
+        // AC3: Fall back to missing-only build (Story 15.5).
+        // build_profile_missing_only() checks whether the store path already exists
+        // before invoking nixos-rebuild, and always passes --no-update-lock-file (AC1).
+        let (generation, _store_path_reused) = self.build_profile_missing_only()?;
         Ok((generation, current_fingerprint.to_owned(), false))
+    }
+
+    /// Get the current result store path (if result symlink exists and target is valid)
+    ///
+    /// Reads `{config_path}/result` symlink and resolves the target path.  Returns
+    /// `Ok(Some(path))` when the symlink exists *and* its target directory exists (i.e.
+    /// the store path is present in the Nix store).  Returns `Ok(None)` when the symlink
+    /// is absent, broken, or the target is not present.
+    ///
+    /// This is the detection primitive for Story 15.5 AC2/AC3: the missing-only build
+    /// path only invokes `nixos-rebuild` when this returns `None`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use nails_core::nixos::NixOSBuilder;
+    /// # use std::path::PathBuf;
+    /// let builder = NixOSBuilder::new(
+    ///     PathBuf::from("/mnt/hidden/nixos"),
+    ///     PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    /// );
+    ///
+    /// match builder.get_result_store_path()? {
+    ///     Some(p) => println!("Store path present: {}", p.display()),
+    ///     None    => println!("Store path absent — build required"),
+    /// }
+    /// # Ok::<(), nails_core::NailsError>(())
+    /// ```
+    pub fn get_result_store_path(&self) -> Result<Option<PathBuf>> {
+        let result_symlink = self.config_path.join("result");
+
+        // Symlink must exist
+        if !result_symlink.exists() && std::fs::symlink_metadata(&result_symlink).is_err() {
+            tracing::debug!(
+                symlink = %result_symlink.display(),
+                "Result symlink does not exist — store path absent"
+            );
+            return Ok(None);
+        }
+
+        // Read the symlink target
+        let target = match std::fs::read_link(&result_symlink) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::debug!(
+                    symlink = %result_symlink.display(),
+                    error = %e,
+                    "Could not read result symlink — treating store path as absent"
+                );
+                return Ok(None);
+            }
+        };
+
+        // The store path must actually exist (i.e. not GC-collected)
+        if target.exists() {
+            tracing::debug!(
+                store_path = %target.display(),
+                "Result store path is present"
+            );
+            Ok(Some(target))
+        } else {
+            tracing::debug!(
+                store_path = %target.display(),
+                "Result store path is absent (GC-collected or never built)"
+            );
+            Ok(None)
+        }
+    }
+
+    /// Build NixOS profile using the missing-only path (Story 15.5)
+    ///
+    /// Implements a two-stage fast path on top of the fingerprint check:
+    ///
+    /// 1. **Store-path reuse** (AC2): If `{config_path}/result` already points to a
+    ///    live Nix store path, extract the generation ID from that path and return it
+    ///    immediately without invoking `nixos-rebuild`.
+    /// 2. **Missing-only build** (AC1 + AC3): If the store path is absent, run
+    ///    `nixos-rebuild build --no-update-lock-file` to build *only* the missing
+    ///    derivations, then parse and return the new generation ID.
+    ///
+    /// The `--no-update-lock-file` flag (AC1) prevents any flake lock file or package
+    /// version updates during the build.  This keeps the decoy system packages
+    /// completely stable.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok((generation_id, store_path_reused))`:
+    ///   - `generation_id`     – Generation to switch to (8-char store hash prefix)
+    ///   - `store_path_reused` – `true` if build was skipped, `false` if build ran
+    /// * `Err(NixOSError)` if the build fails
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use nails_core::nixos::NixOSBuilder;
+    /// # use std::path::PathBuf;
+    /// let builder = NixOSBuilder::new(
+    ///     PathBuf::from("/mnt/hidden/nixos"),
+    ///     PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    /// );
+    ///
+    /// // First run: store path absent → build runs
+    /// let (r#gen, reused) = builder.build_profile_missing_only()?;
+    /// assert!(!reused);
+    ///
+    /// // Second run (same config): store path present → reused
+    /// let (r#gen2, reused2) = builder.build_profile_missing_only()?;
+    /// assert!(reused2);
+    /// assert_eq!(r#gen, r#gen2);
+    /// # Ok::<(), nails_core::NailsError>(())
+    /// ```
+    pub fn build_profile_missing_only(&self) -> Result<(String, bool)> {
+        // AC2: Check whether the result store path is already present.
+        if let Some(store_path) = self.get_result_store_path()? {
+            let generation_id = self.extract_generation_from_store_path(&store_path)?;
+            tracing::info!(
+                store_path = %store_path.display(),
+                generation = %generation_id,
+                "Missing-only path: store path already present — skipping build (AC2)"
+            );
+            return Ok((generation_id, true));
+        }
+
+        // AC1 + AC3: Store path missing — build only missing derivations.
+        tracing::info!(
+            "Missing-only path: store path absent — building with --no-update-lock-file (AC1, AC3)"
+        );
+        let start = std::time::Instant::now();
+
+        let (success, stdout, stderr) = self.executor.execute_nixos_rebuild(&[
+            "build",
+            "--flake",
+            &self.config_path.to_string_lossy(),
+            "--no-update-lock-file",
+        ])?;
+
+        if !success {
+            return Err(NailsError::NixOSError(format!("Build failed: {}", stderr)));
+        }
+
+        // AC3: Parse generation from the result symlink created by nixos-rebuild build.
+        let generation_id = self.parse_generation_from_build_output(&stdout)?;
+
+        let duration = start.elapsed();
+        tracing::info!(
+            generation = %generation_id,
+            duration_s = duration.as_secs_f64(),
+            "Missing-only build complete: generation {} ({:.1}s)",
+            generation_id,
+            duration.as_secs_f64()
+        );
+
+        Ok((generation_id, false))
+    }
+
+    /// Extract a generation ID (8-char store hash prefix) from an absolute store path.
+    ///
+    /// Store paths follow the Nix naming convention:
+    /// `/nix/store/<hash32>-<name>` — the first 32 hex characters are the store hash.
+    /// We use the first 8 characters as a human-readable pseudo-generation identifier,
+    /// consistent with `parse_generation_from_build_output`.
+    ///
+    /// # Arguments
+    ///
+    /// * `store_path` – Absolute path such as
+    ///   `/nix/store/abc12345defg6789…-nixos-system-hostname-24.11`
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(generation_id)` – First 8 characters of the store hash
+    /// * `Err(NixOSError)` – Path has no filename or hash is too short
+    fn extract_generation_from_store_path(&self, store_path: &std::path::Path) -> Result<String> {
+        let filename = store_path
+            .file_name()
+            .ok_or_else(|| NailsError::NixOSError("Invalid store path: no filename".into()))?
+            .to_string_lossy();
+
+        if let Some(hash_part) = filename.split('-').next()
+            && hash_part.len() >= 8
+        {
+            return Ok(hash_part[0..8].to_string());
+        }
+
+        Err(NailsError::NixOSError(format!(
+            "Could not extract generation ID from store path: {}",
+            filename
+        )))
     }
 
     /// Parse generation ID from nixos-rebuild build output
@@ -3079,5 +3270,367 @@ imports = [
             "Run 2 fast path returns generation from profile symlink"
         );
         assert_eq!(fp2, fp);
+    }
+
+    // -------------------------------------------------------------------------
+    // Story 15.5 — RecordingMockExecutor (records args passed to execute_nixos_rebuild)
+    // -------------------------------------------------------------------------
+
+    /// A mock executor that records every invocation of `execute_nixos_rebuild` so
+    /// tests can assert which flags were passed (e.g. `--no-update-lock-file`).
+    struct RecordingMockExecutor {
+        should_succeed: bool,
+        stdout: String,
+        stderr: String,
+        recorded_args: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl RecordingMockExecutor {
+        fn new_success(stdout: impl Into<String>) -> Self {
+            Self {
+                should_succeed: true,
+                stdout: stdout.into(),
+                stderr: String::new(),
+                recorded_args: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        #[allow(dead_code)]
+        fn get_recorded_args(&self) -> Vec<Vec<String>> {
+            self.recorded_args.lock().unwrap().clone()
+        }
+    }
+
+    impl CommandExecutor for RecordingMockExecutor {
+        fn execute_nixos_rebuild(&self, args: &[&str]) -> Result<(bool, String, String)> {
+            self.recorded_args
+                .lock()
+                .unwrap()
+                .push(args.iter().map(|s| s.to_string()).collect());
+            Ok((
+                self.should_succeed,
+                self.stdout.clone(),
+                self.stderr.clone(),
+            ))
+        }
+
+        fn execute_switch_to_configuration(
+            &self,
+            _script_path: &std::path::Path,
+            _args: &[&str],
+        ) -> Result<(bool, String, String)> {
+            Ok((true, String::new(), String::new()))
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Story 15.5 — get_result_store_path tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_get_result_store_path_no_symlink() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().to_path_buf();
+        let profile_path = temp_dir.path().join("nails-system");
+
+        let builder = NixOSBuilder::new_with_executor(
+            config_path,
+            profile_path,
+            Box::new(MockCommandExecutor::success()),
+        );
+
+        // No result symlink at all → None
+        let result = builder.get_result_store_path().unwrap();
+        assert!(
+            result.is_none(),
+            "Expected None when result symlink is absent"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_get_result_store_path_broken_symlink() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().to_path_buf();
+        let profile_path = temp_dir.path().join("nails-system");
+
+        // Create a symlink pointing to a non-existent target
+        let result_symlink = config_path.join("result");
+        let non_existent = temp_dir.path().join("does-not-exist");
+        std::os::unix::fs::symlink(&non_existent, &result_symlink).unwrap();
+
+        let builder = NixOSBuilder::new_with_executor(
+            config_path,
+            profile_path,
+            Box::new(MockCommandExecutor::success()),
+        );
+
+        // Broken symlink → None
+        let result = builder.get_result_store_path().unwrap();
+        assert!(result.is_none(), "Expected None for broken symlink");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_get_result_store_path_valid_symlink() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().to_path_buf();
+        let profile_path = temp_dir.path().join("nails-system");
+
+        // Create a real target and symlink pointing to it
+        let store_path = temp_dir.path().join("abc12345-nixos-system-host-24.11");
+        std::fs::write(&store_path, "dummy").unwrap();
+        let result_symlink = config_path.join("result");
+        std::os::unix::fs::symlink(&store_path, &result_symlink).unwrap();
+
+        let builder = NixOSBuilder::new_with_executor(
+            config_path,
+            profile_path,
+            Box::new(MockCommandExecutor::success()),
+        );
+
+        // Valid symlink → Some(target path)
+        let result = builder.get_result_store_path().unwrap();
+        assert!(result.is_some(), "Expected Some for valid symlink");
+        assert_eq!(result.unwrap(), store_path);
+    }
+
+    // -------------------------------------------------------------------------
+    // Story 15.5 — build_profile_missing_only tests
+    // -------------------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn test_missing_only_store_path_exists_reuses_without_build() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().to_path_buf();
+        let profile_path = temp_dir.path().join("nails-system");
+
+        // Pre-create a valid result symlink → store path present
+        let store_path = temp_dir.path().join("ab12cd34-nixos-system-host-24.11");
+        std::fs::write(&store_path, "dummy").unwrap();
+        let result_symlink = config_path.join("result");
+        std::os::unix::fs::symlink(&store_path, &result_symlink).unwrap();
+
+        let recorder = RecordingMockExecutor::new_success("unused stdout");
+        let builder =
+            NixOSBuilder::new_with_executor(config_path, profile_path, Box::new(recorder));
+
+        let (generation, reused) = builder.build_profile_missing_only().unwrap();
+
+        // AC2: store path was present → skip build, return reused=true
+        assert!(
+            reused,
+            "build_profile_missing_only should return reused=true when store path exists"
+        );
+        assert_eq!(
+            generation, "ab12cd34",
+            "Generation should be the 8-char store hash prefix"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_missing_only_store_path_absent_triggers_build() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().to_path_buf();
+        let profile_path = temp_dir.path().join("nails-system");
+
+        // No result symlink — build will run and nixos-rebuild creates result.
+        // Pre-create the target that the parser (parse_generation_from_build_output)
+        // will read via the result symlink after the "build".
+        let store_path = temp_dir.path().join("deadbeef-nixos-system-host-24.11");
+        std::fs::write(&store_path, "dummy").unwrap();
+        let result_symlink = config_path.join("result");
+
+        // Executor creates the result symlink as a side effect (simulating nixos-rebuild)
+        // We pre-create it here before building so the parser can find it.
+        std::os::unix::fs::symlink(&store_path, &result_symlink).unwrap();
+        // Then remove the symlink so get_result_store_path() returns None (no prior build)
+        std::fs::remove_file(&result_symlink).unwrap();
+
+        // Now the build mock will be called; parse_generation_from_build_output reads
+        // the result symlink. We need to create it again after the executor runs.
+        // The easiest way: pre-create it once more just before the builder call so that
+        // parse_generation_from_build_output can see it.  The executor mock doesn't
+        // actually create files; we simulate its side effect here.
+        std::os::unix::fs::symlink(&store_path, &result_symlink).unwrap();
+        // …but get_result_store_path runs BEFORE the build, so we must remove it again.
+        std::fs::remove_file(&result_symlink).unwrap();
+
+        // Strategy: use a custom executor that creates the symlink as a side effect.
+        struct SymlinkCreatingExecutor {
+            result_symlink: PathBuf,
+            store_path: PathBuf,
+        }
+        impl CommandExecutor for SymlinkCreatingExecutor {
+            fn execute_nixos_rebuild(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+                // Simulate nixos-rebuild: create the result symlink
+                if !self.result_symlink.exists() {
+                    std::os::unix::fs::symlink(&self.store_path, &self.result_symlink).unwrap();
+                }
+                Ok((true, String::new(), String::new()))
+            }
+            fn execute_switch_to_configuration(
+                &self,
+                _script_path: &std::path::Path,
+                _args: &[&str],
+            ) -> Result<(bool, String, String)> {
+                Ok((true, String::new(), String::new()))
+            }
+        }
+
+        let executor = SymlinkCreatingExecutor {
+            result_symlink: result_symlink.clone(),
+            store_path: store_path.clone(),
+        };
+
+        let builder =
+            NixOSBuilder::new_with_executor(config_path, profile_path, Box::new(executor));
+
+        let (generation, reused) = builder.build_profile_missing_only().unwrap();
+
+        // AC3: store path was absent → build ran, reused=false
+        assert!(
+            !reused,
+            "build_profile_missing_only should return reused=false when build ran"
+        );
+        assert_eq!(
+            generation, "deadbeef",
+            "Generation should be 8-char hash prefix from result symlink"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_missing_only_broken_symlink_triggers_build() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().to_path_buf();
+        let profile_path = temp_dir.path().join("nails-system");
+
+        // Create a broken result symlink (target does not exist)
+        let result_symlink = config_path.join("result");
+        let non_existent = temp_dir.path().join("ghost-store-path");
+        std::os::unix::fs::symlink(&non_existent, &result_symlink).unwrap();
+
+        // Prepare a real store path that the build executor will "create"
+        let store_path = temp_dir.path().join("cafebabe-nixos-system-host-24.11");
+        std::fs::write(&store_path, "dummy").unwrap();
+
+        struct FixSymlinkExecutor {
+            result_symlink: PathBuf,
+            store_path: PathBuf,
+        }
+        impl CommandExecutor for FixSymlinkExecutor {
+            fn execute_nixos_rebuild(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+                // Simulate nixos-rebuild fixing the result symlink
+                if self.result_symlink.exists()
+                    || std::fs::symlink_metadata(&self.result_symlink).is_ok()
+                {
+                    std::fs::remove_file(&self.result_symlink).unwrap();
+                }
+                std::os::unix::fs::symlink(&self.store_path, &self.result_symlink).unwrap();
+                Ok((true, String::new(), String::new()))
+            }
+            fn execute_switch_to_configuration(
+                &self,
+                _script_path: &std::path::Path,
+                _args: &[&str],
+            ) -> Result<(bool, String, String)> {
+                Ok((true, String::new(), String::new()))
+            }
+        }
+
+        let builder = NixOSBuilder::new_with_executor(
+            config_path,
+            profile_path,
+            Box::new(FixSymlinkExecutor {
+                result_symlink,
+                store_path,
+            }),
+        );
+
+        let (generation, reused) = builder.build_profile_missing_only().unwrap();
+
+        // Broken symlink treated as absent → build must run → reused=false
+        assert!(
+            !reused,
+            "Broken symlink must trigger a build (reused=false)"
+        );
+        assert_eq!(generation, "cafebabe");
+    }
+
+    // -------------------------------------------------------------------------
+    // Story 15.5 — AC1: --no-update-lock-file always passed
+    // -------------------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn test_build_profile_missing_only_passes_no_update_lock_file() {
+        use std::sync::{Arc, Mutex};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().to_path_buf();
+        let profile_path = temp_dir.path().join("nails-system");
+
+        // No result symlink → build will run
+        let store_path = temp_dir.path().join("f00dcafe-nixos-system-host-24.11");
+        std::fs::write(&store_path, "dummy").unwrap();
+
+        // Executor that records args AND creates the result symlink (simulating nixos-rebuild)
+        struct SharedArgExecutor {
+            result_symlink: PathBuf,
+            store_path: PathBuf,
+            recorded: Arc<Mutex<Vec<Vec<String>>>>,
+        }
+        impl CommandExecutor for SharedArgExecutor {
+            fn execute_nixos_rebuild(&self, args: &[&str]) -> Result<(bool, String, String)> {
+                self.recorded
+                    .lock()
+                    .unwrap()
+                    .push(args.iter().map(|s| s.to_string()).collect());
+                if !self.result_symlink.exists() {
+                    std::os::unix::fs::symlink(&self.store_path, &self.result_symlink).unwrap();
+                }
+                Ok((true, String::new(), String::new()))
+            }
+            fn execute_switch_to_configuration(
+                &self,
+                _script_path: &std::path::Path,
+                _args: &[&str],
+            ) -> Result<(bool, String, String)> {
+                Ok((true, String::new(), String::new()))
+            }
+        }
+
+        let recorded: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+        let builder = NixOSBuilder::new_with_executor(
+            config_path.clone(),
+            profile_path,
+            Box::new(SharedArgExecutor {
+                result_symlink: config_path.join("result"),
+                store_path: temp_dir.path().join("f00dcafe-nixos-system-host-24.11"),
+                recorded: Arc::clone(&recorded),
+            }),
+        );
+
+        let (_gen, reused) = builder.build_profile_missing_only().unwrap();
+        assert!(!reused, "No prior store path → build must run");
+
+        let calls = recorded.lock().unwrap();
+        assert_eq!(calls.len(), 1, "Exactly one nixos-rebuild call expected");
+        let args = &calls[0];
+        assert!(
+            args.iter().any(|a| a == "--no-update-lock-file"),
+            "AC1: --no-update-lock-file must be passed to nixos-rebuild; got: {:?}",
+            args
+        );
     }
 }

@@ -1781,6 +1781,9 @@ impl<F: Filesystem> NailsManager<F> {
                 let step_timer = Stopwatch::start();
 
                 // --- Story 15.4, AC2/AC3: fast-path decision ---
+                // Story 15.5: when build is required, build_profile_with_fingerprint() delegates
+                // to build_profile_missing_only() which reuses the existing store path when
+                // available, and always passes --no-update-lock-file to avoid package updates.
                 let (generation_id, fp_out, fast_path_used) = builder
                     .build_profile_with_fingerprint(&current_fp, stored_fp.as_deref())
                     .map_err(|e| {
