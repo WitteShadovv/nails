@@ -249,7 +249,8 @@ pub mod cli {
                 yes,
             } => {
                 use nails_core::{
-                    ActivateOptions, CliOverrides, Config, NailsManager, RealFilesystem, Verbosity,
+                    ActivateOptions, CliOverrides, Config, NailsManager, NixOSBuilder,
+                    RealFilesystem, Verbosity,
                 };
 
                 use std::sync::{Arc, Mutex};
@@ -326,11 +327,38 @@ pub mod cli {
 
                 let state_path = config.state_file_path.clone();
 
-                // Create NailsManager with real filesystem
+                // Create NailsManager with real filesystem (enable NixOS switching when flake is present)
                 let filesystem = RealFilesystem;
-                let manager = Arc::new(Mutex::new(NailsManager::new(
-                    filesystem, config, state_path,
-                )));
+                let nixos_flake_dir = config.hidden_volume_root.join("nixos");
+                let nixos_flake = nixos_flake_dir.join("flake.nix");
+                let legacy_config = std::path::PathBuf::from("/etc/nixos/configuration.nix");
+                let manager = if nixos_flake.exists() {
+                    let builder = NixOSBuilder::new(
+                        nixos_flake_dir,
+                        std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
+                    );
+                    Arc::new(Mutex::new(NailsManager::with_nixos(
+                        filesystem,
+                        config,
+                        state_path,
+                        builder,
+                    )))
+                } else if legacy_config.exists() {
+                    let builder = NixOSBuilder::new_legacy(
+                        legacy_config,
+                        std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
+                    );
+                    Arc::new(Mutex::new(NailsManager::with_nixos(
+                        filesystem,
+                        config,
+                        state_path,
+                        builder,
+                    )))
+                } else {
+                    Arc::new(Mutex::new(NailsManager::new(
+                        filesystem, config, state_path,
+                    )))
+                };
 
                 // Set verbosity level
                 manager.lock().unwrap().set_verbosity(verbosity);
@@ -385,8 +413,8 @@ pub mod cli {
                 plain,
             } => {
                 use nails_core::{
-                    CleanupConfig, Config, DeactivationOrchestrator, NailsManager, RealFilesystem,
-                    Verbosity,
+                    CleanupConfig, Config, DeactivationOrchestrator, NailsManager, NixOSBuilder,
+                    RealFilesystem, Verbosity,
                 };
 
                 use std::sync::{Arc, Mutex};
@@ -426,11 +454,38 @@ pub mod cli {
 
                 let state_path = config.state_file_path.clone();
 
-                // Create NailsManager with real filesystem
+                // Create NailsManager with real filesystem (enable NixOS switching when flake is present)
                 let filesystem = RealFilesystem;
-                let manager = Arc::new(Mutex::new(NailsManager::new(
-                    filesystem, config, state_path,
-                )));
+                let nixos_flake_dir = config.hidden_volume_root.join("nixos");
+                let nixos_flake = nixos_flake_dir.join("flake.nix");
+                let legacy_config = std::path::PathBuf::from("/etc/nixos/configuration.nix");
+                let manager = if nixos_flake.exists() {
+                    let builder = NixOSBuilder::new(
+                        nixos_flake_dir,
+                        std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
+                    );
+                    Arc::new(Mutex::new(NailsManager::with_nixos(
+                        filesystem,
+                        config,
+                        state_path,
+                        builder,
+                    )))
+                } else if legacy_config.exists() {
+                    let builder = NixOSBuilder::new_legacy(
+                        legacy_config,
+                        std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
+                    );
+                    Arc::new(Mutex::new(NailsManager::with_nixos(
+                        filesystem,
+                        config,
+                        state_path,
+                        builder,
+                    )))
+                } else {
+                    Arc::new(Mutex::new(NailsManager::new(
+                        filesystem, config, state_path,
+                    )))
+                };
 
                 // Set verbosity level
                 manager.lock().unwrap().set_verbosity(verbosity);

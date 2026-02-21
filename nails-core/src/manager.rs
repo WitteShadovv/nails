@@ -1746,104 +1746,152 @@ impl<F: Filesystem> NailsManager<F> {
         let (generation, new_fingerprint) = {
             let manager = manager_arc.lock().unwrap();
             if let Some(ref builder) = manager.nixos_builder {
-                if verbosity >= Verbosity::Normal {
-                    tracing::info!("Building NixOS profile...");
-                }
-
-                // --- Story 15.4, AC1: compute config fingerprint ---
-                let hw_path = manager
-                    .config
-                    .hidden_volume_root
-                    .join("etc/nixos/hardware-configuration.nix");
-                let cfg_path = manager
-                    .config
-                    .hidden_volume_root
-                    .join("config/nixos/configuration.nix");
-
-                // Read config files for fingerprint computation (Story 15.4, AC1)
-                // Log warnings but continue if files are missing - build will fail later if truly required
-                let hw_content = match manager.filesystem.read_file_content(&hw_path) {
-                    Ok(content) => content,
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %hw_path.display(),
-                            error = %e,
-                            "Failed to read hardware-configuration.nix for fingerprint, using empty content"
+                if !builder.is_flake() {
+                    if verbosity >= Verbosity::Normal {
+                        tracing::info!(
+                            "Legacy NixOS config detected — deferring nixos-rebuild switch until after /etc overlay"
                         );
-                        String::new()
                     }
-                };
-                let cfg_content = match manager.filesystem.read_file_content(&cfg_path) {
-                    Ok(content) => content,
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %cfg_path.display(),
-                            error = %e,
-                            "Failed to read configuration.nix for fingerprint, using empty content"
-                        );
-                        String::new()
-                    }
-                };
 
-                let current_fp =
-                    crate::nixos::compute_config_fingerprint(&hw_content, &cfg_content);
+                    // Still compute fingerprint so we can persist it after switch.
+                    let hw_path = manager
+                        .config
+                        .hidden_volume_root
+                        .join("etc/nixos/hardware-configuration.nix");
+                    let cfg_path = manager
+                        .config
+                        .hidden_volume_root
+                        .join("config/nixos/configuration.nix");
 
-                // Load stored fingerprint from persisted state (may be None on first run)
-                let stored_fp: Option<String> = {
-                    let cached = manager.cached_state.lock().unwrap();
-                    cached.as_ref().and_then(|sf| sf.config_fingerprint.clone())
-                };
-
-                let step_timer = Stopwatch::start();
-
-                // --- Story 15.4, AC2/AC3: fast-path decision ---
-                // Story 15.5: when build is required, build_profile_with_fingerprint() delegates
-                // to build_profile_missing_only() which reuses the existing store path when
-                // available, and always passes --no-update-lock-file to avoid package updates.
-                let (generation_id, fp_out, fast_path_used) = builder
-                    .build_profile_with_fingerprint(&current_fp, stored_fp.as_deref())
-                    .map_err(|e| {
-                        // Story 9.3 AC#2: Structured error event for NixOS build failure
-                        let error_msg = match &e {
-                            NailsError::NixOSError(msg) => format!("NixOS build failed: {}", msg),
-                            other => format!("NixOS build failed: {}", other),
-                        };
-
-                        tracing::error!(
-                            error = %e,
-                            phase = "nixos_build",
-                            rollback = true,
-                            "NixOS profile build failed"
-                        );
-
-                        match e {
-                            NailsError::NixOSError(_) => NailsError::NixOSError(error_msg),
-                            other => other,
+                    let hw_content = match manager.filesystem.read_file_content(&hw_path) {
+                        Ok(content) => content,
+                        Err(e) => {
+                            tracing::warn!(
+                                path = %hw_path.display(),
+                                error = %e,
+                                "Failed to read hardware-configuration.nix for fingerprint, using empty content"
+                            );
+                            String::new()
                         }
-                    })?;
+                    };
+                    let cfg_content = match manager.filesystem.read_file_content(&cfg_path) {
+                        Ok(content) => content,
+                        Err(e) => {
+                            tracing::warn!(
+                                path = %cfg_path.display(),
+                                error = %e,
+                                "Failed to read configuration.nix for fingerprint, using empty content"
+                            );
+                            String::new()
+                        }
+                    };
 
-                if verbosity >= Verbosity::Normal {
-                    if fast_path_used {
-                        tracing::info!(
-                            step = "nixos_build",
-                            duration_ms = step_timer.elapsed().as_millis() as u64,
-                            generation = generation_id,
-                            "⚡ NixOS profile ready (fast path): generation {} ({})",
-                            generation_id,
-                            step_timer
-                        );
-                    } else {
-                        tracing::info!(
-                            step = "nixos_build",
-                            duration_ms = step_timer.elapsed().as_millis() as u64,
-                            generation = generation_id,
-                            "✓ NixOS profile ready: generation {} ({})",
-                            generation_id,
-                            step_timer
-                        );
+                    let current_fp =
+                        crate::nixos::compute_config_fingerprint(&hw_content, &cfg_content);
+
+                    (None, Some(current_fp))
+                } else {
+                    if verbosity >= Verbosity::Normal {
+                        tracing::info!("Building NixOS profile...");
                     }
+
+                    // --- Story 15.4, AC1: compute config fingerprint ---
+                    let hw_path = manager
+                        .config
+                        .hidden_volume_root
+                        .join("etc/nixos/hardware-configuration.nix");
+                    let cfg_path = manager
+                        .config
+                        .hidden_volume_root
+                        .join("config/nixos/configuration.nix");
+
+                    // Read config files for fingerprint computation (Story 15.4, AC1)
+                    // Log warnings but continue if files are missing - build will fail later if truly required
+                    let hw_content = match manager.filesystem.read_file_content(&hw_path) {
+                        Ok(content) => content,
+                        Err(e) => {
+                            tracing::warn!(
+                                path = %hw_path.display(),
+                                error = %e,
+                                "Failed to read hardware-configuration.nix for fingerprint, using empty content"
+                            );
+                            String::new()
+                        }
+                    };
+                    let cfg_content = match manager.filesystem.read_file_content(&cfg_path) {
+                        Ok(content) => content,
+                        Err(e) => {
+                            tracing::warn!(
+                                path = %cfg_path.display(),
+                                error = %e,
+                                "Failed to read configuration.nix for fingerprint, using empty content"
+                            );
+                            String::new()
+                        }
+                    };
+
+                    let current_fp =
+                        crate::nixos::compute_config_fingerprint(&hw_content, &cfg_content);
+
+                    // Load stored fingerprint from persisted state (may be None on first run)
+                    let stored_fp: Option<String> = {
+                        let cached = manager.cached_state.lock().unwrap();
+                        cached.as_ref().and_then(|sf| sf.config_fingerprint.clone())
+                    };
+
+                    let step_timer = Stopwatch::start();
+
+                    // --- Story 15.4, AC2/AC3: fast-path decision ---
+                    // Story 15.5: when build is required, build_profile_with_fingerprint() delegates
+                    // to build_profile_missing_only() which reuses the existing store path when
+                    // available, and always passes --no-update-lock-file to avoid package updates.
+                    let (generation_id, fp_out, fast_path_used) = builder
+                        .build_profile_with_fingerprint(&current_fp, stored_fp.as_deref())
+                        .map_err(|e| {
+                            // Story 9.3 AC#2: Structured error event for NixOS build failure
+                            let error_msg = match &e {
+                                NailsError::NixOSError(msg) => {
+                                    format!("NixOS build failed: {}", msg)
+                                }
+                                other => format!("NixOS build failed: {}", other),
+                            };
+
+                            tracing::error!(
+                                error = %e,
+                                phase = "nixos_build",
+                                rollback = true,
+                                "NixOS profile build failed"
+                            );
+
+                            match e {
+                                NailsError::NixOSError(_) => NailsError::NixOSError(error_msg),
+                                other => other,
+                            }
+                        })?;
+
+                    if verbosity >= Verbosity::Normal {
+                        if fast_path_used {
+                            tracing::info!(
+                                step = "nixos_build",
+                                duration_ms = step_timer.elapsed().as_millis() as u64,
+                                generation = generation_id,
+                                "⚡ NixOS profile ready (fast path): generation {} ({})",
+                                generation_id,
+                                step_timer
+                            );
+                        } else {
+                            tracing::info!(
+                                step = "nixos_build",
+                                duration_ms = step_timer.elapsed().as_millis() as u64,
+                                generation = generation_id,
+                                "✓ NixOS profile ready: generation {} ({})",
+                                generation_id,
+                                step_timer
+                            );
+                        }
+                    }
+                    (Some(generation_id), Some(fp_out))
                 }
-                (Some(generation_id), Some(fp_out))
             } else {
                 (None, None)
             }
@@ -2477,59 +2525,112 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         // Step 9: Switch NixOS profile and update nixos_generation (Story 4.7, AC3, Task 3.3)
-        if let Some(ref generation_id) = generation {
+        {
             let manager = manager_arc.lock().unwrap();
             if let Some(ref builder) = manager.nixos_builder {
-                if verbosity >= Verbosity::Normal {
-                    tracing::info!("Switching to NixOS profile...");
-                }
-                let step_timer = Stopwatch::start();
-                builder.switch_profile(generation_id).map_err(|e| {
-                    // Story 9.3 AC#2: Structured error event for NixOS switch failure
-                    let error_msg = match &e {
-                        NailsError::NixOSError(msg) => format!("NixOS switch failed: {}", msg),
-                        other => format!("NixOS switch failed: {}", other),
-                    };
+                if builder.is_flake() {
+                    if let Some(ref generation_id) = generation {
+                        if verbosity >= Verbosity::Normal {
+                            tracing::info!("Switching to hidden NixOS configuration...");
+                        }
+                        let step_timer = Stopwatch::start();
+                        builder.switch_profile(generation_id).map_err(|e| {
+                            // Story 9.3 AC#2: Structured error event for NixOS switch failure
+                            let error_msg = match &e {
+                                NailsError::NixOSError(msg) => {
+                                    format!("NixOS switch failed: {}", msg)
+                                }
+                                other => format!("NixOS switch failed: {}", other),
+                            };
 
-                    tracing::error!(
-                        error = %e,
-                        generation = generation_id,
-                        phase = "nixos_switch",
-                        rollback = true,
-                        "NixOS profile switch failed"
-                    );
+                            tracing::error!(
+                                error = %e,
+                                generation = generation_id,
+                                phase = "nixos_switch",
+                                rollback = true,
+                                "NixOS profile switch failed"
+                            );
 
-                    match e {
-                        NailsError::NixOSError(_) => NailsError::NixOSError(error_msg),
-                        other => other,
+                            match e {
+                                NailsError::NixOSError(_) => NailsError::NixOSError(error_msg),
+                                other => other,
+                            }
+                        })?;
+                        if verbosity >= Verbosity::Normal {
+                            tracing::info!(
+                                step = "nixos_switch",
+                                duration_ms = step_timer.elapsed().as_millis() as u64,
+                                "✓ NixOS profile switched ({})",
+                                step_timer
+                            );
+                        }
+
+                        // Story 4.7, AC3: Update nixos_generation in state file after successful switch
+                        // Story 15.4, AC4: Persist config_fingerprint so fast path works on next activation
+                        let mut cached = manager.cached_state.lock().unwrap();
+                        if let Some(ref mut state_file) = *cached {
+                            state_file.nixos_generation = Some(generation_id.clone());
+                            state_file.config_fingerprint = new_fingerprint.clone();
+
+                            // Save state file to disk (AC1, AC3)
+                            // State save failures here are non-critical - the switch succeeded and the system is functional.
+                            // The final ACTIVE transition save will persist this data. This incremental save aids crash recovery.
+                            drop(cached); // Release lock before saving
+                            if let Err(e) = manager.save_cached_state()
+                                && verbosity >= Verbosity::Debug
+                            {
+                                tracing::warn!("Failed to save nixos_generation to state: {}", e);
+                            }
+                            // Continue - switch succeeded, state save is for tracking/crash recovery only
+                        }
                     }
-                })?;
-                if verbosity >= Verbosity::Normal {
-                    tracing::info!(
-                        step = "nixos_switch",
-                        duration_ms = step_timer.elapsed().as_millis() as u64,
-                        "✓ NixOS profile switched ({})",
-                        step_timer
-                    );
-                }
-
-                // Story 4.7, AC3: Update nixos_generation in state file after successful switch
-                // Story 15.4, AC4: Persist config_fingerprint so fast path works on next activation
-                let mut cached = manager.cached_state.lock().unwrap();
-                if let Some(ref mut state_file) = *cached {
-                    state_file.nixos_generation = Some(generation_id.clone());
-                    state_file.config_fingerprint = new_fingerprint.clone();
-
-                    // Save state file to disk (AC1, AC3)
-                    // State save failures here are non-critical - the switch succeeded and the system is functional.
-                    // The final ACTIVE transition save will persist this data. This incremental save aids crash recovery.
-                    drop(cached); // Release lock before saving
-                    if let Err(e) = manager.save_cached_state()
-                        && verbosity >= Verbosity::Debug
-                    {
-                        tracing::warn!("Failed to save nixos_generation to state: {}", e);
+                } else {
+                    if verbosity >= Verbosity::Normal {
+                        tracing::info!("Switching to hidden NixOS configuration...");
                     }
-                    // Continue - switch succeeded, state save is for tracking/crash recovery only
+                    let step_timer = Stopwatch::start();
+                    builder.switch_profile("")
+                        .map_err(|e| {
+                            let error_msg = match &e {
+                                NailsError::NixOSError(msg) => {
+                                    format!("Legacy NixOS switch failed: {}", msg)
+                                }
+                                other => format!("Legacy NixOS switch failed: {}", other),
+                            };
+
+                            tracing::error!(
+                                error = %e,
+                                phase = "nixos_switch",
+                                rollback = true,
+                                "Legacy NixOS switch failed"
+                            );
+
+                            match e {
+                                NailsError::NixOSError(_) => NailsError::NixOSError(error_msg),
+                                other => other,
+                            }
+                        })?;
+                    if verbosity >= Verbosity::Normal {
+                        tracing::info!(
+                            step = "nixos_switch",
+                            duration_ms = step_timer.elapsed().as_millis() as u64,
+                            "✓ Legacy NixOS switch complete ({})",
+                            step_timer
+                        );
+                    }
+
+                    let mut cached = manager.cached_state.lock().unwrap();
+                    if let Some(ref mut state_file) = *cached {
+                        state_file.nixos_generation = None;
+                        state_file.config_fingerprint = new_fingerprint.clone();
+
+                        drop(cached);
+                        if let Err(e) = manager.save_cached_state()
+                            && verbosity >= Verbosity::Debug
+                        {
+                            tracing::warn!("Failed to save nixos_generation to state: {}", e);
+                        }
+                    }
                 }
             }
         }
@@ -2838,6 +2939,28 @@ impl<F: Filesystem> NailsManager<F> {
             let current = manager.current_state()?;
             let inactive_state = current.complete_deactivation()?;
             manager.update_state(inactive_state)?;
+        }
+
+        // Step 8.2: Switch back to the system (decoy) profile if NixOS switching is enabled.
+        let switch_error = {
+            let manager = manager_arc.lock().unwrap();
+            if let Some(ref builder) = manager.nixos_builder {
+                if manager.verbosity >= crate::verbosity::Verbosity::Normal {
+                    tracing::info!("Switching to decoy NixOS configuration...");
+                }
+                match builder.switch_to_system_profile() {
+                    Ok(()) => None,
+                    Err(e) => Some(e),
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(err) = switch_error {
+            // Deactivation already transitioned to Inactive; commit to prevent rollback to Active.
+            guard.commit();
+            return Err(err);
         }
 
         // Step 8.5 (Story 15.3, AC3): After all overlays are unmounted, verify the base

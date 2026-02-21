@@ -218,6 +218,14 @@ pub struct NixOSBuilder {
     profile_path: PathBuf,
     /// Command executor (for testability)
     executor: Box<dyn CommandExecutor + Send + Sync>,
+    /// Build mode (flake or legacy)
+    build_mode: NixOSBuildMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NixOSBuildMode {
+    Flake,
+    Legacy { config_path: PathBuf },
 }
 
 impl NixOSBuilder {
@@ -244,6 +252,26 @@ impl NixOSBuilder {
             config_path,
             profile_path,
             executor: Box::new(RealCommandExecutor),
+            build_mode: NixOSBuildMode::Flake,
+        }
+    }
+
+    /// Create a new legacy (non-flake) NixOSBuilder
+    ///
+    /// # Arguments
+    ///
+    /// - `config_path`: Path to /etc/nixos/configuration.nix
+    /// - `profile_path`: Path to profile symlink for caching
+    pub fn new_legacy(config_path: PathBuf, profile_path: PathBuf) -> Self {
+        let config_dir = config_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/etc/nixos"));
+        Self {
+            config_path: config_dir,
+            profile_path,
+            executor: Box::new(RealCommandExecutor),
+            build_mode: NixOSBuildMode::Legacy { config_path },
         }
     }
 
@@ -258,7 +286,30 @@ impl NixOSBuilder {
             config_path,
             profile_path,
             executor,
+            build_mode: NixOSBuildMode::Flake,
         }
+    }
+
+    #[cfg(test)]
+    fn new_legacy_with_executor(
+        config_path: PathBuf,
+        profile_path: PathBuf,
+        executor: Box<dyn CommandExecutor + Send + Sync>,
+    ) -> Self {
+        let config_dir = config_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/etc/nixos"));
+        Self {
+            config_path: config_dir,
+            profile_path,
+            executor,
+            build_mode: NixOSBuildMode::Legacy { config_path },
+        }
+    }
+
+    pub fn is_flake(&self) -> bool {
+        matches!(self.build_mode, NixOSBuildMode::Flake)
     }
 
     /// Get cached generation ID if profile exists
@@ -636,6 +687,11 @@ impl NixOSBuilder {
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
     pub fn build_profile_missing_only(&self) -> Result<(String, bool)> {
+        if !self.is_flake() {
+            return Err(NailsError::NixOSError(
+                "Legacy NixOS builds are not supported in the missing-only path".into(),
+            ));
+        }
         // AC2: Check whether the result store path is already present.
         if let Some(store_path) = self.get_result_store_path()? {
             let generation_id = self.extract_generation_from_store_path(&store_path)?;
@@ -813,6 +869,9 @@ impl NixOSBuilder {
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
     pub fn switch_profile(&self, generation: &str) -> Result<()> {
+        if !self.is_flake() {
+            return self.switch_legacy();
+        }
         // Validate profile exists before attempting switch
         if !self.profile_exists(generation)? {
             return Err(NailsError::NixOSError(format!(
@@ -895,7 +954,7 @@ impl NixOSBuilder {
     fn get_current_generation(&self) -> Result<Option<String>> {
         // Read the current system generation from /nix/var/nix/profiles/system
         // This is the currently active NixOS system, not our custom profile
-        let system_profile = PathBuf::from("/nix/var/nix/profiles/system");
+        let system_profile = system_profile_path();
 
         if !system_profile.exists() {
             return Ok(None);
@@ -927,7 +986,7 @@ impl NixOSBuilder {
         // Construct path to the profile's activation script for rollback
         // This uses the system profile path, not our custom nails profile
         let system_profile_path =
-            PathBuf::from("/nix/var/nix/profiles").join(format!("system-{}-link", generation));
+            system_profiles_dir().join(format!("system-{}-link", generation));
 
         let switch_script = system_profile_path.join("bin/switch-to-configuration");
 
@@ -941,6 +1000,69 @@ impl NixOSBuilder {
 
         Ok(())
     }
+
+    /// Switch back to the current system profile (decoy) generation.
+    ///
+    /// Uses the system profile's switch-to-configuration script directly.
+    pub fn switch_to_system_profile(&self) -> Result<()> {
+        let system_profile = system_profile_path();
+
+        if !system_profile.exists() {
+            return Ok(());
+        }
+
+        let switch_script = system_profile.join("bin/switch-to-configuration");
+
+        let (success, _stdout, stderr) = self
+            .executor
+            .execute_switch_to_configuration(&switch_script, &["switch"])?;
+
+        if !success {
+            return Err(NailsError::NixOSError(format!(
+                "System profile switch failed: {}",
+                stderr
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn switch_legacy(&self) -> Result<()> {
+        let config_path = match &self.build_mode {
+            NixOSBuildMode::Legacy { config_path } => config_path,
+            NixOSBuildMode::Flake => {
+                return Err(NailsError::NixOSError(
+                    "switch_legacy called for flake builder".into(),
+                ))
+            }
+        };
+
+        let arg = format!("nixos-config={}", config_path.display());
+        let (success, _stdout, stderr) =
+            self.executor.execute_nixos_rebuild(&["switch", "-I", &arg])?;
+
+        if !success {
+            return Err(NailsError::NixOSError(format!(
+                "Legacy nixos-rebuild switch failed: {}",
+                stderr
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+fn system_profile_path() -> PathBuf {
+    std::env::var_os("NAILS_SYSTEM_PROFILE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/nix/var/nix/profiles/system"))
+}
+
+fn system_profiles_dir() -> PathBuf {
+    system_profile_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("/nix/var/nix/profiles"))
 }
 
 // ============================================================================
@@ -1341,6 +1463,29 @@ pub fn verify_base_config_clean<F: Filesystem>(fs: &F) -> Result<bool> {
     Ok(true)
 }
 
+/// Ensure the hardware configuration includes the NAILS import block.
+///
+/// Returns updated content when the import is missing, or the original content
+/// when the import is already present (idempotent).
+pub(crate) fn ensure_nails_import_block(content: &str) -> String {
+    if contains_active_path(content, "./nails/configuration.nix") {
+        return content.to_string();
+    }
+
+    const NAILS_ENTRY: &str = "    ./nails/configuration.nix";
+    const INJECTED_BLOCK: &str =
+        "# NAILS: injected import (do not edit)\nimports = [\n  ./nails/configuration.nix\n];\n\n";
+
+    if let Some(imports_pos) = find_imports_bracket(content) {
+        // An imports = [ ... ] block exists — insert our entry as the first element.
+        let (before, after) = content.split_at(imports_pos);
+        format!("{}{}\n{}", before, NAILS_ENTRY, after)
+    } else {
+        // No imports block — prepend a complete one.
+        format!("{}{}", INJECTED_BLOCK, content)
+    }
+}
+
 /// Injects a NAILS import block into the overlayed `/etc/nixos/hardware-configuration.nix`.
 ///
 /// This function must be called **after** the `/etc` overlay has been mounted so that
@@ -1376,24 +1521,11 @@ pub fn inject_import_block<F: Filesystem>(fs: &F) -> Result<()> {
 
     let content = fs.read_file_content(&target)?;
 
-    // Idempotency check — already injected outside comments/strings.
-    if contains_active_path(&content, "./nails/configuration.nix") {
+    let new_content = ensure_nails_import_block(&content);
+    if new_content == content {
         tracing::debug!("inject_import_block: ./nails/configuration.nix already present, skipping");
         return Ok(());
     }
-
-    const NAILS_ENTRY: &str = "    ./nails/configuration.nix";
-    const INJECTED_BLOCK: &str =
-        "# NAILS: injected import (do not edit)\nimports = [\n  ./nails/configuration.nix\n];\n\n";
-
-    let new_content = if let Some(imports_pos) = find_imports_bracket(&content) {
-        // An imports = [ ... ] block exists — insert our entry as the first element.
-        let (before, after) = content.split_at(imports_pos);
-        format!("{}{}\n{}", before, NAILS_ENTRY, after)
-    } else {
-        // No imports block — prepend a complete one.
-        format!("{}{}", INJECTED_BLOCK, content)
-    };
 
     fs.write_file_content(&target, &new_content)?;
     tracing::info!(
