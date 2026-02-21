@@ -1250,6 +1250,16 @@ impl<F: Filesystem> NailsManager<F> {
         Ok(())
     }
 
+    /// Clear overlay_status in cached state without altering other fields.
+    ///
+    /// Used during deactivation to avoid losing nixos_generation/config_fingerprint.
+    pub(crate) fn clear_overlay_status_in_cache(&self) {
+        let mut cached = self.cached_state.lock().unwrap();
+        if let Some(ref mut state_file) = *cached {
+            state_file.overlay_status.clear();
+        }
+    }
+
     /// Verify state file matches actual system state
     ///
     /// Checks that all overlays listed in state file are actually
@@ -1872,7 +1882,38 @@ impl<F: Filesystem> NailsManager<F> {
                     let current_fp =
                         crate::nixos::compute_config_fingerprint(&hw_content, &cfg_content);
 
-                    (None, Some(current_fp))
+                    let (stored_fp, stored_generation) = {
+                        let cached = manager.cached_state.lock().unwrap();
+                        (
+                            cached.as_ref().and_then(|sf| sf.config_fingerprint.clone()),
+                            cached.as_ref().and_then(|sf| sf.nixos_generation.clone()),
+                        )
+                    };
+
+                    // Debug visibility into fast-path decision (Story 15.4)
+                    if verbosity >= Verbosity::Normal {
+                        tracing::info!(
+                            stored_fingerprint = %stored_fp.as_deref().unwrap_or("none"),
+                            current_fingerprint = %current_fp,
+                            stored_generation = %stored_generation.as_deref().unwrap_or("none"),
+                            "Legacy fast-path check"
+                        );
+                    }
+
+                    let mut fast_path_generation: Option<String> = None;
+                    if stored_fp.as_deref() == Some(current_fp.as_str()) {
+                        if let Some(ref generation_id) = stored_generation {
+                            if verbosity >= Verbosity::Normal {
+                                tracing::info!(
+                                    generation = %generation_id,
+                                    "⚡ Legacy fast path: fingerprint matches — attempting generation switch"
+                                );
+                            }
+                            fast_path_generation = Some(generation_id.clone());
+                        }
+                    }
+
+                    (fast_path_generation, Some(current_fp))
                 } else {
                     if verbosity >= Verbosity::Normal {
                         tracing::info!("Building NixOS profile...");
@@ -2694,27 +2735,65 @@ impl<F: Filesystem> NailsManager<F> {
                         })?;
                     }
                     let step_timer = Stopwatch::start();
-                    builder.switch_profile("")
-                        .map_err(|e| {
-                            let error_msg = match &e {
-                                NailsError::NixOSError(msg) => {
-                                    format!("Legacy NixOS switch failed: {}", msg)
-                                }
-                                other => format!("Legacy NixOS switch failed: {}", other),
-                            };
-
-                            tracing::error!(
-                                error = %e,
-                                phase = "nixos_switch",
-                                rollback = true,
-                                "Legacy NixOS switch failed"
-                            );
-
-                            match e {
-                                NailsError::NixOSError(_) => NailsError::NixOSError(error_msg),
-                                other => other,
+                    if let Some(ref generation_id) = generation {
+                        if let Err(e) = builder.switch_system_generation(generation_id) {
+                            if verbosity >= Verbosity::Normal {
+                                tracing::warn!(
+                                    error = %e,
+                                    generation = generation_id,
+                                    "Legacy fast-path switch failed, falling back to nixos-rebuild"
+                                );
                             }
-                        })?;
+
+                            builder
+                                .switch_profile("")
+                                .map_err(|e| {
+                                    let error_msg = match &e {
+                                        NailsError::NixOSError(msg) => {
+                                            format!("Legacy NixOS switch failed: {}", msg)
+                                        }
+                                        other => format!("Legacy NixOS switch failed: {}", other),
+                                    };
+
+                                    tracing::error!(
+                                        error = %e,
+                                        phase = "nixos_switch",
+                                        rollback = true,
+                                        "Legacy NixOS switch failed"
+                                    );
+
+                                    match e {
+                                        NailsError::NixOSError(_) => {
+                                            NailsError::NixOSError(error_msg)
+                                        }
+                                        other => other,
+                                    }
+                                })?;
+                        }
+                    } else {
+                        builder
+                            .switch_profile("")
+                            .map_err(|e| {
+                                let error_msg = match &e {
+                                    NailsError::NixOSError(msg) => {
+                                        format!("Legacy NixOS switch failed: {}", msg)
+                                    }
+                                    other => format!("Legacy NixOS switch failed: {}", other),
+                                };
+
+                                tracing::error!(
+                                    error = %e,
+                                    phase = "nixos_switch",
+                                    rollback = true,
+                                    "Legacy NixOS switch failed"
+                                );
+
+                                match e {
+                                    NailsError::NixOSError(_) => NailsError::NixOSError(error_msg),
+                                    other => other,
+                                }
+                            })?;
+                    }
                     if verbosity >= Verbosity::Normal {
                         tracing::info!(
                             step = "nixos_switch",
@@ -2726,7 +2805,13 @@ impl<F: Filesystem> NailsManager<F> {
 
                     let mut cached = manager.cached_state.lock().unwrap();
                     if let Some(ref mut state_file) = *cached {
-                        state_file.nixos_generation = None;
+                        if let Some(ref generation_id) = generation {
+                            state_file.nixos_generation = Some(generation_id.clone());
+                        } else if let Ok(current_gen) =
+                            builder.current_system_generation()
+                        {
+                            state_file.nixos_generation = current_gen;
+                        }
                         state_file.config_fingerprint = new_fingerprint.clone();
 
                         drop(cached);

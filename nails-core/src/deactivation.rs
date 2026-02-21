@@ -337,8 +337,10 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
             }
         };
 
-        // Step 4: Transition to INACTIVE - AC2
-        manager.force_state(SystemState::Inactive)?;
+        // Step 4: Clear overlay_status and transition to INACTIVE - AC2
+        manager.clear_overlay_status_in_cache();
+        let inactive_state = manager.current_state()?.complete_deactivation()?;
+        manager.update_state(inactive_state)?;
 
         // Step 5: Switch to newest available base system generation (decoy)
         let switch_error = if let Some(system_profile) =

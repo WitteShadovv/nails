@@ -916,6 +916,28 @@ impl NixOSBuilder {
         Ok(())
     }
 
+    /// Switch to a specific system generation (non-flake fast path).
+    pub fn switch_system_generation(&self, generation: &str) -> Result<()> {
+        if !self.system_generation_exists(generation)? {
+            return Err(NailsError::NixOSError(format!(
+                "System generation not found: {}",
+                generation
+            )));
+        }
+        self.switch_to_generation(generation)
+    }
+
+    /// Check if a system generation exists under /nix/var/nix/profiles.
+    pub fn system_generation_exists(&self, generation: &str) -> Result<bool> {
+        let path = system_profiles_dir().join(format!("system-{}-link", generation));
+        Ok(path.exists())
+    }
+
+    /// Get the current active system generation (if any).
+    pub fn current_system_generation(&self) -> Result<Option<String>> {
+        self.get_current_generation()
+    }
+
     /// Check if profile exists for given generation
     ///
     /// Validates that the profile path exists in the filesystem.
