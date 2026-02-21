@@ -291,6 +291,7 @@ impl NixOSBuilder {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     fn new_legacy_with_executor(
         config_path: PathBuf,
         profile_path: PathBuf,
@@ -1007,8 +1008,7 @@ impl NixOSBuilder {
     fn switch_to_generation(&self, generation: &str) -> Result<()> {
         // Construct path to the profile's activation script for rollback
         // This uses the system profile path, not our custom nails profile
-        let system_profile_path =
-            system_profiles_dir().join(format!("system-{}-link", generation));
+        let system_profile_path = system_profiles_dir().join(format!("system-{}-link", generation));
 
         let switch_script = system_profile_path.join("bin/switch-to-configuration");
 
@@ -1055,13 +1055,14 @@ impl NixOSBuilder {
             NixOSBuildMode::Flake => {
                 return Err(NailsError::NixOSError(
                     "switch_legacy called for flake builder".into(),
-                ))
+                ));
             }
         };
 
         let arg = format!("nixos-config={}", config_path.display());
-        let (success, _stdout, stderr) =
-            self.executor.execute_nixos_rebuild(&["switch", "-I", &arg])?;
+        let (success, _stdout, stderr) = self
+            .executor
+            .execute_nixos_rebuild(&["switch", "-I", &arg])?;
 
         if !success {
             return Err(NailsError::NixOSError(format!(

@@ -826,6 +826,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_scripts_dir_path() {
         let shell = create_test_shell();
         let scripts_dir = shell.scripts_dir();
@@ -833,6 +834,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_prompt_script_paths() {
         let shell = create_test_shell();
 
@@ -847,6 +849,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cleanup_script_paths() {
         let shell = create_test_shell();
 
@@ -873,6 +876,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_write_prompt_scripts_creates_directory() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -894,6 +898,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_write_prompt_scripts_writes_all_files() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -936,6 +941,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_write_prompt_scripts_idempotent() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -967,6 +973,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_write_prompt_scripts_uses_custom_hidden_volume_path() {
         let fs = MockFilesystem::new();
         let config = Config {
@@ -992,6 +999,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_script_content_has_shebang() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1027,6 +1035,7 @@ mod tests {
     // Alias script tests
 
     #[test]
+    #[serial]
     fn test_write_alias_scripts_creates_directory() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1048,6 +1057,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_write_alias_scripts_writes_all_files() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1082,6 +1092,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_alias_script_path_bash() {
         let shell = create_test_shell();
         let path = shell.alias_script_path(ShellType::Bash);
@@ -1089,6 +1100,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_alias_script_path_zsh() {
         let shell = create_test_shell();
         let path = shell.alias_script_path(ShellType::Zsh);
@@ -1096,6 +1108,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_alias_script_path_fish() {
         let shell = create_test_shell();
         let path = shell.alias_script_path(ShellType::Fish);
@@ -1103,6 +1116,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_alias_cleanup_script_path_bash() {
         let shell = create_test_shell();
         let path = shell.alias_cleanup_script_path(ShellType::Bash);
@@ -1110,6 +1124,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_alias_cleanup_script_path_zsh() {
         let shell = create_test_shell();
         let path = shell.alias_cleanup_script_path(ShellType::Zsh);
@@ -1117,6 +1132,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_alias_cleanup_script_path_fish() {
         let shell = create_test_shell();
         let path = shell.alias_cleanup_script_path(ShellType::Fish);
@@ -1124,6 +1140,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_bash_zsh_alias_script_content() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1147,6 +1164,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_fish_alias_script_content() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1170,6 +1188,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_alias_script_uses_actual_binary_path() {
         let fs = MockFilesystem::new();
         let config = Config {
@@ -1195,6 +1214,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_bash_zsh_cleanup_script_content() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1216,6 +1236,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_fish_cleanup_script_content() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1237,6 +1258,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_write_alias_scripts_idempotent() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1266,6 +1288,7 @@ mod tests {
     // Tests for shell_setup() and ShellSetupResult
 
     #[test]
+    #[serial]
     fn test_shell_setup_with_bash() {
         let fs = MockFilesystem::new();
         let config = Config::default();
@@ -1578,6 +1601,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_shell_setup_result_paths() {
         let fs = MockFilesystem::new();
         let config = Config {

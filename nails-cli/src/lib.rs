@@ -340,10 +340,7 @@ pub mod cli {
                         std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
                     );
                     Arc::new(Mutex::new(NailsManager::with_nixos(
-                        filesystem,
-                        config,
-                        state_path,
-                        builder,
+                        filesystem, config, state_path, builder,
                     )))
                 } else if etc_flake.exists() {
                     let builder = NixOSBuilder::new(
@@ -351,32 +348,15 @@ pub mod cli {
                         std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
                     );
                     Arc::new(Mutex::new(NailsManager::with_nixos(
-                        filesystem,
-                        config,
-                        state_path,
-                        builder,
+                        filesystem, config, state_path, builder,
                     )))
-                } else if legacy_config.exists() {
+                } else if legacy_config.exists() || system_profile.exists() {
                     let builder = NixOSBuilder::new_legacy(
                         legacy_config,
                         std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
                     );
                     Arc::new(Mutex::new(NailsManager::with_nixos(
-                        filesystem,
-                        config,
-                        state_path,
-                        builder,
-                    )))
-                } else if system_profile.exists() {
-                    let builder = NixOSBuilder::new_legacy(
-                        legacy_config,
-                        std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
-                    );
-                    Arc::new(Mutex::new(NailsManager::with_nixos(
-                        filesystem,
-                        config,
-                        state_path,
-                        builder,
+                        filesystem, config, state_path, builder,
                     )))
                 } else {
                     Arc::new(Mutex::new(NailsManager::new(
@@ -489,10 +469,7 @@ pub mod cli {
                         std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
                     );
                     Arc::new(Mutex::new(NailsManager::with_nixos(
-                        filesystem,
-                        config,
-                        state_path,
-                        builder,
+                        filesystem, config, state_path, builder,
                     )))
                 } else if legacy_config.exists() {
                     let builder = NixOSBuilder::new_legacy(
@@ -500,10 +477,7 @@ pub mod cli {
                         std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
                     );
                     Arc::new(Mutex::new(NailsManager::with_nixos(
-                        filesystem,
-                        config,
-                        state_path,
-                        builder,
+                        filesystem, config, state_path, builder,
                     )))
                 } else {
                     Arc::new(Mutex::new(NailsManager::new(

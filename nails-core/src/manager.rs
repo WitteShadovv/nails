@@ -79,18 +79,11 @@ fn find_newest_system_profile<F: Filesystem>(fs: &F) -> Result<Option<PathBuf>> 
 
     let mut best: Option<(u64, PathBuf)> = None;
     for entry in fs.list_directory(&profiles_dir)? {
-        let name = entry
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        if let Some(generation) = parse_system_generation(name) {
-            if best
-                .as_ref()
-                .map(|(g, _)| generation > *g)
-                .unwrap_or(true)
-            {
-                best = Some((generation, entry));
-            }
+        let name = entry.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if let Some(generation) = parse_system_generation(name)
+            && best.as_ref().map(|(g, _)| generation > *g).unwrap_or(true)
+        {
+            best = Some((generation, entry));
         }
     }
 
@@ -1901,16 +1894,16 @@ impl<F: Filesystem> NailsManager<F> {
                     }
 
                     let mut fast_path_generation: Option<String> = None;
-                    if stored_fp.as_deref() == Some(current_fp.as_str()) {
-                        if let Some(ref generation_id) = stored_generation {
-                            if verbosity >= Verbosity::Normal {
-                                tracing::info!(
-                                    generation = %generation_id,
-                                    "⚡ Legacy fast path: fingerprint matches — attempting generation switch"
-                                );
-                            }
-                            fast_path_generation = Some(generation_id.clone());
+                    if stored_fp.as_deref() == Some(current_fp.as_str())
+                        && let Some(ref generation_id) = stored_generation
+                    {
+                        if verbosity >= Verbosity::Normal {
+                            tracing::info!(
+                                generation = %generation_id,
+                                "Legacy fast path: fingerprint matches — attempting generation switch"
+                            );
                         }
+                        fast_path_generation = Some(generation_id.clone());
                     }
 
                     (fast_path_generation, Some(current_fp))
@@ -1999,7 +1992,7 @@ impl<F: Filesystem> NailsManager<F> {
                                 step = "nixos_build",
                                 duration_ms = step_timer.elapsed().as_millis() as u64,
                                 generation = generation_id,
-                                "⚡ NixOS profile ready (fast path): generation {} ({})",
+                                "NixOS profile ready (fast path): generation {} ({})",
                                 generation_id,
                                 step_timer
                             );
@@ -2651,9 +2644,7 @@ impl<F: Filesystem> NailsManager<F> {
                         if verbosity >= Verbosity::Normal {
                             tracing::info!("Switching to hidden NixOS configuration...");
                         }
-                        if let Some(system_profile) =
-                            select_system_profile(&manager.filesystem)?
-                        {
+                        if let Some(system_profile) = select_system_profile(&manager.filesystem)? {
                             ensure_run_current_system_symlink(
                                 &manager.filesystem,
                                 &system_profile,
@@ -2720,19 +2711,14 @@ impl<F: Filesystem> NailsManager<F> {
                     if verbosity >= Verbosity::Normal {
                         tracing::info!("Switching to hidden NixOS configuration...");
                     }
-                    if let Some(system_profile) =
-                        select_system_profile(&manager.filesystem)?
-                    {
-                        ensure_run_current_system_symlink(
-                            &manager.filesystem,
-                            &system_profile,
-                        )
-                        .map_err(|e| {
-                            NailsError::NixOSError(format!(
-                                "Failed to prepare /run/current-system for NixOS switch: {}",
-                                e
-                            ))
-                        })?;
+                    if let Some(system_profile) = select_system_profile(&manager.filesystem)? {
+                        ensure_run_current_system_symlink(&manager.filesystem, &system_profile)
+                            .map_err(|e| {
+                                NailsError::NixOSError(format!(
+                                    "Failed to prepare /run/current-system for NixOS switch: {}",
+                                    e
+                                ))
+                            })?;
                     }
                     let step_timer = Stopwatch::start();
                     if let Some(ref generation_id) = generation {
@@ -2745,35 +2731,7 @@ impl<F: Filesystem> NailsManager<F> {
                                 );
                             }
 
-                            builder
-                                .switch_profile("")
-                                .map_err(|e| {
-                                    let error_msg = match &e {
-                                        NailsError::NixOSError(msg) => {
-                                            format!("Legacy NixOS switch failed: {}", msg)
-                                        }
-                                        other => format!("Legacy NixOS switch failed: {}", other),
-                                    };
-
-                                    tracing::error!(
-                                        error = %e,
-                                        phase = "nixos_switch",
-                                        rollback = true,
-                                        "Legacy NixOS switch failed"
-                                    );
-
-                                    match e {
-                                        NailsError::NixOSError(_) => {
-                                            NailsError::NixOSError(error_msg)
-                                        }
-                                        other => other,
-                                    }
-                                })?;
-                        }
-                    } else {
-                        builder
-                            .switch_profile("")
-                            .map_err(|e| {
+                            builder.switch_profile("").map_err(|e| {
                                 let error_msg = match &e {
                                     NailsError::NixOSError(msg) => {
                                         format!("Legacy NixOS switch failed: {}", msg)
@@ -2793,6 +2751,28 @@ impl<F: Filesystem> NailsManager<F> {
                                     other => other,
                                 }
                             })?;
+                        }
+                    } else {
+                        builder.switch_profile("").map_err(|e| {
+                            let error_msg = match &e {
+                                NailsError::NixOSError(msg) => {
+                                    format!("Legacy NixOS switch failed: {}", msg)
+                                }
+                                other => format!("Legacy NixOS switch failed: {}", other),
+                            };
+
+                            tracing::error!(
+                                error = %e,
+                                phase = "nixos_switch",
+                                rollback = true,
+                                "Legacy NixOS switch failed"
+                            );
+
+                            match e {
+                                NailsError::NixOSError(_) => NailsError::NixOSError(error_msg),
+                                other => other,
+                            }
+                        })?;
                     }
                     if verbosity >= Verbosity::Normal {
                         tracing::info!(
@@ -2807,9 +2787,7 @@ impl<F: Filesystem> NailsManager<F> {
                     if let Some(ref mut state_file) = *cached {
                         if let Some(ref generation_id) = generation {
                             state_file.nixos_generation = Some(generation_id.clone());
-                        } else if let Ok(current_gen) =
-                            builder.current_system_generation()
-                        {
+                        } else if let Ok(current_gen) = builder.current_system_generation() {
                             state_file.nixos_generation = current_gen;
                         }
                         state_file.config_fingerprint = new_fingerprint.clone();
@@ -3270,6 +3248,8 @@ mod tests {
             "/etc/nixos/hardware-configuration.nix",
             "{ config, lib, pkgs, ... }:\n{ imports = [ ./nails/configuration.nix ]; }",
         );
+        fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
 
         // Hidden overlay hardware config
         let hidden_etc = hidden_root.join("etc/nixos");
@@ -4477,6 +4457,8 @@ mod tests {
 
         // Disable swap
         fs.mock_set_swap_enabled(false);
+        setup_nixos_config_check(&fs, mock_hidden_vol);
+        setup_nixos_config_check(&fs, mock_hidden_vol);
 
         let config = Config {
             hidden_volume_root: mock_hidden_vol.to_path_buf(),
@@ -9517,5 +9499,32 @@ mod tests {
 
         // Test passes: config_fingerprint field is properly saved to disk and loaded back,
         // validating the state persistence integration for Story 15.4
+    }
+
+    #[test]
+    fn test_ensure_run_current_system_symlink_replaces_existing_symlink() {
+        let fs = MockFilesystem::new();
+        let run_current = PathBuf::from("/run/current-system");
+        let target = PathBuf::from("/nix/var/nix/profiles/system-1-link");
+
+        fs.mock_set_path_exists(run_current.to_str().unwrap(), true);
+        fs.mock_set_is_symlink(run_current.to_str().unwrap(), true);
+
+        let result = ensure_run_current_system_symlink(&fs, &target);
+        assert!(result.is_ok());
+        assert_eq!(fs.mock_get_symlink_target(&run_current), Some(target));
+    }
+
+    #[test]
+    fn test_ensure_run_current_system_symlink_rejects_non_symlink() {
+        let fs = MockFilesystem::new();
+        let run_current = PathBuf::from("/run/current-system");
+        let target = PathBuf::from("/nix/var/nix/profiles/system-1-link");
+
+        fs.mock_set_path_exists(run_current.to_str().unwrap(), true);
+        fs.mock_set_is_symlink(run_current.to_str().unwrap(), false);
+
+        let result = ensure_run_current_system_symlink(&fs, &target);
+        assert!(result.is_err());
     }
 }

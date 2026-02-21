@@ -50,11 +50,11 @@
 //! }
 //! ```
 
+use crate::manager::{ensure_run_current_system_symlink, select_system_profile};
 use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError,
     NailsManager, Result, StateGuard, SystemState,
 };
-use crate::manager::{ensure_run_current_system_symlink, select_system_profile};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -348,8 +348,7 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
         {
             tracing::info!("Switching to decoy NixOS configuration...");
 
-            if let Err(e) =
-                ensure_run_current_system_symlink(manager.filesystem(), &system_profile)
+            if let Err(e) = ensure_run_current_system_symlink(manager.filesystem(), &system_profile)
             {
                 Some(NailsError::NixOSError(format!(
                     "Failed to prepare /run/current-system for NixOS switch: {}",
@@ -678,7 +677,10 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
 mod tests {
     use super::*;
     use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
-    use crate::{Config, MockFilesystem};
+    use crate::{Config, MockFilesystem, StateFile};
+    use serial_test::serial;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
     /// Helper function to check if logs contain a specific string
@@ -688,9 +690,41 @@ mod tests {
         tracing_test::internal::logs_with_scope_contain("", s)
     }
 
+    /// Helper function to configure a stub system profile for decoy switching.
+    fn setup_system_profile_stub(fs: &MockFilesystem) {
+        let profile_root = tempfile::tempdir().expect("tempdir").keep();
+        let system_profile_path = profile_root.join("system");
+        unsafe {
+            std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile_path);
+        }
+
+        let profiles_dir = system_profile_path
+            .parent()
+            .expect("profile root")
+            .to_path_buf();
+        let system_link = profiles_dir.join("system-1-link");
+        let bin_dir = system_link.join("bin");
+        let switch_script = bin_dir.join("switch-to-configuration");
+
+        fs::create_dir_all(&bin_dir).expect("create stub bin dir");
+        fs::write(&switch_script, "#!/bin/sh\nexit 0\n").expect("write stub switch script");
+        let mut perms = fs::metadata(&switch_script)
+            .expect("stat switch script")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&switch_script, perms).expect("chmod switch script");
+
+        fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
+        fs.mock_set_path_type(profiles_dir.to_str().unwrap(), "directory");
+        fs.mock_set_directory_contents(&profiles_dir, vec![system_link]);
+        fs.mock_set_path_exists(switch_script.to_str().unwrap(), true);
+        fs.mock_set_path_type(switch_script.to_str().unwrap(), "file");
+    }
+
     /// Helper function to create a test manager in ACTIVE state
     fn setup_active_manager() -> Arc<Mutex<NailsManager<MockFilesystem>>> {
         let fs = MockFilesystem::new();
+        setup_system_profile_stub(&fs);
 
         // Setup mock filesystem for active state
         fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
@@ -724,6 +758,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_deactivation_report_new() {
         let report = DeactivationReport {
             cleanup_report: CleanupReport::default(),
@@ -739,6 +774,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_deactivation_report_display_already_inactive() {
         let report = DeactivationReport {
             cleanup_report: CleanupReport::default(),
@@ -753,6 +789,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_deactivation_report_display_with_items() {
         let mut cleanup_report = CleanupReport::new(CleanupMode::Fast);
         cleanup_report.add_cleaned("Removed 3 history entries");
@@ -775,6 +812,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_deactivation_orchestrator_new() {
         let manager = setup_active_manager();
         let config = CleanupConfig::default();
@@ -789,6 +827,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_idempotent_deactivation() {
         // Setup manager in INACTIVE state
         let fs = MockFilesystem::new();
@@ -824,6 +863,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_deactivation_from_non_active_state_fails() {
         // Setup manager in ACTIVATING state (invalid for deactivation)
         let fs = MockFilesystem::new();
@@ -866,6 +906,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_successful_deactivation() {
         let manager = setup_active_manager();
 
@@ -894,6 +935,76 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn test_deactivation_preserves_generation_and_fingerprint() {
+        let fs = MockFilesystem::new();
+        setup_system_profile_stub(&fs);
+
+        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+        fs.mock_set_path_exists("/mnt/hidden-volume", true);
+        fs.mock_set_path_type(DEFAULT_HIDDEN_VOLUME_ROOT, "directory");
+        fs.mock_set_path_type("/mnt/hidden-volume", "directory");
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mock_hidden_vol = temp_dir.path();
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
+
+        let state_file = StateFile {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            state: SystemState::Active {
+                activated_at: chrono::Utc::now(),
+                overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
+            },
+            nixos_generation: Some("6".to_string()),
+            config_fingerprint: Some("deadbeefcafebabe".to_string()),
+            overlay_status: std::collections::HashMap::new(),
+            failed_overlays: Vec::new(),
+            last_modified: chrono::Utc::now(),
+            checksum: None,
+        };
+        state_file
+            .save_with_custom_root(&state_path, mock_hidden_vol)
+            .unwrap();
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            ..Config::test_default()
+        };
+
+        let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+
+        {
+            let m = manager.lock().unwrap();
+            m.filesystem().mock_set_mounted(Path::new("/home"), true);
+            m.filesystem().mock_set_mounted(Path::new("/etc"), true);
+        }
+
+        let orchestrator =
+            DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+        let result = orchestrator.run();
+        assert!(result.is_ok());
+
+        let loaded = StateFile::load(
+            &manager
+                .lock()
+                .unwrap()
+                .config()
+                .hidden_volume_root
+                .join("state.json"),
+        )
+        .unwrap();
+        assert_eq!(loaded.nixos_generation, Some("6".to_string()));
+        assert_eq!(
+            loaded.config_fingerprint,
+            Some("deadbeefcafebabe".to_string())
+        );
+    }
+
+    #[test]
+    #[serial]
     fn test_cleanup_failure_rollback() {
         let manager = setup_active_manager();
 
@@ -956,6 +1067,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cleanup_failure_keeps_overlays_mounted() {
         // Additional test for AC4: verify overlays remain mounted after cleanup failure
         let manager = setup_active_manager();
@@ -1001,6 +1113,7 @@ mod tests {
     // ============================================================================
 
     #[test]
+    #[serial]
     #[tracing_test::traced_test]
     fn test_deactivation_emits_structured_events() {
         let manager = setup_active_manager();
@@ -1026,6 +1139,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[tracing_test::traced_test]
     fn test_deactivation_cleanup_event_includes_count() {
         let manager = setup_active_manager();
@@ -1056,6 +1170,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[tracing_test::traced_test]
     fn test_deactivation_unmount_event_includes_overlay_list() {
         let manager = setup_active_manager();
@@ -1079,6 +1194,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[tracing_test::traced_test]
     fn test_deactivation_idempotent_log() {
         // Test idempotent deactivation logging
