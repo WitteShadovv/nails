@@ -7,12 +7,13 @@
 //!
 //! # Architecture
 //!
-//! DeactivationOrchestrator follows a 5-step sequence (Story 5.5, AC2):
+//! DeactivationOrchestrator follows a 6-step sequence (Story 5.5, AC2):
 //! 1. **State transition:** ACTIVE → DEACTIVATING with StateGuard
 //! 2. **Artifact cleanup:** Call CleanupManager with Thorough mode
 //! 3. **Overlay unmount:** Unmount overlays in reverse LIFO order
 //! 4. **State transition:** DEACTIVATING → INACTIVE
-//! 5. **Commit StateGuard:** Finalize deactivation
+//! 5. **Decoy switch:** Switch to newest available base system generation
+//! 6. **Commit StateGuard:** Finalize deactivation
 //!
 //! If any step fails, StateGuard automatically rolls back to ACTIVE state (FR51).
 //!
@@ -53,6 +54,7 @@ use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError,
     NailsManager, Result, StateGuard, SystemState,
 };
+use crate::manager::{ensure_run_current_system_symlink, select_system_profile};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -338,7 +340,60 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
         // Step 4: Transition to INACTIVE - AC2
         manager.force_state(SystemState::Inactive)?;
 
-        // Step 5: Commit StateGuard (prevent rollback) - AC2
+        // Step 5: Switch to newest available base system generation (decoy)
+        let switch_error = if let Some(system_profile) =
+            select_system_profile(manager.filesystem())?
+        {
+            tracing::info!("Switching to decoy NixOS configuration...");
+
+            if let Err(e) =
+                ensure_run_current_system_symlink(manager.filesystem(), &system_profile)
+            {
+                Some(NailsError::NixOSError(format!(
+                    "Failed to prepare /run/current-system for NixOS switch: {}",
+                    e
+                )))
+            } else {
+                let switch_script = system_profile.join("bin/switch-to-configuration");
+                match manager.filesystem().path_exists(&switch_script) {
+                    Ok(true) => match std::process::Command::new(&switch_script)
+                        .arg("switch")
+                        .output()
+                    {
+                        Ok(output) => {
+                            if output.status.success() {
+                                None
+                            } else {
+                                Some(NailsError::NixOSError(format!(
+                                    "System profile switch failed: {}",
+                                    String::from_utf8_lossy(&output.stderr)
+                                )))
+                            }
+                        }
+                        Err(e) => Some(NailsError::NixOSError(format!(
+                            "System profile switch failed: {}",
+                            e
+                        ))),
+                    },
+                    Ok(false) => Some(NailsError::NixOSError(format!(
+                        "System profile switch script missing: {}",
+                        switch_script.display()
+                    ))),
+                    Err(e) => Some(e),
+                }
+            }
+        } else {
+            Some(NailsError::NixOSError(
+                "No system profile available for decoy switch".into(),
+            ))
+        };
+
+        if let Some(err) = switch_error {
+            guard.commit();
+            return Err(err);
+        }
+
+        // Step 6: Commit StateGuard (prevent rollback) - AC2
         guard.commit();
 
         // Story 9.3 AC#3: Log deactivation complete with structured fields

@@ -46,6 +46,89 @@ fn start_service_and_socket(service: &str) {
         .output();
 }
 
+/// Return the system profile path, honoring NAILS_SYSTEM_PROFILE_PATH if set.
+pub(crate) fn system_profile_path() -> PathBuf {
+    std::env::var_os("NAILS_SYSTEM_PROFILE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/nix/var/nix/profiles/system"))
+}
+
+fn system_profiles_dir() -> PathBuf {
+    system_profile_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("/nix/var/nix/profiles"))
+}
+
+fn parse_system_generation(name: &str) -> Option<u64> {
+    let prefix = "system-";
+    let suffix = "-link";
+    if !name.starts_with(prefix) || !name.ends_with(suffix) {
+        return None;
+    }
+    let num = &name[prefix.len()..name.len() - suffix.len()];
+    num.parse::<u64>().ok()
+}
+
+/// Return the newest available system profile (system-<n>-link), if present.
+fn find_newest_system_profile<F: Filesystem>(fs: &F) -> Result<Option<PathBuf>> {
+    let profiles_dir = system_profiles_dir();
+    if !fs.path_exists(&profiles_dir)? {
+        return Ok(None);
+    }
+
+    let mut best: Option<(u64, PathBuf)> = None;
+    for entry in fs.list_directory(&profiles_dir)? {
+        let name = entry
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        if let Some(generation) = parse_system_generation(name) {
+            if best
+                .as_ref()
+                .map(|(g, _)| generation > *g)
+                .unwrap_or(true)
+            {
+                best = Some((generation, entry));
+            }
+        }
+    }
+
+    Ok(best.map(|(_, path)| path))
+}
+
+/// Prefer the newest available system profile, fall back to the system symlink.
+pub(crate) fn select_system_profile<F: Filesystem>(fs: &F) -> Result<Option<PathBuf>> {
+    if let Some(path) = find_newest_system_profile(fs)? {
+        return Ok(Some(path));
+    }
+    let system_profile = system_profile_path();
+    if fs.path_exists(&system_profile)? {
+        return Ok(Some(system_profile));
+    }
+    Ok(None)
+}
+
+/// Ensure /run/current-system exists as a symlink to the provided system profile.
+pub(crate) fn ensure_run_current_system_symlink<F: Filesystem>(
+    fs: &F,
+    target: &Path,
+) -> Result<()> {
+    let run_current = PathBuf::from("/run/current-system");
+    // Handle dangling symlinks: path_exists() is false for them, so check is_symlink first.
+    if fs.is_symlink(&run_current)? {
+        fs.remove_file(&run_current)?;
+    } else if fs.path_exists(&run_current)? {
+        return Err(NailsError::NixOSError(format!(
+            "{} exists but is not a symlink",
+            run_current.display()
+        )));
+    }
+
+    fs.create_symlink(target, &run_current)?;
+    Ok(())
+}
+
 /// Clean stale network configuration files from /etc overlay upper layer (Task 6: DNS preservation)
 ///
 /// Before mounting the /etc overlay, remove stale `resolv.conf` and `nsswitch.conf` from the
@@ -1965,9 +2048,10 @@ impl<F: Filesystem> NailsManager<F> {
         let mount_timer = Stopwatch::start();
 
         // Create shared tracker for both persistent and ephemeral overlays (Story 4.11)
-        // Tracker will be committed after all mounts succeed (persistent + ephemeral)
+        // Tracker will be committed only after full activation succeeds.
         let manager = manager_arc.lock().unwrap();
-        let mut tracker = MountTracker::new(&manager.filesystem);
+        let fs = manager.filesystem.clone();
+        let mut tracker = MountTracker::new(&fs);
 
         // Build OverlayStrategyOptions from ActivateOptions (Story 4.15, AC8)
         let strategy_options = crate::overlay::OverlayStrategyOptions {
@@ -2486,10 +2570,6 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
-        // Commit tracker to prevent automatic rollback on drop
-        // This happens AFTER all mounts succeed (persistent + ephemeral)
-        tracker.commit();
-
         // Story 9.3 AC#1: Log overlays mounted with structured fields
         let mounted_paths: Vec<_> = tracker
             .mounted
@@ -2497,9 +2577,6 @@ impl<F: Filesystem> NailsManager<F> {
             .map(|info| info.target.clone())
             .collect();
         tracing::info!(overlays = ?mounted_paths, "Overlays mounted");
-
-        // Drop tracker explicitly (now safe since it's committed)
-        drop(tracker);
 
         // Release manager lock before continuing
         drop(manager);
@@ -2532,6 +2609,20 @@ impl<F: Filesystem> NailsManager<F> {
                     if let Some(ref generation_id) = generation {
                         if verbosity >= Verbosity::Normal {
                             tracing::info!("Switching to hidden NixOS configuration...");
+                        }
+                        if let Some(system_profile) =
+                            select_system_profile(&manager.filesystem)?
+                        {
+                            ensure_run_current_system_symlink(
+                                &manager.filesystem,
+                                &system_profile,
+                            )
+                            .map_err(|e| {
+                                NailsError::NixOSError(format!(
+                                    "Failed to prepare /run/current-system for NixOS switch: {}",
+                                    e
+                                ))
+                            })?;
                         }
                         let step_timer = Stopwatch::start();
                         builder.switch_profile(generation_id).map_err(|e| {
@@ -2587,6 +2678,20 @@ impl<F: Filesystem> NailsManager<F> {
                 } else {
                     if verbosity >= Verbosity::Normal {
                         tracing::info!("Switching to hidden NixOS configuration...");
+                    }
+                    if let Some(system_profile) =
+                        select_system_profile(&manager.filesystem)?
+                    {
+                        ensure_run_current_system_symlink(
+                            &manager.filesystem,
+                            &system_profile,
+                        )
+                        .map_err(|e| {
+                            NailsError::NixOSError(format!(
+                                "Failed to prepare /run/current-system for NixOS switch: {}",
+                                e
+                            ))
+                        })?;
                     }
                     let step_timer = Stopwatch::start();
                     builder.switch_profile("")
@@ -2668,6 +2773,9 @@ impl<F: Filesystem> NailsManager<F> {
                 tracing::info!("  ✓ Display manager restarted - login screen should appear");
             }
         }
+
+        // Commit tracker to prevent automatic rollback on drop now that activation is successful.
+        tracker.commit();
 
         // Step 11: Success - commit guard to prevent rollback
         guard.commit();
@@ -2944,15 +3052,49 @@ impl<F: Filesystem> NailsManager<F> {
         // Step 8.2: Switch back to the system (decoy) profile if NixOS switching is enabled.
         let switch_error = {
             let manager = manager_arc.lock().unwrap();
-            if let Some(ref builder) = manager.nixos_builder {
+            let fs = &manager.filesystem;
+
+            if let Some(system_profile) = select_system_profile(fs)? {
                 if manager.verbosity >= crate::verbosity::Verbosity::Normal {
                     tracing::info!("Switching to decoy NixOS configuration...");
                 }
-                match builder.switch_to_system_profile() {
-                    Ok(()) => None,
-                    Err(e) => Some(e),
+
+                if let Err(e) = ensure_run_current_system_symlink(fs, &system_profile) {
+                    Some(NailsError::NixOSError(format!(
+                        "Failed to prepare /run/current-system for NixOS switch: {}",
+                        e
+                    )))
+                } else {
+                    let switch_script = system_profile.join("bin/switch-to-configuration");
+                    match fs.path_exists(&switch_script) {
+                        Ok(true) => match std::process::Command::new(&switch_script)
+                            .arg("switch")
+                            .output()
+                        {
+                            Ok(output) => {
+                                if output.status.success() {
+                                    None
+                                } else {
+                                    Some(NailsError::NixOSError(format!(
+                                        "System profile switch failed: {}",
+                                        String::from_utf8_lossy(&output.stderr)
+                                    )))
+                                }
+                            }
+                            Err(e) => Some(NailsError::NixOSError(format!(
+                                "System profile switch failed: {}",
+                                e
+                            ))),
+                        },
+                        Ok(false) => Some(NailsError::NixOSError(format!(
+                            "System profile switch script missing: {}",
+                            switch_script.display()
+                        ))),
+                        Err(e) => Some(e),
+                    }
                 }
             } else {
+                // No system profile available; skip silently on non-NixOS systems.
                 None
             }
         };

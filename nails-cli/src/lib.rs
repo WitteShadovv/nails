@@ -331,7 +331,9 @@ pub mod cli {
                 let filesystem = RealFilesystem;
                 let nixos_flake_dir = config.hidden_volume_root.join("nixos");
                 let nixos_flake = nixos_flake_dir.join("flake.nix");
+                let etc_flake = std::path::PathBuf::from("/etc/nixos/flake.nix");
                 let legacy_config = std::path::PathBuf::from("/etc/nixos/configuration.nix");
+                let system_profile = std::path::PathBuf::from("/nix/var/nix/profiles/system");
                 let manager = if nixos_flake.exists() {
                     let builder = NixOSBuilder::new(
                         nixos_flake_dir,
@@ -343,7 +345,29 @@ pub mod cli {
                         state_path,
                         builder,
                     )))
+                } else if etc_flake.exists() {
+                    let builder = NixOSBuilder::new(
+                        std::path::PathBuf::from("/etc/nixos"),
+                        std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
+                    );
+                    Arc::new(Mutex::new(NailsManager::with_nixos(
+                        filesystem,
+                        config,
+                        state_path,
+                        builder,
+                    )))
                 } else if legacy_config.exists() {
+                    let builder = NixOSBuilder::new_legacy(
+                        legacy_config,
+                        std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
+                    );
+                    Arc::new(Mutex::new(NailsManager::with_nixos(
+                        filesystem,
+                        config,
+                        state_path,
+                        builder,
+                    )))
+                } else if system_profile.exists() {
                     let builder = NixOSBuilder::new_legacy(
                         legacy_config,
                         std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
