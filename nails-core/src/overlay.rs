@@ -774,6 +774,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
         let mut to_restart_safe = Vec::new();
         let mut to_restart_risky = Vec::new();
         let mut cannot_restart = Vec::new();
+        let mut skip_count = 0;
 
         for proc in blocking {
             match classify_process(&proc, target) {
@@ -786,17 +787,26 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
                     to_restart_risky.push(proc);
                 }
                 RestartStrategy::NoRestart => {
-                    eprintln!("  → {} (PID {}) - Cannot restart", proc.name, proc.pid);
+                    // Don't print each one - just count them
                     cannot_restart.push(proc);
                 }
                 RestartStrategy::Skip => {
                     // Process uses target but doesn't block mount — leave it alone
-                    eprintln!(
-                        "  → {} (PID {}) - Skip (read-only consumer)",
-                        proc.name, proc.pid
-                    );
+                    // Don't print each one - just count them
+                    skip_count += 1;
                 }
             }
+        }
+
+        // Print summary for non-actionable processes
+        if !cannot_restart.is_empty() {
+            eprintln!("  {} processes cannot be restarted", cannot_restart.len());
+        }
+        if skip_count > 0 {
+            eprintln!(
+                "  {} processes skipped (read-only, no action needed)",
+                skip_count
+            );
         }
 
         // Restart Safe processes automatically
