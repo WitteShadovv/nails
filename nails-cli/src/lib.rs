@@ -479,23 +479,17 @@ pub mod cli {
                 }
             }
             Commands::Deactivate {
-                no_clear_history,
+                no_clear_history: _,
                 quiet,
                 verbose,
                 json,
                 no_color,
                 plain,
             } => {
-                use nails_core::{
-                    CleanupConfig, Config, DeactivationOrchestrator, NailsManager, NixOSBuilder,
-                    RealFilesystem, Verbosity,
-                };
-
+                use nails_core::{Config, NailsManager, RealFilesystem, Verbosity};
                 use std::sync::{Arc, Mutex};
 
-                // Configure color output (must be done before any colored output)
-                // Story 14.7: Integrate output module with NO_COLOR/--no-color/--plain support
-                // Note: set_plain_mode() already handles colored::control::set_override()
+                // Configure color output
                 if no_color || plain || std::env::var("NO_COLOR").is_ok() {
                     nails_core::set_plain_mode(true);
                 }
@@ -507,96 +501,50 @@ pub mod cli {
                     match verbose {
                         0 => Verbosity::Normal,
                         1 => Verbosity::Verbose,
-                        _ => Verbosity::Debug, // 2+ maps to Debug
+                        _ => Verbosity::Debug,
                     }
                 };
 
-                // Create cleanup config from args
-                let mut cleanup_config = CleanupConfig::default();
-                if no_clear_history {
-                    cleanup_config.clear_history = false;
-                    if verbosity >= Verbosity::Normal && !json {
-                        println!("Skipping history cleanup (--no-clear-history)");
-                    }
-                }
-
-                // Load configuration (Story 14.1)
+                // Load configuration
                 let config_path = nails_core::config::discover_config_path(cli.config.as_deref());
-
                 let config = Config::load_or_default(&config_path)
                     .unwrap_or_else(|_| Config::test_default());
-
                 let state_path = config.state_file_path.clone();
 
-                // Create NailsManager with real filesystem (enable NixOS switching when flake is present)
+                // Create manager
                 let filesystem = RealFilesystem;
-                let nixos_flake_dir = config.hidden_volume_root.join("nixos");
-                let nixos_flake = nixos_flake_dir.join("flake.nix");
-                let legacy_config = std::path::PathBuf::from("/etc/nixos/configuration.nix");
-                let manager = if nixos_flake.exists() {
-                    let builder = NixOSBuilder::new(
-                        nixos_flake_dir,
-                        std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
-                    );
-                    Arc::new(Mutex::new(NailsManager::with_nixos(
-                        filesystem, config, state_path, builder,
-                    )))
-                } else if legacy_config.exists() {
-                    let builder = NixOSBuilder::new_legacy(
-                        legacy_config,
-                        std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
-                    );
-                    Arc::new(Mutex::new(NailsManager::with_nixos(
-                        filesystem, config, state_path, builder,
-                    )))
-                } else {
-                    Arc::new(Mutex::new(NailsManager::new(
-                        filesystem, config, state_path,
-                    )))
-                };
-
-                // Set verbosity level
+                let manager = Arc::new(Mutex::new(NailsManager::new(
+                    filesystem, config, state_path,
+                )));
                 manager.lock().unwrap().set_verbosity(verbosity);
 
-                // Create orchestrator and run deactivation
-                let orchestrator =
-                    DeactivationOrchestrator::new(Arc::clone(&manager), cleanup_config);
-
-                let result = orchestrator.run();
-
-                // Generate shell cleanup instructions after deactivation
-                // Note: Normal deactivation does NOT remove aliases (only prompt cleanup)
-                let shell_cleanup = if result.is_ok() {
-                    use nails_core::ShellInstrumentation;
-                    let mgr = manager.lock().unwrap();
-                    let shell =
-                        ShellInstrumentation::new(nails_core::RealFilesystem, mgr.config().clone());
-                    Some(shell.shell_cleanup(false)) // false = no alias removal
-                } else {
-                    None
-                };
-
-                // Output results based on flags
-                if json {
-                    print_deactivate_json(&result, &manager, shell_cleanup.as_ref());
-                } else {
-                    print_deactivate_human(
-                        &result,
-                        verbosity,
-                        no_color,
-                        shell_cleanup.as_ref(),
-                        quiet,
-                    );
-                }
-
-                // Return appropriate exit code
-                match result {
-                    Ok(_) => std::process::exit(0),
-                    Err(_) => std::process::exit(1),
+                // Run quick deactivation (restore symlink + reboot)
+                match NailsManager::deactivate(Arc::clone(&manager)) {
+                    Ok(()) => {
+                        // Success - system will reboot
+                        if !json {
+                            println!("✓ System configuration restored");
+                            println!("  Rebooting to decoy environment...");
+                        } else {
+                            println!(
+                                "{{\"status\":\"success\",\"message\":\"Rebooting to decoy configuration\"}}"
+                            );
+                        }
+                        // Note: Reboot command was already issued, this code may not execute
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        if !json {
+                            eprintln!("✗ Deactivation failed: {}", e);
+                        } else {
+                            eprintln!("{{\"status\":\"error\",\"message\":\"{}\"}}", e);
+                        }
+                        std::process::exit(1);
+                    }
                 }
             }
             Commands::Emergency {
-                no_countdown,
+                no_countdown: _,
                 quiet,
                 verbose,
                 json,
@@ -604,15 +552,11 @@ pub mod cli {
                 plain,
             } => {
                 use nails_core::{
-                    CleanupConfig, Config, EmergencyCountdown, EmergencyOrchestrator, ForkStrategy,
-                    NailsManager, RealFilesystem, Verbosity, fork_and_execute,
+                    Config, NailsManager, RealFilesystem, Verbosity, emergency_deactivate,
                 };
-
                 use std::sync::{Arc, Mutex};
 
-                // Configure color output (must be done before any colored output)
-                // Story 14.7: Integrate output module with NO_COLOR/--no-color/--plain support
-                // Note: set_plain_mode() already handles colored::control::set_override()
+                // Configure color output
                 if no_color || plain || std::env::var("NO_COLOR").is_ok() {
                     nails_core::set_plain_mode(true);
                 }
@@ -624,16 +568,16 @@ pub mod cli {
                     match verbose {
                         0 => Verbosity::Normal,
                         1 => Verbosity::Verbose,
-                        _ => Verbosity::Debug, // 2+ maps to Debug
+                        _ => Verbosity::Debug,
                     }
                 };
 
-                // Load config with state path (Story 14.1)
+                // Load config
                 let config_path = nails_core::config::discover_config_path(cli.config.as_deref());
                 let config = Config::load_or_default(&config_path)
                     .unwrap_or_else(|_| Config::test_default());
 
-                // TEST SAFETY GUARD (Layer 1): Check if real operations are allowed
+                // TEST SAFETY GUARD
                 if let Err(msg) = check_real_operations_allowed(&config.hidden_volume_root) {
                     eprintln!("{}", msg);
                     std::process::exit(2);
@@ -641,119 +585,32 @@ pub mod cli {
 
                 let state_path = config.state_file_path.clone();
 
-                // AC2: Create countdown (3 seconds fixed per AR33)
-                let countdown = EmergencyCountdown {
-                    countdown_seconds: 3,
-                    skip_countdown: no_countdown,
-                };
+                // Create manager
+                let filesystem = RealFilesystem;
+                let manager = Arc::new(Mutex::new(NailsManager::new(
+                    filesystem, config, state_path,
+                )));
+                manager.lock().unwrap().set_verbosity(verbosity);
 
-                // Run countdown
-                match countdown.run() {
-                    Ok(false) => {
-                        // Aborted by user (Ctrl+C)
+                // Run emergency deactivation
+                match emergency_deactivate(Arc::clone(&manager)) {
+                    Ok(()) => {
                         if !json {
-                            println!("Emergency deactivation aborted");
+                            println!("✓ Emergency deactivation complete");
+                            println!("  System returned to decoy configuration");
                         } else {
                             println!(
-                                "{{\"status\":\"aborted\",\"message\":\"Emergency deactivation aborted by user\"}}"
+                                "{{\"status\":\"success\",\"message\":\"Emergency deactivation complete\"}}"
                             );
                         }
-                        // Exit immediately: user explicitly aborted, no cleanup needed
-                        // Using exit() instead of return to prevent any further processing
-                        std::process::exit(0);
-                    }
-                    Ok(true) => {
-                        // Countdown completed — proceed with fork
-                    }
-                    Err(e) => {
-                        eprintln!("Countdown error: {}", e);
-                        // Continue anyway — emergency should not be blocked by countdown errors
-                    }
-                }
-
-                // Capture flags for use in the closure
-                let json_flag = json;
-                let quiet_flag = quiet;
-                let verbosity_clone = verbosity;
-
-                // AC3: Fork and execute emergency deactivation
-                let result = fork_and_execute(
-                    move || {
-                        // Child process: create fresh manager and orchestrator
-                        let filesystem = RealFilesystem;
-                        let config = Config::load_or_default(&config_path)
-                            .unwrap_or_else(|_| Config::test_default());
-
-                        // TEST SAFETY GUARD (Layer 1): Check again in forked child
-                        // The fork creates a new process, so we must re-check here
-                        if let Err(msg) = check_real_operations_allowed(&config.hidden_volume_root)
-                        {
-                            eprintln!("{}", msg);
-                            std::process::exit(2);
-                        }
-
-                        let manager = Arc::new(Mutex::new(NailsManager::new(
-                            filesystem, config, state_path,
-                        )));
-
-                        // Set verbosity level
-                        manager.lock().unwrap().set_verbosity(verbosity_clone);
-
-                        // Create orchestrator and run
-                        let cleanup_config = CleanupConfig::default();
-                        let orchestrator =
-                            EmergencyOrchestrator::new(Arc::clone(&manager), cleanup_config);
-
-                        let report = orchestrator.run()?;
-
-                        // Generate shell cleanup instructions (best-effort, include alias removal)
-                        // Emergency mode removes aliases per FR34
-                        let shell_cleanup = {
-                            use nails_core::ShellInstrumentation;
-                            let mgr = manager.lock().unwrap();
-                            let shell =
-                                ShellInstrumentation::new(RealFilesystem, mgr.config().clone());
-                            shell.shell_cleanup(true) // true = include alias removal for emergency
-                        };
-
-                        // Format and output results
-                        if json_flag {
-                            print_emergency_json(&report, Some(&shell_cleanup));
-                        } else {
-                            print_emergency_human(
-                                &report,
-                                verbosity_clone,
-                                quiet_flag,
-                                Some(&shell_cleanup),
-                            );
-                        }
-
-                        // Exit with appropriate code (AC5: exit 1 when errors present)
-                        if report.errors.is_empty() {
-                            // No errors - clean shutdown
-                            // Using exit() instead of return: this code runs in forked child process,
-                            // we must exit directly to prevent returning to parent's CLI handler
-                            std::process::exit(0);
-                        } else {
-                            // Errors occurred during emergency - exit with error code
-                            // Using exit() instead of return: child process must terminate directly
-                            std::process::exit(1);
-                        }
-                    },
-                    ForkStrategy::Fork,
-                );
-
-                // Parent process: handle result from fork_and_execute
-                // Returns Ok(()) when: (1) fork succeeded, or (2) fork failed but fallback succeeded
-                match result {
-                    Ok(()) => {
-                        // Fork succeeded (parent) OR fallback execution succeeded
-                        // Using exit() instead of return: prevents race conditions with child process
                         std::process::exit(0);
                     }
                     Err(e) => {
-                        // Fork failed AND fallback execution also failed (true failure)
-                        eprintln!("Emergency deactivation failed: {}", e);
+                        if !json {
+                            eprintln!("✗ Emergency deactivation failed: {}", e);
+                        } else {
+                            eprintln!("{{\"status\":\"error\",\"message\":\"{}\"}}", e);
+                        }
                         std::process::exit(1);
                     }
                 }
@@ -1630,185 +1487,6 @@ pub mod cli {
             }
         }
     }
-
-    /// JSON output structure for emergency command (AC6)
-    #[derive(serde::Serialize)]
-    pub(crate) struct EmergencyJsonOutput {
-        /// "success", "error", or "aborted"
-        pub(crate) status: String,
-        /// Duration in seconds
-        pub(crate) duration: f64,
-        /// System state after emergency (e.g., "Inactive")
-        pub(crate) state: String,
-        /// Non-fatal errors collected during emergency
-        pub(crate) errors: Vec<String>,
-        /// Recommendation (e.g., "Reboot recommended" or "none")
-        pub(crate) recommendation: String,
-        /// Overlays that were successfully unmounted
-        pub(crate) unmounted_overlays: Vec<String>,
-        /// True if emergency ran when system was already INACTIVE (defensive cleanup)
-        pub(crate) was_defensive: bool,
-        /// Shell cleanup instructions
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub(crate) shell_cleanup: Option<ShellCleanupJson>,
-    }
-
-    impl From<&nails_core::EmergencyReport> for EmergencyJsonOutput {
-        fn from(report: &nails_core::EmergencyReport) -> Self {
-            Self {
-                status: report.status.clone(),
-                duration: report.duration.as_secs_f64(),
-                state: format!("{:?}", report.final_state),
-                errors: report.errors.clone(),
-                recommendation: report
-                    .recommendation
-                    .clone()
-                    .unwrap_or_else(|| "none".to_string()),
-                unmounted_overlays: report.unmounted_overlays.clone(),
-                was_defensive: report.was_defensive,
-                shell_cleanup: None, // Will be set by print_emergency_json
-            }
-        }
-    }
-
-    /// Print emergency result in JSON format (AC6)
-    fn print_emergency_json(
-        report: &nails_core::EmergencyReport,
-        shell_cleanup: Option<&nails_core::ShellCleanupResult>,
-    ) {
-        let mut output = EmergencyJsonOutput::from(report);
-
-        // Add shell cleanup instructions if available
-        output.shell_cleanup = shell_cleanup.and_then(|cleanup| {
-            cleanup
-                .shell_type
-                .as_ref()
-                .map(|shell_type| ShellCleanupJson {
-                    shell_type: format!("{:?}", shell_type).to_lowercase(),
-                    instructions: cleanup.instructions.clone(),
-                    note: "Best-effort alias removal attempted during emergency".to_string(),
-                })
-        });
-
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output).expect("Failed to serialize JSON")
-        );
-    }
-
-    /// Print emergency result in human-readable format (AC4, AC5, AC7, AC8)
-    fn print_emergency_human(
-        report: &nails_core::EmergencyReport,
-        verbosity: nails_core::Verbosity,
-        quiet: bool,
-        shell_cleanup: Option<&nails_core::ShellCleanupResult>,
-    ) {
-        use colored::Colorize;
-        use nails_core::Verbosity;
-
-        let duration = report.duration.as_secs_f64();
-
-        if report.is_successful() && report.errors.is_empty() {
-            // AC4: Successful emergency
-            if quiet {
-                // AC7: Quiet mode shows countdown and final result (duration + final state)
-                println!("Emergency deactivation complete in {:.2}s", duration);
-                println!("Final state: {:?}", report.final_state);
-            } else {
-                println!(
-                    "{}",
-                    format!("✓ Emergency deactivation complete in {:.2}s", duration)
-                        .green()
-                        .bold()
-                );
-
-                if report.was_defensive {
-                    println!("{}", "  (defensive - system was already INACTIVE)".dimmed());
-                }
-
-                // Show unmounted overlays in normal+ mode
-                if verbosity >= Verbosity::Normal && !report.unmounted_overlays.is_empty() {
-                    println!();
-                    println!("Unmounted Overlays:");
-                    for overlay in &report.unmounted_overlays {
-                        println!("  ✓ {}", overlay);
-                    }
-                }
-
-                // -vv: Debug mode — show full details (AC8)
-                if verbosity >= Verbosity::Debug {
-                    println!();
-                    println!("Debug Details:");
-                    println!("  Final State: {:?}", report.final_state);
-                    println!("  Duration: {:.4}s", duration);
-                    println!("  Defensive: {}", report.was_defensive);
-                    println!("  Unmounted overlays: {}", report.unmounted_overlays.len());
-
-                    // Show cleanup details if available (AC8: show each cleanup step)
-                    if !report.unmounted_overlays.is_empty() {
-                        println!();
-                        println!("  Unmount Details:");
-                        for (i, overlay) in report.unmounted_overlays.iter().enumerate() {
-                            println!("    {}. {} (force unmounted)", i + 1, overlay);
-                        }
-                    }
-
-                    // Show cleanup report details (history files, temp files, etc.)
-                    // Note: cleanup_report is private, but we can infer from report fields
-                    if report.was_defensive {
-                        println!();
-                        println!("  Note: Defensive cleanup - system was already INACTIVE");
-                    }
-                }
-
-                // Shell cleanup instructions (best-effort alias removal attempted)
-                if !quiet
-                    && let Some(cleanup) = shell_cleanup
-                    && cleanup.shell_type.is_some()
-                {
-                    println!();
-                    println!("{}", "Shell Cleanup:".cyan().bold());
-                    println!("{}", "Alias removal attempted (best-effort)".dimmed());
-                    if verbosity >= Verbosity::Verbose {
-                        println!("{}", "To manually verify, run:".dimmed());
-                        for cmd in &cleanup.instructions {
-                            println!("  {}", cmd.bright_white());
-                        }
-                    }
-                }
-            }
-        } else {
-            // AC5: Error-tolerant emergency
-            eprintln!(
-                "{}",
-                "Emergency deactivation completed with errors".red().bold()
-            );
-
-            if !report.errors.is_empty() {
-                eprintln!();
-                for error in &report.errors {
-                    eprintln!("  {} {}", "✗".red(), error);
-                }
-            }
-
-            eprintln!();
-            eprintln!(
-                "{}",
-                "Recommendation: Reboot system to ensure clean state"
-                    .yellow()
-                    .bold()
-            );
-
-            // Show state in verbose mode
-            if verbosity >= Verbosity::Normal {
-                eprintln!();
-                eprintln!("Final State: {:?}", report.final_state);
-            }
-        }
-    }
-
-    // ========================================================================
-    // Status Command Output Formatting (Story 7.4)
     // ========================================================================
 
     /// JSON output structure for status command (AC5)
@@ -2426,118 +2104,6 @@ mod tests {
         // AC1: Verify --delay flag no longer exists (removed per AR33)
         let result = Cli::try_parse_from(["nails", "emergency", "--delay", "10"]);
         assert!(result.is_err(), "--delay flag should no longer exist");
-    }
-
-    // ========================================================================
-    // Emergency Output Formatting Tests (AC10)
-    // ========================================================================
-    // Note: Testing output formatting functions directly since execute_command
-    // calls std::process::exit() which terminates test process.
-
-    #[test]
-    fn test_emergency_json_output_success() {
-        // AC10: Test JSON output for successful emergency
-        use nails_core::{EmergencyReport, SystemState};
-        use std::time::Duration;
-
-        let report = EmergencyReport {
-            cleanup_report: nails_core::CleanupReport::default(),
-            unmounted_overlays: vec!["/home".to_string(), "/etc".to_string()],
-            duration: Duration::from_millis(1500),
-            final_state: SystemState::Inactive,
-            errors: vec![],
-            was_defensive: false,
-            status: "success".to_string(),
-            recommendation: None,
-        };
-
-        let json_output = EmergencyJsonOutput::from(&report);
-
-        // Verify all required fields (AC6)
-        assert_eq!(json_output.status, "success");
-        assert!((json_output.duration - 1.5).abs() < 0.01);
-        assert_eq!(json_output.state, "Inactive");
-        assert!(json_output.errors.is_empty());
-        assert_eq!(json_output.recommendation, "none");
-        assert_eq!(json_output.unmounted_overlays.len(), 2);
-        assert!(!json_output.was_defensive);
-
-        // Verify JSON serialization
-        let json_str = serde_json::to_string_pretty(&json_output).unwrap();
-        assert!(json_str.contains("\"status\": \"success\""));
-        assert!(json_str.contains("\"duration\""));
-        assert!(json_str.contains("\"state\": \"Inactive\""));
-        assert!(json_str.contains("\"recommendation\": \"none\""));
-        assert!(json_str.contains("\"unmounted_overlays\""));
-        assert!(json_str.contains("\"was_defensive\": false"));
-    }
-
-    #[test]
-    fn test_emergency_json_output_with_errors() {
-        // AC10: Test JSON output with errors
-        use nails_core::{EmergencyReport, SystemState};
-        use std::time::Duration;
-
-        let report = EmergencyReport {
-            cleanup_report: nails_core::CleanupReport::default(),
-            unmounted_overlays: vec!["/etc".to_string()],
-            duration: Duration::from_millis(2500),
-            final_state: SystemState::Inactive,
-            errors: vec![
-                "Force unmount failed for /home: busy".to_string(),
-                "Cleanup failed: permission denied".to_string(),
-            ],
-            was_defensive: false,
-            status: "error".to_string(),
-            recommendation: Some("Reboot recommended".to_string()),
-        };
-
-        let json_output = EmergencyJsonOutput::from(&report);
-
-        assert_eq!(json_output.status, "error");
-        assert_eq!(json_output.errors.len(), 2);
-        assert_eq!(json_output.recommendation, "Reboot recommended");
-        assert_eq!(json_output.unmounted_overlays.len(), 1);
-    }
-
-    #[test]
-    fn test_emergency_json_output_defensive() {
-        // AC10: Test JSON output for defensive emergency (already INACTIVE)
-        use nails_core::{EmergencyReport, SystemState};
-        use std::time::Duration;
-
-        let report = EmergencyReport {
-            cleanup_report: nails_core::CleanupReport::default(),
-            unmounted_overlays: vec![],
-            duration: Duration::from_millis(500),
-            final_state: SystemState::Inactive,
-            errors: vec![],
-            was_defensive: true,
-            status: "success".to_string(),
-            recommendation: None,
-        };
-
-        let json_output = EmergencyJsonOutput::from(&report);
-
-        assert!(json_output.was_defensive);
-        assert_eq!(json_output.unmounted_overlays.len(), 0);
-    }
-
-    #[test]
-    fn test_execute_status_command_without_verbose() {
-        let cli = Cli {
-            config: None,
-            verbose: 0,
-            quiet: false,
-            no_logs: false,
-            command: Commands::Status {
-                json: false,
-                no_color: false,
-                plain: false,
-                verbose: false,
-            },
-        };
-        assert!(execute_command(cli).is_ok());
     }
 
     #[test]

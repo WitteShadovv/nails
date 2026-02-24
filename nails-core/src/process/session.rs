@@ -8,7 +8,7 @@
 //! Fallback behavior is included for non-logind environments.
 
 use crate::{NailsError, Result};
-use nix::unistd::{getuid, Uid, User};
+use nix::unistd::{Uid, User, getuid};
 use std::env;
 use std::fs;
 use std::thread;
@@ -286,10 +286,7 @@ pub fn prompt_session_kill_confirmation(ctx: &SessionContext, yes_flag: bool) ->
         ));
     }
 
-    let dm = ctx
-        .display_manager
-        .as_deref()
-        .unwrap_or("display-manager");
+    let dm = ctx.display_manager.as_deref().unwrap_or("display-manager");
 
     println!("⚠️  This will terminate your graphical session!");
     println!("    All unsaved work in open applications will be LOST.");
@@ -401,10 +398,8 @@ fn kill_graphical_session_with_executor<E: SessionCommandExecutor>(
         }
 
         tracing::info!("DEBUG: About to terminate user: {}", target_uid);
-        let (success, _stdout, _stderr) = executor.execute_loginctl(&[
-            "terminate-user",
-            &target_uid.to_string(),
-        ])?;
+        let (success, _stdout, _stderr) =
+            executor.execute_loginctl(&["terminate-user", &target_uid.to_string()])?;
         tracing::info!("DEBUG: User termination completed, success={}", success);
         result.user_terminated = success;
 
@@ -490,7 +485,7 @@ fn kill_user_processes(uid: u32) -> Result<(u32, u32)> {
             return Err(NailsError::ConfigError(
                 "/proc filesystem not available. This is required for process termination"
                     .to_string(),
-            ))
+            ));
         }
     };
 

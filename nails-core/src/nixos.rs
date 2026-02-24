@@ -869,9 +869,9 @@ impl NixOSBuilder {
     /// builder.switch_profile(&generation)?;
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
-    pub fn switch_profile(&self, generation: &str) -> Result<()> {
+    pub fn switch_profile(&self, generation: &str, action: &str) -> Result<()> {
         if !self.is_flake() {
-            return self.switch_legacy();
+            return self.switch_legacy(action);
         }
         // Validate profile exists before attempting switch
         if !self.profile_exists(generation)? {
@@ -885,7 +885,11 @@ impl NixOSBuilder {
         let previous_gen = self.get_current_generation()?;
 
         // Execute switch command using the profile's switch-to-configuration script
-        tracing::info!("Switching to NixOS profile: generation {}", generation);
+        tracing::info!(
+            "Switching to NixOS profile: generation {} (action: {})",
+            generation,
+            action
+        );
 
         // Construct path to the profile's activation script
         // Profile path format: /nix/var/nix/profiles/nails-system-{generation}-link/bin/switch-to-configuration
@@ -899,13 +903,13 @@ impl NixOSBuilder {
 
         let (success, _stdout, stderr) = self
             .executor
-            .execute_switch_to_configuration(&switch_script, &["switch"])?;
+            .execute_switch_to_configuration(&switch_script, &[action])?;
 
         if !success {
             // Attempt rollback to previous generation
             if let Some(prev) = previous_gen {
                 tracing::warn!("Switch failed, attempting rollback to generation {}", prev);
-                if let Err(e) = self.switch_to_generation(&prev) {
+                if let Err(e) = self.switch_to_generation(&prev, "switch") {
                     tracing::error!("Rollback failed: {}", e);
                 }
             }
@@ -918,14 +922,14 @@ impl NixOSBuilder {
     }
 
     /// Switch to a specific system generation (non-flake fast path).
-    pub fn switch_system_generation(&self, generation: &str) -> Result<()> {
+    pub fn switch_system_generation(&self, generation: &str, action: &str) -> Result<()> {
         if !self.system_generation_exists(generation)? {
             return Err(NailsError::NixOSError(format!(
                 "System generation not found: {}",
                 generation
             )));
         }
-        self.switch_to_generation(generation)
+        self.switch_to_generation(generation, action)
     }
 
     /// Check if a system generation exists under /nix/var/nix/profiles.
@@ -1005,7 +1009,7 @@ impl NixOSBuilder {
     ///
     /// * `Ok(())` on successful switch
     /// * `Err(NailsError::NixOSError)` if switch fails
-    fn switch_to_generation(&self, generation: &str) -> Result<()> {
+    fn switch_to_generation(&self, generation: &str, action: &str) -> Result<()> {
         // Construct path to the profile's activation script for rollback
         // This uses the system profile path, not our custom nails profile
         let system_profile_path = system_profiles_dir().join(format!("system-{}-link", generation));
@@ -1014,10 +1018,12 @@ impl NixOSBuilder {
 
         let (success, _stdout, _stderr) = self
             .executor
-            .execute_switch_to_configuration(&switch_script, &["switch"])?;
+            .execute_switch_to_configuration(&switch_script, &[action])?;
 
         if !success {
-            return Err(NailsError::NixOSError("Rollback switch failed".into()));
+            return Err(NailsError::NixOSError(
+                format!("NixOS {} failed", action).into(),
+            ));
         }
 
         Ok(())
@@ -1049,7 +1055,7 @@ impl NixOSBuilder {
         Ok(())
     }
 
-    fn switch_legacy(&self) -> Result<()> {
+    fn switch_legacy(&self, action: &str) -> Result<()> {
         let config_path = match &self.build_mode {
             NixOSBuildMode::Legacy { config_path } => config_path,
             NixOSBuildMode::Flake => {
@@ -1060,14 +1066,13 @@ impl NixOSBuilder {
         };
 
         let arg = format!("nixos-config={}", config_path.display());
-        let (success, _stdout, stderr) = self
-            .executor
-            .execute_nixos_rebuild(&["switch", "-I", &arg])?;
+        let (success, _stdout, stderr) =
+            self.executor.execute_nixos_rebuild(&[action, "-I", &arg])?;
 
         if !success {
             return Err(NailsError::NixOSError(format!(
-                "Legacy nixos-rebuild switch failed: {}",
-                stderr
+                "Legacy nixos-rebuild {} failed: {}",
+                action, stderr
             )));
         }
 
@@ -2125,7 +2130,7 @@ mod tests {
         );
 
         // Should successfully switch to profile
-        let result = builder.switch_profile("123");
+        let result = builder.switch_profile("123", "switch");
         if let Err(ref e) = result {
             eprintln!("Error: {:?}", e);
         }
@@ -2161,7 +2166,7 @@ mod tests {
         );
 
         // Should return error with stderr
-        let result = builder.switch_profile("123");
+        let result = builder.switch_profile("123", "switch");
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -2186,7 +2191,7 @@ mod tests {
         );
 
         // Should return error indicating profile not found
-        let result = builder.switch_profile("123");
+        let result = builder.switch_profile("123", "switch");
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -2228,7 +2233,7 @@ mod tests {
         );
 
         // Should attempt rollback and still return error
-        let result = builder.switch_profile("123");
+        let result = builder.switch_profile("123", "switch");
         assert!(result.is_err());
 
         // Error should still be the original switch failure

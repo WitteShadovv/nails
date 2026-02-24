@@ -739,7 +739,6 @@ pub const DEFAULT_OVERLAY_EXCLUSIONS: &[&str] = &[
     "/dev",
     "/run",
     "/mnt",
-    "/boot",
     "/bin",
     "/usr",
     "/lib",
@@ -1094,6 +1093,13 @@ impl Default for Config {
             state_file_path: hidden_root.join("state.json"),
             overlays: vec![
                 OverlayConfig {
+                    name: "boot".to_string(),
+                    lower: PathBuf::from("/boot"),
+                    upper: hidden_root.join("boot"),
+                    work: hidden_root.join(".work/boot"),
+                    target: PathBuf::from("/boot"),
+                },
+                OverlayConfig {
                     name: "home".to_string(),
                     lower: PathBuf::from("/home"),
                     upper: hidden_root.join("home"),
@@ -1443,6 +1449,13 @@ color_scheme:
             state_file_path: hidden_root.join("state.json"),
             overlays: vec![
                 OverlayConfig {
+                    name: "boot".to_string(),
+                    lower: PathBuf::from("/boot"),
+                    upper: hidden_root.join("boot"),
+                    work: hidden_root.join(".work/boot"),
+                    target: PathBuf::from("/boot"),
+                },
+                OverlayConfig {
                     name: "home".to_string(),
                     lower: PathBuf::from("/home"),
                     upper: hidden_root.join("home"),
@@ -1744,10 +1757,10 @@ mod tests {
             config.hidden_volume_root.join("state.json")
         );
         // Default config includes /home, /etc, and /var overlays
-        assert_eq!(config.overlays.len(), 3);
-        assert_eq!(config.overlays[0].name, "home");
-        assert_eq!(config.overlays[1].name, "etc");
-        assert_eq!(config.overlays[2].name, "var");
+        assert_eq!(config.overlays.len(), 4);
+        assert_eq!(config.overlays[1].name, "home");
+        assert_eq!(config.overlays[2].name, "etc");
+        assert_eq!(config.overlays[3].name, "var");
         // Extended overlays disabled - using regular overlays for all directories
         assert!(!config.extended_overlays.enabled);
         // User-configurable options with defaults (Epic 10)
@@ -1772,10 +1785,10 @@ mod tests {
             config.hidden_volume_root,
             PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
         );
-        assert_eq!(config.overlays.len(), 3);
-        assert_eq!(config.overlays[0].name, "home");
-        assert_eq!(config.overlays[1].name, "etc");
-        assert_eq!(config.overlays[2].name, "var");
+        assert_eq!(config.overlays.len(), 4);
+        assert_eq!(config.overlays[1].name, "home");
+        assert_eq!(config.overlays[2].name, "etc");
+        assert_eq!(config.overlays[3].name, "var");
         // Extended overlays disabled in test_default for simpler testing
         assert!(!config.extended_overlays.enabled);
         assert!(config.extended_overlays.directories.is_empty());
@@ -1915,9 +1928,9 @@ mod tests {
         assert!(!config.extended_overlays.enabled);
         assert!(config.extended_overlays.directories.is_empty());
         // /var is now a regular overlay instead of extended overlay
-        assert_eq!(config.overlays.len(), 3);
-        assert_eq!(config.overlays[2].name, "var");
-        assert_eq!(config.overlays[2].target, PathBuf::from("/var"));
+        assert_eq!(config.overlays.len(), 4);
+        assert_eq!(config.overlays[3].name, "var");
+        assert_eq!(config.overlays[3].target, PathBuf::from("/var"));
     }
 
     #[test]
@@ -3152,12 +3165,12 @@ preflight_checks: true
         assert_eq!(config.log_path, root.join("logs"));
 
         // Check overlay paths
-        assert_eq!(config.overlays[0].upper, root.join("home"));
-        assert_eq!(config.overlays[0].work, root.join(".work/home"));
-        assert_eq!(config.overlays[1].upper, root.join("etc"));
-        assert_eq!(config.overlays[1].work, root.join(".work/etc"));
-        assert_eq!(config.overlays[2].upper, root.join("var"));
-        assert_eq!(config.overlays[2].work, root.join(".work/var"));
+        assert_eq!(config.overlays[1].upper, root.join("home"));
+        assert_eq!(config.overlays[1].work, root.join(".work/home"));
+        assert_eq!(config.overlays[2].upper, root.join("etc"));
+        assert_eq!(config.overlays[2].work, root.join(".work/etc"));
+        assert_eq!(config.overlays[3].upper, root.join("var"));
+        assert_eq!(config.overlays[3].work, root.join(".work/var"));
     }
 
     #[test]
@@ -3257,14 +3270,14 @@ hidden_volume_root: /test/volume
 
         let exclusions = config.compute_effective_exclusions();
 
-        // Should return all 13 defaults
-        assert_eq!(exclusions.len(), 13);
+        // Should return all 12 defaults (/boot removed)
+        assert_eq!(exclusions.len(), 12);
         assert!(exclusions.contains(&PathBuf::from("/proc")));
         assert!(exclusions.contains(&PathBuf::from("/sys")));
         assert!(exclusions.contains(&PathBuf::from("/dev")));
         assert!(exclusions.contains(&PathBuf::from("/run")));
         assert!(exclusions.contains(&PathBuf::from("/mnt")));
-        assert!(exclusions.contains(&PathBuf::from("/boot")));
+        assert!(!exclusions.contains(&PathBuf::from("/boot")));
         assert!(exclusions.contains(&PathBuf::from("/bin")));
         assert!(exclusions.contains(&PathBuf::from("/usr")));
         assert!(exclusions.contains(&PathBuf::from("/lib")));
@@ -3281,8 +3294,8 @@ hidden_volume_root: /test/volume
 
         let exclusions = config.compute_effective_exclusions();
 
-        // Should include defaults + user additions (13 + 2 = 15 total)
-        assert_eq!(exclusions.len(), 15);
+        // Should include defaults + user additions (12 + 2 = 14 total)
+        assert_eq!(exclusions.len(), 14);
         assert!(exclusions.contains(&PathBuf::from("/proc")));
         assert!(exclusions.contains(&PathBuf::from("/custom1")));
         assert!(exclusions.contains(&PathBuf::from("/custom2")));
@@ -3301,7 +3314,7 @@ hidden_volume_root: /test/volume
 
         let exclusions = config.compute_effective_exclusions();
 
-        // Should include defaults minus removals (13 - 3 = 10 total)
+        // Should include defaults minus removals (12 - 2 = 10 total, /boot no longer in defaults)
         assert_eq!(exclusions.len(), 10);
         assert!(exclusions.contains(&PathBuf::from("/proc")));
         assert!(exclusions.contains(&PathBuf::from("/sys")));
@@ -3348,11 +3361,11 @@ hidden_volume_root: /test/volume
 
         let exclusions = config.compute_effective_exclusions();
 
-        // Defaults (13) + /custom - /mnt = 13 items
-        assert_eq!(exclusions.len(), 13);
+        // Defaults (12) + /custom - /mnt = 12 items
+        assert_eq!(exclusions.len(), 12);
         assert!(exclusions.contains(&PathBuf::from("/custom")));
         assert!(!exclusions.contains(&PathBuf::from("/mnt")));
-        assert!(exclusions.contains(&PathBuf::from("/boot")));
+        assert!(!exclusions.contains(&PathBuf::from("/boot")));
     }
 
     #[test]

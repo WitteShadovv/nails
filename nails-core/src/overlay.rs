@@ -333,9 +333,12 @@ pub fn mount_ephemeral_overlay<F: Filesystem>(
 pub fn unmount_ephemeral_overlay<F: Filesystem>(fs: &F, info: &EphemeralMountInfo) -> Result<()> {
     let mut errors = Vec::new();
 
-    // Step 1: Unmount overlay first
-    if let Err(e) = fs.unmount(&info.target, false) {
-        errors.push(format!("overlay {}: {}", info.target.display(), e));
+    // Step 1: Unmount overlay first (try graceful, then force)
+    if let Err(_e) = fs.unmount(&info.target, false) {
+        // Graceful unmount failed, try force
+        if let Err(force_err) = fs.unmount(&info.target, true) {
+            errors.push(format!("overlay {}: {}", info.target.display(), force_err));
+        }
     }
 
     // Step 2: Unmount work tmpfs
@@ -590,9 +593,12 @@ pub fn unmount_pivot_overlay<F: Filesystem>(fs: &F, info: &PivotMountInfo) -> Re
         errors.push(format!("bind mount {}: {}", info.target.display(), e));
     }
 
-    // Step 2: Unmount overlay from staging
-    if let Err(e) = fs.unmount(&info.staging, false) {
-        errors.push(format!("overlay {}: {}", info.staging.display(), e));
+    // Step 2: Unmount overlay from staging (try graceful, then force)
+    if let Err(_e) = fs.unmount(&info.staging, false) {
+        // Graceful unmount failed, try force
+        if let Err(force_err) = fs.unmount(&info.staging, true) {
+            errors.push(format!("overlay {}: {}", info.staging.display(), force_err));
+        }
     }
 
     // Step 3: Remove staging directory (best effort)

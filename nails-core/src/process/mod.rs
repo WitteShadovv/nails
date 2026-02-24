@@ -50,8 +50,8 @@ pub use classification::{RestartStrategy, classify_process};
 pub use detection::{ProcessInfo, detect_processes_using};
 pub use restart::{RestartMethod, RestartedProcess, restart_processes};
 pub use session::{
-    RealSessionCommandExecutor, SessionCommandExecutor, SessionContext, SessionKind,
-    SessionKillResult, SessionRestartPlan, detect_session_context, kill_graphical_session,
+    RealSessionCommandExecutor, SessionCommandExecutor, SessionContext, SessionKillResult,
+    SessionKind, SessionRestartPlan, detect_session_context, kill_graphical_session,
     prompt_session_kill_confirmation, restart_display_manager, restart_user_manager,
 };
 

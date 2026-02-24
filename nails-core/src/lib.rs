@@ -143,8 +143,8 @@ pub use process::{
     kill_graphical_session,
     prompt_session_kill_confirmation,
     restart_display_manager,
-    restart_user_manager,
     restart_processes,
+    restart_user_manager,
 };
 
 // Activation options exports (Story 4.15: User Prompts and CLI Flags)
@@ -170,10 +170,8 @@ pub use cleanup::{
 // Deactivation orchestrator exports (Story 5.5: DeactivationOrchestrator with Cleanup + Unmount + Rollback)
 pub use deactivation::{DeactivationOrchestrator, DeactivationReport};
 
-// Emergency deactivation exports (Story 6.1-6.3: Countdown, Fork, Orchestrator)
-pub use emergency::{
-    EmergencyCountdown, EmergencyOrchestrator, EmergencyReport, ForkStrategy, fork_and_execute,
-};
+// Emergency deactivation (thorough cleanup without reboot)
+pub use emergency::emergency_deactivate;
 
 // Status command exports (Story 7.1: State Query with Overlay Verification)
 pub use status::{

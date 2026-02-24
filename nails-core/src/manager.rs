@@ -38,6 +38,11 @@ use std::sync::{Arc, Mutex};
 
 /// Start a systemd service and its socket (socket first), best-effort.
 fn start_service_and_socket(service: &str) {
+    // Skip actual systemctl calls during tests to prevent leaking to host system
+    if cfg!(test) {
+        return;
+    }
+
     let _ = std::process::Command::new("systemctl")
         .args(["start", &format!("{}.socket", service)])
         .output();
@@ -2216,6 +2221,15 @@ impl<F: Filesystem> NailsManager<F> {
                                 nix_overlay_succeeded = true;
                             }
 
+                            // After /var overlay is mounted, unconditionally restart systemd-journald
+                            // to ensure all logs are written to the overlay (prevents underlay leakage)
+                            if overlay.target == Path::new("/var") {
+                                start_service_and_socket("systemd-journald");
+                                tracing::info!(
+                                    "Restarted systemd-journald after /var overlay mount (prevents log leakage)"
+                                );
+                            }
+
                             tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
 
                             // Story 15.1, AC2/AC4: After /etc overlay is mounted, inject the
@@ -2457,6 +2471,15 @@ impl<F: Filesystem> NailsManager<F> {
                                 );
                             }
 
+                            // After /var overlay is mounted, unconditionally restart systemd-journald
+                            // to ensure all logs are written to the overlay (prevents underlay leakage)
+                            if overlay.target == Path::new("/var") {
+                                start_service_and_socket("systemd-journald");
+                                tracing::info!(
+                                    "Restarted systemd-journald after /var overlay mount (prevents log leakage)"
+                                );
+                            }
+
                             tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
 
                             // Story 15.1, AC2/AC4: After /etc overlay is mounted, inject the
@@ -2683,7 +2706,8 @@ impl<F: Filesystem> NailsManager<F> {
                             })?;
                         }
                         let step_timer = Stopwatch::start();
-                        builder.switch_profile(generation_id).map_err(|e| {
+                        // Use "test" action to avoid updating bootloader (keeps /boot pristine)
+                        builder.switch_profile(generation_id, "test").map_err(|e| {
                             // Story 9.3 AC#2: Structured error event for NixOS switch failure
                             let error_msg = match &e {
                                 NailsError::NixOSError(msg) => {
@@ -2748,7 +2772,8 @@ impl<F: Filesystem> NailsManager<F> {
                     }
                     let step_timer = Stopwatch::start();
                     if let Some(ref generation_id) = generation {
-                        if let Err(e) = builder.switch_system_generation(generation_id) {
+                        // Use "test" action to avoid updating bootloader (keeps /boot pristine)
+                        if let Err(e) = builder.switch_system_generation(generation_id, "test") {
                             if verbosity >= Verbosity::Normal {
                                 tracing::warn!(
                                     error = %e,
@@ -2757,7 +2782,8 @@ impl<F: Filesystem> NailsManager<F> {
                                 );
                             }
 
-                            builder.switch_profile("").map_err(|e| {
+                            // Use "test" action to avoid updating bootloader (keeps /boot pristine)
+                            builder.switch_profile("", "test").map_err(|e| {
                                 let error_msg = match &e {
                                     NailsError::NixOSError(msg) => {
                                         format!("Legacy NixOS switch failed: {}", msg)
@@ -2779,7 +2805,8 @@ impl<F: Filesystem> NailsManager<F> {
                             })?;
                         }
                     } else {
-                        builder.switch_profile("").map_err(|e| {
+                        // Use "test" action to avoid updating bootloader (keeps /boot pristine)
+                        builder.switch_profile("", "test").map_err(|e| {
                             let error_msg = match &e {
                                 NailsError::NixOSError(msg) => {
                                     format!("Legacy NixOS switch failed: {}", msg)
@@ -2903,7 +2930,70 @@ impl<F: Filesystem> NailsManager<F> {
     /// ));
     /// let result = NailsManager::deactivate(Arc::clone(&manager));
     /// ```
+    /// Quick deactivation: Restore decoy NixOS configuration and reboot
+    ///
+    /// This is a simplified, fast-path deactivation that:
+    /// 1. Restores /run/current-system to point to the decoy (underlay) NixOS configuration
+    /// 2. Reboots the system
+    ///
+    /// On reboot, the system will boot into the decoy configuration with all overlays gone.
+    /// Use `emergency` command for a thorough deactivation without reboot.
     pub fn deactivate(manager_arc: Arc<Mutex<Self>>) -> Result<()> {
+        // Step 1: Select the decoy system profile
+        let (system_profile, verbosity) = {
+            let manager = manager_arc.lock().unwrap();
+            let fs = &manager.filesystem;
+            let profile = select_system_profile(fs)?;
+            (profile, manager.verbosity)
+        };
+
+        let Some(system_profile) = system_profile else {
+            return Err(NailsError::NixOSError(
+                "No system profile found. Cannot restore decoy configuration.".to_string(),
+            ));
+        };
+
+        // Step 2: Restore /run/current-system symlink to decoy profile
+        {
+            let manager = manager_arc.lock().unwrap();
+            if verbosity >= crate::verbosity::Verbosity::Normal {
+                tracing::info!("Restoring /run/current-system to decoy NixOS configuration...");
+            }
+
+            ensure_run_current_system_symlink(&manager.filesystem, &system_profile)?;
+
+            if verbosity >= crate::verbosity::Verbosity::Normal {
+                tracing::info!("  ✓ Symlink restored to {}", system_profile.display());
+            }
+        }
+
+        // Step 3: Reboot immediately
+        if verbosity >= crate::verbosity::Verbosity::Normal {
+            tracing::info!("Rebooting system...");
+        }
+
+        // Skip actual reboot during tests
+        if !cfg!(test) {
+            std::process::Command::new("systemctl")
+                .arg("reboot")
+                .output()
+                .map_err(|e| NailsError::NixOSError(format!("Failed to execute reboot: {}", e)))?;
+        }
+
+        Ok(())
+    }
+
+    /// Emergency deactivation: Thorough cleanup without reboot
+    ///
+    /// This performs a complete deactivation:
+    /// 1. Unmounts all overlays (ephemeral and persistent)
+    /// 2. Switches to decoy NixOS configuration
+    /// 3. Verifies forensic cleanliness
+    /// 4. Does NOT reboot
+    ///
+    /// Use this when you need thorough cleanup without an immediate reboot.
+    /// For quick escape with reboot, use `deactivate()` instead.
+    pub fn emergency_deactivate(manager_arc: Arc<Mutex<Self>>) -> Result<()> {
         use crate::StateGuard;
 
         // Step 1: Capture current state for StateGuard BEFORE any modifications
@@ -2913,7 +3003,6 @@ impl<F: Filesystem> NailsManager<F> {
         };
 
         // Step 2: Create StateGuard for automatic rollback on failure/panic
-        // If we don't call guard.commit(), drop() will rollback to previous_state (Active)
         let guard = StateGuard::new(Arc::clone(&manager_arc), previous_state.clone());
 
         // Step 3: Validate transition is allowed
@@ -2936,35 +3025,19 @@ impl<F: Filesystem> NailsManager<F> {
                     .cloned()
                     .collect::<Vec<_>>()
             } else {
-                // No state file or no overlays tracked
                 Vec::new()
             }
         };
         let etc_was_overlaid = overlays_to_unmount.iter().any(|p| p == Path::new("/etc"));
 
-        // Step 5b: Unmount ephemeral overlays FIRST (LIFO: last mounted, first unmounted)
-        // Story 4.11: Ephemeral overlays are RAM-backed and not tracked in state file
-        // They must be unmounted before persistent overlays to maintain LIFO order
+        // Step 5b: Unmount ephemeral overlays FIRST (LIFO order)
         let mut unmount_errors = Vec::new();
         {
             let manager = manager_arc.lock().unwrap();
             if manager.config.extended_overlays.enabled {
-                tracing::info!(
-                    phase = "deactivation",
-                    mount_type = "ephemeral",
-                    "Unmounting ephemeral overlays"
-                );
+                tracing::info!("Unmounting ephemeral overlays");
 
-                // Unmount in REVERSE order (LIFO)
                 for ephemeral_dir in manager.config.extended_overlays.directories.iter().rev() {
-                    tracing::info!(
-                        path = %ephemeral_dir.path.display(),
-                        mount_type = "ephemeral",
-                        "Unmounting ephemeral overlay"
-                    );
-
-                    // Use unmount_pivot_overlay from overlay module (Story 4.11)
-                    // Pivot mounts require: unmount bind → unmount staging → cleanup tmpfs
                     let dir_name = ephemeral_dir
                         .path
                         .file_name()
@@ -2980,63 +3053,43 @@ impl<F: Filesystem> NailsManager<F> {
                         )),
                         upper: PathBuf::from(format!("/run/nails/{}-upper", dir_name)),
                         work: PathBuf::from(format!("/run/nails/{}-work", dir_name)),
-                        lower: ephemeral_dir.path.clone(), // Original directory
+                        lower: ephemeral_dir.path.clone(),
                         is_ephemeral: true,
                     };
 
-                    match crate::overlay::unmount_pivot_overlay(&manager.filesystem, &mount_info) {
-                        Ok(()) => {
-                            tracing::info!(
-                                path = %ephemeral_dir.path.display(),
-                                mount_type = "ephemeral",
-                                "Ephemeral overlay unmounted"
-                            );
-                        }
-                        Err(e) => {
-                            // Story 9.3 AC#2: Structured error event for ephemeral unmount failure
-                            tracing::error!(
-                                error = %e,
-                                target = %ephemeral_dir.path.display(),
-                                mount_type = "ephemeral",
-                                phase = "deactivation",
-                                "Ephemeral overlay unmount failed"
-                            );
-                            unmount_errors.push((ephemeral_dir.path.clone(), e));
-                        }
+                    if let Err(e) =
+                        crate::overlay::unmount_pivot_overlay(&manager.filesystem, &mount_info)
+                    {
+                        tracing::error!(error = %e, "Ephemeral overlay unmount failed");
+                        unmount_errors.push((ephemeral_dir.path.clone(), e));
                     }
                 }
             }
         }
 
         // Step 5c: Pre-unmount nix-daemon lifecycle
-        // If /nix is in the overlay list, stop nix-daemon and unmount our /nix/store bind mount
-        // BEFORE unmounting the /nix overlay itself.
         let nix_was_overlaid = overlays_to_unmount.iter().any(|p| p == Path::new("/nix"));
         if nix_was_overlaid {
             tracing::info!("Stopping nix-daemon before /nix overlay unmount...");
-            let _ = std::process::Command::new("systemctl")
-                .args(["stop", "nix-daemon.socket"])
-                .output();
-            let _ = std::process::Command::new("systemctl")
-                .args(["stop", "nix-daemon.service"])
-                .output();
+            if !cfg!(test) {
+                let _ = std::process::Command::new("systemctl")
+                    .args(["stop", "nix-daemon.socket"])
+                    .output();
+                let _ = std::process::Command::new("systemctl")
+                    .args(["stop", "nix-daemon.service"])
+                    .output();
+            }
 
-            // Unmount our recreated read-only bind mount on /nix/store
-            // (the one we created during activation Task 7)
             tracing::info!("Unmounting /nix/store bind mount...");
             {
                 let manager = manager_arc.lock().unwrap();
-                if let Err(e) = manager.filesystem.unmount(Path::new("/nix/store"), false) {
-                    tracing::warn!(
-                        error = %e,
-                        "Could not unmount /nix/store bind mount (may not have been mounted)"
-                    );
-                }
+                let _ = manager.filesystem.unmount(Path::new("/nix/store"), false);
             }
         }
 
-        // Step 6: Unmount persistent overlays - if any fail, StateGuard will rollback
+        // Step 6: Unmount persistent overlays (two-stage: graceful then force)
         for overlay_path in &overlays_to_unmount {
+            // Try graceful unmount first
             let unmount_result = {
                 let manager = manager_arc.lock().unwrap();
                 manager.filesystem.unmount(overlay_path, false)
@@ -3046,44 +3099,46 @@ impl<F: Filesystem> NailsManager<F> {
                 Ok(()) => {
                     tracing::info!(
                         path = %overlay_path.display(),
-                        mount_type = "persistent",
-                        "Overlay unmounted"
+                        "Persistent overlay unmounted gracefully"
                     );
                 }
                 Err(e) => {
-                    // Story 9.3 AC#2: Structured error event for persistent overlay unmount failure
-                    tracing::error!(
+                    tracing::warn!(
+                        path = %overlay_path.display(),
                         error = %e,
-                        target = %overlay_path.display(),
-                        mount_type = "persistent",
-                        phase = "deactivation",
-                        "Persistent overlay unmount failed"
+                        "Graceful unmount failed, trying force unmount"
                     );
-                    unmount_errors.push((overlay_path.clone(), e));
+
+                    // If graceful fails, try force unmount
+                    let force_result = {
+                        let manager = manager_arc.lock().unwrap();
+                        manager.filesystem.unmount(overlay_path, true)
+                    };
+
+                    if let Err(force_err) = force_result {
+                        tracing::error!(
+                            path = %overlay_path.display(),
+                            error = %force_err,
+                            "Force unmount also failed"
+                        );
+                        unmount_errors.push((overlay_path.clone(), force_err));
+                    } else {
+                        tracing::info!(
+                            path = %overlay_path.display(),
+                            "Persistent overlay force unmounted"
+                        );
+                    }
                 }
             }
         }
 
         // If any unmount failed, return error and let StateGuard rollback
         if !unmount_errors.is_empty() {
-            // Story 9.3 AC#2: Structured error event for deactivation failure with rollback
-            tracing::error!(
-                failed_count = unmount_errors.len(),
-                total_overlays = overlays_to_unmount.len(),
-                rollback = true,
-                state_to = "Active",
-                "Deactivation failed, rolling back to Active state"
-            );
-
-            // Return error with suggestion to retry manually (FR51)
             let error_msg = format!(
-                "Failed to unmount {} overlay(s). System will rollback to Active state. \
-                Suggestion: Close any open files in the hidden environment and retry. \
-                First error: {:?}",
+                "Failed to unmount {} overlay(s). First error: {:?}",
                 unmount_errors.len(),
                 unmount_errors[0].1
             );
-
             return Err(NailsError::UnmountError {
                 path: unmount_errors[0].0.clone(),
                 reason: error_msg,
@@ -3091,15 +3146,12 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         // Step 6b: Post-unmount nix-daemon restart
-        // After /nix overlay is unmounted, the original boot-time bind mount is visible again.
-        // Restart nix-daemon so it sees the original /nix.
         if nix_was_overlaid {
-            tracing::info!("Restarting nix-daemon (now using original /nix)...");
+            tracing::info!("Restarting nix-daemon...");
             start_service_and_socket("nix-daemon");
         }
 
-        // Step 7: Clear overlay_status in cached state (persistent overlays only)
-        // Ephemeral overlays were never in state file
+        // Step 7: Clear overlay_status in cached state
         {
             let manager = manager_arc.lock().unwrap();
             let mut cached = manager.cached_state.lock().unwrap();
@@ -3116,43 +3168,42 @@ impl<F: Filesystem> NailsManager<F> {
             manager.update_state(inactive_state)?;
         }
 
-        // Step 8.2: Switch back to the system (decoy) profile if NixOS switching is enabled.
+        // Step 8.2: Switch to decoy profile
         let switch_error = {
             let manager = manager_arc.lock().unwrap();
             let fs = &manager.filesystem;
 
             if let Some(system_profile) = select_system_profile(fs)? {
-                if manager.verbosity >= crate::verbosity::Verbosity::Normal {
-                    tracing::info!("Switching to decoy NixOS configuration...");
-                }
+                tracing::info!("Switching to decoy NixOS configuration...");
 
                 if let Err(e) = ensure_run_current_system_symlink(fs, &system_profile) {
                     Some(NailsError::NixOSError(format!(
-                        "Failed to prepare /run/current-system for NixOS switch: {}",
+                        "Failed to prepare /run/current-system: {}",
                         e
                     )))
                 } else {
                     let switch_script = system_profile.join("bin/switch-to-configuration");
                     match fs.path_exists(&switch_script) {
-                        Ok(true) => match std::process::Command::new(&switch_script)
-                            .arg("switch")
-                            .output()
-                        {
-                            Ok(output) => {
-                                if output.status.success() {
-                                    None
-                                } else {
-                                    Some(NailsError::NixOSError(format!(
+                        Ok(true) => {
+                            if !cfg!(test) {
+                                match std::process::Command::new(&switch_script)
+                                    .arg("switch")
+                                    .output()
+                                {
+                                    Ok(output) if output.status.success() => None,
+                                    Ok(output) => Some(NailsError::NixOSError(format!(
                                         "System profile switch failed: {}",
                                         String::from_utf8_lossy(&output.stderr)
-                                    )))
+                                    ))),
+                                    Err(e) => Some(NailsError::NixOSError(format!(
+                                        "System profile switch failed: {}",
+                                        e
+                                    ))),
                                 }
+                            } else {
+                                None
                             }
-                            Err(e) => Some(NailsError::NixOSError(format!(
-                                "System profile switch failed: {}",
-                                e
-                            ))),
-                        },
+                        }
                         Ok(false) => Some(NailsError::NixOSError(format!(
                             "System profile switch script missing: {}",
                             switch_script.display()
@@ -3161,63 +3212,35 @@ impl<F: Filesystem> NailsManager<F> {
                     }
                 }
             } else {
-                // No system profile available; skip silently on non-NixOS systems.
                 None
             }
         };
 
         if let Some(err) = switch_error {
-            // Deactivation already transitioned to Inactive; commit to prevent rollback to Active.
             guard.commit();
             return Err(err);
         }
 
-        // Step 8.5 (Story 15.3, AC3): After all overlays are unmounted, verify the base
-        // hardware-configuration.nix is forensically clean. Once the /etc overlay is gone the
-        // OS-visible file reverts to the underlay — this check confirms no hidden references
-        // survived on the underlay (which they never should, but we enforce it here).
+        // Step 8.5: Verify base config is forensically clean
         let base_config_error = if etc_was_overlaid {
             let manager = manager_arc.lock().unwrap();
             match verify_base_config_clean(&manager.filesystem) {
-                Ok(true) => {
-                    tracing::debug!(
-                        "Post-deactivation: base hardware-configuration.nix is forensically clean"
-                    );
-                    None
-                }
-                Ok(false) => {
-                    tracing::error!(
-                        "Post-deactivation: base /etc/nixos/hardware-configuration.nix contains \
-                         hidden references — underlay may have been polluted"
-                    );
-                    Some(NailsError::NixOSError(
-                        "Base hardware-configuration.nix is not forensically clean after deactivation \
-                         — underlay contains NAILS or hidden references"
-                            .into(),
-                    ))
-                }
-                Err(e) => {
-                    tracing::error!(
-                        error = %e,
-                        "Could not verify base hardware-configuration.nix after deactivation"
-                    );
-                    Some(e)
-                }
+                Ok(true) => None,
+                Ok(false) => Some(NailsError::NixOSError(
+                    "Base hardware-configuration.nix is not forensically clean".into(),
+                )),
+                Err(e) => Some(e),
             }
         } else {
-            tracing::debug!(
-                "Post-deactivation: /etc overlay was not mounted, skipping base config clean check"
-            );
             None
         };
 
         if let Some(err) = base_config_error {
-            // Deactivation already transitioned to Inactive; commit to prevent rollback to Active.
             guard.commit();
             return Err(err);
         }
 
-        // Step 9: Success - commit guard to prevent rollback
+        // Step 9: Success
         guard.commit();
         Ok(())
     }
@@ -5196,7 +5219,7 @@ mod tests {
             PathBuf::from("/proc"), // Default exclusion
             PathBuf::from("/sys"),  // Default exclusion
             PathBuf::from("/dev"),  // Default exclusion
-            PathBuf::from("/boot"), // Default exclusion
+            PathBuf::from("/boot"), // Now included (removed from default exclusions)
         ]);
 
         let config = Config {
@@ -5206,19 +5229,19 @@ mod tests {
 
         let targets = build_overlay_targets(&fs, &config).expect("Should build targets");
 
-        // Should include most dirs, exclude /proc, /sys, /dev, /boot + critical /bin, /usr
-        assert_eq!(targets.len(), 5);
+        // Should include most dirs, exclude /proc, /sys, /dev + critical /bin, /usr
+        assert_eq!(targets.len(), 6);
         assert!(targets.contains(&PathBuf::from("/home")));
         assert!(targets.contains(&PathBuf::from("/etc")));
         assert!(targets.contains(&PathBuf::from("/nix")));
         assert!(targets.contains(&PathBuf::from("/var")));
         assert!(targets.contains(&PathBuf::from("/tmp")));
+        assert!(targets.contains(&PathBuf::from("/boot")));
         assert!(!targets.contains(&PathBuf::from("/usr"))); // Critical binary root
         assert!(!targets.contains(&PathBuf::from("/bin"))); // Critical binary root
         assert!(!targets.contains(&PathBuf::from("/proc")));
         assert!(!targets.contains(&PathBuf::from("/sys")));
         assert!(!targets.contains(&PathBuf::from("/dev")));
-        assert!(!targets.contains(&PathBuf::from("/boot")));
     }
 
     #[test]
@@ -5237,18 +5260,18 @@ mod tests {
             overlay_mode: OverlayMode::Auto,
             ..Config::default()
         };
-        // Add /var and /nix as additional user exclusions (boot already excluded by default)
+        // Add /var and /nix as additional user exclusions
         config.overlay_exclusions = vec![PathBuf::from("/var"), PathBuf::from("/nix")];
 
         let targets = build_overlay_targets(&fs, &config).expect("Should build targets");
 
-        // Should exclude user-specified directories
-        assert_eq!(targets.len(), 2);
+        // Should exclude user-specified directories, /boot now included
+        assert_eq!(targets.len(), 3);
         assert!(targets.contains(&PathBuf::from("/home")));
         assert!(targets.contains(&PathBuf::from("/etc")));
+        assert!(targets.contains(&PathBuf::from("/boot")));
         assert!(!targets.contains(&PathBuf::from("/nix")));
         assert!(!targets.contains(&PathBuf::from("/var")));
-        assert!(!targets.contains(&PathBuf::from("/boot")));
     }
 
     #[test]

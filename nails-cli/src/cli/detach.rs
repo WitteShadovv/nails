@@ -1,6 +1,6 @@
 use std::env;
-use std::fs::File;
 use std::ffi::OsString;
+use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 use std::process::Command;
@@ -54,9 +54,8 @@ pub fn maybe_detach_for_session_kill(
     }
 
     // Create log file for detached service
-    let (_, log_path) = open_detached_log().map_err(|e| {
-        NailsError::InvalidState(format!("Failed to create log file: {}", e))
-    })?;
+    let (_, log_path) = open_detached_log()
+        .map_err(|e| NailsError::InvalidState(format!("Failed to create log file: {}", e)))?;
 
     // Get the current binary path
     let exe_path = std::env::current_exe().map_err(|e| {
@@ -69,7 +68,8 @@ pub fn maybe_detach_for_session_kill(
     // Build systemd-run command
     // Using no --scope flag creates a proper transient service
     let mut cmd = Command::new("systemd-run");
-    cmd.arg("--unit").arg(&unit_name)
+    cmd.arg("--unit")
+        .arg(&unit_name)
         .arg("--slice=system.slice")
         .arg("--same-dir") // Keep current working directory
         .arg("--collect") // Clean up unit after it finishes
@@ -112,8 +112,14 @@ pub fn maybe_detach_for_session_kill(
     }
 
     // Redirect output to log file
-    cmd.arg(format!("--property=StandardOutput=append:{}", log_path.display()));
-    cmd.arg(format!("--property=StandardError=append:{}", log_path.display()));
+    cmd.arg(format!(
+        "--property=StandardOutput=append:{}",
+        log_path.display()
+    ));
+    cmd.arg(format!(
+        "--property=StandardError=append:{}",
+        log_path.display()
+    ));
 
     // Add the command to execute
     cmd.arg("--");
@@ -121,9 +127,9 @@ pub fn maybe_detach_for_session_kill(
     cmd.args(args.iter().skip(1));
 
     // Execute systemd-run
-    let output = cmd.output().map_err(|e| {
-        NailsError::InvalidState(format!("Failed to execute systemd-run: {}", e))
-    })?;
+    let output = cmd
+        .output()
+        .map_err(|e| NailsError::InvalidState(format!("Failed to execute systemd-run: {}", e)))?;
 
     if !output.status.success() {
         return Err(NailsError::InvalidState(format!(
