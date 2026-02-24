@@ -2638,6 +2638,29 @@ impl<F: Filesystem> NailsManager<F> {
             );
         }
 
+        // Step 8.5: Restart display manager BEFORE NixOS switch for better UX
+        // This allows the user to log back in immediately while nixos-rebuild runs
+        // Note: We skip restarting user manager here - it will start automatically when user logs in
+        if restart_plan.display_manager.is_some() {
+            use crate::process::restart_display_manager;
+
+            if let Some(ref dm_name) = restart_plan.display_manager {
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!("Restarting display manager ({})...", dm_name);
+                }
+
+                restart_display_manager(dm_name)?;
+
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!("  ✓ Display manager restarted - login screen should appear");
+                    tracing::info!("  ℹ NixOS rebuild will continue in background...");
+                    tracing::info!("  ℹ User manager will start automatically when you log in");
+                }
+            }
+
+            session_restart_guard.disarm();
+        }
+
         // Step 9: Switch NixOS profile and update nixos_generation (Story 4.7, AC3, Task 3.3)
         {
             let manager = manager_arc.lock().unwrap();
@@ -2815,31 +2838,8 @@ impl<F: Filesystem> NailsManager<F> {
             manager.update_state(active_state)?;
         }
 
-        // Step 10.5: Restart display manager if session was killed (Story 4.15, AC8)
-        if restart_plan.target_uid.is_some() || restart_plan.display_manager.is_some() {
-            use crate::process::{restart_display_manager, restart_user_manager};
-
-            if let Some(uid) = restart_plan.target_uid {
-                if verbosity >= Verbosity::Normal {
-                    tracing::info!("Restarting user manager (uid {})...", uid);
-                }
-                restart_user_manager(uid)?;
-            }
-
-            if let Some(ref dm_name) = restart_plan.display_manager {
-                if verbosity >= Verbosity::Normal {
-                    tracing::info!("Restarting display manager ({})...", dm_name);
-                }
-
-                restart_display_manager(dm_name)?;
-
-                if verbosity >= Verbosity::Normal {
-                    tracing::info!("  ✓ Display manager restarted - login screen should appear");
-                }
-            }
-
-            session_restart_guard.disarm();
-        }
+        // Note: User session already restarted in Step 8.5 (before NixOS switch)
+        // This allows user to log in while nixos-rebuild runs
 
         // Commit tracker to prevent automatic rollback on drop now that activation is successful.
         tracker.commit();
