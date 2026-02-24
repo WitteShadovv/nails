@@ -129,19 +129,21 @@ pub use overlay::{
 // Process detection and classification exports (Story 4.13: Process Detection)
 pub use process::{
     // Story 4.14: Session Detection and Shutdown Support
-    DisplayManager,
     ProcessInfo,
     RestartMethod,
     RestartStrategy,
     RestartedProcess,
+    SessionContext,
     SessionKillResult,
-    SessionType,
+    SessionKind,
+    SessionRestartPlan,
     classify_process,
     detect_processes_using,
-    detect_session_type,
+    detect_session_context,
     kill_graphical_session,
     prompt_session_kill_confirmation,
     restart_display_manager,
+    restart_user_manager,
     restart_processes,
 };
 

@@ -1579,60 +1579,58 @@ impl<F: Filesystem> NailsManager<F> {
     ) -> Result<()> {
         use crate::{StateGuard, Stopwatch, Verbosity};
 
-        // RAII guard: if we kill the display manager but exit early with an error,
-        // attempt to restart it so the user doesn't stay on a black screen.
-        struct DisplayManagerRestartGuard {
-            dm_name: Option<String>,
+        // RAII guard: if we kill the session but exit early with an error,
+        // attempt to restart the user manager and display manager.
+        struct SessionRestartGuard {
+            plan: crate::process::SessionRestartPlan,
             disarmed: bool,
         }
 
-        impl DisplayManagerRestartGuard {
-            fn new(dm_name: Option<String>) -> Self {
+        impl SessionRestartGuard {
+            fn new(plan: crate::process::SessionRestartPlan) -> Self {
                 Self {
-                    dm_name,
+                    plan,
                     disarmed: false,
                 }
             }
 
-            /// Prevent the guard from restarting the DM (use after a successful restart).
+            /// Prevent the guard from restarting the session (use after a successful restart).
             fn disarm(&mut self) {
                 self.disarmed = true;
             }
         }
 
-        impl Drop for DisplayManagerRestartGuard {
+        impl Drop for SessionRestartGuard {
             fn drop(&mut self) {
                 if self.disarmed {
                     return;
                 }
 
-                let dm_name = match self.dm_name.take() {
-                    Some(name) => name,
-                    None => return,
-                };
+                use crate::process::{restart_display_manager, restart_user_manager};
 
-                use crate::process::{DisplayManager, restart_display_manager};
+                if let Some(uid) = self.plan.target_uid {
+                    if let Err(e) = restart_user_manager(uid) {
+                        tracing::error!(
+                            error = %e,
+                            uid = uid,
+                            "Failed to restart user manager after activation error"
+                        );
+                    }
+                }
 
-                let dm = match dm_name.to_lowercase().as_str() {
-                    "gdm" => DisplayManager::Gdm,
-                    "sddm" => DisplayManager::Sddm,
-                    "lightdm" => DisplayManager::LightDm,
-                    "greetd" => DisplayManager::Greetd,
-                    "ly" => DisplayManager::Ly,
-                    _ => DisplayManager::Other(dm_name.clone()),
-                };
-
-                if let Err(e) = restart_display_manager(&dm) {
-                    tracing::error!(
-                        error = %e,
-                        dm = %dm_name,
-                        "Failed to restart display manager after activation error"
-                    );
-                } else {
-                    tracing::warn!(
-                        dm = %dm_name,
-                        "Display manager restarted after activation error"
-                    );
+                if let Some(dm_name) = self.plan.display_manager.take() {
+                    if let Err(e) = restart_display_manager(&dm_name) {
+                        tracing::error!(
+                            error = %e,
+                            dm = %dm_name,
+                            "Failed to restart display manager after activation error"
+                        );
+                    } else {
+                        tracing::warn!(
+                            dm = %dm_name,
+                            "Display manager restarted after activation error"
+                        );
+                    }
                 }
             }
         }
@@ -1690,9 +1688,9 @@ impl<F: Filesystem> NailsManager<F> {
         // Step 2.5: Handle --kill-session flag (Story 4.15, AC8)
         // Kill graphical session BEFORE pre-flight checks to ensure optimal activation
         // This enables all direct overlay mounts without pivot mount fallback
-        let killed_display_manager = if options.kill_session {
+        let restart_plan = if options.kill_session {
             use crate::process::{
-                SessionType, detect_session_type, kill_graphical_session,
+                SessionKind, detect_session_context, kill_graphical_session,
                 prompt_session_kill_confirmation,
             };
 
@@ -1700,18 +1698,21 @@ impl<F: Filesystem> NailsManager<F> {
                 tracing::info!("Detecting session type for --kill-session...");
             }
 
-            let session = detect_session_type()?;
+            let session = detect_session_context()?;
 
-            match session {
-                SessionType::GraphicalUser {
-                    ref display_manager,
-                    ..
-                } => {
+            match session.kind {
+                SessionKind::GraphicalUser => {
                     // Prompt for confirmation unless --yes flag
-                    prompt_session_kill_confirmation(&session, options.yes)?;
+                    if !options.session_kill_confirmed {
+                        prompt_session_kill_confirmation(&session, options.yes)?;
+                    }
 
                     if verbosity >= Verbosity::Normal {
-                        tracing::info!("Killing graphical session ({})", display_manager);
+                        let dm = session
+                            .display_manager
+                            .as_deref()
+                            .unwrap_or("display-manager");
+                        tracing::info!("Killing graphical session ({})", dm);
                     }
 
                     let kill_result = kill_graphical_session(&session)?;
@@ -1719,47 +1720,49 @@ impl<F: Filesystem> NailsManager<F> {
                     if verbosity >= Verbosity::Verbose {
                         tracing::info!(
                             "  ✓ Session killed: {} processes terminated, {} force-killed",
-                            kill_result.processes_terminated,
-                            kill_result.processes_force_killed
+                            kill_result.fallback_processes_terminated,
+                            kill_result.fallback_processes_force_killed
                         );
                     }
 
-                    // Store display manager name for restart later
-                    Some(display_manager.clone())
+                    // Store restart plan for later
+                    kill_result.restart_plan.clone()
                 }
-                SessionType::Tty => {
-                    if verbosity >= Verbosity::Verbose {
-                        tracing::info!("Running in TTY - no session to kill");
+                SessionKind::Tty => {
+                    if verbosity >= Verbosity::Normal {
+                        tracing::warn!("--kill-session requested, but running in TTY - skipping");
                     }
-                    None
+                    crate::process::SessionRestartPlan::default()
                 }
-                SessionType::Ssh => {
-                    if verbosity >= Verbosity::Verbose {
-                        tracing::info!("Running over SSH - no local session to kill");
+                SessionKind::Ssh => {
+                    if verbosity >= Verbosity::Normal {
+                        tracing::warn!(
+                            "--kill-session requested over SSH - skipping session termination"
+                        );
                     }
-                    None
+                    crate::process::SessionRestartPlan::default()
                 }
-                SessionType::GraphicalRoot => {
+                SessionKind::GraphicalRoot => {
                     if verbosity >= Verbosity::Normal {
                         tracing::warn!(
                             "Running as root in graphical session - cannot kill session"
                         );
                     }
-                    None
+                    crate::process::SessionRestartPlan::default()
                 }
-                SessionType::Unknown => {
+                SessionKind::Unknown => {
                     if verbosity >= Verbosity::Normal {
                         tracing::warn!("Could not detect session type - skipping session kill");
                     }
-                    None
+                    crate::process::SessionRestartPlan::default()
                 }
             }
         } else {
-            None
+            crate::process::SessionRestartPlan::default()
         };
 
-        // Auto-restart display manager if we exit early with an error after killing it.
-        let mut dm_restart_guard = DisplayManagerRestartGuard::new(killed_display_manager.clone());
+        // Auto-restart session if we exit early with an error after killing it.
+        let mut session_restart_guard = SessionRestartGuard::new(restart_plan.clone());
 
         // Step 2.75: Stage hidden config symlink before pre-flight checks (Story 15.2).
         // This ensures NixOSConfigCheck can validate the staged link.
@@ -2813,28 +2816,29 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         // Step 10.5: Restart display manager if session was killed (Story 4.15, AC8)
-        if let Some(ref dm_name) = killed_display_manager {
-            use crate::process::{DisplayManager, restart_display_manager};
+        if restart_plan.target_uid.is_some() || restart_plan.display_manager.is_some() {
+            use crate::process::{restart_display_manager, restart_user_manager};
 
-            if verbosity >= Verbosity::Normal {
-                tracing::info!("Restarting display manager ({})...", dm_name);
+            if let Some(uid) = restart_plan.target_uid {
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!("Restarting user manager (uid {})...", uid);
+                }
+                restart_user_manager(uid)?;
             }
 
-            let dm = match dm_name.to_lowercase().as_str() {
-                "gdm" => DisplayManager::Gdm,
-                "sddm" => DisplayManager::Sddm,
-                "lightdm" => DisplayManager::LightDm,
-                "greetd" => DisplayManager::Greetd,
-                "ly" => DisplayManager::Ly,
-                _ => DisplayManager::Other(dm_name.clone()), // Preserve original case for Other
-            };
+            if let Some(ref dm_name) = restart_plan.display_manager {
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!("Restarting display manager ({})...", dm_name);
+                }
 
-            restart_display_manager(&dm)?;
-            dm_restart_guard.disarm();
+                restart_display_manager(dm_name)?;
 
-            if verbosity >= Verbosity::Normal {
-                tracing::info!("  ✓ Display manager restarted - login screen should appear");
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!("  ✓ Display manager restarted - login screen should appear");
+                }
             }
+
+            session_restart_guard.disarm();
         }
 
         // Commit tracker to prevent automatic rollback on drop now that activation is successful.

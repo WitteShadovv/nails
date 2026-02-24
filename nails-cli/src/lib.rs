@@ -275,7 +275,7 @@ pub mod cli {
                 };
 
                 // Build ActivateOptions from CLI flags
-                let options = ActivateOptions {
+                let mut options = ActivateOptions {
                     kill_session,
                     accept_pivot_risks,
                     no_pivot,
@@ -285,7 +285,23 @@ pub mod cli {
                     json,
                     no_color,
                     skip_process_detection_override: None, // Use default test behavior
+                    session_kill_confirmed: false,
                 };
+
+                if options.kill_session {
+                    if !options.yes {
+                        eprintln!(
+                            "Error: --kill-session is non-interactive after detach; use --yes"
+                        );
+                        std::process::exit(2);
+                    }
+                    if !options.accept_pivot_risks && !options.no_pivot {
+                        eprintln!(
+                            "Error: --kill-session requires --accept-pivot-risks or --no-pivot to avoid prompts"
+                        );
+                        std::process::exit(2);
+                    }
+                }
 
                 // Validate options (check for conflicting flags)
                 if let Err(e) = options.validate() {
@@ -367,14 +383,68 @@ pub mod cli {
                 // Set verbosity level
                 manager.lock().unwrap().set_verbosity(verbosity);
 
+                // If kill-session, run preflight before detaching so output stays visible.
+                let mut skip_preflight = no_preflight;
+                if options.kill_session && !no_preflight {
+                    if verbosity >= Verbosity::Normal {
+                        tracing::info!("Running pre-flight checks before session kill...");
+                    }
+
+                    {
+                        let mgr = manager.lock().unwrap();
+                        if let Err(e) = nails_core::stage_hidden_config_symlink(
+                            mgr.filesystem(),
+                            &mgr.config().hidden_volume_root,
+                        ) {
+                            tracing::error!(
+                                error = %e,
+                                "Failed to stage hidden config symlink before pre-flight checks"
+                            );
+                            eprintln!("Error: {}", e);
+                            std::process::exit(2);
+                        }
+                    }
+
+                    {
+                        let mgr = manager.lock().unwrap();
+                        if let Err(e) = mgr.run_preflight_checks() {
+                            eprintln!("Error: {}", e);
+                            std::process::exit(2);
+                        }
+                    }
+
+                    skip_preflight = true;
+                }
+
                 // Detach if we're about to kill the GUI session so the worker survives it
                 let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
-                maybe_detach_for_session_kill(kill_session, &argv)?;
+                let mut session_ctx = None;
+                if options.kill_session {
+                    if let Ok(ctx) = nails_core::detect_session_context() {
+                        if ctx.kind == nails_core::SessionKind::GraphicalUser {
+                            session_ctx = Some(ctx);
+                        }
+                    }
+                }
+
+                if options.kill_session && !options.session_kill_confirmed {
+                    if let Some(ref ctx) = session_ctx {
+                        if let Err(e) =
+                            nails_core::prompt_session_kill_confirmation(ctx, options.yes)
+                        {
+                            eprintln!("Error: {}", e);
+                            std::process::exit(2);
+                        }
+                        options.session_kill_confirmed = true;
+                    }
+                }
+
+                maybe_detach_for_session_kill(kill_session, &argv, session_ctx.as_ref())?;
 
                 // Run activation with options and measure duration
                 let start = Instant::now();
                 let result =
-                    NailsManager::activate_with_options(manager.clone(), options, no_preflight);
+                    NailsManager::activate_with_options(manager.clone(), options, skip_preflight);
                 let duration = start.elapsed().as_secs_f64();
 
                 // If activation succeeded, set up shell instrumentation (non-critical)

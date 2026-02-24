@@ -50,9 +50,9 @@ pub use classification::{RestartStrategy, classify_process};
 pub use detection::{ProcessInfo, detect_processes_using};
 pub use restart::{RestartMethod, RestartedProcess, restart_processes};
 pub use session::{
-    DisplayManager, RealSessionCommandExecutor, SessionCommandExecutor, SessionKillResult,
-    SessionType, detect_session_type, kill_graphical_session, prompt_session_kill_confirmation,
-    restart_display_manager,
+    RealSessionCommandExecutor, SessionCommandExecutor, SessionContext, SessionKind,
+    SessionKillResult, SessionRestartPlan, detect_session_context, kill_graphical_session,
+    prompt_session_kill_confirmation, restart_display_manager, restart_user_manager,
 };
 
 #[cfg(test)]

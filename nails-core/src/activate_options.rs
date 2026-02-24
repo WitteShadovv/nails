@@ -77,6 +77,12 @@ pub struct ActivateOptions {
     /// that need to verify process detection logic.
     #[doc(hidden)]
     pub skip_process_detection_override: Option<bool>,
+
+    /// Skip session kill confirmation prompt (internal use)
+    ///
+    /// This is set by the CLI when the user already confirmed before detaching.
+    #[doc(hidden)]
+    pub session_kill_confirmed: bool,
 }
 
 impl ActivateOptions {
@@ -249,6 +255,7 @@ mod tests {
             json: true,
             no_color: true,
             skip_process_detection_override: None,
+            session_kill_confirmed: false,
         };
         assert!(opts.validate().is_ok());
     }

@@ -1,102 +1,58 @@
 //! Session Detection and Management
 //!
-//! Provides session detection and controlled shutdown for graphical sessions.
-//! Part of the **Universal Overlay Mounting Strategy** documented in
-//! `/docs/architecture/universal-overlay-mounting-strategy.md`.
+//! Provides logind-first session termination for the `--kill-session` flag.
+//! The goal is to stop the display manager, terminate the user's graphical
+//! session (and all user processes that could leak to underlays), then
+//! restart the display manager and user manager after activation.
 //!
-//! This module enables the `--kill-session` flag for optimal activation from GUI
-//! by terminating the graphical session, allowing all direct overlay mounts without
-//! pivot mount fallback.
-//!
-//! # Key Components
-//!
-//! - **Session Detection**: Identify if running in GUI vs TTY
-//! - **Display Manager Detection**: Determine which DM is active (gdm, sddm, etc.)
-//! - **Session Kill**: Gracefully terminate graphical session with force-kill fallback
-//! - **DM Restart**: Restart display manager after activation completes
-//!
-//! # Example
-//!
-//! ```no_run
-//! use nails_core::process::session::{detect_session_type, kill_graphical_session, SessionType};
-//!
-//! // Detect current session type
-//! let session = detect_session_type()?;
-//!
-//! match session {
-//!     SessionType::GraphicalUser { .. } => {
-//!         // Kill session if user consents
-//!         let result = kill_graphical_session(&session)?;
-//!         println!("Terminated {} processes", result.processes_terminated);
-//!     }
-//!     SessionType::Tty => {
-//!         // Already optimal - no session to kill
-//!         println!("Running in TTY - optimal activation path");
-//!     }
-//!     _ => {}
-//! }
-//! # Ok::<(), nails_core::NailsError>(())
-//! ```
+//! Fallback behavior is included for non-logind environments.
 
 use crate::{NailsError, Result};
+use nix::unistd::{getuid, Uid, User};
 use std::env;
 use std::fs;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Type of session currently running
+/// Kind of session currently running
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionType {
+pub enum SessionKind {
     /// Running in TTY (no graphical session)
     Tty,
-
     /// Running in user's graphical session
-    GraphicalUser {
-        /// Display manager name (e.g., "gdm", "sddm")
-        display_manager: String,
-        /// PID of session leader (compositor/X11)
-        session_leader_pid: u32,
-    },
-
-    /// Running as root in graphical session
+    GraphicalUser,
+    /// Running as root in graphical session without a target user
     GraphicalRoot,
-
     /// Running over SSH
     Ssh,
-
     /// Cannot determine session type
     Unknown,
 }
 
-/// Supported display managers
+/// Context about the current session and target user
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DisplayManager {
-    /// GNOME Display Manager
-    Gdm,
-    /// Simple Desktop Display Manager
-    Sddm,
-    /// LightDM
-    LightDm,
-    /// Greetd
-    Greetd,
-    /// Ly
-    Ly,
-    /// Other display manager (holds the service name)
-    Other(String),
+pub struct SessionContext {
+    /// Session classification
+    pub kind: SessionKind,
+    /// logind session id, if available
+    pub session_id: Option<String>,
+    /// Display manager service to stop/start
+    pub display_manager: Option<String>,
+    /// Target user uid to terminate
+    pub target_uid: Option<u32>,
+    /// Target user name (best-effort)
+    pub target_user: Option<String>,
+    /// Whether logind is available
+    pub logind_available: bool,
 }
 
-impl DisplayManager {
-    /// Get systemd service name for this display manager
-    pub fn service_name(&self) -> &str {
-        match self {
-            Self::Gdm => "gdm",
-            Self::Sddm => "sddm",
-            Self::LightDm => "lightdm",
-            Self::Greetd => "greetd",
-            Self::Ly => "ly",
-            Self::Other(name) => name.as_str(),
-        }
-    }
+/// Plan for restart after session kill
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SessionRestartPlan {
+    /// Display manager service to restart
+    pub display_manager: Option<String>,
+    /// User uid to restart user manager for
+    pub target_uid: Option<u32>,
 }
 
 /// Result of session kill operation
@@ -104,38 +60,47 @@ impl DisplayManager {
 pub struct SessionKillResult {
     /// Display manager was successfully stopped
     pub display_manager_stopped: bool,
-    /// Number of processes terminated gracefully
-    pub processes_terminated: u32,
-    /// Number of processes force-killed
-    pub processes_force_killed: u32,
+    /// logind was used for termination
+    pub logind_used: bool,
+    /// Session termination attempted and succeeded
+    pub session_terminated: bool,
+    /// User termination attempted and succeeded
+    pub user_terminated: bool,
+    /// Number of processes terminated in fallback mode
+    pub fallback_processes_terminated: u32,
+    /// Number of processes force-killed in fallback mode
+    pub fallback_processes_force_killed: u32,
     /// Time taken for operation
     pub duration: Duration,
+    /// Plan for restart after activation
+    pub restart_plan: SessionRestartPlan,
 }
 
 impl Default for SessionKillResult {
     fn default() -> Self {
         Self {
             display_manager_stopped: false,
-            processes_terminated: 0,
-            processes_force_killed: 0,
+            logind_used: false,
+            session_terminated: false,
+            user_terminated: false,
+            fallback_processes_terminated: 0,
+            fallback_processes_force_killed: 0,
             duration: Duration::from_secs(0),
+            restart_plan: SessionRestartPlan::default(),
         }
     }
 }
 
 /// Command executor for session operations
-///
-/// Abstraction layer for executing system commands, allowing tests to mock
-/// systemctl and kill operations without affecting the actual system.
 pub trait SessionCommandExecutor {
     /// Execute systemctl command
     fn execute_systemctl(&self, args: &[&str]) -> Result<(bool, String, String)>;
 
-    /// Count processes in graphical session
-    fn count_session_processes(&self) -> Result<u32>;
+    /// Execute loginctl command
+    fn execute_loginctl(&self, args: &[&str]) -> Result<(bool, String, String)>;
 
-    /// Force kill remaining session processes
-    fn force_kill_session_processes(&self) -> Result<u32>;
+    /// Check whether loginctl is available
+    fn loginctl_available(&self) -> bool;
 }
 
 /// Real command executor using system commands
@@ -153,138 +118,155 @@ impl SessionCommandExecutor for RealSessionCommandExecutor {
         Ok((success, stdout, stderr))
     }
 
-    fn count_session_processes(&self) -> Result<u32> {
-        // Count processes with DISPLAY or WAYLAND_DISPLAY
-        let mut count = 0;
+    fn execute_loginctl(&self, args: &[&str]) -> Result<(bool, String, String)> {
+        use std::process::Command;
+        let output = Command::new("loginctl").args(args).output()?;
 
-        if let Ok(entries) = fs::read_dir("/proc") {
-            for entry in entries.flatten() {
-                if let Ok(pid_str) = entry.file_name().into_string()
-                    && pid_str.chars().all(|c| c.is_ascii_digit())
-                {
-                    let environ_path = format!("/proc/{}/environ", pid_str);
-                    if let Ok(environ) = fs::read_to_string(&environ_path)
-                        && (environ.contains("DISPLAY=") || environ.contains("WAYLAND_DISPLAY="))
-                    {
-                        count += 1;
-                    }
-                }
-            }
-        }
+        let success = output.status.success();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-        Ok(count)
+        Ok((success, stdout, stderr))
     }
 
-    fn force_kill_session_processes(&self) -> Result<u32> {
-        let mut killed = 0;
-
-        if let Ok(entries) = fs::read_dir("/proc") {
-            for entry in entries.flatten() {
-                if let Ok(pid_str) = entry.file_name().into_string()
-                    && let Ok(pid) = pid_str.parse::<u32>()
-                {
-                    let environ_path = format!("/proc/{}/environ", pid_str);
-                    if let Ok(environ) = fs::read_to_string(&environ_path)
-                        && (environ.contains("DISPLAY=") || environ.contains("WAYLAND_DISPLAY="))
-                    {
-                        // Send SIGKILL
-                        use std::process::Command;
-                        if Command::new("kill")
-                            .args(["-9", &pid.to_string()])
-                            .status()
-                            .is_ok()
-                        {
-                            killed += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(killed)
+    fn loginctl_available(&self) -> bool {
+        use std::process::Command;
+        Command::new("loginctl").arg("--version").output().is_ok()
     }
 }
 
-/// Detect the current session type
-///
-/// Checks environment variables and process information to determine
-/// if running in graphical session, TTY, SSH, etc.
-///
-/// # Environment Variables Checked
-///
-/// - `$DISPLAY`: X11 display server
-/// - `$WAYLAND_DISPLAY`: Wayland compositor
-/// - `$SSH_TTY`: SSH connection indicator
-///
-/// # Errors
-///
-/// Returns error if unable to determine session type due to system issues.
-pub fn detect_session_type() -> Result<SessionType> {
+/// Detect the current session context
+pub fn detect_session_context() -> Result<SessionContext> {
+    detect_session_context_with_executor(&RealSessionCommandExecutor)
+}
+
+fn detect_session_context_with_executor<E: SessionCommandExecutor>(
+    executor: &E,
+) -> Result<SessionContext> {
+    let logind_available = match env::var("NAILS_LOGIND_AVAILABLE") {
+        Ok(val) => val != "0",
+        Err(_) => executor.loginctl_available(),
+    };
+    let session_id = env::var("XDG_SESSION_ID").ok();
+    let override_session_id = env::var("NAILS_SESSION_ID").ok();
+    let override_dm = env::var("NAILS_DISPLAY_MANAGER").ok();
+    let override_uid = env::var("NAILS_TARGET_UID")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok());
+    let override_user = env::var("NAILS_TARGET_USER").ok();
+
     // Check for SSH first
     if env::var("SSH_TTY").is_ok() || env::var("SSH_CONNECTION").is_ok() {
-        return Ok(SessionType::Ssh);
+        return Ok(SessionContext {
+            kind: SessionKind::Ssh,
+            session_id: override_session_id.or(session_id),
+            display_manager: None,
+            target_uid: None,
+            target_user: None,
+            logind_available,
+        });
+    }
+
+    // If overrides were provided by the pre-detach environment, trust them.
+    if override_session_id.is_some() || override_uid.is_some() || override_dm.is_some() {
+        return Ok(SessionContext {
+            kind: SessionKind::GraphicalUser,
+            session_id: override_session_id.or(session_id),
+            display_manager: override_dm,
+            target_uid: override_uid,
+            target_user: override_user,
+            logind_available,
+        });
     }
 
     // Check for graphical session indicators
+    let session_type = env::var("XDG_SESSION_TYPE").ok();
     let has_display = env::var("DISPLAY").is_ok();
     let has_wayland = env::var("WAYLAND_DISPLAY").is_ok();
 
-    if !has_display && !has_wayland {
-        return Ok(SessionType::Tty);
+    let is_graphical = match session_type.as_deref() {
+        Some("wayland") | Some("x11") => true,
+        Some("tty") => false,
+        _ => has_display || has_wayland,
+    };
+
+    let target_uid = resolve_target_uid();
+    let target_user = resolve_target_user(target_uid);
+
+    if !is_graphical {
+        return Ok(SessionContext {
+            kind: SessionKind::Tty,
+            session_id,
+            display_manager: None,
+            target_uid,
+            target_user,
+            logind_available,
+        });
     }
 
-    // Graphical session detected - determine DM and check privileges
-    let is_root = nix::unistd::getuid().is_root();
+    let display_manager = detect_display_manager(executor)?;
 
-    if is_root {
-        return Ok(SessionType::GraphicalRoot);
-    }
+    let kind = if target_uid.is_some() {
+        SessionKind::GraphicalUser
+    } else {
+        SessionKind::GraphicalRoot
+    };
 
-    // User graphical session - detect DM and session leader
-    let dm = detect_display_manager()?;
-
-    // Try to find session leader, but use 0 as placeholder if not found
-    // This allows session detection to succeed even with unknown compositors
-    let session_leader = find_session_leader_pid().unwrap_or(0);
-
-    Ok(SessionType::GraphicalUser {
-        display_manager: dm
-            .map(|d| d.service_name().to_string())
-            .unwrap_or_else(|| "unknown".to_string()),
-        session_leader_pid: session_leader,
+    Ok(SessionContext {
+        kind,
+        session_id,
+        display_manager,
+        target_uid,
+        target_user,
+        logind_available,
     })
 }
 
+fn resolve_target_uid() -> Option<u32> {
+    let uid = getuid();
+
+    if uid.is_root() {
+        if let Ok(val) = env::var("SUDO_UID") {
+            if let Ok(parsed) = val.parse::<u32>() {
+                return Some(parsed);
+            }
+        }
+        if let Ok(val) = env::var("PKEXEC_UID") {
+            if let Ok(parsed) = val.parse::<u32>() {
+                return Some(parsed);
+            }
+        }
+        None
+    } else {
+        Some(uid.as_raw())
+    }
+}
+
+fn resolve_target_user(uid: Option<u32>) -> Option<String> {
+    if let Ok(user) = env::var("SUDO_USER") {
+        return Some(user);
+    }
+
+    let uid = uid?;
+    User::from_uid(Uid::from_raw(uid))
+        .ok()
+        .flatten()
+        .map(|u| u.name.to_string())
+}
+
 /// Detect which display manager is currently active
-///
-/// Checks systemd services to identify the active display manager.
-///
-/// # Returns
-///
-/// - `Some(DisplayManager)` if a known DM is detected
-/// - `None` if no display manager is detected
-fn detect_display_manager() -> Result<Option<DisplayManager>> {
-    use std::process::Command;
+fn detect_display_manager<E: SessionCommandExecutor>(executor: &E) -> Result<Option<String>> {
+    if let Ok((true, stdout, _)) = executor.execute_systemctl(&["is-active", "display-manager"]) {
+        if stdout.trim() == "active" {
+            return Ok(Some("display-manager".to_string()));
+        }
+    }
 
-    let dms = [
-        ("gdm", DisplayManager::Gdm),
-        ("sddm", DisplayManager::Sddm),
-        ("lightdm", DisplayManager::LightDm),
-        ("greetd", DisplayManager::Greetd),
-        ("ly", DisplayManager::Ly),
-    ];
-
-    for (service, dm) in dms {
-        let output = Command::new("systemctl")
-            .args(["is-active", service])
-            .output();
-
-        if let Ok(output) = output
-            && output.status.success()
-        {
-            let status = String::from_utf8_lossy(&output.stdout);
-            if status.trim() == "active" {
-                return Ok(Some(dm));
+    let dms = ["gdm", "sddm", "lightdm", "greetd", "ly"];
+    for dm in dms {
+        if let Ok((true, stdout, _)) = executor.execute_systemctl(&["is-active", dm]) {
+            if stdout.trim() == "active" {
+                return Ok(Some(dm.to_string()));
             }
         }
     }
@@ -292,107 +274,31 @@ fn detect_display_manager() -> Result<Option<DisplayManager>> {
     Ok(None)
 }
 
-/// Find the PID of the session leader process
-///
-/// Looks for the compositor (Wayland) or X server (X11) process.
-///
-/// # Errors
-///
-/// Returns error if no session leader process can be found.
-fn find_session_leader_pid() -> Result<u32> {
-    // Look for common session leader processes
-    let session_leaders = [
-        "sway",
-        "Hyprland",
-        "gnome-shell",
-        "kwin_wayland",
-        "Xorg",
-        "X",
-        "kwin_x11",
-        "mutter",
-    ];
-
-    if let Ok(entries) = fs::read_dir("/proc") {
-        for entry in entries.flatten() {
-            if let Ok(pid_str) = entry.file_name().into_string()
-                && let Ok(_pid) = pid_str.parse::<u32>()
-            {
-                let comm_path = format!("/proc/{}/comm", pid_str);
-                if let Ok(comm) = fs::read_to_string(&comm_path) {
-                    let comm = comm.trim();
-                    if session_leaders.contains(&comm) {
-                        return pid_str
-                            .parse::<u32>()
-                            .map_err(|e| NailsError::InvalidState(format!("Invalid PID: {}", e)));
-                    }
-                }
-            }
-        }
-    }
-
-    // No session leader found - return error instead of hardcoded placeholder
-    Err(NailsError::InvalidState(
-        "Could not detect session leader process. Known session leaders: sway, Hyprland, gnome-shell, kwin_wayland, Xorg, X, kwin_x11, mutter".to_string()
-    ))
-}
-
 /// Prompt user for confirmation before killing graphical session
-///
-/// Displays a warning about session termination and requires explicit user
-/// confirmation unless `--yes` flag is provided.
-///
-/// # Arguments
-///
-/// - `session`: The session type that will be killed
-/// - `yes_flag`: If true, skip confirmation (user provided --yes flag)
-///
-/// # Returns
-///
-/// `Ok(())` if user confirms or `--yes` flag was provided
-///
-/// # Errors
-///
-/// Returns `Err` if user declines confirmation
-///
-/// # Example
-///
-/// ```no_run
-/// use nails_core::process::session::{prompt_session_kill_confirmation, SessionType};
-///
-/// let session = SessionType::GraphicalUser {
-///     display_manager: "gdm".to_string(),
-///     session_leader_pid: 1234,
-/// };
-///
-/// if let Err(_) = prompt_session_kill_confirmation(&session, false) {
-///     println!("User declined confirmation");
-/// }
-/// # Ok::<(), nails_core::NailsError>(())
-/// ```
-pub fn prompt_session_kill_confirmation(session: &SessionType, yes_flag: bool) -> Result<()> {
+pub fn prompt_session_kill_confirmation(ctx: &SessionContext, yes_flag: bool) -> Result<()> {
     if yes_flag {
         return Ok(());
     }
 
-    let display_manager = match session {
-        SessionType::GraphicalUser {
-            display_manager, ..
-        } => display_manager.as_str(),
-        _ => {
-            return Err(NailsError::InvalidState(
-                "Cannot confirm session kill - not a graphical user session".to_string(),
-            ));
-        }
-    };
+    if ctx.kind != SessionKind::GraphicalUser {
+        return Err(NailsError::InvalidState(
+            "Cannot confirm session kill - not a graphical user session".to_string(),
+        ));
+    }
+
+    let dm = ctx
+        .display_manager
+        .as_deref()
+        .unwrap_or("display-manager");
 
     println!("⚠️  This will terminate your graphical session!");
     println!("    All unsaved work in open applications will be LOST.");
     println!();
     println!("    The system will:");
-    println!("    1. Stop display manager ({})", display_manager);
-    println!("    2. Terminate all graphical session processes");
+    println!("    1. Stop display manager ({})", dm);
+    println!("    2. Terminate your logind session and user processes");
     println!("    3. Mount hidden environment overlays");
-    println!("    4. Restart display manager");
+    println!("    4. Restart display manager and user manager");
     println!();
     println!("    You will need to log in again after activation.");
     println!();
@@ -415,176 +321,278 @@ pub fn prompt_session_kill_confirmation(session: &SessionType, yes_flag: bool) -
     }
 }
 
-/// Kill the graphical session
-///
-/// Stops the display manager and terminates all session processes.
-/// Uses graceful termination first, then force-kills remaining processes.
-///
-/// # Arguments
-///
-/// - `session`: The session type to kill (must be GraphicalUser)
-///
-/// # Returns
-///
-/// Result containing session kill statistics
-///
-/// # Errors
-///
-/// - `InvalidState`: Not running in graphical session
-/// - `PermissionDenied`: Not running as root
-/// - `OverlayError`: Failed to stop display manager
-///
-/// # Example
-///
-/// ```no_run
-/// use nails_core::process::session::{detect_session_type, kill_graphical_session};
-///
-/// let session = detect_session_type()?;
-/// let result = kill_graphical_session(&session)?;
-/// println!("Killed {} processes", result.processes_terminated);
-/// # Ok::<(), nails_core::NailsError>(())
-/// ```
-pub fn kill_graphical_session(session: &SessionType) -> Result<SessionKillResult> {
-    kill_graphical_session_with_executor(session, &RealSessionCommandExecutor)
+/// Kill the graphical session (logind-first)
+pub fn kill_graphical_session(ctx: &SessionContext) -> Result<SessionKillResult> {
+    kill_graphical_session_with_executor(ctx, &RealSessionCommandExecutor)
 }
 
-/// Kill graphical session with custom executor (for testing)
 fn kill_graphical_session_with_executor<E: SessionCommandExecutor>(
-    session: &SessionType,
+    ctx: &SessionContext,
     executor: &E,
 ) -> Result<SessionKillResult> {
-    // Safety check: Must be graphical user session
-    let display_manager = match session {
-        SessionType::GraphicalUser {
-            display_manager, ..
-        } => display_manager.clone(),
-        SessionType::GraphicalRoot => {
-            return Err(NailsError::InvalidState(
-                "Session kill from root context not supported. Please run as a normal user in the graphical session.".to_string(),
-            ));
-        }
-        SessionType::Tty => {
-            return Err(NailsError::InvalidState(
-                "Not running in graphical session (detected TTY)".to_string(),
-            ));
-        }
-        SessionType::Ssh => {
-            return Err(NailsError::InvalidState(
-                "Not running in graphical session (detected SSH)".to_string(),
-            ));
-        }
-        SessionType::Unknown => {
-            return Err(NailsError::InvalidState(
-                "Cannot determine session type - unable to kill session".to_string(),
-            ));
-        }
-    };
+    if ctx.kind != SessionKind::GraphicalUser {
+        return Err(NailsError::InvalidState(
+            "Not running in a graphical user session".to_string(),
+        ));
+    }
 
-    // Safety check: Must be root
     if !nix::unistd::getuid().is_root() {
         return Err(NailsError::PermissionDenied(
             "Session kill requires root privileges".to_string(),
         ));
     }
 
+    let target_uid = ctx.target_uid.ok_or_else(|| {
+        NailsError::InvalidState(
+            "Unable to determine target user for --kill-session. Run via sudo from the GUI session"
+                .to_string(),
+        )
+    })?;
+
+    if target_uid == 0 {
+        return Err(NailsError::InvalidState(
+            "Refusing to terminate root user session".to_string(),
+        ));
+    }
+
+    // Safety guard: avoid terminating the session while still inside its cgroup.
+    if ctx.logind_available && process_in_user_slice(target_uid) {
+        if try_move_self_to_system_slice() && !process_in_user_slice(target_uid) {
+            // moved out successfully, proceed
+        } else {
+            return Err(NailsError::InvalidState(
+                "Refusing to terminate user session from within that session. The CLI must detach into system.slice first"
+                    .to_string(),
+            ));
+        }
+    }
+
     let start = Instant::now();
     let mut result = SessionKillResult::default();
+    result.restart_plan = SessionRestartPlan {
+        display_manager: ctx.display_manager.clone(),
+        target_uid: Some(target_uid),
+    };
 
     // Step 1: Stop display manager
-    let (success, _stdout, stderr) = executor.execute_systemctl(&["stop", &display_manager])?;
-    if !success {
-        return Err(NailsError::OverlayError(format!(
-            "Failed to stop display manager {}: {}",
-            display_manager, stderr
-        )));
+    if let Some(ref dm) = ctx.display_manager {
+        tracing::info!("DEBUG: About to stop display manager: {}", dm);
+        let (success, _stdout, stderr) = executor.execute_systemctl(&["stop", dm])?;
+        tracing::info!("DEBUG: Display manager stop completed, success={}", success);
+        if !success {
+            return Err(NailsError::OverlayError(format!(
+                "Failed to stop display manager {}: {}",
+                dm, stderr
+            )));
+        }
+        result.display_manager_stopped = true;
     }
-    result.display_manager_stopped = true;
 
-    // Step 2: Wait for processes to terminate gracefully (max 5 seconds)
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let initial_count = executor.count_session_processes()?;
+    // Step 2: Terminate session/user via logind
+    if ctx.logind_available {
+        result.logind_used = true;
 
-    loop {
-        let remaining = executor.count_session_processes()?;
-        if remaining == 0 {
-            result.processes_terminated = initial_count;
-            break;
+        if let Some(ref session_id) = ctx.session_id {
+            tracing::info!("DEBUG: About to terminate session: {}", session_id);
+            let (success, _stdout, _stderr) =
+                executor.execute_loginctl(&["terminate-session", session_id])?;
+            tracing::info!("DEBUG: Session termination completed, success={}", success);
+            result.session_terminated = success;
         }
 
-        if Instant::now() > deadline {
-            // Step 3: Force kill remaining processes
-            result.processes_terminated = initial_count - remaining;
-            result.processes_force_killed = executor.force_kill_session_processes()?;
-            break;
-        }
+        tracing::info!("DEBUG: About to terminate user: {}", target_uid);
+        let (success, _stdout, _stderr) = executor.execute_loginctl(&[
+            "terminate-user",
+            &target_uid.to_string(),
+        ])?;
+        tracing::info!("DEBUG: User termination completed, success={}", success);
+        result.user_terminated = success;
 
-        // Wait 100ms before checking again
-        // This delay allows processes time to terminate gracefully
-        thread::sleep(Duration::from_millis(100));
+        // Wait for user manager to stop (max 5 seconds)
+        if !wait_for_user_manager_exit(executor, target_uid, Duration::from_secs(5))? {
+            let (terminated, force_killed) = kill_user_processes(target_uid)?;
+            result.fallback_processes_terminated = terminated;
+            result.fallback_processes_force_killed = force_killed;
+        }
+    } else {
+        let (terminated, force_killed) = kill_user_processes(target_uid)?;
+        result.fallback_processes_terminated = terminated;
+        result.fallback_processes_force_killed = force_killed;
     }
 
     result.duration = start.elapsed();
     Ok(result)
 }
 
-/// Restart the display manager
-///
-/// Starts the display manager service using systemd.
-///
-/// # Arguments
-///
-/// - `dm`: Display manager to restart
-///
-/// # Returns
-///
-/// `Ok(())` if display manager starts successfully
-///
-/// # Errors
-///
-/// Returns error if display manager fails to start with troubleshooting advice.
-pub fn restart_display_manager(dm: &DisplayManager) -> Result<()> {
-    restart_display_manager_with_executor(dm, &RealSessionCommandExecutor)
+fn wait_for_user_manager_exit<E: SessionCommandExecutor>(
+    executor: &E,
+    uid: u32,
+    timeout: Duration,
+) -> Result<bool> {
+    let unit = format!("user@{}.service", uid);
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let (success, stdout, _stderr) = executor.execute_systemctl(&["is-active", &unit])?;
+        let active = success && stdout.trim() == "active";
+
+        if !active {
+            return Ok(true);
+        }
+
+        if Instant::now() > deadline {
+            return Ok(false);
+        }
+
+        thread::sleep(Duration::from_millis(200));
+    }
 }
 
-/// Restart display manager with custom executor (for testing)
+fn process_in_user_slice(uid: u32) -> bool {
+    let cgroup_path = "/proc/self/cgroup";
+    let contents = match fs::read_to_string(cgroup_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let needle = format!("user-{}.slice", uid);
+    contents.lines().any(|line| line.contains(&needle))
+}
+
+fn try_move_self_to_system_slice() -> bool {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::path::Path;
+
+    if !nix::unistd::getuid().is_root() {
+        return false;
+    }
+
+    let path = Path::new("/sys/fs/cgroup/system.slice/cgroup.procs");
+    if !path.exists() {
+        return false;
+    }
+
+    if let Ok(mut file) = OpenOptions::new().write(true).open(path) {
+        return writeln!(file, "{}", std::process::id()).is_ok();
+    }
+
+    false
+}
+
+fn kill_user_processes(uid: u32) -> Result<(u32, u32)> {
+    let mut pids = Vec::new();
+    let proc_dir = fs::read_dir("/proc");
+
+    let entries = match proc_dir {
+        Ok(entries) => entries,
+        Err(_) => {
+            return Err(NailsError::ConfigError(
+                "/proc filesystem not available. This is required for process termination"
+                    .to_string(),
+            ))
+        }
+    };
+
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let pid_str = file_name.to_string_lossy();
+        if !pid_str.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+
+        let pid: u32 = match pid_str.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        if pid == std::process::id() {
+            continue;
+        }
+
+        if let Some(proc_uid) = read_uid_from_status(pid) {
+            if proc_uid == uid {
+                pids.push(pid);
+            }
+        }
+    }
+
+    let mut terminated = 0;
+    for pid in &pids {
+        if send_signal(*pid, "TERM") {
+            terminated += 1;
+        }
+    }
+
+    thread::sleep(Duration::from_millis(300));
+
+    let mut force_killed = 0;
+    for pid in pids {
+        if process_exists(pid) && send_signal(pid, "KILL") {
+            force_killed += 1;
+        }
+    }
+
+    Ok((terminated, force_killed))
+}
+
+fn read_uid_from_status(pid: u32) -> Option<u32> {
+    let status_path = format!("/proc/{}/status", pid);
+    let content = fs::read_to_string(status_path).ok()?;
+
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("Uid:\t") {
+            let first = rest.split_whitespace().next()?;
+            return first.parse::<u32>().ok();
+        }
+    }
+
+    None
+}
+
+fn process_exists(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{}", pid)).exists()
+}
+
+fn send_signal(pid: u32, signal: &str) -> bool {
+    use std::process::Command;
+    Command::new("kill")
+        .arg(format!("-{}", signal))
+        .arg(pid.to_string())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Restart the display manager (best-effort)
+pub fn restart_display_manager(service: &str) -> Result<()> {
+    restart_display_manager_with_executor(service, &RealSessionCommandExecutor)
+}
+
 fn restart_display_manager_with_executor<E: SessionCommandExecutor>(
-    dm: &DisplayManager,
+    service: &str,
     executor: &E,
 ) -> Result<()> {
-    let service = dm.service_name();
-
-    // Start the display manager service
     let (success, _stdout, stderr) = executor.execute_systemctl(&["start", service])?;
 
     if !success {
         return Err(NailsError::OverlayError(format!(
-            "Failed to start display manager {}: {}\n\nTroubleshooting:\n\
-            1. Check systemd logs: journalctl -u {}\n\
-            2. Verify display manager is installed\n\
-            3. Check display manager configuration\n\
-            4. Try manual start: systemctl start {}",
-            service, stderr, service, service
+            "Failed to start display manager {}: {}",
+            service, stderr
         )));
     }
 
-    // Wait for greeter to appear (max 10 seconds)
     let deadline = Instant::now() + Duration::from_secs(10);
-
     loop {
-        let (is_active, _stdout, _stderr) = executor.execute_systemctl(&["is-active", service])?;
-
-        if is_active {
+        let (is_active, stdout, _stderr) = executor.execute_systemctl(&["is-active", service])?;
+        if is_active && stdout.trim() == "active" {
             return Ok(());
         }
 
         if Instant::now() > deadline {
             return Err(NailsError::OverlayError(format!(
-                "Display manager {} failed to start within 10 seconds\n\nTroubleshooting:\n\
-                1. Check systemd status: systemctl status {}\n\
-                2. View logs: journalctl -u {} -n 50\n\
-                3. Verify X11/Wayland configuration\n\
-                4. Check for conflicting processes",
-                service, service, service
+                "Display manager {} failed to start within 10 seconds",
+                service
             )));
         }
 
@@ -592,172 +600,83 @@ fn restart_display_manager_with_executor<E: SessionCommandExecutor>(
     }
 }
 
+/// Restart the user manager (best-effort)
+pub fn restart_user_manager(uid: u32) -> Result<()> {
+    restart_user_manager_with_executor(uid, &RealSessionCommandExecutor)
+}
+
+fn restart_user_manager_with_executor<E: SessionCommandExecutor>(
+    uid: u32,
+    executor: &E,
+) -> Result<()> {
+    let runtime_service = format!("user-runtime-dir@{}.service", uid);
+    let user_service = format!("user@{}.service", uid);
+
+    let _ = executor.execute_systemctl(&["start", &runtime_service]);
+    let (success, _stdout, stderr) = executor.execute_systemctl(&["start", &user_service])?;
+
+    if !success {
+        return Err(NailsError::OverlayError(format!(
+            "Failed to start user manager {}: {}",
+            user_service, stderr
+        )));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_display_manager_service_names() {
-        assert_eq!(DisplayManager::Gdm.service_name(), "gdm");
-        assert_eq!(DisplayManager::Sddm.service_name(), "sddm");
-        assert_eq!(DisplayManager::LightDm.service_name(), "lightdm");
-        assert_eq!(DisplayManager::Greetd.service_name(), "greetd");
-        assert_eq!(DisplayManager::Ly.service_name(), "ly");
-        assert_eq!(
-            DisplayManager::Other("custom-dm".to_string()).service_name(),
-            "custom-dm"
-        );
-    }
-
-    #[test]
-    fn test_session_kill_result_default() {
-        let result = SessionKillResult::default();
-        assert!(!result.display_manager_stopped);
-        assert_eq!(result.processes_terminated, 0);
-        assert_eq!(result.processes_force_killed, 0);
-        assert_eq!(result.duration, Duration::from_secs(0));
-    }
-
-    #[test]
-    fn test_detect_session_type_returns_valid_type() {
-        // NOTE: This test is environment-dependent and may return different
-        // results depending on where it's run (CI vs local TTY vs GUI).
-        // It verifies that detect_session_type() doesn't panic and returns
-        // a valid SessionType enum variant for the current environment.
-        let session = detect_session_type().unwrap();
-        assert!(matches!(
-            session,
-            SessionType::Tty
-                | SessionType::GraphicalUser { .. }
-                | SessionType::GraphicalRoot
-                | SessionType::Ssh
-                | SessionType::Unknown
-        ));
-    }
-
-    #[test]
-    fn test_kill_graphical_session_requires_graphical_session() {
-        let tty_session = SessionType::Tty;
-        let result = kill_graphical_session(&tty_session);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), NailsError::InvalidState(_)));
-    }
-
-    #[test]
-    fn test_kill_graphical_session_requires_root() {
-        // This test assumes we're NOT running as root
-        let graphical_session = SessionType::GraphicalUser {
-            display_manager: "gdm".to_string(),
-            session_leader_pid: 1000,
-        };
-
-        let result = kill_graphical_session(&graphical_session);
-
-        // If we're not root, should fail with PermissionDenied
-        if !nix::unistd::getuid().is_root() {
-            assert!(result.is_err());
-            assert!(matches!(
-                result.unwrap_err(),
-                NailsError::PermissionDenied(_)
-            ));
-        }
-    }
-
-    // Mock executor for testing
     struct MockSessionCommandExecutor {
         systemctl_success: bool,
-        process_count: u32,
+        loginctl_success: bool,
+        loginctl_available: bool,
     }
 
     impl SessionCommandExecutor for MockSessionCommandExecutor {
         fn execute_systemctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
-            Ok((self.systemctl_success, "".to_string(), "".to_string()))
+            Ok((self.systemctl_success, "active".to_string(), "".to_string()))
         }
 
-        fn count_session_processes(&self) -> Result<u32> {
-            Ok(self.process_count)
+        fn execute_loginctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+            Ok((self.loginctl_success, "".to_string(), "".to_string()))
         }
 
-        fn force_kill_session_processes(&self) -> Result<u32> {
-            Ok(self.process_count)
+        fn loginctl_available(&self) -> bool {
+            self.loginctl_available
         }
     }
 
     #[test]
-    fn test_kill_graphical_session_with_mock_executor() {
-        // Skip if not root
-        if !nix::unistd::getuid().is_root() {
-            return;
-        }
-
-        let session = SessionType::GraphicalUser {
-            display_manager: "gdm".to_string(),
-            session_leader_pid: 1000,
-        };
-
-        let executor = MockSessionCommandExecutor {
-            systemctl_success: true,
-            process_count: 5,
-        };
-
-        let result = kill_graphical_session_with_executor(&session, &executor);
-        assert!(result.is_ok());
-
-        let result = result.unwrap();
-        assert!(result.display_manager_stopped);
-        assert!(result.processes_terminated > 0 || result.processes_force_killed > 0);
+    fn session_kill_result_default() {
+        let result = SessionKillResult::default();
+        assert!(!result.display_manager_stopped);
+        assert!(!result.logind_used);
+        assert_eq!(result.fallback_processes_terminated, 0);
+        assert_eq!(result.fallback_processes_force_killed, 0);
     }
 
     #[test]
-    fn test_restart_display_manager_with_mock_executor() {
-        let dm = DisplayManager::Gdm;
-
-        let executor = MockSessionCommandExecutor {
-            systemctl_success: true,
-            process_count: 0,
-        };
-
-        let result = restart_display_manager_with_executor(&dm, &executor);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_restart_display_manager_handles_failure() {
-        let dm = DisplayManager::Gdm;
-
-        let executor = MockSessionCommandExecutor {
+    fn detect_display_manager_none() {
+        let exec = MockSessionCommandExecutor {
             systemctl_success: false,
-            process_count: 0,
+            loginctl_success: true,
+            loginctl_available: true,
         };
-
-        let result = restart_display_manager_with_executor(&dm, &executor);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), NailsError::OverlayError(_)));
+        let dm = detect_display_manager(&exec).unwrap();
+        assert!(dm.is_none());
     }
 
     #[test]
-    fn test_prompt_session_kill_confirmation_with_yes_flag() {
-        let graphical_session = SessionType::GraphicalUser {
-            display_manager: "gdm".to_string(),
-            session_leader_pid: 1000,
+    fn restart_display_manager_uses_systemctl() {
+        let exec = MockSessionCommandExecutor {
+            systemctl_success: true,
+            loginctl_success: true,
+            loginctl_available: true,
         };
-
-        // With yes_flag=true, should skip confirmation
-        let result = prompt_session_kill_confirmation(&graphical_session, true);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_kill_graphical_session_rejects_graphical_root() {
-        let root_session = SessionType::GraphicalRoot;
-        let result = kill_graphical_session(&root_session);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), NailsError::InvalidState(_)));
-    }
-
-    #[test]
-    fn test_display_manager_other_with_string() {
-        let dm = DisplayManager::Other("custom-dm".to_string());
-        assert_eq!(dm.service_name(), "custom-dm");
+        let res = restart_display_manager_with_executor("display-manager", &exec);
+        assert!(res.is_ok());
     }
 }
