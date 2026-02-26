@@ -78,7 +78,7 @@ safety/
 work/
 overlay/
 *.baseline
-config/
+/config/
 # Prevent accidental commits of state files created during testing in build dirs
 target/**/.nails/
 

@@ -87,8 +87,8 @@ pub mod output;
 
 // Re-export for convenience
 pub use config::{
-    CliOverrides, Config, ConfigBuilder, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig,
-    OverlayMode,
+    CliOverrides, ColorProfile, ColorSchemeConfig, Config, ConfigBuilder, DecoyProfile,
+    EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig, OverlayMode,
 };
 pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
