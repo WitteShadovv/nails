@@ -541,7 +541,7 @@ pub fn derive_hidden_volume_root() -> PathBuf {
                         return PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
                     }
 
-                    tracing::info!(
+                    tracing::debug!(
                         "Derived hidden volume root from binary location: {}",
                         parent_path.display()
                     );

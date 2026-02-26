@@ -241,24 +241,7 @@ impl LoggingManager {
             return Ok(None);
         }
 
-        // Verify log directory is not a symlink (prevents bypassing path validation)
-        if !fs.path_exists(&self.log_path)? {
-            // Create log directory if it doesn't exist
-            fs.create_directory(&self.log_path)?;
-        } else {
-            // Path exists - verify it's not a symlink
-            if fs.is_symlink(&self.log_path)? {
-                output::error("Refusing to log to symlink path");
-                return Err(NailsError::InvalidState(
-                    "Log path must not be a symlink".to_string(),
-                ));
-            }
-        }
-
-        // Re-verify after directory creation that we're still within hidden volume
-        // (defense against race condition where directory is replaced mid-creation)
-        self.validate_log_path()?;
-
+        // No need to create directory - log file goes directly in hidden volume root
         let log_file_path = self.log_path.join(LOG_FILE_NAME);
 
         Ok(Some(LoggingConfig { log_file_path }))

@@ -226,15 +226,15 @@ fn resolve_target_uid() -> Option<u32> {
     let uid = getuid();
 
     if uid.is_root() {
-        if let Ok(val) = env::var("SUDO_UID") {
-            if let Ok(parsed) = val.parse::<u32>() {
-                return Some(parsed);
-            }
+        if let Ok(val) = env::var("SUDO_UID")
+            && let Ok(parsed) = val.parse::<u32>()
+        {
+            return Some(parsed);
         }
-        if let Ok(val) = env::var("PKEXEC_UID") {
-            if let Ok(parsed) = val.parse::<u32>() {
-                return Some(parsed);
-            }
+        if let Ok(val) = env::var("PKEXEC_UID")
+            && let Ok(parsed) = val.parse::<u32>()
+        {
+            return Some(parsed);
         }
         None
     } else {
@@ -256,18 +256,18 @@ fn resolve_target_user(uid: Option<u32>) -> Option<String> {
 
 /// Detect which display manager is currently active
 fn detect_display_manager<E: SessionCommandExecutor>(executor: &E) -> Result<Option<String>> {
-    if let Ok((true, stdout, _)) = executor.execute_systemctl(&["is-active", "display-manager"]) {
-        if stdout.trim() == "active" {
-            return Ok(Some("display-manager".to_string()));
-        }
+    if let Ok((true, stdout, _)) = executor.execute_systemctl(&["is-active", "display-manager"])
+        && stdout.trim() == "active"
+    {
+        return Ok(Some("display-manager".to_string()));
     }
 
     let dms = ["gdm", "sddm", "lightdm", "greetd", "ly"];
     for dm in dms {
-        if let Ok((true, stdout, _)) = executor.execute_systemctl(&["is-active", dm]) {
-            if stdout.trim() == "active" {
-                return Ok(Some(dm.to_string()));
-            }
+        if let Ok((true, stdout, _)) = executor.execute_systemctl(&["is-active", dm])
+            && stdout.trim() == "active"
+        {
+            return Ok(Some(dm.to_string()));
         }
     }
 
@@ -365,10 +365,12 @@ fn kill_graphical_session_with_executor<E: SessionCommandExecutor>(
     }
 
     let start = Instant::now();
-    let mut result = SessionKillResult::default();
-    result.restart_plan = SessionRestartPlan {
-        display_manager: ctx.display_manager.clone(),
-        target_uid: Some(target_uid),
+    let mut result = SessionKillResult {
+        restart_plan: SessionRestartPlan {
+            display_manager: ctx.display_manager.clone(),
+            target_uid: Some(target_uid),
+        },
+        ..Default::default()
     };
 
     // Step 1: Stop display manager
@@ -505,10 +507,10 @@ fn kill_user_processes(uid: u32) -> Result<(u32, u32)> {
             continue;
         }
 
-        if let Some(proc_uid) = read_uid_from_status(pid) {
-            if proc_uid == uid {
-                pids.push(pid);
-            }
+        if let Some(proc_uid) = read_uid_from_status(pid)
+            && proc_uid == uid
+        {
+            pids.push(pid);
         }
     }
 

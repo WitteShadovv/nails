@@ -1,10 +1,6 @@
 use std::env;
 use std::ffi::OsString;
-use std::fs::File;
-use std::io;
-use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use nails_core::{NailsError, SessionContext, SessionKind, detect_session_context};
 
@@ -53,10 +49,6 @@ pub fn maybe_detach_for_session_kill(
         }
     }
 
-    // Create log file for detached service
-    let (_, log_path) = open_detached_log()
-        .map_err(|e| NailsError::InvalidState(format!("Failed to create log file: {}", e)))?;
-
     // Get the current binary path
     let exe_path = std::env::current_exe().map_err(|e| {
         NailsError::InvalidState(format!("Failed to get current executable path: {}", e))
@@ -90,36 +82,30 @@ pub fn maybe_detach_for_session_kill(
         }
     }
 
-    if let Some(ctx) = session_ctx {
-        if ctx.kind == SessionKind::GraphicalUser {
-            if let Some(ref session_id) = ctx.session_id {
-                cmd.arg(format!("--setenv=NAILS_SESSION_ID={}", session_id));
-            }
-            if let Some(ref dm) = ctx.display_manager {
-                cmd.arg(format!("--setenv=NAILS_DISPLAY_MANAGER={}", dm));
-            }
-            if let Some(uid) = ctx.target_uid {
-                cmd.arg(format!("--setenv=NAILS_TARGET_UID={}", uid));
-            }
-            if let Some(ref user) = ctx.target_user {
-                cmd.arg(format!("--setenv=NAILS_TARGET_USER={}", user));
-            }
-            cmd.arg(format!(
-                "--setenv=NAILS_LOGIND_AVAILABLE={}",
-                if ctx.logind_available { "1" } else { "0" }
-            ));
+    if let Some(ctx) = session_ctx
+        && ctx.kind == SessionKind::GraphicalUser
+    {
+        if let Some(ref session_id) = ctx.session_id {
+            cmd.arg(format!("--setenv=NAILS_SESSION_ID={}", session_id));
         }
+        if let Some(ref dm) = ctx.display_manager {
+            cmd.arg(format!("--setenv=NAILS_DISPLAY_MANAGER={}", dm));
+        }
+        if let Some(uid) = ctx.target_uid {
+            cmd.arg(format!("--setenv=NAILS_TARGET_UID={}", uid));
+        }
+        if let Some(ref user) = ctx.target_user {
+            cmd.arg(format!("--setenv=NAILS_TARGET_USER={}", user));
+        }
+        cmd.arg(format!(
+            "--setenv=NAILS_LOGIND_AVAILABLE={}",
+            if ctx.logind_available { "1" } else { "0" }
+        ));
     }
 
-    // Redirect output to log file
-    cmd.arg(format!(
-        "--property=StandardOutput=append:{}",
-        log_path.display()
-    ));
-    cmd.arg(format!(
-        "--property=StandardError=append:{}",
-        log_path.display()
-    ));
+    // Redirect output to /dev/null (no logging to /tmp)
+    cmd.arg("--property=StandardOutput=null");
+    cmd.arg("--property=StandardError=null");
 
     // Add the command to execute
     cmd.arg("--");
@@ -138,27 +124,10 @@ pub fn maybe_detach_for_session_kill(
         )));
     }
 
-    eprintln!(
-        "Detached to background via systemd transient service. Logs: {}",
-        log_path.display()
-    );
+    eprintln!("Detached to background via systemd transient service.");
     eprintln!("Handoff complete; activation continues in background.");
 
     std::process::exit(0);
-}
-
-fn open_detached_log() -> io::Result<(File, PathBuf)> {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let path = PathBuf::from(format!(
-        "/tmp/nails-activate-{}-{}.log",
-        std::process::id(),
-        ts
-    ));
-    let file = File::create(&path)?;
-    Ok((file, path))
 }
 
 #[cfg(test)]

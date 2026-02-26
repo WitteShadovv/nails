@@ -866,7 +866,7 @@ impl NixOSBuilder {
     /// let generation = builder.build_profile()?;
     ///
     /// // Switch to the built profile
-    /// builder.switch_profile(&generation)?;
+    /// builder.switch_profile(&generation, "switch")?;
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
     pub fn switch_profile(&self, generation: &str, action: &str) -> Result<()> {
@@ -1021,9 +1021,7 @@ impl NixOSBuilder {
             .execute_switch_to_configuration(&switch_script, &[action])?;
 
         if !success {
-            return Err(NailsError::NixOSError(
-                format!("NixOS {} failed", action).into(),
-            ));
+            return Err(NailsError::NixOSError(format!("NixOS {} failed", action)));
         }
 
         Ok(())

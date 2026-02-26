@@ -670,12 +670,12 @@ impl StateFile {
         // Write JSON content
         std::io::Write::write_all(&mut temp.as_file(), json.as_bytes())?;
 
-        // 5. Set permissions to 0600 (user-only read/write)
+        // 5. Set permissions to 0644 (owner read/write, others read)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mut perms = std::fs::metadata(temp.path())?.permissions();
-            perms.set_mode(0o600);
+            perms.set_mode(0o644);
             std::fs::set_permissions(temp.path(), perms)?;
         }
 
@@ -1700,7 +1700,7 @@ mod tests {
             let perms = std::fs::metadata(&state_path)
                 .expect("Should get metadata")
                 .permissions();
-            assert_eq!(perms.mode() & 0o777, 0o600);
+            assert_eq!(perms.mode() & 0o777, 0o644);
         }
 
         // Test that save_with_root rejects paths outside the custom root

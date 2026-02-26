@@ -1613,14 +1613,14 @@ impl<F: Filesystem> NailsManager<F> {
 
                 use crate::process::{restart_display_manager, restart_user_manager};
 
-                if let Some(uid) = self.plan.target_uid {
-                    if let Err(e) = restart_user_manager(uid) {
-                        tracing::error!(
-                            error = %e,
-                            uid = uid,
-                            "Failed to restart user manager after activation error"
-                        );
-                    }
+                if let Some(uid) = self.plan.target_uid
+                    && let Err(e) = restart_user_manager(uid)
+                {
+                    tracing::error!(
+                        error = %e,
+                        uid = uid,
+                        "Failed to restart user manager after activation error"
+                    );
                 }
 
                 if let Some(dm_name) = self.plan.display_manager.take() {
@@ -2939,6 +2939,17 @@ impl<F: Filesystem> NailsManager<F> {
     /// On reboot, the system will boot into the decoy configuration with all overlays gone.
     /// Use `emergency` command for a thorough deactivation without reboot.
     pub fn deactivate(manager_arc: Arc<Mutex<Self>>) -> Result<()> {
+        // Step 0: Verify system is in Active state
+        {
+            let manager = manager_arc.lock().unwrap();
+            let state = manager.current_state()?;
+            if !matches!(state, SystemState::Active { .. }) {
+                return Err(NailsError::InvalidState(
+                    "Cannot deactivate: system is not in Active state".to_string(),
+                ));
+            }
+        }
+
         // Step 1: Select the decoy system profile
         let (system_profile, verbosity) = {
             let manager = manager_arc.lock().unwrap();
@@ -3135,7 +3146,7 @@ impl<F: Filesystem> NailsManager<F> {
         // If any unmount failed, return error and let StateGuard rollback
         if !unmount_errors.is_empty() {
             let error_msg = format!(
-                "Failed to unmount {} overlay(s). First error: {:?}",
+                "Failed to unmount {} overlay(s). First error: {:?}. State has been rolled back to Active; you may retry deactivation.",
                 unmount_errors.len(),
                 unmount_errors[0].1
             );
@@ -4065,6 +4076,13 @@ mod tests {
 
         let fs = MockFilesystem::new();
 
+        // Mock NixOS system profile for deactivation
+        fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+        fs.mock_set_path_exists(
+            "/nix/var/nix/profiles/system/bin/switch-to-configuration",
+            true,
+        );
+
         // Set up paths to exist
         fs.mock_set_path_exists("/", true);
         let upper_dir = mock_hidden_vol.join("overlays/home/upper");
@@ -4135,8 +4153,8 @@ mod tests {
             SystemState::Active { .. }
         ));
 
-        // Deactivation should fail
-        let result = NailsManager::deactivate(Arc::clone(&manager));
+        // Deactivation should fail (using emergency_deactivate for full unmount)
+        let result = NailsManager::emergency_deactivate(Arc::clone(&manager));
         assert!(result.is_err());
 
         // Verify error message recommends retry (FR51)
@@ -4180,6 +4198,13 @@ mod tests {
         let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
+
+        // Mock NixOS system profile for deactivation
+        fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+        fs.mock_set_path_exists(
+            "/nix/var/nix/profiles/system/bin/switch-to-configuration",
+            true,
+        );
 
         // Set up paths to exist
         fs.mock_set_path_exists("/", true);
@@ -4242,8 +4267,8 @@ mod tests {
             }
         }
 
-        // Deactivation should succeed
-        let result = NailsManager::deactivate(Arc::clone(&manager));
+        // Deactivation should succeed (using emergency_deactivate for full unmount)
+        let result = NailsManager::emergency_deactivate(Arc::clone(&manager));
         assert!(result.is_ok());
 
         // Verify overlay is unmounted
@@ -4295,7 +4320,8 @@ mod tests {
 
         // deactivate() should fail from Inactive state
         let result = NailsManager::deactivate(Arc::clone(&manager));
-        assert!(result.is_err());
+        eprintln!("DEBUG: result = {:?}", result);
+        assert!(result.is_err(), "Expected Err, got {:?}", result);
         assert!(matches!(result.unwrap_err(), NailsError::InvalidState(_)));
     }
 
@@ -6514,6 +6540,13 @@ mod tests {
         fs.mock_set_readable("/home", true);
         fs.mock_set_readable("/etc", true);
 
+        // Mock NixOS system profile for deactivation tests
+        fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+        fs.mock_set_path_exists(
+            "/nix/var/nix/profiles/system/bin/switch-to-configuration",
+            true,
+        );
+
         let manager = NailsManager::new(fs, config, state_path);
 
         (Arc::new(Mutex::new(manager)), temp_dir)
@@ -6858,7 +6891,7 @@ mod tests {
 
         // WHEN: Attempting deactivation with unmount failure on /etc
         // Deactivation tries to unmount overlays; /home succeeds, /etc fails
-        let result = NailsManager::deactivate(Arc::clone(&manager_arc));
+        let result = NailsManager::emergency_deactivate(Arc::clone(&manager_arc));
 
         // THEN: Deactivation fails
         assert!(result.is_err(), "Expected deactivation to fail");
@@ -6908,7 +6941,7 @@ mod tests {
 
         NailsManager::activate(Arc::clone(&manager_arc), true).expect("Should activate");
 
-        let result = NailsManager::deactivate(Arc::clone(&manager_arc));
+        let result = NailsManager::emergency_deactivate(Arc::clone(&manager_arc));
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -6933,7 +6966,7 @@ mod tests {
 
         NailsManager::activate(Arc::clone(&manager_arc), true).expect("Should activate");
 
-        let result = NailsManager::deactivate(Arc::clone(&manager_arc));
+        let result = NailsManager::emergency_deactivate(Arc::clone(&manager_arc));
         assert!(result.is_err());
 
         // State should remain ACTIVE
@@ -8888,6 +8921,13 @@ mod tests {
 
         let fs = MockFilesystem::new();
 
+        // Mock NixOS system profile for deactivation
+        fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+        fs.mock_set_path_exists(
+            "/nix/var/nix/profiles/system/bin/switch-to-configuration",
+            true,
+        );
+
         // Overlay dirs (needed for activate path, not used by deactivate directly)
         let upper_etc = mock_hidden_vol.join("overlays/etc/upper");
         let work_etc = mock_hidden_vol.join("overlays/etc/work");
@@ -8962,6 +9002,13 @@ mod tests {
         let state_path = mock_hidden_vol.join("state.json");
 
         let fs = MockFilesystem::new();
+
+        // Mock NixOS system profile for deactivation
+        fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+        fs.mock_set_path_exists(
+            "/nix/var/nix/profiles/system/bin/switch-to-configuration",
+            true,
+        );
 
         // Overlay dirs
         let upper_home = mock_hidden_vol.join("overlays/home/upper");
@@ -9196,7 +9243,7 @@ mod tests {
             "{ config, lib, pkgs, ... }:\n{ }",
         );
 
-        let result = NailsManager::deactivate(Arc::clone(&manager));
+        let result = NailsManager::emergency_deactivate(Arc::clone(&manager));
         assert!(
             result.is_ok(),
             "Deactivation should succeed when base config is clean: {:?}",
@@ -9236,7 +9283,7 @@ mod tests {
             "{ config, lib, pkgs, ... }:\n{ imports = [ /mnt/hidden/nixos/configuration.nix ]; }",
         );
 
-        let result = NailsManager::deactivate(Arc::clone(&manager));
+        let result = NailsManager::emergency_deactivate(Arc::clone(&manager));
         assert!(
             result.is_err(),
             "Deactivation should fail when base config is dirty after unmount (AC3)"
@@ -9277,7 +9324,7 @@ mod tests {
             "{ config, lib, pkgs, ... }:\n{ imports = [ /mnt/hidden/nixos/configuration.nix ]; }",
         );
 
-        let result = NailsManager::deactivate(Arc::clone(&manager));
+        let result = NailsManager::emergency_deactivate(Arc::clone(&manager));
         assert!(
             result.is_ok(),
             "Deactivation should succeed when /etc overlay was not mounted"
@@ -9300,6 +9347,13 @@ mod tests {
         let mock_hidden_vol = temp_dir.path();
         let state_path = mock_hidden_vol.join("state.json");
         let fs = MockFilesystem::new();
+
+        // Mock NixOS system profile for deactivation
+        fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+        fs.mock_set_path_exists(
+            "/nix/var/nix/profiles/system/bin/switch-to-configuration",
+            true,
+        );
 
         // Base hardware config: clean (AC1 pre-condition)
         fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
@@ -9387,7 +9441,7 @@ mod tests {
         );
 
         // === Deactivate ===
-        let deactivate_result = NailsManager::deactivate(Arc::clone(&manager));
+        let deactivate_result = NailsManager::emergency_deactivate(Arc::clone(&manager));
         assert!(
             deactivate_result.is_ok(),
             "Deactivation should succeed: {:?}",
