@@ -1,0 +1,221 @@
+//! Activation Logic for NailsManager
+//!
+//! This module implements the 10-step activation flow that:
+//! 1. Validates system state
+//! 2. Runs preflight checks
+//! 3. Handles session management
+//! 4. Builds NixOS configuration (if enabled)
+//! 5. Mounts overlays with RAII rollback
+//! 6. Switches to active NixOS generation
+//! 7. Restarts services
+//! 8. Updates state to Active
+//!
+//! # RAII Rollback Pattern
+//!
+//! The activation process uses StateGuard and MountTracker for automatic
+//! rollback on failure, ensuring the system doesn't get left in a partially
+//! activated state.
+
+use super::{
+    MountInfo, MountTracker, MountType, NailsManager, build_overlay_targets,
+    clean_stale_network_config, create_overlay_config, ensure_run_current_system_symlink,
+    select_system_profile, start_service_and_socket,
+};
+use crate::{Filesystem, Result, Verbosity};
+use std::sync::{Arc, Mutex};
+
+mod guards;
+mod nixos_build;
+mod nixos_switch;
+mod overlay_mount;
+mod preflight;
+mod session;
+
+use guards::SessionRestartGuard;
+
+impl<F: Filesystem> NailsManager<F> {
+    pub fn activate(manager_arc: Arc<Mutex<Self>>, no_preflight: bool) -> Result<()> {
+        // Use default options for backward compatibility with tests
+        let options = crate::ActivateOptions::default();
+        Self::activate_with_options(manager_arc, options, no_preflight)
+    }
+
+    /// Activate overlays with custom activation options
+    ///
+    /// Extended version of activate() that accepts ActivateOptions for controlling:
+    /// - Session management (--kill-session)
+    /// - Process restart behavior (risky process prompts)
+    /// - Pivot mount policy (--accept-pivot-risks, --no-pivot)
+    /// - User interaction (--yes to skip prompts)
+    ///
+    /// Story 4.15: User Prompts and CLI Flags for Overlay Strategy
+    ///
+    /// # Arguments
+    ///
+    /// * `manager_arc` - Shared reference to NailsManager
+    /// * `options` - Activation options controlling behavior
+    /// * `no_preflight` - Skip pre-flight checks (expert override)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::{ActivateOptions, NailsManager, MockFilesystem, Config};
+    /// use std::path::PathBuf;
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// let fs = MockFilesystem::new();
+    /// let config = Config::default();
+    /// let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
+    /// let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    ///
+    /// let options = ActivateOptions {
+    ///     no_pivot: true,  // Strict security mode
+    ///     ..Default::default()
+    /// };
+    ///
+    /// let result = NailsManager::activate_with_options(Arc::clone(&manager), options, false);
+    /// ```
+    pub fn activate_with_options(
+        manager_arc: Arc<Mutex<Self>>,
+        options: crate::ActivateOptions,
+        no_preflight: bool,
+    ) -> Result<()> {
+        use crate::{StateGuard, Stopwatch};
+
+        let total_timer = Stopwatch::start();
+
+        // Validate options first
+        options.validate()?;
+
+        // Step 1: Capture current state and verbosity for progress logging
+        let (previous_state, verbosity) = {
+            let manager = manager_arc.lock().unwrap();
+            (manager.current_state()?, manager.verbosity)
+        };
+
+        // Step 2: Idempotent check - if already active, return early (AC: 7)
+        if previous_state.is_active() {
+            if verbosity >= Verbosity::Normal {
+                tracing::info!(state = ?previous_state, "System already active, nothing to do");
+            }
+            return Ok(());
+        }
+
+        // Story 9.3 AC#1: Log activation started with structured state field
+        tracing::info!(state_from = ?previous_state, "Activation started");
+
+        // Step 2.5: Handle --kill-session flag (Story 4.15, AC8)
+        let restart_plan = Self::handle_session_kill(verbosity, &options)?;
+
+        // Auto-restart session if we exit early with an error after killing it.
+        let mut session_restart_guard = SessionRestartGuard::new(restart_plan.clone());
+
+        // Step 2.75 & 3: Stage config and run preflight checks
+        {
+            let manager = manager_arc.lock().unwrap();
+            manager.run_preflight_phase(no_preflight, verbosity)?;
+        }
+
+        // Step 4: Create StateGuard for automatic rollback on failure/panic
+        let guard = StateGuard::new(Arc::clone(&manager_arc), previous_state.clone());
+
+        // Step 5: Validate transition is allowed
+        let activating_state = previous_state.begin_activation()?;
+
+        // Step 6: Transition to Activating state
+        {
+            let mut manager = manager_arc.lock().unwrap();
+            manager.update_state(activating_state)?;
+        }
+
+        // Step 7: Build NixOS profile (if NixOSBuilder configured)
+        let (generation, new_fingerprint) = {
+            let manager = manager_arc.lock().unwrap();
+            manager.build_nixos_profile(verbosity)?
+        };
+
+        // Step 8: Mount persistent and ephemeral overlays
+        let mount_timer = Stopwatch::start();
+        let (direct_mounts, pivot_mounts, mounted_overlays) = {
+            let manager = manager_arc.lock().unwrap();
+            manager.mount_overlays(&options, verbosity)?
+        };
+
+        if verbosity >= Verbosity::Normal {
+            let security_status = if pivot_mounts == 0 {
+                "OPTIMAL"
+            } else {
+                "DEGRADED"
+            };
+
+            tracing::info!(
+                step = "mount_overlays",
+                duration_ms = mount_timer.elapsed().as_millis() as u64,
+                direct_mounts = direct_mounts,
+                pivot_mounts = pivot_mounts,
+                "✓ All overlays mounted ({}) - {} direct, {} pivot - Security: {}",
+                mount_timer,
+                direct_mounts,
+                pivot_mounts,
+                security_status
+            );
+        }
+
+        // Step 8.5: Restart display manager BEFORE NixOS switch for better UX
+        if restart_plan.display_manager.is_some() {
+            use crate::process::restart_display_manager;
+
+            if let Some(ref dm_name) = restart_plan.display_manager {
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!("Restarting display manager ({})...", dm_name);
+                }
+
+                restart_display_manager(dm_name)?;
+
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!("  ✓ Display manager restarted - login screen should appear");
+                    tracing::info!("  ℹ NixOS rebuild will continue in background...");
+                    tracing::info!("  ℹ User manager will start automatically when you log in");
+                }
+            }
+
+            session_restart_guard.disarm();
+        }
+
+        // Step 9: Switch NixOS profile
+        {
+            let manager = manager_arc.lock().unwrap();
+            manager.switch_nixos_profile(&generation, &new_fingerprint, verbosity)?;
+        }
+
+        // Step 10: Transition to Active state (Story 4.7, AC1, Task 3.4)
+        {
+            let mut manager = manager_arc.lock().unwrap();
+            let current = manager.current_state()?;
+            let active_state = current.complete_activation(mounted_overlays)?;
+            manager.update_state(active_state)?;
+        }
+
+        // Step 11: Success - commit guard to prevent rollback
+        guard.commit();
+
+        // Story 9.3 AC#1: Log activation complete with state transition and duration
+        let final_state = {
+            let manager = manager_arc.lock().unwrap();
+            manager.current_state().ok()
+        };
+
+        // Always show completion message, even in Quiet mode (AC: 3)
+        if verbosity >= Verbosity::Quiet {
+            tracing::info!(
+                step = "activation_complete",
+                duration_ms = total_timer.elapsed().as_millis() as u64,
+                state_to = ?final_state,
+                "✓ Activation complete in {}",
+                total_timer
+            );
+        }
+
+        Ok(())
+    }
+}
