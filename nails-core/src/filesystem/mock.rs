@@ -94,6 +94,7 @@ pub struct MockFilesystem {
     root_directories: Arc<Mutex<Vec<PathBuf>>>, // Track root directory list for enumeration (Story 14.10)
     root_symlinks: Arc<Mutex<Vec<PathBuf>>>,    // Track symlinks under / (Story 14.10)
     symlink_targets: Arc<Mutex<HashMap<PathBuf, PathBuf>>>, // Track symlink targets for create_symlink (Story 15.2)
+    symlink_support: Arc<Mutex<HashMap<PathBuf, bool>>>,    // Track symlink support per directory
     op_log: Arc<Mutex<Vec<MockOp>>>,                        // Operation log for test assertions
 }
 
@@ -145,6 +146,7 @@ impl MockFilesystem {
             root_directories: Arc::new(Mutex::new(Vec::new())),
             root_symlinks: Arc::new(Mutex::new(Vec::new())),
             symlink_targets: Arc::new(Mutex::new(HashMap::new())),
+            symlink_support: Arc::new(Mutex::new(HashMap::new())),
             op_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -185,6 +187,7 @@ impl MockFilesystem {
         self.modified_times.lock().unwrap().clear();
         self.permissions.lock().unwrap().clear();
         self.symlink_targets.lock().unwrap().clear();
+        self.symlink_support.lock().unwrap().clear();
         self.op_log.lock().unwrap().clear();
     }
 
@@ -252,6 +255,14 @@ impl MockFilesystem {
         let entry = paths.entry(PathBuf::from(path)).or_default();
         entry.exists = true;
         entry.is_symlink = is_symlink;
+    }
+
+    /// Set whether a directory's filesystem supports symbolic links
+    pub fn mock_set_supports_symlinks(&self, path: &Path, supports: bool) {
+        self.symlink_support
+            .lock()
+            .unwrap()
+            .insert(path.to_path_buf(), supports);
     }
 
     /// Set free space for a path
@@ -939,6 +950,12 @@ impl Filesystem for MockFilesystem {
     fn is_symlink(&self, path: &Path) -> Result<bool> {
         let paths = self.paths.lock().unwrap();
         Ok(paths.get(path).map(|info| info.is_symlink).unwrap_or(false))
+    }
+
+    fn supports_symlinks(&self, dir: &Path) -> Result<bool> {
+        let support = self.symlink_support.lock().unwrap();
+        // Default to true (most test filesystems support symlinks)
+        Ok(support.get(dir).copied().unwrap_or(true))
     }
 
     fn create_symlink(&self, target: &Path, link: &Path) -> Result<()> {

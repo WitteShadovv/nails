@@ -1277,3 +1277,206 @@ fn test_compute_effective_exclusions_warns_about_dangerous_removals() {
     assert!(logs_contain("Removing /dev"));
     assert!(logs_contain("mount will likely FAIL"));
 }
+
+// ========================================================================
+// nixos_flake config field tests (--flake CLI flag / nixos_flake config)
+// ========================================================================
+
+#[test]
+fn test_config_default_nixos_flake_is_none() {
+    let config = Config::default();
+    assert_eq!(config.nixos_flake, None);
+}
+
+#[test]
+fn test_config_test_default_nixos_flake_is_none() {
+    let config = Config::test_default();
+    assert_eq!(config.nixos_flake, None);
+}
+
+#[test]
+fn test_config_nixos_flake_serialization_roundtrip() {
+    let config = Config {
+        nixos_flake: Some("/etc/nixos#amnesia-virtualbox".to_string()),
+        ..Config::default()
+    };
+
+    let json = serde_json::to_string_pretty(&config).expect("Should serialize");
+    assert!(json.contains("nixos_flake"));
+    assert!(json.contains("/etc/nixos#amnesia-virtualbox"));
+
+    let deserialized: Config = serde_json::from_str(&json).expect("Should deserialize");
+    assert_eq!(
+        deserialized.nixos_flake,
+        Some("/etc/nixos#amnesia-virtualbox".to_string())
+    );
+}
+
+#[test]
+fn test_config_nixos_flake_absent_deserializes_to_none() {
+    // Simulate older config JSON without nixos_flake field
+    let json = format!(
+        r#"{{
+        "hidden_volume_root": "{}",
+        "state_file_path": "{}/state.json",
+        "overlays": [],
+        "minimum_space_mb": 100,
+        "extended_overlays": {{ "enabled": false, "directories": [] }}
+    }}"#,
+        DEFAULT_HIDDEN_VOLUME_ROOT, DEFAULT_HIDDEN_VOLUME_ROOT
+    );
+
+    let config: Config = serde_json::from_str(&json).expect("Should deserialize");
+    assert_eq!(config.nixos_flake, None);
+}
+
+#[test]
+fn test_config_nixos_flake_yaml_load() {
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    let mut file = NamedTempFile::new().unwrap();
+    writeln!(
+        file,
+        r#"
+hidden_volume_path: /mnt/test-volume
+nixos_flake: /etc/nixos#amnesia-virtualbox
+"#
+    )
+    .unwrap();
+
+    let config = Config::load(file.path()).unwrap();
+    assert_eq!(
+        config.nixos_flake,
+        Some("/etc/nixos#amnesia-virtualbox".to_string())
+    );
+}
+
+#[test]
+fn test_config_nixos_flake_yaml_load_absent() {
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    let mut file = NamedTempFile::new().unwrap();
+    writeln!(
+        file,
+        r#"
+hidden_volume_path: /mnt/test-volume
+"#
+    )
+    .unwrap();
+
+    let config = Config::load(file.path()).unwrap();
+    assert_eq!(config.nixos_flake, None);
+}
+
+#[test]
+fn test_config_nixos_flake_yaml_load_path_only() {
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    let mut file = NamedTempFile::new().unwrap();
+    writeln!(
+        file,
+        r#"
+hidden_volume_path: /mnt/test-volume
+nixos_flake: /etc/nixos
+"#
+    )
+    .unwrap();
+
+    let config = Config::load(file.path()).unwrap();
+    assert_eq!(config.nixos_flake, Some("/etc/nixos".to_string()));
+}
+
+#[test]
+fn test_cli_overrides_default_nixos_flake_is_none() {
+    let overrides = CliOverrides::default();
+    assert!(overrides.nixos_flake.is_none());
+}
+
+#[test]
+fn test_apply_cli_overrides_nixos_flake() {
+    let mut config = Config::default();
+    assert_eq!(config.nixos_flake, None);
+
+    let overrides = CliOverrides {
+        nixos_flake: Some("/etc/nixos#my-config".to_string()),
+        ..Default::default()
+    };
+
+    config.apply_cli_overrides(&overrides);
+    assert_eq!(config.nixos_flake, Some("/etc/nixos#my-config".to_string()));
+}
+
+#[test]
+fn test_apply_cli_overrides_nixos_flake_none_preserves_config() {
+    let mut config = Config {
+        nixos_flake: Some("/etc/nixos#from-config".to_string()),
+        ..Config::default()
+    };
+
+    let overrides = CliOverrides::default(); // nixos_flake is None
+
+    config.apply_cli_overrides(&overrides);
+    assert_eq!(
+        config.nixos_flake,
+        Some("/etc/nixos#from-config".to_string())
+    );
+}
+
+#[test]
+fn test_apply_cli_overrides_nixos_flake_overrides_config() {
+    // CLI --flake should override config file nixos_flake
+    let mut config = Config {
+        nixos_flake: Some("/etc/nixos#from-config".to_string()),
+        ..Config::default()
+    };
+
+    let overrides = CliOverrides {
+        nixos_flake: Some("/mnt/hidden/nixos#from-cli".to_string()),
+        ..Default::default()
+    };
+
+    config.apply_cli_overrides(&overrides);
+    assert_eq!(
+        config.nixos_flake,
+        Some("/mnt/hidden/nixos#from-cli".to_string())
+    );
+}
+
+#[test]
+fn test_from_file_and_cli_nixos_flake_precedence() {
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    // Config file sets nixos_flake
+    let mut file = NamedTempFile::new().unwrap();
+    writeln!(
+        file,
+        r#"
+hidden_volume_path: /mnt/test-volume
+nixos_flake: /etc/nixos#config-value
+"#
+    )
+    .unwrap();
+
+    // CLI overrides it
+    let overrides = CliOverrides {
+        nixos_flake: Some("/etc/nixos#cli-value".to_string()),
+        ..Default::default()
+    };
+
+    let config = Config::from_file_and_cli(file.path(), &overrides).unwrap();
+    // CLI wins
+    assert_eq!(config.nixos_flake, Some("/etc/nixos#cli-value".to_string()));
+}
+
+#[test]
+fn test_example_config_mentions_nixos_flake() {
+    let example = Config::example_config();
+    assert!(
+        example.contains("nixos_flake"),
+        "Example config should mention nixos_flake"
+    );
+}

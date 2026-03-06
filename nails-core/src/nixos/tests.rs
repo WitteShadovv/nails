@@ -159,3 +159,71 @@ fn test_build_profile_uses_cached_generation() {
     let generation = builder.build_profile().unwrap();
     assert_eq!(generation, "456");
 }
+
+// ========================================================================
+// Flake ref tests (--flake /path#attr support)
+// ========================================================================
+
+#[test]
+fn test_nixos_builder_new_with_flake_ref() {
+    let builder = NixOSBuilder::new_with_flake_ref(
+        "/etc/nixos#amnesia-virtualbox".to_string(),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+
+    // config_path should be the directory part (before #)
+    assert_eq!(builder.config_path, PathBuf::from("/etc/nixos"));
+    // flake_ref should hold the full ref
+    assert_eq!(
+        builder.flake_ref,
+        Some("/etc/nixos#amnesia-virtualbox".to_string())
+    );
+}
+
+#[test]
+fn test_nixos_builder_new_with_flake_ref_no_fragment() {
+    let builder = NixOSBuilder::new_with_flake_ref(
+        "/etc/nixos".to_string(),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+
+    // config_path should be the full path (no # to split on)
+    assert_eq!(builder.config_path, PathBuf::from("/etc/nixos"));
+    // flake_ref should be None when there's no fragment (no need to override)
+    assert_eq!(builder.flake_ref, None);
+}
+
+#[test]
+fn test_nixos_builder_flake_arg_with_fragment() {
+    let builder = NixOSBuilder::new_with_flake_ref(
+        "/etc/nixos#amnesia-virtualbox".to_string(),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+
+    assert_eq!(
+        builder.effective_flake_arg(),
+        "/etc/nixos#amnesia-virtualbox"
+    );
+}
+
+#[test]
+fn test_nixos_builder_flake_arg_without_fragment() {
+    let builder = NixOSBuilder::new(
+        PathBuf::from("/mnt/hidden/nixos"),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+
+    // Without flake_ref, should fall back to config_path
+    assert_eq!(builder.effective_flake_arg(), "/mnt/hidden/nixos");
+}
+
+#[test]
+fn test_nixos_builder_new_preserves_no_flake_ref() {
+    // Existing new() constructor should have flake_ref = None
+    let builder = NixOSBuilder::new(
+        PathBuf::from("/mnt/hidden/nixos"),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+
+    assert_eq!(builder.flake_ref, None);
+}

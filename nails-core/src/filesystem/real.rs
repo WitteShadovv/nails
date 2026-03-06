@@ -212,6 +212,26 @@ impl Filesystem for RealFilesystem {
         Ok(path.is_symlink())
     }
 
+    fn supports_symlinks(&self, dir: &Path) -> Result<bool> {
+        let probe = dir.join(".nails_symlink_probe");
+        // Clean up any leftover probe from a previous interrupted run
+        let _ = std::fs::remove_file(&probe);
+        match std::os::unix::fs::symlink(&probe, &probe) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&probe);
+                Ok(true)
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&probe);
+                match e.raw_os_error() {
+                    // EPERM (1) or ENOTSUP/EOPNOTSUPP (95) → filesystem doesn't support symlinks
+                    Some(1) | Some(95) => Ok(false),
+                    _ => Err(NailsError::IoError(e)),
+                }
+            }
+        }
+    }
+
     fn create_symlink(&self, target: &Path, link: &Path) -> Result<()> {
         // Idempotent: if symlink already exists pointing to the same target, no-op
         if link.is_symlink() {

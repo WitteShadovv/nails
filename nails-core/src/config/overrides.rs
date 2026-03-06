@@ -44,6 +44,9 @@ impl Config {
         if let Some(v) = overrides.verify_on_deactivate {
             self.verify_on_deactivate = v;
         }
+        if let Some(ref v) = overrides.nixos_flake {
+            self.nixos_flake = Some(v.clone());
+        }
     }
 
     /// Load config from file and apply CLI overrides

@@ -238,6 +238,7 @@ impl Default for Config {
             max_log_size_mb: default_max_log_size_mb(),
             retention_days: default_retention_days(),
             color_scheme: ColorSchemeConfig::default(),
+            nixos_flake: None,
         }
     }
 }

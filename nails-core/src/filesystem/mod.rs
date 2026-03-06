@@ -824,6 +824,20 @@ pub trait Filesystem: Send + Sync + Clone {
     /// ```
     fn read_directory(&self, path: &Path) -> Result<Vec<std::fs::DirEntry>>;
 
+    /// Check if a directory's filesystem supports symbolic links
+    ///
+    /// Creates a temporary symlink probe in `dir` to test support.
+    /// Useful for detecting FAT32/exFAT volumes that cannot host symlinks.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - Directory on the filesystem to probe
+    ///
+    /// # Returns
+    ///
+    /// `Ok(true)` if symlinks are supported, `Ok(false)` if not (e.g. FAT32/exFAT).
+    fn supports_symlinks(&self, dir: &Path) -> Result<bool>;
+
     /// Get the modification time of a file
     ///
     /// Returns the last modified timestamp of a file.

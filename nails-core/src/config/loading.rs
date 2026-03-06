@@ -243,6 +243,9 @@ color_scheme:
 #     - path: /var
 #       tmpfs_upper_size: 512M
 #       tmpfs_work_size: 128M
+
+# NixOS flake reference (optional, auto-detected if not set):
+# nixos_flake: /etc/nixos#amnesia-virtualbox
 "##
     }
 

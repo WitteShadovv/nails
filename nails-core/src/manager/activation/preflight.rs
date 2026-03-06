@@ -11,6 +11,31 @@ impl<F: Filesystem> NailsManager<F> {
         no_preflight: bool,
         verbosity: Verbosity,
     ) -> Result<()> {
+        // Step 2.5: Probe symlink support on hidden volume before staging.
+        // Catches FAT32/exFAT volumes early with a clear error message.
+        match self
+            .filesystem
+            .supports_symlinks(&self.config.hidden_volume_root)
+        {
+            Ok(false) => {
+                let msg = format!(
+                    "Filesystem at {} does not support symbolic links. \
+                     The hidden volume must be formatted with a Linux filesystem (e.g. ext4). \
+                     FAT32 and exFAT do not support symlinks.",
+                    self.config.hidden_volume_root.display()
+                );
+                if no_preflight {
+                    tracing::warn!("{}", msg);
+                } else {
+                    return Err(crate::NailsError::NixOSError(msg));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Could not probe symlink support; continuing");
+            }
+            Ok(true) => {}
+        }
+
         // Step 2.75: Stage hidden config symlink before pre-flight checks (Story 15.2).
         // This ensures NixOSConfigCheck can validate the staged link.
         if let Err(e) =

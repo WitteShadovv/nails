@@ -26,7 +26,7 @@
 //!
 //! # Example
 //!
-//! ```rust
+//! ```rust,no_run
 //! use nails_core::shell::color_scheme::{apply_hidden_color_scheme, apply_decoy_color_scheme};
 //! use nails_core::config::ColorSchemeConfig;
 //!

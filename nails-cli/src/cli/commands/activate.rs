@@ -14,7 +14,8 @@ use crate::cli::detach::maybe_detach_for_session_kill;
 use crate::cli::output;
 
 use nails_core::{
-    ActivateOptions, CliOverrides, Config, NailsManager, NixOSBuilder, RealFilesystem, Verbosity,
+    ActivateOptions, CliOverrides, Config, Filesystem, NailsManager, NixOSBuilder, RealFilesystem,
+    Verbosity,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -33,6 +34,7 @@ use std::time::Instant;
 /// - `no_kill_session`: Do not kill graphical session (interactive mode)
 /// - `accept_pivot_risks`: Accept pivot mount fallback for any volume (degraded security)
 /// - `interactive`: Prompt for confirmations instead of auto-accepting
+/// - `nixos_flake`: Optional NixOS flake reference (e.g., /etc/nixos#hostname)
 /// - `config_override`: Optional path to configuration file
 /// - `check_real_ops`: Safety guard callback to verify real operations are allowed
 ///
@@ -52,6 +54,7 @@ pub fn execute(
     no_kill_session: bool,
     accept_pivot_risks: bool,
     interactive: bool,
+    nixos_flake: Option<String>,
     config_override: Option<std::path::PathBuf>,
     check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
 ) -> ! {
@@ -126,6 +129,7 @@ pub fn execute(
             None // Use config file or default
         },
         color_output: if no_color { Some(false) } else { None },
+        nixos_flake,
         ..Default::default()
     };
 
@@ -147,39 +151,46 @@ pub fn execute(
 
     // Create NailsManager with real filesystem (enable NixOS switching when flake is present)
     let filesystem = RealFilesystem;
-    let nixos_flake_dir = config.hidden_volume_root.join("nixos");
-    let nixos_flake = nixos_flake_dir.join("flake.nix");
-    let etc_flake = std::path::PathBuf::from("/etc/nixos/flake.nix");
-    let legacy_config = std::path::PathBuf::from("/etc/nixos/configuration.nix");
-    let system_profile = std::path::PathBuf::from("/nix/var/nix/profiles/system");
-    let manager = if nixos_flake.exists() {
-        let builder = NixOSBuilder::new(
-            nixos_flake_dir,
-            std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    let nails_profile = std::path::PathBuf::from("/nix/var/nix/profiles/nails-system");
+
+    let manager = if let Some(ref flake_ref) = config.nixos_flake {
+        // Explicit flake reference from --flake flag or config nixos_flake
+        // Skip auto-discovery and use the provided reference directly
+        tracing::info!(
+            flake_ref = %flake_ref,
+            "Using explicit NixOS flake reference"
         );
-        Arc::new(Mutex::new(NailsManager::with_nixos(
-            filesystem, config, state_path, builder,
-        )))
-    } else if etc_flake.exists() {
-        let builder = NixOSBuilder::new(
-            std::path::PathBuf::from("/etc/nixos"),
-            std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
-        );
-        Arc::new(Mutex::new(NailsManager::with_nixos(
-            filesystem, config, state_path, builder,
-        )))
-    } else if legacy_config.exists() || system_profile.exists() {
-        let builder = NixOSBuilder::new_legacy(
-            legacy_config,
-            std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
-        );
+        let builder = NixOSBuilder::new_with_flake_ref(flake_ref.clone(), nails_profile);
         Arc::new(Mutex::new(NailsManager::with_nixos(
             filesystem, config, state_path, builder,
         )))
     } else {
-        Arc::new(Mutex::new(NailsManager::new(
-            filesystem, config, state_path,
-        )))
+        // Auto-discovery cascade: hidden volume → /etc/nixos → legacy → no NixOS
+        let nixos_flake_dir = config.hidden_volume_root.join("nixos");
+        let nixos_flake = nixos_flake_dir.join("flake.nix");
+        let etc_flake = std::path::PathBuf::from("/etc/nixos/flake.nix");
+        let legacy_config = std::path::PathBuf::from("/etc/nixos/configuration.nix");
+        let system_profile = std::path::PathBuf::from("/nix/var/nix/profiles/system");
+        if nixos_flake.exists() {
+            let builder = NixOSBuilder::new(nixos_flake_dir, nails_profile);
+            Arc::new(Mutex::new(NailsManager::with_nixos(
+                filesystem, config, state_path, builder,
+            )))
+        } else if etc_flake.exists() {
+            let builder = NixOSBuilder::new(std::path::PathBuf::from("/etc/nixos"), nails_profile);
+            Arc::new(Mutex::new(NailsManager::with_nixos(
+                filesystem, config, state_path, builder,
+            )))
+        } else if legacy_config.exists() || system_profile.exists() {
+            let builder = NixOSBuilder::new_legacy(legacy_config, nails_profile);
+            Arc::new(Mutex::new(NailsManager::with_nixos(
+                filesystem, config, state_path, builder,
+            )))
+        } else {
+            Arc::new(Mutex::new(NailsManager::new(
+                filesystem, config, state_path,
+            )))
+        }
     };
 
     // Set verbosity level
@@ -190,6 +201,30 @@ pub fn execute(
     if options.kill_session && !no_preflight {
         if verbosity >= Verbosity::Normal {
             tracing::info!("Running pre-flight checks before session kill...");
+        }
+
+        // Probe symlink support before staging (catches FAT32/exFAT early)
+        {
+            let mgr = manager.lock().unwrap();
+            match mgr
+                .filesystem()
+                .supports_symlinks(&mgr.config().hidden_volume_root)
+            {
+                Ok(false) => {
+                    let msg = format!(
+                        "Filesystem at {} does not support symbolic links. \
+                         The hidden volume must be formatted with a Linux filesystem (e.g. ext4). \
+                         FAT32 and exFAT do not support symlinks.",
+                        mgr.config().hidden_volume_root.display()
+                    );
+                    eprintln!("Error: {}", msg);
+                    std::process::exit(2);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Could not probe symlink support; continuing");
+                }
+                Ok(true) => {}
+            }
         }
 
         {

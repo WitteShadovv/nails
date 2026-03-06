@@ -45,6 +45,8 @@ pub fn set_plain_mode(plain: bool) {
     // Update colored crate's override when plain mode changes
     if plain {
         control::set_override(false);
+    } else {
+        control::unset_override();
     }
 }
 
@@ -163,6 +165,25 @@ pub fn warn(msg: &str) {
 pub fn info(msg: &str) {
     let formatted = format_info(msg);
     let _ = writeln!(stdout(), "{}", formatted);
+}
+
+/// Print a preflight check result to stderr with check name label
+///
+/// Displays the check name in brackets followed by the result using the
+/// existing `CheckResult` Display formatting (colored ✓/⚠/✗).
+///
+/// # Examples
+///
+/// ```no_run
+/// use nails_core::output;
+/// use nails_core::preflight::CheckResult;
+///
+/// let result = CheckResult::Pass("Hidden volume mounted".to_string());
+/// output::check_result("hidden-volume", &result);
+/// // Prints to stderr: "  [hidden-volume] ✓ Hidden volume mounted"
+/// ```
+pub fn check_result(name: &str, result: &crate::preflight::CheckResult) {
+    let _ = writeln!(stderr(), "  [{}] {}", name, result);
 }
 
 #[cfg(test)]

@@ -574,7 +574,38 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             return;
         }
 
-        use std::io::Write;
+        use std::io::{IsTerminal, Write};
+
+        // Only write OSC sequences when stdout is a real terminal.
+        // When stdout is redirected (pipes, cargo test capture, scripts) the
+        // sequences would corrupt the output stream without affecting any terminal.
+        if !std::io::stdout().is_terminal() {
+            tracing::debug!(
+                "Skipping terminal color scheme ({}): stdout is not a terminal",
+                context
+            );
+            return;
+        }
+
+        // Never mutate terminal colors during test builds. Unit tests exercise
+        // shell_setup/shell_cleanup and would otherwise leak the hidden scheme
+        // into the developer's terminal when running `cargo test`.
+        if cfg!(test) {
+            tracing::debug!("Skipping terminal color scheme ({}): test build", context);
+            return;
+        }
+
+        // Respect the NO_COLOR convention and our own NAILS_NO_COLOR override.
+        // This also ensures OSC sequences are suppressed when cargo test runs
+        // with a PTY (where is_terminal() returns true but we still must not
+        // mutate the developer's terminal colors).
+        if std::env::var("NO_COLOR").is_ok() || std::env::var("NAILS_NO_COLOR").is_ok() {
+            tracing::debug!(
+                "Skipping terminal color scheme ({}): NO_COLOR / NAILS_NO_COLOR is set",
+                context
+            );
+            return;
+        }
 
         // Write OSC sequences directly to stdout
         if let Err(e) = std::io::stdout().write_all(sequences.as_bytes()) {

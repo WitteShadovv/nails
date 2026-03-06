@@ -87,6 +87,14 @@ pub enum Commands {
         /// Prompt for confirmations (interactive mode)
         #[arg(long, conflicts_with = "yes")]
         interactive: bool,
+
+        /// NixOS flake reference (e.g., /etc/nixos#hostname)
+        ///
+        /// When set, this value is passed directly to `nixos-rebuild --flake`
+        /// instead of auto-detecting the flake path. Supports attribute
+        /// selection (e.g., /etc/nixos#amnesia-virtualbox).
+        #[arg(long = "flake", value_name = "FLAKE_REF")]
+        nixos_flake: Option<String>,
     },
     /// Deactivate and return to decoy state (unmount + cleanup)
     Deactivate {

@@ -85,6 +85,9 @@ pub struct CliOverrides {
 
     /// Override verify_on_deactivate (--no-verify sets to false)
     pub verify_on_deactivate: Option<bool>,
+
+    /// Override nixos_flake (--flake sets to the given flake reference)
+    pub nixos_flake: Option<String>,
 }
 
 /// Application configuration
@@ -241,4 +244,19 @@ pub struct Config {
     /// Terminal color scheme configuration
     #[serde(default)]
     pub color_scheme: ColorSchemeConfig,
+
+    /// NixOS flake reference (optional, auto-detected if not set)
+    ///
+    /// When set, this value is passed directly to `nixos-rebuild --flake <value>`
+    /// instead of auto-detecting the flake path. Supports full flake references
+    /// with attribute selection (e.g., `/etc/nixos#amnesia-virtualbox`).
+    ///
+    /// **Precedence**: CLI `--flake` flag > config `nixos_flake` > auto-discovery
+    ///
+    /// **Example**:
+    /// ```yaml
+    /// nixos_flake: /etc/nixos#amnesia-virtualbox
+    /// ```
+    #[serde(default)]
+    pub nixos_flake: Option<String>,
 }

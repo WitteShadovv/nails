@@ -414,14 +414,18 @@ impl<F: Filesystem> NailsManager<F> {
     /// ```
     pub fn run_preflight_checks(&self) -> Result<()> {
         use crate::preflight::{
-            HiddenVolumeCheck, NixOSConfigCheck, PreFlightRegistry, SpaceCheck, StateCheck,
-            StorageReadinessCheck, SwapCheck,
+            HiddenVolumeCheck, NixOSBuildTargetCheck, NixOSConfigCheck, PreFlightRegistry,
+            SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck, SymlinkSupportCheck,
         };
 
         let mut registry = PreFlightRegistry::new();
 
         // Register all checks (Stories 3.1-3.7, merged in Story 14.5)
         registry.add_check(Box::new(HiddenVolumeCheck::new(
+            self.config.hidden_volume_root.clone(),
+        )));
+
+        registry.add_check(Box::new(SymlinkSupportCheck::new(
             self.config.hidden_volume_root.clone(),
         )));
 
@@ -473,6 +477,11 @@ impl<F: Filesystem> NailsManager<F> {
             self.config.hidden_volume_root.clone(),
         )));
 
+        registry.add_check(Box::new(NixOSBuildTargetCheck::new(
+            self.config.nixos_flake.clone(),
+            self.config.hidden_volume_root.clone(),
+        )));
+
         registry.add_check(Box::new(SwapCheck));
 
         registry.add_check(Box::new(SpaceCheck::new(
@@ -482,38 +491,35 @@ impl<F: Filesystem> NailsManager<F> {
 
         registry.add_check(Box::new(StateCheck::new(self.current_state()?)));
 
-        // Run all checks
-        let results = registry.run_all(&self.filesystem)?;
+        // Run all checks (always get full results for display)
+        let (results, all_passed) = registry.run_all_detailed(&self.filesystem);
 
-        // Collect failures and warnings
-        let mut warnings = Vec::new();
+        // Display each check result and collect failures
+        let mut failed_checks: Vec<(String, String)> = Vec::new();
 
-        for (name, result) in results {
+        for (name, result) in &results {
+            // Print each check result to stderr so the user sees progress
+            crate::output::check_result(name, result);
+
             match result {
                 crate::preflight::CheckResult::Pass(msg) => {
                     tracing::info!(check = %name, result = "pass", msg = %msg, "Preflight check passed");
                 }
                 crate::preflight::CheckResult::Warn(msg) => {
                     tracing::warn!(check = %name, result = "warn", msg = %msg, "Preflight check warning");
-                    warnings.push((name, msg));
                 }
-                crate::preflight::CheckResult::Fail(_) => {
-                    // Failures are already handled by registry.run_all() returning Err
-                    // This branch shouldn't be reached, but we keep it for completeness
+                crate::preflight::CheckResult::Fail(msg) => {
+                    tracing::error!(check = %name, result = "fail", msg = %msg, "Preflight check failed");
+                    failed_checks.push((name.clone(), msg.clone()));
                 }
             }
         }
 
-        if warnings.is_empty() {
+        if all_passed {
             tracing::info!("All pre-flight checks passed");
+            Ok(())
         } else {
-            tracing::info!(
-                "Pre-flight checks passed with {} warning{}",
-                warnings.len(),
-                if warnings.len() == 1 { "" } else { "s" }
-            );
+            Err(crate::NailsError::PreFlightCheckFailed(failed_checks))
         }
-
-        Ok(())
     }
 }

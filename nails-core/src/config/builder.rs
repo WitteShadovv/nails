@@ -269,6 +269,7 @@ impl ConfigBuilder {
             max_log_size_mb,
             retention_days,
             color_scheme,
+            nixos_flake: None,
         })
     }
 }
