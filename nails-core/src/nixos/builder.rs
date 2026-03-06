@@ -130,10 +130,11 @@ impl NixOSBuilder {
 
         // Execute nixos-rebuild build command
         // AC1 (Story 15.5): --no-update-lock-file prevents any package version updates.
+        let flake_arg = self.effective_flake_arg();
         let (success, stdout, stderr) = self.executor.execute_nixos_rebuild(&[
             "build",
             "--flake",
-            &self.config_path.to_string_lossy(),
+            &flake_arg,
             "--no-update-lock-file",
         ])?;
 
@@ -297,10 +298,11 @@ impl NixOSBuilder {
         );
         let start = std::time::Instant::now();
 
+        let flake_arg = self.effective_flake_arg();
         let (success, stdout, stderr) = self.executor.execute_nixos_rebuild(&[
             "build",
             "--flake",
-            &self.config_path.to_string_lossy(),
+            &flake_arg,
             "--no-update-lock-file",
         ])?;
 
@@ -394,9 +396,6 @@ impl NixOSBuilder {
     /// - Automatic rollback on failure
     /// - Detailed error messages with stderr capture
     pub fn switch_profile(&self, generation: &str, action: &str) -> Result<()> {
-        if !self.is_flake() {
-            return self.switch_legacy(action);
-        }
         // Validate profile exists before attempting switch
         if !self.profile_exists(generation)? {
             return Err(NailsError::NixOSError(format!(
@@ -545,24 +544,34 @@ impl NixOSBuilder {
         Ok(())
     }
 
-    pub(super) fn switch_legacy(&self, action: &str) -> Result<()> {
-        let config_path = match &self.build_mode {
-            NixOSBuildMode::Legacy { config_path } => config_path,
+    /// Combined build + switch via `nixos-rebuild test`.
+    ///
+    /// Works for both flake and legacy configs — the only difference is the
+    /// arguments passed to `nixos-rebuild`:
+    ///
+    /// - **Flake**:  `nixos-rebuild test --flake <ref> --no-update-lock-file`
+    /// - **Legacy**: `nixos-rebuild test -I nixos-config=<path>`
+    pub fn build_and_switch(&self) -> Result<()> {
+        let (success, _stdout, stderr) = match &self.build_mode {
             NixOSBuildMode::Flake => {
-                return Err(NailsError::NixOSError(
-                    "switch_legacy called for flake builder".into(),
-                ));
+                let flake_arg = self.effective_flake_arg();
+                self.executor.execute_nixos_rebuild(&[
+                    "test",
+                    "--flake",
+                    &flake_arg,
+                    "--no-update-lock-file",
+                ])?
+            }
+            NixOSBuildMode::Legacy { config_path } => {
+                let arg = format!("nixos-config={}", config_path.display());
+                self.executor.execute_nixos_rebuild(&["test", "-I", &arg])?
             }
         };
 
-        let arg = format!("nixos-config={}", config_path.display());
-        let (success, _stdout, stderr) =
-            self.executor.execute_nixos_rebuild(&[action, "-I", &arg])?;
-
         if !success {
             return Err(NailsError::NixOSError(format!(
-                "Legacy nixos-rebuild {} failed: {}",
-                action, stderr
+                "nixos-rebuild test failed: {}",
+                stderr
             )));
         }
 

@@ -93,6 +93,12 @@ pub struct NixOSBuilder {
     executor: Box<dyn CommandExecutorTrait + Send + Sync>,
     /// Build mode (flake or legacy)
     build_mode: NixOSBuildMode,
+    /// Optional full flake reference (e.g., "/etc/nixos#amnesia-virtualbox")
+    ///
+    /// When set, this is used as the `--flake` argument to `nixos-rebuild`
+    /// instead of `config_path`. This allows specifying a custom attribute
+    /// name when the flake uses a different name than the hostname.
+    pub(crate) flake_ref: Option<String>,
 }
 
 impl NixOSBuilder {
@@ -120,6 +126,7 @@ impl NixOSBuilder {
             profile_path,
             executor: Box::new(RealCommandExecutorImpl),
             build_mode: NixOSBuildMode::Flake,
+            flake_ref: None,
         }
     }
 
@@ -139,6 +146,7 @@ impl NixOSBuilder {
             profile_path,
             executor: Box::new(RealCommandExecutorImpl),
             build_mode: NixOSBuildMode::Legacy { config_path },
+            flake_ref: None,
         }
     }
 
@@ -154,6 +162,7 @@ impl NixOSBuilder {
             profile_path,
             executor,
             build_mode: NixOSBuildMode::Flake,
+            flake_ref: None,
         }
     }
 
@@ -173,11 +182,67 @@ impl NixOSBuilder {
             profile_path,
             executor,
             build_mode: NixOSBuildMode::Legacy { config_path },
+            flake_ref: None,
         }
     }
 
     pub fn is_flake(&self) -> bool {
         matches!(self.build_mode, NixOSBuildMode::Flake)
+    }
+
+    /// Create a new NixOSBuilder from a full flake reference string
+    ///
+    /// Parses the flake reference to extract the directory path and optional
+    /// attribute fragment. If the reference contains `#`, the part before it
+    /// is used as the config directory path and the full ref is stored for
+    /// use as the `--flake` argument. If no `#` is present, behaves like `new()`.
+    ///
+    /// # Arguments
+    ///
+    /// - `flake_ref`: Full flake reference (e.g., "/etc/nixos#amnesia-virtualbox" or "/etc/nixos")
+    /// - `profile_path`: Path to profile symlink for caching
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nails_core::nixos::NixOSBuilder;
+    ///
+    /// let builder = NixOSBuilder::new_with_flake_ref(
+    ///     "/etc/nixos#amnesia-virtualbox".to_string(),
+    ///     std::path::PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    /// );
+    /// ```
+    pub fn new_with_flake_ref(flake_ref: String, profile_path: PathBuf) -> Self {
+        if let Some(hash_pos) = flake_ref.find('#') {
+            let dir_part = &flake_ref[..hash_pos];
+            Self {
+                config_path: PathBuf::from(dir_part),
+                profile_path,
+                executor: Box::new(RealCommandExecutorImpl),
+                build_mode: NixOSBuildMode::Flake,
+                flake_ref: Some(flake_ref),
+            }
+        } else {
+            Self {
+                config_path: PathBuf::from(&flake_ref),
+                profile_path,
+                executor: Box::new(RealCommandExecutorImpl),
+                build_mode: NixOSBuildMode::Flake,
+                flake_ref: None,
+            }
+        }
+    }
+
+    /// Return the effective `--flake` argument for `nixos-rebuild`
+    ///
+    /// If a full flake reference with `#` attribute was provided, returns that.
+    /// Otherwise, falls back to the config directory path.
+    pub fn effective_flake_arg(&self) -> String {
+        if let Some(ref flake_ref) = self.flake_ref {
+            flake_ref.clone()
+        } else {
+            self.config_path.to_string_lossy().into_owned()
+        }
     }
 }
 
