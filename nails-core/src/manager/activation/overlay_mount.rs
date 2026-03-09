@@ -182,6 +182,59 @@ impl<F: Filesystem> NailsManager<F> {
                 }
             };
 
+            // Strip opaque xattrs from upper layer to prevent previous activation
+            // cycles from hiding lower-layer contents (e.g., flake.nix under /etc/nixos)
+            let stripped = crate::overlay::opaque::strip_opaque_xattrs(&overlay.upper);
+            if stripped > 0 {
+                tracing::warn!(
+                    upper = %overlay.upper.display(),
+                    count = stripped,
+                    "Stripped {} opaque overlay dir(s) from upper layer {}",
+                    stripped,
+                    overlay.upper.display()
+                );
+            }
+
+            // Compute extra lower layers from bind-mounted content.
+            // overlayfs cannot follow bind mounts in the lower layer — content
+            // at bind mount points (e.g., /etc/nixos from /persist/etc/nixos)
+            // would be invisible without adding the backing store as an extra lower.
+            let extra_lowers = match self.filesystem.find_submount_sources(&target) {
+                Ok(sources) if !sources.is_empty() => {
+                    let extra =
+                        crate::overlay::bind_sync::compute_extra_lower_dirs(&target, &sources);
+                    if !extra.is_empty() {
+                        tracing::info!(
+                            target = %target.display(),
+                            count = extra.len(),
+                            extra = ?extra,
+                            "Adding {} extra lower layer(s) for bind mount visibility on {}",
+                            extra.len(),
+                            target.display()
+                        );
+                    }
+                    extra
+                }
+                Ok(_) => Vec::new(),
+                Err(e) => {
+                    tracing::warn!(
+                        target = %target.display(),
+                        error = %e,
+                        "Failed to detect submount sources for {}: {}",
+                        target.display(),
+                        e
+                    );
+                    // Continue anyway — best effort
+                    Vec::new()
+                }
+            };
+
+            // Build lower layer refs: primary lower first, then extras
+            let mut lower_refs: Vec<&std::path::Path> = vec![&overlay.lower];
+            for extra in &extra_lowers {
+                lower_refs.push(extra.as_path());
+            }
+
             // Task 6: DNS preservation - clean stale network config before mounting /etc
             if target == Path::new("/etc")
                 && let Err(e) = clean_stale_network_config(&overlay.upper, &self.filesystem)
@@ -197,7 +250,7 @@ impl<F: Filesystem> NailsManager<F> {
             // Use universal overlay mounting algorithm (Story 4.15, AC8)
             match crate::overlay::mount_overlay_with_strategy(
                 &self.filesystem,
-                &overlay.lower,
+                &lower_refs,
                 &overlay.upper,
                 &overlay.work,
                 &overlay.target,
@@ -299,6 +352,58 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         for overlay in &self.config.overlays {
+            // Strip opaque xattrs from upper layer to prevent previous activation
+            // cycles from hiding lower-layer contents (e.g., flake.nix under /etc/nixos)
+            let stripped = crate::overlay::opaque::strip_opaque_xattrs(&overlay.upper);
+            if stripped > 0 {
+                tracing::warn!(
+                    upper = %overlay.upper.display(),
+                    count = stripped,
+                    "Stripped {} opaque overlay dir(s) from upper layer {}",
+                    stripped,
+                    overlay.upper.display()
+                );
+            }
+
+            // Compute extra lower layers from bind-mounted content.
+            // overlayfs cannot follow bind mounts in the lower layer.
+            let extra_lowers = match self.filesystem.find_submount_sources(&overlay.target) {
+                Ok(sources) if !sources.is_empty() => {
+                    let extra = crate::overlay::bind_sync::compute_extra_lower_dirs(
+                        &overlay.target,
+                        &sources,
+                    );
+                    if !extra.is_empty() {
+                        tracing::info!(
+                            target = %overlay.target.display(),
+                            count = extra.len(),
+                            extra = ?extra,
+                            "Adding {} extra lower layer(s) for bind mount visibility on {}",
+                            extra.len(),
+                            overlay.target.display()
+                        );
+                    }
+                    extra
+                }
+                Ok(_) => Vec::new(),
+                Err(e) => {
+                    tracing::warn!(
+                        target = %overlay.target.display(),
+                        error = %e,
+                        "Failed to detect submount sources for {}: {}",
+                        overlay.target.display(),
+                        e
+                    );
+                    Vec::new()
+                }
+            };
+
+            // Build lower layer refs: primary lower first, then extras
+            let mut lower_refs: Vec<&std::path::Path> = vec![&overlay.lower];
+            for extra in &extra_lowers {
+                lower_refs.push(extra.as_path());
+            }
+
             // Task 6: DNS preservation - clean stale network config before mounting /etc
             if overlay.target == Path::new("/etc")
                 && let Err(e) = clean_stale_network_config(&overlay.upper, &self.filesystem)
@@ -314,7 +419,7 @@ impl<F: Filesystem> NailsManager<F> {
             // Use universal overlay mounting algorithm (Story 4.15, AC8)
             match crate::overlay::mount_overlay_with_strategy(
                 &self.filesystem,
-                &overlay.lower,
+                &lower_refs,
                 &overlay.upper,
                 &overlay.work,
                 &overlay.target,

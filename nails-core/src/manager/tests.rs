@@ -3937,7 +3937,7 @@ fn test_rollback_mount_tracker_rollback_all() {
 
     // Mount overlays
     fs.mount_overlay(
-        Path::new("/"),
+        &[Path::new("/")],
         Path::new("/tmp/home-upper"),
         Path::new("/tmp/home-work"),
         Path::new("/home"),
@@ -3945,7 +3945,7 @@ fn test_rollback_mount_tracker_rollback_all() {
     .expect("Should mount /home");
 
     fs.mount_overlay(
-        Path::new("/"),
+        &[Path::new("/")],
         Path::new("/tmp/etc-upper"),
         Path::new("/tmp/etc-work"),
         Path::new("/etc"),

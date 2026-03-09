@@ -43,14 +43,32 @@ impl Default for RealFilesystem {
 }
 
 impl Filesystem for RealFilesystem {
-    fn mount_overlay(&self, lower: &Path, upper: &Path, work: &Path, target: &Path) -> Result<()> {
-        // Verify all preconditions using the helper function
-        verify_mount_preconditions(self, lower, upper, work, target)?;
+    fn mount_overlay(
+        &self,
+        lower: &[&Path],
+        upper: &Path,
+        work: &Path,
+        target: &Path,
+    ) -> Result<()> {
+        // Verify all preconditions using the helper function (primary lower = lower[0])
+        if lower.is_empty() {
+            return Err(NailsError::OverlayError(
+                "mount_overlay requires at least one lower layer".to_string(),
+            ));
+        }
+        verify_mount_preconditions(self, lower[0], upper, work, target)?;
+
+        // Build colon-separated lowerdir string (overlayfs stacks left-to-right)
+        let lowerdir: String = lower
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(":");
 
         // Build overlay options
         let options = format!(
             "lowerdir={},upperdir={},workdir={}",
-            lower.display(),
+            lowerdir,
             upper.display(),
             work.display()
         );
@@ -121,6 +139,45 @@ impl Filesystem for RealFilesystem {
         for line in mounts.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2
+                && let Ok(mount_point) = PathBuf::from(parts[1]).canonicalize()
+                && mount_point == canonical_target
+            {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn get_filesystem_type(&self, target: &Path) -> Result<Option<String>> {
+        let mounts = std::fs::read_to_string("/proc/mounts")?;
+        let canonical_target = target
+            .canonicalize()
+            .unwrap_or_else(|_| target.to_path_buf());
+
+        for line in mounts.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3
+                && let Ok(mount_point) = PathBuf::from(parts[1]).canonicalize()
+                && mount_point == canonical_target
+            {
+                return Ok(Some(parts[2].to_string()));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn is_overlay_mounted(&self, target: &Path) -> Result<bool> {
+        let mounts = std::fs::read_to_string("/proc/mounts")?;
+        let canonical_target = target
+            .canonicalize()
+            .unwrap_or_else(|_| target.to_path_buf());
+
+        for line in mounts.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3
+                && parts[2] == "overlay"
                 && let Ok(mount_point) = PathBuf::from(parts[1]).canonicalize()
                 && mount_point == canonical_target
             {
@@ -793,6 +850,165 @@ impl Filesystem for RealFilesystem {
         // Convert SystemTime to DateTime<Utc>
         let datetime: chrono::DateTime<chrono::Utc> = modified.into();
         Ok(datetime)
+    }
+
+    fn copy_tree(&self, src: &Path, dst: &Path) -> Result<()> {
+        let src_str = src.to_str().ok_or_else(|| {
+            NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid UTF-8 in source path: {}", src.display()),
+            ))
+        })?;
+
+        // cp -a copies recursively, preserving all attributes.
+        // The trailing "/." copies the *contents* of src into dst.
+        let output = std::process::Command::new("cp")
+            .args(["-a", &format!("{}/.", src_str)])
+            .arg(dst)
+            .output()
+            .map_err(|e| {
+                NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to run cp -a {}/. {}: {}",
+                        src.display(),
+                        dst.display(),
+                        e
+                    ),
+                ))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(NailsError::IoError(std::io::Error::other(format!(
+                "cp -a {}/. {} failed: {}",
+                src.display(),
+                dst.display(),
+                stderr.trim()
+            ))));
+        }
+
+        Ok(())
+    }
+
+    fn get_directory_size(&self, path: &Path) -> Result<u64> {
+        let path_str = path.to_str().ok_or_else(|| {
+            NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid UTF-8 in path: {}", path.display()),
+            ))
+        })?;
+
+        let output = std::process::Command::new("du")
+            .args(["-sb", path_str])
+            .output()
+            .map_err(|e| {
+                NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to run du -sb {}: {}", path.display(), e),
+                ))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(NailsError::IoError(std::io::Error::other(format!(
+                "du -sb {} failed: {}",
+                path.display(),
+                stderr.trim()
+            ))));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let size_str = stdout.split_whitespace().next().ok_or_else(|| {
+            NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("du -sb {} returned empty output", path.display()),
+            ))
+        })?;
+
+        size_str.parse::<u64>().map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to parse du output '{}': {}", size_str, e),
+            ))
+        })
+    }
+
+    fn find_submount_sources(&self, target: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
+        let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")?;
+        let canonical_target = target
+            .canonicalize()
+            .unwrap_or_else(|_| target.to_path_buf());
+
+        let mut results = Vec::new();
+
+        for line in mountinfo.lines() {
+            // /proc/self/mountinfo format (space-separated fields):
+            // 0: mount_id  1: parent_id  2: dev_id  3: fs_root  4: mount_point
+            // 5+: optional fields ... separator "-"  fstype  source  super_options
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 5 {
+                continue;
+            }
+
+            let mount_point = PathBuf::from(parts[4]);
+
+            // Include mount points strictly under target (not target itself)
+            if !mount_point.starts_with(&canonical_target) || mount_point == canonical_target {
+                continue;
+            }
+
+            // Find the source (mount source) after the "-" separator
+            // Fields after "-": fstype, mount_source, super_options
+            let separator_pos = parts.iter().position(|&p| p == "-");
+            let mount_source = match separator_pos {
+                Some(pos) if pos + 2 < parts.len() => PathBuf::from(parts[pos + 2]),
+                _ => continue,
+            };
+
+            // For bind mounts, the fs_root (field 3) tells us which subtree of
+            // the source filesystem is mounted. Combined with mount_source, this
+            // gives us the actual source path. However, for simple bind mounts
+            // the mount_source is often just the device (e.g., /dev/sda2) and
+            // the actual source path requires combining device + fs_root.
+            //
+            // A more reliable approach: the fs_root (field 3) gives the path
+            // within the filesystem. For bind mounts from /persist/etc/nixos,
+            // we can reconstruct the source by finding where the source fs is
+            // mounted and appending fs_root.
+            //
+            // Pragmatic approach: check if mount_source is a real path.
+            // If it's a device path (/dev/...), use fs_root heuristic.
+            if mount_source.starts_with("/") && !mount_source.starts_with("/dev/") {
+                // mount_source is a real path (e.g., bind mount source)
+                results.push((mount_point, mount_source));
+            } else {
+                // Device-backed mount — the fs_root (field 3) is the path within
+                // that filesystem. We need to find where the parent filesystem is
+                // mounted and construct the full source path.
+                //
+                // For now, try to resolve via /proc/mounts which sometimes shows
+                // bind mount sources more clearly. Fall back to using mount_point
+                // itself (the VFS path is what we need for overlayfs lowerdir).
+                let fs_root = Path::new(parts[3]);
+                if fs_root != Path::new("/") {
+                    // Non-root fs_root suggests a bind mount of a subtree.
+                    // We can find the parent mount by matching dev_id and
+                    // fs_root="/", but that's complex. For common NixOS patterns,
+                    // the mount_point path itself IS the VFS-resolved content path
+                    // which is what we need for the overlayfs lower layer computation.
+                    //
+                    // Skip device-backed mounts for now — they're typically not
+                    // the bind mounts we're looking for (those show up with real
+                    // source paths in mountinfo).
+                    continue;
+                }
+            }
+        }
+
+        // Sort for consistent ordering
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(results)
     }
 }
 

@@ -28,7 +28,7 @@
 //! fs.mock_set_path_exists("/mnt/hidden/work", true);
 //!
 //! let result = fs.mount_overlay(
-//!     Path::new("/"),
+//!     &[Path::new("/")],
 //!     Path::new("/mnt/hidden/upper"),
 //!     Path::new("/mnt/hidden/work"),
 //!     Path::new("/home")
@@ -80,16 +80,23 @@ pub trait Filesystem: Send + Sync + Clone {
     ///
     /// # Arguments
     ///
-    /// * `lower` - Read-only base layer (typically the base system)
+    /// * `lower` - Read-only base layers (first element is primary, rest are extra
+    ///   lower layers for bind mount visibility; overlayfs stacks them left-to-right)
     /// * `upper` - Writeable upper layer (typically in hidden volume)
     /// * `work` - Work directory for overlay metadata
     /// * `target` - Mount point where overlay appears
     ///
     /// # Errors
     ///
-    /// Returns `NailsError::AlreadyMounted` if target is already mounted.
+    /// Returns `NailsError::AlreadyMounted` if target already has an overlay mount.
     /// Returns `NailsError::OverlayError` if mount operation fails.
-    fn mount_overlay(&self, lower: &Path, upper: &Path, work: &Path, target: &Path) -> Result<()>;
+    fn mount_overlay(
+        &self,
+        lower: &[&Path],
+        upper: &Path,
+        work: &Path,
+        target: &Path,
+    ) -> Result<()>;
 
     /// Unmount an overlay filesystem
     ///
@@ -118,6 +125,37 @@ pub trait Filesystem: Send + Sync + Clone {
     ///
     /// `Ok(true)` if mounted, `Ok(false)` if not mounted.
     fn is_mounted(&self, target: &Path) -> Result<bool>;
+
+    /// Get the filesystem type at a mount point
+    ///
+    /// Reads the mount table to determine what filesystem type is mounted at the
+    /// given path. Returns `None` if the path is not a mount point.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - Path to query
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Some("vfat"))`, `Ok(Some("ext4"))`, etc. if path is a mount point.
+    /// `Ok(None)` if path is not a mount point.
+    fn get_filesystem_type(&self, target: &Path) -> Result<Option<String>>;
+
+    /// Check if a path has an overlayfs mount
+    ///
+    /// Returns `true` only if the target has an **overlay** filesystem mount,
+    /// not other mount types (ext4, tmpfs, vfat, etc.). This allows overlaying
+    /// on top of block device mounts (e.g., /boot, /nix, /persist) while still
+    /// preventing double-overlay (overlay-on-overlay).
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - Path to check
+    ///
+    /// # Returns
+    ///
+    /// `Ok(true)` if an overlayfs mount exists at target, `Ok(false)` otherwise.
+    fn is_overlay_mounted(&self, target: &Path) -> Result<bool>;
 
     /// Get mount info for a currently mounted overlay
     ///
@@ -158,7 +196,7 @@ pub trait Filesystem: Send + Sync + Clone {
     /// fs.mock_set_writable("/mnt/hidden/work", true);
     ///
     /// fs.mount_overlay(
-    ///     Path::new("/"),
+    ///     &[Path::new("/")],
     ///     Path::new("/mnt/hidden/upper"),
     ///     Path::new("/mnt/hidden/work"),
     ///     Path::new("/home")
@@ -868,6 +906,71 @@ pub trait Filesystem: Send + Sync + Clone {
     /// println!("Last modified: {}", modified);
     /// ```
     fn modified_time(&self, path: &Path) -> Result<chrono::DateTime<chrono::Utc>>;
+
+    // ------------------------------------------------------------------------
+    // Directory Copy and Size Operations (Snapshot Pivot Strategy)
+    // ------------------------------------------------------------------------
+
+    /// Recursively copy a directory tree preserving all attributes
+    ///
+    /// Copies the contents of `src` into `dst`, preserving ownership, permissions,
+    /// timestamps, and symlinks. Used by the snapshot pivot strategy to copy
+    /// overlay-incompatible filesystem contents into a tmpfs for use as an
+    /// overlay lower layer.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - Source directory to copy from
+    /// * `dst` - Destination directory to copy into (must exist)
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if copy fails.
+    fn copy_tree(&self, src: &Path, dst: &Path) -> Result<()>;
+
+    /// Get the total size of a directory's contents in bytes
+    ///
+    /// Calculates the total disk usage of all files within a directory tree.
+    /// Used by the overlay compatibility preflight check to verify that
+    /// overlay-incompatible targets are small enough to snapshot into RAM.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Directory to measure
+    ///
+    /// # Returns
+    ///
+    /// Total size in bytes of all files within the directory tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if size cannot be determined.
+    fn get_directory_size(&self, path: &Path) -> Result<u64>;
+
+    // ------------------------------------------------------------------------
+    // Submount Source Detection (Multi-Lower-Layer Overlayfs)
+    // ------------------------------------------------------------------------
+
+    /// Find bind mount sources for submounts within a target directory
+    ///
+    /// Returns `(mount_point, source_path)` pairs for bind mounts nested within
+    /// `target` (not `target` itself). Used to compute extra lower layers for
+    /// overlayfs — the kernel's `clone_private_mount()` isolates the overlay
+    /// from the VFS mount tree, so bind-mounted content is invisible unless
+    /// the backing store is added as an additional lower layer.
+    ///
+    /// On NixOS impermanence systems, `/etc/nixos` is typically bind-mounted
+    /// from `/persist/etc/nixos/`. Adding `/persist/etc` as a second lower layer
+    /// (`lowerdir=/etc:/persist/etc`) makes `flake.nix` visible through the overlay.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - Directory to search for submounts within
+    ///
+    /// # Returns
+    ///
+    /// Vec of `(mount_point, source_path)` pairs for bind mounts strictly under `target`.
+    fn find_submount_sources(&self, target: &Path) -> Result<Vec<(PathBuf, PathBuf)>>;
 }
 
 // ============================================================================
@@ -987,8 +1090,8 @@ pub fn verify_mount_preconditions<F: Filesystem>(
         }
     }
 
-    // Check target not already mounted
-    if fs.is_mounted(target)? {
+    // Check target not already overlay-mounted (block device mounts are OK)
+    if fs.is_overlay_mounted(target)? {
         return Err(NailsError::AlreadyMounted {
             path: target.to_path_buf(),
         });

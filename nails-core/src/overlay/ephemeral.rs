@@ -80,7 +80,7 @@ pub fn mount_ephemeral_overlay<F: Filesystem>(
     fs.mount_tmpfs(&work, &config.tmpfs_work_size)?;
 
     // Step 4: Mount overlay using tmpfs upper/work
-    fs.mount_overlay(lower, &upper, &work, &config.path)?;
+    fs.mount_overlay(&[lower], &upper, &work, &config.path)?;
 
     Ok(EphemeralMountInfo {
         target: config.path.clone(),

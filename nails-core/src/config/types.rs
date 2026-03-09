@@ -21,7 +21,8 @@ pub const DEFAULT_HIDDEN_VOLUME_ROOT: &str = "/mnt/hidden-volume";
 /// - Kernel-managed virtual filesystems (/proc, /sys, /dev)
 /// - Runtime state directories (/run)
 /// - Mount point directories (/mnt)
-/// - Bootloader directory (/boot)
+/// - Note: /boot is NOT excluded — it is overlayed via snapshot pivot on vfat partitions
+///   (contents copied to tmpfs in RAM, then overlayed)
 /// - System library symlinks common in NixOS (/lib, /lib64, /sbin)
 /// - Filesystem recovery directory (/lost+found)
 /// - Non-standard user directories (/Downloads)
@@ -167,10 +168,11 @@ pub struct Config {
     /// Directories to exclude from overlay in Auto mode, in addition to the defaults.
     /// These paths are merged with the default exclusion list.
     ///
-    /// **Default exclusions**: `/proc`, `/sys`, `/dev`, `/run`, `/mnt`, `/boot`, `/bin`, `/usr`, `/lib`, `/lib64`, `/sbin`, `/lost+found`, `/Downloads`
+    /// **Default exclusions**: `/proc`, `/sys`, `/dev`, `/run`, `/mnt`, `/bin`, `/usr`, `/lib`, `/lib64`, `/sbin`, `/lost+found`, `/Downloads`
     ///
     /// **Use case**: Exclude additional directories you don't want overlaid
-    /// (e.g., `/boot` for boot partition, `/nix` for Nix store performance).
+    /// (e.g., `/nix` for Nix store performance). Note: `/boot` is NOT excluded
+    /// by default — vfat partitions are handled via snapshot pivot automatically.
     ///
     /// **Example**:
     /// ```yaml

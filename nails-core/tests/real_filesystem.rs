@@ -132,7 +132,7 @@ fn test_real_filesystem_mount_overlay_requires_paths_exist() {
 
     // WHEN: Attempting to mount overlay with nonexistent paths
     let result = fs.mount_overlay(
-        Path::new("/nonexistent/lower"),
+        &[Path::new("/nonexistent/lower")],
         Path::new("/nonexistent/upper"),
         Path::new("/nonexistent/work"),
         Path::new("/tmp/nails_test_target"),
@@ -381,7 +381,7 @@ fn test_real_filesystem_mount_overlay_validates_all_paths() {
     let _ = std::fs::create_dir_all(&work);
 
     // WHEN: Attempting to mount (will fail without root, but validates paths first)
-    let result = fs.mount_overlay(&lower, &upper, &work, &target);
+    let result = fs.mount_overlay(&[lower.as_path()], &upper, &work, &target);
 
     // THEN: Either succeeds (unlikely without root) or fails at mount operation
     // The important thing is we covered the path validation code
@@ -407,7 +407,7 @@ fn test_real_filesystem_mount_overlay_validates_lower_exists() {
 
     // WHEN: Attempting to mount with nonexistent lower path
     let result = fs.mount_overlay(
-        Path::new("/nonexistent/lower"),
+        &[Path::new("/nonexistent/lower")],
         &upper,
         &work,
         Path::new("/tmp/target"),
@@ -434,7 +434,7 @@ fn test_real_filesystem_mount_overlay_validates_upper_exists() {
 
     // WHEN: Attempting to mount with nonexistent upper path
     let result = fs.mount_overlay(
-        &lower,
+        &[lower.as_path()],
         Path::new("/nonexistent/upper"),
         &work,
         Path::new("/tmp/target"),
@@ -461,7 +461,7 @@ fn test_real_filesystem_mount_overlay_validates_work_exists() {
 
     // WHEN: Attempting to mount with nonexistent work path
     let result = fs.mount_overlay(
-        &lower,
+        &[lower.as_path()],
         &upper,
         Path::new("/nonexistent/work"),
         Path::new("/tmp/target"),
@@ -482,7 +482,7 @@ fn test_real_filesystem_mount_overlay_detects_already_mounted() {
 
     // WHEN: Attempting to mount on root (which is already mounted)
     let result = fs.mount_overlay(
-        Path::new("/tmp"),
+        &[Path::new("/tmp")],
         Path::new("/tmp"),
         Path::new("/tmp"),
         Path::new("/"),

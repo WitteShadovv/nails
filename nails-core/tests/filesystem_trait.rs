@@ -30,7 +30,7 @@ fn test_mount_overlay_succeeds_with_valid_paths() {
     fs.mock_set_path_exists("/mnt/hidden/work", true);
 
     // WHEN: Mounting overlay
-    let result = fs.mount_overlay(lower, upper, work, target);
+    let result = fs.mount_overlay(&[lower], upper, work, target);
 
     // THEN: Mount succeeds
     assert!(result.is_ok());
@@ -54,7 +54,7 @@ fn test_mount_overlay_fails_if_target_already_mounted() {
 
     // WHEN: Attempting to mount overlay on same target
     let result = fs.mount_overlay(
-        Path::new("/"),
+        &[Path::new("/")],
         Path::new("/mnt/hidden/upper"),
         Path::new("/mnt/hidden/work"),
         target,
@@ -81,7 +81,7 @@ fn test_mount_overlay_tracks_mount_in_state() {
 
     // WHEN: Mounting overlay
     fs.mount_overlay(
-        Path::new("/"),
+        &[Path::new("/")],
         Path::new("/mnt/hidden/upper"),
         Path::new("/mnt/hidden/work"),
         target,
@@ -101,7 +101,7 @@ fn test_mount_overlay_validates_lower_path_exists() {
 
     // WHEN: Attempting to mount with invalid lower path
     let result = fs.mount_overlay(
-        lower,
+        &[lower],
         Path::new("/mnt/hidden/upper"),
         Path::new("/mnt/hidden/work"),
         Path::new("/home"),
@@ -126,7 +126,7 @@ fn test_mount_overlay_validates_upper_path_exists() {
 
     // WHEN: Attempting to mount with invalid upper path
     let result = fs.mount_overlay(
-        Path::new("/"),
+        &[Path::new("/")],
         Path::new("/mnt/hidden/upper"),
         Path::new("/mnt/hidden/work"),
         Path::new("/home"),
@@ -147,7 +147,7 @@ fn test_mount_overlay_validates_work_path_exists() {
 
     // WHEN: Attempting to mount with invalid work path
     let result = fs.mount_overlay(
-        Path::new("/"),
+        &[Path::new("/")],
         Path::new("/mnt/hidden/upper"),
         Path::new("/mnt/hidden/work"),
         Path::new("/home"),

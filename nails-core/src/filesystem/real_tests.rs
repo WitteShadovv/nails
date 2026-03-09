@@ -58,7 +58,7 @@ fn test_real_overlay_mount_creates_merged_view() {
     upper_fh.sync_all().unwrap();
 
     // Mount overlay
-    let result = fs.mount_overlay(&lower, &upper, &work, &target);
+    let result = fs.mount_overlay(&[lower.as_path()], &upper, &work, &target);
     if let Err(e) = result {
         // Clean up on failure
         let _ = fs::remove_dir_all(&test_dir);

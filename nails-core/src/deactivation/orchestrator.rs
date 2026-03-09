@@ -503,7 +503,7 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
                 );
 
                 match manager.filesystem().mount_overlay(
-                    &mount_info.lower,
+                    &[mount_info.lower.as_path()],
                     &mount_info.upper,
                     &mount_info.work,
                     &mount_info.target,

@@ -126,6 +126,17 @@ Beyond `/home` and `/etc`, NAILS optionally overlays high-activity directories (
 in RAM and destroyed immediately on unmount — they never reach the hidden storage and never
 persist to disk, even if the system is examined immediately after deactivation.
 
+### Boot partition handling
+
+On NixOS with impermanence, `/boot` is typically a vfat (FAT32) EFI System Partition. The Linux
+kernel does not support overlayfs on vfat — not even as a read-only lower layer (missing `d_type`
+support). NAILS detects this automatically and uses a **snapshot pivot** strategy: the contents of
+`/boot` are copied into a tmpfs in RAM, the tmpfs is used as the overlay lower layer, and the
+result is bind-mounted over the original `/boot`. A preflight check validates that the target is
+small enough (< 1 GB) to fit in RAM. This ensures `nixos-rebuild` writes new boot generations to
+the overlay rather than the real `/boot` — preventing boot failures when the hidden volume is
+absent.
+
 ---
 
 ## Key Features
@@ -874,6 +885,22 @@ cargo clean && cargo build
 # See which lines are uncovered
 cargo tarpaulin --out Html --output-dir coverage/
 # Open coverage/tarpaulin-report.html in a browser
+```
+
+### /boot overlay fails with "filesystem not supported"
+
+This happens when `/boot` is a vfat/FAT32 partition (common for EFI). NAILS detects
+overlay-incompatible filesystems automatically and uses a **snapshot pivot** — the contents
+are copied to a tmpfs in RAM and overlayed there. No extra flags needed. If the preflight
+check fails because `/boot` is too large (> 1 GB), add it to `overlay_exclusions` in your
+config file.
+
+```bash
+# Check /boot filesystem type
+findmnt -n -o FSTYPE /boot
+
+# Activate normally — vfat snapshot pivot is automatic
+sudo nails activate
 ```
 
 ### Can't return to decoy state

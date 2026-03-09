@@ -414,8 +414,9 @@ impl<F: Filesystem> NailsManager<F> {
     /// ```
     pub fn run_preflight_checks(&self) -> Result<()> {
         use crate::preflight::{
-            HiddenVolumeCheck, NixOSBuildTargetCheck, NixOSConfigCheck, PreFlightRegistry,
-            SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck, SymlinkSupportCheck,
+            HiddenVolumeCheck, NixOSBuildTargetCheck, NixOSConfigCheck, OverlayCompatibilityCheck,
+            PreFlightRegistry, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
+            SymlinkSupportCheck,
         };
 
         let mut registry = PreFlightRegistry::new();
@@ -471,6 +472,24 @@ impl<F: Filesystem> NailsManager<F> {
         registry.add_check(Box::new(StorageReadinessCheck::new(
             self.config.hidden_volume_root.clone(),
             overlay_dirs,
+        )));
+
+        // Compute overlay targets for compatibility check
+        let overlay_target_paths: Vec<std::path::PathBuf> = match self.config.overlay_mode {
+            crate::config::OverlayMode::Auto => {
+                build_overlay_targets(&self.filesystem, &self.config)?
+            }
+            crate::config::OverlayMode::Explicit => self
+                .config
+                .overlays
+                .iter()
+                .map(|o| o.lower.clone())
+                .collect(),
+        };
+
+        registry.add_check(Box::new(OverlayCompatibilityCheck::new(
+            overlay_target_paths,
+            self.config.hidden_volume_root.clone(),
         )));
 
         registry.add_check(Box::new(NixOSConfigCheck::new(

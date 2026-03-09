@@ -28,7 +28,7 @@ pub const PIVOT_STAGING_BASE: &str = "/mnt/nails-pivot";
 /// # Arguments
 ///
 /// * `fs` - Filesystem trait implementation
-/// * `lower` - Read-only base layer (typically the current `/var`)
+/// * `lower` - Read-only base layers (first is primary, rest are extra lower layers)
 /// * `upper` - Writeable upper layer (on hidden volume or tmpfs)
 /// * `work` - Work directory for overlay metadata
 /// * `target` - Final mount point (e.g., `/var`)
@@ -59,7 +59,7 @@ pub const PIVOT_STAGING_BASE: &str = "/mnt/nails-pivot";
 ///
 /// let info = pivot_overlay_mount(
 ///     &fs,
-///     Path::new("/var"),           // lower
+///     &[Path::new("/var")],           // lower
 ///     Path::new("/mnt/hidden/var-upper"),  // upper
 ///     Path::new("/mnt/hidden/var-work"),   // work
 ///     Path::new("/var"),           // target
@@ -70,7 +70,7 @@ pub const PIVOT_STAGING_BASE: &str = "/mnt/nails-pivot";
 /// ```
 pub fn pivot_overlay_mount<F: Filesystem>(
     fs: &F,
-    lower: &Path,
+    lower: &[&Path],
     upper: &Path,
     work: &Path,
     target: &Path,
@@ -104,7 +104,7 @@ pub fn pivot_overlay_mount<F: Filesystem>(
         staging,
         upper: upper.to_path_buf(),
         work: work.to_path_buf(),
-        lower: lower.to_path_buf(),
+        lower: lower[0].to_path_buf(),
         is_ephemeral: false, // Caller can set this based on upper/work type
     })
 }
@@ -186,7 +186,7 @@ pub fn pivot_ephemeral_mount<F: Filesystem>(
     }
 
     // Step 4: Pivot mount overlay to target
-    match pivot_overlay_mount(fs, lower, &upper, &work, &config.path) {
+    match pivot_overlay_mount(fs, &[lower], &upper, &work, &config.path) {
         Ok(mut info) => {
             info.is_ephemeral = true;
             Ok(info)
@@ -198,6 +198,98 @@ pub fn pivot_ephemeral_mount<F: Filesystem>(
             Err(e)
         }
     }
+}
+
+/// Mount an overlay using the snapshot pivot strategy for overlay-incompatible filesystems
+///
+/// Some filesystems (vfat, exfat, ntfs) cannot serve as overlayfs lower layers because
+/// they lack required POSIX semantics (d_type, xattrs). This function works around the
+/// limitation by:
+///
+/// 1. Creating a tmpfs "snapshot" and copying the target contents into it
+/// 2. Using the tmpfs snapshot as the overlay lower layer
+/// 3. Mounting the overlay to a staging directory
+/// 4. Bind mounting the staging directory over the original target
+///
+/// # Arguments
+///
+/// * `fs` - Filesystem trait implementation
+/// * `lower` - Original lower layers (on overlay-incompatible filesystem)
+/// * `upper` - Upper layer directory (on hidden volume)
+/// * `work` - Work directory for overlay
+/// * `target` - Target directory to overlay (e.g., `/boot`)
+///
+/// # Returns
+///
+/// `Ok(PivotMountInfo)` with `lower` set to the snapshot tmpfs path.
+///
+/// # Rollback
+///
+/// On failure at any step, all previous steps are rolled back.
+pub fn snapshot_pivot_overlay_mount<F: Filesystem>(
+    fs: &F,
+    _lower: &[&Path],
+    upper: &Path,
+    work: &Path,
+    target: &Path,
+) -> Result<PivotMountInfo> {
+    let dir_name = target
+        .file_name()
+        .ok_or_else(|| {
+            NailsError::OverlayError(format!("Invalid target path: {}", target.display()))
+        })?
+        .to_string_lossy();
+
+    // Step 1: Create snapshot tmpfs directory
+    let snapshot_path = PathBuf::from(PIVOT_STAGING_BASE).join(format!("{}-snapshot", dir_name));
+    fs.create_directory(&snapshot_path)?;
+
+    // Step 2: Mount tmpfs at snapshot location
+    if let Err(e) = fs.mount_tmpfs(&snapshot_path, "1G") {
+        let _ = std::fs::remove_dir(&snapshot_path);
+        return Err(e);
+    }
+
+    // Step 3: Copy target contents into snapshot tmpfs
+    if let Err(e) = fs.copy_tree(target, &snapshot_path) {
+        let _ = fs.unmount_tmpfs(&snapshot_path);
+        let _ = std::fs::remove_dir(&snapshot_path);
+        return Err(e);
+    }
+
+    // Step 4: Create staging directory
+    let staging = PathBuf::from(PIVOT_STAGING_BASE).join(dir_name.as_ref());
+    if let Err(e) = fs.create_directory(&staging) {
+        let _ = fs.unmount_tmpfs(&snapshot_path);
+        let _ = std::fs::remove_dir(&snapshot_path);
+        return Err(e);
+    }
+
+    // Step 5: Mount overlay with snapshot as lower layer
+    if let Err(e) = fs.mount_overlay(&[snapshot_path.as_path()], upper, work, &staging) {
+        let _ = std::fs::remove_dir(&staging);
+        let _ = fs.unmount_tmpfs(&snapshot_path);
+        let _ = std::fs::remove_dir(&snapshot_path);
+        return Err(e);
+    }
+
+    // Step 6: Bind mount staging to target
+    if let Err(e) = fs.bind_mount(&staging, target) {
+        let _ = fs.unmount(&staging, true);
+        let _ = std::fs::remove_dir(&staging);
+        let _ = fs.unmount_tmpfs(&snapshot_path);
+        let _ = std::fs::remove_dir(&snapshot_path);
+        return Err(e);
+    }
+
+    Ok(PivotMountInfo {
+        target: target.to_path_buf(),
+        staging,
+        upper: upper.to_path_buf(),
+        work: work.to_path_buf(),
+        lower: snapshot_path,
+        is_ephemeral: false,
+    })
 }
 
 /// Unmount a pivot overlay
@@ -239,6 +331,20 @@ pub fn unmount_pivot_overlay<F: Filesystem>(fs: &F, info: &PivotMountInfo) -> Re
 
     // Step 3: Remove staging directory (best effort)
     let _ = std::fs::remove_dir(&info.staging);
+
+    // Step 3.5: If snapshot pivot, unmount and remove the snapshot tmpfs
+    // Snapshot pivots have their lower dir under PIVOT_STAGING_BASE ending with "-snapshot"
+    if info.lower.starts_with(PIVOT_STAGING_BASE)
+        && info
+            .lower
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().ends_with("-snapshot"))
+    {
+        if let Err(e) = fs.unmount_tmpfs(&info.lower) {
+            errors.push(format!("snapshot tmpfs {}: {}", info.lower.display(), e));
+        }
+        let _ = std::fs::remove_dir(&info.lower);
+    }
 
     // Step 4: If ephemeral, unmount tmpfs layers
     if info.is_ephemeral {

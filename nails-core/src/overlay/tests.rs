@@ -277,7 +277,7 @@ fn test_pivot_overlay_mount_success() {
 
     let result = pivot_overlay_mount(
         &fs,
-        Path::new("/var"),
+        &[Path::new("/var")],
         Path::new("/mnt/hidden/var-upper"),
         Path::new("/mnt/hidden/var-work"),
         Path::new("/var"),
@@ -308,7 +308,7 @@ fn test_pivot_overlay_mount_creates_staging_dir() {
 
     let result = pivot_overlay_mount(
         &fs,
-        Path::new("/var"),
+        &[Path::new("/var")],
         Path::new("/mnt/hidden/var-upper"),
         Path::new("/mnt/hidden/var-work"),
         Path::new("/var"),
@@ -334,7 +334,7 @@ fn test_pivot_overlay_mount_rollback_on_bind_failure() {
 
     let result = pivot_overlay_mount(
         &fs,
-        Path::new("/var"),
+        &[Path::new("/var")],
         Path::new("/mnt/hidden/var-upper"),
         Path::new("/mnt/hidden/var-work"),
         Path::new("/var"),
@@ -421,7 +421,7 @@ fn test_unmount_pivot_overlay_success() {
     // Mount
     let info = pivot_overlay_mount(
         &fs,
-        Path::new("/var"),
+        &[Path::new("/var")],
         Path::new("/mnt/hidden/var-upper"),
         Path::new("/mnt/hidden/var-work"),
         Path::new("/var"),

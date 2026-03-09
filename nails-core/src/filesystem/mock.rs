@@ -38,6 +38,7 @@ impl Default for PathInfo {
 pub enum MockOp {
     MountOverlay { target: PathBuf },
     WriteFile { path: PathBuf },
+    CopyTree { src: PathBuf, dst: PathBuf },
 }
 
 /// Mock filesystem for testing (no root privileges required)
@@ -95,7 +96,12 @@ pub struct MockFilesystem {
     root_symlinks: Arc<Mutex<Vec<PathBuf>>>,    // Track symlinks under / (Story 14.10)
     symlink_targets: Arc<Mutex<HashMap<PathBuf, PathBuf>>>, // Track symlink targets for create_symlink (Story 15.2)
     symlink_support: Arc<Mutex<HashMap<PathBuf, bool>>>,    // Track symlink support per directory
+    filesystem_types: Arc<Mutex<HashMap<PathBuf, String>>>, // Track filesystem types at mount points
     op_log: Arc<Mutex<Vec<MockOp>>>,                        // Operation log for test assertions
+    copy_tree_should_fail: Arc<Mutex<HashSet<PathBuf>>>, // Track paths where copy_tree should fail
+    directory_sizes: Arc<Mutex<HashMap<PathBuf, u64>>>, // Track directory sizes for get_directory_size
+    #[allow(clippy::type_complexity)]
+    submount_sources: Arc<Mutex<HashMap<PathBuf, Vec<(PathBuf, PathBuf)>>>>, // Track submount sources per target for find_submount_sources
 }
 
 impl MockFilesystem {
@@ -147,7 +153,11 @@ impl MockFilesystem {
             root_symlinks: Arc::new(Mutex::new(Vec::new())),
             symlink_targets: Arc::new(Mutex::new(HashMap::new())),
             symlink_support: Arc::new(Mutex::new(HashMap::new())),
+            filesystem_types: Arc::new(Mutex::new(HashMap::new())),
             op_log: Arc::new(Mutex::new(Vec::new())),
+            copy_tree_should_fail: Arc::new(Mutex::new(HashSet::new())),
+            directory_sizes: Arc::new(Mutex::new(HashMap::new())),
+            submount_sources: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -189,6 +199,9 @@ impl MockFilesystem {
         self.symlink_targets.lock().unwrap().clear();
         self.symlink_support.lock().unwrap().clear();
         self.op_log.lock().unwrap().clear();
+        self.copy_tree_should_fail.lock().unwrap().clear();
+        self.directory_sizes.lock().unwrap().clear();
+        self.submount_sources.lock().unwrap().clear();
     }
 
     // ========================================================================
@@ -265,6 +278,38 @@ impl MockFilesystem {
             .insert(path.to_path_buf(), supports);
     }
 
+    /// Set the filesystem type for a mount point (e.g., "vfat", "ext4", "tmpfs")
+    pub fn mock_set_filesystem_type(&self, path: &Path, fstype: &str) {
+        self.filesystem_types
+            .lock()
+            .unwrap()
+            .insert(path.to_path_buf(), fstype.to_string());
+    }
+
+    /// Set whether copy_tree should fail for a source path
+    pub fn mock_set_copy_tree_should_fail(&self, src: &Path) {
+        self.copy_tree_should_fail
+            .lock()
+            .unwrap()
+            .insert(src.to_path_buf());
+    }
+
+    /// Set the reported size for a directory
+    pub fn mock_set_directory_size(&self, path: &Path, size: u64) {
+        self.directory_sizes
+            .lock()
+            .unwrap()
+            .insert(path.to_path_buf(), size);
+    }
+
+    /// Set mock submount sources for a target directory
+    pub fn mock_set_submount_sources(&self, target: &Path, sources: Vec<(PathBuf, PathBuf)>) {
+        self.submount_sources
+            .lock()
+            .unwrap()
+            .insert(target.to_path_buf(), sources);
+    }
+
     /// Set free space for a path
     pub fn mock_set_free_space(&self, path: &Path, bytes: u64) {
         let mut paths = self.paths.lock().unwrap();
@@ -302,7 +347,7 @@ impl MockFilesystem {
     ///
     /// // This will now fail
     /// let result = fs.mount_overlay(
-    ///     Path::new("/"),
+    ///     &[Path::new("/")],
     ///     Path::new("/mnt/hidden/upper"),
     ///     Path::new("/mnt/hidden/work"),
     ///     Path::new("/home")
@@ -666,7 +711,7 @@ impl MockFilesystem {
     /// fs.mock_set_path_exists("/mnt/hidden/work", true);
     ///
     /// fs.mount_overlay(
-    ///     Path::new("/"),
+    ///     &[Path::new("/")],
     ///     Path::new("/mnt/hidden/upper"),
     ///     Path::new("/mnt/hidden/work"),
     ///     Path::new("/home")
@@ -833,7 +878,13 @@ impl Default for MockFilesystem {
 }
 
 impl Filesystem for MockFilesystem {
-    fn mount_overlay(&self, lower: &Path, upper: &Path, work: &Path, target: &Path) -> Result<()> {
+    fn mount_overlay(
+        &self,
+        lower: &[&Path],
+        upper: &Path,
+        work: &Path,
+        target: &Path,
+    ) -> Result<()> {
         // Check if this mount should fail (for testing rollback)
         let fail_set = self.mount_should_fail.lock().unwrap();
         if fail_set.contains(target) {
@@ -844,12 +895,18 @@ impl Filesystem for MockFilesystem {
         }
         drop(fail_set);
 
-        // Verify all preconditions using the helper function
-        verify_mount_preconditions(self, lower, upper, work, target)?;
+        if lower.is_empty() {
+            return Err(NailsError::OverlayError(
+                "mount_overlay requires at least one lower layer".to_string(),
+            ));
+        }
 
-        // Create mount info with timestamp
+        // Verify all preconditions using the helper function (primary lower = lower[0])
+        verify_mount_preconditions(self, lower[0], upper, work, target)?;
+
+        // Create mount info with timestamp (store primary lower)
         let mount_info = MountInfo {
-            lower: lower.to_path_buf(),
+            lower: lower[0].to_path_buf(),
             upper: upper.to_path_buf(),
             work: work.to_path_buf(),
             target: target.to_path_buf(),
@@ -917,6 +974,15 @@ impl Filesystem for MockFilesystem {
     }
 
     fn is_mounted(&self, target: &Path) -> Result<bool> {
+        Ok(self.mounted.lock().unwrap().contains(target))
+    }
+
+    fn get_filesystem_type(&self, target: &Path) -> Result<Option<String>> {
+        Ok(self.filesystem_types.lock().unwrap().get(target).cloned())
+    }
+
+    fn is_overlay_mounted(&self, target: &Path) -> Result<bool> {
+        // In mock, all tracked mounts represent overlay mounts
         Ok(self.mounted.lock().unwrap().contains(target))
     }
 
@@ -1558,6 +1624,34 @@ impl Filesystem for MockFilesystem {
         // Default to current time if no mock time was set
         Ok(chrono::Utc::now())
     }
+
+    fn copy_tree(&self, src: &Path, dst: &Path) -> Result<()> {
+        // Log the operation
+        self.op_log.lock().unwrap().push(MockOp::CopyTree {
+            src: src.to_path_buf(),
+            dst: dst.to_path_buf(),
+        });
+
+        // Check if this source should fail
+        if self.copy_tree_should_fail.lock().unwrap().contains(src) {
+            return Err(NailsError::IoError(std::io::Error::other(format!(
+                "Mock copy_tree failure for {}",
+                src.display()
+            ))));
+        }
+
+        Ok(())
+    }
+
+    fn get_directory_size(&self, path: &Path) -> Result<u64> {
+        let sizes = self.directory_sizes.lock().unwrap();
+        Ok(sizes.get(path).copied().unwrap_or(0))
+    }
+
+    fn find_submount_sources(&self, target: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
+        let sources = self.submount_sources.lock().unwrap();
+        Ok(sources.get(target).cloned().unwrap_or_default())
+    }
 }
 
 #[cfg(test)]
@@ -1673,7 +1767,7 @@ mod tests {
 
         // Mount overlay
         let result = fs.mount_overlay(
-            Path::new("/"),
+            &[Path::new("/")],
             Path::new("/mnt/hidden/upper"),
             Path::new("/mnt/hidden/work"),
             Path::new("/home"),
@@ -1708,7 +1802,7 @@ mod tests {
         fs.mock_set_path_exists("/mnt/hidden/work", true);
 
         let result = fs.mount_overlay(
-            Path::new("/nonexistent/lower"),
+            &[Path::new("/nonexistent/lower")],
             Path::new("/mnt/hidden/upper"),
             Path::new("/mnt/hidden/work"),
             Path::new("/home"),
@@ -1733,7 +1827,7 @@ mod tests {
         fs.mock_set_path_exists("/mnt/hidden/work", true);
 
         let result = fs.mount_overlay(
-            Path::new("/"),
+            &[Path::new("/")],
             Path::new("/nonexistent/upper"),
             Path::new("/mnt/hidden/work"),
             Path::new("/home"),
@@ -1758,7 +1852,7 @@ mod tests {
         fs.mock_set_path_exists("/mnt/hidden/upper", true);
 
         let result = fs.mount_overlay(
-            Path::new("/"),
+            &[Path::new("/")],
             Path::new("/mnt/hidden/upper"),
             Path::new("/nonexistent/work"),
             Path::new("/home"),
@@ -1785,7 +1879,7 @@ mod tests {
 
         // Mount once (should succeed)
         let result = fs.mount_overlay(
-            Path::new("/"),
+            &[Path::new("/")],
             Path::new("/mnt/hidden/upper"),
             Path::new("/mnt/hidden/work"),
             Path::new("/home"),
@@ -1794,7 +1888,7 @@ mod tests {
 
         // Try to mount again (should fail)
         let result = fs.mount_overlay(
-            Path::new("/"),
+            &[Path::new("/")],
             Path::new("/mnt/hidden/upper"),
             Path::new("/mnt/hidden/work"),
             Path::new("/home"),
@@ -1822,7 +1916,7 @@ mod tests {
         fs.mock_set_mount_should_fail("/home", true);
 
         let result = fs.mount_overlay(
-            Path::new("/"),
+            &[Path::new("/")],
             Path::new("/mnt/hidden/upper"),
             Path::new("/mnt/hidden/work"),
             Path::new("/home"),
@@ -1850,7 +1944,7 @@ mod tests {
 
         // Mount overlay
         let result = fs.mount_overlay(
-            Path::new("/"),
+            &[Path::new("/")],
             Path::new("/mnt/hidden/upper"),
             Path::new("/mnt/hidden/work"),
             Path::new("/home"),
@@ -1895,7 +1989,7 @@ mod tests {
 
         // Mount
         fs.mount_overlay(
-            Path::new("/"),
+            &[Path::new("/")],
             Path::new("/mnt/hidden/upper"),
             Path::new("/mnt/hidden/work"),
             Path::new("/home"),
@@ -2022,7 +2116,7 @@ mod tests {
 
         // Mount first
         fs.mount_overlay(
-            Path::new("/"),
+            &[Path::new("/")],
             Path::new("/mnt/hidden/upper"),
             Path::new("/mnt/hidden/work"),
             Path::new("/home"),
