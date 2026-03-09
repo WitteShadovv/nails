@@ -76,7 +76,7 @@ dmypy.json
 .nails-state
 safety/
 work/
-overlay/
+/overlay/
 *.baseline
 /config/
 # Prevent accidental commits of state files created during testing in build dirs
