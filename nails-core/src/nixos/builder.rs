@@ -136,6 +136,7 @@ impl NixOSBuilder {
             "--flake",
             &flake_arg,
             "--no-update-lock-file",
+            "--impure",
         ])?;
 
         // Check if build succeeded
@@ -304,6 +305,7 @@ impl NixOSBuilder {
             "--flake",
             &flake_arg,
             "--no-update-lock-file",
+            "--impure",
         ])?;
 
         if !success {
@@ -560,6 +562,7 @@ impl NixOSBuilder {
                     "--flake",
                     &flake_arg,
                     "--no-update-lock-file",
+                    "--impure",
                 ])?
             }
             NixOSBuildMode::Legacy { config_path } => {
