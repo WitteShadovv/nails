@@ -1,17 +1,17 @@
 # NAILS — NixOS Anti-forensics Isolation & Layering System
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust 1.93+](https://img.shields.io/badge/rust-1.93+-orange.svg)](https://www.rust-lang.org/)
 [![NixOS](https://img.shields.io/badge/NixOS-required-5277C3.svg)](https://nixos.org/)
-[![Test Pipeline](https://github.com/nails-project/nails/actions/workflows/test.yml/badge.svg)](https://github.com/nails-project/nails/actions/workflows/test.yml)
-[![Coverage](https://img.shields.io/badge/coverage->85%25-brightgreen.svg)](docs/definition-of-done.md)
-[![Status: Active Development](https://img.shields.io/badge/status-active%20development-yellow.svg)](CHANGELOG.md)
+[![Test Pipeline](https://github.com/WitteShadovv/nails/actions/workflows/test.yml/badge.svg)](https://github.com/WitteShadovv/nails/actions/workflows/test.yml)
+[![Coverage: >=85%](https://img.shields.io/badge/coverage-%3E%3D85%25-brightgreen.svg)](docs/definition-of-done.md)
+[![Status: Alpha](https://img.shields.io/badge/status-alpha-yellow.svg)](CHANGELOG.md)
 
-> **Instant, cryptographically deniable dual-environment computing on NixOS.**
+> **Fast-switching dual-environment computing on NixOS, designed to support plausible deniability workflows.**
 >
 > NAILS combines hidden volumes, Linux overlay filesystems, and NixOS's declarative
-> configuration system to provide a hidden computing environment that is mathematically
-> impossible to prove exists — and that switches in 2–5 seconds.
+> configuration system to provide a hidden computing environment designed to reduce obvious
+> host-side traces within the documented threat model.
 
 ---
 
@@ -24,6 +24,7 @@
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Commands](#commands)
+- [Common Workflows](#common-workflows)
 - [Configuration](#configuration)
 - [Security Model](#security-model)
 - [Architecture](#architecture)
@@ -43,18 +44,21 @@ NAILS is a security tool for NixOS that lets you maintain two completely separat
 environments — a visible **decoy system** and a hidden **real environment** — and switch between
 them near-instantly.
 
-The hidden environment lives inside any mounted directory you control: a VeraCrypt hidden
-volume, a remote server accessed over SSHFS, an encrypted microSD card, or anything else.
-When inactive, no forensic evidence of the hidden environment exists on the host system.
+The hidden environment lives inside a mounted directory tree you control: a local encrypted
+volume, a remote filesystem, removable media, or any other backend that behaves like a normal
+Linux filesystem and supports symbolic links. When inactive, the goal is that no NAILS-specific
+evidence remains on the host system.
 When active, Linux kernel overlays layer the hidden environment on top of the decoy without
 ever modifying the base system.
 
-**The result:** If your device is seized, you hand over the decoy password. The adversary sees a
-normal encrypted NixOS installation. The hidden volume is indistinguishable from random data.
+**Intended outcome:** In the offline-seizure case, after proper deactivation and dismounting, the
+decoy should present as a normal encrypted NixOS installation. When paired with a hidden-volume
+backend such as VeraCrypt, the hidden container is intended to appear as random data to standard
+forensic tooling.
 
-This is not a new idea. What is new is doing it *correctly* at the OS level — with declarative
-reproducibility, automated artifact cleanup, and a Rust implementation that eliminates entire
-classes of forensic residue that interpreted-language tools inevitably leave behind.
+This is not a new idea. What is new is an OS-level, declarative approach focused on reducing common
+host artifacts, with a Rust implementation that avoids interpreter-generated residue such as
+bytecode caches and runtime dependencies.
 
 ---
 
@@ -96,35 +100,40 @@ classes of forensic residue that interpreted-language tools inevitably leave beh
 
 ### How NixOS configuration integration works
 
-A critical property: **the base system configuration is forensically clean**. It contains no
-NAILS-specific modules and no indication that a hidden environment exists.
+A critical design goal is to keep the base system configuration mundane and low-signal. It should
+not contain persistent NAILS-specific modules while inactive.
 
 Every NixOS installation imports `hardware-configuration.nix` by default — it contains hardware
 detection results and is entirely unremarkable. During activation, NAILS overlays `/etc/nixos/`
-with a modified version that adds one hidden import statement. This is indistinguishable from
-any other NixOS system.
+with a modified version that adds one hidden import statement. In ordinary inspection, this should
+look similar to a normal NixOS configuration change.
 
-Upon deactivation the overlay is removed and the original file is restored with no trace of
-modification.
+Upon successful deactivation, the overlay is removed and the original file is restored. Operators
+should still verify the decoy state and dismount hidden storage before treating the system as safe.
 
 ### Storage backend flexibility
 
-NAILS makes no assumptions about where the hidden environment lives. It accepts hidden data from
-**any mounted directory**:
+NAILS is storage-agnostic. The hidden root must already be mounted, writable, and backed by a
+filesystem that supports symbolic links.
 
-- **Local VeraCrypt hidden volumes** — offline access, strong cryptographic deniability
-- **SSHFS / NFS over Tor** — hidden data never touches local storage; ideal for border crossings
-- **Concealed hardware** — encrypted microSD cards; physical deniability on top of cryptographic
-- **Anything else** that provides a directory tree with the required structure
+- **Kernel-managed encrypted mounts** — the safest default for `nails activate`, especially when
+  the graphical session will be killed before activation completes
+- **Remote filesystems** — viable if they present a normal writable directory tree and remain
+  available for the full activation window
+- **Removable media** — viable if mounted as a normal Linux filesystem and kept mounted until
+  deactivation is complete
+- **User-session-scoped VeraCrypt / FUSE mounts** — risky with the default activation path, because
+  killing the user session can tear the mount down underneath NAILS
 
-Different threat situations call for different storage strategies. NAILS stays out of that decision.
+Different threat situations call for different storage strategies. NAILS does not mount the hidden
+backend for you — it assumes the backend is already mounted correctly before activation begins.
 
 ### Extended overlay strategy
 
 Beyond `/home` and `/etc`, NAILS optionally overlays high-activity directories (`/var`, `/tmp`,
-`/srv`, `/opt`) with **tmpfs-backed upper layers**. Writes during the hidden session are captured
-in RAM and destroyed immediately on unmount — they never reach the hidden storage and never
-persist to disk, even if the system is examined immediately after deactivation.
+`/srv`, `/opt`) with **tmpfs-backed upper layers**. These writes are intended to stay in RAM and
+be discarded on unmount, reducing the chance that they persist on disk. This does not rule out
+recovery from RAM, swap, logs, or other system-level traces.
 
 ### Boot partition handling
 
@@ -141,34 +150,36 @@ absent.
 
 ## Key Features
 
-- **🔒 Cryptographic plausible deniability** — VeraCrypt hidden volumes are mathematically
-  indistinguishable from random data. You cannot be compelled to prove something that cannot
-  be proven to exist.
+- **🔒 Plausible deniability primitives** — When paired with hidden-volume technology such as
+  VeraCrypt, NAILS can fit a plausible-deniability workflow. Real-world deniability still depends
+  on system state, operator behavior, and adversary capabilities.
 
-- **⚡ 2–5 second switching** — Overlay mount/unmount is a kernel operation. After the
-  one-time first-run NixOS profile build (median 34 s), activation is near-instant (median 2.1 s).
+- **⚡ Fast switching architecture** — Overlay mount/unmount is a kernel operation. The design aims
+  for near-instant activation after the initial NixOS build path is satisfied.
 
-- **🧹 Zero forensic footprint** — 0% artifact detection across all categories in forensic
-  testing with Autopsy, Sleuth Kit, and Volatility (n=30, standard deactivation).
+- **🧹 Forensic hygiene by design** — State, logs, and writable overlay layers stay on the hidden
+  backend, with additional cleanup and verification support for operator workflows.
 
-- **🚨 One-command emergency response** — `nails emergency` triggers immediate deactivation in
-  under 3 seconds. No levels to choose. No parameters to remember.
+- **🚨 One-command live cleanup** — `nails emergency` removes active overlays without waiting for a
+  reboot, but the hidden storage may still need to be dismounted manually afterward.
 
-- **📝 Declarative hidden environment** — Your entire hidden system is defined in
-  `configuration.nix`. If your hardware is seized, `git clone` + `nixos-rebuild` reconstructs
-  your identical environment on new hardware.
+- **📝 Declarative hidden environment** — Your hidden environment lives in
+  `config/nixos/configuration.nix` or a hidden flake. `git clone` + `nixos-rebuild` can recreate a
+  functionally similar environment on new hardware, subject to pinned inputs and host differences.
 
-- **🔄 Automatic rollback on failure** — Every operation either completes fully or rolls back to
-  a known-good state. Partial activation is impossible.
+- **🔄 Rollback on failure** — NAILS tracks activation state and attempts rollback on failure. Do
+  not assume rollback succeeded silently; verify state explicitly and reboot into decoy if anything
+  looks wrong.
 
-- **🔍 Forensic verification** — `nails verify` runs a post-deactivation scan to confirm no
-  artifacts remain on the host system.
+- **🔍 Forensic verification support** — `nails verify` scans for known/common post-deactivation
+  artifacts on the host system. A clean result is evidence, not proof.
 
-- **📦 Storage-agnostic** — VeraCrypt, SSHFS over Tor, microSD, or any other mounted directory.
-  Choose the backend that fits your threat model.
+- **📦 Storage-agnostic** — Local encrypted volumes, remote filesystems, and removable media all
+  work if they present a mounted Linux directory tree that stays available for the full session.
 
-- **🦀 Rust implementation** — No interpreter overhead, no `.pyc` files, no GC pauses.
-  Deterministic memory cleanup via RAII. Binary is ~2–5 MB stripped, starts in under 10 ms.
+- **🦀 Rust implementation** — Avoids interpreter-generated artifacts such as `.pyc` files and
+  reduces some memory-safety risks. Runtime overhead is expected to be low, with exact size and
+  startup characteristics depending on the final release build.
 
 ---
 
@@ -179,88 +190,171 @@ Before installing NAILS, you need:
 | Requirement | Notes |
 |---|---|
 | **NixOS** | Any recent version with OverlayFS support (kernel 3.18+) |
-| **NixOS impermanence** | Ephemeral tmpfs root strongly recommended for full deniability |
-| **Hidden storage backend** | VeraCrypt volume, SSHFS mount, or any other mounted directory |
+| **NixOS impermanence** | Ephemeral tmpfs root strongly recommended for the strongest documented posture |
+| **Hidden storage backend** | User-managed mounted filesystem with symlink support |
 | **Rust 1.93+** | Stable channel. Only needed to build from source. |
 | **Root access** | Required for `activate`, `deactivate`, `emergency`. |
 
 > **Why NixOS only?**
-> NAILS is built on NixOS's unique properties: declarative configuration, reproducible profiles,
-> and the impermanence module. These are not available on general Linux distributions.
+> NAILS is built on NixOS's unique properties: declarative configuration, repeatable rebuilds with
+> pinned inputs, and the impermanence module. These are not available on general Linux distributions.
 
 ---
 
 ## Installation
 
-### Option 1: Build from Source (Recommended)
+### Option 1: GitHub Release Binary (Default)
 
-Clone the repository onto your hidden volume, then build:
+Mount the hidden storage first, then download the release binary directly onto the mounted hidden
+root and run that copy.
 
 ```bash
-# 1. Mount your hidden volume first
+# 1. Mount hidden storage first
 veracrypt --mount /path/to/container /mnt/hidden
 
-# 2. Clone onto the hidden volume
-git clone https://github.com/nails-project/nails /mnt/hidden/nails
-cd /mnt/hidden/nails
+# 2. Download the appropriate release asset from GitHub Releases
+#    and place the real executable on the hidden root
+install -m0755 /path/to/downloaded/nails /mnt/hidden/nails
+```
+
+Verify the published checksum before first use. For higher assurance, rebuild the tagged source
+locally and compare it against the release artifact using the reproducible-build verification
+instructions published with that release.
+
+> **Operator safety:** The default path assumes the hidden root is already mounted, writable, and
+> stays available for the entire session. NAILS does not mount or protect the storage backend for you.
+
+> **Important:** Zero-config path discovery only trusts the binary installed on hidden storage.
+> Build outputs, store paths, and temporary locations are intentionally rejected for hidden-root
+> auto-discovery. If you run NAILS from any other location, set `hidden_volume_root` explicitly or
+> use `--config`.
+
+> **Symlink note:** A host-side symlink such as `/usr/local/bin/nails -> /mnt/hidden/nails` is only
+> a convenience entry point. NAILS resolves symlinks before discovering paths, so the real target
+> binary location controls config discovery and hidden-root detection. Use the binary on the mounted
+> hidden root directly unless you have explicitly accepted that exposure.
+
+### Option 2: Build from Source
+
+Mount your hidden storage first, then build the binary and install the real executable onto that
+mounted hidden root:
+
+```bash
+# 1. Mount hidden storage first
+veracrypt --mount /path/to/container /mnt/hidden
+
+# 2. Clone the repository onto hidden storage
+git clone https://github.com/WitteShadovv/nails /mnt/hidden/src/nails
+cd /mnt/hidden/src/nails
 
 # 3. Build the release binary
 cargo build --release
 
-# 4. The binary is at:
-./target/release/nails --version
+# 4. Install the real executable onto the hidden root
+install -m0755 ./target/release/nails /mnt/hidden/nails
+
+# 5. Optional host-side symlink if you accept the exposure
+sudo ln -s /mnt/hidden/nails /usr/local/bin/nails
 ```
 
-**Optional:** Create a symlink for easy access. NAILS uses the binary's parent directory to
-auto-detect the hidden volume root, so a symlink is fully supported:
+**Important:** zero-config path discovery works from the installed binary on hidden storage, not
+from `./target/release/nails`. Build directories and `/nix/store` paths are intentionally rejected
+for hidden-root auto-discovery, so running the binary in place falls back to `/mnt/hidden-volume`
+unless you set `hidden_volume_root` explicitly.
+
+**Current hidden paths:**
+
+- **Runtime config (optional):** `{hidden}/config/nails.yaml`
+- **Hidden NixOS module:** `{hidden}/config/nixos/configuration.nix`
+- **Hidden overlaid hardware config:** `{hidden}/etc/nixos/hardware-configuration.nix`
+- **Staged symlink (managed by NAILS):** `{hidden}/etc/nixos/nails/configuration.nix`
+- **State file:** `{hidden}/state.json`
+- **Logs:** `{hidden}/logs/`
+
+> **Hidden storage requirements:** The hidden root must already be a mounted, writable directory.
+> The filesystem must support symbolic links. Linux filesystems such as `ext4` work; `FAT32` and
+> `exFAT` do not.
+>
+> **VeraCrypt note:** `veracrypt --mount` is only safe with the default activation path if the
+> resulting mount survives termination of the user session. If the mount depends on a GUI-session
+> FUSE process, prefer `cryptsetup` with a kernel-managed mount instead.
+
+### Option 3: Nix Flake (Build Package / Dev Shell)
 
 ```bash
-sudo ln -s /mnt/hidden/nails/target/release/nails /usr/local/bin/nails
+# Optional: enter the pinned Rust dev shell
+nix develop
+
+# Build the package
+nix build .#nails
+
+# Install the built binary onto the hidden root
+install -m0755 ./result/bin/nails /mnt/hidden/nails
 ```
 
-### Option 2: Nix Flake (NixOS Users)
-
-```nix
-# flake.nix
-{
-  inputs.nails.url = "github:nails-project/nails";
-
-  outputs = { nixpkgs, nails, ... }: {
-    nixosConfigurations.my-machine = nixpkgs.lib.nixosSystem {
-      modules = [
-        nails.nixosModules.default
-        ./configuration.nix
-      ];
-    };
-  };
-}
-```
+Because `./result/bin/nails` resolves into `/nix/store`, you should copy it onto hidden storage
+before using zero-config mode. If you choose to run a store path directly, provide an explicit
+config with `hidden_volume_root`, or use `--config`.
 
 ---
 
 ## Quick Start
 
-### 1. Initialize the hidden environment structure
+### 1. Create the hidden configuration layout
 
 ```bash
-nails init
+mkdir -p /mnt/hidden/config/nixos
+mkdir -p /mnt/hidden/etc/nixos
+cp /etc/nixos/hardware-configuration.nix /mnt/hidden/etc/nixos/hardware-configuration.nix
 ```
 
-This creates the required directory structure inside your hidden volume:
-`config/`, `overlays/`, `logs/`, and `.nails/`.
+NAILS does not yet provide a `nails init` subcommand, so create these paths directly.
+
+Then make sure the hidden hardware config imports the hidden module:
+
+```bash
+$EDITOR /mnt/hidden/etc/nixos/hardware-configuration.nix
+```
+
+Add the hidden import to its `imports` list:
+
+```nix
+{ config, pkgs, lib, modulesPath, ... }:
+{
+  imports = [
+    (modulesPath + "/installer/scan/not-detected.nix")
+    ./nails/configuration.nix
+  ];
+}
+```
+
+If you want an explicit runtime config, place it at:
+
+```bash
+$EDITOR /mnt/hidden/config/nails.yaml
+```
+
+Minimal example:
+
+```yaml
+hidden_volume_root: /mnt/hidden
+# Optional:
+# nixos_flake: /mnt/hidden/nixos#my-host
+```
+
+If `config/nails.yaml` is missing, NAILS falls back to binary-relative discovery.
 
 ### 2. Write your hidden NixOS configuration
 
 ```bash
-$EDITOR /mnt/hidden/nails/nixos/configuration.nix
+$EDITOR /mnt/hidden/config/nixos/configuration.nix
 ```
 
 Example `configuration.nix`:
 
 ```nix
-{ config, pkgs, lib, ... }:
+{ pkgs, ... }:
 {
-  imports = [ /etc/nixos/configuration.nix ];  # Extend the decoy system
 
   environment.systemPackages = with pkgs; [
     tor
@@ -270,17 +364,35 @@ Example `configuration.nix`:
   ];
 
   services.tor.enable = true;
-  services.openssh.enable = false;
 
   users.users.ghost = {
     isNormalUser = true;
     extraGroups = [ "wheel" "networkmanager" ];
-    hashedPassword = "$6$...";
   };
 }
 ```
 
-### 3. Configure your decoy system for impermanence
+> **Do not** import `/etc/nixos/configuration.nix` from this file. NAILS injects the hidden module
+> through the overlaid `/etc/nixos/hardware-configuration.nix` path.
+
+### 3. Optional: provide a hidden flake
+
+Current build-target selection is:
+
+1. `{hidden}/nixos/flake.nix`
+2. `/etc/nixos/flake.nix`
+3. `/etc/nixos/configuration.nix`
+
+If you want NAILS to build from a hidden flake, place it at:
+
+```bash
+$EDITOR /mnt/hidden/nixos/flake.nix
+```
+
+If you need an explicit flake reference or attribute, use `--flake /absolute/path#attr` or set
+`nixos_flake:` in `config/nails.yaml`.
+
+### 4. Configure your decoy system for impermanence
 
 This is the base NixOS configuration that is **always visible to forensics**. It looks like any
 other NixOS installation:
@@ -309,40 +421,89 @@ other NixOS installation:
 }
 ```
 
-### 4. Activate the hidden environment
+### 5. Activate the hidden environment
 
 ```bash
 sudo nails activate
 ```
 
-NAILS runs pre-flight checks (hidden storage mounted? sufficient space? swap disabled?),
-builds the NixOS profile on first run (one-time, median ~34 s), and mounts the overlays.
+By default, `activate` behaves as if you passed:
 
-### 5. Work in your hidden environment
+- `--kill-session`
+- `--yes`
+- `--no-pivot`
+
+On a graphical desktop, NAILS detaches into a transient systemd unit, terminates the graphical
+session, restarts the display manager, and continues activation in the background.
+
+> **Warning:** Save your work first. Unsaved GUI state will be lost.
+>
+> **Safe to proceed only if all of the following are true:**
+> - the hidden storage is already mounted
+> - the mount is writable
+> - the mount survives loss of the current user session
+>
+> If you cannot verify those conditions on your exact setup, do **not** use the default path. Use
+> `--no-kill-session --interactive` or reconfigure the storage backend first.
+
+When the login screen returns, log in only after activation has completed and only with an account
+that exists in the activated configuration.
+
+If you do **not** want the session terminated, opt out explicitly:
+
+```bash
+sudo nails activate --no-kill-session --interactive
+```
+
+> **Operational note:** Default activation kills the graphical user session first, then
+> continues from a detached worker in `system.slice`. Your hidden storage must still be mounted
+> after that session dies.
+>
+> - **User-session-scoped VeraCrypt / FUSE mounts are risky.** If the mount depends on the GUI
+>   session, a user `systemd --user` instance, or a FUSE daemon owned by that session, killing the
+>   session can tear the mount down underneath NAILS.
+> - **Prefer `cryptsetup` + kernel-managed mounts with the default activation path.** A kernel
+>   block-device mount survives the death of the GUI session, so the detached root worker can still
+>   finish activation, cleanup, and display-manager restart.
+> - In practice, the detached worker must still be able to read from and write to the hidden
+>   storage after the user session ends, without relying on the old session or any user-space
+>   FUSE process.
+
+### 6. Work in your hidden environment
 
 Your system now has access to hidden packages, configurations, and user accounts.
 Everything you do is isolated in the overlay — the decoy is untouched.
 
-### 6. Deactivate when finished
+### 7. Deactivate when finished
 
 ```bash
 sudo nails deactivate
 ```
 
-Overlays are unmounted, shell history is sanitized, and the system returns to decoy state.
-Unmount your hidden storage afterward:
+`deactivate` currently returns the system to decoy state by triggering an immediate reboot. The
+hidden storage may still be mounted until the reboot completes, so treat the safe end-state as:
+
+1. the machine has rebooted into the decoy system
+2. you are back in the decoy environment
+3. the hidden storage has been manually dismounted
+
+After the reboot, log into your decoy account again, then unmount the hidden storage before any
+ordinary decoy use:
 
 ```bash
 veracrypt --dismount /mnt/hidden
 ```
 
-### 7. Verify no artifacts remain
+### 8. Verify from the decoy side
 
 ```bash
 nails verify
 ```
 
-Runs a forensic artifact scan against the host system. Target: 0% detection.
+If you keep a decoy-side copy of the binary for verification, run `nails verify` after returning to
+the decoy side and after manually dismounting the hidden storage. If your only `nails` binary lives
+on the hidden storage, dismount first and treat the previous session's logs plus your manual
+operator checks as the final confirmation path.
 
 ---
 
@@ -350,137 +511,173 @@ Runs a forensic artifact scan against the host system. Target: 0% detection.
 
 ### `nails activate`
 
-Mount the hidden overlay environment. Requires root.
+Activate the hidden environment. Requires root.
 
-```
+```text
 sudo nails activate [OPTIONS]
 
 Options:
-  --no-preflight          Skip pre-flight checks (DANGEROUS — expert use only)
-  --no-kill-session       Do not kill the graphical session before activating
-  --kill-session          Kill the graphical session (default)
-  --accept-pivot-risks    Allow pivot mount fallback (degraded security)
-  --no-pivot              Abort if any volume requires pivot mount (default)
-  -y, --yes               Skip all confirmation prompts (default)
-  --interactive           Prompt for confirmations
-  --no-clear-history      Skip shell history cleanup on deactivation
-  -v, --verbose           Verbose output (-v, -vv for more detail)
-  -q, --quiet             Show only final result
-  --json                  Output in JSON format
-  --plain                 ASCII-only output (no Unicode symbols)
-  --no-color              Disable colored output
+      --config <PATH>        Path to configuration file (overrides binary-relative discovery)
+      --no-preflight         Skip pre-flight checks (DANGEROUS - expert use only)
+  -q, --quiet                Quiet mode: only show final result
+  -v, --verbose...           Verbose output (-v for detailed, -vv for debug)
+      --json                 Output results in JSON format
+      --no-color             Disable colored output
+      --plain                ASCII-only output (no Unicode symbols)
+      --no-clear-history     Skip clearing shell history on deactivation
+      --kill-session         Kill graphical session before activation (enabled by default)
+      --no-kill-session      Do not kill session (interactive mode)
+      --accept-pivot-risks   Accept pivot mount fallback for any volume (degraded security)
+      --no-pivot             Abort if any volume requires pivot mount (strict security, enabled by default)
+  -y, --yes                  Skip all confirmation prompts (enabled by default)
+      --interactive          Prompt for confirmations (interactive mode)
+      --flake <FLAKE_REF>    NixOS flake reference (e.g. /etc/nixos#hostname)
 ```
 
 **What activation does:**
-1. Runs pre-flight validation (hidden storage accessible? available space? swap status?)
-2. Builds a NixOS profile from `nixos/configuration.nix` (first run only; median ~34 s)
-3. Fast-switches the NixOS profile on subsequent runs (median ~2.1 s)
-4. Mounts overlay filesystems (`/nix`, `/etc`, `/home`, `/var`)
-5. Optionally mounts tmpfs-backed overlays for `/tmp`, `/srv`, `/opt`
-6. Updates the shell prompt indicator
+1. Runs pre-flight checks unless explicitly skipped
+2. Stages the hidden NixOS config symlink and validates the hidden storage layout
+3. May kill the graphical session and continue from a detached systemd worker
+4. Mounts overlays and applies the hidden NixOS configuration
+5. Uses `--flake`, then hidden `nixos/flake.nix`, then `/etc/nixos/flake.nix`, then legacy `/etc/nixos/configuration.nix`
+6. Leaves you in the hidden environment after you log in again if session kill was used
 
 ### `nails deactivate`
 
-Unmount overlays and return to decoy state. Requires root.
+Return to decoy state. Requires root.
 
-```
+```text
 sudo nails deactivate [OPTIONS]
 
 Options:
-  --no-clear-history      Skip shell history sanitization
-  -v, --verbose           Verbose output
-  -q, --quiet             Errors only
-  --json                  JSON output
-  --plain                 ASCII-only output
-  --no-color              Disable colors
+      --config <PATH>        Path to configuration file (overrides binary-relative discovery)
+      --no-clear-history     Skip shell history cleanup
+  -q, --quiet                Suppress output except errors
+  -v, --verbose...           Increase verbosity (-v for details, -vv for debug)
+      --json                 Output results in JSON format
+      --no-color             Disable colored output
+      --plain                ASCII-only output (no Unicode symbols)
 ```
 
 **What deactivation does:**
-1. Unmounts overlay filesystems in reverse order
-2. Cleans shell history (removes `nails` invocations)
-3. Removes temporary files
-4. Rotates and trims hidden volume logs
-5. Verifies no artifacts remain on the host
-6. Rolls back automatically if any step fails
+1. Restores `/run/current-system` to the decoy system profile
+2. Calls `systemctl reboot`
+3. Returns you to the decoy environment after reboot
+
+This is the current fast path. It does **not** perform the thorough in-process unmount and cleanup
+sequence documented in older versions of this README. After the reboot, the operator must still
+confirm the decoy system is back and manually dismount the hidden storage.
 
 ### `nails emergency`
 
-Immediate deactivation with a 3-second abort window. Requires root.
+Thorough deactivation without reboot. Requires root.
 
-```
+```text
 sudo nails emergency [OPTIONS]
 
 Options:
-  --no-countdown          Skip the 3-second countdown (proceed immediately)
-  -v, --verbose           Verbose output
-  -q, --quiet             Errors only
-  --json                  JSON output
-  --plain                 ASCII-only output
-  --no-color              Disable colors
+      --config <PATH>        Path to configuration file (overrides binary-relative discovery)
+      --no-countdown         Skip the 3-second countdown (proceed immediately)
+      --quiet                Suppress output except final result
+  -v, --verbose...           Increase verbosity (-v for details, -vv for debug)
+      --json                 Output results in JSON format
+      --no-color             Disable colored output
+      --plain                ASCII-only output (no Unicode symbols)
 ```
 
-> **Design principle:** This command must be typeable reflexively under extreme stress.
-> No levels to choose. No parameters required. Press `Ctrl+C` within 3 seconds to abort.
+**What emergency does:**
+1. Transitions to the deactivating state
+2. Unmounts ephemeral overlays first and persistent overlays after
+3. Restarts `nix-daemon` if `/nix` was overlaid
+4. Switches back to the decoy configuration without reboot
+5. Verifies base config cleanliness when `/etc` was overlaid
 
-Speed is prioritized over thoroughness. If overlays cannot be unmounted cleanly, a system
-reboot is initiated — on NixOS with impermanence, the ephemeral tmpfs root ensures all
-artifacts are wiped on restart. Completed in under 3 seconds in all test runs (maximum
-observed: 2.9 s across n=30).
+> **Important:** `--no-countdown` is currently accepted for compatibility only. Do not rely on it
+> to change emergency behavior.
+
+After `emergency`, the hidden storage may still be mounted. If you are safe to do so, dismount it
+manually before returning to ordinary decoy use. If you cannot dismount it cleanly, or if you are
+unsure cleanup completed, reboot immediately.
 
 ### `nails status`
 
 Show current system state and security posture.
 
-```
+```text
 nails status [OPTIONS]
 
 Options:
-  -v, --verbose           Show detailed overlay mount information
-  --json                  JSON output
-  --plain                 ASCII-only output
-  --no-color              Disable colors
+      --config <PATH>        Path to configuration file (overrides binary-relative discovery)
+      --json                 Output results in JSON format
+      --plain                ASCII-only output (no Unicode box drawing or emoji)
+      --no-color             Disable colored output
+  -v, --verbose             Display detailed overlay mount information
 ```
 
-Example output:
-
-```
-┌─────────────────────────────────────────────┐
-│  NAILS STATUS                               │
-│  State:    ACTIVE                           │
-│  Uptime:   0h 14m 32s                       │
-│  Overlays: 4/4 mounted                      │
-│                                             │
-│  ⚠  Remember: deactivate before shutdown   │
-└─────────────────────────────────────────────┘
-```
+`status` always exits successfully. If the state file is missing or invalid, it reports `INACTIVE`
+with context instead of failing.
 
 ### `nails verify`
 
 Scan the host system for NAILS artifacts after deactivation.
 
-```
+```text
 nails verify [OPTIONS]
 
 Options:
-  --deep                  Deep scan (slower, more thorough)
-  --json                  JSON output
+      --deep                 Perform deep scan (slower, more thorough)
+      --json                 Output results as JSON
 ```
 
-Runs the same forensic validation checks used in CI/CD to confirm the host is clean.
-Target: 0% artifact detection rate.
+The verifier checks mounted overlays, known artifact paths, running NAILS processes, and memory
+warnings. `--deep` adds scans of `/tmp`, `/var/tmp`, `/var/log`, and common shell history files.
+Treat a clean result as a check for known/common artifacts, not a proof that no trace is
+recoverable.
+
+## Common Workflows
+
+### Check the current state
+
+Use `nails status` before activation, after reboot, or before dismounting hidden storage.
+
+```bash
+nails status
+nails status -v
+```
+
+### Activate without killing the current session
+
+If you have not verified that the hidden backend survives session termination, avoid the default
+activation path:
+
+```bash
+sudo nails activate --no-kill-session --interactive
+```
+
+### Return to decoy state without reboot
+
+If normal deactivation is unavailable or unsafe, use the live cleanup path:
+
+```bash
+sudo nails emergency
+```
+
+After `emergency`, dismount the hidden storage manually when it is safe to do so.
+
+---
 
 ### Global Flags
 
-```
+```text
 nails [GLOBAL OPTIONS] <COMMAND>
 
 Global Options:
-  --config <PATH>         Path to config file (overrides binary-relative discovery)
-  -v, --verbose           Verbose output (stackable: -v, -vv, -vvv)
-  -q, --quiet             Quiet mode: errors and warnings only
-  --no-logs               Log to stdout only (skip hidden volume log file)
-  --version               Print version
-  -h, --help              Print help
+      --config <PATH>        Path to configuration file (overrides binary-relative discovery)
+  -v, --verbose...           Verbose output (-v, -vv, -vvv)
+  -q, --quiet                Quiet mode: only show errors and warnings
+      --no-logs              Skip file logging (only log to stdout)
+  -V, --version              Print version
+  -h, --help                 Print help
 ```
 
 ---
@@ -489,90 +686,224 @@ Global Options:
 
 ### Zero-Config Operation
 
-NAILS requires no configuration file. Place the binary on your hidden volume and run it.
-The hidden volume root is auto-derived from the binary's location:
+NAILS can run without a config file. If none is found, it uses built-in defaults.
 
-```
-/mnt/hidden/nails/target/release/nails → uses /mnt/hidden/nails as root
-/mnt/hidden/nails     (symlink target)  → correctly resolves to /mnt/hidden/nails
-```
+**Config file discovery order:**
+1. `--config <PATH>`
+2. `{resolved-binary-dir}/config/nails.yaml`
+3. `{current-working-directory}/config/nails.yaml` if the binary path cannot be determined
 
-**Priority order for hidden volume root detection:**
-1. Explicit value in `config/nails.toml` (if present)
-2. Binary's parent directory (auto-detected)
+**Hidden volume root resolution order:**
+1. `hidden_volume_root` in YAML (`hidden_volume_path` is also accepted as an alias)
+2. Resolved binary parent directory
 3. Fallback constant: `/mnt/hidden-volume`
 
-### Manual Configuration (`config/nails.toml`)
+> **Important:** Auto-derivation does **not** trust build/store locations such as `target/debug`,
+> `target/release`, `target/llvm-cov-target`, or `/nix/store`. In those cases NAILS falls back to
+> `/mnt/hidden-volume` unless you set `hidden_volume_root` explicitly.
 
-For advanced setups, create a TOML config file on the hidden volume:
+### Manual Configuration (`config/nails.yaml`)
 
-```toml
-# config/nails.toml
+For advanced setups, place a YAML config at `config/nails.yaml`.
 
-# Explicit override (use this only if auto-detection fails)
-hidden_volume_root = "/custom/mount"
+```yaml
+# config/nails.yaml
 
-# Override default paths
-state_file_path = "/custom/mount/.nails/state.json"
-log_path        = "/custom/mount/logs"
+# Optional explicit hidden-volume root override.
+hidden_volume_root: /mnt/hidden-volume
+# Backward-compatible alias also accepted:
+# hidden_volume_path: /mnt/hidden-volume
 
-# Overlay configuration (advanced)
-[[overlays]]
-name   = "nix"
-lower  = "/nix"
-upper  = "/custom/mount/overlays/nix/upper"
-work   = "/custom/mount/overlays/nix/work"
-target = "/nix"
+# Derived from hidden_volume_root when omitted
+state_file_path: /mnt/hidden-volume/state.json
+log_path: /mnt/hidden-volume/logs
 
-[[overlays]]
-name   = "etc"
-lower  = "/etc"
-upper  = "/custom/mount/overlays/etc/upper"
-work   = "/custom/mount/overlays/etc/work"
-target = "/etc"
+minimum_space_mb: 500
 
-[[overlays]]
-name   = "home"
-lower  = "/home"
-upper  = "/custom/mount/overlays/home/upper"
-work   = "/custom/mount/overlays/home/work"
-target = "/home"
+# Overlay selection
+overlay_mode: auto  # auto (default) or explicit
+
+# Additional exclusions in auto mode
+overlay_exclusions:
+  - /nix
+
+# Remove entries from the default exclusion set
+overlay_exclusions_remove:
+  - /mnt
+
+# Used only when overlay_mode: explicit
+overlays:
+  - name: home
+    lower: /home
+    upper: /mnt/hidden-volume/home
+    work: /mnt/hidden-volume/.work/home
+    target: /home
+
+extended_overlays:
+  enabled: false
+  directories:
+    - path: /var
+      tmpfs_upper_size: 1G
+      tmpfs_work_size: 512M
+
+clear_history: true
+preflight_checks: true
+default_verbosity: info
+color_output: true
+verify_on_deactivate: true
+milestone_tips: true
+show_opsec_reminders: true
+
+max_log_size_mb: 10
+retention_days: 7
+
+color_scheme:
+  enabled: true
+  hidden:
+    background: "#1a1a2e"
+    foreground: "#e0e0e0"
+  decoy:
+    reset: true
+
+# Passed directly to: nixos-rebuild --flake <value>
+nixos_flake: /etc/nixos#my-host
 ```
+
+**Current top-level config keys:**
+
+- `hidden_volume_root`
+- `state_file_path`
+- `overlays`
+- `minimum_space_mb`
+- `extended_overlays`
+- `overlay_mode`
+- `overlay_exclusions`
+- `overlay_exclusions_remove`
+- `clear_history`
+- `preflight_checks`
+- `default_verbosity`
+- `color_output`
+- `verify_on_deactivate`
+- `milestone_tips`
+- `show_opsec_reminders`
+- `log_path`
+- `max_log_size_mb`
+- `retention_days`
+- `color_scheme`
+- `nixos_flake`
+
+### Overlay Behavior
+
+`overlay_mode: auto` is the default and the recommended mode. In auto mode, NAILS:
+
+- enumerates directories under `/`
+- applies the effective exclusion list
+- creates overlay upper directories automatically under `{hidden_volume_root}/{name}`
+- creates work directories under `{hidden_volume_root}/.work/{name}`
+
+`overlay_mode: explicit` uses only the entries in `overlays`.
+
+**Default auto-mode exclusions:**
+
+- `/proc`
+- `/sys`
+- `/dev`
+- `/run`
+- `/mnt`
+- `/bin`
+- `/usr`
+- `/lib`
+- `/lib64`
+- `/sbin`
+- `/lost+found`
+- `/Downloads`
+
+Notes:
+
+- `/boot` is **not** excluded by default.
+- Removing `/proc`, `/sys`, `/dev`, or `/run` from the exclusion list is allowed, but will likely cause mount failures.
+
+### Extended Overlays
+
+`extended_overlays` enables RAM-backed tmpfs overlays for selected directories.
+
+Each entry uses:
+
+- `path`
+- `tmpfs_upper_size`
+- `tmpfs_work_size`
+
+These overlays are ephemeral: their writable layers live in RAM and disappear on unmount. They do
+not create persistent upper/work directories on the hidden volume.
+
+### Terminal Color Scheme
+
+`color_scheme` controls automatic terminal color changes when entering and leaving the hidden
+environment.
+
+Defaults:
+
+- `color_scheme.enabled: true`
+- hidden background: `#1a1a2e`
+- hidden foreground: `#e0e0e0`
+- decoy reset: `true`
+
+### NixOS Build Target Selection
+
+`nixos_flake` is optional.
+
+**Precedence:**
+1. CLI `--flake`
+2. config `nixos_flake`
+3. auto-discovery
+
+If auto-discovery is used, NAILS checks in this order:
+
+1. `{hidden_volume_root}/nixos/flake.nix`
+2. `/etc/nixos/flake.nix`
+3. `/etc/nixos/configuration.nix`
 
 ### Hidden Volume File Structure
 
-```
-/mnt/hidden/nails/
-├── target/release/nails       # NAILS binary
-│
-├── nixos/
-│   └── configuration.nix      # Hidden NixOS system configuration
-│
+```text
+<hidden_volume_root>/
 ├── config/
-│   └── nails.toml             # Optional: NAILS configuration
-│
-├── etc/                       # Upper layer for /etc overlay
+│   ├── nails.yaml                    # Optional YAML config
 │   └── nixos/
-│       └── hardware-configuration.nix  # Modified with hidden import (at runtime)
-│
-├── home/                      # Upper layer for /home overlay
-│
-├── nix/                       # Upper layer for /nix overlay
-│
-├── .work/                     # OverlayFS work directories
+│       └── configuration.nix         # Hidden NixOS module imported at activation
+├── nixos/
+│   └── flake.nix                     # Optional flake root for auto-discovery
+├── state.json                        # Runtime state
+├── logs/                             # Hidden-volume log directory
+├── .work/                            # OverlayFS work directories
+│   ├── boot/
 │   ├── etc/
-│   └── home/
-│
-├── .nails/
-│   └── state.json             # Runtime state (only accessible when volume is mounted)
-│
-└── logs/                      # Audit log (7-day retention, 10 MB max)
-    └── nails.log
+│   ├── home/
+│   ├── var/
+│   └── ...
+├── boot/                             # Persistent upper dir for /boot
+├── etc/                              # Persistent upper dir for /etc
+│   └── nixos/
+│       └── nails/
+│           └── configuration.nix     # Symlink to config/nixos/configuration.nix
+├── home/                             # Persistent upper dir for /home
+├── var/                              # Persistent upper dir for /var
+└── ...                               # One top-level upper dir per overlaid target
 ```
 
-> **Forensic note:** All state and logs live exclusively on the hidden volume. Unmounting the
-> volume makes them inaccessible. NAILS will refuse to write state or logs outside the
-> hidden volume root.
+A few important details:
+
+- The current layout uses root-level upper directories such as `home/`, `etc/`, `var/`, and `boot/` - not `overlays/<name>/upper/`.
+- OverlayFS work directories live under `.work/<name>/`.
+- Runtime state lives at `state.json` in the hidden-volume root.
+- `config/nails.yaml` is optional.
+- `config/nixos/configuration.nix` is the hidden module imported into the overlaid NixOS config path.
+- If you use flakes, the hidden flake auto-discovery location is `nixos/flake.nix`.
+- `extended_overlays` are RAM-backed and therefore do not appear in the persistent on-disk tree above.
+
+> **Forensic note:** NAILS-managed runtime state and file logs are intended to stay on the hidden
+> volume. Unmounting the volume makes them inaccessible. Other evidence sources outside NAILS's
+> control may still exist.
 
 ---
 
@@ -587,18 +918,17 @@ existence of a hidden environment.
 | Attack Vector | NAILS Mitigation | Limitation |
 |---|---|---|
 | Disk forensics (offline) | VeraCrypt hidden volumes; OverlayFS write isolation | VeraCrypt must be unmounted |
-| Artifact-based forensics | NixOS impermanence (ephemeral tmpfs root); automated cleanup on deactivation | User must actually deactivate |
+| Artifact-based forensics | NixOS impermanence (ephemeral tmpfs root); cleanup and verification workflow | User must actually deactivate or reboot into decoy state |
 | Memory forensics (cold boot) | Rust deterministic cleanup; no GC pauses | Keys persist in RAM; ~1–5 min window after power-off |
-| Live system analysis | Emergency command; shutdown fallback | System captured before response |
+| Live system analysis | Emergency command; operator-controlled reboot fallback | System captured before response |
 | Supply chain | `cargo audit` on every commit; Cargo.lock committed | — |
 
-### What NAILS Protects
+### What NAILS Helps Isolate
 
-- Hidden packages, applications, and data
-- Hidden user accounts and configurations
-- Activity logs and shell history
-- Network configuration and browsing traces
-- Cryptographic keys and secrets stored in the hidden environment
+- Filesystem-resident hidden packages, applications, and user data
+- Hidden user accounts and local configuration changes
+- Some shell history, temp-file, and log artifacts when the documented workflow is followed
+- Secrets stored inside the hidden environment's mounted backend
 
 ### What NAILS Does Not Protect
 
@@ -610,13 +940,15 @@ existence of a hidden environment.
 ### Operational Security Recommendations
 
 ```
-✔  Always unmount the hidden storage after deactivating.
+✔  Always unmount the hidden storage after deactivating or after emergency cleanup.
+✔  For VeraCrypt-style hidden volumes, keep the outer volume believable and never mount the outer and hidden volumes at the same time.
+✔  Use a strong hidden-volume passphrase and test your exact mount method before relying on the default activation path.
 ✔  Use NixOS impermanence (ephemeral tmpfs root) for maximum defense-in-depth.
 ✔  Disable swap, or use encrypted swap — never unencrypted swap.
 ✔  Maintain plausible decoy activity (files, browser history, documents).
 ✔  Test your emergency procedure before relying on it.
 ✔  Use UTC timezone to avoid fingerprinting via clock offsets.
-✔  Verify the system is clean with `nails verify` after every deactivation.
+✔  Verify the system with `nails verify` after every hidden session; a clean result is not a guarantee.
 ✔  For border crossings, consider SSHFS-over-Tor backends so no hidden data touches the device.
 ```
 
@@ -649,20 +981,20 @@ nails/
         ├── manager/           # NailsManager orchestrator (Facade pattern)
         ├── state/             # Type-safe state machine + persistence
         ├── config/            # Configuration loading and validation
-        ├── filesystem/        # FilesystemTrait + Real/Mock implementations
+        ├── filesystem/        # Filesystem trait + Real/Mock implementations
         ├── overlay/           # OverlayFS mount/unmount operations
         ├── preflight/         # Pre-flight validation registry
         ├── nixos/             # NixOS profile builder + config injection
         ├── cleanup/           # History, temp files, log sanitization
         ├── deactivation/      # DeactivationOrchestrator with rollback
-        ├── emergency/         # Emergency deactivation with countdown
+        ├── emergency/         # Emergency deactivation helpers
         ├── status/            # Status command + security posture
         ├── verify/            # Forensic artifact scanner
         ├── shell/             # Shell prompt instrumentation scripts
         ├── logging/           # Logging with hidden volume path validation
         ├── process/           # Process detection and session management
         ├── output/            # Structured CLI output formatting
-        └── error.rs           # NailsError enum (12 variants, thiserror)
+        └── error.rs           # NailsError enum (thiserror-based)
 ```
 
 **Why this separation?**
@@ -695,7 +1027,7 @@ the compiler prevents illegal states before code ever runs.
 | Pattern | Where Used | Why |
 |---|---|---|
 | **RAII guards** | `StateGuard`, `OverlayGuard` | Automatic rollback on failure or panic |
-| **Trait abstraction** | `FilesystemTrait` | Enables test mocking without root |
+| **Trait abstraction** | `Filesystem` | Enables test mocking without root |
 | **Builder pattern** | `ConfigBuilder`, `NailsManager::new()` | Validated construction with smart defaults |
 | **Facade** | `NailsManager` | Single entry point to all subsystems |
 | **Command** | Each public manager method | Symmetry between CLI commands and core ops |
@@ -710,7 +1042,7 @@ the compiler prevents illegal states before code ever runs.
 # Debug build (fast compile, includes debug symbols)
 cargo build
 
-# Release build (optimized, stripped binary)
+# Release build (optimized)
 cargo build --release
 
 # Check for errors without producing a binary (fastest)
@@ -736,7 +1068,7 @@ RUST_LOG=debug cargo test
 cargo test --test '*'
 ```
 
-> **No root required:** 99% of the test suite runs without elevated privileges.
+> **No root required:** Most of the test suite runs without elevated privileges.
 > The `MockFilesystem` trait implementation simulates all filesystem operations.
 
 ### Code Quality
@@ -757,8 +1089,8 @@ cargo clippy -- -D warnings
 # Security audit (checks all transitive dependencies)
 cargo audit
 
-# Test coverage (requires cargo-tarpaulin)
-cargo tarpaulin --out Html --output-dir coverage/
+# Test coverage (requires cargo-llvm-cov)
+cargo llvm-cov --all-features --workspace --html --output-dir coverage/html
 ```
 
 ### Pre-commit Hooks
@@ -785,10 +1117,11 @@ Hooks run automatically on `git commit`:
 
 ### CI/CD Pipeline
 
-Six-job GitHub Actions pipeline runs on every push and pull request:
+The repository uses GitHub Actions for format, lint, test, coverage, audit, benchmark, and final
+status validation:
 
-```
-format-check → lint → test → coverage → audit → benchmark
+```text
+format-check -> lint -> test -> coverage -> audit -> benchmark -> ci-success
 ```
 
 All jobs must pass before merging. Coverage reports are uploaded as artifacts and
@@ -831,23 +1164,22 @@ See [docs/development-guide.md](docs/development-guide.md) for the full contribu
 | **Kernel** | Linux 3.18+ (OverlayFS support) |
 | **Architecture** | `x86_64` (primary); other architectures untested |
 | **Rust** | 1.93+ stable channel (build from source only) |
-| **Hidden storage** | User-managed (VeraCrypt, SSHFS, or any mounted directory) |
+| **Hidden storage** | User-managed mounted filesystem with symlink support |
 | **Privileges** | Root (`sudo`) for `activate`, `deactivate`, `emergency` |
 | **Disk space** | Depends on hidden environment size; overlays are copy-on-write |
-| **RAM** | < 10 MB typical runtime footprint |
+| **RAM** | Low runtime footprint is a design goal; exact usage depends on build and workload |
 
 ### Performance
 
-Measured on standardized hardware (8 GB RAM, 256 GB SSD, Intel AES-NI), n=30 runs each:
+Performance targets are tracked in the design and CI pipeline, but the benchmark harness is still
+being filled out. The current placeholder targets are:
 
-| Operation | Median | 95th Percentile | Requirement |
-|---|---|---|---|
-| `activate` (first run) | 34.2 s | 52.8 s | one-time |
-| `activate` (subsequent) | 2.1 s | 3.4 s | < 5 s ✓ |
-| `deactivate` | 2.4 s | 3.1 s | < 5 s ✓ |
-| `emergency` | 1.8 s | 2.3 s | **< 3 s ✓** |
-| `status` | 0.08 s | 0.12 s | < 500 ms ✓ |
-| Binary startup | < 10 ms | — | — |
+| Operation | Target |
+|---|---|
+| `activate` (subsequent) | < 5 s |
+| `emergency` | < 3 s |
+| `status` | < 500 ms |
+| Binary startup | < 10 ms |
 
 ---
 
@@ -883,17 +1215,18 @@ cargo clean && cargo build
 
 ```bash
 # See which lines are uncovered
-cargo tarpaulin --out Html --output-dir coverage/
-# Open coverage/tarpaulin-report.html in a browser
+cargo llvm-cov --all-features --workspace --html --output-dir coverage/html
+# Open coverage/html/index.html in a browser
 ```
 
 ### /boot overlay fails with "filesystem not supported"
 
 This happens when `/boot` is a vfat/FAT32 partition (common for EFI). NAILS detects
 overlay-incompatible filesystems automatically and uses a **snapshot pivot** — the contents
-are copied to a tmpfs in RAM and overlayed there. No extra flags needed. If the preflight
+are copied to a tmpfs in RAM and overlaid there. No extra flags needed. If the preflight
 check fails because `/boot` is too large (> 1 GB), add it to `overlay_exclusions` in your
-config file.
+config file only if you accept that hidden rebuilds may then touch the real `/boot` and leave
+visible boot artifacts.
 
 ```bash
 # Check /boot filesystem type
@@ -926,7 +1259,7 @@ If the NAILS binary itself is unavailable:
 sudo umount -lf /nix /etc /home /var
 
 # Rebuild the binary from source
-cd /mnt/hidden/nails
+cd /mnt/hidden/src/nails
 cargo build --release
 sudo ./target/release/nails emergency
 ```
@@ -1002,7 +1335,7 @@ for the full development roadmap.
 
 ## License & Disclaimer
 
-This project is licensed under the **GNU Affero General Public License v3.0**.
+This project is licensed under the **GNU General Public License v3.0**.
 See [LICENSE](LICENSE) for the full text.
 
 > **Disclaimer:** This software is for educational and security research purposes.
