@@ -19,6 +19,7 @@
 
 - [What Is NAILS?](#what-is-nails)
 - [How It Works](#how-it-works)
+- [Release Artifact Reproducibility](#release-artifact-reproducibility)
 - [Key Features](#key-features)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
@@ -146,6 +147,29 @@ result is bind-mounted over the original `/boot`. A preflight check validates th
 small enough (< 1 GB) to fit in RAM. This ensures `nixos-rebuild` writes new boot generations to
 the overlay rather than the real `/boot` — preventing boot failures when the hidden volume is
 absent.
+
+---
+
+## Release Artifact Reproducibility
+
+NAILS now has one canonical Nix-built release artifact for Linux:
+
+- flake attribute: `.#nails-release`
+- target: `x86_64-unknown-linux-musl`
+
+CI verifies this artifact by:
+
+- building the canonical release bundle with Nix
+- running `nix-store --realise --check` on the release derivation
+- rebuilding it in two independent GitHub Actions jobs
+- comparing the archive, checksums, and binary hash byte-for-byte
+
+This is evidence of deterministic output for the pinned source revision, build instructions, and
+tested CI environment. GitHub attestation provides provenance for the published artifact, but does
+not by itself prove reproducibility.
+
+For local rebuild instructions and the exact scope of the guarantee, see
+`docs/release-artifact-reproducibility.md`.
 
 ---
 
@@ -304,12 +328,13 @@ config with `hidden_volume_root`, or use `--config`.
 ### 1. Create the hidden configuration layout
 
 ```bash
-mkdir -p /mnt/hidden/config/nixos
 mkdir -p /mnt/hidden/etc/nixos
 cp /etc/nixos/hardware-configuration.nix /mnt/hidden/etc/nixos/hardware-configuration.nix
 ```
 
-NAILS does not yet provide a `nails init` subcommand, so create these paths directly.
+NAILS does not yet provide a `nails init` subcommand, so create these paths directly. The hidden
+module at `/mnt/hidden/config/nixos/configuration.nix` is now auto-generated on first activation if
+it is missing.
 
 Then make sure the hidden hardware config imports the hidden module:
 
@@ -345,11 +370,23 @@ hidden_volume_root: /mnt/hidden
 
 If `config/nails.yaml` is missing, NAILS falls back to binary-relative discovery.
 
-### 2. Write your hidden NixOS configuration
+### 2. Optional: write your hidden NixOS configuration
 
 ```bash
 $EDITOR /mnt/hidden/config/nixos/configuration.nix
 ```
+
+If this file does not exist, NAILS auto-generates a minimal hidden module:
+
+```nix
+{ pkgs, ... }: {
+  environment.systemPackages = [ pkgs.ripgrep ];
+}
+```
+
+That keeps activation working out of the box and adds one hidden-only package that is not present in
+the base test system. If you want a real hidden environment, replace that generated file with your
+own module before the next activation.
 
 Example `configuration.nix`:
 

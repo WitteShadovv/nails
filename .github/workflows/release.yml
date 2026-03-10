@@ -15,17 +15,18 @@ concurrency:
 
 jobs:
   build-release:
-    name: Build release artifact
+    name: Build canonical release bundle
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
-      package-version: ${{ steps.metadata.outputs.package-version }}
+      archive-name: ${{ steps.canonical.outputs.archive-name }}
       artifact-prefix: ${{ steps.metadata.outputs.artifact-prefix }}
+      canonical-artifact-name: ${{ steps.metadata.outputs.canonical-artifact-name }}
       publish-release: ${{ steps.metadata.outputs.publish-release }}
-      rolling-tag: ${{ steps.metadata.outputs.rolling-tag }}
       release-name: ${{ steps.metadata.outputs.release-name }}
       release-notes: ${{ steps.metadata.outputs.release-notes }}
+      rolling-tag: ${{ steps.metadata.outputs.rolling-tag }}
 
     steps:
       - name: Checkout code
@@ -34,53 +35,43 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Derive build metadata
+      - name: Derive release metadata
         id: metadata
         run: |
-          workspace_version=""
           short_sha=""
-          package_version=""
           artifact_prefix=""
+          canonical_artifact_name=""
           publish_release="false"
-          rolling_tag=""
           release_name=""
           release_notes=""
+          rolling_tag=""
 
-          workspace_version=$(python - <<'PY'
-          import tomllib
-          with open('Cargo.toml', 'rb') as fh:
-              data = tomllib.load(fh)
-          print(data['workspace']['package']['version'])
-          PY
-          )
           short_sha=$(git rev-parse --short=12 HEAD)
+          artifact_prefix="release-verification-${short_sha}"
+          canonical_artifact_name="canonical-release-${short_sha}"
 
           case "${GITHUB_REF_NAME}" in
             main)
-              package_version="main"
-              artifact_prefix="main-release-${short_sha}"
               publish_release="true"
               rolling_tag="main-latest"
               release_name="Main rolling build"
               release_notes=$(cat <<EOF
-          Automated reproducible build from \'main\'.
+          Deterministic release artifact verification for \'main\'.
 
           - Commit: ${GITHUB_SHA}
-          - Source version: ${workspace_version}
-          - Workflow run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Canonical bundle attr: .#nails-release
+          - Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
           EOF
           )
               ;;
             dev)
-              package_version="dev-${short_sha}"
-              artifact_prefix="dev-release-${short_sha}"
-              release_name="Dev validation build"
+              release_name="Dev deterministic verification build"
               release_notes=$(cat <<EOF
-          Validation-only reproducible build from \'dev\'.
+          Deterministic release artifact verification for \'dev\'.
 
           - Commit: ${GITHUB_SHA}
-          - Source version: ${workspace_version}
-          - Workflow run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Canonical bundle attr: .#nails-release
+          - No GitHub release publication occurs for dev builds
           EOF
           )
               ;;
@@ -91,11 +82,12 @@ jobs:
           esac
 
           {
-            echo "package-version=${package_version}"
+            echo "archive-name="
             echo "artifact-prefix=${artifact_prefix}"
+            echo "canonical-artifact-name=${canonical_artifact_name}"
             echo "publish-release=${publish_release}"
-            echo "rolling-tag=${rolling_tag}"
             echo "release-name=${release_name}"
+            echo "rolling-tag=${rolling_tag}"
             echo "release-notes<<EOF"
             printf '%s\n' "${release_notes}"
             echo "EOF"
@@ -108,53 +100,80 @@ jobs:
             experimental-features = nix-command flakes
             accept-flake-config = false
 
-      - name: Build canonical release artifact
-        run: nix build -L .#nails -o result --option accept-flake-config false
+      - name: Build canonical release bundle
+        run: nix build -L .#nails-release -o result --option accept-flake-config false
 
-      - name: Package release assets
+      - name: Read canonical archive name
+        id: canonical
         run: |
-          source_date_epoch=""
-          mkdir -p dist
-          source_date_epoch=$(git log -1 --format=%ct HEAD)
-          export SOURCE_DATE_EPOCH="$source_date_epoch"
-          ./.github/scripts/package-release.sh \
-            --binary result/bin/nails \
-            --version "${{ steps.metadata.outputs.package-version }}" \
-            --target x86_64-unknown-linux-musl \
-            --out-dir dist
+          archive_name=$(python - <<'PY'
+          from pathlib import Path
+          archives = sorted(Path('result').glob('*.tar.gz'))
+          if len(archives) != 1:
+              raise SystemExit(f"expected exactly one archive, found {len(archives)}")
+          print(archives[0].name)
+          PY
+          )
+          echo "archive-name=${archive_name}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload release assets
+      - name: Verify same-runner determinism
+        run: |
+          drv=$(nix path-info --derivation .#nails-release)
+          nix-store --realise "$drv" --check -K
+
+      - name: Smoke test canonical archive
+        run: |
+          archive_name="${{ steps.canonical.outputs.archive-name }}"
+          smoke_dir=$(mktemp -d)
+          tar -xzf "result/${archive_name}" -C "$smoke_dir"
+          extracted_dir="$smoke_dir/${archive_name%.tar.gz}"
+          test -f "$extracted_dir/LICENSE"
+          test -f "$extracted_dir/README.md"
+          test -x "$extracted_dir/nails"
+          file "$extracted_dir/nails"
+          "$extracted_dir/nails" --version
+
+      - name: Collect canonical release files
+        run: |
+          mkdir -p dist
+          cp -R result/* dist/
+          printf '%s\n' "${{ steps.canonical.outputs.archive-name }}" > dist/archive-name.txt
+          test -f "dist/${{ steps.canonical.outputs.archive-name }}"
+
+      - name: Upload canonical release artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: release-assets
+          name: ${{ steps.metadata.outputs.canonical-artifact-name }}
           path: dist/
           retention-days: 14
 
-  reproducibility:
-    name: Verify reproducibility
+  determinism:
+    name: Deterministic release verification
     needs: build-release
     permissions:
       contents: read
     uses: ./.github/workflows/reproducibility.yml
     with:
       git-ref: ${{ github.sha }}
-      flake-attr: .#nails
+      flake-attr: .#nails-release
+      canonical-artifact-name: ${{ needs.build-release.outputs.canonical-artifact-name }}
       artifact-prefix: ${{ needs.build-release.outputs.artifact-prefix }}
+      archive-name: ${{ needs.build-release.outputs.archive-name }}
 
   attest-release:
-    name: Attest release assets
+    name: Attest canonical release bundle
     runs-on: ubuntu-24.04
-    needs: [build-release, reproducibility]
+    needs: [build-release, determinism]
     permissions:
       contents: read
       id-token: write
       attestations: write
 
     steps:
-      - name: Download release assets
+      - name: Download canonical release artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: release-assets
+          name: ${{ needs.build-release.outputs.canonical-artifact-name }}
           path: dist
 
       - name: Create GitHub artifact attestation
@@ -171,10 +190,10 @@ jobs:
       contents: write
 
     steps:
-      - name: Download release assets
+      - name: Download canonical release artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: release-assets
+          name: ${{ needs.build-release.outputs.canonical-artifact-name }}
           path: dist
 
       - name: Publish rolling main release
@@ -191,7 +210,11 @@ jobs:
             gh release delete "$ROLLING_TAG" --yes --cleanup-tag
           fi
 
-          gh release create "$ROLLING_TAG" dist/*.tar.gz dist/SHA256SUMS \
+          gh release create "$ROLLING_TAG" \
+            dist/*.tar.gz \
+            dist/SHA256SUMS \
+            dist/nails.sha256 \
+            dist/release-metadata.json \
             --target "$GITHUB_SHA" \
             --title "$RELEASE_NAME" \
             --notes-file "$notes_file" \
