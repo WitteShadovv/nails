@@ -11,15 +11,15 @@ on:
 
 jobs:
   e2e-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v31
+        uses: cachix/install-nix-action@43082b822f2e4b696046793cdd9e9b5da14f3d75
         with:
           extra_nix_config: |
             system-features = nixos-test benchmark big-parallel kvm
@@ -27,7 +27,7 @@ jobs:
             max-jobs = auto
 
       - name: Setup Cachix
-        uses: cachix/cachix-action@v14
+        uses: cachix/cachix-action@18cf96c7c98e048e10a83abd92116114cd8504be
         with:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
           extraPushArgs: --view-store nix-community
@@ -40,7 +40,7 @@ jobs:
 
       - name: Upload test results as artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: e2e-test-results
           path: |
@@ -50,7 +50,7 @@ jobs:
 
       - name: Upload performance metrics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: performance-metrics
           path: |

@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    name: Build release artifact
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate tag matches workspace version
+        run: |
+          workspace_version=""
+          workspace_version=$(python - <<'PY'
+          import tomllib
+          with open('Cargo.toml', 'rb') as fh:
+              data = tomllib.load(fh)
+          print(data['workspace']['package']['version'])
+          PY
+          )
+          if [[ "${GITHUB_REF_NAME}" != "v${workspace_version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match workspace version v${workspace_version}" >&2
+            exit 1
+          fi
+          echo "WORKSPACE_VERSION=${workspace_version}" >> "$GITHUB_ENV"
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@43082b822f2e4b696046793cdd9e9b5da14f3d75
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = false
+
+      - name: Build canonical release artifact
+        run: nix build -L .#nails -o result --option accept-flake-config false
+
+      - name: Package release assets
+        run: |
+          source_date_epoch=""
+          mkdir -p dist
+          source_date_epoch=$(git log -1 --format=%ct HEAD)
+          export SOURCE_DATE_EPOCH="$source_date_epoch"
+          ./.github/scripts/package-release.sh \
+            --binary result/bin/nails \
+            --version "$WORKSPACE_VERSION" \
+            --target x86_64-unknown-linux-musl \
+            --out-dir dist
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-assets
+          path: dist/
+          retention-days: 14
+
+  reproducibility:
+    name: Verify reproducibility
+    needs: build-release
+    uses: ./.github/workflows/reproducibility.yml
+    with:
+      git-ref: ${{ github.ref }}
+      flake-attr: .#nails
+      artifact-prefix: release-reproducibility
+
+  attest-release:
+    name: Attest release assets
+    runs-on: ubuntu-24.04
+    needs: [build-release, reproducibility]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Create GitHub artifact attestation
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+  publish-release:
+    name: Publish GitHub release
+    runs-on: ubuntu-24.04
+    needs: [build-release, attest-release]
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b
+        with:
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS

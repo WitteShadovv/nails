@@ -27,27 +27,48 @@
 
         pkgsMusl = pkgs.pkgsCross.musl64;
 
+        sourceFiles = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            ./LICENSE
+            ./README.md
+            (pkgs.lib.fileset.maybeMissing ./.cargo)
+            ./nails-cli
+            ./nails-core
+            (pkgs.lib.fileset.maybeMissing ./rust-toolchain.toml)
+          ];
+        };
+
+        reproducibleRustFlags = pkgs.lib.concatStringsSep " " [
+          "-C target-feature=+crt-static"
+          "-C link-arg=-Wl,--build-id=none"
+          "--remap-path-prefix=/build/source=."
+        ];
+
         # NAILS binary with static musl linking
         nails = rustPlatformMusl.buildRustPackage rec {
           pname = "nails";
           version = "0.1.0";
 
-          # Use builtins.path to include all files without filtering
-          src = builtins.path {
-            path = ./.;
-            name = "nails-${version}";
-          };
+          src = sourceFiles;
 
           cargoLock = { lockFile = ./Cargo.lock; };
+          cargoDepsName = pname;
 
           # Use musl stdenv for static linking
           inherit (pkgsMusl) stdenv;
+          strictDeps = true;
 
           # Cross target to musl
           CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
 
-          # Configure for static linking
-          CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+          # Configure for reproducible static linking
+          CARGO_INCREMENTAL = "0";
+          SOURCE_DATE_EPOCH = toString (self.lastModified or 1);
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS =
+            reproducibleRustFlags;
 
           doCheck = false; # Tests run separately in checks
         };

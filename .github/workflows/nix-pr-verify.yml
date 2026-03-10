@@ -1,0 +1,43 @@
+name: Nix PR Verify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: nix-pr-verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix-build:
+    name: Nix Release Path Build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@43082b822f2e4b696046793cdd9e9b5da14f3d75
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = false
+
+      - name: Build canonical release artifact
+        run: nix build -L .#nails -o result --option accept-flake-config false
+
+      - name: Smoke test release binary
+        run: |
+          test -x result/bin/nails
+          result/bin/nails --version

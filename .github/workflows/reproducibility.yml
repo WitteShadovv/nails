@@ -1,0 +1,155 @@
+name: Reproducibility
+
+on:
+  workflow_call:
+    inputs:
+      git-ref:
+        description: Git ref to verify
+        required: false
+        type: string
+        default: ""
+      flake-attr:
+        description: Flake attribute to build
+        required: false
+        type: string
+        default: ".#nails"
+      artifact-prefix:
+        description: Artifact name prefix
+        required: false
+        type: string
+        default: nails-reproducibility
+  workflow_dispatch:
+    inputs:
+      git-ref:
+        description: Git ref to verify
+        required: false
+        type: string
+        default: ""
+      flake-attr:
+        description: Flake attribute to build
+        required: false
+        type: string
+        default: ".#nails"
+      artifact-prefix:
+        description: Artifact name prefix
+        required: false
+        type: string
+        default: nails-reproducibility
+
+permissions: {}
+
+jobs:
+  rebuild:
+    name: Rebuild ${{ matrix.build_id }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        build_id: [a, b]
+    permissions:
+      contents: read
+    env:
+      TARGET_REF: ${{ inputs.git-ref || github.sha }}
+      FLAKE_ATTR: ${{ inputs.flake-attr || '.#nails' }}
+      ARTIFACT_PREFIX: ${{ inputs.artifact-prefix || 'nails-reproducibility' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ env.TARGET_REF }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@43082b822f2e4b696046793cdd9e9b5da14f3d75
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = false
+
+      - name: Build from source without substitutes
+        run: nix build -L "$FLAKE_ATTR" -o result --option accept-flake-config false --option substitute false
+
+      - name: Package release artifact
+        run: |
+          mkdir -p dist
+          source_date_epoch=""
+          version=""
+          version=$(python - <<'PY'
+          import tomllib
+          with open('Cargo.toml', 'rb') as fh:
+              data = tomllib.load(fh)
+          print(data['workspace']['package']['version'])
+          PY
+          )
+          source_date_epoch=$(git log -1 --format=%ct HEAD)
+          export SOURCE_DATE_EPOCH="$source_date_epoch"
+          ./.github/scripts/package-release.sh \
+            --binary result/bin/nails \
+            --version "$version" \
+            --target x86_64-unknown-linux-musl \
+            --out-dir dist
+
+      - name: Upload reproducibility artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ env.ARTIFACT_PREFIX }}-${{ matrix.build_id }}
+          path: dist/
+          retention-days: 14
+
+  compare:
+    name: Compare release artifacts
+    runs-on: ubuntu-24.04
+    needs: rebuild
+    permissions:
+      contents: read
+    env:
+      ARTIFACT_PREFIX: ${{ inputs.artifact-prefix || 'nails-reproducibility' }}
+
+    steps:
+      - name: Download build a
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ env.ARTIFACT_PREFIX }}-a
+          path: artifacts/a
+
+      - name: Download build b
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ env.ARTIFACT_PREFIX }}-b
+          path: artifacts/b
+
+      - name: Compare tarballs
+        id: compare
+        continue-on-error: true
+        run: |
+          diff -u artifacts/a/SHA256SUMS artifacts/b/SHA256SUMS
+          archive_a=$(find artifacts/a -maxdepth 1 -name '*.tar.gz' -print -quit)
+          archive_b=$(find artifacts/b -maxdepth 1 -name '*.tar.gz' -print -quit)
+          cmp "$archive_a" "$archive_b"
+
+      - name: Generate diffoscope report
+        if: steps.compare.outcome == 'failure'
+        run: |
+          mkdir -p diffoscope
+          archive_a=$(find artifacts/a -maxdepth 1 -name '*.tar.gz' -print -quit)
+          archive_b=$(find artifacts/b -maxdepth 1 -name '*.tar.gz' -print -quit)
+          nix shell nixpkgs#diffoscope -c diffoscope \
+            --text diffoscope/report.txt \
+            "$archive_a" \
+            "$archive_b"
+
+      - name: Upload diffoscope report
+        if: steps.compare.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ env.ARTIFACT_PREFIX }}-diffoscope
+          path: diffoscope/
+          retention-days: 14
+
+      - name: Fail on mismatch
+        if: steps.compare.outcome == 'failure'
+        run: |
+          echo "Reproducibility check failed" >&2
+          exit 1
