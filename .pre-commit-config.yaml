@@ -151,11 +151,13 @@ repos:
           - |
             echo "🔍 Checking test coverage (85% required)..."
 
-            # Function to run coverage
+            # Function to run coverage and produce cobertura XML
             run_coverage() {
               export LLVM_COV=$(command -v llvm-cov 2>/dev/null || echo "")
               export LLVM_PROFDATA=$(command -v llvm-profdata 2>/dev/null || echo "")
-              cargo llvm-cov --workspace --all-features --all-targets 2>&1
+              mkdir -p /tmp/nails-coverage
+              cargo llvm-cov --workspace --all-features \
+                --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1
             }
 
             # Check if we're already in nix-shell (IN_NIX_SHELL env var is set)
@@ -167,7 +169,9 @@ repos:
               coverage_output=$(nix-shell --run 'bash -c '"'"'
                 export LLVM_COV=$(command -v llvm-cov 2>/dev/null || echo "")
                 export LLVM_PROFDATA=$(command -v llvm-profdata 2>/dev/null || echo "")
-                cargo llvm-cov --workspace --all-features --all-targets 2>&1
+                mkdir -p /tmp/nails-coverage
+                cargo llvm-cov --workspace --all-features \
+                  --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1
               '"'"'')
               coverage_status=$?
             fi
@@ -178,14 +182,14 @@ repos:
               exit 1
             fi
 
-            # Extract line coverage percentage from TOTAL line
-            line_coverage=$(echo "$coverage_output" | grep "^TOTAL" | awk '{print $NF}' | sed 's/%//')
-
-            if [ -z "$line_coverage" ]; then
-              echo "❌ Could not parse coverage percentage"
+            # Extract line coverage from cobertura XML (same method as CI)
+            COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' /tmp/nails-coverage/cobertura.xml | head -1)
+            if [ -z "$COVERAGE" ]; then
+              echo "❌ Could not parse coverage percentage from cobertura XML"
               echo "$coverage_output"
               exit 1
             fi
+            line_coverage=$(echo "$COVERAGE * 100" | bc)
 
             # Check if coverage meets threshold (85%)
             if (( $(echo "$line_coverage < 85" | bc -l) )); then

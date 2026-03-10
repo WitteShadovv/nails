@@ -5263,6 +5263,37 @@ fn test_activate_auto_mode_failed_overlays_recorded_on_failure() {
 }
 
 #[test]
+fn test_activate_auto_mode_all_mounts_fail_returns_first_mount_error() {
+    let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/etc", "/home"]);
+    let mock_hidden_vol = temp_dir.path();
+
+    fs.mock_set_mount_should_fail("/etc", true);
+    fs.mock_set_mount_should_fail("/home", true);
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlay_mode: OverlayMode::Auto,
+        overlay_exclusions: vec![],
+        overlay_exclusions_remove: vec![],
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path.clone(),
+    )));
+
+    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
+    assert!(err.to_string().contains("/etc"));
+
+    let state = manager.lock().unwrap().current_state().unwrap();
+    assert_eq!(state, SystemState::Inactive);
+}
+
+#[test]
 fn test_activate_auto_mode_with_user_exclusions() {
     // Integration test: auto mode with user-specified exclusions
     let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/boot", "/etc", "/home", "/nix"]);
@@ -5508,6 +5539,323 @@ fn test_activate_explicit_mode_empty_overlays_fails() {
         err_msg.contains("no overlays") || err_msg.contains("NO forensic protection"),
         "Error should mention empty overlays: {}",
         err_msg
+    );
+}
+
+#[test]
+fn test_activation_aborts_when_base_hardware_config_is_dirty() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_hidden_vol = temp_dir.path();
+    let state_path = mock_hidden_vol.join("state.json");
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_file_content(
+        "/etc/nixos/hardware-configuration.nix",
+        "{ config, lib, pkgs, ... }:\n{ imports = [ /mnt/hidden/nixos/configuration.nix ]; }",
+    );
+
+    fs.mock_set_path_exists("/home", true);
+    let upper_home = mock_hidden_vol.join("overlays/home/upper");
+    let work_home = mock_hidden_vol.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_home).unwrap();
+    std::fs::create_dir_all(&work_home).unwrap();
+    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_home,
+                work: work_home,
+                target: PathBuf::from("/home"),
+            }],
+            ..Config::test_default()
+        },
+        state_path,
+    )));
+
+    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
+    assert!(err.to_string().contains("forensically clean"));
+    assert!(
+        fs.mock_ops().is_empty(),
+        "no overlay mounts should be attempted"
+    );
+    assert_eq!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive
+    );
+}
+
+#[test]
+fn test_activation_aborts_when_base_hardware_config_cannot_be_read() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_hidden_vol = temp_dir.path();
+    let state_path = mock_hidden_vol.join("state.json");
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_exists("/home", true);
+    let upper_home = mock_hidden_vol.join("overlays/home/upper");
+    let work_home = mock_hidden_vol.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_home).unwrap();
+    std::fs::create_dir_all(&work_home).unwrap();
+    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_home,
+                work: work_home,
+                target: PathBuf::from("/home"),
+            }],
+            ..Config::test_default()
+        },
+        state_path,
+    )));
+
+    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
+    assert!(err.to_string().contains("File not found in mock"));
+    assert!(
+        fs.mock_ops().is_empty(),
+        "no overlay mounts should be attempted"
+    );
+}
+
+#[test]
+fn test_activate_explicit_mode_rejects_critical_system_root_overlay_bin() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_hidden_vol = temp_dir.path();
+    let state_path = mock_hidden_vol.join("state.json");
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_file_content(
+        "/etc/nixos/hardware-configuration.nix",
+        "{ config, lib, pkgs, ... }:\n{ }",
+    );
+    fs.mock_set_path_exists("/bin", true);
+
+    let upper_bin = mock_hidden_vol.join("overlays/bin/upper");
+    let work_bin = mock_hidden_vol.join("overlays/bin/work");
+    std::fs::create_dir_all(&upper_bin).unwrap();
+    std::fs::create_dir_all(&work_bin).unwrap();
+    fs.mock_set_path_exists(upper_bin.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_bin.to_str().unwrap(), true);
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![OverlayConfig {
+                name: "bin".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_bin,
+                work: work_bin,
+                target: PathBuf::from("/bin"),
+            }],
+            ..Config::test_default()
+        },
+        state_path,
+    )));
+
+    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Overlaying critical system root /bin is blocked")
+    );
+    assert!(fs.mock_ops().is_empty());
+}
+
+#[test]
+fn test_activation_rolls_back_when_import_injection_fails_after_etc_mount() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_hidden_vol = temp_dir.path();
+    let state_path = mock_hidden_vol.join("state.json");
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_file_content(
+        "/etc/nixos/hardware-configuration.nix",
+        "{ config, lib, pkgs, ... }:\n{ }",
+    );
+    fs.mock_set_write_should_fail("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists("/etc", true);
+
+    let upper_etc = mock_hidden_vol.join("overlays/etc/upper");
+    let work_etc = mock_hidden_vol.join("overlays/etc/work");
+    std::fs::create_dir_all(&upper_etc).unwrap();
+    std::fs::create_dir_all(&work_etc).unwrap();
+    fs.mock_set_path_exists(upper_etc.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![OverlayConfig {
+                name: "etc".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_etc,
+                work: work_etc,
+                target: PathBuf::from("/etc"),
+            }],
+            ..Config::test_default()
+        },
+        state_path,
+    )));
+
+    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
+    assert!(err.to_string().contains("Mock write failure"));
+    assert!(
+        !fs.is_mounted(Path::new("/etc")).unwrap(),
+        "/etc should be rolled back"
+    );
+    assert_eq!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive
+    );
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn test_activate_explicit_mode_continues_when_clean_stale_network_config_fails() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_hidden_vol = temp_dir.path();
+    let state_path = mock_hidden_vol.join("state.json");
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_file_content(
+        "/etc/nixos/hardware-configuration.nix",
+        "{ config, lib, pkgs, ... }:\n{ }",
+    );
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists("/etc", true);
+
+    let upper_etc = mock_hidden_vol.join("overlays/etc/upper");
+    let work_etc = mock_hidden_vol.join("overlays/etc/work");
+    std::fs::create_dir_all(&upper_etc).unwrap();
+    std::fs::create_dir_all(&work_etc).unwrap();
+    fs.mock_set_path_exists(upper_etc.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
+    let resolv_conf = upper_etc.join("resolv.conf");
+    fs.mock_set_path_exists(resolv_conf.to_str().unwrap(), true);
+    fs.mock_set_remove_should_fail(resolv_conf.to_str().unwrap(), true);
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![OverlayConfig {
+                name: "etc".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_etc,
+                work: work_etc,
+                target: PathBuf::from("/etc"),
+            }],
+            ..Config::test_default()
+        },
+        state_path,
+    )));
+
+    let result = NailsManager::activate(Arc::clone(&manager), true);
+    assert!(
+        result.is_ok(),
+        "activation should continue on stale network cleanup failure: {:?}",
+        result
+    );
+    assert!(logs_contain("Failed to clean stale network config"));
+}
+
+#[test]
+fn test_activation_ephemeral_mount_failure_rolls_back_persistent_mounts() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_hidden_vol = temp_dir.path();
+    let state_path = mock_hidden_vol.join("state.json");
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_file_content(
+        "/etc/nixos/hardware-configuration.nix",
+        "{ config, lib, pkgs, ... }:\n{ }",
+    );
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_path_exists("/var", true);
+
+    let upper_home = mock_hidden_vol.join("overlays/home/upper");
+    let work_home = mock_hidden_vol.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_home).unwrap();
+    std::fs::create_dir_all(&work_home).unwrap();
+    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
+    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+
+    let mut config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlay_mode: OverlayMode::Explicit,
+        overlays: vec![OverlayConfig {
+            name: "home".to_string(),
+            lower: PathBuf::from("/"),
+            upper: upper_home,
+            work: work_home,
+            target: PathBuf::from("/home"),
+        }],
+        ..Config::test_default()
+    };
+    config.extended_overlays = ExtendedOverlayConfig {
+        enabled: true,
+        directories: vec![EphemeralOverlayDir {
+            path: PathBuf::from("/var"),
+            tmpfs_upper_size: "bogus".to_string(),
+            tmpfs_work_size: "512M".to_string(),
+        }],
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path,
+    )));
+
+    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
+    assert!(err.to_string().contains("Invalid tmpfs size format"));
+    assert!(
+        !fs.is_mounted(Path::new("/home")).unwrap(),
+        "/home should be rolled back"
+    );
+    assert_eq!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive
     );
 }
 
@@ -6317,6 +6665,357 @@ fn test_config_fingerprint_field_persistence() {
 
     // Test passes: config_fingerprint field is properly saved to disk and loaded back,
     // validating the state persistence integration for Story 15.4
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn test_nixos_build_logs_fast_path_when_fingerprint_matches_and_generation_exists() {
+    use crate::NixOSBuilder;
+    use crate::nixos::compute_config_fingerprint;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+    setup_nixos_config_check(&fs, hidden_root);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_mount_should_fail("/home", true);
+
+    let hw_content = fs
+        .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.nix"))
+        .unwrap();
+    let cfg_content = fs
+        .read_file_content(&hidden_root.join("config/nixos/configuration.nix"))
+        .unwrap();
+    let fingerprint = compute_config_fingerprint(&hw_content, &cfg_content);
+
+    let upper_home = hidden_root.join("overlays/home/upper");
+    let work_home = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_home).unwrap();
+    std::fs::create_dir_all(&work_home).unwrap();
+    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+    fs.mock_set_path_exists("/", true);
+
+    let builder = NixOSBuilder::new(
+        hidden_root.join("config/nixos"),
+        hidden_root.join("profiles/nails-system"),
+    );
+    let mut manager = NailsManager::with_nixos(
+        fs.clone(),
+        Config {
+            hidden_volume_root: hidden_root.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_home,
+                work: work_home,
+                target: PathBuf::from("/home"),
+            }],
+            ..Config::test_default()
+        },
+        state_path,
+        builder,
+    );
+    manager.set_verbosity(Verbosity::Normal);
+    {
+        let mut cached = manager.cached_state.lock().unwrap();
+        *cached = Some(StateFile {
+            state: SystemState::Inactive,
+            config_fingerprint: Some(fingerprint),
+            nixos_generation: Some("123".to_string()),
+            ..StateFile::default()
+        });
+    }
+
+    let result = NailsManager::activate(Arc::new(Mutex::new(manager)), true);
+    assert!(result.is_err());
+    assert!(logs_contain("Computing NixOS config fingerprint"));
+    assert!(logs_contain("Fast-path check"));
+    assert!(logs_contain("Fast path: fingerprint matches"));
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn test_nixos_build_does_not_take_fast_path_when_generation_missing() {
+    use crate::NixOSBuilder;
+    use crate::nixos::compute_config_fingerprint;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+    setup_nixos_config_check(&fs, hidden_root);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_mount_should_fail("/home", true);
+    fs.mock_set_path_exists("/", true);
+
+    let hw_content = fs
+        .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.nix"))
+        .unwrap();
+    let cfg_content = fs
+        .read_file_content(&hidden_root.join("config/nixos/configuration.nix"))
+        .unwrap();
+    let fingerprint = compute_config_fingerprint(&hw_content, &cfg_content);
+
+    let upper_home = hidden_root.join("overlays/home/upper");
+    let work_home = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_home).unwrap();
+    std::fs::create_dir_all(&work_home).unwrap();
+    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+
+    let builder = NixOSBuilder::new(
+        hidden_root.join("config/nixos"),
+        hidden_root.join("profiles/nails-system"),
+    );
+    let mut manager = NailsManager::with_nixos(
+        fs.clone(),
+        Config {
+            hidden_volume_root: hidden_root.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_home,
+                work: work_home,
+                target: PathBuf::from("/home"),
+            }],
+            ..Config::test_default()
+        },
+        state_path,
+        builder,
+    );
+    manager.set_verbosity(Verbosity::Normal);
+    {
+        let mut cached = manager.cached_state.lock().unwrap();
+        *cached = Some(StateFile {
+            state: SystemState::Inactive,
+            config_fingerprint: Some(fingerprint),
+            nixos_generation: None,
+            ..StateFile::default()
+        });
+    }
+
+    let result = NailsManager::activate(Arc::new(Mutex::new(manager)), true);
+    assert!(result.is_err());
+    assert!(logs_contain("Fast-path check"));
+    assert!(!logs_contain("Fast path: fingerprint matches"));
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn test_nixos_build_uses_empty_content_when_both_reads_fail() {
+    use crate::NixOSBuilder;
+    use crate::nixos::compute_config_fingerprint;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_file_content(
+        "/etc/nixos/hardware-configuration.nix",
+        "{ config, lib, pkgs, ... }:\n{ }",
+    );
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_mount_should_fail("/home", true);
+    fs.mock_set_path_exists("/", true);
+
+    let fingerprint = compute_config_fingerprint("", "");
+    let upper_home = hidden_root.join("overlays/home/upper");
+    let work_home = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_home).unwrap();
+    std::fs::create_dir_all(&work_home).unwrap();
+    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+
+    let builder = NixOSBuilder::new(
+        hidden_root.join("config/nixos"),
+        hidden_root.join("profiles/nails-system"),
+    );
+    let mut manager = NailsManager::with_nixos(
+        fs.clone(),
+        Config {
+            hidden_volume_root: hidden_root.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_home,
+                work: work_home,
+                target: PathBuf::from("/home"),
+            }],
+            ..Config::test_default()
+        },
+        state_path,
+        builder,
+    );
+    manager.set_verbosity(Verbosity::Normal);
+    {
+        let mut cached = manager.cached_state.lock().unwrap();
+        *cached = Some(StateFile {
+            state: SystemState::Inactive,
+            config_fingerprint: Some(fingerprint),
+            nixos_generation: Some("123".to_string()),
+            ..StateFile::default()
+        });
+    }
+
+    let result = NailsManager::activate(Arc::new(Mutex::new(manager)), true);
+    assert!(result.is_err());
+    assert!(logs_contain(
+        "Failed to read hardware-configuration.nix for fingerprint"
+    ));
+    assert!(logs_contain(
+        "Failed to read configuration.nix for fingerprint"
+    ));
+    assert!(logs_contain("Fast path: fingerprint matches"));
+}
+
+// ========== parse_system_generation Tests ==========
+
+#[test]
+fn test_parse_system_generation_valid() {
+    assert_eq!(parse_system_generation("system-1-link"), Some(1));
+    assert_eq!(parse_system_generation("system-42-link"), Some(42));
+    assert_eq!(parse_system_generation("system-100-link"), Some(100));
+    assert_eq!(parse_system_generation("system-0-link"), Some(0));
+}
+
+#[test]
+fn test_parse_system_generation_invalid_no_prefix() {
+    assert_eq!(parse_system_generation("1-link"), None);
+    assert_eq!(parse_system_generation("foo-1-link"), None);
+}
+
+#[test]
+fn test_parse_system_generation_invalid_no_suffix() {
+    assert_eq!(parse_system_generation("system-1"), None);
+    assert_eq!(parse_system_generation("system-1-symlink"), None);
+}
+
+#[test]
+fn test_parse_system_generation_non_numeric() {
+    assert_eq!(parse_system_generation("system-abc-link"), None);
+    assert_eq!(parse_system_generation("system--link"), None);
+}
+
+#[test]
+fn test_parse_system_generation_empty() {
+    assert_eq!(parse_system_generation(""), None);
+}
+
+// ========== find_newest_system_profile / select_system_profile Tests ==========
+
+#[test]
+fn test_find_newest_system_profile_directory_not_exist() {
+    let fs = MockFilesystem::new();
+    // Profiles dir doesn't exist
+    let result = find_newest_system_profile(&fs);
+    assert!(result.is_ok());
+    assert!(result.unwrap().is_none());
+}
+
+#[test]
+fn test_find_newest_system_profile_picks_highest_generation() {
+    let fs = MockFilesystem::new();
+    // Use runtime value of system_profiles_dir() to stay consistent with any
+    // NAILS_SYSTEM_PROFILE_PATH set by concurrent deactivation tests.
+    let profiles_dir = system_profiles_dir();
+    fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
+    fs.mock_set_directory_contents(
+        &profiles_dir,
+        vec![
+            profiles_dir.join("system-1-link"),
+            profiles_dir.join("system-5-link"),
+            profiles_dir.join("system-3-link"),
+            profiles_dir.join("not-a-generation"),
+        ],
+    );
+
+    let result = find_newest_system_profile(&fs).unwrap();
+    assert!(result.is_some());
+    let path = result.unwrap();
+    assert!(path.to_string_lossy().contains("system-5-link"));
+}
+
+#[test]
+fn test_find_newest_system_profile_no_valid_entries() {
+    let fs = MockFilesystem::new();
+    let profiles_dir = PathBuf::from("/nix/var/nix/profiles");
+    fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
+    fs.mock_set_directory_contents(
+        &profiles_dir,
+        vec![
+            profiles_dir.join("not-a-generation"),
+            profiles_dir.join("system"),
+        ],
+    );
+
+    let result = find_newest_system_profile(&fs).unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_select_system_profile_finds_newest() {
+    let fs = MockFilesystem::new();
+    // Use runtime value of system_profiles_dir() to stay consistent with any
+    // NAILS_SYSTEM_PROFILE_PATH set by concurrent deactivation tests.
+    let profiles_dir = system_profiles_dir();
+    fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
+    fs.mock_set_directory_contents(
+        &profiles_dir,
+        vec![
+            profiles_dir.join("system-2-link"),
+            profiles_dir.join("system-1-link"),
+        ],
+    );
+
+    let result = select_system_profile(&fs).unwrap();
+    assert!(result.is_some());
+    assert!(result.unwrap().to_string_lossy().contains("system-2-link"));
+}
+
+#[test]
+fn test_select_system_profile_falls_back_to_system_symlink() {
+    let fs = MockFilesystem::new();
+    // No newest generation found, but system symlink exists
+    let system_path = system_profile_path();
+    // profiles dir doesn't exist (so no generations found)
+    // but the system symlink itself exists
+    fs.mock_set_path_exists(system_path.to_str().unwrap(), true);
+
+    let result = select_system_profile(&fs).unwrap();
+    assert!(result.is_some());
+    assert_eq!(result.unwrap(), system_path);
+}
+
+#[test]
+fn test_select_system_profile_returns_none_when_nothing_found() {
+    let fs = MockFilesystem::new();
+    // Neither profiles dir nor system symlink exist
+    let result = select_system_profile(&fs).unwrap();
+    assert!(result.is_none());
+}
+
+// ========== ensure_run_current_system_symlink Tests ==========
+
+#[test]
+fn test_ensure_run_current_system_symlink_creates_new_when_not_exists() {
+    let fs = MockFilesystem::new();
+    let run_current = PathBuf::from("/run/current-system");
+    let target = PathBuf::from("/nix/var/nix/profiles/system-1-link");
+
+    // run_current does not exist (neither symlink nor regular file)
+    let result = ensure_run_current_system_symlink(&fs, &target);
+    assert!(result.is_ok());
+    assert_eq!(fs.mock_get_symlink_target(&run_current), Some(target));
 }
 
 #[test]

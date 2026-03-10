@@ -193,3 +193,145 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nails_core::{Config, MockFilesystem, NailsError, NailsManager, ShellSetupResult};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    fn make_manager() -> Arc<Mutex<NailsManager<MockFilesystem>>> {
+        let fs = MockFilesystem::new();
+        let config = Config::default();
+        let manager = NailsManager::new(fs, config, PathBuf::from("/tmp/test-state.json"));
+        Arc::new(Mutex::new(manager))
+    }
+
+    fn make_shell_setup_rc_modified() -> ShellSetupResult {
+        use nails_core::shell::ShellType;
+        ShellSetupResult {
+            shell_type: ShellType::Bash,
+            prompt_script_path: PathBuf::from("/mnt/hidden/scripts/nails_prompt.bash"),
+            alias_script_path: PathBuf::from("/mnt/hidden/scripts/nails_alias.sh"),
+            instructions: vec!["source /mnt/hidden/scripts/nails_prompt.bash".to_string()],
+            warning: None,
+            rc_modified: true,
+        }
+    }
+
+    fn make_shell_setup_no_rc() -> ShellSetupResult {
+        use nails_core::shell::ShellType;
+        ShellSetupResult {
+            shell_type: ShellType::Bash,
+            prompt_script_path: PathBuf::from("/mnt/hidden/scripts/nails_prompt.bash"),
+            alias_script_path: PathBuf::from("/mnt/hidden/scripts/nails_alias.sh"),
+            instructions: vec!["source /mnt/hidden/scripts/nails_prompt.bash".to_string()],
+            warning: None,
+            rc_modified: false,
+        }
+    }
+
+    fn make_shell_setup_with_warning() -> ShellSetupResult {
+        use nails_core::shell::ShellType;
+        ShellSetupResult {
+            shell_type: ShellType::Bash,
+            prompt_script_path: PathBuf::from("/mnt/hidden/scripts/nails_prompt.bash"),
+            alias_script_path: PathBuf::from("/mnt/hidden/scripts/nails_alias.sh"),
+            instructions: vec![],
+            warning: Some("Could not detect shell config".to_string()),
+            rc_modified: false,
+        }
+    }
+
+    // ── print_activate_json ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_json_success_no_shell() {
+        let manager = make_manager();
+        print_activate_json(&Ok(()), 1.5, &manager, None);
+    }
+
+    #[test]
+    fn test_json_success_with_shell() {
+        let manager = make_manager();
+        let setup = make_shell_setup_rc_modified();
+        print_activate_json(&Ok(()), 2.3, &manager, Some(&setup));
+    }
+
+    #[test]
+    fn test_json_preflight_failure() {
+        let manager = make_manager();
+        let err = NailsError::PreFlightCheckFailed(vec![
+            ("hidden_volume".to_string(), "not mounted".to_string()),
+            ("swap".to_string(), "swap enabled".to_string()),
+        ]);
+        print_activate_json(&Err(err), 0.1, &manager, None);
+    }
+
+    #[test]
+    fn test_json_other_error() {
+        let manager = make_manager();
+        let err = NailsError::InvalidState("unexpected state".to_string());
+        print_activate_json(&Err(err), 0.5, &manager, None);
+    }
+
+    // ── print_activate_human ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_human_success_no_shell() {
+        let manager = make_manager();
+        print_activate_human(&Ok(()), 1.5, &manager, None, false);
+    }
+
+    #[test]
+    fn test_human_success_quiet() {
+        let manager = make_manager();
+        print_activate_human(&Ok(()), 1.5, &manager, None, true);
+    }
+
+    #[test]
+    fn test_human_success_shell_rc_modified() {
+        let manager = make_manager();
+        let setup = make_shell_setup_rc_modified();
+        print_activate_human(&Ok(()), 1.0, &manager, Some(&setup), false);
+    }
+
+    #[test]
+    fn test_human_success_shell_no_rc() {
+        let manager = make_manager();
+        let setup = make_shell_setup_no_rc();
+        print_activate_human(&Ok(()), 1.0, &manager, Some(&setup), false);
+    }
+
+    #[test]
+    fn test_human_success_shell_with_warning() {
+        let manager = make_manager();
+        let setup = make_shell_setup_with_warning();
+        print_activate_human(&Ok(()), 1.0, &manager, Some(&setup), false);
+    }
+
+    #[test]
+    fn test_human_success_shell_quiet_suppresses_instructions() {
+        let manager = make_manager();
+        let setup = make_shell_setup_rc_modified();
+        print_activate_human(&Ok(()), 1.0, &manager, Some(&setup), true);
+    }
+
+    #[test]
+    fn test_human_preflight_failure() {
+        let manager = make_manager();
+        let err = NailsError::PreFlightCheckFailed(vec![(
+            "hidden_volume".to_string(),
+            "not mounted".to_string(),
+        )]);
+        print_activate_human(&Err(err), 0.1, &manager, None, false);
+    }
+
+    #[test]
+    fn test_human_other_error() {
+        let manager = make_manager();
+        let err = NailsError::InvalidState("bad state".to_string());
+        print_activate_human(&Err(err), 0.3, &manager, None, false);
+    }
+}

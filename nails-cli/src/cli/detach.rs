@@ -134,8 +134,13 @@ pub fn maybe_detach_for_session_kill(
 mod tests {
     use super::*;
     use std::env;
+    use std::sync::Mutex;
+
+    // Serialize all tests that touch environment variables to avoid races.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_env<K: AsRef<str>, V: AsRef<str>, F: FnOnce()>(key: K, val: V, f: F) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             env::set_var(key.as_ref(), val.as_ref());
         }
