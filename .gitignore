@@ -152,3 +152,7 @@ docs/architecture/
 docs/flowcharts/
 docs/research/
 docs/impermanence-base-config.nix
+
+# Local-only artifacts
+epics.md
+scripts/clean-ai-traces.sh
