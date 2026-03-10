@@ -133,6 +133,8 @@ jobs:
   reproducibility:
     name: Verify reproducibility
     needs: build-release
+    permissions:
+      contents: read
     uses: ./.github/workflows/reproducibility.yml
     with:
       git-ref: ${{ github.sha }}
