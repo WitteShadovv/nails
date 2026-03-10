@@ -4,7 +4,7 @@
 [![Rust 1.93+](https://img.shields.io/badge/rust-1.93+-orange.svg)](https://www.rust-lang.org/)
 [![NixOS](https://img.shields.io/badge/NixOS-required-5277C3.svg)](https://nixos.org/)
 [![Test Pipeline](https://github.com/WitteShadovv/nails/actions/workflows/test.yml/badge.svg)](https://github.com/WitteShadovv/nails/actions/workflows/test.yml)
-[![Coverage: >=85%](https://img.shields.io/badge/coverage-%3E%3D85%25-brightgreen.svg)](docs/definition-of-done.md)
+[![Coverage: >=85%](https://img.shields.io/badge/coverage-%3E%3D85%25-brightgreen.svg)](CHANGELOG.md)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha-yellow.svg)](CHANGELOG.md)
 
 > **Fast-switching dual-environment computing on NixOS, designed to support plausible deniability workflows.**
@@ -34,6 +34,7 @@
 - [Use Cases](#use-cases)
 - [Known Limitations](#known-limitations)
 - [Project Status](#project-status)
+- [Acknowledgments](#acknowledgments)
 - [License & Disclaimer](#license--disclaimer)
 
 ---
@@ -1131,7 +1132,7 @@ posted as PR comments.
 
 NAILS welcomes contributions. Before submitting:
 
-1. All submissions must pass the [Definition of Done](docs/definition-of-done.md) criteria.
+1. All submissions must pass the Definition of Done criteria.
 2. Use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages.
 3. Maintain ≥ 85% test coverage.
 4. Zero `clippy` warnings.
@@ -1152,7 +1153,7 @@ bugfix/issue-NNN-short-description
 docs/topic-name
 ```
 
-See [docs/development-guide.md](docs/development-guide.md) for the full contribution workflow.
+See the development guide for the full contribution workflow.
 
 ---
 
@@ -1328,8 +1329,15 @@ NAILS is under active development. The project follows a milestone-driven releas
 | **v0.2.0 Beta** — Complete command suite + emergency | May 2026 | ⏳ Planned |
 | **v1.0.0 Release** — Forensically validated | Jun 2026 | ⏳ Planned |
 
-See [CHANGELOG.md](CHANGELOG.md) for detailed change history and [docs/epics.md](docs/epics.md)
-for the full development roadmap.
+See [CHANGELOG.md](CHANGELOG.md) for detailed change history.
+
+---
+
+## Acknowledgments
+
+Development of NAILS was assisted by Claude (Anthropic) — Sonnet and Opus models were used
+for code generation, testing, and documentation throughout the project.
+All code has been reviewed, tested, and validated by the author.
 
 ---
 
