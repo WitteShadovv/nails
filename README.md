@@ -71,15 +71,15 @@ bytecode caches and runtime dependencies.
 │  │  Standard NixOS + LUKS full-disk encryption                     │   │
 │  │  Mundane applications, believable user data                     │   │
 │  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│  OVERLAY LAYER  (active only when hidden storage is mounted)             │
+│                                                                        │
+│  OVERLAY LAYER  (active only when hidden storage is mounted)           │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
 │  │  OverlayFS mounts from hidden storage backend                   │   │
-│  │  /nix  /etc  /home  /var  layered over decoy (copy-on-write)   │   │
+│  │  /nix  /etc  /home  /var  layered over decoy (copy-on-write)    │   │
 │  │  All writes go to hidden storage — host remains untouched       │   │
 │  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│  HIDDEN ENVIRONMENT  (inside hidden storage)                             │
+│                                                                        │
+│  HIDDEN ENVIRONMENT  (inside hidden storage)                           │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
 │  │  Full NixOS configuration (configuration.nix)                   │   │
 │  │  Hidden packages, services, user accounts, secrets              │   │
