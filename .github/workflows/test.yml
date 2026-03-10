@@ -3,11 +3,12 @@ name: Test Pipeline
 on:
   push:
     branches:
-      - "**"
+      - main
+      - dev
   pull_request:
     branches:
       - main
-      - develop
+      - dev
   schedule:
     # Run burn-in weekly (Sundays at 2am UTC)
     - cron: "0 2 * * 0"
@@ -236,7 +237,7 @@ jobs:
     # Only run burn-in on PRs to main/develop or on schedule
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'pull_request' && contains(fromJson('["main", "develop"]'), github.base_ref)) ||
+      (github.event_name == 'pull_request' && contains(fromJson('["main", "dev"]'), github.base_ref)) ||
       github.event_name == 'workflow_dispatch'
 
     steps:
