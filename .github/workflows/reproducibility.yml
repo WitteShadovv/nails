@@ -68,8 +68,8 @@ jobs:
             experimental-features = nix-command flakes
             accept-flake-config = false
 
-      - name: Build from source without substitutes
-        run: nix build -L "$FLAKE_ATTR" -o result --option accept-flake-config false --option substitute false
+      - name: Build release artifact
+        run: nix build -L "$FLAKE_ATTR" -o result --option accept-flake-config false
 
       - name: Package release artifact
         run: |
@@ -90,6 +90,9 @@ jobs:
             --version "$version" \
             --target x86_64-unknown-linux-musl \
             --out-dir dist
+
+      - name: Record binary hash
+        run: sha256sum result/bin/nails > dist/nails.sha256
 
       - name: Upload reproducibility artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -124,6 +127,7 @@ jobs:
         id: compare
         continue-on-error: true
         run: |
+          diff -u artifacts/a/nails.sha256 artifacts/b/nails.sha256
           diff -u artifacts/a/SHA256SUMS artifacts/b/SHA256SUMS
           archive_a=$(find artifacts/a -maxdepth 1 -name '*.tar.gz' -print -quit)
           archive_b=$(find artifacts/b -maxdepth 1 -name '*.tar.gz' -print -quit)
