@@ -625,6 +625,9 @@ fn restart_user_manager_with_executor<E: SessionCommandExecutor>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::env;
+    use std::sync::Mutex;
 
     struct MockSessionCommandExecutor {
         systemctl_success: bool,
@@ -646,6 +649,113 @@ mod tests {
         }
     }
 
+    struct ScriptedSessionCommandExecutor {
+        systemctl_responses: Mutex<Vec<Result<(bool, String, String)>>>,
+        loginctl_responses: Mutex<Vec<Result<(bool, String, String)>>>,
+        loginctl_available: bool,
+    }
+
+    impl ScriptedSessionCommandExecutor {
+        fn new(
+            systemctl_responses: Vec<Result<(bool, String, String)>>,
+            loginctl_responses: Vec<Result<(bool, String, String)>>,
+            loginctl_available: bool,
+        ) -> Self {
+            Self {
+                systemctl_responses: Mutex::new(systemctl_responses),
+                loginctl_responses: Mutex::new(loginctl_responses),
+                loginctl_available,
+            }
+        }
+    }
+
+    impl SessionCommandExecutor for ScriptedSessionCommandExecutor {
+        fn execute_systemctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+            self.systemctl_responses.lock().unwrap().remove(0)
+        }
+
+        fn execute_loginctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+            self.loginctl_responses.lock().unwrap().remove(0)
+        }
+
+        fn loginctl_available(&self) -> bool {
+            self.loginctl_available
+        }
+    }
+
+    struct RecordingScriptedSessionCommandExecutor {
+        systemctl_responses: Mutex<Vec<Result<(bool, String, String)>>>,
+        loginctl_responses: Mutex<Vec<Result<(bool, String, String)>>>,
+        systemctl_calls: Mutex<Vec<Vec<String>>>,
+        loginctl_calls: Mutex<Vec<Vec<String>>>,
+        loginctl_available: bool,
+    }
+
+    impl RecordingScriptedSessionCommandExecutor {
+        fn new(
+            systemctl_responses: Vec<Result<(bool, String, String)>>,
+            loginctl_responses: Vec<Result<(bool, String, String)>>,
+            loginctl_available: bool,
+        ) -> Self {
+            Self {
+                systemctl_responses: Mutex::new(systemctl_responses),
+                loginctl_responses: Mutex::new(loginctl_responses),
+                systemctl_calls: Mutex::new(Vec::new()),
+                loginctl_calls: Mutex::new(Vec::new()),
+                loginctl_available,
+            }
+        }
+
+        fn systemctl_calls(&self) -> Vec<Vec<String>> {
+            self.systemctl_calls.lock().unwrap().clone()
+        }
+    }
+
+    impl SessionCommandExecutor for RecordingScriptedSessionCommandExecutor {
+        fn execute_systemctl(&self, args: &[&str]) -> Result<(bool, String, String)> {
+            self.systemctl_calls
+                .lock()
+                .unwrap()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            self.systemctl_responses.lock().unwrap().remove(0)
+        }
+
+        fn execute_loginctl(&self, args: &[&str]) -> Result<(bool, String, String)> {
+            self.loginctl_calls
+                .lock()
+                .unwrap()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            self.loginctl_responses.lock().unwrap().remove(0)
+        }
+
+        fn loginctl_available(&self) -> bool {
+            self.loginctl_available
+        }
+    }
+
+    fn clear_session_env() {
+        for key in [
+            "SSH_TTY",
+            "SSH_CONNECTION",
+            "NAILS_LOGIND_AVAILABLE",
+            "XDG_SESSION_ID",
+            "NAILS_SESSION_ID",
+            "NAILS_DISPLAY_MANAGER",
+            "NAILS_TARGET_UID",
+            "NAILS_TARGET_USER",
+            "XDG_SESSION_TYPE",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "SUDO_UID",
+            "SUDO_USER",
+            "PKEXEC_UID",
+        ] {
+            unsafe {
+                env::remove_var(key);
+            }
+        }
+    }
+
     #[test]
     fn session_kill_result_default() {
         let result = SessionKillResult::default();
@@ -664,6 +774,524 @@ mod tests {
         };
         let dm = detect_display_manager(&exec).unwrap();
         assert!(dm.is_none());
+    }
+
+    #[test]
+    fn detect_display_manager_prefers_generic_display_manager() {
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![Ok((true, "active".to_string(), String::new()))],
+            vec![],
+            true,
+        );
+
+        let dm = detect_display_manager(&exec).unwrap();
+
+        assert_eq!(dm, Some("display-manager".to_string()));
+    }
+
+    #[test]
+    fn detect_display_manager_falls_back_to_named_service() {
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![
+                Ok((false, "inactive".to_string(), String::new())),
+                Ok((true, "active".to_string(), String::new())),
+            ],
+            vec![],
+            true,
+        );
+
+        let dm = detect_display_manager(&exec).unwrap();
+
+        assert_eq!(dm, Some("gdm".to_string()));
+    }
+
+    #[test]
+    fn detect_display_manager_skips_failed_probes_and_returns_later_active_service() {
+        let exec = RecordingScriptedSessionCommandExecutor::new(
+            vec![
+                Err(NailsError::IoError(std::io::Error::other(
+                    "display-manager failed",
+                ))),
+                Ok((false, "inactive".to_string(), String::new())),
+                Ok((true, "active".to_string(), String::new())),
+            ],
+            vec![],
+            true,
+        );
+
+        let dm = detect_display_manager(&exec).unwrap();
+
+        assert_eq!(dm, Some("sddm".to_string()));
+        assert_eq!(
+            exec.systemctl_calls(),
+            vec![
+                vec!["is-active".to_string(), "display-manager".to_string()],
+                vec!["is-active".to_string(), "gdm".to_string()],
+                vec!["is-active".to_string(), "sddm".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn detect_session_context_detects_ssh() {
+        clear_session_env();
+        unsafe {
+            env::set_var("SSH_CONNECTION", "1 2 3 4");
+            env::set_var("NAILS_LOGIND_AVAILABLE", "0");
+        }
+
+        let exec = MockSessionCommandExecutor {
+            systemctl_success: true,
+            loginctl_success: true,
+            loginctl_available: true,
+        };
+
+        let ctx = detect_session_context_with_executor(&exec).unwrap();
+
+        assert_eq!(ctx.kind, SessionKind::Ssh);
+        assert_eq!(ctx.display_manager, None);
+        assert_eq!(ctx.target_uid, None);
+        assert!(!ctx.logind_available);
+
+        clear_session_env();
+    }
+
+    #[test]
+    #[serial]
+    fn detect_session_context_uses_override_values() {
+        clear_session_env();
+        unsafe {
+            env::set_var("NAILS_SESSION_ID", "c2");
+            env::set_var("NAILS_DISPLAY_MANAGER", "gdm");
+            env::set_var("NAILS_TARGET_UID", "1000");
+            env::set_var("NAILS_TARGET_USER", "alice");
+        }
+
+        let exec = MockSessionCommandExecutor {
+            systemctl_success: false,
+            loginctl_success: true,
+            loginctl_available: true,
+        };
+
+        let ctx = detect_session_context_with_executor(&exec).unwrap();
+
+        assert_eq!(ctx.kind, SessionKind::GraphicalUser);
+        assert_eq!(ctx.session_id, Some("c2".to_string()));
+        assert_eq!(ctx.display_manager, Some("gdm".to_string()));
+        assert_eq!(ctx.target_uid, Some(1000));
+        assert_eq!(ctx.target_user, Some("alice".to_string()));
+
+        clear_session_env();
+    }
+
+    #[test]
+    #[serial]
+    fn detect_session_context_detects_tty_when_not_graphical() {
+        clear_session_env();
+        unsafe {
+            env::set_var("XDG_SESSION_TYPE", "tty");
+            env::set_var("NAILS_LOGIND_AVAILABLE", "0");
+        }
+
+        let exec = MockSessionCommandExecutor {
+            systemctl_success: true,
+            loginctl_success: true,
+            loginctl_available: true,
+        };
+
+        let ctx = detect_session_context_with_executor(&exec).unwrap();
+
+        assert_eq!(ctx.kind, SessionKind::Tty);
+        assert_eq!(ctx.display_manager, None);
+        assert!(!ctx.logind_available);
+
+        clear_session_env();
+    }
+
+    #[test]
+    #[serial]
+    fn detect_session_context_detects_graphical_user_and_display_manager() {
+        clear_session_env();
+        unsafe {
+            env::set_var("DISPLAY", ":0");
+            env::set_var("SUDO_UID", "1000");
+            env::set_var("SUDO_USER", "alice");
+        }
+
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![Ok((true, "active".to_string(), String::new()))],
+            vec![],
+            true,
+        );
+
+        let ctx = detect_session_context_with_executor(&exec).unwrap();
+
+        assert_eq!(ctx.kind, SessionKind::GraphicalUser);
+        assert_eq!(ctx.display_manager, Some("display-manager".to_string()));
+        assert!(ctx.target_uid.is_some());
+
+        clear_session_env();
+    }
+
+    #[test]
+    #[serial]
+    fn detect_session_context_honors_logind_override() {
+        clear_session_env();
+        unsafe {
+            env::set_var("XDG_SESSION_TYPE", "tty");
+            env::set_var("NAILS_LOGIND_AVAILABLE", "0");
+        }
+
+        let exec = MockSessionCommandExecutor {
+            systemctl_success: true,
+            loginctl_success: true,
+            loginctl_available: true,
+        };
+
+        let ctx = detect_session_context_with_executor(&exec).unwrap();
+
+        assert!(!ctx.logind_available);
+
+        clear_session_env();
+    }
+
+    #[test]
+    #[serial]
+    fn detect_session_context_uses_executor_logind_availability_when_not_overridden() {
+        clear_session_env();
+        unsafe {
+            env::set_var("XDG_SESSION_TYPE", "tty");
+        }
+
+        let exec = MockSessionCommandExecutor {
+            systemctl_success: true,
+            loginctl_success: true,
+            loginctl_available: true,
+        };
+
+        let ctx = detect_session_context_with_executor(&exec).unwrap();
+
+        assert_eq!(ctx.kind, SessionKind::Tty);
+        assert!(ctx.logind_available);
+
+        clear_session_env();
+    }
+
+    #[test]
+    #[serial]
+    fn detect_session_context_uses_xdg_session_id_when_override_missing() {
+        clear_session_env();
+        unsafe {
+            env::set_var("XDG_SESSION_ID", "c7");
+            env::set_var("NAILS_TARGET_UID", "1000");
+            env::set_var("NAILS_DISPLAY_MANAGER", "gdm");
+        }
+
+        let exec = MockSessionCommandExecutor {
+            systemctl_success: true,
+            loginctl_success: true,
+            loginctl_available: true,
+        };
+
+        let ctx = detect_session_context_with_executor(&exec).unwrap();
+
+        assert_eq!(ctx.session_id, Some("c7".to_string()));
+        assert_eq!(ctx.display_manager, Some("gdm".to_string()));
+        assert_eq!(ctx.target_uid, Some(1000));
+
+        clear_session_env();
+    }
+
+    #[test]
+    #[serial]
+    fn detect_session_context_ignores_invalid_override_target_uid() {
+        clear_session_env();
+        unsafe {
+            env::set_var("NAILS_SESSION_ID", "c2");
+            env::set_var("NAILS_TARGET_UID", "not-a-number");
+            env::set_var("NAILS_TARGET_USER", "alice");
+        }
+
+        let exec = MockSessionCommandExecutor {
+            systemctl_success: true,
+            loginctl_success: true,
+            loginctl_available: true,
+        };
+
+        let ctx = detect_session_context_with_executor(&exec).unwrap();
+
+        assert_eq!(ctx.kind, SessionKind::GraphicalUser);
+        assert_eq!(ctx.session_id, Some("c2".to_string()));
+        assert_eq!(ctx.target_uid, None);
+        assert_eq!(ctx.target_user, Some("alice".to_string()));
+
+        clear_session_env();
+    }
+
+    #[test]
+    #[serial]
+    fn detect_session_context_uses_wayland_display_when_session_type_unset() {
+        clear_session_env();
+        unsafe {
+            env::set_var("WAYLAND_DISPLAY", "wayland-0");
+            env::set_var("SUDO_UID", "1000");
+            env::set_var("SUDO_USER", "alice");
+        }
+
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![Ok((true, "active".to_string(), String::new()))],
+            vec![],
+            true,
+        );
+
+        let ctx = detect_session_context_with_executor(&exec).unwrap();
+
+        assert_eq!(ctx.kind, SessionKind::GraphicalUser);
+        assert_eq!(ctx.display_manager, Some("display-manager".to_string()));
+        assert_eq!(ctx.target_user, Some("alice".to_string()));
+
+        clear_session_env();
+    }
+
+    #[test]
+    fn prompt_session_kill_confirmation_yes_flag_bypasses_validation() {
+        let ctx = SessionContext {
+            kind: SessionKind::Tty,
+            session_id: None,
+            display_manager: None,
+            target_uid: None,
+            target_user: None,
+            logind_available: false,
+        };
+
+        assert!(prompt_session_kill_confirmation(&ctx, true).is_ok());
+    }
+
+    #[test]
+    fn prompt_session_kill_confirmation_requires_graphical_user_session() {
+        let ctx = SessionContext {
+            kind: SessionKind::Tty,
+            session_id: None,
+            display_manager: None,
+            target_uid: None,
+            target_user: None,
+            logind_available: false,
+        };
+
+        let err = prompt_session_kill_confirmation(&ctx, false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Cannot confirm session kill - not a graphical user session")
+        );
+    }
+
+    #[test]
+    fn kill_graphical_session_rejects_non_graphical_session() {
+        let ctx = SessionContext {
+            kind: SessionKind::Tty,
+            session_id: None,
+            display_manager: None,
+            target_uid: None,
+            target_user: None,
+            logind_available: false,
+        };
+        let exec = MockSessionCommandExecutor {
+            systemctl_success: true,
+            loginctl_success: true,
+            loginctl_available: true,
+        };
+
+        let err = kill_graphical_session_with_executor(&ctx, &exec).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Not running in a graphical user session")
+        );
+    }
+
+    #[test]
+    fn wait_for_user_manager_exit_returns_true_when_unit_is_inactive() {
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![Ok((false, "inactive".to_string(), String::new()))],
+            vec![],
+            true,
+        );
+
+        let exited = wait_for_user_manager_exit(&exec, 1000, Duration::from_millis(1)).unwrap();
+
+        assert!(exited);
+    }
+
+    #[test]
+    fn wait_for_user_manager_exit_returns_false_after_timeout() {
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![
+                Ok((true, "active".to_string(), String::new())),
+                Ok((true, "active".to_string(), String::new())),
+            ],
+            vec![],
+            true,
+        );
+
+        let exited = wait_for_user_manager_exit(&exec, 1000, Duration::from_millis(1)).unwrap();
+
+        assert!(!exited);
+    }
+
+    #[test]
+    fn wait_for_user_manager_exit_propagates_systemctl_error() {
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![Err(NailsError::IoError(std::io::Error::other(
+                "systemctl failed",
+            )))],
+            vec![],
+            true,
+        );
+
+        assert!(wait_for_user_manager_exit(&exec, 1000, Duration::from_millis(1)).is_err());
+    }
+
+    #[test]
+    fn wait_for_user_manager_exit_retries_until_inactive() {
+        let exec = RecordingScriptedSessionCommandExecutor::new(
+            vec![
+                Ok((true, "active".to_string(), String::new())),
+                Ok((false, "inactive".to_string(), String::new())),
+            ],
+            vec![],
+            true,
+        );
+
+        let exited = wait_for_user_manager_exit(&exec, 1000, Duration::from_millis(500)).unwrap();
+
+        assert!(exited);
+        assert_eq!(exec.systemctl_calls().len(), 2);
+    }
+
+    #[test]
+    fn wait_for_user_manager_exit_treats_non_active_success_output_as_exited() {
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![Ok((true, "failed".to_string(), String::new()))],
+            vec![],
+            true,
+        );
+
+        let exited = wait_for_user_manager_exit(&exec, 1000, Duration::from_millis(1)).unwrap();
+
+        assert!(exited);
+    }
+
+    #[test]
+    fn restart_display_manager_returns_error_when_start_fails() {
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![Ok((false, String::new(), "boom".to_string()))],
+            vec![],
+            true,
+        );
+
+        let err = restart_display_manager_with_executor("display-manager", &exec).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Failed to start display manager display-manager: boom")
+        );
+    }
+
+    #[test]
+    fn restart_display_manager_retries_until_service_becomes_active() {
+        let exec = RecordingScriptedSessionCommandExecutor::new(
+            vec![
+                Ok((true, String::new(), String::new())),
+                Ok((false, "inactive".to_string(), String::new())),
+                Ok((true, "active".to_string(), String::new())),
+            ],
+            vec![],
+            true,
+        );
+
+        assert!(restart_display_manager_with_executor("display-manager", &exec).is_ok());
+        assert_eq!(
+            exec.systemctl_calls(),
+            vec![
+                vec!["start".to_string(), "display-manager".to_string()],
+                vec!["is-active".to_string(), "display-manager".to_string()],
+                vec!["is-active".to_string(), "display-manager".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn restart_display_manager_propagates_is_active_error_after_start() {
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![
+                Ok((true, String::new(), String::new())),
+                Err(NailsError::IoError(std::io::Error::other(
+                    "systemctl failed",
+                ))),
+            ],
+            vec![],
+            true,
+        );
+
+        let err = restart_display_manager_with_executor("display-manager", &exec).unwrap_err();
+        assert!(err.to_string().contains("systemctl failed"));
+    }
+
+    #[test]
+    fn restart_user_manager_returns_error_when_user_service_fails() {
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![
+                Ok((true, String::new(), String::new())),
+                Ok((false, String::new(), "boom".to_string())),
+            ],
+            vec![],
+            true,
+        );
+
+        let err = restart_user_manager_with_executor(1000, &exec).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Failed to start user manager user@1000.service: boom")
+        );
+    }
+
+    #[test]
+    fn restart_user_manager_succeeds_even_if_runtime_dir_start_fails() {
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![
+                Err(NailsError::IoError(std::io::Error::other(
+                    "runtime-dir failed",
+                ))),
+                Ok((true, String::new(), String::new())),
+            ],
+            vec![],
+            true,
+        );
+
+        assert!(restart_user_manager_with_executor(1000, &exec).is_ok());
+    }
+
+    #[test]
+    fn restart_user_manager_starts_runtime_service_before_user_service() {
+        let exec = RecordingScriptedSessionCommandExecutor::new(
+            vec![
+                Ok((true, String::new(), String::new())),
+                Ok((true, String::new(), String::new())),
+            ],
+            vec![],
+            true,
+        );
+
+        assert!(restart_user_manager_with_executor(1000, &exec).is_ok());
+        assert_eq!(
+            exec.systemctl_calls(),
+            vec![
+                vec![
+                    "start".to_string(),
+                    "user-runtime-dir@1000.service".to_string()
+                ],
+                vec!["start".to_string(), "user@1000.service".to_string()],
+            ]
+        );
     }
 
     #[test]

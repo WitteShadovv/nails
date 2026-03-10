@@ -94,6 +94,7 @@ pub fn find_opaque_dirs(upper: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_find_opaque_dirs_nonexistent_path() {
@@ -104,6 +105,35 @@ mod tests {
     #[test]
     fn test_strip_opaque_xattrs_nonexistent_path() {
         let count = strip_opaque_xattrs(Path::new("/nonexistent/path/that/doesnt/exist"));
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_find_opaque_dirs_existing_empty_directory_returns_empty() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let result = find_opaque_dirs(temp_dir.path());
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_find_opaque_dirs_existing_tree_without_xattrs_returns_empty() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp_dir.path().join("nested/child")).unwrap();
+
+        let result = find_opaque_dirs(temp_dir.path());
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_strip_opaque_xattrs_existing_tree_without_xattrs_returns_zero() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp_dir.path().join("upper/etc/nixos")).unwrap();
+
+        let count = strip_opaque_xattrs(temp_dir.path());
+
         assert_eq!(count, 0);
     }
 }

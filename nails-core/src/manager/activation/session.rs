@@ -85,3 +85,97 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ActivateOptions, Config, MockFilesystem};
+    use serial_test::serial;
+    use std::path::PathBuf;
+
+    fn make_manager() -> NailsManager<MockFilesystem> {
+        NailsManager::new(
+            MockFilesystem::new(),
+            Config::test_default(),
+            PathBuf::from("/tmp/nails-session-state.json"),
+        )
+    }
+
+    fn clear_session_env() {
+        for key in [
+            "SSH_TTY",
+            "SSH_CONNECTION",
+            "NAILS_LOGIND_AVAILABLE",
+            "XDG_SESSION_ID",
+            "NAILS_SESSION_ID",
+            "NAILS_DISPLAY_MANAGER",
+            "NAILS_TARGET_UID",
+            "NAILS_TARGET_USER",
+            "XDG_SESSION_TYPE",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "SUDO_UID",
+            "SUDO_USER",
+            "PKEXEC_UID",
+        ] {
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
+    }
+
+    #[test]
+    fn handle_session_kill_returns_default_plan_when_disabled() {
+        let _manager = make_manager();
+        let options = ActivateOptions::default();
+
+        let plan = NailsManager::<MockFilesystem>::handle_session_kill(Verbosity::Quiet, &options)
+            .unwrap();
+
+        assert_eq!(plan, SessionRestartPlan::default());
+    }
+
+    #[test]
+    #[serial]
+    fn handle_session_kill_skips_ssh_sessions() {
+        clear_session_env();
+        unsafe {
+            std::env::set_var("SSH_CONNECTION", "1 2 3 4");
+            std::env::set_var("NAILS_LOGIND_AVAILABLE", "0");
+        }
+
+        let options = ActivateOptions {
+            kill_session: true,
+            yes: true,
+            ..ActivateOptions::default()
+        };
+
+        let plan = NailsManager::<MockFilesystem>::handle_session_kill(Verbosity::Normal, &options)
+            .unwrap();
+
+        assert_eq!(plan, SessionRestartPlan::default());
+        clear_session_env();
+    }
+
+    #[test]
+    #[serial]
+    fn handle_session_kill_skips_tty_sessions() {
+        clear_session_env();
+        unsafe {
+            std::env::set_var("XDG_SESSION_TYPE", "tty");
+            std::env::set_var("NAILS_LOGIND_AVAILABLE", "0");
+        }
+
+        let options = ActivateOptions {
+            kill_session: true,
+            yes: true,
+            ..ActivateOptions::default()
+        };
+
+        let plan = NailsManager::<MockFilesystem>::handle_session_kill(Verbosity::Normal, &options)
+            .unwrap();
+
+        assert_eq!(plan, SessionRestartPlan::default());
+        clear_session_env();
+    }
+}

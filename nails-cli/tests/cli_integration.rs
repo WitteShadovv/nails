@@ -402,6 +402,105 @@ fn test_status_command_executes_with_verbose() {
         .stdout(predicates::str::contains("State:"));
 }
 
+#[test]
+fn test_status_command_json_output() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["status", "--json"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"state\""))
+        .stdout(predicates::str::contains("\"security_posture\""));
+}
+
+#[test]
+fn test_status_command_plain_output() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["status", "--plain"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("NAILS Status Report"))
+        .stdout(predicates::str::contains("===="))
+        .stdout(predicates::str::contains("State:"));
+}
+
+#[test]
+fn test_verify_command_json_output() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["verify", "--json"])
+        .assert()
+        .code(1)
+        .stdout(predicates::str::contains("\"status\""))
+        .stdout(predicates::str::contains("\"findings\""));
+}
+
+#[test]
+fn test_verify_command_deep_json_output() {
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args(["verify", "--deep", "--json"])
+        .output()
+        .expect("failed to run deep verify command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    match output.status.code() {
+        Some(1) => {
+            assert!(stdout.contains("\"scan_depth\""));
+            assert!(stdout.contains("Deep"));
+        }
+        Some(2) => {
+            assert!(stderr.contains("Error running verification:"));
+        }
+        other => panic!("unexpected exit code: {other:?}\nstdout={stdout}\nstderr={stderr}"),
+    }
+}
+
+#[test]
+fn test_activate_interactive_fails_before_any_real_ops() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--interactive"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "--kill-session is non-interactive after detach; use --yes",
+        ));
+}
+
+#[test]
+fn test_activate_with_build_dir_config_hits_safety_guard() {
+    let config_file = create_test_config_file("/tmp/fake/target/debug/fake-hidden");
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args([
+        "--config",
+        config_file.path().to_str().unwrap(),
+        "activate",
+        "--no-kill-session",
+        "--no-preflight",
+    ])
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains("TEST SAFETY GUARD"));
+}
+
+#[test]
+fn test_emergency_with_build_dir_config_hits_safety_guard() {
+    let config_file = create_test_config_file("/tmp/fake/target/llvm-cov-target/fake-hidden");
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args([
+        "--config",
+        config_file.path().to_str().unwrap(),
+        "emergency",
+    ])
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains("TEST SAFETY GUARD"));
+}
+
 /// Test that activate command has --no-clear-history flag in help (AC3)
 #[test]
 fn test_activate_has_no_clear_history_flag() {

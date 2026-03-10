@@ -66,3 +66,88 @@ pub fn check_real_operations_allowed(hidden_volume_root: &std::path::Path) -> Re
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn allows_when_unsafe_env_is_set_even_for_build_dir() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::set_var("NAILS_UNSAFE_REAL_OPS", "1");
+        }
+
+        let result =
+            check_real_operations_allowed(Path::new("/tmp/project/target/debug/fake-hidden"));
+
+        unsafe {
+            std::env::remove_var("NAILS_UNSAFE_REAL_OPS");
+        }
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn blocks_target_debug_path_without_opt_in() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::remove_var("NAILS_UNSAFE_REAL_OPS");
+        }
+
+        let err = check_real_operations_allowed(Path::new("/tmp/project/target/debug/fake-hidden"))
+            .unwrap_err();
+
+        assert!(err.contains("TEST SAFETY GUARD"));
+        assert!(err.contains("/target/debug"));
+    }
+
+    #[test]
+    fn blocks_target_release_path_without_opt_in() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::remove_var("NAILS_UNSAFE_REAL_OPS");
+        }
+
+        let err =
+            check_real_operations_allowed(Path::new("/tmp/project/target/release/fake-hidden"))
+                .unwrap_err();
+
+        assert!(err.contains("TEST SAFETY GUARD"));
+        assert!(err.contains("/target/release"));
+    }
+
+    #[test]
+    fn blocks_llvm_cov_path_without_opt_in() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::remove_var("NAILS_UNSAFE_REAL_OPS");
+        }
+
+        let err = check_real_operations_allowed(Path::new(
+            "/tmp/project/target/llvm-cov-target/fake-hidden",
+        ))
+        .unwrap_err();
+
+        assert!(err.contains("TEST SAFETY GUARD"));
+        assert!(err.contains("/target/llvm-cov-target"));
+    }
+
+    #[test]
+    fn allows_non_build_path_without_opt_in() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::remove_var("NAILS_UNSAFE_REAL_OPS");
+        }
+
+        let result = check_real_operations_allowed(Path::new("/mnt/hidden-volume"));
+
+        assert!(result.is_ok());
+    }
+}

@@ -282,6 +282,106 @@ mod tests {
         }
     }
 
+    struct RecordingKillExecutor {
+        kill_calls: std::sync::Mutex<Vec<(u32, String)>>,
+        term_success: bool,
+        kill_success: bool,
+    }
+
+    impl RecordingKillExecutor {
+        fn new(term_success: bool, kill_success: bool) -> Self {
+            Self {
+                kill_calls: std::sync::Mutex::new(Vec::new()),
+                term_success,
+                kill_success,
+            }
+        }
+
+        fn kill_calls(&self) -> Vec<(u32, String)> {
+            self.kill_calls.lock().unwrap().clone()
+        }
+    }
+
+    impl CommandExecutor for RecordingKillExecutor {
+        fn execute_systemctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+            Ok((true, String::new(), String::new()))
+        }
+
+        fn execute_kill(&self, pid: u32, signal: &str) -> Result<bool> {
+            self.kill_calls
+                .lock()
+                .unwrap()
+                .push((pid, signal.to_string()));
+
+            Ok(match signal {
+                "TERM" => self.term_success,
+                "KILL" => self.kill_success,
+                _ => false,
+            })
+        }
+    }
+
+    struct ScriptedSystemctlExecutor {
+        responses: std::sync::Mutex<Vec<Result<(bool, String, String)>>>,
+        calls: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl ScriptedSystemctlExecutor {
+        fn new(responses: Vec<Result<(bool, String, String)>>) -> Self {
+            Self {
+                responses: std::sync::Mutex::new(responses),
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl CommandExecutor for ScriptedSystemctlExecutor {
+        fn execute_systemctl(&self, args: &[&str]) -> Result<(bool, String, String)> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+
+            self.responses.lock().unwrap().remove(0)
+        }
+
+        fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    struct FailingSystemctlExecutor;
+
+    impl CommandExecutor for FailingSystemctlExecutor {
+        fn execute_systemctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+            Err(crate::NailsError::IoError(std::io::Error::other(
+                "systemctl failed",
+            )))
+        }
+
+        fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    struct FailingKillExecutor;
+
+    impl CommandExecutor for FailingKillExecutor {
+        fn execute_systemctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+            Ok((true, String::new(), String::new()))
+        }
+
+        fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
+            Err(crate::NailsError::IoError(std::io::Error::other(
+                "kill failed",
+            )))
+        }
+    }
+
     fn make_test_process(name: &str, pid: u32, service: Option<String>) -> ProcessInfo {
         ProcessInfo {
             pid,
@@ -370,6 +470,18 @@ mod tests {
     }
 
     #[test]
+    fn test_restart_processes_with_executor_empty_input_returns_empty() {
+        let executor = MockCommandExecutor {
+            systemctl_success: true,
+            kill_success: true,
+        };
+
+        let results = restart_processes_with_executor(&[], &executor).unwrap();
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
     fn test_restart_method_enum() {
         assert_eq!(RestartMethod::Systemd, RestartMethod::Systemd);
         assert_eq!(RestartMethod::Signal, RestartMethod::Signal);
@@ -398,6 +510,69 @@ mod tests {
 
         // Test with unlikely PID (should not exist)
         assert!(!process_exists(99999999));
+    }
+
+    #[test]
+    fn test_restart_via_signal_term_only_when_pid_already_absent() {
+        let pid = 99_999_999;
+        let proc = make_test_process("missing-proc", pid, None);
+        let executor = RecordingKillExecutor::new(true, true);
+
+        let result = restart_via_signal(&proc, &executor).unwrap();
+
+        assert_eq!(result.restart_method, RestartMethod::Signal);
+        assert!(result.stopped_successfully);
+        assert_eq!(executor.kill_calls(), vec![(pid, "TERM".to_string())]);
+    }
+
+    #[test]
+    fn test_restart_via_signal_escalates_to_kill_when_process_still_exists() {
+        let pid = std::process::id();
+        let proc = make_test_process("current-proc", pid, None);
+        let executor = RecordingKillExecutor::new(true, true);
+
+        let result = restart_via_signal(&proc, &executor).unwrap();
+
+        assert_eq!(result.restart_method, RestartMethod::Signal);
+        assert!(result.stopped_successfully);
+        assert_eq!(
+            executor.kill_calls(),
+            vec![(pid, "TERM".to_string()), (pid, "KILL".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_restart_via_signal_goes_to_kill_when_term_command_fails() {
+        let pid = 42_424;
+        let proc = make_test_process("term-fails", pid, None);
+        let executor = RecordingKillExecutor::new(false, true);
+
+        let result = restart_via_signal(&proc, &executor).unwrap();
+
+        assert_eq!(result.restart_method, RestartMethod::Signal);
+        assert!(result.stopped_successfully);
+        assert_eq!(
+            executor.kill_calls(),
+            vec![(pid, "TERM".to_string()), (pid, "KILL".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_restart_processes_with_executor_propagates_systemctl_error() {
+        let processes = vec![make_test_process("svc", 12, Some("svc".to_string()))];
+
+        let result = restart_processes_with_executor(&processes, &FailingSystemctlExecutor);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_restart_processes_with_executor_propagates_kill_error() {
+        let processes = vec![make_test_process("daemon", 34, None)];
+
+        let result = restart_processes_with_executor(&processes, &FailingKillExecutor);
+
+        assert!(result.is_err());
     }
 
     // Socket-aware service stopping tests
@@ -431,6 +606,28 @@ mod tests {
         // Both calls were made
         let calls = executor.systemctl_calls();
         assert_eq!(calls.len(), 2);
+    }
+
+    #[test]
+    fn test_restart_systemd_service_ignores_socket_stop_error_and_stops_service() {
+        let proc = make_test_process("nix-daemon", 234, Some("nix-daemon".to_string()));
+        let executor = ScriptedSystemctlExecutor::new(vec![
+            Err(crate::NailsError::IoError(std::io::Error::other(
+                "socket stop failed",
+            ))),
+            Ok((true, String::new(), String::new())),
+        ]);
+
+        let result = restart_systemd_service(&proc, "nix-daemon", &executor).unwrap();
+
+        assert!(result.stopped_successfully);
+        assert_eq!(
+            executor.calls(),
+            vec![
+                vec!["stop".to_string(), "nix-daemon.socket".to_string()],
+                vec!["stop".to_string(), "nix-daemon".to_string()],
+            ]
+        );
     }
 
     #[test]

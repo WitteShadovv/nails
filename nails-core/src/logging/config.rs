@@ -123,6 +123,7 @@ impl LoggingConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::ErrorKind;
 
     #[test]
     fn test_logging_config_is_cloneable() {
@@ -141,5 +142,39 @@ mod tests {
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("LoggingConfig"));
         assert!(debug_str.contains("nails.log"));
+    }
+
+    #[test]
+    fn test_build_and_install_subscriber_returns_io_error_when_parent_missing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = LoggingConfig {
+            log_file_path: temp_dir.path().join("missing/logs/nails.log"),
+        };
+
+        let err = config
+            .build_and_install_subscriber(tracing::Level::INFO)
+            .unwrap_err();
+
+        match err {
+            NailsError::IoError(io) => assert_eq!(io.kind(), ErrorKind::NotFound),
+            other => panic!("expected IoError(NotFound), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_and_install_with_verbosity_propagates_open_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = LoggingConfig {
+            log_file_path: temp_dir.path().join("missing/logs/nails.log"),
+        };
+
+        let err = config
+            .build_and_install_with_verbosity(Verbosity::Normal)
+            .unwrap_err();
+
+        match err {
+            NailsError::IoError(io) => assert_eq!(io.kind(), ErrorKind::NotFound),
+            other => panic!("expected IoError(NotFound), got {other:?}"),
+        }
     }
 }

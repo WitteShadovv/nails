@@ -79,6 +79,7 @@ pub(crate) fn clean_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::ErrorKind;
 
     #[test]
     fn test_clean_path_no_traversal() {
@@ -125,6 +126,62 @@ mod tests {
         assert_eq!(
             clean_path(Path::new("/mnt/hidden-volume/")),
             PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
+        );
+    }
+
+    #[test]
+    fn test_is_permission_denied_matches_permission_denied_io_error() {
+        let err = NailsError::IoError(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "access denied",
+        ));
+
+        assert!(is_permission_denied(&err));
+    }
+
+    #[test]
+    fn test_is_permission_denied_rejects_other_io_error_kinds() {
+        let err = NailsError::IoError(std::io::Error::new(ErrorKind::NotFound, "missing"));
+
+        assert!(!is_permission_denied(&err));
+    }
+
+    #[test]
+    fn test_is_permission_denied_rejects_non_io_errors() {
+        let err = NailsError::ConfigError("bad config".to_string());
+
+        assert!(!is_permission_denied(&err));
+    }
+
+    #[test]
+    fn test_clean_path_relative_parent_components() {
+        assert_eq!(
+            clean_path(Path::new("logs/../audit/app.log")),
+            PathBuf::from("audit/app.log")
+        );
+    }
+
+    #[test]
+    fn test_clean_path_relative_leading_parent_is_dropped() {
+        assert_eq!(
+            clean_path(Path::new("../logs/app.log")),
+            PathBuf::from("logs/app.log")
+        );
+    }
+
+    #[test]
+    fn test_clean_path_absolute_cannot_escape_root() {
+        assert_eq!(
+            clean_path(Path::new("/../../etc/passwd")),
+            PathBuf::from("/etc/passwd")
+        );
+    }
+
+    #[test]
+    fn test_clean_path_mixed_dot_and_parent_components() {
+        assert_eq!(
+            clean_path(Path::new("/mnt/hidden-volume/logs/./../audit")),
+            PathBuf::from("/mnt/hidden-volume/audit")
         );
     }
 }

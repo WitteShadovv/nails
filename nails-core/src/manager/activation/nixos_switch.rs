@@ -126,3 +126,212 @@ impl<F: Filesystem> NailsManager<F> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nixos::NixOSBuilder;
+    use crate::{Config, MockFilesystem, StateFile, SystemState};
+    use serial_test::serial;
+    use std::fs;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    fn clear_system_profile_env() {
+        unsafe {
+            std::env::remove_var("NAILS_SYSTEM_PROFILE_PATH");
+        }
+    }
+
+    fn restore_path_env(old_path: Option<std::ffi::OsString>) {
+        if let Some(path) = old_path {
+            unsafe {
+                std::env::set_var("PATH", path);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("PATH");
+            }
+        }
+    }
+
+    fn write_executable_script(path: &std::path::Path, body: &str) {
+        fs::write(path, body).unwrap();
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).unwrap();
+    }
+
+    fn make_manager(
+        fs: MockFilesystem,
+        hidden_root: &std::path::Path,
+        builder: NixOSBuilder,
+    ) -> NailsManager<MockFilesystem> {
+        let state_path = hidden_root.join("state.json");
+        let manager = NailsManager::with_nixos(
+            fs,
+            Config {
+                hidden_volume_root: hidden_root.to_path_buf(),
+                state_file_path: state_path.clone(),
+                overlays: vec![],
+                ..Config::test_default()
+            },
+            state_path,
+            builder,
+        );
+        let mut cached = manager.cached_state.lock().unwrap();
+        *cached = Some(StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        });
+        drop(cached);
+        manager
+    }
+
+    #[test]
+    #[serial]
+    fn test_switch_nixos_profile_wraps_run_current_system_preparation_error() {
+        clear_system_profile_env();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path();
+        let profiles_dir = hidden_root.join("profiles");
+        let system_profile = profiles_dir.join("system");
+        let generation_dir = profiles_dir.join("system-123-link");
+        fs::create_dir_all(generation_dir.join("bin")).unwrap();
+
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
+        fs.mock_set_path_type(profiles_dir.to_str().unwrap(), "directory");
+        fs.mock_set_directory_contents(&profiles_dir, vec![generation_dir]);
+        fs.mock_set_path_exists("/run/current-system", true);
+        fs.mock_set_path_type("/run/current-system", "directory");
+
+        unsafe {
+            std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
+        }
+
+        let builder =
+            NixOSBuilder::new(hidden_root.join("config"), hidden_root.join("nails-system"));
+        let manager = make_manager(fs, hidden_root, builder);
+
+        let err = manager
+            .switch_nixos_profile(
+                &Some("123".to_string()),
+                &Some("fp".to_string()),
+                Verbosity::Quiet,
+            )
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("Failed to prepare /run/current-system for NixOS switch")
+        );
+        assert!(
+            err.to_string()
+                .contains("/run/current-system exists but is not a symlink")
+        );
+
+        clear_system_profile_env();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial]
+    fn test_switch_nixos_profile_fast_path_falls_back_and_persists_generation() {
+        clear_system_profile_env();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path();
+        let profiles_dir = hidden_root.join("profiles");
+        fs::create_dir_all(&profiles_dir).unwrap();
+        let system_profile = profiles_dir.join("system");
+        let system_generation = profiles_dir.join("system-123-link");
+        fs::create_dir_all(system_generation.join("bin")).unwrap();
+        write_executable_script(
+            &system_generation.join("bin/switch-to-configuration"),
+            "#!/bin/sh\nexit 1\n",
+        );
+        symlink(&system_generation, &system_profile).unwrap();
+        unsafe {
+            std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
+        }
+
+        let bin_dir = hidden_root.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let marker = hidden_root.join("rebuild-called");
+        write_executable_script(
+            &bin_dir.join("nixos-rebuild"),
+            &format!("#!/bin/sh\n: > '{}'\nexit 0\n", marker.display()),
+        );
+
+        let old_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", &bin_dir);
+        }
+
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
+        fs.mock_set_path_type(profiles_dir.to_str().unwrap(), "directory");
+        fs.mock_set_directory_contents(&profiles_dir, vec![system_generation.clone()]);
+
+        let builder =
+            NixOSBuilder::new(hidden_root.join("config"), hidden_root.join("nails-system"));
+        let manager = make_manager(fs.clone(), hidden_root, builder);
+
+        manager
+            .switch_nixos_profile(
+                &Some("123".to_string()),
+                &Some("new-fp".to_string()),
+                Verbosity::Quiet,
+            )
+            .unwrap();
+
+        assert!(marker.exists());
+        assert_eq!(
+            fs.mock_get_symlink_target(std::path::Path::new("/run/current-system")),
+            Some(system_generation)
+        );
+
+        let saved = StateFile::load(&hidden_root.join("state.json")).unwrap();
+        assert_eq!(saved.nixos_generation, Some("123".to_string()));
+        assert_eq!(saved.config_fingerprint, Some("new-fp".to_string()));
+
+        restore_path_env(old_path);
+        clear_system_profile_env();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial]
+    fn test_switch_nixos_profile_wraps_build_and_switch_nixos_errors() {
+        clear_system_profile_env();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path();
+        let bin_dir = hidden_root.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        write_executable_script(
+            &bin_dir.join("nixos-rebuild"),
+            "#!/bin/sh\nprintf 'boom\\n' 1>&2\nexit 2\n",
+        );
+
+        let old_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", &bin_dir);
+        }
+
+        let builder =
+            NixOSBuilder::new(hidden_root.join("config"), hidden_root.join("nails-system"));
+        let manager = make_manager(MockFilesystem::new(), hidden_root, builder);
+
+        let err = manager
+            .switch_nixos_profile(&None, &Some("fp".to_string()), Verbosity::Quiet)
+            .unwrap_err();
+        let err_text = err.to_string();
+        assert!(err_text.contains("NixOS build+switch failed:"));
+        assert!(err_text.contains("boom"));
+
+        restore_path_env(old_path);
+        clear_system_profile_env();
+    }
+}
