@@ -496,8 +496,14 @@ impl<F: Filesystem> NailsManager<F> {
             self.config.hidden_volume_root.clone(),
         )));
 
-        registry.add_check(Box::new(NixOSBuildTargetCheck::new(
+        let selected_flake_dir = self
+            .nixos_builder
+            .as_ref()
+            .and_then(|builder| builder.flake_dir().map(|path| path.to_path_buf()));
+
+        registry.add_check(Box::new(NixOSBuildTargetCheck::with_selected_flake_dir(
             self.config.nixos_flake.clone(),
+            selected_flake_dir,
             self.config.hidden_volume_root.clone(),
         )));
 

@@ -1601,6 +1601,141 @@ fn test_preflight_no_filesystem_changes_on_failure() {
     assert_eq!(loaded_state.state, SystemState::Inactive);
 }
 
+#[test]
+fn test_preflight_flake_builder_fails_when_default_flake_is_missing() {
+    use crate::NixOSBuilder;
+
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let mock_hidden_vol = temp_dir.path();
+    std::fs::create_dir_all(mock_hidden_vol).unwrap();
+    let state_path = mock_hidden_vol.join("state.json");
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+    fs.mock_set_mounted(mock_hidden_vol, true);
+    setup_nixos_config_check(&fs, mock_hidden_vol);
+
+    let overlays_dir = mock_hidden_vol.join("overlays");
+    let etc_dir = mock_hidden_vol.join("etc");
+    let home_dir = mock_hidden_vol.join("home");
+    let config_dir = mock_hidden_vol.join("config");
+    let nixos_dir = mock_hidden_vol.join("nixos");
+    let work_dir = mock_hidden_vol.join(".work");
+    let work_etc = work_dir.join("etc");
+    let work_home = work_dir.join("home");
+
+    std::fs::create_dir_all(&overlays_dir).unwrap();
+    std::fs::create_dir_all(&etc_dir).unwrap();
+    std::fs::create_dir_all(&home_dir).unwrap();
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&nixos_dir).unwrap();
+    std::fs::create_dir_all(&work_etc).unwrap();
+    std::fs::create_dir_all(&work_home).unwrap();
+
+    fs.mock_set_path_exists(etc_dir.to_str().unwrap(), true);
+    fs.mock_set_path_type(etc_dir.to_str().unwrap(), "directory");
+    fs.mock_set_path_exists(home_dir.to_str().unwrap(), true);
+    fs.mock_set_path_type(home_dir.to_str().unwrap(), "directory");
+    fs.mock_set_path_exists(config_dir.to_str().unwrap(), true);
+    fs.mock_set_path_type(config_dir.to_str().unwrap(), "directory");
+    fs.mock_set_path_exists(nixos_dir.to_str().unwrap(), true);
+    fs.mock_set_path_type(nixos_dir.to_str().unwrap(), "directory");
+    fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
+    fs.mock_set_path_type(work_etc.to_str().unwrap(), "directory");
+    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+    fs.mock_set_path_type(work_home.to_str().unwrap(), "directory");
+
+    fs.mock_set_swap_enabled(false);
+    fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let builder = NixOSBuilder::new(nixos_dir.clone(), mock_hidden_vol.join("nails-system"));
+    let manager = Arc::new(Mutex::new(NailsManager::with_nixos(
+        fs, config, state_path, builder,
+    )));
+
+    let result = NailsManager::activate(Arc::clone(&manager), false);
+    assert!(
+        result.is_err(),
+        "Activation should fail when flake.nix is missing"
+    );
+
+    match result.unwrap_err() {
+        NailsError::PreFlightCheckFailed(failures) => {
+            let (_, message) = failures
+                .iter()
+                .find(|(name, _)| name == "nixos-build-target")
+                .expect("nixos-build-target failure should be reported");
+            assert!(message.contains("flake.nix not found"));
+            assert!(message.contains(nixos_dir.to_str().unwrap()));
+        }
+        other => panic!("Expected PreFlightCheckFailed error, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_preflight_fails_when_explicit_flake_is_missing() {
+    use crate::NixOSBuilder;
+
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let mock_hidden_vol = temp_dir.path();
+    let explicit_flake_dir = temp_dir.path().join("explicit-flake");
+    std::fs::create_dir_all(mock_hidden_vol).unwrap();
+    std::fs::create_dir_all(&explicit_flake_dir).unwrap();
+    let state_path = mock_hidden_vol.join("state.json");
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
+    fs.mock_set_mounted(mock_hidden_vol, true);
+    fs.mock_set_path_exists(explicit_flake_dir.to_str().unwrap(), true);
+    fs.mock_set_path_exists(
+        &explicit_flake_dir.join("flake.nix").to_string_lossy(),
+        false,
+    );
+    setup_nixos_config_check(&fs, mock_hidden_vol);
+    fs.mock_set_swap_enabled(false);
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        nixos_flake: Some(format!("{}#host", explicit_flake_dir.display())),
+        ..Config::test_default()
+    };
+
+    let builder = NixOSBuilder::new_with_flake_ref(
+        format!("{}#host", explicit_flake_dir.display()),
+        mock_hidden_vol.join("nails-system"),
+    );
+    let manager = Arc::new(Mutex::new(NailsManager::with_nixos(
+        fs, config, state_path, builder,
+    )));
+
+    let result = NailsManager::activate(Arc::clone(&manager), false);
+    assert!(
+        result.is_err(),
+        "Activation should fail when explicit flake.nix is missing"
+    );
+
+    match result.unwrap_err() {
+        NailsError::PreFlightCheckFailed(failures) => {
+            let (_, message) = failures
+                .iter()
+                .find(|(name, _)| name == "nixos-build-target")
+                .expect("nixos-build-target failure should be reported");
+            assert!(message.contains("flake.nix not found"));
+            assert!(message.contains(explicit_flake_dir.to_str().unwrap()));
+        }
+        other => panic!("Expected PreFlightCheckFailed error, got {:?}", other),
+    }
+}
+
 // ========== Story 4.6: MountTracker Drop Trait and Edge Cases Tests ==========
 
 #[test]

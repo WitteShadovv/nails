@@ -5,7 +5,7 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Validates the NixOS build target reference will resolve
 ///
@@ -26,6 +26,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct NixOSBuildTargetCheck {
     nixos_flake: Option<String>,
+    selected_flake_dir: Option<PathBuf>,
     hidden_volume_root: PathBuf,
 }
 
@@ -39,6 +40,24 @@ impl NixOSBuildTargetCheck {
     pub fn new(nixos_flake: Option<String>, hidden_volume_root: PathBuf) -> Self {
         Self {
             nixos_flake,
+            selected_flake_dir: None,
+            hidden_volume_root,
+        }
+    }
+
+    /// Create a new NixOSBuildTargetCheck for a pre-selected flake build target.
+    ///
+    /// This is used when activation has already selected a flake directory via
+    /// auto-discovery. In that case preflight must validate the chosen flake
+    /// directly rather than falling back to legacy detection.
+    pub fn with_selected_flake_dir(
+        nixos_flake: Option<String>,
+        selected_flake_dir: Option<PathBuf>,
+        hidden_volume_root: PathBuf,
+    ) -> Self {
+        Self {
+            nixos_flake,
+            selected_flake_dir,
             hidden_volume_root,
         }
     }
@@ -82,6 +101,28 @@ impl NixOSBuildTargetCheck {
         Ok(CheckResult::Pass(format!(
             "Flake build target '{}' validated (attribute selection deferred to build time)",
             flake_ref
+        )))
+    }
+
+    fn check_selected_flake_dir<F: Filesystem>(&self, fs: &F, dir: &Path) -> Result<CheckResult> {
+        if !fs.path_exists(dir)? {
+            return Ok(CheckResult::Fail(format!(
+                "Flake directory '{}' not found.",
+                dir.display()
+            )));
+        }
+
+        let flake_nix = dir.join("flake.nix");
+        if !fs.path_exists(&flake_nix)? {
+            return Ok(CheckResult::Fail(format!(
+                "flake.nix not found in '{}'.",
+                dir.display()
+            )));
+        }
+
+        Ok(CheckResult::Pass(format!(
+            "Flake build target '{}' validated",
+            dir.display()
         )))
     }
 
@@ -140,6 +181,8 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSBuildTargetCheck {
     fn run(&self, fs: &F) -> Result<CheckResult> {
         if let Some(ref flake_ref) = self.nixos_flake {
             self.check_explicit_flake(fs, flake_ref)
+        } else if let Some(ref selected_flake_dir) = self.selected_flake_dir {
+            self.check_selected_flake_dir(fs, selected_flake_dir)
         } else {
             self.check_auto_discovery(fs)
         }
@@ -252,6 +295,43 @@ mod tests {
         assert!(result.is_fail());
         assert!(result.message().contains("flake.nix not found"));
         assert!(result.message().contains("/etc/nixos"));
+    }
+
+    #[test]
+    fn test_selected_flake_dir_no_flake_nix_does_not_fall_back_to_legacy() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/mnt/hidden/nixos", true);
+        fs.mock_set_path_exists("/mnt/hidden/nixos/flake.nix", false);
+        fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
+
+        let check = NixOSBuildTargetCheck::with_selected_flake_dir(
+            None,
+            Some(PathBuf::from("/mnt/hidden/nixos")),
+            PathBuf::from("/mnt/hidden"),
+        );
+        let result = check.run(&fs).unwrap();
+
+        assert!(result.is_fail());
+        assert!(result.message().contains("flake.nix not found"));
+        assert!(result.message().contains("/mnt/hidden/nixos"));
+        assert!(!result.message().contains("legacy"));
+    }
+
+    #[test]
+    fn test_selected_flake_dir_with_flake_nix_passes() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/mnt/hidden/nixos", true);
+        fs.mock_set_path_exists("/mnt/hidden/nixos/flake.nix", true);
+
+        let check = NixOSBuildTargetCheck::with_selected_flake_dir(
+            None,
+            Some(PathBuf::from("/mnt/hidden/nixos")),
+            PathBuf::from("/mnt/hidden"),
+        );
+        let result = check.run(&fs).unwrap();
+
+        assert!(result.is_pass());
+        assert!(result.message().contains("/mnt/hidden/nixos"));
     }
 
     // ========================================================================

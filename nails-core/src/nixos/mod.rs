@@ -39,7 +39,7 @@
 //! # Ok::<(), nails_core::NailsError>(())
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // Module declarations
 mod builder;
@@ -242,6 +242,14 @@ impl NixOSBuilder {
             flake_ref.clone()
         } else {
             self.config_path.to_string_lossy().into_owned()
+        }
+    }
+
+    pub(crate) fn flake_dir(&self) -> Option<&Path> {
+        if self.is_flake() {
+            Some(&self.config_path)
+        } else {
+            None
         }
     }
 }
