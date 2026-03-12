@@ -3,7 +3,7 @@
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust 1.93+](https://img.shields.io/badge/rust-1.93+-orange.svg)](https://www.rust-lang.org/)
 [![NixOS](https://img.shields.io/badge/NixOS-required-5277C3.svg)](https://nixos.org/)
-[![Test Pipeline](https://github.com/WitteShadovv/nails/actions/workflows/test.yml/badge.svg)](https://github.com/WitteShadovv/nails/actions/workflows/test.yml)
+[![CI](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml/badge.svg)](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml)
 [![Coverage: >=85%](https://img.shields.io/badge/coverage-%3E%3D85%25-brightgreen.svg)](CHANGELOG.md)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha-yellow.svg)](CHANGELOG.md)
 
@@ -19,6 +19,7 @@
 
 - [What Is NAILS?](#what-is-nails)
 - [How It Works](#how-it-works)
+- [Release Artifact Reproducibility](#release-artifact-reproducibility)
 - [Key Features](#key-features)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
@@ -146,6 +147,29 @@ result is bind-mounted over the original `/boot`. A preflight check validates th
 small enough (< 1 GB) to fit in RAM. This ensures `nixos-rebuild` writes new boot generations to
 the overlay rather than the real `/boot` — preventing boot failures when the hidden volume is
 absent.
+
+---
+
+## Release Artifact Reproducibility
+
+NAILS now has one canonical Nix-built release artifact for Linux:
+
+- flake attribute: `.#nails-release`
+- target: `x86_64-unknown-linux-musl`
+
+CI verifies this artifact by:
+
+- building the canonical release bundle with Nix
+- running `nix-store --realise --check` on the release derivation
+- rebuilding it in two independent GitHub Actions jobs
+- comparing the archive, checksums, and binary hash byte-for-byte
+
+This is evidence of deterministic output for the pinned source revision, build instructions, and
+tested CI environment. GitHub attestation provides provenance for the published artifact, but does
+not by itself prove reproducibility.
+
+For local rebuild instructions and the exact scope of the guarantee, see
+`docs/release-artifact-reproducibility.md`.
 
 ---
 
@@ -304,17 +328,21 @@ config with `hidden_volume_root`, or use `--config`.
 ### 1. Create the hidden configuration layout
 
 ```bash
-mkdir -p /mnt/hidden/config/nixos
-mkdir -p /mnt/hidden/etc/nixos
-cp /etc/nixos/hardware-configuration.nix /mnt/hidden/etc/nixos/hardware-configuration.nix
+mkdir -p /mnt/hidden-volume/etc/nixos
+cp /etc/nixos/hardware-configuration.nix /mnt/hidden-volume/etc/nixos/hardware-configuration.nix
 ```
 
-NAILS does not yet provide a `nails init` subcommand, so create these paths directly.
+NAILS does not yet provide a `nails init` subcommand, so create this base directory directly.
+On first activation, NAILS can bootstrap the rest of the hidden NixOS layout for you:
 
-Then make sure the hidden hardware config imports the hidden module:
+- it stages `/mnt/hidden-volume/etc/nixos/nails/configuration.nix`
+- it auto-generates `/mnt/hidden-volume/config/nixos/configuration.nix` if it is missing
+- it keeps using your copied hidden `hardware-configuration.nix` as the visible import anchor
+
+Then make sure the hidden hardware config imports the staged hidden module:
 
 ```bash
-$EDITOR /mnt/hidden/etc/nixos/hardware-configuration.nix
+$EDITOR /mnt/hidden-volume/etc/nixos/hardware-configuration.nix
 ```
 
 Add the hidden import to its `imports` list:
@@ -332,24 +360,36 @@ Add the hidden import to its `imports` list:
 If you want an explicit runtime config, place it at:
 
 ```bash
-$EDITOR /mnt/hidden/config/nails.yaml
+$EDITOR /mnt/hidden-volume/config/nails.yaml
 ```
 
 Minimal example:
 
 ```yaml
-hidden_volume_root: /mnt/hidden
+hidden_volume_root: /mnt/hidden-volume
 # Optional:
-# nixos_flake: /mnt/hidden/nixos#my-host
+# nixos_flake: /mnt/hidden-volume/nixos#my-host
 ```
 
 If `config/nails.yaml` is missing, NAILS falls back to binary-relative discovery.
 
-### 2. Write your hidden NixOS configuration
+### 2. Optional: write your hidden NixOS configuration
 
 ```bash
-$EDITOR /mnt/hidden/config/nixos/configuration.nix
+$EDITOR /mnt/hidden-volume/config/nixos/configuration.nix
 ```
+
+If this file does not exist, NAILS auto-generates a minimal hidden module:
+
+```nix
+{ pkgs, ... }: {
+  environment.systemPackages = [ pkgs.ripgrep ];
+}
+```
+
+That keeps activation working out of the box and adds one hidden-only smoke-test package that is not
+present in the decoy base system. If you want a real hidden environment, replace that generated
+file with your own module before the next activation.
 
 Example `configuration.nix`:
 
@@ -387,7 +427,7 @@ Current build-target selection is:
 If you want NAILS to build from a hidden flake, place it at:
 
 ```bash
-$EDITOR /mnt/hidden/nixos/flake.nix
+$EDITOR /mnt/hidden-volume/nixos/flake.nix
 ```
 
 If you need an explicit flake reference or attribute, use `--flake /absolute/path#attr` or set
@@ -492,7 +532,7 @@ After the reboot, log into your decoy account again, then unmount the hidden sto
 ordinary decoy use:
 
 ```bash
-veracrypt --dismount /mnt/hidden
+veracrypt --dismount /mnt/hidden-volume
 ```
 
 ### 8. Verify from the decoy side
@@ -537,11 +577,12 @@ Options:
 
 **What activation does:**
 1. Runs pre-flight checks unless explicitly skipped
-2. Stages the hidden NixOS config symlink and validates the hidden storage layout
-3. May kill the graphical session and continue from a detached systemd worker
-4. Mounts overlays and applies the hidden NixOS configuration
-5. Uses `--flake`, then hidden `nixos/flake.nix`, then `/etc/nixos/flake.nix`, then legacy `/etc/nixos/configuration.nix`
-6. Leaves you in the hidden environment after you log in again if session kill was used
+2. Validates that the hidden storage is already mounted and writable; NAILS does not unlock or mount it for you
+3. Bootstraps missing hidden NixOS files where possible, including the staged hidden config symlink and the minimal hidden module
+4. May kill the graphical session and continue from a detached systemd worker
+5. Mounts overlays and applies the hidden NixOS configuration
+6. Uses `--flake`, then hidden `nixos/flake.nix`, then `/etc/nixos/flake.nix`, then legacy `/etc/nixos/configuration.nix`
+7. Leaves you in the hidden environment after you log in again if session kill was used
 
 ### `nails deactivate`
 
@@ -635,6 +676,10 @@ warnings. `--deep` adds scans of `/tmp`, `/var/tmp`, `/var/log`, and common shel
 Treat a clean result as a check for known/common artifacts, not a proof that no trace is
 recoverable.
 
+For an operator-facing baseline: after rebooting back into decoy state and dismounting hidden
+storage, `nails verify` should no longer report active overlay findings. During an active hidden
+session it should report mounted overlays as critical.
+
 ## Common Workflows
 
 ### Check the current state
@@ -702,6 +747,9 @@ NAILS can run without a config file. If none is found, it uses built-in defaults
 > **Important:** Auto-derivation does **not** trust build/store locations such as `target/debug`,
 > `target/release`, `target/llvm-cov-target`, or `/nix/store`. In those cases NAILS falls back to
 > `/mnt/hidden-volume` unless you set `hidden_volume_root` explicitly.
+
+Examples in this README use `/mnt/hidden-volume` consistently because that is also the built-in
+fallback root when automatic discovery cannot trust the binary location.
 
 ### Manual Configuration (`config/nails.yaml`)
 
@@ -894,11 +942,20 @@ If auto-discovery is used, NAILS checks in this order:
 
 A few important details:
 
+- Operator-managed prerequisites:
+  - the hidden backend is already mounted
+  - `<hidden_volume_root>/etc/nixos/` exists
+  - optional `config/nails.yaml` and optional hidden flake/custom hidden module
+- NAILS-generated or staged files:
+  - `config/nixos/configuration.nix` if missing
+  - `etc/nixos/nails/configuration.nix` symlink
+  - hidden upper/work directories such as `home/`, `etc/`, `var/`, and `.work/`
 - The current layout uses root-level upper directories such as `home/`, `etc/`, `var/`, and `boot/` - not `overlays/<name>/upper/`.
 - OverlayFS work directories live under `.work/<name>/`.
 - Runtime state lives at `state.json` in the hidden-volume root.
 - `config/nails.yaml` is optional.
 - `config/nixos/configuration.nix` is the hidden module imported into the overlaid NixOS config path.
+- If `config/nixos/configuration.nix` is auto-generated, it currently installs `pkgs.ripgrep` as a minimal hidden-only package so first activation has a visible hidden-side smoke test.
 - If you use flakes, the hidden flake auto-discovery location is `nixos/flake.nix`.
 - `extended_overlays` are RAM-backed and therefore do not appear in the persistent on-disk tree above.
 
@@ -1067,6 +1124,15 @@ RUST_LOG=debug cargo test
 
 # Run integration tests only
 cargo test --test '*'
+
+# Run the local NixOS VM e2e suite
+./scripts/run-e2e-tests.sh
+
+# Run the CI smoke subset locally
+./scripts/run-e2e-tests.sh ci
+
+# Run a single e2e test interactively
+./scripts/run-e2e-tests.sh -i verify
 ```
 
 > **No root required:** Most of the test suite runs without elevated privileges.
@@ -1118,15 +1184,14 @@ Hooks run automatically on `git commit`:
 
 ### CI/CD Pipeline
 
-The repository uses GitHub Actions for format, lint, test, coverage, audit, benchmark, and final
-status validation:
+The repository uses the following GitHub Actions workflows:
 
-```text
-format-check -> lint -> test -> coverage -> audit -> benchmark -> ci-success
-```
+- **CI** (`ci.yml`): formatting, linting, sharded tests, coverage enforcement, burn-in flaky detection, security audit, and benchmarks
+- **Release** (`release.yml`): deterministic Nix release builds with reproducibility verification
+- **Nix PR Verify** (`nix-pr-verify.yml`): quick `nix build` smoke test on every push/PR
+- **E2E** (`e2e-tests.yml`): NixOS VM tests; currently manual-trigger only
 
-All jobs must pass before merging. Coverage reports are uploaded as artifacts and
-posted as PR comments.
+For local parity with the E2E workflow, use `./scripts/run-e2e-tests.sh ci`.
 
 ### Contributing
 
@@ -1196,8 +1261,15 @@ grep overlay /proc/filesystems
 findmnt /nix
 
 # Verify hidden storage is mounted and writable
-ls -la /mnt/hidden/
+ls -la /mnt/hidden-volume/
 ```
+
+If activation fails early during hidden NixOS bootstrap:
+
+- create `<hidden_volume_root>/etc/nixos/` if it does not exist yet
+- verify `/etc/nixos/hardware-configuration.nix` exists on the decoy side so NAILS can copy or stage from it
+- verify either `/etc/nixos/configuration.nix` or `/etc/nixos/flake.nix` exists on the decoy side
+- if you replaced the generated hidden hardware config, make sure it imports `./nails/configuration.nix`
 
 ### Build errors
 

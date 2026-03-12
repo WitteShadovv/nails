@@ -1,40 +1,28 @@
 name: CI
 
 on:
-  pull_request:
   push:
     branches:
       - main
-      - develop
+      - dev
+  pull_request:
+    branches:
+      - main
+      - dev
+  schedule:
+    # Run burn-in weekly (Sundays at 2am UTC)
+    - cron: "0 2 * * 0"
+  workflow_dispatch:
 
 env:
-  CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
   COVERAGE_THRESHOLD: 85
 
 jobs:
-  # Job 1: Format Check
-  format-check:
-    name: Format Check
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
-        with:
-          toolchain: 1.93.0
-          components: rustfmt
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-  # Job 2: Lint
+  # Stage 1: Lint and format checks
   lint:
-    name: Clippy Lint
+    name: Lint & Format
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -46,21 +34,25 @@ jobs:
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           toolchain: 1.93.0
-          components: clippy
+          components: rustfmt, clippy
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97
         with:
           shared-key: "lint"
 
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-  # Job 3: Test
-  test:
-    name: Test Suite
+  # Stage 2: Security audit for dependency vulnerabilities
+  audit:
+    name: Security Audit
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
+    needs: lint
 
     steps:
       - name: Checkout code
@@ -74,26 +66,81 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97
         with:
-          shared-key: "test"
+          shared-key: "audit"
 
-      - name: Run tests
-        run: cargo test --all-features --workspace
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Generate audit report (JSON)
+        run: |
+          mkdir -p target
+          cargo audit --json > target/audit-report.json 2>&1 || true
+
+      - name: Run security audit
+        run: cargo audit
+
+      - name: Upload audit results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: audit-report
+          path: target/audit-report.json
+          retention-days: 30
+
+  # Stage 3: Test execution with parallel sharding
+  test:
+    name: Test (Shard ${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: 1.93.0
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97
+        with:
+          shared-key: "test-shard-${{ matrix.shard }}"
+
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked
+
+      - name: Run tests (shard ${{ matrix.shard }}/4)
+        run: |
+          cargo nextest run \
+            --partition count:${{ matrix.shard }}/4 \
+            --no-fail-fast \
+            --status-level all
 
       - name: Upload test results on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: test-results
+          name: test-results-shard-${{ matrix.shard }}
           path: |
+            target/nextest/**/*.xml
             target/debug/**/*.log
           retention-days: 30
 
-  # Job 4: Coverage
+  # Stage 4: Coverage enforcement (85% required for TDD)
   coverage:
-    name: Code Coverage
+    name: Coverage Enforcement
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: test
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - name: Checkout code
@@ -136,6 +183,20 @@ jobs:
             --cobertura --output-path ./coverage/cobertura.xml \
             --no-run
 
+      - name: Enforce 85% coverage threshold
+        run: |
+          COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' coverage/cobertura.xml | head -1)
+          COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc)
+
+          echo "Coverage: ${COVERAGE_PCT}%"
+          echo "Required: ${COVERAGE_THRESHOLD}%"
+          echo "COVERAGE_PCT=${COVERAGE_PCT}" >> "$GITHUB_ENV"
+
+          if (( $(echo "$COVERAGE_PCT < $COVERAGE_THRESHOLD" | bc -l) )); then
+            echo "Coverage below threshold: ${COVERAGE_PCT}% < ${COVERAGE_THRESHOLD}%"
+            exit 1
+          fi
+
       - name: Upload coverage report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -143,20 +204,12 @@ jobs:
           path: coverage/
           retention-days: 30
 
-      - name: Extract coverage percentage
-        run: |
-          COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' coverage/cobertura.xml | head -1)
-          COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc)
-          echo "COVERAGE_PCT=${COVERAGE_PCT}" >> "$GITHUB_ENV"
-          echo "📊 Coverage: ${COVERAGE_PCT}%"
-
-      - name: Check coverage threshold
-        run: |
-          if (( $(echo "$COVERAGE_PCT < 85" | bc -l) )); then
-            echo "❌ Coverage below threshold: ${COVERAGE_PCT}% < 85%"
-            exit 1
-          fi
-          echo "✅ Coverage meets threshold: ${COVERAGE_PCT}%"
+      - name: Upload coverage to Codecov
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238
+        with:
+          files: ./coverage/cobertura.xml
+          fail_ci_if_error: false
 
       - name: Post coverage comment to PR
         if: github.event_name == 'pull_request'
@@ -164,20 +217,25 @@ jobs:
         with:
           header: coverage
           message: |
-            ## 📊 Code Coverage Report
+            ## Code Coverage Report
 
             **Coverage:** ${{ env.COVERAGE_PCT }}%
-            **Threshold:** 85%
+            **Threshold:** ${{ env.COVERAGE_THRESHOLD }}%
 
-            ${{ env.COVERAGE_PCT == '85' && '✅ Coverage meets requirements' || '❌ Coverage below threshold - TDD requires 85%' }}
+            ${{ env.COVERAGE_PCT >= env.COVERAGE_THRESHOLD && 'Coverage meets requirements' || 'Coverage below threshold' }}
 
             [View full report](../actions/runs/${{ github.run_id }})
 
-  # Job 5: Security Audit
-  audit:
-    name: Security Audit
+  # Stage 5: Burn-in loop for flaky test detection
+  burn-in:
+    name: Burn-In Loop (Flaky Detection)
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 60
+    needs: coverage
+    if: |
+      github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request' && contains(fromJson('["main", "dev"]'), github.base_ref)) ||
+      github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout code
@@ -191,20 +249,35 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97
         with:
-          shared-key: "audit"
+          shared-key: "burn-in"
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      - name: Run burn-in loop (10 iterations)
+        run: |
+          for i in {1..10}; do
+            echo "Burn-in iteration $i/10"
+            if ! cargo test --all-features --workspace; then
+              echo "FLAKY TEST DETECTED on iteration $i/10"
+              exit 1
+            fi
+          done
+          echo "All 10 iterations passed - no flaky tests detected"
 
-      - name: Run security audit
-        run: cargo audit
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: burn-in-failures
+          path: |
+            target/debug/**/*.log
+            target/tmp/**
+          retention-days: 30
 
-  # Job 6: Benchmark
-  benchmark:
+  # Stage 6: Performance benchmarks (Criterion)
+  benchmarks:
     name: Performance Benchmarks
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # Only run on main branch or manual trigger
+    needs: test
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
 
     steps:
@@ -219,27 +292,17 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97
         with:
-          shared-key: "benchmark"
+          shared-key: "benchmarks"
 
       - name: Check if benchmarks are real
         run: |
           if grep -q "placeholder" benches/performance.rs; then
-            echo "⚠️ Benchmarks are placeholder, skipping benchmark execution"
-            echo "Real benchmarks will be implemented in Epic 4 (Activation Command)"
+            echo "Benchmarks are placeholder, skipping"
             exit 0
           fi
 
       - name: Run benchmarks
         run: cargo bench --all-features
-
-      - name: Check performance targets (RQ2)
-        run: |
-          echo "🎯 Performance Targets (RQ2):"
-          echo "  - Activation: p95 < 5.0s"
-          echo "  - Emergency: p95 < 3.0s"
-          echo "  - Status: p95 < 500ms"
-          echo ""
-          echo "📊 Benchmark results available in target/criterion/"
 
       - name: Upload benchmark results
         if: success()
@@ -249,44 +312,45 @@ jobs:
           path: target/criterion/
           retention-days: 90
 
-  # Final validation
+  # Final status check
   ci-success:
     name: CI Success
     runs-on: ubuntu-24.04
-    needs: [format-check, lint, test, coverage, audit, benchmark]
+    needs: [lint, audit, test, coverage, burn-in, benchmarks]
     if: always()
 
     steps:
-      - name: Validate all jobs passed
+      - name: Check all jobs passed
         run: |
-          if [[ "${{ needs.format-check.result }}" != "success" ]]; then
-            echo "❌ Format check failed"
-            exit 1
-          fi
-
           if [[ "${{ needs.lint.result }}" != "success" ]]; then
-            echo "❌ Clippy lint failed"
-            exit 1
-          fi
-
-          if [[ "${{ needs.test.result }}" != "success" ]]; then
-            echo "❌ Tests failed"
-            exit 1
-          fi
-
-          if [[ "${{ needs.coverage.result }}" != "success" ]]; then
-            echo "❌ Coverage below 85% threshold"
+            echo "Lint job failed"
             exit 1
           fi
 
           if [[ "${{ needs.audit.result }}" != "success" ]]; then
-            echo "❌ Security audit failed (vulnerabilities detected)"
+            echo "Security audit failed"
             exit 1
           fi
 
-          # Benchmark is optional (may be skipped if placeholder)
-          if [[ "${{ needs.benchmark.result }}" == "failure" ]]; then
-            echo "⚠️ Benchmarks failed (non-blocking for now)"
+          if [[ "${{ needs.test.result }}" != "success" ]]; then
+            echo "Test job failed"
+            exit 1
           fi
 
-          echo "✅ All required CI checks passed!"
+          if [[ "${{ needs.coverage.result }}" != "success" ]]; then
+            echo "Coverage job failed (85% required)"
+            exit 1
+          fi
+
+          # burn-in and benchmarks are conditional (may be skipped)
+          if [[ "${{ needs.burn-in.result }}" == "failure" ]]; then
+            echo "Burn-in detected flaky tests"
+            exit 1
+          fi
+
+          if [[ "${{ needs.benchmarks.result }}" == "failure" ]]; then
+            echo "Benchmarks failed"
+            exit 1
+          fi
+
+          echo "All CI checks passed"

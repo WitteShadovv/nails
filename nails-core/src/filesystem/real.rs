@@ -14,6 +14,7 @@
 
 use super::{Filesystem, MountInfo, verify_mount_preconditions};
 use crate::{NailsError, Result};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 // ============================================================================
@@ -434,6 +435,7 @@ impl Filesystem for RealFilesystem {
     fn nails_process_running(&self) -> Result<bool> {
         // Scan /proc for nails-related processes
         let proc_path = Path::new("/proc");
+        let excluded_pids = collect_ancestor_pids();
 
         if !proc_path.exists() {
             // Not on Linux or /proc not mounted
@@ -448,9 +450,19 @@ impl Filesystem for RealFilesystem {
 
                 // Check if it's a numeric PID directory
                 if pid_dir.is_some_and(|p| p.chars().all(|c| c.is_ascii_digit())) {
+                    let pid = match pid_dir.and_then(|p| p.parse::<u32>().ok()) {
+                        Some(pid) => pid,
+                        None => continue,
+                    };
+
+                    if excluded_pids.contains(&pid) {
+                        continue;
+                    }
+
                     let cmdline_path = entry_path.join("cmdline");
 
-                    if let Ok(cmdline) = std::fs::read_to_string(&cmdline_path) {
+                    if let Ok(cmdline_bytes) = std::fs::read(&cmdline_path) {
+                        let cmdline = String::from_utf8_lossy(&cmdline_bytes).replace('\0', " ");
                         // Check if cmdline contains "nails"
                         if cmdline.to_lowercase().contains("nails") {
                             return Ok(true);
@@ -1009,6 +1021,39 @@ impl Filesystem for RealFilesystem {
         // Sort for consistent ordering
         results.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(results)
+    }
+}
+
+fn collect_ancestor_pids() -> HashSet<u32> {
+    let mut pids = HashSet::new();
+    let mut current = std::process::id();
+
+    loop {
+        pids.insert(current);
+        if current <= 1 {
+            break;
+        }
+
+        match read_ppid(current) {
+            Some(ppid) if ppid != current => current = ppid,
+            _ => break,
+        }
+    }
+
+    pids
+}
+
+fn read_ppid(pid: u32) -> Option<u32> {
+    let stat_path = format!("/proc/{pid}/stat");
+    let content = std::fs::read_to_string(stat_path).ok()?;
+    let after_comm = content.rfind(')')? + 1;
+    let remainder = &content[after_comm..];
+    let fields: Vec<&str> = remainder.split_whitespace().collect();
+
+    if fields.len() >= 2 {
+        fields[1].parse().ok()
+    } else {
+        None
     }
 }
 

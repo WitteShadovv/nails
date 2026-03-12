@@ -40,8 +40,8 @@ fn test_mount_overlay_succeeds_with_valid_paths() {
 }
 
 #[test]
-fn test_mount_overlay_fails_if_target_already_mounted() {
-    // GIVEN: MockFilesystem with target already mounted
+fn test_mount_overlay_fails_if_target_already_overlay_mounted() {
+    // GIVEN: MockFilesystem with target already overlay-mounted
     let fs = MockFilesystem::new();
     let target = Path::new("/home");
 
@@ -50,7 +50,7 @@ fn test_mount_overlay_fails_if_target_already_mounted() {
     fs.mock_set_path_exists("/mnt/hidden/upper", true);
     fs.mock_set_path_exists("/mnt/hidden/work", true);
 
-    fs.mock_set_mounted(target, true);
+    fs.mock_set_overlay_mounted(target, true);
 
     // WHEN: Attempting to mount overlay on same target
     let result = fs.mount_overlay(
@@ -66,6 +66,21 @@ fn test_mount_overlay_fails_if_target_already_mounted() {
         result.unwrap_err(),
         NailsError::AlreadyMounted { .. }
     ));
+}
+
+#[test]
+fn test_is_overlay_mounted_distinguishes_generic_mounts() {
+    let fs = MockFilesystem::new();
+    let target = Path::new("/home");
+
+    fs.mock_set_mounted(target, true);
+
+    assert!(fs.is_mounted(target).unwrap());
+    assert!(!fs.is_overlay_mounted(target).unwrap());
+
+    fs.mock_set_overlay_mounted(target, true);
+
+    assert!(fs.is_overlay_mounted(target).unwrap());
 }
 
 #[test]

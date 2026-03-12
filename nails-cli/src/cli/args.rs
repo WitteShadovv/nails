@@ -95,6 +95,10 @@ pub enum Commands {
         /// selection (e.g., /etc/nixos#amnesia-virtualbox).
         #[arg(long = "flake", value_name = "FLAKE_REF")]
         nixos_flake: Option<String>,
+
+        /// Mount overlays only, skip NixOS profile switch
+        #[arg(long)]
+        overlay_only: bool,
     },
     /// Deactivate and return to decoy state (unmount + cleanup)
     Deactivate {

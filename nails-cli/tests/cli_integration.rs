@@ -425,12 +425,28 @@ fn test_status_command_plain_output() {
 
 #[test]
 fn test_verify_command_json_output() {
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["verify", "--json"])
-        .assert()
-        .code(1)
-        .stdout(predicates::str::contains("\"status\""))
-        .stdout(predicates::str::contains("\"findings\""));
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args(["verify", "--json"])
+        .output()
+        .expect("failed to run verify command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let code = output.status.code();
+
+    // Exit code 0 = Secure, 1 = Warning/Critical, 2 = error
+    assert!(
+        code == Some(0) || code == Some(1),
+        "unexpected exit code: {:?}",
+        code
+    );
+    assert!(
+        stdout.contains("\"status\""),
+        "missing \"status\" in output"
+    );
+    assert!(
+        stdout.contains("\"findings\""),
+        "missing \"findings\" in output"
+    );
 }
 
 #[test]

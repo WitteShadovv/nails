@@ -30,6 +30,9 @@ use crate::error::{NailsError, Result};
 use crate::filesystem::Filesystem;
 use std::path::{Path, PathBuf};
 
+const AUTO_GENERATED_HIDDEN_CONFIGURATION: &str =
+    "{ pkgs, ... }: {\n  environment.systemPackages = [ pkgs.ripgrep ];\n}\n";
+
 /// NixOS configuration overlay information
 ///
 /// Contains paths to the key files in the NixOS configuration overlay.
@@ -189,6 +192,40 @@ pub fn prepare_nixos_config_overlay<F: Filesystem>(
     })
 }
 
+pub fn ensure_hidden_configuration_module<F: Filesystem>(fs: &F, hidden_path: &Path) -> Result<()> {
+    let config_dir = hidden_path.join("config/nixos");
+    let hidden_config = config_dir.join("configuration.nix");
+
+    if fs.path_exists(&hidden_config)? {
+        return Ok(());
+    }
+
+    fs.create_directory(&config_dir).map_err(|e| {
+        NailsError::NixOSError(format!(
+            "Failed to create hidden config directory {}: {}",
+            config_dir.display(),
+            e
+        ))
+    })?;
+
+    fs.write_file_content(&hidden_config, AUTO_GENERATED_HIDDEN_CONFIGURATION)
+        .map_err(|e| {
+            NailsError::NixOSError(format!(
+                "Failed to auto-generate hidden configuration.nix at {}: {}",
+                hidden_config.display(),
+                e
+            ))
+        })?;
+
+    tracing::info!(
+        path = %hidden_config.display(),
+        package = "ripgrep",
+        "Auto-generated minimal hidden configuration.nix"
+    );
+
+    Ok(())
+}
+
 /// Stage the hidden config symlink into the hidden /etc/nixos tree (Story 15.2)
 ///
 /// Creates `{hidden}/etc/nixos/nails/` directory (if missing) and a symlink
@@ -214,13 +251,7 @@ pub fn stage_hidden_config_symlink<F: Filesystem>(fs: &F, hidden_path: &Path) ->
     let symlink_path = nails_dir.join("configuration.nix");
     let symlink_target = hidden_path.join("config/nixos/configuration.nix");
 
-    // Ensure the hidden config exists before staging the link.
-    if !fs.path_exists(&symlink_target)? {
-        return Err(NailsError::NixOSError(format!(
-            "Hidden configuration.nix not found at {}",
-            symlink_target.display()
-        )));
-    }
+    ensure_hidden_configuration_module(fs, hidden_path)?;
 
     // Create {hidden}/etc/nixos/nails/ if it doesn't exist (idempotent)
     if !fs.path_exists(&nails_dir)? {
@@ -728,13 +759,23 @@ mod tests {
         // Setup hidden config
         fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
         fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
-        fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
-        fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", "file");
+        fs.mock_set_path_exists("/mnt", true);
+        fs.mock_set_path_type("/mnt", "directory");
+        fs.mock_set_writable("/mnt", true);
+        fs.mock_set_path_exists("/mnt/hidden", true);
+        fs.mock_set_path_type("/mnt/hidden", "directory");
+        fs.mock_set_writable("/mnt/hidden", true);
         let hidden_config = hidden_path.join("config/nixos/configuration.nix");
-        fs.write_file_content(&hidden_config, "{ }").unwrap();
 
         // Stage symlink
         stage_hidden_config_symlink(&fs, &hidden_path).unwrap();
+
+        assert!(
+            fs.path_exists(&hidden_config).unwrap(),
+            "hidden configuration should exist"
+        );
+        let generated = fs.read_file_content(&hidden_config).unwrap();
+        assert!(generated.contains("pkgs.ripgrep"));
 
         // Verify nails directory was created
         let nails_dir = hidden_path.join("etc/nixos/nails");
@@ -749,5 +790,48 @@ mod tests {
             fs.path_exists(&symlink_path).unwrap(),
             "symlink should exist"
         );
+    }
+
+    #[test]
+    fn test_ensure_hidden_configuration_module_creates_minimal_module() {
+        let fs = MockFilesystem::new();
+        let hidden_path = std::path::PathBuf::from("/mnt/hidden");
+        let hidden_root = hidden_path.clone();
+
+        fs.mock_set_path_exists("/mnt", true);
+        fs.mock_set_path_type("/mnt", "directory");
+        fs.mock_set_writable("/mnt", true);
+        fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
+        fs.mock_set_path_type(hidden_root.to_str().unwrap(), "directory");
+        fs.mock_set_writable(hidden_root.to_str().unwrap(), true);
+
+        ensure_hidden_configuration_module(&fs, &hidden_path).unwrap();
+
+        let hidden_config = hidden_path.join("config/nixos/configuration.nix");
+        let content = fs.read_file_content(&hidden_config).unwrap();
+        assert!(content.contains("environment.systemPackages"));
+        assert!(content.contains("pkgs.ripgrep"));
+        assert!(content.starts_with("{ pkgs, ... }"));
+    }
+
+    #[test]
+    fn test_ensure_hidden_configuration_module_preserves_existing_file() {
+        let fs = MockFilesystem::new();
+        let hidden_path = std::path::PathBuf::from("/mnt/hidden");
+        let hidden_config = hidden_path.join("config/nixos/configuration.nix");
+
+        fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
+        fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", "file");
+        fs.write_file_content(
+            &hidden_config,
+            "{ pkgs, ... }: { environment.systemPackages = [ pkgs.jq ]; }",
+        )
+        .unwrap();
+
+        ensure_hidden_configuration_module(&fs, &hidden_path).unwrap();
+
+        let content = fs.read_file_content(&hidden_config).unwrap();
+        assert!(content.contains("pkgs.jq"));
+        assert!(!content.contains("pkgs.ripgrep"));
     }
 }

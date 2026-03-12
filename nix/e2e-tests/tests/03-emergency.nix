@@ -16,8 +16,44 @@ in {
   testScript = _: ''
     import time
 
+    def write_headless_config(path):
+        machine.succeed(
+            """cat > %s <<'EOF'
+    hidden_volume_root: /mnt/hidden-volume
+    overlay_mode: explicit
+    overlays:
+      - name: etc
+        lower: /etc
+        upper: /mnt/hidden-volume/etc
+        work: /mnt/hidden-volume/.work/etc
+        target: /etc
+      - name: home
+        lower: /home
+        upper: /mnt/hidden-volume/home
+        work: /mnt/hidden-volume/.work/home
+        target: /home
+      - name: root
+        lower: /root
+        upper: /mnt/hidden-volume/root
+        work: /mnt/hidden-volume/.work/root
+        target: /root
+      - name: srv
+        lower: /srv
+        upper: /mnt/hidden-volume/srv
+        work: /mnt/hidden-volume/.work/srv
+        target: /srv
+      - name: tmp
+        lower: /tmp
+        upper: /mnt/hidden-volume/tmp
+        work: /mnt/hidden-volume/.work/tmp
+        target: /tmp
+    EOF""" % path
+        )
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
+    headless_config = "/tmp/nails-headless.yaml"
+    write_headless_config(headless_config)
 
     # Detect if running under QEMU TCG (software emulation) vs KVM hardware acceleration.
     # When QEMU uses TCG, /proc/cpuinfo model name contains "QEMU TCG CPU".
@@ -39,7 +75,7 @@ in {
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
     # Activate NAILS
-    machine.succeed("sudo nails activate")
+    machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
     print("✓ NAILS activated")
 
     # Create 100 secret files
@@ -117,7 +153,7 @@ in {
         print(f"\nCycle {cycle}/20:")
 
         # Reactivate
-        machine.succeed("sudo nails activate")
+        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
 
         # Recreate data
         machine.succeed("su - testuser -c 'for i in $(seq 1 100); do echo \"secret data $i\" > ~/secret_$i.txt; done'")

@@ -27,14 +27,16 @@ print_usage() {
     echo "  -i, --interactive  Run interactive test driver for debugging"
     echo ""
     echo "Arguments:"
-    echo "  TEST_NAME           Run specific test (basic-workflow, emergency, forensic-clean, snapshot-diff, performance)"
+    echo "  TEST_NAME           Run specific test (basic-workflow, verify, emergency, forensic-clean, snapshot-diff, performance, ci)"
     echo ""
     echo "Available tests:"
     echo "  basic-workflow      Basic activate/deactivate workflow test"
+    echo "  verify              Verify command contract test"
     echo "  emergency           Emergency deactivation <3s test"
     echo "  forensic-clean      Forensic cleanliness validation test"
     echo "  snapshot-diff       Snapshot comparison test"
     echo "  performance         Performance validation test"
+    echo "  ci                  CI smoke suite (basic-workflow, verify, emergency)"
     echo ""
     echo "If no test name is provided, all tests are run."
     echo ""
@@ -69,7 +71,13 @@ run_single_test() {
 
     cd "$PROJECT_ROOT"
 
-    if nix build ".#checks.x86_64-linux.e2e-$test_name" --no-link -L; then
+    if [ "$test_name" = "ci" ]; then
+        target=".#checks.x86_64-linux.e2e-ci"
+    else
+        target=".#checks.x86_64-linux.e2e-$test_name"
+    fi
+
+    if nix build "$target" --no-link -L; then
         echo -e "\n${GREEN}✓ Test '$test_name' PASSED${NC}\n"
         return 0
     else

@@ -215,6 +215,28 @@ impl MockFilesystem {
             mounts.insert(path.to_path_buf());
         } else {
             mounts.remove(path);
+            self.mounted_overlays.lock().unwrap().remove(path);
+        }
+    }
+
+    /// Set whether a path is mounted as an overlay filesystem.
+    pub fn mock_set_overlay_mounted(&self, path: &Path, mounted: bool) {
+        self.mock_set_mounted(path, mounted);
+
+        let mut overlays = self.mounted_overlays.lock().unwrap();
+        if mounted {
+            overlays.insert(
+                path.to_path_buf(),
+                MountInfo {
+                    lower: path.to_path_buf(),
+                    upper: PathBuf::from(format!("/mock-upper{}", path.display())),
+                    work: PathBuf::from(format!("/mock-work{}", path.display())),
+                    target: path.to_path_buf(),
+                    mounted_at: chrono::Utc::now(),
+                },
+            );
+        } else {
+            overlays.remove(path);
         }
     }
 
@@ -982,8 +1004,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn is_overlay_mounted(&self, target: &Path) -> Result<bool> {
-        // In mock, all tracked mounts represent overlay mounts
-        Ok(self.mounted.lock().unwrap().contains(target))
+        Ok(self.mounted_overlays.lock().unwrap().contains_key(target))
     }
 
     fn get_mount_info(&self, target: &Path) -> Option<MountInfo> {

@@ -76,7 +76,7 @@ impl<F: Filesystem> Verifier<F> {
         ];
 
         for mount_point in mount_points {
-            if self.filesystem.is_mounted(mount_point)? {
+            if self.filesystem.is_overlay_mounted(mount_point)? {
                 findings.push(
                     Finding::new(
                         Severity::Critical,

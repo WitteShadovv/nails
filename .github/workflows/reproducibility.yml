@@ -1,4 +1,4 @@
-name: Reproducibility
+name: Deterministic Release Verification
 
 on:
   workflow_call:
@@ -12,12 +12,22 @@ on:
         description: Flake attribute to build
         required: false
         type: string
-        default: ".#nails"
-      artifact-prefix:
-        description: Artifact name prefix
+        default: ".#nails-release"
+      canonical-artifact-name:
+        description: Artifact name for the canonical release bundle
         required: false
         type: string
-        default: nails-reproducibility
+        default: ""
+      artifact-prefix:
+        description: Artifact name prefix for rebuilds
+        required: false
+        type: string
+        default: nails-determinism
+      archive-name:
+        description: Expected release archive filename
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       git-ref:
@@ -29,12 +39,22 @@ on:
         description: Flake attribute to build
         required: false
         type: string
-        default: ".#nails"
-      artifact-prefix:
-        description: Artifact name prefix
+        default: ".#nails-release"
+      canonical-artifact-name:
+        description: Artifact name for the canonical release bundle
         required: false
         type: string
-        default: nails-reproducibility
+        default: ""
+      artifact-prefix:
+        description: Artifact name prefix for rebuilds
+        required: false
+        type: string
+        default: nails-determinism
+      archive-name:
+        description: Expected release archive filename
+        required: false
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -50,8 +70,10 @@ jobs:
       contents: read
     env:
       TARGET_REF: ${{ inputs.git-ref || github.sha }}
-      FLAKE_ATTR: ${{ inputs.flake-attr || '.#nails' }}
-      ARTIFACT_PREFIX: ${{ inputs.artifact-prefix || 'nails-reproducibility' }}
+      FLAKE_ATTR: ${{ inputs.flake-attr || '.#nails-release' }}
+      ARTIFACT_PREFIX: ${{ inputs.artifact-prefix || 'nails-determinism' }}
+      CANONICAL_ARTIFACT_NAME: ${{ inputs.canonical-artifact-name }}
+      EXPECTED_ARCHIVE_NAME: ${{ inputs.archive-name }}
 
     steps:
       - name: Checkout code
@@ -68,30 +90,39 @@ jobs:
             experimental-features = nix-command flakes
             accept-flake-config = false
 
-      - name: Build from source without substitutes
-        run: nix build -L "$FLAKE_ATTR" -o result --option accept-flake-config false --option substitute false
+      - name: Build release artifact bundle
+        run: nix build -L "$FLAKE_ATTR" -o result --option accept-flake-config false
 
-      - name: Package release artifact
+      - name: Verify same-runner determinism
+        run: |
+          drv=$(nix path-info --derivation "$FLAKE_ATTR")
+          nix-store --realise "$drv" --check -K
+
+      - name: Collect release bundle metadata
         run: |
           mkdir -p dist
-          source_date_epoch=""
-          version=""
-          version=$(python - <<'PY'
-          import tomllib
-          with open('Cargo.toml', 'rb') as fh:
-              data = tomllib.load(fh)
-          print(data['workspace']['package']['version'])
-          PY
-          )
-          source_date_epoch=$(git log -1 --format=%ct HEAD)
-          export SOURCE_DATE_EPOCH="$source_date_epoch"
-          ./.github/scripts/package-release.sh \
-            --binary result/bin/nails \
-            --version "$version" \
-            --target x86_64-unknown-linux-musl \
-            --out-dir dist
+          cp -R result/* dist/
 
-      - name: Upload reproducibility artifact
+          archive_name="$EXPECTED_ARCHIVE_NAME"
+          if [[ -z "$archive_name" ]]; then
+            archive_name=$(python - <<'PY'
+          from pathlib import Path
+          archives = sorted(Path('dist').glob('*.tar.gz'))
+          if len(archives) != 1:
+              raise SystemExit(f"expected exactly one archive, found {len(archives)}")
+          print(archives[0].name)
+          PY
+            )
+          fi
+
+          if [[ ! -f "dist/${archive_name}" ]]; then
+            echo "Expected archive dist/${archive_name} not found" >&2
+            exit 1
+          fi
+
+          printf '%s\n' "$archive_name" > dist/archive-name.txt
+
+      - name: Upload rebuild artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ env.ARTIFACT_PREFIX }}-${{ matrix.build_id }}
@@ -99,13 +130,15 @@ jobs:
           retention-days: 14
 
   compare:
-    name: Compare release artifacts
+    name: Compare release bundles
     runs-on: ubuntu-24.04
     needs: rebuild
     permissions:
       contents: read
     env:
-      ARTIFACT_PREFIX: ${{ inputs.artifact-prefix || 'nails-reproducibility' }}
+      ARTIFACT_PREFIX: ${{ inputs.artifact-prefix || 'nails-determinism' }}
+      CANONICAL_ARTIFACT_NAME: ${{ inputs.canonical-artifact-name }}
+      EXPECTED_ARCHIVE_NAME: ${{ inputs.archive-name }}
 
     steps:
       - name: Download build a
@@ -120,25 +153,61 @@ jobs:
           name: ${{ env.ARTIFACT_PREFIX }}-b
           path: artifacts/b
 
-      - name: Compare tarballs
+      - name: Download canonical artifact
+        if: env.CANONICAL_ARTIFACT_NAME != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ env.CANONICAL_ARTIFACT_NAME }}
+          path: artifacts/canonical
+
+      - name: Compare release bundle contents
         id: compare
         continue-on-error: true
         run: |
+          archive_name="$EXPECTED_ARCHIVE_NAME"
+          if [[ -z "$archive_name" ]]; then
+            archive_name=$(<artifacts/a/archive-name.txt)
+          fi
+
+          diff -u artifacts/a/archive-name.txt artifacts/b/archive-name.txt
+          diff -u artifacts/a/nails.sha256 artifacts/b/nails.sha256
           diff -u artifacts/a/SHA256SUMS artifacts/b/SHA256SUMS
-          archive_a=$(find artifacts/a -maxdepth 1 -name '*.tar.gz' -print -quit)
-          archive_b=$(find artifacts/b -maxdepth 1 -name '*.tar.gz' -print -quit)
-          cmp "$archive_a" "$archive_b"
+          diff -u artifacts/a/release-metadata.json artifacts/b/release-metadata.json
+          cmp "artifacts/a/${archive_name}" "artifacts/b/${archive_name}"
+
+          if [[ -n "$CANONICAL_ARTIFACT_NAME" ]]; then
+            diff -u artifacts/canonical/archive-name.txt artifacts/a/archive-name.txt
+            diff -u artifacts/canonical/archive-name.txt artifacts/b/archive-name.txt
+            diff -u artifacts/canonical/nails.sha256 artifacts/a/nails.sha256
+            diff -u artifacts/canonical/nails.sha256 artifacts/b/nails.sha256
+            diff -u artifacts/canonical/SHA256SUMS artifacts/a/SHA256SUMS
+            diff -u artifacts/canonical/SHA256SUMS artifacts/b/SHA256SUMS
+            diff -u artifacts/canonical/release-metadata.json artifacts/a/release-metadata.json
+            diff -u artifacts/canonical/release-metadata.json artifacts/b/release-metadata.json
+            cmp "artifacts/canonical/${archive_name}" "artifacts/a/${archive_name}"
+            cmp "artifacts/canonical/${archive_name}" "artifacts/b/${archive_name}"
+          fi
 
       - name: Generate diffoscope report
         if: steps.compare.outcome == 'failure'
         run: |
+          archive_name="$EXPECTED_ARCHIVE_NAME"
+          if [[ -z "$archive_name" ]]; then
+            archive_name=$(<artifacts/a/archive-name.txt)
+          fi
+
           mkdir -p diffoscope
-          archive_a=$(find artifacts/a -maxdepth 1 -name '*.tar.gz' -print -quit)
-          archive_b=$(find artifacts/b -maxdepth 1 -name '*.tar.gz' -print -quit)
+          left="artifacts/a/${archive_name}"
+          right="artifacts/b/${archive_name}"
+          if [[ -n "$CANONICAL_ARTIFACT_NAME" ]]; then
+            left="artifacts/canonical/${archive_name}"
+            right="artifacts/a/${archive_name}"
+          fi
+
           nix shell nixpkgs#diffoscope -c diffoscope \
             --text diffoscope/report.txt \
-            "$archive_a" \
-            "$archive_b"
+            "$left" \
+            "$right"
 
       - name: Upload diffoscope report
         if: steps.compare.outcome == 'failure'
@@ -151,5 +220,5 @@ jobs:
       - name: Fail on mismatch
         if: steps.compare.outcome == 'failure'
         run: |
-          echo "Reproducibility check failed" >&2
+          echo "Deterministic release verification failed" >&2
           exit 1

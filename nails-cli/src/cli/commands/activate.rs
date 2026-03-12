@@ -55,6 +55,7 @@ pub fn execute(
     accept_pivot_risks: bool,
     interactive: bool,
     nixos_flake: Option<String>,
+    overlay_only: bool,
     config_override: Option<std::path::PathBuf>,
     check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
 ) -> ! {
@@ -92,6 +93,7 @@ pub fn execute(
         verbosity: verbose,
         json,
         no_color,
+        overlay_only,
         skip_process_detection_override: None, // Use default test behavior
         session_kill_confirmed: false,
     };
@@ -153,7 +155,13 @@ pub fn execute(
     let filesystem = RealFilesystem;
     let nails_profile = std::path::PathBuf::from("/nix/var/nix/profiles/nails-system");
 
-    let manager = if let Some(ref flake_ref) = config.nixos_flake {
+    let manager = if overlay_only {
+        // --overlay-only: skip NixOS builder creation entirely
+        tracing::info!("Overlay-only mode: skipping NixOS profile switch");
+        Arc::new(Mutex::new(NailsManager::new(
+            filesystem, config, state_path,
+        )))
+    } else if let Some(ref flake_ref) = config.nixos_flake {
         // Explicit flake reference from --flake flag or config nixos_flake
         // Skip auto-discovery and use the provided reference directly
         tracing::info!(
@@ -244,7 +252,7 @@ pub fn execute(
 
         {
             let mgr = manager.lock().unwrap();
-            if let Err(e) = mgr.run_preflight_checks() {
+            if let Err(e) = mgr.run_preflight_checks(overlay_only) {
                 eprintln!("Error: {}", e);
                 std::process::exit(2);
             }

@@ -50,8 +50,9 @@ pub mod fingerprint;
 // Re-exports for public API
 pub use command::{CommandExecutor, RealCommandExecutor};
 pub use config::{
-    NixOSConfigInfo, contains_nails_import, ensure_nails_import_block, inject_import_block,
-    prepare_nixos_config_overlay, stage_hidden_config_symlink, verify_base_config_clean,
+    NixOSConfigInfo, contains_nails_import, ensure_hidden_configuration_module,
+    ensure_nails_import_block, inject_import_block, prepare_nixos_config_overlay,
+    stage_hidden_config_symlink, verify_base_config_clean,
 };
 pub use fingerprint::compute_config_fingerprint;
 
