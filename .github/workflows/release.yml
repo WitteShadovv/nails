@@ -189,7 +189,7 @@ jobs:
         if: steps.repo-visibility.outputs.visibility == 'public'
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
         with:
-          subject-checksums: dist/SHA256SUMS
+          subject-checksums: dist/checksums.txt
 
   publish-release:
     name: Publish GitHub release
@@ -223,9 +223,8 @@ jobs:
 
           gh release create "$ROLLING_TAG" \
             dist/*.tar.gz \
-            dist/SHA256SUMS \
-            dist/nails.sha256 \
-            dist/release-metadata.json \
+            dist/nails \
+            dist/checksums.txt \
             --target "$GITHUB_SHA" \
             --title "$RELEASE_NAME" \
             --notes-file "$notes_file" \
