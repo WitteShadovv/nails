@@ -3,7 +3,7 @@
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust 1.93+](https://img.shields.io/badge/rust-1.93+-orange.svg)](https://www.rust-lang.org/)
 [![NixOS](https://img.shields.io/badge/NixOS-required-5277C3.svg)](https://nixos.org/)
-[![Test Pipeline](https://github.com/WitteShadovv/nails/actions/workflows/test.yml/badge.svg)](https://github.com/WitteShadovv/nails/actions/workflows/test.yml)
+[![CI](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml/badge.svg)](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml)
 [![Coverage: >=85%](https://img.shields.io/badge/coverage-%3E%3D85%25-brightgreen.svg)](CHANGELOG.md)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha-yellow.svg)](CHANGELOG.md)
 
@@ -1184,11 +1184,12 @@ Hooks run automatically on `git commit`:
 
 ### CI/CD Pipeline
 
-The repository currently uses multiple GitHub Actions workflows rather than one linear pipeline:
+The repository uses the following GitHub Actions workflows:
 
-- Rust/test workflow for formatting, linting, unit tests, and coverage-related checks
-- Nix verification workflow for flake builds and reproducibility-oriented validation
-- E2E workflow for NixOS VM coverage; GitHub currently runs the `e2e-ci` smoke subset
+- **CI** (`ci.yml`): formatting, linting, sharded tests, coverage enforcement, burn-in flaky detection, security audit, and benchmarks
+- **Release** (`release.yml`): deterministic Nix release builds with reproducibility verification
+- **Nix PR Verify** (`nix-pr-verify.yml`): quick `nix build` smoke test on every push/PR
+- **E2E** (`e2e-tests.yml`): NixOS VM tests; currently manual-trigger only while fixes are in progress
 
 For local parity with the E2E workflow, use `./scripts/run-e2e-tests.sh ci`.
 
