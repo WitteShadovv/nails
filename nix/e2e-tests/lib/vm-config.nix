@@ -12,6 +12,10 @@
     # Secondary disk for hidden volume simulation (2GB)
     # Available as /dev/vdb inside the VM
     emptyDiskImages = [ 2048 ];
+
+    # Keeping restrictNetwork = false is harmless and avoids the QEMU "-net none"
+    # flag that can interfere with the test framework's own virtual network.
+    restrictNetwork = false;
   };
 
   # No swap for forensic safety
@@ -38,8 +42,12 @@
     util-linux # For mount operations
   ];
 
-  # Disable firewall for simpler testing
-  networking.firewall.enable = false;
+  # Networking: disable firewall, basic config for test framework management connection
+  networking = {
+    firewall.enable = false;
+    usePredictableInterfaceNames = false;
+    useDHCP = true;
+  };
 
   # Enable SSH for debugging (optional)
   services.openssh.enable = true;

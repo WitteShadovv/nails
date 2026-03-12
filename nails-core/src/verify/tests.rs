@@ -79,7 +79,7 @@ fn test_comprehensive_scan_with_all_check_types() {
     let verifier = Verifier::new(fs.clone());
 
     // Set up findings from all check types
-    fs.mock_set_mounted(std::path::Path::new("/home"), true); // mount
+    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true); // mount
     fs.mock_set_path_exists("/tmp/nails.log", true); // file
     fs.mock_set_swap_enabled(true); // memory
     fs.mock_set_path_exists("/root/.bash_history", true); // deep scan
@@ -175,7 +175,7 @@ fn test_overlay_mount_detection() {
     let verifier = Verifier::new(fs.clone());
 
     // Set up a mounted overlay
-    fs.mock_set_mounted(std::path::Path::new("/home"), true);
+    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true);
 
     let result = verifier.run(false).unwrap();
     assert_eq!(result.status, VerifyStatus::Critical);
@@ -302,8 +302,8 @@ fn test_multiple_critical_findings() {
     let verifier = Verifier::new(fs.clone());
 
     // Set up multiple critical issues
-    fs.mock_set_mounted(std::path::Path::new("/home"), true);
-    fs.mock_set_mounted(std::path::Path::new("/etc"), true);
+    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true);
+    fs.mock_set_overlay_mounted(std::path::Path::new("/etc"), true);
 
     let result = verifier.run(false).unwrap();
     assert_eq!(result.status, VerifyStatus::Critical);
@@ -322,7 +322,7 @@ fn test_status_determination_priority() {
     let verifier = Verifier::new(fs.clone());
 
     // Set up both critical and warning findings
-    fs.mock_set_mounted(std::path::Path::new("/home"), true); // Critical
+    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true); // Critical
     fs.mock_set_path_exists("/tmp/nails.log", true); // Warning
 
     let result = verifier.run(false).unwrap();
@@ -359,7 +359,7 @@ fn test_ac9_overlay_mounted_critical_exit_1() {
     let fs = MockFilesystem::new();
     let verifier = Verifier::new(fs.clone());
 
-    fs.mock_set_mounted(std::path::Path::new("/home"), true);
+    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true);
 
     let result = verifier.run(false).unwrap();
 
@@ -465,8 +465,8 @@ fn test_ac9_multiple_findings_all_reported() {
     let verifier = Verifier::new(fs.clone());
 
     // Set up multiple findings
-    fs.mock_set_mounted(std::path::Path::new("/home"), true);
-    fs.mock_set_mounted(std::path::Path::new("/etc"), true);
+    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true);
+    fs.mock_set_overlay_mounted(std::path::Path::new("/etc"), true);
     fs.mock_set_path_exists("/tmp/nails.log", true);
     fs.mock_set_path_exists("/tmp/nails.toml", true);
 
@@ -762,9 +762,9 @@ fn test_check_all_overlay_mount_points() {
     let verifier = Verifier::new(fs.clone());
 
     // Set up all three overlay mount points
-    fs.mock_set_mounted(std::path::Path::new("/home"), true);
-    fs.mock_set_mounted(std::path::Path::new("/etc"), true);
-    fs.mock_set_mounted(std::path::Path::new("/root"), true);
+    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true);
+    fs.mock_set_overlay_mounted(std::path::Path::new("/etc"), true);
+    fs.mock_set_overlay_mounted(std::path::Path::new("/root"), true);
 
     let result = verifier.run(false).unwrap();
 
@@ -788,6 +788,18 @@ fn test_check_all_overlay_mount_points() {
                 .contains("nails deactivate")
         );
     }
+}
+
+#[test]
+fn test_non_overlay_mounts_are_not_reported_as_overlay_findings() {
+    let fs = MockFilesystem::new();
+    let verifier = Verifier::new(fs.clone());
+
+    fs.mock_set_mounted(std::path::Path::new("/home"), true);
+
+    let result = verifier.run(false).unwrap();
+
+    assert!(result.findings.iter().all(|f| f.category != "mount"));
 }
 
 #[test]

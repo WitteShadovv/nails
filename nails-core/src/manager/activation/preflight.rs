@@ -9,6 +9,7 @@ impl<F: Filesystem> NailsManager<F> {
     pub(super) fn run_preflight_phase(
         &self,
         no_preflight: bool,
+        overlay_only: bool,
         verbosity: Verbosity,
     ) -> Result<()> {
         // Step 2.5: Probe symlink support on hidden volume before staging.
@@ -68,7 +69,7 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         let step_timer = Stopwatch::start();
-        self.run_preflight_checks()?;
+        self.run_preflight_checks(overlay_only)?;
 
         if verbosity >= Verbosity::Normal {
             // AC #1: Pre-flight checks event with duration_ms field

@@ -1,6 +1,7 @@
 //! Verify command handler
 
 use crate::cli::output;
+use std::io::Write;
 
 /// Execute the verify command
 ///
@@ -45,6 +46,7 @@ pub fn execute(deep: bool, json: bool) -> ! {
     }
 
     // Set exit code based on status
+    let _ = std::io::stdout().flush();
     match result.status {
         nails_core::VerifyStatus::Secure => std::process::exit(0),
         nails_core::VerifyStatus::Warning | nails_core::VerifyStatus::Critical => {

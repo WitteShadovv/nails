@@ -76,6 +76,7 @@ pub fn init_stdout_subscriber(
             .with_file(false)
             .with_line_number(false)
             .with_level(true)
+            .with_writer(std::io::stderr)
             .with_max_level(stdout_level)
             .init();
         return;
@@ -94,6 +95,7 @@ pub fn init_stdout_subscriber(
                 .with_file(false)
                 .with_line_number(false)
                 .with_level(true)
+                .with_writer(std::io::stderr)
                 .with_filter(stdout_level);
 
             tracing_subscriber::registry()
@@ -110,6 +112,7 @@ pub fn init_stdout_subscriber(
                 .with_file(false)
                 .with_line_number(false)
                 .with_level(true)
+                .with_writer(std::io::stderr)
                 .with_max_level(stdout_level)
                 .init();
         }

@@ -35,6 +35,7 @@ pub mod cli {
                 yes: _,
                 interactive,
                 nixos_flake,
+                overlay_only,
             } => commands::activate::execute(
                 no_preflight,
                 quiet,
@@ -47,6 +48,7 @@ pub mod cli {
                 accept_pivot_risks,
                 interactive,
                 nixos_flake,
+                overlay_only,
                 cli.config,
                 check_real_operations_allowed,
             ),

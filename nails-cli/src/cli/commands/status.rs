@@ -1,6 +1,7 @@
 //! Status command handler
 
 use crate::cli::output;
+use std::io::Write;
 use std::path::PathBuf;
 
 /// Execute the status command
@@ -113,6 +114,7 @@ pub fn execute(
                 println!();
                 println!("Run 'nails activate' to mount hidden environment");
             }
+            let _ = std::io::stdout().flush();
             std::process::exit(0); // FR63: Always exit 0
         }
     };
@@ -139,5 +141,6 @@ pub fn execute(
     }
 
     // FR63: Status always succeeds (exit code 0)
+    let _ = std::io::stdout().flush();
     std::process::exit(0);
 }

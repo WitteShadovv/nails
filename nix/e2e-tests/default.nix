@@ -8,6 +8,7 @@ let
   tests = {
     basic-workflow =
       pkgs.testers.runNixOSTest (importTest ./tests/01-basic-workflow.nix);
+    verify = pkgs.testers.runNixOSTest (importTest ./tests/02-verify.nix);
     emergency = pkgs.testers.runNixOSTest (importTest ./tests/03-emergency.nix);
     forensic-clean =
       pkgs.testers.runNixOSTest (importTest ./tests/04-forensic-clean.nix);
@@ -28,11 +29,30 @@ let
   '';
 
 in tests // {
+  ci = pkgs.linkFarm "e2e-ci" [
+    {
+      name = "basic-workflow";
+      path = tests.basic-workflow;
+    }
+    {
+      name = "verify";
+      path = tests.verify;
+    }
+    {
+      name = "emergency";
+      path = tests.emergency;
+    }
+  ];
+
   # Run all tests
   all = pkgs.linkFarm "e2e-all" [
     {
       name = "basic-workflow";
       path = tests.basic-workflow;
+    }
+    {
+      name = "verify";
+      path = tests.verify;
     }
     {
       name = "emergency";

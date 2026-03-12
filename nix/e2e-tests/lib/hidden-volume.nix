@@ -34,6 +34,7 @@
     mkdir -p /mnt/hidden-volume/.work/nix
     # Additional required directories
     mkdir -p /mnt/hidden-volume/config
+    mkdir -p /mnt/hidden-volume/config/nixos
     mkdir -p /mnt/hidden-volume/nixos
     mkdir -p /mnt/hidden-volume/.nails
 

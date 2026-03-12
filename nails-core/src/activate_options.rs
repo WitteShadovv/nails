@@ -69,6 +69,9 @@ pub struct ActivateOptions {
     /// Disable colored output
     pub no_color: bool,
 
+    /// Skip NixOS profile build and switch (overlay mounts only)
+    pub overlay_only: bool,
+
     /// Override skip_process_detection behavior (for testing)
     ///
     /// This field is hidden from public documentation and is intended for
@@ -254,6 +257,7 @@ mod tests {
             verbosity: 2,
             json: true,
             no_color: true,
+            overlay_only: false,
             skip_process_detection_override: None,
             session_kill_confirmed: false,
         };
@@ -268,5 +272,15 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(opts.skip_process_detection_override, Some(false));
+    }
+
+    #[test]
+    fn test_overlay_only_flag() {
+        let opts = ActivateOptions {
+            overlay_only: true,
+            ..Default::default()
+        };
+        assert!(opts.validate().is_ok());
+        assert!(opts.overlay_only);
     }
 }

@@ -412,7 +412,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// // Activate with preflight checks (no_preflight = false)
     /// let result = NailsManager::activate(manager, false);
     /// ```
-    pub fn run_preflight_checks(&self) -> Result<()> {
+    pub fn run_preflight_checks(&self, overlay_only: bool) -> Result<()> {
         use crate::preflight::{
             HiddenVolumeCheck, NixOSBuildTargetCheck, NixOSConfigCheck, OverlayCompatibilityCheck,
             PreFlightRegistry, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
@@ -492,20 +492,22 @@ impl<F: Filesystem> NailsManager<F> {
             self.config.hidden_volume_root.clone(),
         )));
 
-        registry.add_check(Box::new(NixOSConfigCheck::new(
-            self.config.hidden_volume_root.clone(),
-        )));
+        if !overlay_only {
+            registry.add_check(Box::new(NixOSConfigCheck::new(
+                self.config.hidden_volume_root.clone(),
+            )));
 
-        let selected_flake_dir = self
-            .nixos_builder
-            .as_ref()
-            .and_then(|builder| builder.flake_dir().map(|path| path.to_path_buf()));
+            let selected_flake_dir = self
+                .nixos_builder
+                .as_ref()
+                .and_then(|builder| builder.flake_dir().map(|path| path.to_path_buf()));
 
-        registry.add_check(Box::new(NixOSBuildTargetCheck::with_selected_flake_dir(
-            self.config.nixos_flake.clone(),
-            selected_flake_dir,
-            self.config.hidden_volume_root.clone(),
-        )));
+            registry.add_check(Box::new(NixOSBuildTargetCheck::with_selected_flake_dir(
+                self.config.nixos_flake.clone(),
+                selected_flake_dir,
+                self.config.hidden_volume_root.clone(),
+            )));
+        }
 
         registry.add_check(Box::new(SwapCheck));
 
