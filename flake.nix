@@ -16,7 +16,6 @@
         targetTriple = "x86_64-unknown-linux-musl";
         sourceDateEpoch = toString (self.lastModified or 1);
         shortRev = self.shortRev or (self.dirtyShortRev or "dirty");
-        revision = self.rev or (self.dirtyRev or "dirty");
 
         # Native Rust toolchain pinned for local development.
         rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
@@ -61,18 +60,6 @@
         workspaceVersion = workspaceManifest.workspace.package.version;
         releaseVersion = "${workspaceVersion}-git.${shortRev}";
         releaseArchiveName = "nails-${releaseVersion}-${targetTriple}.tar.gz";
-        releaseMetadataTemplate = builtins.toJSON {
-          artifact_name = releaseArchiveName;
-          binary_name = "nails";
-          package_version = workspaceVersion;
-          release_version = releaseVersion;
-          target = targetTriple;
-          git_revision = revision;
-          git_short_revision = shortRev;
-          source_date_epoch = builtins.fromJSON sourceDateEpoch;
-          binary_sha256 = "__BINARY_SHA256__";
-          archive_sha256 = "__ARCHIVE_SHA256__";
-        };
 
         # Canonical release binary: static x86_64-unknown-linux-musl.
         nails = rustPlatformMusl.buildRustPackage rec {
@@ -110,8 +97,7 @@
         };
 
         nails-release = pkgs.runCommand "nails-release-${releaseVersion}" {
-          nativeBuildInputs =
-            [ pkgs.coreutils pkgs.gnused pkgs.gnutar pkgs.gzip ];
+          nativeBuildInputs = [ pkgs.coreutils pkgs.gnutar pkgs.gzip ];
           SOURCE_DATE_EPOCH = sourceDateEpoch;
           allowSubstitutes = false;
           preferLocalBuild = true;
@@ -141,15 +127,13 @@
             -cf - \
             "$package_dir" | gzip -n > "$out/${releaseArchiveName}"
 
+          install -m 0755 ${nails}/bin/nails "$out/nails"
+
           archive_sha256=$(sha256sum "$out/${releaseArchiveName}" | cut -d' ' -f1)
-          binary_sha256=$(cd "$stage_dir" && sha256sum nails | cut -d' ' -f1)
+          binary_sha256=$(sha256sum "$out/nails" | cut -d' ' -f1)
 
-          printf '%s  %s\n' "$archive_sha256" "${releaseArchiveName}" > "$out/SHA256SUMS"
-          printf '%s  %s\n' "$binary_sha256" "nails" > "$out/nails.sha256"
-
-          metadata='${releaseMetadataTemplate}'
-          metadata=$(printf '%s' "$metadata" | sed "s/__BINARY_SHA256__/$binary_sha256/; s/__ARCHIVE_SHA256__/$archive_sha256/")
-          printf '%s\n' "$metadata" > "$out/release-metadata.json"
+          printf '%s  %s\n' "$archive_sha256" "${releaseArchiveName}" > "$out/checksums.txt"
+          printf '%s  %s\n' "$binary_sha256" "nails" >> "$out/checksums.txt"
         '';
 
         # Import E2E tests (impermanence is now local)
