@@ -209,6 +209,7 @@ jobs:
       - name: Publish rolling main release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           ROLLING_TAG: ${{ needs.build-release.outputs.rolling-tag }}
           RELEASE_NAME: ${{ needs.build-release.outputs.release-name }}
           RELEASE_NOTES: ${{ needs.build-release.outputs.release-notes }}
