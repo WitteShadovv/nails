@@ -1189,7 +1189,7 @@ The repository uses the following GitHub Actions workflows:
 - **CI** (`ci.yml`): formatting, linting, sharded tests, coverage enforcement, burn-in flaky detection, security audit, and benchmarks
 - **Release** (`release.yml`): deterministic Nix release builds with reproducibility verification
 - **Nix PR Verify** (`nix-pr-verify.yml`): quick `nix build` smoke test on every push/PR
-- **E2E** (`e2e-tests.yml`): NixOS VM tests; currently manual-trigger only while fixes are in progress
+- **E2E** (`e2e-tests.yml`): NixOS VM tests; currently manual-trigger only
 
 For local parity with the E2E workflow, use `./scripts/run-e2e-tests.sh ci`.
 
