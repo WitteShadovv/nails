@@ -218,14 +218,27 @@ jobs:
           printf '%s\n' "$RELEASE_NOTES" > "$notes_file"
 
           if gh release view "$ROLLING_TAG" >/dev/null 2>&1; then
-            gh release delete "$ROLLING_TAG" --yes --cleanup-tag
+            # Update in place — avoids tag deletion/recreation which is blocked by repo rulesets
+            gh release view "$ROLLING_TAG" --json assets --jq '.assets[].name' | \
+              while IFS= read -r asset; do
+                gh release delete-asset "$ROLLING_TAG" "$asset" --yes
+              done
+            gh release edit "$ROLLING_TAG" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_NAME" \
+              --notes-file "$notes_file" \
+              --prerelease
+            gh release upload "$ROLLING_TAG" \
+              dist/*.tar.gz \
+              dist/nails \
+              dist/checksums.txt
+          else
+            gh release create "$ROLLING_TAG" \
+              dist/*.tar.gz \
+              dist/nails \
+              dist/checksums.txt \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_NAME" \
+              --notes-file "$notes_file" \
+              --prerelease
           fi
-
-          gh release create "$ROLLING_TAG" \
-            dist/*.tar.gz \
-            dist/nails \
-            dist/checksums.txt \
-            --target "$GITHUB_SHA" \
-            --title "$RELEASE_NAME" \
-            --notes-file "$notes_file" \
-            --prerelease
