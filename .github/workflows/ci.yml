@@ -139,6 +139,7 @@ jobs:
     timeout-minutes: 30
     needs: test
     permissions:
+      contents: read
       pull-requests: write
 
     steps:
