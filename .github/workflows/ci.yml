@@ -37,7 +37,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97
+        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: "lint"
 
@@ -64,7 +64,7 @@ jobs:
           toolchain: 1.93.0
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97
+        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: "audit"
 
@@ -81,7 +81,7 @@ jobs:
 
       - name: Upload audit results
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: audit-report
           path: target/audit-report.json
@@ -108,7 +108,7 @@ jobs:
           toolchain: 1.93.0
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97
+        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: "test-shard-${{ matrix.shard }}"
 
@@ -124,7 +124,7 @@ jobs:
 
       - name: Upload test results on failure
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: test-results-shard-${{ matrix.shard }}
           path: |
@@ -153,7 +153,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97
+        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: "coverage"
           cache-targets: "true"
@@ -198,7 +198,7 @@ jobs:
           fi
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: coverage-report
           path: coverage/
@@ -247,7 +247,7 @@ jobs:
           toolchain: 1.93.0
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97
+        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: "burn-in"
 
@@ -264,7 +264,7 @@ jobs:
 
       - name: Upload failure artifacts
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: burn-in-failures
           path: |
@@ -290,7 +290,7 @@ jobs:
           toolchain: 1.93.0
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97
+        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: "benchmarks"
 
@@ -306,7 +306,7 @@ jobs:
 
       - name: Upload benchmark results
         if: success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: benchmark-results
           path: target/criterion/
