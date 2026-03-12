@@ -1003,6 +1003,7 @@ fn test_real_command_executor_execute_nixos_rebuild_returns_not_found_when_missi
 }
 
 #[test]
+#[serial]
 fn test_real_command_executor_execute_switch_to_configuration_runs_exact_script_path() {
     let temp_dir = tempfile::tempdir().unwrap();
     let script = temp_dir.path().join("switch-to-configuration");
