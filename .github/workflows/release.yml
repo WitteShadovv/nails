@@ -176,7 +176,17 @@ jobs:
           name: ${{ needs.build-release.outputs.canonical-artifact-name }}
           path: dist
 
+      - name: Check repository visibility
+        id: repo-visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          visibility=$(gh api repos/${{ github.repository }} --jq '.visibility')
+          echo "visibility=${visibility}" >> "$GITHUB_OUTPUT"
+          echo "Repository visibility: ${visibility}"
+
       - name: Create GitHub artifact attestation
+        if: steps.repo-visibility.outputs.visibility == 'public'
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
         with:
           subject-checksums: dist/SHA256SUMS
