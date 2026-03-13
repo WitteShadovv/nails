@@ -224,7 +224,6 @@ jobs:
                 gh release delete-asset "$ROLLING_TAG" "$asset" --yes
               done
             gh release edit "$ROLLING_TAG" \
-              --target "$GITHUB_SHA" \
               --title "$RELEASE_NAME" \
               --notes-file "$notes_file" \
               --prerelease
