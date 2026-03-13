@@ -26,7 +26,7 @@ jobs:
       publish-release: ${{ steps.metadata.outputs.publish-release }}
       release-name: ${{ steps.metadata.outputs.release-name }}
       release-notes: ${{ steps.metadata.outputs.release-notes }}
-      rolling-tag: ${{ steps.metadata.outputs.rolling-tag }}
+      release-tag: ${{ steps.metadata.outputs.release-tag }}
 
     steps:
       - name: Checkout code
@@ -38,23 +38,21 @@ jobs:
       - name: Derive release metadata
         id: metadata
         run: |
-          short_sha=""
-          artifact_prefix=""
-          canonical_artifact_name=""
-          publish_release="false"
-          release_name=""
-          release_notes=""
-          rolling_tag=""
-
           short_sha=$(git rev-parse --short=12 HEAD)
+          short_rev=$(git rev-parse --short=7 HEAD)
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
           artifact_prefix="release-verification-${short_sha}"
           canonical_artifact_name="canonical-release-${short_sha}"
+          publish_release="false"
+          release_tag=""
+          release_name=""
+          release_notes=""
 
           case "${GITHUB_REF_NAME}" in
             main)
               publish_release="true"
-              rolling_tag="main-latest"
-              release_name="Main rolling build"
+              release_tag="v${version}-git.${short_rev}"
+              release_name="nails ${version}-git.${short_rev}"
               release_notes=$(cat <<EOF
           Deterministic release artifact verification for \'main\'.
 
@@ -87,7 +85,7 @@ jobs:
             echo "canonical-artifact-name=${canonical_artifact_name}"
             echo "publish-release=${publish_release}"
             echo "release-name=${release_name}"
-            echo "rolling-tag=${rolling_tag}"
+            echo "release-tag=${release_tag}"
             echo "release-notes<<EOF"
             printf '%s\n' "${release_notes}"
             echo "EOF"
@@ -206,38 +204,22 @@ jobs:
           name: ${{ needs.build-release.outputs.canonical-artifact-name }}
           path: dist
 
-      - name: Publish rolling main release
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          ROLLING_TAG: ${{ needs.build-release.outputs.rolling-tag }}
+          RELEASE_TAG: ${{ needs.build-release.outputs.release-tag }}
           RELEASE_NAME: ${{ needs.build-release.outputs.release-name }}
           RELEASE_NOTES: ${{ needs.build-release.outputs.release-notes }}
         run: |
           notes_file=$(mktemp)
           printf '%s\n' "$RELEASE_NOTES" > "$notes_file"
 
-          if gh release view "$ROLLING_TAG" >/dev/null 2>&1; then
-            # Update in place — avoids tag deletion/recreation which is blocked by repo rulesets
-            gh release view "$ROLLING_TAG" --json assets --jq '.assets[].name' | \
-              while IFS= read -r asset; do
-                gh release delete-asset "$ROLLING_TAG" "$asset" --yes
-              done
-            gh release edit "$ROLLING_TAG" \
-              --title "$RELEASE_NAME" \
-              --notes-file "$notes_file" \
-              --prerelease
-            gh release upload "$ROLLING_TAG" \
-              dist/*.tar.gz \
-              dist/nails \
-              dist/checksums.txt
-          else
-            gh release create "$ROLLING_TAG" \
-              dist/*.tar.gz \
-              dist/nails \
-              dist/checksums.txt \
-              --target "$GITHUB_SHA" \
-              --title "$RELEASE_NAME" \
-              --notes-file "$notes_file" \
-              --prerelease
-          fi
+          gh release create "$RELEASE_TAG" \
+            dist/*.tar.gz \
+            dist/nails \
+            dist/checksums.txt \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_NAME" \
+            --notes-file "$notes_file" \
+            --prerelease
