@@ -14,7 +14,7 @@
 
 use super::{Filesystem, MountInfo, verify_mount_preconditions};
 use crate::{NailsError, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // ============================================================================
@@ -951,77 +951,152 @@ impl Filesystem for RealFilesystem {
         let canonical_target = target
             .canonicalize()
             .unwrap_or_else(|_| target.to_path_buf());
+        Ok(parse_submount_sources(&mountinfo, &canonical_target))
+    }
+}
 
-        let mut results = Vec::new();
+/// Parse `/proc/self/mountinfo` content to find submount source paths under `target`.
+///
+/// Uses a two-pass algorithm:
+/// - **Pass 1**: Build a map from `dev_id` → `mount_point` for entries where `fs_root == "/"`.
+///   These represent root mounts of each device/partition.
+/// - **Pass 2**: Find mounts strictly under `target` and resolve their source paths:
+///   - Non-device path sources (e.g., bind mounts with a real path) are used directly.
+///   - Device-backed sources (`/dev/...`) are resolved via the Pass 1 map.
+///   - Pseudo-filesystem sources (`tmpfs`, `sysfs`, `proc`, `none`, etc.) are skipped.
+///   - Direct partition mounts (`fs_root == "/"`) under target are skipped to avoid
+///     circular references where source would equal mount point.
+///
+/// Returns a sorted `Vec<(mount_point, source_path)>`.
+pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(PathBuf, PathBuf)> {
+    // Pass 1: Build a map from dev_id → mount_point for entries where
+    // fs_root == "/". These represent the root mounts of each device/partition,
+    // which we need to resolve device-backed bind mounts.
+    //
+    // Example mountinfo line:
+    //   42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+    // This tells us dev_id "254:1" is mounted at "/persist" with fs_root="/".
+    let mut device_root_mounts: HashMap<String, PathBuf> = HashMap::new();
+    // Track the target's own dev_id so we can skip same-device submounts in Pass 2.
+    // When a submount is on the same device as the target, its content is already
+    // visible through the target mount — adding it as an extra lower layer would
+    // create circular references (ELOOP).
+    // Uses last-wins semantics (assignment, not find_map) to handle overmounts correctly.
+    let mut target_dev_id: Option<String> = None;
 
-        for line in mountinfo.lines() {
-            // /proc/self/mountinfo format (space-separated fields):
-            // 0: mount_id  1: parent_id  2: dev_id  3: fs_root  4: mount_point
-            // 5+: optional fields ... separator "-"  fstype  source  super_options
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 5 {
-                continue;
-            }
-
-            let mount_point = PathBuf::from(parts[4]);
-
-            // Include mount points strictly under target (not target itself)
-            if !mount_point.starts_with(&canonical_target) || mount_point == canonical_target {
-                continue;
-            }
-
-            // Find the source (mount source) after the "-" separator
-            // Fields after "-": fstype, mount_source, super_options
-            let separator_pos = parts.iter().position(|&p| p == "-");
-            let mount_source = match separator_pos {
-                Some(pos) if pos + 2 < parts.len() => PathBuf::from(parts[pos + 2]),
-                _ => continue,
-            };
-
-            // For bind mounts, the fs_root (field 3) tells us which subtree of
-            // the source filesystem is mounted. Combined with mount_source, this
-            // gives us the actual source path. However, for simple bind mounts
-            // the mount_source is often just the device (e.g., /dev/sda2) and
-            // the actual source path requires combining device + fs_root.
-            //
-            // A more reliable approach: the fs_root (field 3) gives the path
-            // within the filesystem. For bind mounts from /persist/etc/nixos,
-            // we can reconstruct the source by finding where the source fs is
-            // mounted and appending fs_root.
-            //
-            // Pragmatic approach: check if mount_source is a real path.
-            // If it's a device path (/dev/...), use fs_root heuristic.
-            if mount_source.starts_with("/") && !mount_source.starts_with("/dev/") {
-                // mount_source is a real path (e.g., bind mount source)
-                results.push((mount_point, mount_source));
-            } else {
-                // Device-backed mount — the fs_root (field 3) is the path within
-                // that filesystem. We need to find where the parent filesystem is
-                // mounted and construct the full source path.
-                //
-                // For now, try to resolve via /proc/mounts which sometimes shows
-                // bind mount sources more clearly. Fall back to using mount_point
-                // itself (the VFS path is what we need for overlayfs lowerdir).
-                let fs_root = Path::new(parts[3]);
-                if fs_root != Path::new("/") {
-                    // Non-root fs_root suggests a bind mount of a subtree.
-                    // We can find the parent mount by matching dev_id and
-                    // fs_root="/", but that's complex. For common NixOS patterns,
-                    // the mount_point path itself IS the VFS-resolved content path
-                    // which is what we need for the overlayfs lower layer computation.
-                    //
-                    // Skip device-backed mounts for now — they're typically not
-                    // the bind mounts we're looking for (those show up with real
-                    // source paths in mountinfo).
-                    continue;
-                }
-            }
+    for line in mountinfo.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 5 {
+            continue;
         }
 
-        // Sort for consistent ordering
-        results.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(results)
+        let dev_id = parts[2];
+        let fs_root = parts[3];
+        let mount_point = PathBuf::from(parts[4]);
+
+        // Only collect entries where fs_root is "/" — these are root mounts
+        // of a device/partition, not bind-mounted subtrees.
+        if fs_root == "/" {
+            // If multiple mounts exist for the same dev_id with fs_root="/",
+            // keep the last one (most recent mount).
+            device_root_mounts.insert(dev_id.to_string(), mount_point);
+        }
+
+        // Track the target's device ID (last-wins for overmounts)
+        if Path::new(parts[4]) == target {
+            target_dev_id = Some(dev_id.to_string());
+        }
     }
+
+    // Pass 2: Find all mounts strictly under the target directory and resolve
+    // their source paths. For non-device path sources, use them directly. For
+    // device-backed sources, look up the root mount point and combine with fs_root.
+    // Pseudo-filesystem sources are silently skipped.
+    let mut results = Vec::new();
+
+    for line in mountinfo.lines() {
+        // /proc/self/mountinfo format (space-separated fields):
+        // 0: mount_id  1: parent_id  2: dev_id  3: fs_root  4: mount_point
+        // 5+: optional fields ... separator "-"  fstype  source  super_options
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 5 {
+            continue;
+        }
+
+        let dev_id = parts[2];
+        let fs_root = parts[3];
+        let mount_point = PathBuf::from(parts[4]);
+
+        // Include mount points strictly under target (not target itself)
+        if !mount_point.starts_with(target) || mount_point == target {
+            continue;
+        }
+
+        // Find the source (mount source) after the "-" separator
+        // Fields after "-": fstype, mount_source, super_options
+        let separator_pos = parts.iter().position(|&p| p == "-");
+        let mount_source = match separator_pos {
+            Some(pos) if pos + 2 < parts.len() => parts[pos + 2],
+            _ => continue,
+        };
+
+        if mount_source.starts_with("/") && !mount_source.starts_with("/dev/") {
+            // Non-device path source — use directly
+            results.push((mount_point, PathBuf::from(mount_source)));
+        } else if mount_source.starts_with("/dev/") {
+            // Device-backed mount — resolve via device_root_mounts
+            if let Some(root_mount_point) = device_root_mounts.get(dev_id) {
+                // Skip submounts on the same device as the target — their content is
+                // already visible through the target mount. Adding them as extra lower
+                // layers would create circular lowerdir references (ELOOP).
+                if let Some(ref target_dev) = target_dev_id
+                    && dev_id == target_dev
+                {
+                    tracing::trace!(
+                        mount_point = %mount_point.display(),
+                        dev_id = %dev_id,
+                        "Skipping same-device submount (content visible through target)"
+                    );
+                    continue;
+                }
+                if fs_root == "/" {
+                    // Direct mount of entire partition under target, not a bind mount subtree.
+                    // Skip — source would equal mount_point, producing a circular reference.
+                    continue;
+                }
+                let source_path =
+                    root_mount_point.join(fs_root.strip_prefix('/').unwrap_or(fs_root));
+                tracing::debug!(
+                    mount_point = %mount_point.display(),
+                    dev_id = %dev_id,
+                    fs_root = %fs_root,
+                    root_mount = %root_mount_point.display(),
+                    resolved_source = %source_path.display(),
+                    "Resolved device-backed bind mount source"
+                );
+                results.push((mount_point, source_path));
+            } else {
+                tracing::warn!(
+                    mount_point = %mount_point.display(),
+                    dev_id = %dev_id,
+                    fs_root = %fs_root,
+                    mount_source = %mount_source,
+                    "Cannot resolve device-backed bind mount: no root mount found for dev_id"
+                );
+            }
+        } else {
+            // Pseudo-filesystem (tmpfs, sysfs, proc, none, etc.) — skip silently
+            tracing::trace!(
+                mount_point = %mount_point.display(),
+                mount_source = %mount_source,
+                "Skipping non-device submount under target"
+            );
+        }
+    }
+
+    // Sort for consistent ordering
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+    results
 }
 
 fn collect_ancestor_pids() -> HashSet<u32> {

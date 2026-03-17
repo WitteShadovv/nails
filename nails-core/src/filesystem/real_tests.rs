@@ -922,3 +922,220 @@ fn test_real_modified_time_returns_timestamp_for_existing_file() {
 
     assert!(modified <= chrono::Utc::now());
 }
+
+// ========================================================================
+// Tests for parse_submount_sources (extracted pure function)
+// ========================================================================
+
+#[test]
+fn test_device_backed_bind_mount_resolved() {
+    use super::parse_submount_sources;
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+73 42 254:1 /etc/nixos /etc/nixos rw,relatime - ext4 /dev/mapper/persist rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/etc"));
+    assert_eq!(
+        result,
+        vec![(
+            PathBuf::from("/etc/nixos"),
+            PathBuf::from("/persist/etc/nixos")
+        )]
+    );
+}
+
+#[test]
+fn test_non_device_bind_mount_passthrough() {
+    use super::parse_submount_sources;
+    let mountinfo = "\
+42 1 0:50 / /etc rw - tmpfs tmpfs rw
+99 42 0:50 /nixos /etc/nixos rw - /persist/etc/nixos /persist/etc/nixos rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/etc"));
+    assert_eq!(
+        result,
+        vec![(
+            PathBuf::from("/etc/nixos"),
+            PathBuf::from("/persist/etc/nixos")
+        )]
+    );
+}
+
+#[test]
+fn test_no_root_mount_for_device_skipped() {
+    use super::parse_submount_sources;
+    // Device 254:99 has no root mount entry — should be skipped
+    let mountinfo = "\
+99 42 254:99 /etc/nixos /etc/nixos rw,relatime - ext4 /dev/sda9 rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/etc"));
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_multiple_bind_mounts_from_same_device() {
+    use super::parse_submount_sources;
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+73 42 254:1 /etc/nixos /etc/nixos rw,relatime - ext4 /dev/mapper/persist rw
+74 42 254:1 /etc/ssh /etc/ssh rw,relatime - ext4 /dev/mapper/persist rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/etc"));
+    assert_eq!(
+        result,
+        vec![
+            (
+                PathBuf::from("/etc/nixos"),
+                PathBuf::from("/persist/etc/nixos")
+            ),
+            (PathBuf::from("/etc/ssh"), PathBuf::from("/persist/etc/ssh")),
+        ]
+    );
+}
+
+#[test]
+fn test_direct_partition_mount_under_target_skipped() {
+    use super::parse_submount_sources;
+    // /home/data is a separate partition mounted directly (fs_root="/"), not a bind mount
+    let mountinfo = "\
+42 1 254:1 / /home rw - ext4 /dev/sda2 rw
+73 1 254:2 / /home/data rw - ext4 /dev/sda3 rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/home"));
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_pseudo_filesystem_mounts_skipped() {
+    use super::parse_submount_sources;
+    let mountinfo = "\
+42 1 0:50 / /etc rw - tmpfs tmpfs rw
+99 42 0:51 / /etc/resolv.conf rw - tmpfs none rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/etc"));
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_target_itself_excluded() {
+    use super::parse_submount_sources;
+    // The target mount itself should not appear in results
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+73 42 254:1 /etc /etc rw,relatime - ext4 /dev/mapper/persist rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/etc"));
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_home_bind_mount_from_persist() {
+    use super::parse_submount_sources;
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+50 1 0:50 / /home rw - tmpfs tmpfs rw
+73 42 254:1 /home/amnesia /home/amnesia rw,relatime - ext4 /dev/mapper/persist rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/home"));
+    assert_eq!(
+        result,
+        vec![(
+            PathBuf::from("/home/amnesia"),
+            PathBuf::from("/persist/home/amnesia")
+        )]
+    );
+}
+
+#[test]
+fn test_empty_mountinfo() {
+    use super::parse_submount_sources;
+    let result = parse_submount_sources("", Path::new("/etc"));
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_malformed_lines_skipped() {
+    use super::parse_submount_sources;
+    let mountinfo = "\
+short line
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+
+73 42 254:1 /etc/nixos /etc/nixos rw,relatime - ext4 /dev/mapper/persist rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/etc"));
+    assert_eq!(
+        result,
+        vec![(
+            PathBuf::from("/etc/nixos"),
+            PathBuf::from("/persist/etc/nixos")
+        )]
+    );
+}
+
+#[test]
+fn test_same_device_submount_skipped_persist() {
+    use super::parse_submount_sources;
+    // Target /persist is on device 254:1, submount /persist/nix/store is also 254:1.
+    // Same device → content already visible → should be skipped to avoid ELOOP.
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+73 42 254:1 /nix/store /persist/nix/store rw,relatime - ext4 /dev/mapper/persist rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/persist"));
+    assert!(
+        result.is_empty(),
+        "Same-device submount should be skipped, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_same_device_submount_skipped_nix() {
+    use super::parse_submount_sources;
+    // Target /nix is bind-mounted from persist (device 254:1).
+    // Submount /nix/store is also on 254:1.
+    // Same device → should be skipped.
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+50 1 254:1 /nix /nix rw,relatime - ext4 /dev/mapper/persist rw
+73 50 254:1 /nix/store /nix/store rw,relatime - ext4 /dev/mapper/persist rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/nix"));
+    assert!(
+        result.is_empty(),
+        "Same-device submount should be skipped, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_different_device_submount_not_skipped() {
+    use super::parse_submount_sources;
+    // Target /etc is on tmpfs (device 0:50), submount /etc/nixos is on persist (254:1).
+    // Different devices → should be included (this is the normal impermanence case).
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+50 1 0:50 / /etc rw - tmpfs tmpfs rw
+73 50 254:1 /etc/nixos /etc/nixos rw,relatime - ext4 /dev/mapper/persist rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/etc"));
+    assert_eq!(
+        result,
+        vec![(
+            PathBuf::from("/etc/nixos"),
+            PathBuf::from("/persist/etc/nixos")
+        )],
+        "Cross-device submount should be included"
+    );
+}
+
+#[test]
+fn test_same_device_mixed_with_cross_device() {
+    use super::parse_submount_sources;
+    // Target /home is on tmpfs (0:51).
+    // /home/amnesia is from persist (254:1) — different device → include.
+    // But if we also had a same-device submount, it should be skipped.
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+50 1 0:51 / /home rw - tmpfs tmpfs rw
+73 50 254:1 /home/amnesia /home/amnesia rw,relatime - ext4 /dev/mapper/persist rw
+74 50 0:51 /home/tmp /home/tmp rw - tmpfs tmpfs rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/home"));
+    // Only the cross-device bind mount should appear; tmpfs submount (same device 0:51)
+    // is a pseudo-fs and gets skipped by the pseudo-fs filter, not the same-device filter.
+    assert_eq!(
+        result,
+        vec![(
+            PathBuf::from("/home/amnesia"),
+            PathBuf::from("/persist/home/amnesia")
+        )],
+    );
+}
