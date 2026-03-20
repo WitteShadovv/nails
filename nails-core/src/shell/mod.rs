@@ -397,7 +397,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     ///
     /// # Behavior
     ///
-    /// - Determines real user from `SUDO_USER` or `USER` env var
+    /// - Determines real user from `SUDO_USER`, `NAILS_TARGET_USER`, or `USER` env var
     /// - Finds home directory: `/home/{user}` (now overlaid)
     /// - Creates rc file if it doesn't exist (with parent dirs for Fish)
     /// - Checks for existing integration marker before appending (idempotent)
@@ -406,11 +406,16 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     ///
     /// # Task 1: Auto-source shell integration via overlay rc file
     pub fn inject_rc_integration(&self, shell_type: ShellType) -> Result<bool> {
-        // Determine real user (SUDO_USER takes precedence over USER)
+        // Determine real user (SUDO_USER → NAILS_TARGET_USER → USER)
+        // NAILS_TARGET_USER is set by the detached systemd-run process where
+        // SUDO_USER and USER are not available.
         let username = std::env::var("SUDO_USER")
+            .or_else(|_| std::env::var("NAILS_TARGET_USER"))
             .or_else(|_| std::env::var("USER"))
             .map_err(|_| {
-                std::io::Error::other("Could not determine username (SUDO_USER or USER not set)")
+                std::io::Error::other(
+                    "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)",
+                )
             })?;
 
         let home_dir = PathBuf::from(format!("/home/{}", username));
@@ -476,6 +481,89 @@ impl<F: Filesystem> ShellInstrumentation<F> {
                 tracing::warn!(
                     "Failed to inject NAILS integration into {}: {}",
                     rc_file_path.display(),
+                    e
+                );
+                Ok(false)
+            }
+        }
+    }
+
+    /// Write XDG autostart desktop entry for `nails notify-dispatch`
+    ///
+    /// Creates `~/.config/autostart/nails-notify.desktop` so that pending
+    /// NAILS notifications are dispatched via `notify-send` when the user
+    /// logs in after activation.
+    ///
+    /// # Cleanup
+    ///
+    /// No explicit cleanup is needed on deactivation. This file is written to the
+    /// **overlaid** home directory, so it only exists in the overlay's upper layer.
+    /// When NAILS deactivates and unmounts the overlay filesystem, the file ceases
+    /// to exist automatically — it is never persisted to the real (lower) filesystem.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(true)` if the file was written successfully, `Ok(false)` if
+    /// it failed (best-effort), or `Err` for unexpected errors (e.g. cannot
+    /// determine the username).
+    ///
+    /// # Behavior
+    ///
+    /// - Determines real user from `SUDO_USER`, `NAILS_TARGET_USER`, or `USER` env var
+    /// - Creates `~/.config/autostart/` directory if it doesn't exist
+    /// - Writes a `.desktop` file that runs `nails notify-dispatch`
+    /// - Idempotent: overwrites the file if it already exists
+    pub fn write_xdg_autostart_entry(&self) -> Result<bool> {
+        // Determine real user (SUDO_USER → NAILS_TARGET_USER → USER)
+        // NAILS_TARGET_USER is set by the detached systemd-run process where
+        // SUDO_USER and USER are not available.
+        let username = std::env::var("SUDO_USER")
+            .or_else(|_| std::env::var("NAILS_TARGET_USER"))
+            .or_else(|_| std::env::var("USER"))
+            .map_err(|_| {
+                std::io::Error::other(
+                    "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)",
+                )
+            })?;
+
+        let home_dir = PathBuf::from(format!("/home/{}", username));
+        let autostart_dir = home_dir.join(".config/autostart");
+        let desktop_file_path = autostart_dir.join("nails-notify.desktop");
+
+        // Create autostart directory if it doesn't exist
+        if !self.filesystem.path_exists(&autostart_dir)?
+            && let Err(e) = self.filesystem.create_directory(&autostart_dir)
+        {
+            tracing::warn!(
+                "Failed to create autostart directory {}: {}",
+                autostart_dir.display(),
+                e
+            );
+            return Ok(false);
+        }
+
+        let desktop_entry = "[Desktop Entry]\n\
+            Type=Application\n\
+            Name=NAILS Notification Dispatch\n\
+            Comment=Dispatches pending NAILS notifications on login\n\
+            Exec=nails notify-dispatch\n\
+            Terminal=false\n\
+            NoDisplay=true\n\
+            X-GNOME-Autostart-enabled=true\n";
+
+        // Write desktop file (best-effort)
+        match self
+            .filesystem
+            .write_file_content(&desktop_file_path, desktop_entry)
+        {
+            Ok(_) => {
+                tracing::info!("Wrote XDG autostart entry: {}", desktop_file_path.display());
+                Ok(true)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to write XDG autostart entry {}: {}",
+                    desktop_file_path.display(),
                     e
                 );
                 Ok(false)
@@ -685,6 +773,21 @@ impl<F: Filesystem> ShellInstrumentation<F> {
 
         // Task 1: Inject rc integration (best-effort)
         let rc_modified = self.inject_rc_integration(shell_type).unwrap_or(false);
+
+        // Write XDG autostart entry for notify-dispatch (best-effort)
+        match self.write_xdg_autostart_entry() {
+            Ok(true) => {
+                tracing::info!("XDG autostart entry written for nails notify-dispatch");
+            }
+            Ok(false) => {
+                tracing::warn!(
+                    "XDG autostart entry could not be written (best-effort, continuing)"
+                );
+            }
+            Err(e) => {
+                tracing::warn!("Failed to write XDG autostart entry: {} (continuing)", e);
+            }
+        }
 
         // Build result with source instructions
         let prompt_script = self.prompt_script_path(shell_type);

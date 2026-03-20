@@ -85,6 +85,9 @@ pub mod logging;
 // Structured CLI output formatting module (Story 14.7: Standardize CLI Output)
 pub mod output;
 
+// Desktop notification signal files (post-activation user feedback)
+pub mod notification;
+
 // Re-export for convenience
 pub use config::{
     CliOverrides, ColorProfile, ColorSchemeConfig, Config, ConfigBuilder, DecoyProfile,
@@ -188,6 +191,9 @@ pub use logging::{LoggingConfig, LoggingManager};
 
 // Structured CLI output exports (Story 14.7: Standardize CLI Output)
 pub use output::{error, format_error, format_info, format_warn, info, set_plain_mode, warn};
+
+// Desktop notification exports
+pub use notification::{Notification, dispatch_all as dispatch_notifications};
 
 /// RAII guard for automatic state rollback on failure
 ///

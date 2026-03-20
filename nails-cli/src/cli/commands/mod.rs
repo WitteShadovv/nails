@@ -7,5 +7,6 @@
 pub mod activate;
 pub mod deactivate;
 pub mod emergency;
+pub mod notify_dispatch;
 pub mod status;
 pub mod verify;

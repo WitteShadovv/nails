@@ -182,4 +182,11 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Dispatch pending desktop notifications (called by XDG autostart on login)
+    #[command(name = "notify-dispatch")]
+    NotifyDispatch {
+        /// Output results in JSON format
+        #[arg(long)]
+        json: bool,
+    },
 }

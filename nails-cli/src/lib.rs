@@ -92,6 +92,9 @@ pub mod cli {
                 verbose,
             } => commands::status::execute(cli.config, json, no_color, plain, verbose),
             Commands::Verify { deep, json } => commands::verify::execute(deep, json),
+            Commands::NotifyDispatch { json } => {
+                commands::notify_dispatch::execute(cli.config, json)
+            }
         }
     }
 

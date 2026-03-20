@@ -103,9 +103,9 @@ pub fn maybe_detach_for_session_kill(
         ));
     }
 
-    // Redirect output to /dev/null (no logging to /tmp)
-    cmd.arg("--property=StandardOutput=null");
-    cmd.arg("--property=StandardError=null");
+    // Redirect output to the systemd journal for post-mortem debugging
+    cmd.arg("--property=StandardOutput=journal");
+    cmd.arg("--property=StandardError=journal");
 
     // Add the command to execute
     cmd.arg("--");
