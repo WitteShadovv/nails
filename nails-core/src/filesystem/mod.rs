@@ -826,6 +826,77 @@ pub trait Filesystem: Send + Sync + Clone {
     fn remove_dir_all(&self, path: &Path) -> Result<()>;
 
     // ------------------------------------------------------------------------
+    // Secure Deletion Operations (Anti-forensics)
+    // ------------------------------------------------------------------------
+
+    /// Securely delete a file by overwriting before removal
+    ///
+    /// Performs a secure deletion by:
+    /// 1. Overwriting file contents with zeros
+    /// 2. Overwriting with random data
+    /// 3. Overwriting with zeros again
+    /// 4. Deleting the file
+    ///
+    /// This makes forensic recovery significantly more difficult compared
+    /// to standard deletion which only removes the directory entry.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the file to securely delete
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if file cannot be overwritten or removed.
+    ///
+    /// # Security Note
+    ///
+    /// While this provides better security than regular deletion, it may not
+    /// be effective against all forensic techniques, especially on:
+    /// - SSDs with wear leveling
+    /// - Copy-on-write filesystems (ZFS, Btrfs)
+    /// - Network filesystems
+    ///
+    /// For maximum security, use encrypted volumes.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/tmp/secret.txt", true);
+    /// fs.secure_delete(Path::new("/tmp/secret.txt")).unwrap();
+    /// ```
+    fn secure_delete(&self, path: &Path) -> Result<()>;
+
+    /// Securely delete a directory and all its contents recursively
+    ///
+    /// Recursively walks the directory tree and securely deletes all files
+    /// by overwriting them before removal, then removes the empty directories.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the directory to securely delete
+    ///
+    /// # Errors
+    ///
+    /// Returns `NailsError::IoError` if any file or directory cannot be removed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_path_exists("/tmp/secret-dir", true);
+    /// fs.mock_set_path_type("/tmp/secret-dir", "directory");
+    /// fs.secure_delete_dir_all(Path::new("/tmp/secret-dir")).unwrap();
+    /// ```
+    fn secure_delete_dir_all(&self, path: &Path) -> Result<()>;
+
+    // ------------------------------------------------------------------------
     // Directory Operations (Story 9.x: Log Rotation)
     // ------------------------------------------------------------------------
 

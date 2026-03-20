@@ -28,6 +28,7 @@
 //! ```
 
 // Submodules
+pub mod canary;
 pub mod history;
 pub mod logs;
 pub mod temp_files;
@@ -40,6 +41,7 @@ mod types;
 mod tests;
 
 // Public re-exports
+pub use canary::{CanaryConfig, CanaryFinding, CanaryScanResult, CanaryScanner};
 pub use history::ShellType;
 pub use manager::CleanupManager;
 pub use types::{CleanupConfig, CleanupMode, CleanupReport};

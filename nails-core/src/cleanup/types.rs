@@ -68,6 +68,21 @@ pub struct CleanupConfig {
     /// Path to hidden volume root (for security validation)
     /// Default: HIDDEN_VOLUME_ROOT
     pub hidden_volume_path: PathBuf,
+
+    /// Whether to sanitize memory after cleanup (default: false)
+    ///
+    /// When enabled, attempts to clear page cache by writing "3" to
+    /// /proc/sys/vm/drop_caches. Requires root privileges.
+    /// This helps prevent forensic recovery of cleanup artifacts from RAM.
+    #[serde(default)]
+    pub sanitize_memory: bool,
+
+    /// Use secure deletion (overwrite before delete) (default: false)
+    ///
+    /// When enabled, files are overwritten with zeros, random data, and zeros
+    /// again before being deleted. This makes forensic recovery more difficult.
+    #[serde(default)]
+    pub secure_delete: bool,
 }
 
 impl Default for CleanupConfig {
@@ -81,6 +96,8 @@ impl Default for CleanupConfig {
             temp_dirs: vec![PathBuf::from("/tmp")],
             log_path: hidden_volume.join("logs"),
             hidden_volume_path: hidden_volume,
+            sanitize_memory: false,
+            secure_delete: false,
         }
     }
 }
@@ -107,6 +124,12 @@ pub struct CleanupReport {
     /// - Some(false): At least one verification failed
     /// - None: Verification was not performed (Fast mode or verify_cleanup=false)
     pub verification_passed: Option<bool>,
+
+    /// Whether memory sanitization was performed
+    pub memory_sanitized: bool,
+
+    /// Number of canary pattern findings during verification
+    pub canary_findings_count: usize,
 }
 
 impl CleanupReport {
@@ -118,6 +141,8 @@ impl CleanupReport {
             duration: Duration::ZERO,
             mode,
             verification_passed: None,
+            memory_sanitized: false,
+            canary_findings_count: 0,
         }
     }
 
@@ -189,7 +214,19 @@ impl fmt::Display for CleanupReport {
                 writeln!(f, "✓ Verification passed - no artifacts remain")?;
             } else {
                 writeln!(f, "⚠ Verification failed - some artifacts may remain")?;
+                if self.canary_findings_count > 0 {
+                    writeln!(
+                        f,
+                        "  Found {} canary pattern(s) in scanned files",
+                        self.canary_findings_count
+                    )?;
+                }
             }
+        }
+
+        if self.memory_sanitized {
+            writeln!(f)?;
+            writeln!(f, "✓ Memory sanitization completed (page cache cleared)")?;
         }
 
         Ok(())

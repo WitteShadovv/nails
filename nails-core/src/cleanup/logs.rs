@@ -43,6 +43,7 @@ use std::path::PathBuf;
 /// - VALIDATES log_path is within hidden_volume BEFORE any cleanup
 /// - Will NOT clean /var/log or any decoy system paths
 /// - Preserves non-nails log files in the same directory
+/// - Optional secure deletion for forensic resistance
 ///
 /// # Generic Parameter
 ///
@@ -51,6 +52,8 @@ pub struct LogCleaner<F: Filesystem> {
     filesystem: F,
     log_path: PathBuf,
     hidden_volume_path: PathBuf,
+    /// Use secure deletion (overwrite before delete)
+    pub(crate) secure_delete: bool,
 }
 
 impl<F: Filesystem> LogCleaner<F> {
@@ -58,12 +61,14 @@ impl<F: Filesystem> LogCleaner<F> {
     ///
     /// Default log_path: {DEFAULT_HIDDEN_VOLUME_ROOT}/logs
     /// Default hidden_volume_path: DEFAULT_HIDDEN_VOLUME_ROOT
+    /// Default secure_delete: false
     pub fn new(filesystem: F) -> Self {
         let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
         Self {
             filesystem,
             log_path: hidden_volume.join("logs"),
             hidden_volume_path: hidden_volume,
+            secure_delete: false,
         }
     }
 
@@ -76,6 +81,15 @@ impl<F: Filesystem> LogCleaner<F> {
     /// Set custom hidden volume path (for testing)
     pub fn with_hidden_volume_path(mut self, path: PathBuf) -> Self {
         self.hidden_volume_path = path;
+        self
+    }
+
+    /// Enable or disable secure deletion
+    ///
+    /// When enabled, log files are securely deleted (overwritten with zeros,
+    /// random data, then zeros again) before being removed.
+    pub fn with_secure_delete(mut self, enabled: bool) -> Self {
+        self.secure_delete = enabled;
         self
     }
 
@@ -173,8 +187,14 @@ impl<F: Filesystem> LogCleaner<F> {
                 continue; // Skip non-nails logs
             }
 
-            // Remove the log file
-            match self.filesystem.remove_file(&file_path) {
+            // Remove the log file (securely if configured)
+            let removal_result = if self.secure_delete {
+                self.filesystem.secure_delete(&file_path)
+            } else {
+                self.filesystem.remove_file(&file_path)
+            };
+
+            match removal_result {
                 Ok(()) => {
                     removed_files.push(filename);
                 }
@@ -194,7 +214,15 @@ impl<F: Filesystem> LogCleaner<F> {
             // AC3/AC5: Return summary message with count and list
             let count = removed_files.len();
             let files_list = removed_files.join(", ");
-            Ok(vec![format!("Removed {} log files: {}", count, files_list)])
+            let secure_note = if self.secure_delete {
+                " (secure delete)"
+            } else {
+                ""
+            };
+            Ok(vec![format!(
+                "Removed {} log files{}: {}",
+                count, secure_note, files_list
+            )])
         }
     }
 }

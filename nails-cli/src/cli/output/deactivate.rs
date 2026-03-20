@@ -260,6 +260,8 @@ mod tests {
             duration: Duration::from_millis(50),
             mode: CleanupMode::Fast,
             verification_passed: Some(true),
+            memory_sanitized: false,
+            canary_findings_count: 0,
         }
     }
 
@@ -434,6 +436,8 @@ mod tests {
                 duration: Duration::from_millis(0),
                 mode: CleanupMode::Fast,
                 verification_passed: None,
+                memory_sanitized: false,
+                canary_findings_count: 0,
             },
             unmounted_overlays: vec![],
             duration: Duration::from_millis(100),

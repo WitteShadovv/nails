@@ -1566,6 +1566,40 @@ impl Filesystem for MockFilesystem {
         Ok(())
     }
 
+    fn secure_delete(&self, path: &Path) -> Result<()> {
+        // Check if removal should fail (mock behavior for testing)
+        if self.remove_should_fail.lock().unwrap().contains(path) {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "Mock: secure_delete configured to fail for {}",
+                    path.display()
+                ),
+            )));
+        }
+
+        // In mock, secure_delete behaves like remove_file
+        // (we don't simulate the actual overwriting in tests)
+        self.remove_file(path)
+    }
+
+    fn secure_delete_dir_all(&self, path: &Path) -> Result<()> {
+        // Check if removal should fail (mock behavior for testing)
+        if self.remove_should_fail.lock().unwrap().contains(path) {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "Mock: secure_delete_dir_all configured to fail for {}",
+                    path.display()
+                ),
+            )));
+        }
+
+        // In mock, secure_delete_dir_all behaves like remove_dir_all
+        // (we don't simulate the actual overwriting in tests)
+        self.remove_dir_all(path)
+    }
+
     fn list_directory(&self, dir: &Path) -> Result<Vec<PathBuf>> {
         // Check if directory contents have been mocked
         let contents = self.directory_contents.lock().unwrap();

@@ -725,6 +725,155 @@ impl Filesystem for RealFilesystem {
         })
     }
 
+    fn secure_delete(&self, path: &Path) -> Result<()> {
+        use std::io::Write;
+
+        // Get file size first
+        let file_size = self.file_size(path)?;
+
+        if file_size == 0 {
+            // Empty file, just remove it
+            return self.remove_file(path);
+        }
+
+        // Open file for writing
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(|e| {
+                NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to open file for secure deletion {}: {}",
+                        path.display(),
+                        e
+                    ),
+                ))
+            })?;
+
+        // Use a 64KB buffer for efficient overwriting
+        const BUFFER_SIZE: usize = 64 * 1024;
+        let zeros = vec![0u8; BUFFER_SIZE];
+
+        // Pass 1: Overwrite with zeros
+        let mut remaining = file_size as usize;
+        while remaining > 0 {
+            let to_write = remaining.min(BUFFER_SIZE);
+            file.write_all(&zeros[..to_write]).map_err(|e| {
+                NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to overwrite file with zeros {}: {}",
+                        path.display(),
+                        e
+                    ),
+                ))
+            })?;
+            remaining -= to_write;
+        }
+        file.sync_all().map_err(NailsError::IoError)?;
+
+        // Pass 2: Overwrite with random data from /dev/urandom
+        use std::io::{Read, Seek};
+        file.seek(std::io::SeekFrom::Start(0))
+            .map_err(NailsError::IoError)?;
+
+        // Read random data from /dev/urandom for cryptographically secure randomness
+        let mut urandom = std::fs::File::open("/dev/urandom").map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to open /dev/urandom for secure deletion: {}", e),
+            ))
+        })?;
+
+        let mut random_buf = vec![0u8; BUFFER_SIZE];
+        remaining = file_size as usize;
+        while remaining > 0 {
+            let to_write = remaining.min(BUFFER_SIZE);
+            // Read fresh random data for each chunk
+            urandom
+                .read_exact(&mut random_buf[..to_write])
+                .map_err(|e| {
+                    NailsError::IoError(std::io::Error::new(
+                        e.kind(),
+                        format!("Failed to read random data from /dev/urandom: {}", e),
+                    ))
+                })?;
+            file.write_all(&random_buf[..to_write]).map_err(|e| {
+                NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to overwrite file with random data {}: {}",
+                        path.display(),
+                        e
+                    ),
+                ))
+            })?;
+            remaining -= to_write;
+        }
+        file.sync_all().map_err(NailsError::IoError)?;
+
+        // Pass 3: Overwrite with zeros again
+        file.seek(std::io::SeekFrom::Start(0))
+            .map_err(NailsError::IoError)?;
+
+        remaining = file_size as usize;
+        while remaining > 0 {
+            let to_write = remaining.min(BUFFER_SIZE);
+            file.write_all(&zeros[..to_write]).map_err(|e| {
+                NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to overwrite file with zeros (final pass) {}: {}",
+                        path.display(),
+                        e
+                    ),
+                ))
+            })?;
+            remaining -= to_write;
+        }
+        file.sync_all().map_err(NailsError::IoError)?;
+
+        // Close file handle before deletion
+        drop(file);
+
+        // Finally, remove the file
+        self.remove_file(path)
+    }
+
+    fn secure_delete_dir_all(&self, path: &Path) -> Result<()> {
+        // First, recursively secure delete all files
+        if path.is_dir() {
+            for entry in std::fs::read_dir(path).map_err(|e| {
+                NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to read directory {}: {}", path.display(), e),
+                ))
+            })? {
+                let entry = entry.map_err(NailsError::IoError)?;
+                let entry_path = entry.path();
+
+                if entry_path.is_dir() {
+                    // Recursively secure delete subdirectory
+                    self.secure_delete_dir_all(&entry_path)?;
+                } else {
+                    // Secure delete the file
+                    self.secure_delete(&entry_path)?;
+                }
+            }
+
+            // Now remove the empty directory
+            std::fs::remove_dir(path).map_err(|e| {
+                NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to remove directory {}: {}", path.display(), e),
+                ))
+            })?;
+        }
+
+        Ok(())
+    }
+
     fn list_directory(&self, dir: &Path) -> Result<Vec<PathBuf>> {
         let entries = std::fs::read_dir(dir).map_err(|e| {
             NailsError::IoError(std::io::Error::new(

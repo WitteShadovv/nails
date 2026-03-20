@@ -73,6 +73,15 @@ impl ShellType {
         }
     }
 
+    /// Get the display name of this shell type
+    pub fn name(&self) -> &'static str {
+        match self {
+            ShellType::Bash => "bash",
+            ShellType::Zsh => "zsh",
+            ShellType::Fish => "fish",
+        }
+    }
+
     /// Get all supported shell types
     pub fn all() -> Vec<ShellType> {
         vec![ShellType::Bash, ShellType::Zsh, ShellType::Fish]
@@ -90,6 +99,7 @@ impl ShellType {
 /// - Case-insensitive matching ensures all variations are caught
 /// - Atomic file writes prevent data corruption
 /// - In-memory clearing prevents forensic recovery from RAM
+/// - Optional secure deletion for forensic resistance
 ///
 /// # Generic Parameter
 ///
@@ -98,6 +108,8 @@ pub struct HistoryCleaner<F: Filesystem> {
     filesystem: F,
     patterns: Vec<String>,
     shells: Vec<ShellType>,
+    /// Use secure deletion (overwrite before delete)
+    pub(crate) secure_delete: bool,
 }
 
 impl<F: Filesystem> HistoryCleaner<F> {
@@ -105,11 +117,13 @@ impl<F: Filesystem> HistoryCleaner<F> {
     ///
     /// Default patterns: ["nails"]
     /// Default shells: [Bash, Zsh, Fish]
+    /// Default secure_delete: false
     pub fn new(filesystem: F) -> Self {
         Self {
             filesystem,
             patterns: vec!["nails".to_string()],
             shells: ShellType::all(),
+            secure_delete: false,
         }
     }
 
@@ -122,6 +136,15 @@ impl<F: Filesystem> HistoryCleaner<F> {
     /// Set specific shells to clean (replaces defaults)
     pub fn with_shells(mut self, shells: Vec<ShellType>) -> Self {
         self.shells = shells;
+        self
+    }
+
+    /// Enable or disable secure deletion
+    ///
+    /// When enabled, history files are securely deleted (overwritten) before
+    /// being rewritten with filtered content. This provides better forensic resistance.
+    pub fn with_secure_delete(mut self, enabled: bool) -> Self {
+        self.secure_delete = enabled;
         self
     }
 
@@ -152,8 +175,8 @@ impl<F: Filesystem> HistoryCleaner<F> {
                 }
             }
 
-            // Clean in-memory history (best-effort)
-            if let Err(e) = self.clean_in_memory_history(*shell) {
+            // Attempt in-memory history clear (best-effort, see method docs for limitations)
+            if let Err(e) = self.attempt_clean_in_memory_history(*shell) {
                 output::warn(&format!(
                     "Failed to clear {:?} in-memory history: {}",
                     shell, e
@@ -217,6 +240,17 @@ impl<F: Filesystem> HistoryCleaner<F> {
             )));
         }
 
+        // If secure_delete is enabled, securely delete the original file first
+        if self.secure_delete
+            && let Err(e) = self.filesystem.secure_delete(&history_path)
+        {
+            output::warn(&format!(
+                "Secure delete of {} failed, falling back to normal overwrite: {}",
+                history_path.display(),
+                e
+            ));
+        }
+
         // Write filtered content back (atomic write via Filesystem trait)
         let new_content = filtered.join("\n");
         if !new_content.is_empty() {
@@ -228,10 +262,16 @@ impl<F: Filesystem> HistoryCleaner<F> {
             self.filesystem.write_file_content(&history_path, "")?;
         }
 
+        let secure_note = if self.secure_delete {
+            " (secure delete)"
+        } else {
+            ""
+        };
         Ok(Some(format!(
-            "Removed {} entries from {}",
+            "Removed {} entries from {}{}",
             removed_count,
-            history_path.display()
+            history_path.display(),
+            secure_note
         )))
     }
 
@@ -243,9 +283,9 @@ impl<F: Filesystem> HistoryCleaner<F> {
             .any(|pattern| line_lower.contains(&pattern.to_lowercase()))
     }
 
-    /// Clear in-memory history for a shell
+    /// Attempt to clear in-memory history for a shell (BEST-EFFORT ONLY)
     ///
-    /// # Important Limitation
+    /// # ⚠️ CRITICAL LIMITATION - THIS DOES NOT WORK AS EXPECTED ⚠️
     ///
     /// **This method spawns NEW shell subprocesses to execute clear commands.**
     /// The subprocess has NO connection to the user's actual shell session.
@@ -258,11 +298,17 @@ impl<F: Filesystem> HistoryCleaner<F> {
     /// process's in-memory history from a subprocess. The in-memory history lives
     /// in the parent shell's RAM space, which is inaccessible to child processes.
     ///
-    /// ## Why This Approach?
+    /// ## Why This Approach Still Exists
     ///
     /// - Follows AC6 requirements letter-by-law ("uses std::process::Command")
     /// - Best-effort approach with warnings on failure
     /// - File-based cleanup (the primary security measure) works correctly
+    ///
+    /// ## What Actually Provides Security
+    ///
+    /// The `clean_history_file()` method removes entries from disk-based history
+    /// files, which IS effective. In-memory history in the parent shell will be
+    /// lost when the shell exits anyway.
     ///
     /// ## Better Solutions (Future Work)
     ///
@@ -271,11 +317,7 @@ impl<F: Filesystem> HistoryCleaner<F> {
     /// 2. **Session management:** Track shells started during nails session and
     ///    terminate them before deactivation (Story 4.14 approach)
     /// 3. **Accept limitation:** Focus on file-based cleanup (already robust)
-    ///
-    /// For now, this method is kept as "best-effort" with clear documentation of
-    /// its limitations. The file-based cleanup in `clean_history_file()` is the
-    /// primary security measure and works correctly.
-    fn clean_in_memory_history(&self, shell: ShellType) -> Result<()> {
+    fn attempt_clean_in_memory_history(&self, shell: ShellType) -> Result<()> {
         let shell_name = match shell {
             ShellType::Bash => "bash",
             ShellType::Zsh => "zsh",
@@ -399,6 +441,7 @@ mod tests {
 
         assert_eq!(cleaner.patterns, vec!["nails".to_string()]);
         assert_eq!(cleaner.shells.len(), 3);
+        assert!(!cleaner.secure_delete);
     }
 
     #[test]

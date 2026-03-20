@@ -168,7 +168,17 @@ This is evidence of deterministic output for the pinned source revision, build i
 tested CI environment. GitHub attestation provides provenance for the published artifact, but does
 not by itself prove reproducibility.
 
-For local rebuild instructions and the exact scope of the guarantee, see
+To reproduce the exact CI artifact locally, check out the commit you want to verify and run:
+
+```bash
+nix build -L .#nails-release -o result --option accept-flake-config false
+```
+
+The release files will be in `result/`. Running `cargo build` directly will not produce a
+byte-identical binary — the CI build is Nix-hermetic and embeds Nix store paths rather than local
+workspace paths.
+
+For the full scope of the guarantee and attestation details, see
 `docs/release-artifact-reproducibility.md`.
 
 ---
