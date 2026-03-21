@@ -19,7 +19,7 @@
 
         # Native Rust toolchain pinned for local development.
         rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
-          extensions = [ "rust-src" "rust-analyzer" ];
+          extensions = [ "rust-src" "rust-analyzer" "llvm-tools-preview" ];
           targets = [ targetTriple ];
         };
 
@@ -160,7 +160,6 @@
             rustToolchain
             cargo-tarpaulin
             cargo-llvm-cov
-            llvmPackages_latest.llvm
             bc # Floating-point arithmetic for coverage threshold checks
           ];
         };

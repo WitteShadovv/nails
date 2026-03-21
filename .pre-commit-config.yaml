@@ -153,8 +153,6 @@ repos:
 
             # Function to run coverage and produce cobertura XML
             run_coverage() {
-              export LLVM_COV=$(command -v llvm-cov 2>/dev/null || echo "")
-              export LLVM_PROFDATA=$(command -v llvm-profdata 2>/dev/null || echo "")
               mkdir -p /tmp/nails-coverage
               cargo llvm-cov --workspace --all-features --all-targets \
                 --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1
@@ -167,8 +165,6 @@ repos:
             else
               # Not in nix-shell, so enter it
               coverage_output=$(nix-shell --run 'bash -c '"'"'
-                export LLVM_COV=$(command -v llvm-cov 2>/dev/null || echo "")
-                export LLVM_PROFDATA=$(command -v llvm-profdata 2>/dev/null || echo "")
                 mkdir -p /tmp/nails-coverage
                 cargo llvm-cov --workspace --all-features --all-targets \
                   --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1
