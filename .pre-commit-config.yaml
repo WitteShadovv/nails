@@ -156,7 +156,7 @@ repos:
               export LLVM_COV=$(command -v llvm-cov 2>/dev/null || echo "")
               export LLVM_PROFDATA=$(command -v llvm-profdata 2>/dev/null || echo "")
               mkdir -p /tmp/nails-coverage
-              cargo llvm-cov --workspace --all-features \
+              cargo llvm-cov --workspace --all-features --all-targets \
                 --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1
             }
 
@@ -170,7 +170,7 @@ repos:
                 export LLVM_COV=$(command -v llvm-cov 2>/dev/null || echo "")
                 export LLVM_PROFDATA=$(command -v llvm-profdata 2>/dev/null || echo "")
                 mkdir -p /tmp/nails-coverage
-                cargo llvm-cov --workspace --all-features \
+                cargo llvm-cov --workspace --all-features --all-targets \
                   --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1
               '"'"'')
               coverage_status=$?

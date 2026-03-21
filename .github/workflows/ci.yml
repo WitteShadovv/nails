@@ -169,18 +169,18 @@ jobs:
             --all-features \
             --workspace \
             --all-targets \
-            --lcov --output-path ./coverage/lcov.info
+            --cobertura --output-path ./coverage/cobertura.xml
           cargo llvm-cov \
             --all-features \
             --workspace \
             --all-targets \
-            --html --output-dir ./coverage/html \
+            --lcov --output-path ./coverage/lcov.info \
             --no-run
           cargo llvm-cov \
             --all-features \
             --workspace \
             --all-targets \
-            --cobertura --output-path ./coverage/cobertura.xml \
+            --html --output-dir ./coverage/html \
             --no-run
 
       - name: Enforce 85% coverage threshold

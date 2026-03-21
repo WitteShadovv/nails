@@ -21,6 +21,7 @@ in pkgs.mkShell {
     # Development tools
     pre-commit
     git
+    bc # Floating-point arithmetic for coverage threshold checks
 
     # Security and forensics tools (for testing)
     veracrypt

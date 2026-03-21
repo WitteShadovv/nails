@@ -161,6 +161,7 @@
             cargo-tarpaulin
             cargo-llvm-cov
             llvmPackages_latest.llvm
+            bc # Floating-point arithmetic for coverage threshold checks
           ];
         };
 
