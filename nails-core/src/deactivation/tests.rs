@@ -1,6 +1,6 @@
 //! Tests for deactivation module
 
-use super::{DeactivationOrchestrator, DeactivationReport};
+use super::{DeactivationOrchestrator, DeactivationReport, PostUnmountCleanupReport};
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 use crate::filesystem::Filesystem;
 use crate::{
@@ -134,6 +134,7 @@ fn test_deactivation_report_new() {
         duration: Duration::from_millis(150),
         final_state: SystemState::Inactive,
         was_already_inactive: false,
+        post_unmount_cleanup: PostUnmountCleanupReport::default(),
     };
 
     assert!(report.is_successful());
@@ -150,6 +151,7 @@ fn test_deactivation_report_display_already_inactive() {
         duration: Duration::from_millis(5),
         final_state: SystemState::Inactive,
         was_already_inactive: true,
+        post_unmount_cleanup: PostUnmountCleanupReport::default(),
     };
 
     let output = format!("{}", report);
@@ -169,6 +171,7 @@ fn test_deactivation_report_display_with_items() {
         duration: Duration::from_millis(150),
         final_state: SystemState::Inactive,
         was_already_inactive: false,
+        post_unmount_cleanup: PostUnmountCleanupReport::default(),
     };
 
     let output = format!("{}", report);

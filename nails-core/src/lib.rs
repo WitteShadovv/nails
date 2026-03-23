@@ -172,7 +172,7 @@ pub use cleanup::{
 };
 
 // Deactivation orchestrator exports (Story 5.5: DeactivationOrchestrator with Cleanup + Unmount + Rollback)
-pub use deactivation::{DeactivationOrchestrator, DeactivationReport};
+pub use deactivation::{DeactivationOrchestrator, DeactivationReport, PostUnmountCleanupReport};
 
 // Emergency deactivation (thorough cleanup without reboot)
 pub use emergency::emergency_deactivate;

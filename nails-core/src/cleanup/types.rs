@@ -83,6 +83,24 @@ pub struct CleanupConfig {
     /// again before being deleted. This makes forensic recovery more difficult.
     #[serde(default)]
     pub secure_delete: bool,
+
+    /// Whether to perform post-unmount cleanup on the real disk (default: true)
+    ///
+    /// When enabled, a second cleanup phase runs AFTER overlay unmount to clean
+    /// history files on the actual disk. This is critical for forensic safety
+    /// because the first cleanup phase only cleans the overlay layer, not the
+    /// real underlying filesystem.
+    ///
+    /// The post-unmount cleanup:
+    /// - Uses secure_delete=true for better forensic resistance
+    /// - Cleans an extended list of history file locations (not just shells)
+    /// - Is best-effort (failures don't abort deactivation)
+    #[serde(default = "default_post_unmount_cleanup")]
+    pub post_unmount_cleanup: bool,
+}
+
+fn default_post_unmount_cleanup() -> bool {
+    true
 }
 
 impl Default for CleanupConfig {
@@ -98,6 +116,7 @@ impl Default for CleanupConfig {
             hidden_volume_path: hidden_volume,
             sanitize_memory: false,
             secure_delete: false,
+            post_unmount_cleanup: true,
         }
     }
 }

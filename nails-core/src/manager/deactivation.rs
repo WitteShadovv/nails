@@ -21,7 +21,10 @@ use super::{
     NailsManager, ensure_run_current_system_symlink, select_system_profile,
     start_service_and_socket,
 };
-use crate::{Filesystem, NailsError, Result, SystemState, verify_base_config_clean};
+use crate::{
+    CleanupConfig, CleanupManager, CleanupMode, Filesystem, NailsError, Result, SystemState,
+    verify_base_config_clean,
+};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -310,6 +313,54 @@ impl<F: Filesystem> NailsManager<F> {
             let current = manager.current_state()?;
             let inactive_state = current.complete_deactivation()?;
             manager.update_state(inactive_state)?;
+        }
+
+        // Step 8.1: Emergency cleanup (Fast mode - no verification, best-effort)
+        // IMPORTANT: Cleanup failures should NOT fail emergency deactivation
+        // Speed and reliability are prioritized over thoroughness
+        {
+            tracing::info!("Starting emergency history cleanup (Fast mode)...");
+
+            let manager = manager_arc.lock().unwrap();
+
+            // Create cleanup config with secure_delete enabled for forensic safety
+            let cleanup_config = CleanupConfig {
+                clear_history: true,
+                clear_temp_files: true,
+                clear_logs: true,
+                secure_delete: true,
+                sanitize_memory: false, // Skip memory sanitization for speed
+                ..CleanupConfig::default()
+            };
+
+            let cleanup_manager = CleanupManager::new(
+                manager.filesystem.clone(),
+                cleanup_config,
+                CleanupMode::Fast, // Fast mode skips verification for speed
+            );
+
+            match cleanup_manager.cleanup() {
+                Ok(report) => {
+                    tracing::info!(
+                        cleaned_items = report.cleaned_items.len(),
+                        errors = report.errors.len(),
+                        duration_ms = report.duration.as_millis() as u64,
+                        "Emergency cleanup completed"
+                    );
+
+                    // Log any errors as warnings (don't fail deactivation)
+                    for error in &report.errors {
+                        tracing::warn!(error = %error, "Emergency cleanup error (non-fatal)");
+                    }
+                }
+                Err(e) => {
+                    // Log failure but continue with deactivation
+                    tracing::warn!(
+                        error = %e,
+                        "Emergency cleanup failed (non-fatal) - continuing deactivation"
+                    );
+                }
+            }
         }
 
         // Step 8.2: Switch to decoy profile

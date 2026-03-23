@@ -115,7 +115,12 @@ impl<F: Filesystem> NailsManager<F> {
         // Step 2.75 & 3: Stage config and run preflight checks
         {
             let manager = manager_arc.lock().unwrap();
-            manager.run_preflight_phase(no_preflight, options.overlay_only, verbosity)?;
+            manager.run_preflight_phase(
+                no_preflight,
+                options.overlay_only,
+                verbosity,
+                options.pre_activation_cleanup,
+            )?;
         }
 
         // Step 4: Create StateGuard for automatic rollback on failure/panic

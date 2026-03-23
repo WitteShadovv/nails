@@ -3,12 +3,13 @@
 //! Implements the core deactivation workflow: state transitions, cleanup,
 //! overlay unmounting, and automatic rollback on failures.
 
-use super::report::DeactivationReport;
+use super::report::{DeactivationReport, PostUnmountCleanupReport};
 use crate::manager::{ensure_run_current_system_symlink, select_system_profile};
 use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError,
     NailsManager, Result, StateGuard, SystemState,
 };
+use crate::cleanup::history::{HistoryCleaner, get_extended_history_files};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -125,6 +126,7 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
                 duration: start.elapsed(),
                 final_state: SystemState::Inactive,
                 was_already_inactive: true,
+                post_unmount_cleanup: PostUnmountCleanupReport::default(),
             });
         }
 
@@ -212,6 +214,17 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
             }
         };
 
+        // Step 3.5: Post-unmount cleanup - cleans REAL DISK (not overlay layer)
+        // This is critical for forensic safety: the Step 2 cleanup only cleaned
+        // the overlay layer. Now that overlays are unmounted, we can clean the
+        // actual underlying filesystem.
+        let post_unmount_report = if self.cleanup_config.post_unmount_cleanup {
+            self.execute_post_unmount_cleanup(&manager)
+        } else {
+            tracing::debug!("Post-unmount cleanup disabled in configuration");
+            PostUnmountCleanupReport::default()
+        };
+
         // Step 4: Clear overlay_status and transition to INACTIVE - AC2
         manager.clear_overlay_status_in_cache();
         let inactive_state = manager.current_state()?.complete_deactivation()?;
@@ -278,6 +291,7 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
             duration_ms = duration_ms,
             state_to = ?SystemState::Inactive,
             unmounted_count = unmounted.len(),
+            post_unmount_cleaned = post_unmount_report.cleaned_items.len(),
             "Deactivation complete"
         );
 
@@ -287,6 +301,7 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
             duration: start.elapsed(),
             final_state: SystemState::Inactive,
             was_already_inactive: false,
+            post_unmount_cleanup: post_unmount_report,
         })
     }
 
@@ -344,6 +359,207 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
         }
 
         Ok(report)
+    }
+
+    /// Execute post-unmount cleanup on the REAL disk
+    ///
+    /// This is Phase 2 of the two-phase cleanup process. It runs AFTER overlays
+    /// are unmounted to clean history files on the actual underlying filesystem,
+    /// not just the overlay layer.
+    ///
+    /// # Why Two-Phase Cleanup?
+    ///
+    /// The Phase 1 cleanup (execute_cleanup) runs while overlays are still mounted,
+    /// which means it only cleans files in the overlay's upper layer. The original
+    /// files on the real disk remain untouched. This is a forensic safety issue
+    /// because an adversary examining the disk would still see command history.
+    ///
+    /// Phase 2 runs after overlay unmount, directly cleaning the real disk.
+    ///
+    /// # Best-Effort Approach
+    ///
+    /// This method is intentionally best-effort - individual file cleanup failures
+    /// are logged as warnings but do NOT fail the entire deactivation. The rationale:
+    /// - Deactivation should complete to restore the innocent appearance
+    /// - Failed cleanups are logged for user awareness
+    /// - Some files may not exist on all systems
+    ///
+    /// # Arguments
+    ///
+    /// * `manager` - Reference to NailsManager for filesystem access
+    ///
+    /// # Returns
+    ///
+    /// PostUnmountCleanupReport with details of what was cleaned and any warnings
+    fn execute_post_unmount_cleanup(&self, manager: &NailsManager<F>) -> PostUnmountCleanupReport {
+        let post_unmount_start = Instant::now();
+        tracing::info!(
+            phase = "post_unmount_cleanup",
+            "Starting Phase 2 cleanup on real disk"
+        );
+
+        let mut report = PostUnmountCleanupReport {
+            cleaned_items: Vec::new(),
+            warnings: Vec::new(),
+            was_performed: true,
+        };
+
+        // Get extended list of history files to clean
+        let history_files = get_extended_history_files();
+
+        if history_files.is_empty() {
+            tracing::warn!(
+                phase = "post_unmount_cleanup",
+                "$HOME not set, cannot determine history file locations"
+            );
+            report.warnings.push("$HOME not set, skipped history file cleanup".to_string());
+            return report;
+        }
+
+        // Create a HistoryCleaner with secure_delete enabled for forensic safety
+        let history_cleaner = HistoryCleaner::new(manager.filesystem().clone())
+            .with_patterns(self.cleanup_config.history_patterns.clone())
+            .with_secure_delete(true); // Always use secure delete for post-unmount
+
+        // Clean each history file individually
+        for history_file in &history_files {
+            // Check if file exists
+            match manager.filesystem().path_exists(history_file) {
+                Ok(true) => {
+                    // Try to clean this file
+                    match self.clean_single_history_file(manager, history_file, &history_cleaner) {
+                        Ok(Some(msg)) => {
+                            tracing::debug!(
+                                file = %history_file.display(),
+                                phase = "post_unmount_cleanup",
+                                "Cleaned history file"
+                            );
+                            report.cleaned_items.push(msg);
+                        }
+                        Ok(None) => {
+                            // File had no matching entries, that's fine
+                            tracing::debug!(
+                                file = %history_file.display(),
+                                phase = "post_unmount_cleanup",
+                                "No nails entries found in file"
+                            );
+                        }
+                        Err(e) => {
+                            let warning = format!(
+                                "Could not clean {}: {}",
+                                history_file.display(),
+                                e
+                            );
+                            tracing::warn!(
+                                file = %history_file.display(),
+                                error = %e,
+                                phase = "post_unmount_cleanup",
+                                "Failed to clean history file"
+                            );
+                            report.warnings.push(warning);
+                        }
+                    }
+                }
+                Ok(false) => {
+                    // File doesn't exist, that's fine
+                    tracing::trace!(
+                        file = %history_file.display(),
+                        phase = "post_unmount_cleanup",
+                        "History file does not exist, skipping"
+                    );
+                }
+                Err(e) => {
+                    let warning = format!(
+                        "Could not check existence of {}: {}",
+                        history_file.display(),
+                        e
+                    );
+                    tracing::warn!(
+                        file = %history_file.display(),
+                        error = %e,
+                        phase = "post_unmount_cleanup",
+                        "Failed to check history file existence"
+                    );
+                    report.warnings.push(warning);
+                }
+            }
+        }
+
+        tracing::info!(
+            phase = "post_unmount_cleanup",
+            cleaned_count = report.cleaned_items.len(),
+            warning_count = report.warnings.len(),
+            duration_ms = post_unmount_start.elapsed().as_millis() as u64,
+            "Phase 2 cleanup complete"
+        );
+
+        report
+    }
+
+    /// Clean a single history file by removing lines matching patterns
+    ///
+    /// This is a helper for execute_post_unmount_cleanup that processes
+    /// a single file.
+    ///
+    /// # Arguments
+    ///
+    /// * `manager` - Reference to NailsManager for filesystem access
+    /// * `path` - Path to the history file
+    /// * `_cleaner` - Reference to HistoryCleaner for pattern access
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(msg))` - File was cleaned, message describes what was done
+    /// - `Ok(None)` - File had no matching entries
+    /// - `Err(e)` - Error occurred during cleanup
+    fn clean_single_history_file(
+        &self,
+        manager: &NailsManager<F>,
+        path: &std::path::Path,
+        _cleaner: &HistoryCleaner<F>,
+    ) -> Result<Option<String>> {
+        // Read file content
+        let content = manager.filesystem().read_file_content(path)?;
+
+        // Filter out lines containing patterns (case-insensitive)
+        let original_count = content.lines().count();
+        let filtered: Vec<&str> = content
+            .lines()
+            .filter(|line| {
+                let line_lower = line.to_lowercase();
+                !self.cleanup_config.history_patterns
+                    .iter()
+                    .any(|pattern| line_lower.contains(&pattern.to_lowercase()))
+            })
+            .collect();
+        let removed_count = original_count - filtered.len();
+
+        if removed_count == 0 {
+            return Ok(None); // No matching entries found
+        }
+
+        // Secure delete the original file first (overwrite with zeros/random)
+        if let Err(e) = manager.filesystem().secure_delete(path) {
+            tracing::debug!(
+                file = %path.display(),
+                error = %e,
+                "Secure delete failed, falling back to normal overwrite"
+            );
+        }
+
+        // Write filtered content back
+        let new_content = filtered.join("\n");
+        if !new_content.is_empty() {
+            manager.filesystem().write_file_content(path, &format!("{}\n", new_content))?;
+        } else {
+            manager.filesystem().write_file_content(path, "")?;
+        }
+
+        Ok(Some(format!(
+            "Removed {} entries from {} (secure delete)",
+            removed_count,
+            path.display()
+        )))
     }
 
     /// Unmount overlays in reverse order

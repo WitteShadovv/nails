@@ -43,7 +43,10 @@ use crate::{NailsError, Result};
 /// };
 /// assert!(opts.validate().is_err());
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Default value for pre_activation_cleanup option
+const DEFAULT_PRE_ACTIVATION_CLEANUP: bool = true;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivateOptions {
     /// Kill graphical session before activation (enables all direct mounts)
     pub kill_session: bool,
@@ -86,6 +89,35 @@ pub struct ActivateOptions {
     /// This is set by the CLI when the user already confirmed before detaching.
     #[doc(hidden)]
     pub session_kill_confirmed: bool,
+
+    /// Enable pre-activation history cleanup (default: true)
+    ///
+    /// When enabled, shell history is cleaned BEFORE overlays are mounted to remove
+    /// evidence of sensitive commands (nails, cryptsetup, veracrypt, luks, etc.)
+    /// from the REAL disk. This is a security feature that runs even when
+    /// `--no-preflight` is set.
+    ///
+    /// Best-effort approach: cleanup failures are logged but don't fail activation.
+    pub pre_activation_cleanup: bool,
+}
+
+impl Default for ActivateOptions {
+    fn default() -> Self {
+        Self {
+            kill_session: false,
+            accept_pivot_risks: false,
+            no_pivot: false,
+            yes: false,
+            quiet: false,
+            verbosity: 0,
+            json: false,
+            no_color: false,
+            overlay_only: false,
+            skip_process_detection_override: None,
+            session_kill_confirmed: false,
+            pre_activation_cleanup: DEFAULT_PRE_ACTIVATION_CLEANUP,
+        }
+    }
 }
 
 impl ActivateOptions {
@@ -260,6 +292,7 @@ mod tests {
             overlay_only: false,
             skip_process_detection_override: None,
             session_kill_confirmed: false,
+            pre_activation_cleanup: true,
         };
         assert!(opts.validate().is_ok());
     }
@@ -282,5 +315,21 @@ mod tests {
         };
         assert!(opts.validate().is_ok());
         assert!(opts.overlay_only);
+    }
+
+    #[test]
+    fn test_pre_activation_cleanup_defaults_to_true() {
+        let opts = ActivateOptions::default();
+        assert!(opts.pre_activation_cleanup);
+    }
+
+    #[test]
+    fn test_pre_activation_cleanup_can_be_disabled() {
+        let opts = ActivateOptions {
+            pre_activation_cleanup: false,
+            ..Default::default()
+        };
+        assert!(!opts.pre_activation_cleanup);
+        assert!(opts.validate().is_ok());
     }
 }

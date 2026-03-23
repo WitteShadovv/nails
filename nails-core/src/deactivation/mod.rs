@@ -58,4 +58,4 @@ mod tests;
 
 // Public exports
 pub use orchestrator::DeactivationOrchestrator;
-pub use report::DeactivationReport;
+pub use report::{DeactivationReport, PostUnmountCleanupReport};

@@ -88,6 +88,64 @@ impl ShellType {
     }
 }
 
+/// Get an extended list of history file paths for forensic cleanup
+///
+/// This function returns paths to all known history files that might contain
+/// NAILS-related commands, including:
+/// - Standard shell history files (bash, zsh, fish)
+/// - Less pager history
+/// - Python/IPython history
+/// - Database CLI history (psql, mysql, sqlite)
+/// - GDB debugger history
+/// - Recently used files trackers
+/// - Node.js REPL history
+/// - Ruby IRB history
+///
+/// This list is used for post-unmount cleanup to ensure the REAL disk
+/// (not the overlay) is cleaned of any forensic artifacts.
+///
+/// # Returns
+///
+/// Vector of PathBuf for all history file locations that may exist.
+/// Note: Not all paths will exist on every system.
+pub fn get_extended_history_files() -> Vec<std::path::PathBuf> {
+    let Some(home) = std::env::var("HOME").ok() else {
+        return Vec::new();
+    };
+    let home_path = std::path::PathBuf::from(&home);
+
+    vec![
+        // Shell history files
+        home_path.join(".bash_history"),
+        home_path.join(".zsh_history"),
+        home_path.join(".local/share/fish/fish_history"),
+        // Less pager history
+        home_path.join(".lesshst"),
+        // Python history
+        home_path.join(".python_history"),
+        home_path.join(".ipython/profile_default/history.sqlite"),
+        // Database CLI history
+        home_path.join(".psql_history"),
+        home_path.join(".mysql_history"),
+        home_path.join(".sqlite_history"),
+        // GDB debugger history
+        home_path.join(".gdb_history"),
+        // Node.js REPL history
+        home_path.join(".node_repl_history"),
+        // Ruby IRB history
+        home_path.join(".irb_history"),
+        // Vim/Neovim history and info
+        home_path.join(".viminfo"),
+        home_path.join(".local/state/nvim/shada/main.shada"),
+        // Recently used files (GNOME/GTK)
+        home_path.join(".local/share/recently-used.xbel"),
+        // Wget history
+        home_path.join(".wget-hsts"),
+        // Atuin shell history (modern shell history tool)
+        home_path.join(".local/share/atuin/history.db"),
+    ]
+}
+
 /// Cleans shell history files by removing lines matching patterns
 ///
 /// HistoryCleaner removes all command history entries containing

@@ -57,6 +57,7 @@ fn test_cleanup_config_custom() {
         hidden_volume_path: hidden_volume,
         sanitize_memory: false,
         secure_delete: false,
+        post_unmount_cleanup: true,
     };
 
     assert!(!config.clear_history);
@@ -267,15 +268,16 @@ fn test_cleanup_manager_selective_cleanup() {
     let fs = MockFilesystem::new();
     let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
     let config = CleanupConfig {
-        clear_history: true,
+        clear_history: false,
         clear_temp_files: false,
         clear_logs: false,
-        history_patterns: vec!["nails".to_string()],
-        temp_dirs: vec![PathBuf::from("/tmp")],
+        history_patterns: vec![],
+        temp_dirs: vec![],
         log_path: hidden_volume.join("logs"),
         hidden_volume_path: hidden_volume,
-        sanitize_memory: false,
+        sanitize_memory: true, // Enable memory sanitization
         secure_delete: false,
+        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Fast;
 
@@ -325,6 +327,7 @@ fn test_cleanup_manager_config_accessor() {
         hidden_volume_path: hidden_volume,
         sanitize_memory: false,
         secure_delete: false,
+        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Fast;
 
@@ -376,6 +379,7 @@ fn test_cleanup_manager_temp_files_integration() {
         hidden_volume_path: hidden_volume,
         sanitize_memory: false,
         secure_delete: false,
+        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Fast;
 
@@ -449,6 +453,7 @@ fn test_cleanup_manager_temp_files_with_errors() {
         hidden_volume_path: hidden_volume,
         sanitize_memory: false,
         secure_delete: false,
+        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Fast;
 
@@ -537,6 +542,7 @@ fn test_full_cleanup_cycle_all_cleaners_invoked() {
         hidden_volume_path: hidden_volume.clone(),
         sanitize_memory: false,
         secure_delete: false,
+        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Thorough {
         verify_cleanup: false,
@@ -717,15 +723,16 @@ fn test_verification_fails_when_artifacts_remain() {
 
     let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
     let config = CleanupConfig {
-        clear_history: false, // Don't actually clean, just verify
-        clear_temp_files: false,
+        clear_history: false,
+        clear_temp_files: true,
         clear_logs: false,
-        history_patterns: vec!["nails".to_string()],
+        history_patterns: vec![],
         temp_dirs: vec![PathBuf::from("/tmp")],
         log_path: hidden_volume.join("logs"),
         hidden_volume_path: hidden_volume,
         sanitize_memory: false,
         secure_delete: false,
+        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Thorough {
         verify_cleanup: true,
@@ -770,6 +777,7 @@ fn test_memory_sanitization_tracking() {
         hidden_volume_path: hidden_volume,
         sanitize_memory: true, // Enable memory sanitization
         secure_delete: false,
+        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Fast;
 
@@ -822,6 +830,7 @@ fn test_cleanup_report_tracks_canary_findings() {
         hidden_volume_path: hidden_volume,
         sanitize_memory: false,
         secure_delete: false,
+        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Thorough {
         verify_cleanup: true,
@@ -904,6 +913,7 @@ fn test_cleanup_manager_uses_secure_delete_when_configured() {
         hidden_volume_path: hidden_volume,
         sanitize_memory: false,
         secure_delete: true, // Enable secure delete
+        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Fast;
 
