@@ -69,7 +69,7 @@ sudo mv cyclonedx /usr/local/bin/
 
 ```bash
 # Generate SBOM in CycloneDX 1.6 JSON format
-cargo sbom --output-format cyclonedx_json_1_6 > sbom.cdx.json
+cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cdx.json
 
 # Verify SBOM was created
 ls -lh sbom.cdx.json
@@ -1018,7 +1018,7 @@ cargo audit
 cargo audit --json | jq -r '.vulnerabilities.list[] | "\(.advisory.id): \(.package.name)@\(.package.version)"'
 
 # 4. Update SBOM
-cargo sbom --output-format cyclonedx_json_1_6 > sbom.cdx.json
+cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cdx.json
 git add sbom.cdx.json
 git commit -m "chore(sbom): update dependency inventory"
 
@@ -1150,7 +1150,7 @@ cargo test --all-features
 ./scripts/ci-local.sh
 
 # 4. Generate new SBOM
-cargo sbom --output-format cyclonedx_json_1_6 > sbom.cdx.json
+cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cdx.json
 
 # 5. Commit fix
 git add Cargo.lock sbom.cdx.json
@@ -1188,7 +1188,7 @@ See [vulnerability-handling.md](vulnerability-handling.md) for complete incident
 
 ```bash
 # SBOM Generation
-cargo sbom --output-format cyclonedx_json_1_6 > sbom.cdx.json
+cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cdx.json
 cyclonedx validate --input-file sbom.cdx.json
 
 # Dependency Auditing

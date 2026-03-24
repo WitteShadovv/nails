@@ -267,7 +267,7 @@ jobs:
       - name: Generate CycloneDX SBOM
         run: |
           mkdir -p sbom
-          cargo sbom --output-format cyclonedx_json_1_6 > sbom/sbom.cdx.json
+          cargo sbom --output-format cyclone_dx_json_1_6 > sbom/sbom.cdx.json
 
       - name: Install CycloneDX CLI for validation
         run: |

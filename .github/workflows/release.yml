@@ -164,7 +164,7 @@ jobs:
         run: cargo install cargo-sbom --locked
 
       - name: Generate CycloneDX SBOM
-        run: cargo sbom --output-format cyclonedx_json_1_6 > sbom.cdx.json
+        run: cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cdx.json
 
       - name: Install CycloneDX CLI for validation
         run: |
