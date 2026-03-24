@@ -3,19 +3,8 @@
 //! Handles pre-activation validation and config preparation.
 
 use crate::cleanup::history::HistoryCleaner;
+use crate::obfuscate;
 use crate::{Filesystem, NailsManager, Result, Stopwatch, Verbosity};
-
-/// Security-sensitive patterns to remove from shell history during pre-activation cleanup.
-/// These patterns indicate encrypted volume operations that should not remain on the REAL disk.
-const PRE_ACTIVATION_CLEANUP_PATTERNS: &[&str] = &[
-    "nails",
-    "cryptsetup",
-    "veracrypt",
-    "luks",
-    "luksOpen",
-    "luksClose",
-    "/dev/mapper",
-];
 
 impl<F: Filesystem> NailsManager<F> {
     /// Stage hidden config symlink and run preflight checks
@@ -125,12 +114,10 @@ impl<F: Filesystem> NailsManager<F> {
             tracing::info!("Running pre-activation history cleanup...");
         }
 
-        let patterns: Vec<String> = PRE_ACTIVATION_CLEANUP_PATTERNS
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        // Use obfuscated patterns for forensic resistance
+        let patterns = obfuscate::pre_activation_cleanup_patterns();
 
-        let cleaner = HistoryCleaner::new(self.filesystem.clone()).with_patterns(patterns);
+        let cleaner = HistoryCleaner::new(self.filesystem.clone()).with_patterns(patterns.clone());
 
         match cleaner.clean() {
             Ok(cleaned_items) => {
@@ -146,7 +133,7 @@ impl<F: Filesystem> NailsManager<F> {
                     }
                     if verbosity >= Verbosity::Normal {
                         tracing::info!(
-                            patterns = ?PRE_ACTIVATION_CLEANUP_PATTERNS,
+                            patterns = ?patterns,
                             items_cleaned = cleaned_items.len(),
                             "Pre-activation history cleanup complete"
                         );

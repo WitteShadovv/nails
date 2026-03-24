@@ -44,11 +44,26 @@ fn test_cleanup_mode_equality() {
 #[test]
 fn test_cleanup_config_default() {
     let config = CleanupConfig::default();
+    let expected_patterns = [
+        "nails",
+        "veracrypt",
+        "cryptsetup",
+        "tcrypt",
+        "/mnt/hidden",
+        "hidden-volume",
+        "hidden_volume",
+    ];
+
     assert!(config.clear_history);
     assert!(config.clear_temp_files);
     assert!(config.clear_logs);
-    assert!(config.history_patterns.contains(&"nails".to_string()));
-    assert!(config.history_patterns.contains(&"NAILS".to_string()));
+    assert_eq!(config.history_patterns.len(), expected_patterns.len());
+    for pattern in expected_patterns {
+        assert!(
+            config.history_patterns.contains(&pattern.to_string()),
+            "Expected default history pattern to include: {pattern}"
+        );
+    }
     assert_eq!(config.temp_dirs.len(), 1);
     assert_eq!(config.temp_dirs[0], PathBuf::from("/tmp"));
 }

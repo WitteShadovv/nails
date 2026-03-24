@@ -4,7 +4,7 @@
 //! FAT32 and exFAT volumes will fail this check.
 
 use super::super::{CheckResult, PreFlightCheck};
-use crate::{Filesystem, Result, config::DEFAULT_HIDDEN_VOLUME_ROOT};
+use crate::{Filesystem, Result, obfuscate};
 use std::path::PathBuf;
 
 /// Pre-flight check that validates the hidden volume filesystem supports symbolic links
@@ -48,7 +48,7 @@ impl Default for SymlinkSupportCheck {
     /// Create check with default hidden volume path
     fn default() -> Self {
         Self {
-            hidden_volume_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+            hidden_volume_path: PathBuf::from(obfuscate::hidden_volume_root()),
         }
     }
 }
@@ -82,6 +82,7 @@ impl<F: Filesystem> PreFlightCheck<F> for SymlinkSupportCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
     use crate::filesystem::MockFilesystem;
     use std::path::Path;
 

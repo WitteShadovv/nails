@@ -88,6 +88,9 @@ pub mod output;
 // Desktop notification signal files (post-activation user feedback)
 pub mod notification;
 
+// String obfuscation for forensic resistance (Finding C4)
+pub mod obfuscate;
+
 // Re-export for convenience
 pub use config::{
     CliOverrides, ColorProfile, ColorSchemeConfig, Config, ConfigBuilder, DecoyProfile,

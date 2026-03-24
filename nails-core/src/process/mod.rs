@@ -44,6 +44,7 @@ pub mod classification;
 pub mod detection;
 pub mod restart;
 pub mod session;
+pub mod shell_cleanup;
 
 // Re-export public API
 pub use classification::{RestartStrategy, classify_process};
@@ -51,9 +52,11 @@ pub use detection::{ProcessInfo, detect_processes_using};
 pub use restart::{RestartMethod, RestartedProcess, restart_processes};
 pub use session::{
     RealSessionCommandExecutor, SessionCommandExecutor, SessionContext, SessionKillResult,
-    SessionKind, SessionRestartPlan, detect_session_context, kill_graphical_session,
-    prompt_session_kill_confirmation, restart_display_manager, restart_user_manager,
+    SessionKind, SessionRestartPlan, detect_session_context, detect_session_context_with_executor,
+    kill_graphical_session, prompt_session_kill_confirmation, restart_display_manager,
+    restart_user_manager,
 };
+pub use shell_cleanup::{ShellKillReport, kill_user_shells};
 
 #[cfg(test)]
 mod tests {

@@ -41,7 +41,7 @@ pub mod alias;
 pub mod color_scheme;
 pub mod prompt;
 
-use crate::{Config, Filesystem, Result};
+use crate::{Config, Filesystem, Result, obfuscate};
 use std::path::PathBuf;
 
 // Re-export ShellType from cleanup module for backward compatibility
@@ -410,7 +410,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         // NAILS_TARGET_USER is set by the detached systemd-run process where
         // SUDO_USER and USER are not available.
         let username = std::env::var("SUDO_USER")
-            .or_else(|_| std::env::var("NAILS_TARGET_USER"))
+            .or_else(|_| std::env::var(obfuscate::env_target_user()))
             .or_else(|_| std::env::var("USER"))
             .map_err(|_| {
                 std::io::Error::other(
@@ -518,7 +518,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         // NAILS_TARGET_USER is set by the detached systemd-run process where
         // SUDO_USER and USER are not available.
         let username = std::env::var("SUDO_USER")
-            .or_else(|_| std::env::var("NAILS_TARGET_USER"))
+            .or_else(|_| std::env::var(obfuscate::env_target_user()))
             .or_else(|_| std::env::var("USER"))
             .map_err(|_| {
                 std::io::Error::other(
@@ -687,7 +687,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         // This also ensures OSC sequences are suppressed when cargo test runs
         // with a PTY (where is_terminal() returns true but we still must not
         // mutate the developer's terminal colors).
-        if std::env::var("NO_COLOR").is_ok() || std::env::var("NAILS_NO_COLOR").is_ok() {
+        if std::env::var("NO_COLOR").is_ok() || std::env::var(obfuscate::env_no_color()).is_ok() {
             tracing::debug!(
                 "Skipping terminal color scheme ({}): NO_COLOR / NAILS_NO_COLOR is set",
                 context

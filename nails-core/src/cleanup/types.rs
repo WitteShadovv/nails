@@ -2,7 +2,8 @@
 //!
 //! Provides the configuration, mode, and reporting types used by the cleanup system.
 
-use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
+use crate::config::get_default_hidden_volume_root;
+use crate::obfuscate;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -54,7 +55,7 @@ pub struct CleanupConfig {
     pub clear_logs: bool,
 
     /// Patterns to match in history for removal (case-insensitive)
-    /// Default: ["nails", "NAILS"]
+    /// Default: ["nails", "veracrypt", "cryptsetup", "tcrypt", "/mnt/hidden", "hidden-volume", "hidden_volume"]
     pub history_patterns: Vec<String>,
 
     /// Directories to scan for temporary files
@@ -105,12 +106,13 @@ fn default_post_unmount_cleanup() -> bool {
 
 impl Default for CleanupConfig {
     fn default() -> Self {
-        let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let hidden_volume = PathBuf::from(get_default_hidden_volume_root());
         Self {
             clear_history: true,
             clear_temp_files: true,
             clear_logs: true,
-            history_patterns: vec!["nails".to_string(), "NAILS".to_string()],
+            // Use obfuscated patterns for forensic resistance
+            history_patterns: obfuscate::default_cleanup_patterns(),
             temp_dirs: vec![PathBuf::from("/tmp")],
             log_path: hidden_volume.join("logs"),
             hidden_volume_path: hidden_volume,

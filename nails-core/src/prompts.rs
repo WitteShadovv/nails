@@ -6,11 +6,57 @@
 //! - Pivot mount security trade-off acceptance
 //!
 //! Part of Story 4.15: User Prompts and CLI Flags for Overlay Strategy
+//!
+//! # Testing Support
+//!
+//! All prompt functions have `_with_io` variants that accept generic `BufRead`
+//! and `Write` implementations, enabling deterministic testing without real stdin/stdout.
 
 use crate::Result;
 use crate::process::ProcessInfo;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::path::Path;
+
+/// Internal implementation of yes/no prompt with injectable I/O for testing
+///
+/// This function allows tests to provide mock input/output streams.
+///
+/// # Arguments
+///
+/// * `message` - Prompt message to display
+/// * `default_no` - If true, default answer is "no" (shown as `[y/N]`)
+/// * `reader` - Input source implementing `BufRead`
+/// * `writer` - Output destination implementing `Write`
+///
+/// # Returns
+///
+/// * `Ok(true)` - User confirmed (yes)
+/// * `Ok(false)` - User declined (no)
+/// * `Err` - I/O error reading input
+pub fn prompt_yes_no_with_io<R: BufRead, W: Write>(
+    message: &str,
+    default_no: bool,
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<bool> {
+    let suffix = if default_no { "[y/N]" } else { "[Y/n]" };
+    write!(writer, "{} {}: ", message, suffix)?;
+    writer.flush()?;
+
+    let mut input = String::new();
+    reader.read_line(&mut input)?;
+
+    let input = input.trim().to_lowercase();
+    match input.as_str() {
+        "y" | "yes" => Ok(true),
+        "n" | "no" => Ok(false),
+        "" => Ok(!default_no), // Empty means use default
+        _ => {
+            writeln!(writer, "Please answer 'y' or 'n'")?;
+            prompt_yes_no_with_io(message, default_no, reader, writer) // Recurse until valid answer
+        }
+    }
+}
 
 /// Prompt user for yes/no confirmation
 ///
@@ -43,24 +89,64 @@ use std::path::Path;
 /// let confirmed = prompt_yes_no("Apply changes?", false)?;
 /// # Ok::<(), nails_core::NailsError>(())
 /// ```
+#[cfg(not(test))]
 pub fn prompt_yes_no(message: &str, default_no: bool) -> Result<bool> {
-    let suffix = if default_no { "[y/N]" } else { "[Y/n]" };
-    print!("{} {}: ", message, suffix);
-    io::stdout().flush()?;
+    let stdin = io::stdin();
+    let mut reader = stdin.lock();
+    let mut writer = io::stdout();
+    prompt_yes_no_with_io(message, default_no, &mut reader, &mut writer)
+}
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
+/// Test-only version that panics if called during tests
+/// This ensures tests use the `_with_io` variant instead
+#[cfg(test)]
+pub fn prompt_yes_no(message: &str, _default_no: bool) -> Result<bool> {
+    panic!(
+        "prompt_yes_no called during test with message: '{}'. Use prompt_yes_no_with_io instead.",
+        message
+    )
+}
 
-    let input = input.trim().to_lowercase();
-    match input.as_str() {
-        "y" | "yes" => Ok(true),
-        "n" | "no" => Ok(false),
-        "" => Ok(!default_no), // Empty means use default
-        _ => {
-            println!("Please answer 'y' or 'n'");
-            prompt_yes_no(message, default_no) // Recurse until valid answer
+/// Internal implementation of risky process restart prompt with injectable I/O
+///
+/// # Arguments
+///
+/// * `risky_processes` - List of processes classified as risky to restart
+/// * `reader` - Input source implementing `BufRead`
+/// * `writer` - Output destination implementing `Write`
+///
+/// # Returns
+///
+/// * `Ok(true)` - User confirmed restart
+/// * `Ok(false)` - User declined
+/// * `Err` - I/O error
+pub fn prompt_risky_process_restart_with_io<R: BufRead, W: Write>(
+    risky_processes: &[ProcessInfo],
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<bool> {
+    writeln!(writer)?;
+    writeln!(
+        writer,
+        "⚠️  Risky processes detected that may cause service disruption:"
+    )?;
+
+    for proc in risky_processes {
+        if let Some(ref service_name) = proc.service_name {
+            writeln!(writer, "    • {} ({})", proc.name, service_name)?;
+        } else {
+            writeln!(writer, "    • {} (PID {})", proc.name, proc.pid)?;
         }
     }
+
+    writeln!(writer)?;
+    writeln!(writer, "    Restarting these may briefly interrupt:")?;
+    writeln!(writer, "    • Network connectivity")?;
+    writeln!(writer, "    • Desktop notifications")?;
+    writeln!(writer, "    • Some application features")?;
+    writeln!(writer)?;
+
+    prompt_yes_no_with_io("    Restart these processes?", true, reader, writer)
 }
 
 /// Prompt for risky process restart confirmation
@@ -94,26 +180,107 @@ pub fn prompt_yes_no(message: &str, default_no: bool) -> Result<bool> {
 ///
 ///     Restart these processes? [y/N]:
 /// ```
+#[cfg(not(test))]
 pub fn prompt_risky_process_restart(risky_processes: &[ProcessInfo]) -> Result<bool> {
-    println!();
-    println!("⚠️  Risky processes detected that may cause service disruption:");
+    let stdin = io::stdin();
+    let mut reader = stdin.lock();
+    let mut writer = io::stdout();
+    prompt_risky_process_restart_with_io(risky_processes, &mut reader, &mut writer)
+}
 
-    for proc in risky_processes {
-        if let Some(ref service_name) = proc.service_name {
-            println!("    • {} ({})", proc.name, service_name);
+/// Test-only version that panics if called during tests
+#[cfg(test)]
+pub fn prompt_risky_process_restart(risky_processes: &[ProcessInfo]) -> Result<bool> {
+    panic!(
+        "prompt_risky_process_restart called during test with {} processes. Use prompt_risky_process_restart_with_io instead.",
+        risky_processes.len()
+    )
+}
+
+/// Internal implementation of pivot mount acceptance prompt with injectable I/O
+///
+/// # Arguments
+///
+/// * `target` - Target path being mounted (e.g., `/home`)
+/// * `blocking_processes` - Processes preventing direct mount
+/// * `reader` - Input source implementing `BufRead`
+/// * `writer` - Output destination implementing `Write`
+///
+/// # Returns
+///
+/// * `Ok(true)` - User accepted pivot mount risks
+/// * `Ok(false)` - User declined
+/// * `Err` - I/O error
+pub fn prompt_pivot_mount_acceptance_with_io<R: BufRead, W: Write>(
+    target: &Path,
+    blocking_processes: &[ProcessInfo],
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<bool> {
+    writeln!(writer)?;
+    writeln!(
+        writer,
+        "⚠️  CANNOT mount {} overlay directly.",
+        target.display()
+    )?;
+    writeln!(writer)?;
+    writeln!(
+        writer,
+        "The following processes are still using {}:",
+        target.display()
+    )?;
+
+    for proc in blocking_processes {
+        if !proc.cmdline.is_empty() {
+            writeln!(
+                writer,
+                "  • {} (PID {}) - {}",
+                proc.name, proc.pid, proc.cmdline
+            )?;
         } else {
-            println!("    • {} (PID {})", proc.name, proc.pid);
+            writeln!(writer, "  • {} (PID {})", proc.name, proc.pid)?;
         }
     }
 
-    println!();
-    println!("    Restarting these may briefly interrupt:");
-    println!("    • Network connectivity");
-    println!("    • Desktop notifications");
-    println!("    • Some application features");
-    println!();
+    writeln!(writer)?;
+    writeln!(writer, "PIVOT MOUNT FALLBACK:")?;
+    writeln!(
+        writer,
+        "  A pivot mount uses a staging location and bind mount."
+    )?;
+    writeln!(writer, "  This creates 'split-view' behavior:")?;
+    writeln!(writer)?;
+    writeln!(
+        writer,
+        "  ⚠️  OLD processes (listed above) continue writing to ORIGINAL {}",
+        target.display()
+    )?;
+    writeln!(
+        writer,
+        "  ✓  NEW processes will write to the hidden overlay"
+    )?;
+    writeln!(writer)?;
+    writeln!(writer, "  SECURITY RISK:")?;
+    writeln!(
+        writer,
+        "    Old processes may leak information about new (hidden) processes"
+    )?;
+    writeln!(writer, "    to the original filesystem. For example:")?;
+    writeln!(writer, "      - Browser writing downloads to original home")?;
+    writeln!(writer, "      - Text editor saving files to original home")?;
+    writeln!(writer)?;
+    writeln!(
+        writer,
+        "  This is a LAST RESORT option with reduced security guarantees."
+    )?;
+    writeln!(writer)?;
 
-    prompt_yes_no("    Restart these processes?", true)
+    prompt_yes_no_with_io(
+        "Accept pivot mount with split-view risk?",
+        true,
+        reader,
+        writer,
+    )
 }
 
 /// Prompt for pivot mount acceptance with security warnings
@@ -165,47 +332,65 @@ pub fn prompt_risky_process_restart(risky_processes: &[ProcessInfo]) -> Result<b
 ///
 /// Accept pivot mount with split-view risk? [y/N]:
 /// ```
+#[cfg(not(test))]
 pub fn prompt_pivot_mount_acceptance(
     target: &Path,
     blocking_processes: &[ProcessInfo],
 ) -> Result<bool> {
-    println!();
-    println!("⚠️  CANNOT mount {} overlay directly.", target.display());
-    println!();
-    println!(
-        "The following processes are still using {}:",
+    let stdin = io::stdin();
+    let mut reader = stdin.lock();
+    let mut writer = io::stdout();
+    prompt_pivot_mount_acceptance_with_io(target, blocking_processes, &mut reader, &mut writer)
+}
+
+/// Test-only version that panics if called during tests
+#[cfg(test)]
+pub fn prompt_pivot_mount_acceptance(
+    target: &Path,
+    blocking_processes: &[ProcessInfo],
+) -> Result<bool> {
+    panic!(
+        "prompt_pivot_mount_acceptance called during test for target '{}' with {} processes. Use prompt_pivot_mount_acceptance_with_io instead.",
+        target.display(),
+        blocking_processes.len()
+    )
+}
+
+/// Internal implementation of abort message display with injectable I/O
+///
+/// # Arguments
+///
+/// * `target` - Target path that failed (e.g., `/home`)
+/// * `writer` - Output destination implementing `Write`
+pub fn display_abort_message_with_io<W: Write>(target: &Path, writer: &mut W) -> Result<()> {
+    writeln!(writer)?;
+    writeln!(
+        writer,
+        "✗ Activation aborted: User declined pivot mount for {}",
         target.display()
-    );
-
-    for proc in blocking_processes {
-        if !proc.cmdline.is_empty() {
-            println!("  • {} (PID {}) - {}", proc.name, proc.pid, proc.cmdline);
-        } else {
-            println!("  • {} (PID {})", proc.name, proc.pid);
-        }
-    }
-
-    println!();
-    println!("PIVOT MOUNT FALLBACK:");
-    println!("  A pivot mount uses a staging location and bind mount.");
-    println!("  This creates 'split-view' behavior:");
-    println!();
-    println!(
-        "  ⚠️  OLD processes (listed above) continue writing to ORIGINAL {}",
-        target.display()
-    );
-    println!("  ✓  NEW processes will write to the hidden overlay");
-    println!();
-    println!("  SECURITY RISK:");
-    println!("    Old processes may leak information about new (hidden) processes");
-    println!("    to the original filesystem. For example:");
-    println!("      - Browser writing downloads to original home");
-    println!("      - Text editor saving files to original home");
-    println!();
-    println!("  This is a LAST RESORT option with reduced security guarantees.");
-    println!();
-
-    prompt_yes_no("Accept pivot mount with split-view risk?", true)
+    )?;
+    writeln!(writer)?;
+    writeln!(writer, "Suggestions:")?;
+    writeln!(
+        writer,
+        "  1. Close all applications and log out, then activate from TTY:"
+    )?;
+    writeln!(writer, "     $ nails activate")?;
+    writeln!(writer)?;
+    writeln!(
+        writer,
+        "  2. Kill your graphical session (will lose unsaved work):"
+    )?;
+    writeln!(writer, "     $ nails activate --kill-session")?;
+    writeln!(writer)?;
+    writeln!(
+        writer,
+        "  3. Accept security trade-off and use pivot mount:"
+    )?;
+    writeln!(writer, "     $ nails activate --accept-pivot-risks")?;
+    writeln!(writer)?;
+    writeln!(writer, "Current state: INACTIVE (unchanged)")?;
+    Ok(())
 }
 
 /// Display abort message with suggestions
@@ -235,33 +420,16 @@ pub fn prompt_pivot_mount_acceptance(
 /// Current state: INACTIVE (unchanged)
 /// ```
 pub fn display_abort_message(target: &Path) {
-    println!();
-    println!(
-        "✗ Activation aborted: User declined pivot mount for {}",
-        target.display()
-    );
-    println!();
-    println!("Suggestions:");
-    println!("  1. Close all applications and log out, then activate from TTY:");
-    println!("     $ nails activate");
-    println!();
-    println!("  2. Kill your graphical session (will lose unsaved work):");
-    println!("     $ nails activate --kill-session");
-    println!();
-    println!("  3. Accept security trade-off and use pivot mount:");
-    println!("     $ nails activate --accept-pivot-risks");
-    println!();
-    println!("Current state: INACTIVE (unchanged)");
+    let mut writer = io::stdout();
+    // Ignore errors from display function - it's just informational output
+    let _ = display_abort_message_with_io(target, &mut writer);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     use std::path::PathBuf;
-
-    // Note: Testing interactive prompts is challenging because they read from stdin.
-    // These tests verify the functions compile and have the correct signatures.
-    // Full testing requires integration tests with mocked stdin/stdout.
 
     /// Helper to create a test ProcessInfo
     fn make_test_process(
@@ -282,42 +450,281 @@ mod tests {
         }
     }
 
+    // ==================== prompt_yes_no_with_io tests ====================
+
     #[test]
-    fn test_display_abort_message_does_not_panic() {
-        // This function only prints output, so we just verify it doesn't panic
-        let target = Path::new("/home");
-        display_abort_message(target);
+    fn test_prompt_yes_no_accepts_y() {
+        let mut input = Cursor::new("y\n");
+        let mut output = Vec::new();
+        let result = prompt_yes_no_with_io("Continue?", true, &mut input, &mut output);
+        assert!(result.unwrap());
     }
 
     #[test]
-    fn test_prompt_pivot_mount_acceptance_signature() {
-        // Verify function signature is correct (will fail at runtime without stdin)
-        let _: fn(&Path, &[ProcessInfo]) -> Result<bool> = prompt_pivot_mount_acceptance;
+    fn test_prompt_yes_no_accepts_yes() {
+        let mut input = Cursor::new("yes\n");
+        let mut output = Vec::new();
+        let result = prompt_yes_no_with_io("Continue?", true, &mut input, &mut output);
+        assert!(result.unwrap());
     }
 
     #[test]
-    fn test_prompt_risky_process_restart_signature() {
-        // Verify function signature is correct
-        let _: fn(&[ProcessInfo]) -> Result<bool> = prompt_risky_process_restart;
+    fn test_prompt_yes_no_accepts_n() {
+        let mut input = Cursor::new("n\n");
+        let mut output = Vec::new();
+        let result = prompt_yes_no_with_io("Continue?", true, &mut input, &mut output);
+        assert!(!result.unwrap());
     }
 
     #[test]
-    fn test_prompt_yes_no_signature() {
-        // Verify function signature is correct
-        let _: fn(&str, bool) -> Result<bool> = prompt_yes_no;
+    fn test_prompt_yes_no_accepts_no() {
+        let mut input = Cursor::new("no\n");
+        let mut output = Vec::new();
+        let result = prompt_yes_no_with_io("Continue?", true, &mut input, &mut output);
+        assert!(!result.unwrap());
     }
 
     #[test]
-    fn test_display_abort_message_formatting() {
-        // Test that abort message is formatted correctly for different paths
-        display_abort_message(Path::new("/home"));
-        display_abort_message(Path::new("/etc"));
-        display_abort_message(Path::new("/var"));
+    fn test_prompt_yes_no_case_insensitive() {
+        let mut input = Cursor::new("Y\n");
+        let mut output = Vec::new();
+        let result = prompt_yes_no_with_io("Continue?", true, &mut input, &mut output);
+        assert!(result.unwrap());
+
+        let mut input = Cursor::new("YES\n");
+        let mut output = Vec::new();
+        let result = prompt_yes_no_with_io("Continue?", true, &mut input, &mut output);
+        assert!(result.unwrap());
+
+        let mut input = Cursor::new("N\n");
+        let mut output = Vec::new();
+        let result = prompt_yes_no_with_io("Continue?", true, &mut input, &mut output);
+        assert!(!result.unwrap());
+
+        let mut input = Cursor::new("NO\n");
+        let mut output = Vec::new();
+        let result = prompt_yes_no_with_io("Continue?", true, &mut input, &mut output);
+        assert!(!result.unwrap());
     }
 
     #[test]
-    fn test_prompt_pivot_mount_acceptance_with_multiple_processes() {
-        // Test formatting of pivot mount prompt with various process types
+    fn test_prompt_yes_no_default_no_empty_input() {
+        let mut input = Cursor::new("\n");
+        let mut output = Vec::new();
+        let result = prompt_yes_no_with_io("Continue?", true, &mut input, &mut output);
+        // default_no = true, so empty input returns false (no)
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_prompt_yes_no_default_yes_empty_input() {
+        let mut input = Cursor::new("\n");
+        let mut output = Vec::new();
+        let result = prompt_yes_no_with_io("Continue?", false, &mut input, &mut output);
+        // default_no = false, so empty input returns true (yes)
+        assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_prompt_yes_no_invalid_then_valid() {
+        // First input is invalid, second is valid
+        let mut input = Cursor::new("maybe\ny\n");
+        let mut output = Vec::new();
+        let result = prompt_yes_no_with_io("Continue?", true, &mut input, &mut output);
+        assert!(result.unwrap());
+
+        // Check that error message was written
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("Please answer 'y' or 'n'"));
+    }
+
+    #[test]
+    fn test_prompt_yes_no_displays_correct_suffix_default_no() {
+        let mut input = Cursor::new("y\n");
+        let mut output = Vec::new();
+        let _ = prompt_yes_no_with_io("Continue?", true, &mut input, &mut output);
+
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("[y/N]"));
+    }
+
+    #[test]
+    fn test_prompt_yes_no_displays_correct_suffix_default_yes() {
+        let mut input = Cursor::new("y\n");
+        let mut output = Vec::new();
+        let _ = prompt_yes_no_with_io("Continue?", false, &mut input, &mut output);
+
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("[Y/n]"));
+    }
+
+    #[test]
+    fn test_prompt_yes_no_displays_message() {
+        let mut input = Cursor::new("y\n");
+        let mut output = Vec::new();
+        let _ = prompt_yes_no_with_io("Do you want to proceed?", true, &mut input, &mut output);
+
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("Do you want to proceed?"));
+    }
+
+    // ==================== prompt_risky_process_restart_with_io tests ====================
+
+    #[test]
+    fn test_prompt_risky_process_restart_accepts_yes() {
+        let processes = vec![make_test_process(
+            100,
+            "NetworkManager",
+            "",
+            Some("network-manager.service".to_string()),
+        )];
+
+        let mut input = Cursor::new("y\n");
+        let mut output = Vec::new();
+        let result = prompt_risky_process_restart_with_io(&processes, &mut input, &mut output);
+        assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_prompt_risky_process_restart_accepts_no() {
+        let processes = vec![make_test_process(
+            100,
+            "NetworkManager",
+            "",
+            Some("network-manager.service".to_string()),
+        )];
+
+        let mut input = Cursor::new("n\n");
+        let mut output = Vec::new();
+        let result = prompt_risky_process_restart_with_io(&processes, &mut input, &mut output);
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_prompt_risky_process_restart_default_no() {
+        let processes = vec![make_test_process(100, "test", "", None)];
+
+        let mut input = Cursor::new("\n");
+        let mut output = Vec::new();
+        let result = prompt_risky_process_restart_with_io(&processes, &mut input, &mut output);
+        // Should default to no (safe option)
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_prompt_risky_process_restart_displays_warning() {
+        let processes = vec![make_test_process(
+            100,
+            "NetworkManager",
+            "",
+            Some("network-manager.service".to_string()),
+        )];
+
+        let mut input = Cursor::new("n\n");
+        let mut output = Vec::new();
+        let _ = prompt_risky_process_restart_with_io(&processes, &mut input, &mut output);
+
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("Risky processes detected"));
+        assert!(output_str.contains("NetworkManager"));
+        assert!(output_str.contains("network-manager.service"));
+    }
+
+    #[test]
+    fn test_prompt_risky_process_restart_shows_pid_when_no_service() {
+        let processes = vec![make_test_process(999, "custom-app", "", None)];
+
+        let mut input = Cursor::new("n\n");
+        let mut output = Vec::new();
+        let _ = prompt_risky_process_restart_with_io(&processes, &mut input, &mut output);
+
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("custom-app"));
+        assert!(output_str.contains("PID 999"));
+    }
+
+    #[test]
+    fn test_prompt_risky_process_restart_shows_disruption_warnings() {
+        let processes = vec![make_test_process(100, "test", "", None)];
+
+        let mut input = Cursor::new("n\n");
+        let mut output = Vec::new();
+        let _ = prompt_risky_process_restart_with_io(&processes, &mut input, &mut output);
+
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("Network connectivity"));
+        assert!(output_str.contains("Desktop notifications"));
+        assert!(output_str.contains("Some application features"));
+    }
+
+    // ==================== prompt_pivot_mount_acceptance_with_io tests ====================
+
+    #[test]
+    fn test_prompt_pivot_mount_acceptance_accepts_yes() {
+        let processes = vec![make_test_process(1234, "sway", "Wayland compositor", None)];
+
+        let mut input = Cursor::new("y\n");
+        let mut output = Vec::new();
+        let result = prompt_pivot_mount_acceptance_with_io(
+            Path::new("/home"),
+            &processes,
+            &mut input,
+            &mut output,
+        );
+        assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_prompt_pivot_mount_acceptance_accepts_no() {
+        let processes = vec![make_test_process(1234, "sway", "Wayland compositor", None)];
+
+        let mut input = Cursor::new("n\n");
+        let mut output = Vec::new();
+        let result = prompt_pivot_mount_acceptance_with_io(
+            Path::new("/home"),
+            &processes,
+            &mut input,
+            &mut output,
+        );
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_prompt_pivot_mount_acceptance_default_no() {
+        let processes = vec![make_test_process(1234, "sway", "", None)];
+
+        let mut input = Cursor::new("\n");
+        let mut output = Vec::new();
+        let result = prompt_pivot_mount_acceptance_with_io(
+            Path::new("/home"),
+            &processes,
+            &mut input,
+            &mut output,
+        );
+        // Should default to no (safe option)
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_prompt_pivot_mount_acceptance_displays_target_path() {
+        let processes = vec![make_test_process(1234, "sway", "", None)];
+
+        let mut input = Cursor::new("n\n");
+        let mut output = Vec::new();
+        let _ = prompt_pivot_mount_acceptance_with_io(
+            Path::new("/home"),
+            &processes,
+            &mut input,
+            &mut output,
+        );
+
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("/home"));
+        assert!(output_str.contains("CANNOT mount /home overlay directly"));
+    }
+
+    #[test]
+    fn test_prompt_pivot_mount_acceptance_displays_blocking_processes() {
         let processes = vec![
             make_test_process(1234, "sway", "Wayland compositor", None),
             make_test_process(
@@ -328,47 +735,123 @@ mod tests {
             ),
         ];
 
-        // We can't easily test the interactive part without mocking stdin,
-        // but we can at least verify the function doesn't panic with various inputs
-        let _ = std::panic::catch_unwind(|| {
-            // This will fail with IO error when reading from closed stdin, but won't panic
-            let _ = prompt_pivot_mount_acceptance(Path::new("/home"), &processes);
-        });
+        let mut input = Cursor::new("n\n");
+        let mut output = Vec::new();
+        let _ = prompt_pivot_mount_acceptance_with_io(
+            Path::new("/home"),
+            &processes,
+            &mut input,
+            &mut output,
+        );
+
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("sway"));
+        assert!(output_str.contains("PID 1234"));
+        assert!(output_str.contains("Wayland compositor"));
+        assert!(output_str.contains("firefox"));
+        assert!(output_str.contains("PID 5678"));
     }
 
     #[test]
-    fn test_prompt_risky_process_restart_formatting() {
-        // Test that risky process prompt formats correctly
-        let risky = vec![
-            make_test_process(
-                100,
-                "NetworkManager",
-                "",
-                Some("network-manager.service".to_string()),
-            ),
-            make_test_process(200, "dbus-daemon", "", Some("dbus.service".to_string())),
-        ];
+    fn test_prompt_pivot_mount_acceptance_displays_security_warnings() {
+        let processes = vec![make_test_process(1234, "test", "", None)];
 
-        let _ = std::panic::catch_unwind(|| {
-            let _ = prompt_risky_process_restart(&risky);
-        });
+        let mut input = Cursor::new("n\n");
+        let mut output = Vec::new();
+        let _ = prompt_pivot_mount_acceptance_with_io(
+            Path::new("/home"),
+            &processes,
+            &mut input,
+            &mut output,
+        );
+
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("PIVOT MOUNT FALLBACK"));
+        assert!(output_str.contains("split-view"));
+        assert!(output_str.contains("SECURITY RISK"));
+        assert!(output_str.contains("LAST RESORT"));
+    }
+
+    #[test]
+    fn test_prompt_pivot_mount_with_empty_cmdline() {
+        let processes = vec![make_test_process(100, "test", "", None)];
+
+        let mut input = Cursor::new("n\n");
+        let mut output = Vec::new();
+        let result = prompt_pivot_mount_acceptance_with_io(
+            Path::new("/home"),
+            &processes,
+            &mut input,
+            &mut output,
+        );
+
+        assert!(!result.unwrap());
+        let output_str = String::from_utf8(output).unwrap();
+        // Should show PID without cmdline
+        assert!(output_str.contains("test (PID 100)"));
+        // Should NOT contain " - " after PID when cmdline is empty
+        assert!(!output_str.contains("test (PID 100) -"));
+    }
+
+    // ==================== display_abort_message_with_io tests ====================
+
+    #[test]
+    fn test_display_abort_message_does_not_panic() {
+        let mut output = Vec::new();
+        let result = display_abort_message_with_io(Path::new("/home"), &mut output);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_display_abort_message_contains_target() {
+        let mut output = Vec::new();
+        let _ = display_abort_message_with_io(Path::new("/home"), &mut output);
+
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("/home"));
+        assert!(output_str.contains("Activation aborted"));
+    }
+
+    #[test]
+    fn test_display_abort_message_contains_suggestions() {
+        let mut output = Vec::new();
+        let _ = display_abort_message_with_io(Path::new("/home"), &mut output);
+
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("Suggestions:"));
+        assert!(output_str.contains("nails activate"));
+        assert!(output_str.contains("--kill-session"));
+        assert!(output_str.contains("--accept-pivot-risks"));
+    }
+
+    #[test]
+    fn test_display_abort_message_shows_inactive_state() {
+        let mut output = Vec::new();
+        let _ = display_abort_message_with_io(Path::new("/home"), &mut output);
+
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("INACTIVE (unchanged)"));
     }
 
     #[test]
     fn test_display_abort_message_different_targets() {
-        // Ensure abort message works for various mount targets
         let targets = vec!["/home", "/etc", "/var", "/opt", "/usr/local"];
         for target in targets {
-            display_abort_message(Path::new(target));
+            let mut output = Vec::new();
+            let result = display_abort_message_with_io(Path::new(target), &mut output);
+            assert!(result.is_ok());
+
+            let output_str = String::from_utf8(output).unwrap();
+            assert!(output_str.contains(target));
         }
     }
 
+    // ==================== ProcessInfo tests ====================
+
     #[test]
     fn test_process_info_with_empty_service_name() {
-        // Test ProcessInfo formatting when service_name is None
         let proc = make_test_process(999, "test_process", "test command", None);
 
-        // Verify the struct is constructed correctly
         assert_eq!(proc.pid, 999);
         assert_eq!(proc.name, "test_process");
         assert!(proc.service_name.is_none());
@@ -376,30 +859,9 @@ mod tests {
 
     #[test]
     fn test_process_info_with_service_name() {
-        // Test ProcessInfo formatting when service_name is Some
         let proc = make_test_process(888, "systemd-service", "", Some("test.service".to_string()));
 
         assert_eq!(proc.pid, 888);
         assert_eq!(proc.service_name, Some("test.service".to_string()));
-    }
-
-    #[test]
-    fn test_prompt_pivot_mount_with_empty_cmdline() {
-        // Test with processes that have empty cmdline
-        let processes = vec![make_test_process(100, "test", "", None)];
-
-        let _ = std::panic::catch_unwind(|| {
-            let _ = prompt_pivot_mount_acceptance(Path::new("/home"), &processes);
-        });
-    }
-
-    #[test]
-    fn test_prompt_risky_process_with_no_service() {
-        // Test risky process prompt with processes without service names
-        let risky = vec![make_test_process(999, "custom-app", "some command", None)];
-
-        let _ = std::panic::catch_unwind(|| {
-            let _ = prompt_risky_process_restart(&risky);
-        });
     }
 }

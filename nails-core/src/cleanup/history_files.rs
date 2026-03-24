@@ -134,6 +134,52 @@ pub enum HistoryPath {
 }
 
 impl HistoryPath {
+    /// Resolve the path to an absolute PathBuf using explicit base paths
+    ///
+    /// This version accepts explicit paths instead of reading environment variables,
+    /// making it suitable for testing without env var manipulation.
+    ///
+    /// # Arguments
+    ///
+    /// * `home` - The home directory path (equivalent to $HOME)
+    /// * `xdg_data` - Optional XDG_DATA_HOME path (defaults to $HOME/.local/share)
+    /// * `xdg_config` - Optional XDG_CONFIG_HOME path (defaults to $HOME/.config)
+    /// * `xdg_state` - Optional XDG_STATE_HOME path (defaults to $HOME/.local/state)
+    ///
+    /// # Returns
+    ///
+    /// PathBuf for the resolved path.
+    pub fn resolve_with_home(
+        &self,
+        home: &std::path::Path,
+        xdg_data: Option<&std::path::Path>,
+        xdg_config: Option<&std::path::Path>,
+        xdg_state: Option<&std::path::Path>,
+    ) -> PathBuf {
+        match self {
+            Self::HomeRelative(path) => home.join(path),
+            Self::XdgData(path) => {
+                let base = xdg_data
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| home.join(".local/share"));
+                base.join(path)
+            }
+            Self::XdgConfig(path) => {
+                let base = xdg_config
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| home.join(".config"));
+                base.join(path)
+            }
+            Self::XdgState(path) => {
+                let base = xdg_state
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| home.join(".local/state"));
+                base.join(path)
+            }
+            Self::Absolute(path) => PathBuf::from(path),
+        }
+    }
+
     /// Resolve the path to an absolute PathBuf
     ///
     /// Uses XDG base directory specification with fallbacks to standard defaults:
@@ -222,6 +268,22 @@ impl HistoryFile {
             format,
             common,
         }
+    }
+
+    /// Resolve the path to this history file using explicit home directory
+    ///
+    /// This version accepts an explicit home path instead of reading $HOME,
+    /// making it suitable for testing without env var manipulation.
+    ///
+    /// # Arguments
+    ///
+    /// * `home` - The home directory path
+    ///
+    /// # Returns
+    ///
+    /// PathBuf for the resolved path.
+    pub fn resolve_path_for_home(&self, home: &std::path::Path) -> PathBuf {
+        self.path.resolve_with_home(home, None, None, None)
     }
 
     /// Resolve the path to this history file
@@ -569,6 +631,13 @@ pub fn get_existing() -> Vec<(&'static HistoryFile, PathBuf)> {
 mod tests {
     use super::*;
 
+    /// Test home directory path - safe for tests, doesn't exist on real filesystem
+    const TEST_HOME: &str = "/home/testuser";
+
+    fn test_home() -> PathBuf {
+        PathBuf::from(TEST_HOME)
+    }
+
     #[test]
     fn test_history_category_display_name() {
         assert_eq!(HistoryCategory::Shell.display_name(), "Shell");
@@ -597,94 +666,95 @@ mod tests {
         assert_eq!(HistoryFormat::Binary.description(), "Binary");
     }
 
-    #[test]
-    fn test_history_path_resolve_home_relative() {
-        // Set HOME for test
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
+    // ============================================================================
+    // HistoryPath::resolve_with_home tests (no env vars needed)
+    // ============================================================================
 
+    #[test]
+    fn test_history_path_resolve_with_home_relative() {
+        let home = test_home();
         let path = HistoryPath::HomeRelative(".bash_history");
-        let resolved = path.resolve();
-        assert_eq!(
-            resolved,
-            Some(PathBuf::from("/home/testuser/.bash_history"))
-        );
+        let resolved = path.resolve_with_home(&home, None, None, None);
+        assert_eq!(resolved, PathBuf::from("/home/testuser/.bash_history"));
     }
 
     #[test]
-    fn test_history_path_resolve_xdg_data() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-            std::env::remove_var("XDG_DATA_HOME");
-        }
-
+    fn test_history_path_resolve_with_home_xdg_data_default() {
+        let home = test_home();
         let path = HistoryPath::XdgData("fish/fish_history");
-        let resolved = path.resolve();
+        let resolved = path.resolve_with_home(&home, None, None, None);
         assert_eq!(
             resolved,
-            Some(PathBuf::from(
-                "/home/testuser/.local/share/fish/fish_history"
-            ))
+            PathBuf::from("/home/testuser/.local/share/fish/fish_history")
         );
     }
 
     #[test]
-    fn test_history_path_resolve_xdg_data_custom() {
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", "/custom/data");
-        }
-
+    fn test_history_path_resolve_with_home_xdg_data_custom() {
+        let home = test_home();
+        let custom_xdg_data = PathBuf::from("/custom/data");
         let path = HistoryPath::XdgData("fish/fish_history");
-        let resolved = path.resolve();
-        assert_eq!(
-            resolved,
-            Some(PathBuf::from("/custom/data/fish/fish_history"))
-        );
-
-        unsafe {
-            std::env::remove_var("XDG_DATA_HOME");
-        }
+        let resolved = path.resolve_with_home(&home, Some(&custom_xdg_data), None, None);
+        assert_eq!(resolved, PathBuf::from("/custom/data/fish/fish_history"));
     }
 
     #[test]
-    fn test_history_path_resolve_xdg_config() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-            std::env::remove_var("XDG_CONFIG_HOME");
-        }
-
+    fn test_history_path_resolve_with_home_xdg_config_default() {
+        let home = test_home();
         let path = HistoryPath::XdgConfig("nushell/history.txt");
-        let resolved = path.resolve();
+        let resolved = path.resolve_with_home(&home, None, None, None);
         assert_eq!(
             resolved,
-            Some(PathBuf::from("/home/testuser/.config/nushell/history.txt"))
+            PathBuf::from("/home/testuser/.config/nushell/history.txt")
         );
     }
 
     #[test]
-    fn test_history_path_resolve_xdg_state() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-            std::env::remove_var("XDG_STATE_HOME");
-        }
+    fn test_history_path_resolve_with_home_xdg_config_custom() {
+        let home = test_home();
+        let custom_xdg_config = PathBuf::from("/custom/config");
+        let path = HistoryPath::XdgConfig("nushell/history.txt");
+        let resolved = path.resolve_with_home(&home, None, Some(&custom_xdg_config), None);
+        assert_eq!(
+            resolved,
+            PathBuf::from("/custom/config/nushell/history.txt")
+        );
+    }
 
+    #[test]
+    fn test_history_path_resolve_with_home_xdg_state_default() {
+        let home = test_home();
         let path = HistoryPath::XdgState("nvim/shada/main.shada");
-        let resolved = path.resolve();
+        let resolved = path.resolve_with_home(&home, None, None, None);
         assert_eq!(
             resolved,
-            Some(PathBuf::from(
-                "/home/testuser/.local/state/nvim/shada/main.shada"
-            ))
+            PathBuf::from("/home/testuser/.local/state/nvim/shada/main.shada")
         );
     }
 
     #[test]
-    fn test_history_path_resolve_absolute() {
-        let path = HistoryPath::Absolute("/etc/some/path");
-        let resolved = path.resolve();
-        assert_eq!(resolved, Some(PathBuf::from("/etc/some/path")));
+    fn test_history_path_resolve_with_home_xdg_state_custom() {
+        let home = test_home();
+        let custom_xdg_state = PathBuf::from("/custom/state");
+        let path = HistoryPath::XdgState("nvim/shada/main.shada");
+        let resolved = path.resolve_with_home(&home, None, None, Some(&custom_xdg_state));
+        assert_eq!(
+            resolved,
+            PathBuf::from("/custom/state/nvim/shada/main.shada")
+        );
     }
+
+    #[test]
+    fn test_history_path_resolve_with_home_absolute() {
+        let home = test_home();
+        let path = HistoryPath::Absolute("/etc/some/path");
+        let resolved = path.resolve_with_home(&home, None, None, None);
+        assert_eq!(resolved, PathBuf::from("/etc/some/path"));
+    }
+
+    // ============================================================================
+    // ALL_HISTORY_FILES tests (no env vars needed)
+    // ============================================================================
 
     #[test]
     fn test_all_history_files_not_empty() {
@@ -885,17 +955,37 @@ mod tests {
         assert!(!names.contains(&"tcsh"));
     }
 
-    #[test]
-    fn test_history_file_resolve_path() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
+    // ============================================================================
+    // HistoryFile::resolve_path_for_home tests (no env vars needed)
+    // ============================================================================
 
+    #[test]
+    fn test_history_file_resolve_path_for_home() {
+        let home = test_home();
         let bash = ALL_HISTORY_FILES.iter().find(|f| f.name == "bash").unwrap();
-        let resolved = bash.resolve_path();
+        let resolved = bash.resolve_path_for_home(&home);
+        assert_eq!(resolved, PathBuf::from("/home/testuser/.bash_history"));
+    }
+
+    #[test]
+    fn test_history_file_resolve_path_for_home_fish() {
+        let home = test_home();
+        let fish = ALL_HISTORY_FILES.iter().find(|f| f.name == "fish").unwrap();
+        let resolved = fish.resolve_path_for_home(&home);
         assert_eq!(
             resolved,
-            Some(PathBuf::from("/home/testuser/.bash_history"))
+            PathBuf::from("/home/testuser/.local/share/fish/fish_history")
+        );
+    }
+
+    #[test]
+    fn test_history_file_resolve_path_for_home_nvim() {
+        let home = test_home();
+        let nvim = ALL_HISTORY_FILES.iter().find(|f| f.name == "nvim").unwrap();
+        let resolved = nvim.resolve_path_for_home(&home);
+        assert_eq!(
+            resolved,
+            PathBuf::from("/home/testuser/.local/state/nvim/shada/main.shada")
         );
     }
 

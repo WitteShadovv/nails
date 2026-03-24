@@ -29,6 +29,7 @@
 //! ```
 
 use crate::Filesystem;
+use crate::obfuscate;
 use std::path::{Path, PathBuf};
 
 /// Configuration for canary pattern scanning
@@ -59,14 +60,8 @@ pub struct CanaryConfig {
 impl Default for CanaryConfig {
     fn default() -> Self {
         Self {
-            forbidden_patterns: vec![
-                "nails".to_string(),
-                "NAILS".to_string(),
-                "hidden-volume".to_string(),
-                "secret-project".to_string(),
-                "financial-data".to_string(),
-                "NAILS_CANARY".to_string(),
-            ],
+            // Use obfuscated patterns for forensic resistance
+            forbidden_patterns: obfuscate::default_canary_patterns(),
             scan_paths: Vec::new(), // Empty means use default shell history paths
             max_file_size: 10 * 1024 * 1024, // 10MB
         }
@@ -334,11 +329,27 @@ mod tests {
     fn test_canary_config_default() {
         let config = CanaryConfig::default();
         assert!(config.forbidden_patterns.contains(&"nails".to_string()));
-        assert!(config.forbidden_patterns.contains(&"NAILS".to_string()));
+        assert!(config.forbidden_patterns.contains(&"veracrypt".to_string()));
+        assert!(
+            config
+                .forbidden_patterns
+                .contains(&"cryptsetup".to_string())
+        );
+        assert!(config.forbidden_patterns.contains(&"tcrypt".to_string()));
+        assert!(
+            config
+                .forbidden_patterns
+                .contains(&"/mnt/hidden".to_string())
+        );
         assert!(
             config
                 .forbidden_patterns
                 .contains(&"hidden-volume".to_string())
+        );
+        assert!(
+            config
+                .forbidden_patterns
+                .contains(&"hidden_volume".to_string())
         );
         assert!(
             config

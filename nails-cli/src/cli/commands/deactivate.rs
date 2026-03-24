@@ -49,7 +49,7 @@ pub fn execute(
 
     // Load configuration
     let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-    let config = Config::load_or_default(&config_path).unwrap_or_else(|_| Config::test_default());
+    let config = Config::load_or_default(&config_path).unwrap_or_else(|_| Config::default());
     let state_path = config.state_file_path.clone();
 
     // Create manager

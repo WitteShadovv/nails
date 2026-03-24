@@ -39,6 +39,27 @@ pub enum ShellType {
 }
 
 impl ShellType {
+    /// Get the default history file path for this shell, given a home directory
+    ///
+    /// # Arguments
+    ///
+    /// * `home` - The home directory path (e.g., from $HOME or for testing)
+    ///
+    /// # Returns
+    ///
+    /// PathBuf to the history file.
+    pub fn history_file_path_for_home(&self, home: &std::path::Path) -> PathBuf {
+        match self {
+            ShellType::Bash => home.join(".bash_history"),
+            ShellType::Zsh => home.join(".zsh_history"),
+            ShellType::Fish => home
+                .join(".local")
+                .join("share")
+                .join("fish")
+                .join("fish_history"),
+        }
+    }
+
     /// Get the default history file path for this shell
     ///
     /// Resolves $HOME environment variable to get actual path.
@@ -49,16 +70,7 @@ impl ShellType {
     pub fn history_file_path(&self) -> Option<PathBuf> {
         let home = std::env::var("HOME").ok()?;
         let home_path = PathBuf::from(home);
-
-        Some(match self {
-            ShellType::Bash => home_path.join(".bash_history"),
-            ShellType::Zsh => home_path.join(".zsh_history"),
-            ShellType::Fish => home_path
-                .join(".local")
-                .join("share")
-                .join("fish")
-                .join("fish_history"),
-        })
+        Some(self.history_file_path_for_home(&home_path))
     }
 
     /// Get the command to clear in-memory history for this shell
@@ -88,6 +100,63 @@ impl ShellType {
     }
 }
 
+/// Get an extended list of history file paths for forensic cleanup, given a home directory
+///
+/// This function returns paths to all known history files that might contain
+/// NAILS-related commands, including:
+/// - Standard shell history files (bash, zsh, fish)
+/// - Less pager history
+/// - Python/IPython history
+/// - Database CLI history (psql, mysql, sqlite)
+/// - GDB debugger history
+/// - Recently used files trackers
+/// - Node.js REPL history
+/// - Ruby IRB history
+///
+/// This list is used for post-unmount cleanup to ensure the REAL disk
+/// (not the overlay) is cleaned of any forensic artifacts.
+///
+/// # Arguments
+///
+/// * `home` - The home directory path (e.g., from $HOME or for testing)
+///
+/// # Returns
+///
+/// Vector of PathBuf for all history file locations that may exist.
+/// Note: Not all paths will exist on every system.
+pub fn get_extended_history_files_for_home(home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    vec![
+        // Shell history files
+        home.join(".bash_history"),
+        home.join(".zsh_history"),
+        home.join(".local/share/fish/fish_history"),
+        // Less pager history
+        home.join(".lesshst"),
+        // Python history
+        home.join(".python_history"),
+        home.join(".ipython/profile_default/history.sqlite"),
+        // Database CLI history
+        home.join(".psql_history"),
+        home.join(".mysql_history"),
+        home.join(".sqlite_history"),
+        // GDB debugger history
+        home.join(".gdb_history"),
+        // Node.js REPL history
+        home.join(".node_repl_history"),
+        // Ruby IRB history
+        home.join(".irb_history"),
+        // Vim/Neovim history and info
+        home.join(".viminfo"),
+        home.join(".local/state/nvim/shada/main.shada"),
+        // Recently used files (GNOME/GTK)
+        home.join(".local/share/recently-used.xbel"),
+        // Wget history
+        home.join(".wget-hsts"),
+        // Atuin shell history (modern shell history tool)
+        home.join(".local/share/atuin/history.db"),
+    ]
+}
+
 /// Get an extended list of history file paths for forensic cleanup
 ///
 /// This function returns paths to all known history files that might contain
@@ -113,37 +182,195 @@ pub fn get_extended_history_files() -> Vec<std::path::PathBuf> {
         return Vec::new();
     };
     let home_path = std::path::PathBuf::from(&home);
+    get_extended_history_files_for_home(&home_path)
+}
 
-    vec![
-        // Shell history files
-        home_path.join(".bash_history"),
-        home_path.join(".zsh_history"),
-        home_path.join(".local/share/fish/fish_history"),
-        // Less pager history
-        home_path.join(".lesshst"),
-        // Python history
-        home_path.join(".python_history"),
-        home_path.join(".ipython/profile_default/history.sqlite"),
-        // Database CLI history
-        home_path.join(".psql_history"),
-        home_path.join(".mysql_history"),
-        home_path.join(".sqlite_history"),
-        // GDB debugger history
-        home_path.join(".gdb_history"),
-        // Node.js REPL history
-        home_path.join(".node_repl_history"),
-        // Ruby IRB history
-        home_path.join(".irb_history"),
-        // Vim/Neovim history and info
-        home_path.join(".viminfo"),
-        home_path.join(".local/state/nvim/shada/main.shada"),
-        // Recently used files (GNOME/GTK)
-        home_path.join(".local/share/recently-used.xbel"),
-        // Wget history
-        home_path.join(".wget-hsts"),
-        // Atuin shell history (modern shell history tool)
-        home_path.join(".local/share/atuin/history.db"),
-    ]
+/// Filter fish shell YAML history by removing matching `- cmd:` entries and their `when:` lines
+///
+/// Fish history format:
+/// ```yaml
+/// - cmd: nails activate
+///   when: 1700000000
+/// - cmd: ls -la
+///   when: 1700000001
+/// ```
+///
+/// When a `- cmd:` line matches any pattern (case-insensitive), the line and its
+/// following `  when:` line are both removed.
+///
+/// # Returns
+///
+/// `(filtered_content, removed_entry_count)` — the filtered string and how many
+/// entries (cmd+when pairs) were removed.
+fn filter_fish_history(content: &str, patterns: &[String]) -> (String, usize) {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = Vec::new();
+    let mut removed_count = 0;
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+
+        // Check if this is a `- cmd:` line
+        if line.starts_with("- cmd:") {
+            let line_lower = line.to_lowercase();
+            let matches = patterns
+                .iter()
+                .any(|p| line_lower.contains(&p.to_lowercase()));
+
+            if matches {
+                removed_count += 1;
+                i += 1;
+                // Skip the following `when:` line if present
+                if i < lines.len() && lines[i].trim_start().starts_with("when:") {
+                    i += 1;
+                }
+                // Also skip any other indented metadata lines (e.g., `  paths:`)
+                while i < lines.len()
+                    && !lines[i].starts_with("- cmd:")
+                    && (lines[i].starts_with("  ") || lines[i].starts_with('\t'))
+                {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+
+        result.push(line);
+        i += 1;
+    }
+
+    let text = if result.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", result.join("\n"))
+    };
+    (text, removed_count)
+}
+
+/// Truncate all known history files to zero length, given a home directory
+///
+/// This is the forensically safe approach: rather than pattern-filtering (which
+/// is fragile), truncate every known history file on the real disk. This ensures
+/// ZERO commands remain visible to an adversary.
+///
+/// # Arguments
+///
+/// * `fs` - Filesystem implementation
+/// * `home` - The home directory path (e.g., from $HOME or for testing)
+/// * `secure` - If true, use secure_delete before truncating (overwrite with zeros/random)
+///
+/// # Returns
+///
+/// Vec of descriptions of what was done (best-effort, never fails overall).
+pub fn truncate_all_history_files_for_home<F: Filesystem>(
+    fs: &F,
+    home: &std::path::Path,
+    secure: bool,
+) -> Vec<String> {
+    let history_files = get_extended_history_files_for_home(home);
+    let mut results = Vec::new();
+
+    for path in &history_files {
+        match fs.path_exists(path) {
+            Ok(true) => {
+                // Secure delete first if requested
+                if secure && let Err(e) = fs.secure_delete(path) {
+                    tracing::debug!(
+                        file = %path.display(),
+                        error = %e,
+                        "Secure delete failed, proceeding with truncation"
+                    );
+                }
+
+                // Truncate to empty
+                match fs.write_file_content(path, "") {
+                    Ok(()) => {
+                        results.push(format!("Truncated {}", path.display()));
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            file = %path.display(),
+                            error = %e,
+                            "Failed to truncate history file"
+                        );
+                    }
+                }
+            }
+            Ok(false) => {
+                // File doesn't exist, skip silently
+            }
+            Err(e) => {
+                tracing::warn!(
+                    file = %path.display(),
+                    error = %e,
+                    "Failed to check history file existence"
+                );
+            }
+        }
+    }
+
+    results
+}
+
+/// Truncate all known history files to zero length
+///
+/// This is the forensically safe approach: rather than pattern-filtering (which
+/// is fragile), truncate every known history file on the real disk. This ensures
+/// ZERO commands remain visible to an adversary.
+///
+/// # Arguments
+///
+/// * `fs` - Filesystem implementation
+/// * `secure` - If true, use secure_delete before truncating (overwrite with zeros/random)
+///
+/// # Returns
+///
+/// Vec of descriptions of what was done (best-effort, never fails overall).
+pub fn truncate_all_history_files<F: Filesystem>(fs: &F, secure: bool) -> Vec<String> {
+    let history_files = get_extended_history_files();
+    let mut results = Vec::new();
+
+    for path in &history_files {
+        match fs.path_exists(path) {
+            Ok(true) => {
+                // Secure delete first if requested
+                if secure && let Err(e) = fs.secure_delete(path) {
+                    tracing::debug!(
+                        file = %path.display(),
+                        error = %e,
+                        "Secure delete failed, proceeding with truncation"
+                    );
+                }
+
+                // Truncate to empty
+                match fs.write_file_content(path, "") {
+                    Ok(()) => {
+                        results.push(format!("Truncated {}", path.display()));
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            file = %path.display(),
+                            error = %e,
+                            "Failed to truncate history file"
+                        );
+                    }
+                }
+            }
+            Ok(false) => {
+                // File doesn't exist, skip silently
+            }
+            Err(e) => {
+                tracing::warn!(
+                    file = %path.display(),
+                    error = %e,
+                    "Failed to check history file existence"
+                );
+            }
+        }
+    }
+
+    results
 }
 
 /// Cleans shell history files by removing lines matching patterns
@@ -168,6 +395,8 @@ pub struct HistoryCleaner<F: Filesystem> {
     shells: Vec<ShellType>,
     /// Use secure deletion (overwrite before delete)
     pub(crate) secure_delete: bool,
+    /// Optional explicit home directory path (for testing without env vars)
+    home: Option<PathBuf>,
 }
 
 impl<F: Filesystem> HistoryCleaner<F> {
@@ -182,6 +411,7 @@ impl<F: Filesystem> HistoryCleaner<F> {
             patterns: vec!["nails".to_string()],
             shells: ShellType::all(),
             secure_delete: false,
+            home: None,
         }
     }
 
@@ -204,6 +434,27 @@ impl<F: Filesystem> HistoryCleaner<F> {
     pub fn with_secure_delete(mut self, enabled: bool) -> Self {
         self.secure_delete = enabled;
         self
+    }
+
+    /// Set explicit home directory path
+    ///
+    /// When set, this path is used instead of reading $HOME environment variable.
+    /// This is useful for testing without env var manipulation.
+    ///
+    /// # Arguments
+    ///
+    /// * `home` - The home directory path to use for history file resolution
+    pub fn with_home(mut self, home: PathBuf) -> Self {
+        self.home = Some(home);
+        self
+    }
+
+    /// Get the history file path for a shell, using explicit home if set
+    fn get_history_path(&self, shell: ShellType) -> Option<PathBuf> {
+        match &self.home {
+            Some(home) => Some(shell.history_file_path_for_home(home)),
+            None => shell.history_file_path(),
+        }
     }
 
     /// Execute history cleanup
@@ -251,22 +502,9 @@ impl<F: Filesystem> HistoryCleaner<F> {
 
     /// Clean a specific shell's history file
     ///
-    /// # Fish Format Limitation
-    ///
-    /// **NOTE:** Fish shell uses a YAML-like history format:
-    /// ```yaml
-    /// - cmd: nails activate
-    ///   when: 1700000000
-    /// ```
-    ///
-    /// The current implementation uses simple line-by-line filtering, which will
-    /// leave orphaned `when:` timestamps when removing fish commands. A proper
-    /// Fish history cleaner would need to parse the YAML structure and remove
-    /// complete command+timestamp entries.
-    ///
-    /// This is a known limitation documented in Story 5.2 Dev Notes. For production
-    /// use with Fish shells, consider implementing `parse_fish_history()` helper
-    /// that properly handles the YAML structure.
+    /// For Fish shell, uses [`filter_fish_history`] to properly handle the YAML-like
+    /// format where each entry consists of a `- cmd:` line followed by a `  when:` line.
+    /// For other shells, uses simple line-by-line filtering.
     ///
     /// # Returns
     ///
@@ -274,7 +512,7 @@ impl<F: Filesystem> HistoryCleaner<F> {
     /// - `Ok(None)` - No history file found (skip)
     /// - `Err(e)` - Error occurred during cleanup
     fn clean_history_file(&self, shell: ShellType) -> Result<Option<String>> {
-        let history_path = match shell.history_file_path() {
+        let history_path = match self.get_history_path(shell) {
             Some(path) => path,
             None => return Ok(None), // $HOME not set
         };
@@ -287,13 +525,23 @@ impl<F: Filesystem> HistoryCleaner<F> {
         // Read history file content
         let content = self.filesystem.read_file_content(&history_path)?;
 
-        // Filter out lines containing patterns (case-insensitive)
-        let original_count = content.lines().count();
-        let filtered: Vec<&str> = content
-            .lines()
-            .filter(|line| !self.line_matches_patterns(line))
-            .collect();
-        let removed_count = original_count - filtered.len();
+        // Filter content based on shell type
+        let (new_content, removed_count) = if shell == ShellType::Fish {
+            filter_fish_history(&content, &self.patterns)
+        } else {
+            let original_count = content.lines().count();
+            let filtered: Vec<&str> = content
+                .lines()
+                .filter(|line| !self.line_matches_patterns(line))
+                .collect();
+            let removed = original_count - filtered.len();
+            let text = if filtered.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", filtered.join("\n"))
+            };
+            (text, removed)
+        };
 
         if removed_count == 0 {
             return Ok(Some(format!(
@@ -314,15 +562,8 @@ impl<F: Filesystem> HistoryCleaner<F> {
         }
 
         // Write filtered content back (atomic write via Filesystem trait)
-        let new_content = filtered.join("\n");
-        if !new_content.is_empty() {
-            // Add trailing newline if content exists
-            self.filesystem
-                .write_file_content(&history_path, &format!("{}\n", new_content))?;
-        } else {
-            // Empty file - just write empty content
-            self.filesystem.write_file_content(&history_path, "")?;
-        }
+        self.filesystem
+            .write_file_content(&history_path, &new_content)?;
 
         let secure_note = if self.secure_delete {
             " (secure delete)"
@@ -418,58 +659,39 @@ mod tests {
     use super::*;
     use crate::MockFilesystem;
 
+    /// Test home directory path - safe for tests, doesn't exist on real filesystem
+    const TEST_HOME: &str = "/home/testuser";
+
+    fn test_home() -> PathBuf {
+        PathBuf::from(TEST_HOME)
+    }
+
+    // ============================================================================
+    // ShellType::history_file_path_for_home tests (no env vars needed)
+    // ============================================================================
+
     #[test]
-    fn test_shell_type_bash_history_path() {
-        // Set HOME for test
-        // Note: std::env::set_var is unsafe in Rust 2024 edition
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
-        let path = ShellType::Bash.history_file_path();
-        assert_eq!(path, Some(PathBuf::from("/home/testuser/.bash_history")));
+    fn test_shell_type_bash_history_path_for_home() {
+        let home = test_home();
+        let path = ShellType::Bash.history_file_path_for_home(&home);
+        assert_eq!(path, PathBuf::from("/home/testuser/.bash_history"));
     }
 
     #[test]
-    fn test_shell_type_zsh_history_path() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
-        let path = ShellType::Zsh.history_file_path();
-        assert_eq!(path, Some(PathBuf::from("/home/testuser/.zsh_history")));
+    fn test_shell_type_zsh_history_path_for_home() {
+        let home = test_home();
+        let path = ShellType::Zsh.history_file_path_for_home(&home);
+        assert_eq!(path, PathBuf::from("/home/testuser/.zsh_history"));
     }
 
     #[test]
-    fn test_shell_type_fish_history_path() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
-        let path = ShellType::Fish.history_file_path();
+    fn test_shell_type_fish_history_path_for_home() {
+        let home = test_home();
+        let path = ShellType::Fish.history_file_path_for_home(&home);
         assert_eq!(
             path,
-            Some(PathBuf::from(
-                "/home/testuser/.local/share/fish/fish_history"
-            ))
+            PathBuf::from("/home/testuser/.local/share/fish/fish_history")
         );
-    }
-
-    #[test]
-    #[ignore] // Ignored: Test modifies global environment (HOME) and causes race conditions
-    fn test_shell_type_history_path_no_home() {
-        // Save current HOME value
-        let original_home = std::env::var("HOME").ok();
-
-        unsafe {
-            std::env::remove_var("HOME");
-        }
-        let path = ShellType::Bash.history_file_path();
-        assert_eq!(path, None);
-
-        // Restore original HOME value
-        if let Some(home) = original_home {
-            unsafe {
-                std::env::set_var("HOME", home);
-            }
-        }
     }
 
     #[test]
@@ -503,6 +725,32 @@ mod tests {
         assert_eq!(shell, cloned);
     }
 
+    // ============================================================================
+    // get_extended_history_files_for_home tests (no env vars needed)
+    // ============================================================================
+
+    #[test]
+    fn test_get_extended_history_files_for_home() {
+        let home = test_home();
+        let files = get_extended_history_files_for_home(&home);
+
+        // Should contain common history files
+        assert!(files.contains(&PathBuf::from("/home/testuser/.bash_history")));
+        assert!(files.contains(&PathBuf::from("/home/testuser/.zsh_history")));
+        assert!(files.contains(&PathBuf::from(
+            "/home/testuser/.local/share/fish/fish_history"
+        )));
+        assert!(files.contains(&PathBuf::from("/home/testuser/.lesshst")));
+        assert!(files.contains(&PathBuf::from("/home/testuser/.python_history")));
+        assert!(files.contains(&PathBuf::from(
+            "/home/testuser/.local/share/recently-used.xbel"
+        )));
+    }
+
+    // ============================================================================
+    // HistoryCleaner tests (using with_home for explicit path)
+    // ============================================================================
+
     #[test]
     fn test_history_cleaner_new() {
         let fs = MockFilesystem::new();
@@ -511,6 +759,15 @@ mod tests {
         assert_eq!(cleaner.patterns, vec!["nails".to_string()]);
         assert_eq!(cleaner.shells.len(), 3);
         assert!(!cleaner.secure_delete);
+        assert!(cleaner.home.is_none());
+    }
+
+    #[test]
+    fn test_history_cleaner_with_home() {
+        let fs = MockFilesystem::new();
+        let cleaner = HistoryCleaner::new(fs).with_home(test_home());
+
+        assert_eq!(cleaner.home, Some(test_home()));
     }
 
     #[test]
@@ -556,10 +813,8 @@ mod tests {
 
     #[test]
     fn test_history_file_cleanup() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
         let fs = MockFilesystem::new();
+        let home = test_home();
 
         let bash_history = PathBuf::from("/home/testuser/.bash_history");
         fs.mock_set_file_content(
@@ -568,7 +823,9 @@ mod tests {
         );
         fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
 
-        let cleaner = HistoryCleaner::new(fs.clone()).with_shells(vec![ShellType::Bash]);
+        let cleaner = HistoryCleaner::new(fs.clone())
+            .with_home(home)
+            .with_shells(vec![ShellType::Bash]);
 
         let result = cleaner.clean().unwrap();
 
@@ -583,13 +840,11 @@ mod tests {
 
     #[test]
     fn test_missing_history_file() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
         let fs = MockFilesystem::new();
+        let home = test_home();
         // Don't set up any history files
 
-        let cleaner = HistoryCleaner::new(fs);
+        let cleaner = HistoryCleaner::new(fs).with_home(home);
         let result = cleaner.clean().unwrap();
 
         // Should succeed with empty results (no files to clean)
@@ -599,16 +854,16 @@ mod tests {
 
     #[test]
     fn test_empty_history_file() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
         let fs = MockFilesystem::new();
+        let home = test_home();
 
         let bash_history = PathBuf::from("/home/testuser/.bash_history");
         fs.mock_set_file_content(bash_history.to_str().unwrap(), "");
         fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
 
-        let cleaner = HistoryCleaner::new(fs.clone()).with_shells(vec![ShellType::Bash]);
+        let cleaner = HistoryCleaner::new(fs.clone())
+            .with_home(home)
+            .with_shells(vec![ShellType::Bash]);
 
         let result = cleaner.clean().unwrap();
 
@@ -619,16 +874,16 @@ mod tests {
 
     #[test]
     fn test_history_file_with_no_matches() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
         let fs = MockFilesystem::new();
+        let home = test_home();
 
         let bash_history = PathBuf::from("/home/testuser/.bash_history");
         fs.mock_set_file_content(bash_history.to_str().unwrap(), "ls -la\ncd /tmp\npwd\n");
         fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
 
-        let cleaner = HistoryCleaner::new(fs.clone()).with_shells(vec![ShellType::Bash]);
+        let cleaner = HistoryCleaner::new(fs.clone())
+            .with_home(home)
+            .with_shells(vec![ShellType::Bash]);
 
         let result = cleaner.clean().unwrap();
 
@@ -643,10 +898,8 @@ mod tests {
 
     #[test]
     fn test_history_file_all_matches_removed() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
         let fs = MockFilesystem::new();
+        let home = test_home();
 
         let bash_history = PathBuf::from("/home/testuser/.bash_history");
         fs.mock_set_file_content(
@@ -655,7 +908,9 @@ mod tests {
         );
         fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
 
-        let cleaner = HistoryCleaner::new(fs.clone()).with_shells(vec![ShellType::Bash]);
+        let cleaner = HistoryCleaner::new(fs.clone())
+            .with_home(home)
+            .with_shells(vec![ShellType::Bash]);
 
         let result = cleaner.clean().unwrap();
 
@@ -670,10 +925,8 @@ mod tests {
 
     #[test]
     fn test_multiple_shells_cleanup() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
         let fs = MockFilesystem::new();
+        let home = test_home();
 
         let bash_history = PathBuf::from("/home/testuser/.bash_history");
         let zsh_history = PathBuf::from("/home/testuser/.zsh_history");
@@ -684,8 +937,9 @@ mod tests {
         fs.mock_set_file_content(zsh_history.to_str().unwrap(), "pwd\nNAILS status\n");
         fs.mock_set_path_exists(zsh_history.to_str().unwrap(), true);
 
-        let cleaner =
-            HistoryCleaner::new(fs.clone()).with_shells(vec![ShellType::Bash, ShellType::Zsh]);
+        let cleaner = HistoryCleaner::new(fs.clone())
+            .with_home(home)
+            .with_shells(vec![ShellType::Bash, ShellType::Zsh]);
 
         let result = cleaner.clean().unwrap();
 
@@ -705,10 +959,8 @@ mod tests {
 
     #[test]
     fn test_custom_patterns() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
         let fs = MockFilesystem::new();
+        let home = test_home();
 
         let bash_history = PathBuf::from("/home/testuser/.bash_history");
         fs.mock_set_file_content(
@@ -718,6 +970,7 @@ mod tests {
         fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
 
         let cleaner = HistoryCleaner::new(fs.clone())
+            .with_home(home)
             .with_patterns(vec!["secret".to_string()])
             .with_shells(vec![ShellType::Bash]);
 
@@ -734,10 +987,8 @@ mod tests {
 
     #[test]
     fn test_multiple_patterns() {
-        unsafe {
-            std::env::set_var("HOME", "/home/testuser");
-        }
         let fs = MockFilesystem::new();
+        let home = test_home();
 
         let bash_history = PathBuf::from("/home/testuser/.bash_history");
         fs.mock_set_file_content(
@@ -747,6 +998,7 @@ mod tests {
         fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
 
         let cleaner = HistoryCleaner::new(fs.clone())
+            .with_home(home)
             .with_patterns(vec!["nails".to_string(), "secret".to_string()])
             .with_shells(vec![ShellType::Bash]);
 
@@ -759,5 +1011,243 @@ mod tests {
         // Verify correct lines were removed
         let written_content = fs.get_written_content(&bash_history).unwrap();
         assert_eq!(written_content, "ls -la\npwd\n");
+    }
+
+    // ============================================================================
+    // Fish YAML history filtering tests (M1)
+    // ============================================================================
+
+    #[test]
+    fn test_filter_fish_history_removes_matching_entries() {
+        let content = "\
+- cmd: ls -la
+  when: 1700000001
+- cmd: nails activate
+  when: 1700000002
+- cmd: cd /tmp
+  when: 1700000003
+";
+        let patterns = vec!["nails".to_string()];
+        let (filtered, removed) = filter_fish_history(content, &patterns);
+
+        assert_eq!(removed, 1);
+        assert!(!filtered.contains("nails"));
+        assert!(filtered.contains("ls -la"));
+        assert!(filtered.contains("cd /tmp"));
+        // No orphaned `when:` lines
+        let when_count = filtered
+            .lines()
+            .filter(|l| l.trim_start().starts_with("when:"))
+            .count();
+        assert_eq!(when_count, 2); // Only the 2 non-matching entries
+    }
+
+    #[test]
+    fn test_filter_fish_history_removes_multiple_entries() {
+        let content = "\
+- cmd: nails activate
+  when: 1700000001
+- cmd: cryptsetup open /dev/sda1
+  when: 1700000002
+- cmd: ls
+  when: 1700000003
+";
+        let patterns = vec!["nails".to_string(), "cryptsetup".to_string()];
+        let (filtered, removed) = filter_fish_history(content, &patterns);
+
+        assert_eq!(removed, 2);
+        assert!(filtered.contains("ls"));
+        assert!(!filtered.contains("nails"));
+        assert!(!filtered.contains("cryptsetup"));
+    }
+
+    #[test]
+    fn test_filter_fish_history_cmd_at_eof_without_when() {
+        let content = "\
+- cmd: ls -la
+  when: 1700000001
+- cmd: nails activate";
+        let patterns = vec!["nails".to_string()];
+        let (filtered, removed) = filter_fish_history(content, &patterns);
+
+        assert_eq!(removed, 1);
+        assert!(filtered.contains("ls -la"));
+        assert!(!filtered.contains("nails"));
+    }
+
+    #[test]
+    fn test_filter_fish_history_preserves_non_matching() {
+        let content = "\
+- cmd: git status
+  when: 1700000001
+- cmd: cargo build
+  when: 1700000002
+";
+        let patterns = vec!["nails".to_string()];
+        let (filtered, removed) = filter_fish_history(content, &patterns);
+
+        assert_eq!(removed, 0);
+        assert!(filtered.contains("git status"));
+        assert!(filtered.contains("cargo build"));
+    }
+
+    #[test]
+    fn test_filter_fish_history_all_entries_removed() {
+        let content = "\
+- cmd: nails activate
+  when: 1700000001
+- cmd: nails status
+  when: 1700000002
+";
+        let patterns = vec!["nails".to_string()];
+        let (filtered, removed) = filter_fish_history(content, &patterns);
+
+        assert_eq!(removed, 2);
+        assert_eq!(filtered, "");
+    }
+
+    #[test]
+    fn test_filter_fish_history_case_insensitive() {
+        let content = "\
+- cmd: NAILS status
+  when: 1700000001
+- cmd: ls
+  when: 1700000002
+";
+        let patterns = vec!["nails".to_string()];
+        let (filtered, removed) = filter_fish_history(content, &patterns);
+
+        assert_eq!(removed, 1);
+        assert!(!filtered.contains("NAILS"));
+        assert!(filtered.contains("ls"));
+    }
+
+    #[test]
+    fn test_filter_fish_history_with_extra_metadata() {
+        // Fish can have `paths:` metadata after `when:`
+        let content = "\
+- cmd: nails activate
+  when: 1700000001
+  paths:
+    - /home/user
+- cmd: ls
+  when: 1700000002
+";
+        let patterns = vec!["nails".to_string()];
+        let (filtered, removed) = filter_fish_history(content, &patterns);
+
+        assert_eq!(removed, 1);
+        assert!(!filtered.contains("nails"));
+        assert!(!filtered.contains("paths:"));
+        assert!(filtered.contains("ls"));
+    }
+
+    #[test]
+    fn test_fish_history_cleaned_via_history_cleaner() {
+        let fs = MockFilesystem::new();
+        let home = test_home();
+
+        let fish_history = PathBuf::from("/home/testuser/.local/share/fish/fish_history");
+        fs.mock_set_file_content(
+            fish_history.to_str().unwrap(),
+            "- cmd: ls -la\n  when: 1700000001\n- cmd: nails activate\n  when: 1700000002\n- cmd: cd /tmp\n  when: 1700000003\n",
+        );
+        fs.mock_set_path_exists(fish_history.to_str().unwrap(), true);
+
+        let cleaner = HistoryCleaner::new(fs.clone())
+            .with_home(home)
+            .with_shells(vec![ShellType::Fish]);
+
+        let result = cleaner.clean().unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].contains("Removed 1 entries"));
+
+        let written = fs.get_written_content(&fish_history).unwrap();
+        assert!(!written.contains("nails"));
+        assert!(written.contains("ls -la"));
+        assert!(written.contains("cd /tmp"));
+        // No orphaned when: lines
+        let cmd_count = written.lines().filter(|l| l.starts_with("- cmd:")).count();
+        let when_count = written
+            .lines()
+            .filter(|l| l.trim_start().starts_with("when:"))
+            .count();
+        assert_eq!(cmd_count, when_count);
+    }
+
+    // ============================================================================
+    // truncate_all_history_files_for_home tests (no env vars needed)
+    // ============================================================================
+
+    #[test]
+    fn test_truncate_all_history_files_for_home_truncates_existing() {
+        let fs = MockFilesystem::new();
+        let home = test_home();
+
+        let bash_history = "/home/testuser/.bash_history";
+        let zsh_history = "/home/testuser/.zsh_history";
+        fs.mock_set_path_exists(bash_history, true);
+        fs.mock_set_file_content(bash_history, "nails activate\nls\n");
+        fs.mock_set_path_exists(zsh_history, true);
+        fs.mock_set_file_content(zsh_history, "cryptsetup open\npwd\n");
+
+        let results = truncate_all_history_files_for_home(&fs, &home, false);
+
+        assert!(results.iter().any(|r| r.contains(".bash_history")));
+        assert!(results.iter().any(|r| r.contains(".zsh_history")));
+
+        // Verify files are now empty
+        let bash_written = fs
+            .get_written_content(&PathBuf::from(bash_history))
+            .unwrap();
+        assert_eq!(bash_written, "");
+        let zsh_written = fs.get_written_content(&PathBuf::from(zsh_history)).unwrap();
+        assert_eq!(zsh_written, "");
+    }
+
+    #[test]
+    fn test_truncate_all_history_files_for_home_with_secure_delete() {
+        let fs = MockFilesystem::new();
+        let home = test_home();
+
+        let bash_history = "/home/testuser/.bash_history";
+        fs.mock_set_path_exists(bash_history, true);
+        fs.mock_set_file_content(bash_history, "some commands\n");
+
+        let results = truncate_all_history_files_for_home(&fs, &home, true);
+
+        assert!(!results.is_empty());
+        let bash_written = fs
+            .get_written_content(&PathBuf::from(bash_history))
+            .unwrap();
+        assert_eq!(bash_written, "");
+    }
+
+    #[test]
+    fn test_truncate_all_history_files_for_home_skips_nonexistent() {
+        let fs = MockFilesystem::new();
+        let home = test_home();
+        // Don't set any files as existing
+
+        let results = truncate_all_history_files_for_home(&fs, &home, false);
+
+        // No files existed, so nothing was truncated
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_truncate_all_history_files_for_home_includes_recently_used_xbel() {
+        let fs = MockFilesystem::new();
+        let home = test_home();
+
+        let xbel_path = "/home/testuser/.local/share/recently-used.xbel";
+        fs.mock_set_path_exists(xbel_path, true);
+        fs.mock_set_file_content(xbel_path, "<xbel>some data</xbel>\n");
+
+        let results = truncate_all_history_files_for_home(&fs, &home, false);
+
+        assert!(results.iter().any(|r| r.contains("recently-used.xbel")));
+        let written = fs.get_written_content(&PathBuf::from(xbel_path)).unwrap();
+        assert_eq!(written, "");
     }
 }

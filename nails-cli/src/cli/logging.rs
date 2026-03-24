@@ -162,7 +162,7 @@ fn init_file_layer(
     let config_path = nails_core::config::discover_config_path(config_override);
     let hidden_volume_path = nails_core::config::Config::load_or_default(&config_path)
         .map(|c| c.hidden_volume_root)
-        .unwrap_or_else(|_| PathBuf::from(nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT));
+        .unwrap_or_else(|_| PathBuf::from(nails_core::obfuscate::hidden_volume_root()));
 
     // Create LoggingManager - log file goes directly in hidden volume root
     let logging_manager =

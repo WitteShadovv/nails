@@ -35,7 +35,7 @@
 //! let results = registry.run_all(&fs);
 //! ```
 
-use crate::{Filesystem, NailsError, Result};
+use crate::{Filesystem, NailsError, Result, obfuscate};
 use colored::Colorize;
 use std::env;
 use std::fmt;
@@ -100,7 +100,7 @@ impl CheckResult {
 /// Returns true if `NO_COLOR` or `NAILS_NO_COLOR` environment variables are set.
 /// This follows the standard NO_COLOR convention (https://no-color.org/).
 fn should_disable_color() -> bool {
-    env::var("NO_COLOR").is_ok() || env::var("NAILS_NO_COLOR").is_ok()
+    env::var("NO_COLOR").is_ok() || env::var(obfuscate::env_no_color()).is_ok()
 }
 
 impl fmt::Display for CheckResult {

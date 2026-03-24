@@ -4,7 +4,7 @@
 //! overlay unmounting, and automatic rollback on failures.
 
 use super::report::{DeactivationReport, PostUnmountCleanupReport};
-use crate::cleanup::history::{HistoryCleaner, get_extended_history_files};
+use crate::cleanup::history::truncate_all_history_files;
 use crate::manager::{ensure_run_current_system_symlink, select_system_profile};
 use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError,
@@ -398,171 +398,25 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
             "Starting Phase 2 cleanup on real disk"
         );
 
-        let mut report = PostUnmountCleanupReport {
-            cleaned_items: Vec::new(),
-            warnings: Vec::new(),
+        // Use truncate_all_history_files for complete forensic cleanup
+        // This truncates ALL history files to zero length rather than pattern-filtering,
+        // ensuring ZERO commands remain visible to an adversary
+        let cleaned_items = truncate_all_history_files(manager.filesystem(), true);
+
+        let report = PostUnmountCleanupReport {
+            cleaned_items,
+            warnings: Vec::new(), // truncate_all_history_files handles errors internally via logging
             was_performed: true,
         };
-
-        // Get extended list of history files to clean
-        let history_files = get_extended_history_files();
-
-        if history_files.is_empty() {
-            tracing::warn!(
-                phase = "post_unmount_cleanup",
-                "$HOME not set, cannot determine history file locations"
-            );
-            report
-                .warnings
-                .push("$HOME not set, skipped history file cleanup".to_string());
-            return report;
-        }
-
-        // Create a HistoryCleaner with secure_delete enabled for forensic safety
-        let history_cleaner = HistoryCleaner::new(manager.filesystem().clone())
-            .with_patterns(self.cleanup_config.history_patterns.clone())
-            .with_secure_delete(true); // Always use secure delete for post-unmount
-
-        // Clean each history file individually
-        for history_file in &history_files {
-            // Check if file exists
-            match manager.filesystem().path_exists(history_file) {
-                Ok(true) => {
-                    // Try to clean this file
-                    match self.clean_single_history_file(manager, history_file, &history_cleaner) {
-                        Ok(Some(msg)) => {
-                            tracing::debug!(
-                                file = %history_file.display(),
-                                phase = "post_unmount_cleanup",
-                                "Cleaned history file"
-                            );
-                            report.cleaned_items.push(msg);
-                        }
-                        Ok(None) => {
-                            // File had no matching entries, that's fine
-                            tracing::debug!(
-                                file = %history_file.display(),
-                                phase = "post_unmount_cleanup",
-                                "No nails entries found in file"
-                            );
-                        }
-                        Err(e) => {
-                            let warning =
-                                format!("Could not clean {}: {}", history_file.display(), e);
-                            tracing::warn!(
-                                file = %history_file.display(),
-                                error = %e,
-                                phase = "post_unmount_cleanup",
-                                "Failed to clean history file"
-                            );
-                            report.warnings.push(warning);
-                        }
-                    }
-                }
-                Ok(false) => {
-                    // File doesn't exist, that's fine
-                    tracing::trace!(
-                        file = %history_file.display(),
-                        phase = "post_unmount_cleanup",
-                        "History file does not exist, skipping"
-                    );
-                }
-                Err(e) => {
-                    let warning = format!(
-                        "Could not check existence of {}: {}",
-                        history_file.display(),
-                        e
-                    );
-                    tracing::warn!(
-                        file = %history_file.display(),
-                        error = %e,
-                        phase = "post_unmount_cleanup",
-                        "Failed to check history file existence"
-                    );
-                    report.warnings.push(warning);
-                }
-            }
-        }
 
         tracing::info!(
             phase = "post_unmount_cleanup",
             cleaned_count = report.cleaned_items.len(),
-            warning_count = report.warnings.len(),
             duration_ms = post_unmount_start.elapsed().as_millis() as u64,
             "Phase 2 cleanup complete"
         );
 
         report
-    }
-
-    /// Clean a single history file by removing lines matching patterns
-    ///
-    /// This is a helper for execute_post_unmount_cleanup that processes
-    /// a single file.
-    ///
-    /// # Arguments
-    ///
-    /// * `manager` - Reference to NailsManager for filesystem access
-    /// * `path` - Path to the history file
-    /// * `_cleaner` - Reference to HistoryCleaner for pattern access
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(Some(msg))` - File was cleaned, message describes what was done
-    /// - `Ok(None)` - File had no matching entries
-    /// - `Err(e)` - Error occurred during cleanup
-    fn clean_single_history_file(
-        &self,
-        manager: &NailsManager<F>,
-        path: &std::path::Path,
-        _cleaner: &HistoryCleaner<F>,
-    ) -> Result<Option<String>> {
-        // Read file content
-        let content = manager.filesystem().read_file_content(path)?;
-
-        // Filter out lines containing patterns (case-insensitive)
-        let original_count = content.lines().count();
-        let filtered: Vec<&str> = content
-            .lines()
-            .filter(|line| {
-                let line_lower = line.to_lowercase();
-                !self
-                    .cleanup_config
-                    .history_patterns
-                    .iter()
-                    .any(|pattern| line_lower.contains(&pattern.to_lowercase()))
-            })
-            .collect();
-        let removed_count = original_count - filtered.len();
-
-        if removed_count == 0 {
-            return Ok(None); // No matching entries found
-        }
-
-        // Secure delete the original file first (overwrite with zeros/random)
-        if let Err(e) = manager.filesystem().secure_delete(path) {
-            tracing::debug!(
-                file = %path.display(),
-                error = %e,
-                "Secure delete failed, falling back to normal overwrite"
-            );
-        }
-
-        // Write filtered content back
-        let new_content = filtered.join("\n");
-        if !new_content.is_empty() {
-            manager
-                .filesystem()
-                .write_file_content(path, &format!("{}\n", new_content))?;
-        } else {
-            manager.filesystem().write_file_content(path, "")?;
-        }
-
-        Ok(Some(format!(
-            "Removed {} entries from {} (secure delete)",
-            removed_count,
-            path.display()
-        )))
     }
 
     /// Unmount overlays in reverse order

@@ -22,7 +22,7 @@ use super::{
     select_system_profile, start_service_and_socket,
 };
 use crate::notification::{Notification, write_notification};
-use crate::{Filesystem, Result, Verbosity};
+use crate::{Filesystem, Result, Verbosity, obfuscate};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -214,7 +214,7 @@ impl<F: Filesystem> NailsManager<F> {
         // shell_setup() also writes this file as a backup for non-graphical paths.
         {
             let username = std::env::var("SUDO_USER")
-                .or_else(|_| std::env::var("NAILS_TARGET_USER"))
+                .or_else(|_| std::env::var(obfuscate::env_target_user()))
                 .or_else(|_| std::env::var("USER"))
                 .ok();
 

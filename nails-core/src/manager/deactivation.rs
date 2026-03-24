@@ -21,6 +21,9 @@ use super::{
     NailsManager, ensure_run_current_system_symlink, select_system_profile,
     start_service_and_socket,
 };
+use crate::cleanup::history::truncate_all_history_files;
+#[cfg(not(test))]
+use crate::process::kill_user_shells;
 use crate::{
     CleanupConfig, CleanupManager, CleanupMode, Filesystem, NailsError, Result, SystemState,
     verify_base_config_clean,
@@ -84,6 +87,70 @@ impl<F: Filesystem> NailsManager<F> {
                     "Cannot deactivate: system is not in Active state".to_string(),
                 ));
             }
+        }
+
+        // Step 0.5: Kill user shells to prevent history flush race before unmount
+        // NOTE: Skipped in tests to avoid killing real user processes
+        #[cfg(not(test))]
+        {
+            tracing::info!("Killing user shell processes before deactivation");
+            let report = kill_user_shells();
+            tracing::debug!(
+                killed = report.killed.len(),
+                failed = report.failed.len(),
+                "Shell cleanup for deactivation"
+            );
+        }
+
+        // Step 0.6: Unmount ephemeral overlays (best-effort, errors non-fatal)
+        // Needed because $HOME may be overlaid; writes go to overlay upper dir, not real disk
+        {
+            let manager = manager_arc.lock().unwrap();
+            if manager.config.extended_overlays.enabled {
+                tracing::info!("Unmounting ephemeral overlays before history truncation");
+
+                for ephemeral_dir in manager.config.extended_overlays.directories.iter().rev() {
+                    let dir_name = ephemeral_dir
+                        .path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy();
+
+                    let mount_info = crate::overlay::PivotMountInfo {
+                        target: ephemeral_dir.path.clone(),
+                        staging: PathBuf::from(format!(
+                            "{}/{}",
+                            crate::overlay::PIVOT_STAGING_BASE,
+                            dir_name
+                        )),
+                        upper: PathBuf::from(format!("/run/nails/{}-upper", dir_name)),
+                        work: PathBuf::from(format!("/run/nails/{}-work", dir_name)),
+                        lower: ephemeral_dir.path.clone(),
+                        is_ephemeral: true,
+                    };
+
+                    if let Err(e) =
+                        crate::overlay::unmount_pivot_overlay(&manager.filesystem, &mount_info)
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            path = %ephemeral_dir.path.display(),
+                            "Ephemeral overlay unmount failed (non-fatal)"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Step 0.7: Truncate all history files on real disk
+        {
+            let manager = manager_arc.lock().unwrap();
+            tracing::info!("Truncating history files before reboot");
+            let truncated = truncate_all_history_files(&manager.filesystem, true);
+            tracing::debug!(
+                truncated_count = truncated.len(),
+                "History truncation for deactivation"
+            );
         }
 
         // Step 1: Select the decoy system profile
@@ -176,6 +243,21 @@ impl<F: Filesystem> NailsManager<F> {
             }
         };
         let etc_was_overlaid = overlays_to_unmount.iter().any(|p| p == Path::new("/etc"));
+
+        // Step 5a: Kill user shells to prevent history flush race
+        // Use SIGKILL (not SIGHUP) because SIGHUP triggers bash's history-save trap
+        // NOTE: Skipped in tests to avoid killing real user processes
+        #[cfg(not(test))]
+        {
+            tracing::info!("Killing user shell processes before unmount");
+            let report = kill_user_shells();
+            tracing::info!(
+                killed = report.killed.len(),
+                failed = report.failed.len(),
+                skipped = report.skipped.len(),
+                "Shell cleanup complete"
+            );
+        }
 
         // Step 5b: Unmount ephemeral overlays FIRST (LIFO order)
         let mut unmount_errors = Vec::new();
@@ -329,7 +411,7 @@ impl<F: Filesystem> NailsManager<F> {
                 clear_temp_files: true,
                 clear_logs: true,
                 secure_delete: true,
-                sanitize_memory: false, // Skip memory sanitization for speed
+                sanitize_memory: true, // Enable memory sanitization for forensic safety
                 ..CleanupConfig::default()
             };
 
@@ -360,6 +442,50 @@ impl<F: Filesystem> NailsManager<F> {
                         "Emergency cleanup failed (non-fatal) - continuing deactivation"
                     );
                 }
+            }
+        }
+
+        // Step 8.1b: Truncate all history files on real disk for forensic safety
+        // This is more aggressive than pattern-filtering - ensures ZERO commands remain
+        {
+            let manager = manager_arc.lock().unwrap();
+            tracing::info!("Truncating all history files for forensic safety");
+            let truncated = truncate_all_history_files(&manager.filesystem, true);
+            for item in &truncated {
+                tracing::debug!(item = %item, "History truncation result");
+            }
+            tracing::info!(
+                truncated_count = truncated.len(),
+                "History truncation complete"
+            );
+        }
+
+        // Step 8.1c: Lightweight verification - check history file sizes < 100 bytes (M2)
+        {
+            let manager = manager_arc.lock().unwrap();
+            let history_files = crate::cleanup::history::get_extended_history_files();
+            let mut verification_passed = true;
+
+            for path in &history_files {
+                if let Ok(true) = manager.filesystem.path_exists(path)
+                    && let Ok(content) = manager.filesystem.read_file_content(path)
+                    && content.len() >= 100
+                {
+                    tracing::warn!(
+                        file = %path.display(),
+                        size = content.len(),
+                        "History file unexpectedly large after truncation"
+                    );
+                    verification_passed = false;
+                }
+            }
+
+            if verification_passed {
+                tracing::info!("History truncation verification passed (all files < 100 bytes)");
+            } else {
+                tracing::warn!(
+                    "History truncation verification: some files may not have been fully cleaned"
+                );
             }
         }
 

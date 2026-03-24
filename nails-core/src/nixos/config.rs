@@ -340,9 +340,14 @@ pub fn verify_base_config_clean<F: Filesystem>(fs: &F) -> Result<bool> {
     let content_lower = content.to_lowercase();
 
     // Suspicious path patterns (substring match is appropriate for paths)
-    if content_lower.contains("/mnt/hidden")
-        || content_lower.contains("hidden/nixos")
-        || content_lower.contains("/hidden/")
+    // Use obfuscated patterns to prevent the strings from appearing in the binary
+    let hidden_path = crate::obfuscate::hidden_path_pattern();
+    let hidden_nixos = crate::obfuscate::pattern_hidden_nixos();
+    let hidden_slash = crate::obfuscate::pattern_hidden_slash();
+
+    if content_lower.contains(&hidden_path)
+        || content_lower.contains(&hidden_nixos)
+        || content_lower.contains(&hidden_slash)
     {
         tracing::warn!("Base hardware-configuration.nix contains suspicious hidden path reference");
         return Ok(false);

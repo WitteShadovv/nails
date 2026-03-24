@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use super::colors::ColorSchemeConfig;
 use super::overlay::{ExtendedOverlayConfig, OverlayConfig, OverlayMode};
-use super::types::{Config, DEFAULT_HIDDEN_VOLUME_ROOT};
+use super::types::{Config, get_default_hidden_volume_root};
+use crate::obfuscate;
 
 /// Derive hidden volume root from binary location
 ///
@@ -82,14 +83,15 @@ pub fn derive_hidden_volume_root() -> PathBuf {
                         || path_str.contains("/target/llvm-cov-target")
                         || path_str.starts_with("/nix/store")
                     {
+                        let fallback = get_default_hidden_volume_root();
                         tracing::warn!(
                             "Binary path not suitable for deriving hidden volume (build/store location): {}. \
                              Refusing to derive hidden volume root from build artifacts. \
                              Falling back to {}",
                             parent_path.display(),
-                            DEFAULT_HIDDEN_VOLUME_ROOT
+                            fallback
                         );
-                        return PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+                        return PathBuf::from(fallback);
                     }
 
                     tracing::debug!(
@@ -99,22 +101,24 @@ pub fn derive_hidden_volume_root() -> PathBuf {
                     parent_path
                 }
                 None => {
+                    let fallback = get_default_hidden_volume_root();
                     tracing::warn!(
                         "Binary at root directory (no parent): {}. Falling back to {}",
                         canonical_path.display(),
-                        DEFAULT_HIDDEN_VOLUME_ROOT
+                        fallback
                     );
-                    PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
+                    PathBuf::from(fallback)
                 }
             }
         }
         Err(e) => {
+            let fallback = get_default_hidden_volume_root();
             tracing::warn!(
                 "Failed to determine binary location: {}. Falling back to {}",
                 e,
-                DEFAULT_HIDDEN_VOLUME_ROOT
+                fallback
             );
-            PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
+            PathBuf::from(fallback)
         }
     }
 }
@@ -126,7 +130,7 @@ pub(super) fn default_hidden_volume_root() -> PathBuf {
 
 pub(super) fn default_state_file_path() -> PathBuf {
     // This will be overridden in load() to use the actual hidden_volume_root
-    PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json")
+    PathBuf::from(obfuscate::hidden_volume_root()).join("state.json")
 }
 
 pub(super) fn default_minimum_space_mb() -> u64 {
@@ -163,7 +167,7 @@ pub(super) fn default_show_opsec_reminders() -> bool {
 
 pub(super) fn default_log_path() -> PathBuf {
     // Default will be derived from hidden_volume_root in builder
-    PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs")
+    PathBuf::from(obfuscate::hidden_volume_root()).join("logs")
 }
 
 pub(super) fn default_max_log_size_mb() -> u64 {

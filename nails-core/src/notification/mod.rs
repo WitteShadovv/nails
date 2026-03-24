@@ -13,7 +13,7 @@
 //! 2. An XDG autostart entry runs `nails notify-dispatch` on user login
 //! 3. The dispatch command reads pending files, calls `notify-send`, and deletes them
 
-use crate::Result;
+use crate::{Result, obfuscate};
 use serde::{Deserialize, Serialize};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -72,7 +72,9 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
     }
 
     // Best-effort chown directory to target user so dispatch_all can delete files
-    if let Ok(user) = std::env::var("NAILS_TARGET_USER").or_else(|_| std::env::var("SUDO_USER")) {
+    if let Ok(user) =
+        std::env::var(obfuscate::env_target_user()).or_else(|_| std::env::var("SUDO_USER"))
+    {
         let _ = std::process::Command::new("chown")
             .arg(format!("{}:{}", user, user))
             .arg(&dir)
@@ -125,7 +127,9 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
     }
 
     // Best-effort chown to target user so dispatch_all can delete the file
-    if let Ok(user) = std::env::var("NAILS_TARGET_USER").or_else(|_| std::env::var("SUDO_USER")) {
+    if let Ok(user) =
+        std::env::var(obfuscate::env_target_user()).or_else(|_| std::env::var("SUDO_USER"))
+    {
         let _ = std::process::Command::new("chown")
             .arg(format!("{}:{}", user, user))
             .arg(&path)
@@ -296,7 +300,7 @@ pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
 /// and other environments where desktop notifications are not desired.
 #[cfg(not(test))]
 fn is_notifications_disabled() -> bool {
-    std::env::var("NAILS_DISABLE_NOTIFICATIONS").is_ok()
+    std::env::var(obfuscate::env_disable_notifications()).is_ok()
 }
 
 /// Find `notify-send` in PATH.

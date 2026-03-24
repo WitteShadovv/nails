@@ -2,6 +2,10 @@ use std::env;
 use std::ffi::OsString;
 use std::process::Command;
 
+use nails_core::obfuscate::{
+    env_detached, env_display_manager, env_force_detach, env_logind_available, env_session_id,
+    env_skip_detach, env_target_uid, env_target_user, systemd_unit_prefix,
+};
 use nails_core::{NailsError, SessionContext, SessionKind, detect_session_context};
 
 /// Detach using systemd-run to create a transient service in system.slice.
@@ -13,7 +17,7 @@ pub fn maybe_detach_for_session_kill(
     session_ctx: Option<&SessionContext>,
 ) -> Result<(), NailsError> {
     // Testing override: allow tests to bypass actual detaching/spawn.
-    if env::var_os("NAILS_SKIP_DETACH").is_some() {
+    if env::var_os(env_skip_detach()).is_some() {
         return Ok(());
     }
 
@@ -23,13 +27,13 @@ pub fn maybe_detach_for_session_kill(
     }
 
     // Prevent recursion - if already detached, just continue.
-    if env::var_os("NAILS_DETACHED").is_some() {
+    if env::var_os(env_detached()).is_some() {
         eprintln!("DEBUG: Already detached, continuing...");
         return Ok(());
     }
 
     // Allow integration tests or users to force detaching for safety.
-    let force_detach = env::var_os("NAILS_FORCE_DETACH").is_some();
+    let force_detach = env::var_os(env_force_detach()).is_some();
 
     if !force_detach {
         // Prefer logind-aware detection to avoid detaching from TTY/SSH.
@@ -55,7 +59,7 @@ pub fn maybe_detach_for_session_kill(
     })?;
 
     // Generate unique unit name
-    let unit_name = format!("nails-activate-{}.service", std::process::id());
+    let unit_name = format!("{}{}.service", systemd_unit_prefix(), std::process::id());
 
     // Build systemd-run command
     // Using no --scope flag creates a proper transient service
@@ -68,7 +72,7 @@ pub fn maybe_detach_for_session_kill(
         .arg("--quiet");
 
     // Set environment variables for the service
-    cmd.arg("--setenv=NAILS_DETACHED=1");
+    cmd.arg(format!("--setenv={}=1", env_detached()));
     cmd.arg("--setenv=XDG_SESSION_ID="); // Clear session tracking
 
     // Set PATH to include NixOS binaries (nixos-rebuild, etc.)
@@ -86,19 +90,20 @@ pub fn maybe_detach_for_session_kill(
         && ctx.kind == SessionKind::GraphicalUser
     {
         if let Some(ref session_id) = ctx.session_id {
-            cmd.arg(format!("--setenv=NAILS_SESSION_ID={}", session_id));
+            cmd.arg(format!("--setenv={}={}", env_session_id(), session_id));
         }
         if let Some(ref dm) = ctx.display_manager {
-            cmd.arg(format!("--setenv=NAILS_DISPLAY_MANAGER={}", dm));
+            cmd.arg(format!("--setenv={}={}", env_display_manager(), dm));
         }
         if let Some(uid) = ctx.target_uid {
-            cmd.arg(format!("--setenv=NAILS_TARGET_UID={}", uid));
+            cmd.arg(format!("--setenv={}={}", env_target_uid(), uid));
         }
         if let Some(ref user) = ctx.target_user {
-            cmd.arg(format!("--setenv=NAILS_TARGET_USER={}", user));
+            cmd.arg(format!("--setenv={}={}", env_target_user(), user));
         }
         cmd.arg(format!(
-            "--setenv=NAILS_LOGIND_AVAILABLE={}",
+            "--setenv={}={}",
+            env_logind_available(),
             if ctx.logind_available { "1" } else { "0" }
         ));
     }
@@ -133,6 +138,7 @@ pub fn maybe_detach_for_session_kill(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nails_core::obfuscate::{env_detached, env_skip_detach};
     use std::env;
     use std::sync::Mutex;
 
@@ -152,7 +158,7 @@ mod tests {
 
     #[test]
     fn does_nothing_when_kill_session_false() {
-        with_env("NAILS_SKIP_DETACH", "1", || {
+        with_env(env_skip_detach(), "1", || {
             unsafe { env::set_var("DISPLAY", ":0") };
             let res = maybe_detach_for_session_kill(false, &[OsString::from("nails")], None);
             unsafe { env::remove_var("DISPLAY") };
@@ -162,7 +168,7 @@ mod tests {
 
     #[test]
     fn does_nothing_without_graphical_env() {
-        with_env("NAILS_SKIP_DETACH", "1", || {
+        with_env(env_skip_detach(), "1", || {
             unsafe { env::remove_var("DISPLAY") };
             unsafe { env::remove_var("WAYLAND_DISPLAY") };
             let res = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None);
@@ -172,12 +178,12 @@ mod tests {
 
     #[test]
     fn skips_when_already_detached() {
-        with_env("NAILS_SKIP_DETACH", "1", || {
+        with_env(env_skip_detach(), "1", || {
             unsafe { env::set_var("DISPLAY", ":1") };
-            unsafe { env::set_var("NAILS_DETACHED", "1") };
+            unsafe { env::set_var(env_detached(), "1") };
             let res = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None);
+            unsafe { env::remove_var(env_detached()) };
             unsafe { env::remove_var("DISPLAY") };
-            unsafe { env::remove_var("NAILS_DETACHED") };
             assert!(res.is_ok());
         });
     }

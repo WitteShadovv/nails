@@ -275,6 +275,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // Requires real bash installation - run with `cargo test -- --ignored`
     fn test_bash_script_syntax_valid() {
         let script = generate_bash_prompt_script();
 
@@ -283,28 +284,30 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let script_path = temp_dir.join("nails_prompt_test.bash");
 
-        if let Ok(mut file) = std::fs::File::create(&script_path) {
-            let _ = file.write_all(script.as_bytes());
+        let mut file =
+            std::fs::File::create(&script_path).expect("Failed to create temp script file");
+        file.write_all(script.as_bytes())
+            .expect("Failed to write script");
 
-            // Use bash -n for syntax check if bash is available
-            if let Ok(output) = std::process::Command::new("bash")
-                .arg("-n")
-                .arg(&script_path)
-                .output()
-            {
-                // bash -n returns 0 if syntax is valid
-                assert!(
-                    output.status.success(),
-                    "bash script syntax validation failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+        // Use bash -n for syntax check
+        let output = std::process::Command::new("bash")
+            .arg("-n")
+            .arg(&script_path)
+            .output()
+            .expect("Failed to execute bash -n");
 
-            let _ = std::fs::remove_file(&script_path);
-        }
+        let _ = std::fs::remove_file(&script_path);
+
+        // bash -n returns 0 if syntax is valid
+        assert!(
+            output.status.success(),
+            "bash script syntax validation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
+    #[ignore] // Requires real zsh installation - run with `cargo test -- --ignored`
     fn test_zsh_script_syntax_valid() {
         let script = generate_zsh_prompt_script();
 
@@ -313,28 +316,30 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let script_path = temp_dir.join("nails_prompt_test.zsh");
 
-        if let Ok(mut file) = std::fs::File::create(&script_path) {
-            let _ = file.write_all(script.as_bytes());
+        let mut file =
+            std::fs::File::create(&script_path).expect("Failed to create temp script file");
+        file.write_all(script.as_bytes())
+            .expect("Failed to write script");
 
-            // Use zsh -n for syntax check if zsh is available
-            if let Ok(output) = std::process::Command::new("zsh")
-                .arg("-n")
-                .arg(&script_path)
-                .output()
-            {
-                // zsh -n returns 0 if syntax is valid
-                assert!(
-                    output.status.success(),
-                    "zsh script syntax validation failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+        // Use zsh -n for syntax check
+        let output = std::process::Command::new("zsh")
+            .arg("-n")
+            .arg(&script_path)
+            .output()
+            .expect("Failed to execute zsh -n");
 
-            let _ = std::fs::remove_file(&script_path);
-        }
+        let _ = std::fs::remove_file(&script_path);
+
+        // zsh -n returns 0 if syntax is valid
+        assert!(
+            output.status.success(),
+            "zsh script syntax validation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
+    #[ignore] // Requires real fish installation - run with `cargo test -- --ignored`
     fn test_fish_script_syntax_valid() {
         let script = generate_fish_prompt_script();
 
@@ -343,28 +348,30 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let script_path = temp_dir.join("nails_prompt_test.fish");
 
-        if let Ok(mut file) = std::fs::File::create(&script_path) {
-            let _ = file.write_all(script.as_bytes());
+        let mut file =
+            std::fs::File::create(&script_path).expect("Failed to create temp script file");
+        file.write_all(script.as_bytes())
+            .expect("Failed to write script");
 
-            // Use fish --no-execute for syntax check if fish is available
-            if let Ok(output) = std::process::Command::new("fish")
-                .arg("--no-execute")
-                .arg(&script_path)
-                .output()
-            {
-                // fish --no-execute returns 0 if syntax is valid
-                assert!(
-                    output.status.success(),
-                    "fish script syntax validation failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+        // Use fish --no-execute for syntax check
+        let output = std::process::Command::new("fish")
+            .arg("--no-execute")
+            .arg(&script_path)
+            .output()
+            .expect("Failed to execute fish --no-execute");
 
-            let _ = std::fs::remove_file(&script_path);
-        }
+        let _ = std::fs::remove_file(&script_path);
+
+        // fish --no-execute returns 0 if syntax is valid
+        assert!(
+            output.status.success(),
+            "fish script syntax validation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
+    #[ignore] // Requires real bash installation - run with `cargo test -- --ignored`
     fn test_bash_cleanup_script_syntax_valid() {
         let cleanup = generate_bash_prompt_cleanup();
 
@@ -372,26 +379,28 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let script_path = temp_dir.join("nails_cleanup_test.bash");
 
-        if let Ok(mut file) = std::fs::File::create(&script_path) {
-            let _ = file.write_all(cleanup.as_bytes());
+        let mut file =
+            std::fs::File::create(&script_path).expect("Failed to create temp script file");
+        file.write_all(cleanup.as_bytes())
+            .expect("Failed to write script");
 
-            if let Ok(output) = std::process::Command::new("bash")
-                .arg("-n")
-                .arg(&script_path)
-                .output()
-            {
-                assert!(
-                    output.status.success(),
-                    "bash cleanup script syntax validation failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+        let output = std::process::Command::new("bash")
+            .arg("-n")
+            .arg(&script_path)
+            .output()
+            .expect("Failed to execute bash -n");
 
-            let _ = std::fs::remove_file(&script_path);
-        }
+        let _ = std::fs::remove_file(&script_path);
+
+        assert!(
+            output.status.success(),
+            "bash cleanup script syntax validation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
+    #[ignore] // Requires real zsh installation - run with `cargo test -- --ignored`
     fn test_zsh_cleanup_script_syntax_valid() {
         let cleanup = generate_zsh_prompt_cleanup();
 
@@ -399,26 +408,28 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let script_path = temp_dir.join("nails_cleanup_test.zsh");
 
-        if let Ok(mut file) = std::fs::File::create(&script_path) {
-            let _ = file.write_all(cleanup.as_bytes());
+        let mut file =
+            std::fs::File::create(&script_path).expect("Failed to create temp script file");
+        file.write_all(cleanup.as_bytes())
+            .expect("Failed to write script");
 
-            if let Ok(output) = std::process::Command::new("zsh")
-                .arg("-n")
-                .arg(&script_path)
-                .output()
-            {
-                assert!(
-                    output.status.success(),
-                    "zsh cleanup script syntax validation failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+        let output = std::process::Command::new("zsh")
+            .arg("-n")
+            .arg(&script_path)
+            .output()
+            .expect("Failed to execute zsh -n");
 
-            let _ = std::fs::remove_file(&script_path);
-        }
+        let _ = std::fs::remove_file(&script_path);
+
+        assert!(
+            output.status.success(),
+            "zsh cleanup script syntax validation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
+    #[ignore] // Requires real fish installation - run with `cargo test -- --ignored`
     fn test_fish_cleanup_script_syntax_valid() {
         let cleanup = generate_fish_prompt_cleanup();
 
@@ -426,22 +437,23 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let script_path = temp_dir.join("nails_cleanup_test.fish");
 
-        if let Ok(mut file) = std::fs::File::create(&script_path) {
-            let _ = file.write_all(cleanup.as_bytes());
+        let mut file =
+            std::fs::File::create(&script_path).expect("Failed to create temp script file");
+        file.write_all(cleanup.as_bytes())
+            .expect("Failed to write script");
 
-            if let Ok(output) = std::process::Command::new("fish")
-                .arg("--no-execute")
-                .arg(&script_path)
-                .output()
-            {
-                assert!(
-                    output.status.success(),
-                    "fish cleanup script syntax validation failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+        let output = std::process::Command::new("fish")
+            .arg("--no-execute")
+            .arg(&script_path)
+            .output()
+            .expect("Failed to execute fish --no-execute");
 
-            let _ = std::fs::remove_file(&script_path);
-        }
+        let _ = std::fs::remove_file(&script_path);
+
+        assert!(
+            output.status.success(),
+            "fish cleanup script syntax validation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

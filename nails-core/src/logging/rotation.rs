@@ -3,6 +3,7 @@
 //! Provides automatic log rotation based on file size limits and
 //! enforcement of retention policies based on file age.
 
+use crate::obfuscate;
 use crate::{Filesystem, Result};
 use std::path::Path;
 
@@ -15,7 +16,19 @@ pub const DEFAULT_MAX_LOG_SIZE_MB: u64 = 10;
 pub const DEFAULT_RETENTION_DAYS: u64 = 7;
 
 /// Log file name within the log directory
+///
+/// # Note
+///
+/// This constant is kept for backwards compatibility with tests.
+/// The actual value is deobfuscated at runtime via `log_file_name()`.
 pub const LOG_FILE_NAME: &str = "nails.log";
+
+/// Get the log file name (deobfuscated at runtime)
+#[inline]
+#[allow(dead_code)]
+pub fn log_file_name() -> String {
+    obfuscate::log_file_name()
+}
 
 /// Check if log rotation should be triggered
 ///
