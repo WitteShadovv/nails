@@ -283,6 +283,70 @@ fn test_activate_verbosity_flags() {
     cmd.args(["activate", "--quiet"]).assert().failure(); // Will fail without setup
 }
 
+/// Test that notify-dispatch command exists and has help text
+#[test]
+fn test_notify_dispatch_command_help() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["notify-dispatch", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("dispatch"))
+        .stdout(predicates::str::contains("notification"));
+}
+
+/// Test that notify-dispatch command accepts --json flag
+#[test]
+fn test_notify_dispatch_json_flag() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["notify-dispatch", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("--json"));
+}
+
+/// Test that notify-dispatch executes without crashing
+#[test]
+fn test_notify_dispatch_executes() {
+    // This test verifies notify-dispatch runs without panic
+    // It will exit 0 even if hidden volume doesn't exist (graceful degradation)
+    // SAFETY: Set NAILS_DISABLE_NOTIFICATIONS to prevent real desktop notifications
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.env("NAILS_DISABLE_NOTIFICATIONS", "1")
+        .args(["notify-dispatch"])
+        .assert()
+        .success(); // Should exit 0 even on error (non-critical feature)
+}
+
+/// Test that notify-dispatch with --json outputs JSON format
+#[test]
+fn test_notify_dispatch_json_output() {
+    // SAFETY: Set NAILS_DISABLE_NOTIFICATIONS to prevent real desktop notifications
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.env("NAILS_DISABLE_NOTIFICATIONS", "1")
+        .args(["notify-dispatch", "--json"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("dispatched"))
+        .stdout(predicates::str::contains("status"));
+}
+
+/// Test that notify-dispatch with custom config path
+#[test]
+fn test_notify_dispatch_with_config() {
+    let config_file = create_test_config_file("/tmp/test-volume");
+
+    // SAFETY: Set NAILS_DISABLE_NOTIFICATIONS to prevent real desktop notifications
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.env("NAILS_DISABLE_NOTIFICATIONS", "1")
+        .args([
+            "--config",
+            config_file.path().to_str().unwrap(),
+            "notify-dispatch",
+        ])
+        .assert()
+        .success();
+}
+
 /// Test that deactivate command executes (idempotent when inactive - AC7/FR62)
 #[test]
 fn test_deactivate_command_executes() {
@@ -322,6 +386,65 @@ fn test_deactivate_json_output() {
     cmd.args(["deactivate", "--json"])
         .assert()
         .failure() // Now fails with safety guard
+        .code(2);
+}
+
+/// Test deactivate with --quiet flag
+#[test]
+fn test_deactivate_with_quiet() {
+    if !check_unsafe_ops_allowed("test_deactivate_with_quiet") {
+        return;
+    }
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["deactivate", "--quiet"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+/// Test deactivate with verbose flag combinations
+#[test]
+fn test_deactivate_verbosity_combinations() {
+    if !check_unsafe_ops_allowed("test_deactivate_verbosity_combinations") {
+        return;
+    }
+
+    // Test -v flag
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["deactivate", "-v"]).assert().failure().code(2);
+
+    // Test -vv flag
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["deactivate", "-vv"]).assert().failure().code(2);
+}
+
+/// Test deactivate with --plain flag
+#[test]
+fn test_deactivate_with_plain() {
+    if !check_unsafe_ops_allowed("test_deactivate_with_plain") {
+        return;
+    }
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["deactivate", "--plain"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+/// Test deactivate respects NO_COLOR environment variable
+#[test]
+fn test_deactivate_respects_no_color_env() {
+    if !check_unsafe_ops_allowed("test_deactivate_respects_no_color_env") {
+        return;
+    }
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["deactivate"])
+        .env("NO_COLOR", "1")
+        .assert()
+        .failure()
         .code(2);
 }
 
@@ -528,6 +651,101 @@ fn test_activate_has_no_clear_history_flag() {
         .stdout(predicates::str::contains("Skip clearing shell history"));
 }
 
+/// Test activate with --overlay-only flag
+#[test]
+fn test_activate_overlay_only_flag() {
+    if !check_unsafe_ops_allowed("test_activate_overlay_only_flag") {
+        return;
+    }
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--overlay-only"])
+        .assert()
+        .failure()
+        .code(2); // Safety guard
+}
+
+/// Test activate with --accept-pivot-risks flag
+#[test]
+fn test_activate_accept_pivot_risks_flag() {
+    if !check_unsafe_ops_allowed("test_activate_accept_pivot_risks_flag") {
+        return;
+    }
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--accept-pivot-risks"])
+        .assert()
+        .failure(); // Will fail due to missing --yes flag requirement
+}
+
+/// Test activate requires --yes when using --kill-session
+#[test]
+fn test_activate_kill_session_requires_yes() {
+    if !check_unsafe_ops_allowed("test_activate_kill_session_requires_yes") {
+        return;
+    }
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--kill-session", "--interactive"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "--kill-session is non-interactive",
+        ));
+}
+
+/// Test activate with multiple verbosity levels
+#[test]
+fn test_activate_multiple_verbosity() {
+    if !check_unsafe_ops_allowed("test_activate_multiple_verbosity") {
+        return;
+    }
+
+    // Test quiet mode
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--quiet", "--no-preflight"])
+        .assert()
+        .failure()
+        .code(2);
+
+    // Test normal verbosity
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--no-preflight"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+/// Test activate with --plain flag (ASCII-only output)
+#[test]
+fn test_activate_plain_output() {
+    if !check_unsafe_ops_allowed("test_activate_plain_output") {
+        return;
+    }
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--plain", "--no-preflight"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+/// Test activate respects NO_COLOR environment variable
+#[test]
+fn test_activate_respects_no_color_env() {
+    if !check_unsafe_ops_allowed("test_activate_respects_no_color_env") {
+        return;
+    }
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--no-preflight"])
+        .env("NO_COLOR", "1")
+        .assert()
+        .failure()
+        .code(2);
+}
+
 /// Test backward compatibility: CLI works when config file doesn't exist (AC6)
 ///
 /// This verifies the behavior specified in AC6:
@@ -542,7 +760,6 @@ fn test_backward_compatibility_without_config_file() {
         return;
     }
 
-    use std::env;
     use tempfile::TempDir;
 
     // Create a temporary home directory with no config file
@@ -552,12 +769,8 @@ fn test_backward_compatibility_without_config_file() {
     // Verify config file doesn't exist
     assert!(!config_path.exists());
 
-    // Set HOME environment variable to temp directory
-    unsafe {
-        env::set_var("HOME", temp_home.path());
-    }
-
     // Test that activate command works without config file (should use defaults + CLI overrides)
+    // Pass HOME only to the subprocess via .env(), don't modify this process's HOME
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["activate", "--no-preflight"])
         .env("HOME", temp_home.path())
@@ -565,10 +778,7 @@ fn test_backward_compatibility_without_config_file() {
         .assert()
         .code(2); // Expect safety guard exit code since we're in build directory
 
-    // Clean up
-    unsafe {
-        env::remove_var("HOME");
-    }
+    // Note: We don't modify this process's HOME, only the subprocess's
 }
 
 /// Test that --config flag is accepted globally (Story 14.1 - AC5)

@@ -29,6 +29,9 @@ in pkgs.mkShell {
     # Rust security auditing
     cargo-audit
 
+    # Dependency policy enforcement
+    cargo-deny
+
     # Coverage enforcement (TDD workflow) - uses llvm-tools-preview from Rust toolchain
     cargo-llvm-cov
 

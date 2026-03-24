@@ -4,12 +4,12 @@
 //! overlay unmounting, and automatic rollback on failures.
 
 use super::report::{DeactivationReport, PostUnmountCleanupReport};
+use crate::cleanup::history::{HistoryCleaner, get_extended_history_files};
 use crate::manager::{ensure_run_current_system_symlink, select_system_profile};
 use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError,
     NailsManager, Result, StateGuard, SystemState,
 };
-use crate::cleanup::history::{HistoryCleaner, get_extended_history_files};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -412,7 +412,9 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
                 phase = "post_unmount_cleanup",
                 "$HOME not set, cannot determine history file locations"
             );
-            report.warnings.push("$HOME not set, skipped history file cleanup".to_string());
+            report
+                .warnings
+                .push("$HOME not set, skipped history file cleanup".to_string());
             return report;
         }
 
@@ -445,11 +447,8 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
                             );
                         }
                         Err(e) => {
-                            let warning = format!(
-                                "Could not clean {}: {}",
-                                history_file.display(),
-                                e
-                            );
+                            let warning =
+                                format!("Could not clean {}: {}", history_file.display(), e);
                             tracing::warn!(
                                 file = %history_file.display(),
                                 error = %e,
@@ -527,7 +526,9 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
             .lines()
             .filter(|line| {
                 let line_lower = line.to_lowercase();
-                !self.cleanup_config.history_patterns
+                !self
+                    .cleanup_config
+                    .history_patterns
                     .iter()
                     .any(|pattern| line_lower.contains(&pattern.to_lowercase()))
             })
@@ -550,7 +551,9 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
         // Write filtered content back
         let new_content = filtered.join("\n");
         if !new_content.is_empty() {
-            manager.filesystem().write_file_content(path, &format!("{}\n", new_content))?;
+            manager
+                .filesystem()
+                .write_file_content(path, &format!("{}\n", new_content))?;
         } else {
             manager.filesystem().write_file_content(path, "")?;
         }

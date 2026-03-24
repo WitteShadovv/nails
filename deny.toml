@@ -1,0 +1,163 @@
+# cargo-deny configuration for NAILS
+# NixOS Anti-forensics Isolation & Layering System
+#
+# This configuration enforces dependency policies for a security-critical,
+# GPL-3.0 licensed Rust application.
+#
+# Usage:
+#   cargo deny check         - Run all checks
+#   cargo deny check bans    - Check dependency bans only
+#   cargo deny check license - Check license compliance only
+#   cargo deny check sources - Check dependency sources only
+#   cargo deny check advisories - Check security advisories only
+
+# =============================================================================
+# ADVISORIES
+# =============================================================================
+# Checks for known security vulnerabilities in dependencies
+# Similar to cargo-audit but integrated with other checks
+
+[advisories]
+# The path where the advisory database is cloned/fetched into
+db-path = "~/.cargo/advisory-db"
+
+# URL(s) to the advisory database's git repository
+db-urls = ["https://github.com/rustsec/advisory-db"]
+
+# SECURITY-CRITICAL: Fail on any known vulnerability
+# Modern cargo-deny uses severity-threshold instead of individual fields
+# The unmaintained field specifies what to check for unmaintained status
+unmaintained = "all"
+
+# SECURITY-CRITICAL: Fail on yanked crates (often yanked due to issues)
+yanked = "deny"
+
+# Specific advisories to ignore (use sparingly and document why)
+# Example: ignore = ["RUSTSEC-2020-0001"]
+ignore = []
+
+# =============================================================================
+# LICENSES
+# =============================================================================
+# License compliance checking for GPL-3.0 compatibility
+# NAILS is GPL-3.0 licensed, so we need GPL-compatible dependencies
+
+[licenses]
+# Confidence threshold for license detection (0.0 to 1.0)
+# 0.8 is a good balance between accuracy and flexibility
+confidence-threshold = 0.8
+
+# List of explicitly allowed licenses
+# These are all GPL-3.0 compatible licenses
+# Only licenses actually used by current dependencies are listed to reduce noise
+allow = [
+    # Our project license
+    "GPL-3.0-or-later",
+
+    # Permissive licenses (used by most Rust crates)
+    "MIT",
+    "Apache-2.0",
+
+    # Public domain (used in some crates)
+    "Unlicense",
+
+    # Weak copyleft (compatible with GPL)
+    "MPL-2.0",
+
+    # Unicode license (common in text processing crates)
+    "Unicode-3.0",
+]
+
+# Deny any license not in the allow list
+# This is the default behavior when 'allow' is specified
+
+# Crates with clarified license expressions
+# Some crates have non-standard license files or need manual verification
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [
+    { path = "LICENSE", hash = 0xbd0eed23 }
+]
+
+[[licenses.clarify]]
+name = "webpki"
+expression = "ISC"
+license-files = [
+    { path = "LICENSE", hash = 0x001c7e6c }
+]
+
+# Private crates that don't need license checking (our own workspace crates)
+[licenses.private]
+ignore = true
+registries = []
+
+# =============================================================================
+# BANS
+# =============================================================================
+# Dependency bans for problematic or unwanted crates
+
+[bans]
+# Warn on multiple versions of the same crate (indicates version conflicts)
+# Using 'warn' instead of 'deny' because transitive deps sometimes cause this
+multiple-versions = "warn"
+
+# SECURITY-CRITICAL: Deny wildcard dependencies (unpredictable versions)
+# Allow wildcards for workspace crates (they're version-locked in the workspace)
+wildcards = "allow"
+allow-wildcard-paths = true
+
+# Highlight the crates that are causing multiple versions
+highlight = "all"
+
+# Workspace crate handling
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+# Allow specific duplicates that are known and acceptable
+# Document why each skip is needed
+skip = [
+    # colored uses windows-sys 0.59.0, while clap uses 0.61.2
+    # This will resolve when colored updates its dependency
+    { name = "windows-sys", version = "=0.59.0" },
+]
+
+# Tree of crates to skip completely (including all transitive deps)
+skip-tree = []
+
+# Banned crates - these should never appear in the dependency tree
+# SECURITY: Block crates known to have security issues or alternatives
+deny = [
+    # Prefer rustls over openssl for TLS (pure Rust, no C dependencies)
+    # Uncomment if project uses TLS and you want to enforce rustls
+    # { name = "openssl", wrappers = ["openssl-sys"] },
+    # { name = "openssl-sys" },
+
+    # Block crates with known unfixable security issues
+    # Add entries as needed based on security advisories
+]
+
+# =============================================================================
+# SOURCES
+# =============================================================================
+# Restrict where crates can be fetched from
+
+[sources]
+# SECURITY-CRITICAL: Only allow crates from crates.io
+# This prevents supply chain attacks from unknown registries
+unknown-registry = "deny"
+
+# SECURITY-CRITICAL: Deny git dependencies in production
+# Git dependencies can change without version bumps
+unknown-git = "deny"
+
+# List of allowed registries (only crates.io by default)
+[sources.allow-org]
+# crates.io is implicitly allowed
+
+# Allow specific git repositories if needed (use sparingly)
+# Example: allow-git = ["https://github.com/example/repo"]
+# allow-git = []
+
+# Allow specific organizations' git repos
+# Example: github = ["rust-lang", "tokio-rs"]

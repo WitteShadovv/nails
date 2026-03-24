@@ -41,6 +41,9 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub mod test_utils;
+
 // Public re-exports
 pub use canary::{CanaryConfig, CanaryFinding, CanaryScanResult, CanaryScanner};
 pub use history::{ShellType, get_extended_history_files};

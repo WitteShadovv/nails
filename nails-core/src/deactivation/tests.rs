@@ -1,6 +1,14 @@
 //! Tests for deactivation module
+//!
+//! # Test Safety Notice
+//!
+//! Tests in this module MUST use `cleanup::test_utils::TEST_HOME` and
+//! `cleanup::test_utils::set_safe_test_home()` instead of reading the real HOME
+//! environment variable. This prevents tests from accidentally operating on real
+//! user history files.
 
 use super::{DeactivationOrchestrator, DeactivationReport, PostUnmountCleanupReport};
+use crate::cleanup::test_utils::{TEST_HOME, assert_path_is_safe, set_safe_test_home};
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 use crate::filesystem::Filesystem;
 use crate::{
@@ -380,9 +388,13 @@ fn test_cleanup_failure_rollback() {
     // This triggers AC4: cleanup failure → rollback to ACTIVE
     {
         let m = manager.lock().unwrap();
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_string());
-        let bash_history = Path::new(&home).join(".bash_history");
+        // SAFETY: Use a fixed fake home directory to prevent touching real files.
+        set_safe_test_home();
+        let bash_history = Path::new(TEST_HOME).join(".bash_history");
         let bash_history_str = bash_history.to_str().unwrap();
+
+        // Validate path safety before using
+        assert_path_is_safe(bash_history_str);
 
         // Set up history file that exists with "nails" content
         m.filesystem().mock_set_path_exists(bash_history_str, true);
@@ -446,10 +458,15 @@ fn test_cleanup_failure_keeps_overlays_mounted() {
         m.filesystem().mock_set_mounted(Path::new("/home"), true);
         m.filesystem().mock_set_mounted(Path::new("/etc"), true);
 
+        // SAFETY: Use a fixed fake home directory to prevent touching real files.
+        set_safe_test_home();
         // Configure cleanup to fail by making write fail
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_string());
-        let bash_history = Path::new(&home).join(".bash_history");
+        let bash_history = Path::new(TEST_HOME).join(".bash_history");
         let bash_history_str = bash_history.to_str().unwrap();
+
+        // Validate path safety before using
+        assert_path_is_safe(bash_history_str);
+
         m.filesystem().mock_set_path_exists(bash_history_str, true);
         m.filesystem()
             .mock_set_file_content(bash_history_str, "nails activate\nsome command\n");
@@ -766,10 +783,15 @@ fn test_deactivation_cleanup_event_includes_count() {
         m.filesystem().mock_set_mounted(Path::new("/home"), true);
         m.filesystem().mock_set_mounted(Path::new("/etc"), true);
 
+        // SAFETY: Use a fixed fake home directory to prevent touching real files.
+        set_safe_test_home();
         // Add some cleanup items
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_string());
-        let bash_history = Path::new(&home).join(".bash_history");
+        let bash_history = Path::new(TEST_HOME).join(".bash_history");
         let bash_history_str = bash_history.to_str().unwrap();
+
+        // Validate path safety before using
+        assert_path_is_safe(bash_history_str);
+
         m.filesystem().mock_set_path_exists(bash_history_str, true);
         m.filesystem()
             .mock_set_file_content(bash_history_str, "nails activate\nsome command\n");
@@ -831,4 +853,124 @@ fn test_deactivation_idempotent_log() {
 
     // Verify idempotent message with structured fields
     assert!(logs_contain("Already inactive") || logs_contain("already_inactive"));
+}
+
+#[test]
+fn test_deactivation_report_display_with_post_unmount_cleanup() {
+    // Test Display implementation for DeactivationReport with post_unmount_cleanup
+    let mut cleanup_report = CleanupReport::new(CleanupMode::Fast);
+    cleanup_report.add_cleaned("Removed 3 history entries");
+    cleanup_report.duration = Duration::from_millis(100);
+
+    let post_unmount_cleanup = PostUnmountCleanupReport {
+        cleaned_items: vec![
+            "~/.bash_history (real disk)".to_string(),
+            "~/.zsh_history (real disk)".to_string(),
+        ],
+        warnings: vec!["Failed to clean ~/.fish_history: Permission denied".to_string()],
+        was_performed: true,
+    };
+
+    let report = DeactivationReport {
+        cleanup_report,
+        unmounted_overlays: vec!["/home".to_string(), "/etc".to_string()],
+        duration: Duration::from_millis(150),
+        final_state: SystemState::Inactive,
+        was_already_inactive: false,
+        post_unmount_cleanup,
+    };
+
+    let output = format!("{}", report);
+    assert!(output.contains("Deactivation Report"));
+    assert!(output.contains("Phase 1 - Overlay Cleanup:"));
+    assert!(output.contains("Removed 3 history entries"));
+    assert!(output.contains("Unmounted Overlays:"));
+    assert!(output.contains("/home"));
+    assert!(output.contains("/etc"));
+    assert!(output.contains("Phase 2 - Real Disk Cleanup:"));
+    assert!(output.contains("~/.bash_history (real disk)"));
+    assert!(output.contains("~/.zsh_history (real disk)"));
+    assert!(output.contains("⚠ Failed to clean ~/.fish_history: Permission denied"));
+    assert!(output.contains("✓ Deactivation complete"));
+}
+
+#[test]
+fn test_deactivation_report_display_without_post_unmount_cleanup() {
+    // Test Display implementation when post_unmount_cleanup.was_performed is false
+    let mut cleanup_report = CleanupReport::new(CleanupMode::Fast);
+    cleanup_report.add_cleaned("Removed 3 history entries");
+    cleanup_report.duration = Duration::from_millis(100);
+
+    let post_unmount_cleanup = PostUnmountCleanupReport {
+        cleaned_items: vec![], // Even if items exist, they shouldn't be shown
+        warnings: vec![],
+        was_performed: false,
+    };
+
+    let report = DeactivationReport {
+        cleanup_report,
+        unmounted_overlays: vec!["/home".to_string()],
+        duration: Duration::from_millis(150),
+        final_state: SystemState::Inactive,
+        was_already_inactive: false,
+        post_unmount_cleanup,
+    };
+
+    let output = format!("{}", report);
+    assert!(output.contains("Deactivation Report"));
+    assert!(output.contains("Phase 1 - Overlay Cleanup:"));
+    // Phase 2 should NOT appear when was_performed is false
+    assert!(!output.contains("Phase 2 - Real Disk Cleanup:"));
+}
+
+#[test]
+fn test_deactivation_report_is_successful_with_inactive_state() {
+    let report = DeactivationReport {
+        cleanup_report: CleanupReport::default(),
+        unmounted_overlays: vec![],
+        duration: Duration::from_millis(100),
+        final_state: SystemState::Inactive,
+        was_already_inactive: false,
+        post_unmount_cleanup: PostUnmountCleanupReport::default(),
+    };
+
+    assert!(report.is_successful());
+}
+
+#[test]
+fn test_deactivation_report_is_not_successful_with_active_state() {
+    let report = DeactivationReport {
+        cleanup_report: CleanupReport::default(),
+        unmounted_overlays: vec![],
+        duration: Duration::from_millis(100),
+        final_state: SystemState::Active {
+            activated_at: chrono::Utc::now(),
+            overlays: vec![],
+        },
+        was_already_inactive: false,
+        post_unmount_cleanup: PostUnmountCleanupReport::default(),
+    };
+
+    assert!(!report.is_successful());
+}
+
+#[test]
+fn test_post_unmount_cleanup_report_default() {
+    let report = PostUnmountCleanupReport::default();
+    assert_eq!(report.cleaned_items.len(), 0);
+    assert_eq!(report.warnings.len(), 0);
+    assert!(!report.was_performed);
+}
+
+#[test]
+fn test_post_unmount_cleanup_report_with_data() {
+    let report = PostUnmountCleanupReport {
+        cleaned_items: vec!["file1".to_string(), "file2".to_string()],
+        warnings: vec!["warning1".to_string()],
+        was_performed: true,
+    };
+
+    assert_eq!(report.cleaned_items.len(), 2);
+    assert_eq!(report.warnings.len(), 1);
+    assert!(report.was_performed);
 }

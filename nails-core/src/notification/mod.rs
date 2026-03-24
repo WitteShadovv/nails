@@ -231,42 +231,85 @@ pub fn clear_all(hidden_volume_root: &Path) -> Result<()> {
 /// notifications sent.
 ///
 /// Silently skips notifications if `notify-send` is not available.
+///
+/// # Test Safety
+///
+/// This function is disabled during testing to prevent real desktop notifications:
+/// - Set `NAILS_DISABLE_NOTIFICATIONS=1` environment variable, OR
+/// - Compile with `#[cfg(test)]` (notification dispatch is always skipped in test builds)
 pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
-    let pending = read_pending(hidden_volume_root)?;
-    if pending.is_empty() {
+    // LAYER 1: Compile-time test guard - NEVER dispatch in test builds
+    #[cfg(test)]
+    {
+        tracing::debug!("Notification dispatch disabled in test build");
+        let _ = hidden_volume_root; // suppress unused warning
+        Ok(0)
+    }
+
+    // LAYER 2: Runtime test guard - check NAILS_DISABLE_NOTIFICATIONS early
+    // This is the FIRST check, before we even read pending notifications
+    #[cfg(not(test))]
+    if is_notifications_disabled() {
+        tracing::debug!("Notification dispatch disabled via NAILS_DISABLE_NOTIFICATIONS");
         return Ok(0);
     }
 
-    // Check if notify-send is available
-    let notify_send = which_notify_send();
-    if notify_send.is_none() {
-        tracing::warn!("notify-send not found in PATH; skipping desktop notifications");
-        return Ok(0);
-    }
-    let notify_send = notify_send.unwrap();
+    #[cfg(not(test))]
+    {
+        let pending = read_pending(hidden_volume_root)?;
+        if pending.is_empty() {
+            return Ok(0);
+        }
 
-    let mut dispatched = 0;
-    for (path, notification) in &pending {
-        match send_notification(&notify_send, notification) {
-            Ok(()) => {
-                let _ = clear_notification(path);
-                dispatched += 1;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    title = %notification.title,
-                    error = %e,
-                    "Failed to dispatch notification"
-                );
+        // Check if notify-send is available (also checks NAILS_DISABLE_NOTIFICATIONS)
+        let notify_send = which_notify_send();
+        if notify_send.is_none() {
+            tracing::warn!("notify-send not found in PATH; skipping desktop notifications");
+            return Ok(0);
+        }
+        let notify_send = notify_send.unwrap();
+
+        let mut dispatched = 0;
+        for (path, notification) in &pending {
+            match send_notification(&notify_send, notification) {
+                Ok(()) => {
+                    let _ = clear_notification(path);
+                    dispatched += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        title = %notification.title,
+                        error = %e,
+                        "Failed to dispatch notification"
+                    );
+                }
             }
         }
-    }
 
-    Ok(dispatched)
+        Ok(dispatched)
+    }
+}
+
+/// Check if notifications are disabled via environment variable.
+///
+/// This is the runtime check used to prevent real notifications in tests
+/// and other environments where desktop notifications are not desired.
+#[cfg(not(test))]
+fn is_notifications_disabled() -> bool {
+    std::env::var("NAILS_DISABLE_NOTIFICATIONS").is_ok()
 }
 
 /// Find `notify-send` in PATH.
+///
+/// Returns `None` if `NAILS_DISABLE_NOTIFICATIONS` is set (used in tests to prevent
+/// real notifications from being sent).
+#[cfg(not(test))]
 fn which_notify_send() -> Option<PathBuf> {
+    // Allow tests to disable notification dispatch
+    if is_notifications_disabled() {
+        return None;
+    }
+
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).find_map(|dir| {
             let candidate = dir.join("notify-send");
@@ -280,6 +323,7 @@ fn which_notify_send() -> Option<PathBuf> {
 }
 
 /// Invoke `notify-send` with the given notification payload.
+#[cfg(not(test))]
 fn send_notification(notify_send: &Path, notification: &Notification) -> Result<()> {
     let mut cmd = std::process::Command::new(notify_send);
     cmd.arg("--urgency").arg(&notification.urgency);

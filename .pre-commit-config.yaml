@@ -117,6 +117,15 @@ repos:
         language: system
         pass_filenames: false
 
+      # Comprehensive dependency policy enforcement (AR50)
+      # Checks licenses, bans, sources, and advisories
+      - id: cargo-deny
+        name: Cargo Dependency Policy Check
+        entry: cargo deny check
+        language: system
+        pass_filenames: false
+        files: (Cargo\.toml|Cargo\.lock|deny\.toml)$
+
       - id: rust-fmt
         name: Format Rust code
         entry: cargo fmt --

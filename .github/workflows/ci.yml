@@ -71,13 +71,27 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
       - name: Generate audit report (JSON)
         run: |
           mkdir -p target
           cargo audit --json > target/audit-report.json 2>&1 || true
 
-      - name: Run security audit
+      - name: Run security audit (cargo-audit)
         run: cargo audit
+
+      - name: Run dependency policy check (cargo-deny)
+        run: |
+          echo "=== Checking advisories (vulnerabilities) ==="
+          cargo deny check advisories
+          echo "=== Checking licenses (GPL-3.0 compatibility) ==="
+          cargo deny check licenses
+          echo "=== Checking bans (blocked dependencies) ==="
+          cargo deny check bans
+          echo "=== Checking sources (registry restrictions) ==="
+          cargo deny check sources
 
       - name: Upload audit results
         if: always()
@@ -226,7 +240,51 @@ jobs:
 
             [View full report](../actions/runs/${{ github.run_id }})
 
-  # Stage 5: Burn-in loop for flaky test detection
+  # Stage 5: SBOM Generation (CycloneDX)
+  sbom:
+    name: SBOM Generation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: 1.93.0
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+        with:
+          shared-key: "sbom"
+
+      - name: Install cargo-sbom
+        run: cargo install cargo-sbom --locked
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          mkdir -p sbom
+          cargo sbom --output-format cyclonedx_json_1_6 > sbom/sbom.cdx.json
+
+      - name: Install CycloneDX CLI for validation
+        run: |
+          curl -sSfL https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.27.1/cyclonedx-linux-x64 -o /tmp/cyclonedx-cli
+          chmod +x /tmp/cyclonedx-cli
+
+      - name: Validate SBOM format
+        run: /tmp/cyclonedx-cli validate --input-file sbom/sbom.cdx.json --input-format json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: sbom-cyclonedx
+          path: sbom/
+          retention-days: 90
+
+  # Stage 6: Burn-in loop for flaky test detection
   burn-in:
     name: Burn-In Loop (Flaky Detection)
     runs-on: ubuntu-24.04
@@ -272,7 +330,7 @@ jobs:
             target/tmp/**
           retention-days: 30
 
-  # Stage 6: Performance benchmarks (Criterion)
+  # Stage 7: Performance benchmarks (Criterion)
   benchmarks:
     name: Performance Benchmarks
     runs-on: ubuntu-24.04
@@ -316,7 +374,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-24.04
-    needs: [lint, audit, test, coverage, burn-in, benchmarks]
+    needs: [lint, audit, test, coverage, sbom, burn-in, benchmarks]
     if: always()
 
     steps:
@@ -339,6 +397,11 @@ jobs:
 
           if [[ "${{ needs.coverage.result }}" != "success" ]]; then
             echo "Coverage job failed (85% required)"
+            exit 1
+          fi
+
+          if [[ "${{ needs.sbom.result }}" != "success" ]]; then
+            echo "SBOM generation failed"
             exit 1
           fi
 

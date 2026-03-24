@@ -234,6 +234,10 @@ impl<F: Filesystem> HistoryCleaner<F> {
             }
 
             // Attempt in-memory history clear (best-effort, see method docs for limitations)
+            // Skipped in test builds: subprocess shell commands have real system side effects
+            // (fish -c "history clear" corrupts $fish_history universal variable;
+            //  zsh -c "fc -W" overwrites ~/.zsh_history with empty content).
+            #[cfg(not(test))]
             if let Err(e) = self.attempt_clean_in_memory_history(*shell) {
                 output::warn(&format!(
                     "Failed to clear {:?} in-memory history: {}",
@@ -375,11 +379,18 @@ impl<F: Filesystem> HistoryCleaner<F> {
     /// 2. **Session management:** Track shells started during nails session and
     ///    terminate them before deactivation (Story 4.14 approach)
     /// 3. **Accept limitation:** Focus on file-based cleanup (already robust)
+    #[cfg_attr(test, allow(dead_code))]
     fn attempt_clean_in_memory_history(&self, shell: ShellType) -> Result<()> {
+        // Fish: `fish -c "history clear"` corrupts the $fish_history universal variable,
+        // causing interactive sessions to stop loading history. Skip entirely.
+        //
+        // Zsh: `fc -W` writes the (empty) subprocess history to $HISTFILE, overwriting
+        // ~/.zsh_history on disk. Skip entirely.
+        //
+        // Bash: `bash -c "history -c"` only affects the subprocess — safe to run.
         let shell_name = match shell {
             ShellType::Bash => "bash",
-            ShellType::Zsh => "zsh",
-            ShellType::Fish => "fish",
+            ShellType::Zsh | ShellType::Fish => return Ok(()),
         };
 
         let command = shell.in_memory_clear_command();

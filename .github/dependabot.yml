@@ -1,0 +1,183 @@
+# Dependabot Configuration for NAILS Project
+# ===========================================
+# Automated dependency updates with security-first approach
+#
+# Design principles:
+# - Security updates are prioritized and handled separately
+# - Version updates are grouped to reduce PR noise
+# - Weekly schedule balances freshness with stability
+# - Commit message format follows conventional commits
+#
+# Note: Nix flakes are not natively supported by Dependabot.
+# For Nix updates, consider using nix-update or nvfetcher.
+
+version: 2
+
+registries: {}
+
+updates:
+  # ============================================================================
+  # Cargo (Rust) Dependencies
+  # ============================================================================
+  # Primary ecosystem for the NAILS Rust workspace project
+  #
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+
+    # Commit message configuration for conventional commits
+    commit-message:
+      prefix: "build(deps)"
+      prefix-development: "build(deps-dev)"
+      include: "scope"
+
+    # Labels for easier PR triage and filtering
+    labels:
+      - "dependencies"
+      - "rust"
+
+    # Group production dependencies together (minor/patch only for stability)
+    # Group dev dependencies separately (more permissive updates)
+    groups:
+      # Production dependencies - conservative updates
+      rust-production:
+        applies-to: version-updates
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+        patterns:
+          - "*"
+        exclude-patterns:
+          # Exclude stability-critical dependencies from grouping
+          # These get individual PRs for careful review
+          - "nix"  # System-level operations, breaking changes are critical
+
+      # Development dependencies - more permissive
+      rust-dev:
+        applies-to: version-updates
+        dependency-type: "development"
+        patterns:
+          - "*"
+
+      # Security updates for production deps - separate group for visibility
+      rust-security:
+        applies-to: security-updates
+        dependency-type: "production"
+        patterns:
+          - "*"
+
+    # Ignore rules for stability-critical dependencies
+    # Major version updates require manual review and testing
+    ignore:
+      # Core system interaction - major versions need careful migration
+      - dependency-name: "nix"
+        update-types: ["version-update:semver-major"]
+
+      # Serialization stack - major versions can break data formats
+      - dependency-name: "serde"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "serde_json"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "serde_yaml"
+        update-types: ["version-update:semver-major"]
+
+      # CLI framework - major versions can break user-facing interfaces
+      - dependency-name: "clap"
+        update-types: ["version-update:semver-major"]
+
+      # Date/time handling - critical for state timestamps
+      - dependency-name: "chrono"
+        update-types: ["version-update:semver-major"]
+
+  # ============================================================================
+  # GitHub Actions Dependencies
+  # ============================================================================
+  # Maintains workflow action versions using commit SHA pinning
+  #
+  # Current actions in use (from workflow analysis):
+  # - actions/checkout (multiple SHAs - will be unified)
+  # - actions/upload-artifact
+  # - actions/download-artifact
+  # - actions/attest
+  # - dtolnay/rust-toolchain
+  # - Swatinem/rust-cache
+  # - codecov/codecov-action
+  # - marocchino/sticky-pull-request-comment
+  # - cachix/install-nix-action
+  # - cachix/cachix-action
+  #
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+
+    # Commit message configuration
+    commit-message:
+      prefix: "ci(deps)"
+      include: "scope"
+
+    # Labels for GitHub Actions updates
+    labels:
+      - "dependencies"
+      - "github-actions"
+      - "ci"
+
+    # Group all GitHub Actions updates together
+    # Since they use SHA pinning, updates are relatively safe
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns:
+          - "*"
+
+      # Security updates for actions - separate for visibility
+      github-actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+    # Ignore rules for actions that need special handling
+    ignore:
+      # None currently - all actions should be kept up to date
+      # Add entries here if specific actions cause issues
+      []
+
+# ============================================================================
+# Notes on ecosystems NOT configured:
+# ============================================================================
+#
+# Nix Flakes:
+#   Dependabot doesn't support Nix flakes natively. For Nix dependency updates,
+#   consider:
+#   - nix flake update (manual or scheduled via CI)
+#   - nix-update tool for nixpkgs package updates
+#   - nvfetcher for managing external sources
+#
+# Pre-commit hooks:
+#   The pip ecosystem could theoretically manage .pre-commit-config.yaml,
+#   but pre-commit has its own update mechanism:
+#   - pre-commit autoupdate
+#   Consider adding a scheduled workflow to run this command.
+#
+# ============================================================================
+# Security Update Behavior:
+# ============================================================================
+# Security updates are enabled by default and handled with higher priority:
+# - They are created immediately when vulnerabilities are detected
+# - They use separate groups (rust-security, github-actions-security)
+# - They bypass the open-pull-requests-limit
+# - They are labeled for easy identification
+#
+# To customize security update behavior further, you can add:
+# - security-updates: (at the updates level, but this is the default)
+#

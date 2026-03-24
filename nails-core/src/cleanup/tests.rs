@@ -1,6 +1,15 @@
 //! Tests for cleanup module
+//!
+//! # Test Safety Notice
+//!
+//! Tests in this module MUST use `test_utils::TEST_HOME` and `test_utils::set_safe_test_home()`
+//! instead of reading the real HOME environment variable. This prevents tests from accidentally
+//! operating on real user history files.
+//!
+//! See `test_utils` module for details.
 
 use super::manager::CleanupManager;
+use super::test_utils::{TEST_HOME, assert_path_is_safe, set_safe_test_home};
 use super::types::{CleanupConfig, CleanupMode, CleanupReport};
 use crate::MockFilesystem;
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
@@ -483,13 +492,19 @@ fn test_cleanup_manager_temp_files_with_errors() {
 /// operation, demonstrating that CleanupManager successfully invoked all three.
 #[test]
 fn test_full_cleanup_cycle_all_cleaners_invoked() {
+    // SAFETY: Use a fixed fake home directory to prevent touching real files.
+    set_safe_test_home();
+
     // Setup: Create comprehensive mock filesystem with data for all three cleaners
     let fs = MockFilesystem::new();
     let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
 
     // 1. Setup history files (for HistoryCleaner)
-    let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/home/testuser".to_string());
+    let home_dir = TEST_HOME;
     let bash_history = format!("{}/.bash_history", home_dir);
+
+    // Validate path safety before using
+    assert_path_is_safe(&bash_history);
     fs.mock_set_file_content(
         &bash_history,
         "ls\nnails activate\ncd /tmp\nnails status\necho hello\n",
@@ -611,11 +626,17 @@ fn test_full_cleanup_cycle_all_cleaners_invoked() {
 fn test_canary_scanner_detects_forbidden_patterns() {
     use super::canary::{CanaryConfig, CanaryScanner};
 
+    // SAFETY: Use a fixed fake home directory to prevent touching real files.
+    set_safe_test_home();
+
     let fs = MockFilesystem::new();
 
     // Setup a file with a forbidden pattern
-    let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/home/testuser".to_string());
+    let home_dir = TEST_HOME;
     let bash_history = format!("{}/.bash_history", home_dir);
+
+    // Validate path safety before using
+    assert_path_is_safe(&bash_history);
 
     // File contains "NAILS_CANARY" which is in the default forbidden patterns
     fs.mock_set_file_content(
@@ -653,11 +674,17 @@ fn test_canary_scanner_detects_forbidden_patterns() {
 fn test_canary_scanner_clean_when_no_patterns() {
     use super::canary::{CanaryConfig, CanaryScanner};
 
+    // SAFETY: Use a fixed fake home directory to prevent touching real files.
+    set_safe_test_home();
+
     let fs = MockFilesystem::new();
 
     // Setup a file with NO forbidden patterns
-    let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/home/testuser".to_string());
+    let home_dir = TEST_HOME;
     let bash_history = format!("{}/.bash_history", home_dir);
+
+    // Validate path safety before using
+    assert_path_is_safe(&bash_history);
 
     fs.mock_set_file_content(&bash_history, "ls -la\ncd /tmp\npwd\ngit status\n");
     fs.mock_set_path_exists(&bash_history, true);
@@ -706,11 +733,17 @@ fn test_secure_delete_config_propagation() {
 /// Test that verification fails when artifacts remain after cleanup
 #[test]
 fn test_verification_fails_when_artifacts_remain() {
+    // SAFETY: Use a fixed fake home directory to prevent touching real files.
+    set_safe_test_home();
+
     let fs = MockFilesystem::new();
 
     // Setup: Create a history file that still contains "nails" after "cleanup"
-    let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/home/testuser".to_string());
+    let home_dir = TEST_HOME;
     let bash_history = format!("{}/.bash_history", home_dir);
+
+    // Validate path safety before using
+    assert_path_is_safe(&bash_history);
 
     // Simulate a cleanup that didn't work properly - file still has nails entries
     fs.mock_set_file_content(&bash_history, "ls -la\nnails activate\ncd /tmp\n");
@@ -802,11 +835,17 @@ fn test_memory_sanitization_tracking() {
 /// Test cleanup report tracks canary findings count
 #[test]
 fn test_cleanup_report_tracks_canary_findings() {
+    // SAFETY: Use a fixed fake home directory to prevent touching real files.
+    set_safe_test_home();
+
     let fs = MockFilesystem::new();
 
     // Setup: History file with forbidden pattern
-    let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/home/testuser".to_string());
+    let home_dir = TEST_HOME;
     let bash_history = format!("{}/.bash_history", home_dir);
+
+    // Validate path safety before using
+    assert_path_is_safe(&bash_history);
 
     fs.mock_set_file_content(
         &bash_history,
@@ -882,11 +921,17 @@ fn test_cleanup_report_display_includes_new_fields() {
 /// Test secure delete is used when configured in CleanupManager
 #[test]
 fn test_cleanup_manager_uses_secure_delete_when_configured() {
+    // SAFETY: Use a fixed fake home directory to prevent touching real files.
+    set_safe_test_home();
+
     let fs = MockFilesystem::new();
 
     // Setup history file to be cleaned
-    let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/home/testuser".to_string());
+    let home_dir = TEST_HOME;
     let bash_history = format!("{}/.bash_history", home_dir);
+
+    // Validate path safety before using
+    assert_path_is_safe(&bash_history);
 
     fs.mock_set_file_content(&bash_history, "ls -la\nnails activate\ncd /tmp\n");
     fs.mock_set_path_exists(&bash_history, true);

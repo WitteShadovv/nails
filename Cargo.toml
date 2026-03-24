@@ -7,9 +7,9 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.93"
 authors = ["NAILS Project"]
-license = "GPL-3.0"
-homepage = "https://github.com/nails-project/nails"
-repository = "https://github.com/nails-project/nails"
+license = "GPL-3.0-or-later"
+homepage = "https://github.com/WitteShadovv/nails"
+repository = "https://github.com/WitteShadovv/nails"
 
 [workspace.dependencies]
 # CLI and argument parsing
