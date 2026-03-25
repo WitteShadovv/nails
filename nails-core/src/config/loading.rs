@@ -129,7 +129,7 @@ impl Config {
         })?;
 
         // Parse YAML with line number in errors
-        let mut config: Config = serde_yaml::from_str(&contents).map_err(|e| {
+        let mut config: Config = serde_saphyr::from_str(&contents).map_err(|e| {
             let line_info = if let Some(location) = e.location() {
                 format!(" at line {}", location.line())
             } else {

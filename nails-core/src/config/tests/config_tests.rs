@@ -573,7 +573,7 @@ fn test_example_config_returns_valid_yaml() {
     assert!(example.contains("preflight_checks"));
     assert!(example.contains("default_verbosity"));
 
-    // Try to parse it (simulated - actual parsing would require serde_yaml)
+    // Try to parse it (simulated - actual parsing would require serde_saphyr)
     assert!(example.contains("# NAILS Configuration"));
     assert!(example.contains("# Required fields:"));
 }
@@ -1112,15 +1112,15 @@ fn test_overlay_mode_serialization() {
     let explicit_mode = OverlayMode::Explicit;
 
     // Serialize to YAML
-    let auto_yaml = serde_yaml::to_string(&auto_mode).unwrap();
-    let explicit_yaml = serde_yaml::to_string(&explicit_mode).unwrap();
+    let auto_yaml = serde_saphyr::to_string(&auto_mode).unwrap();
+    let explicit_yaml = serde_saphyr::to_string(&explicit_mode).unwrap();
 
     assert!(auto_yaml.contains("auto"));
     assert!(explicit_yaml.contains("explicit"));
 
     // Deserialize from YAML
-    let auto_parsed: OverlayMode = serde_yaml::from_str(&auto_yaml).unwrap();
-    let explicit_parsed: OverlayMode = serde_yaml::from_str(&explicit_yaml).unwrap();
+    let auto_parsed: OverlayMode = serde_saphyr::from_str(&auto_yaml).unwrap();
+    let explicit_parsed: OverlayMode = serde_saphyr::from_str(&explicit_yaml).unwrap();
 
     assert_eq!(auto_parsed, OverlayMode::Auto);
     assert_eq!(explicit_parsed, OverlayMode::Explicit);

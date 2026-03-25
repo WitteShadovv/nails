@@ -161,7 +161,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///     hidden_volume_root: mock_hidden_vol.to_path_buf(),
     ///     state_file_path: state_path.clone(),
     ///     overlays: vec![],
-    ///     ..Config::test_default()
+    ///     ..Config::default()
     /// };
     /// let mut manager = NailsManager::new(fs, config, state_path);
     ///
@@ -227,7 +227,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///     hidden_volume_root: mock_hidden_vol.to_path_buf(),
     ///     state_file_path: state_path.clone(),
     ///     overlays: vec![],
-    ///     ..Config::test_default()
+    ///     ..Config::default()
     /// };
     /// let mut manager = NailsManager::new(fs, config, state_path);
     ///

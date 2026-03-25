@@ -24,15 +24,14 @@ use std::path::PathBuf;
 /// # Example
 ///
 /// ```rust
-/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::config::OverlayConfig;
 /// use std::path::PathBuf;
 ///
 /// let overlay = OverlayConfig {
 ///     name: "home".to_string(),
 ///     lower: PathBuf::from("/home"),
-///     upper: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/upper"),
-///     work: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("overlays/home/work"),
+///     upper: PathBuf::from("/mnt/hidden-volume").join("overlays/home/upper"),
+///     work: PathBuf::from("/mnt/hidden-volume").join("overlays/home/work"),
 ///     target: PathBuf::from("/home"),
 /// };
 /// ```

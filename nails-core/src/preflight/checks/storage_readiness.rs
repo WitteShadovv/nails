@@ -50,14 +50,13 @@ const REQUIRED_DIRS: &[&str] = &[
 /// # Example
 ///
 /// ```rust,no_run
-/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::preflight::{StorageReadinessCheck, OverlayDirs, PreFlightCheck};
 /// use nails_core::filesystem::MockFilesystem;
 /// use std::path::PathBuf;
 ///
 /// let fs = MockFilesystem::new();
 /// let check = StorageReadinessCheck::new(
-///     PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+///     PathBuf::from("/mnt/hidden-volume"),
 ///     vec![OverlayDirs::new(
 ///         "home".to_string(),
 ///         PathBuf::from("/home"),

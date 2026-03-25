@@ -23,18 +23,17 @@ use std::path::PathBuf;
 /// # Example
 ///
 /// ```rust
-/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::preflight::{HiddenVolumeCheck, PreFlightCheck};
 /// use nails_core::filesystem::MockFilesystem;
 /// use std::path::PathBuf;
 ///
 /// let fs = MockFilesystem::new();
-/// let check = HiddenVolumeCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT));
+/// let check = HiddenVolumeCheck::new(PathBuf::from("/mnt/hidden-volume"));
 ///
 /// // Set up mock state
-/// fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-/// fs.mock_set_mounted(std::path::Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
-/// fs.mock_set_writable(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+/// fs.mock_set_path_exists("/mnt/hidden-volume", true);
+/// fs.mock_set_mounted(std::path::Path::new("/mnt/hidden-volume"), true);
+/// fs.mock_set_writable("/mnt/hidden-volume", true);
 ///
 /// let result = check.run(&fs).unwrap();
 /// assert!(result.is_pass());

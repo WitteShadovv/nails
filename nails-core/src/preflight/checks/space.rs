@@ -32,16 +32,15 @@ use std::path::PathBuf;
 /// # Example
 ///
 /// ```rust
-/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::preflight::{SpaceCheck, PreFlightCheck};
 /// use nails_core::filesystem::MockFilesystem;
 /// use std::path::PathBuf;
 ///
 /// let fs = MockFilesystem::new();
-/// let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 1024);
+/// let check = SpaceCheck::new(PathBuf::from("/mnt/hidden-volume"), 1024);
 ///
 /// // Simulate 2GB available
-/// fs.mock_set_free_space(std::path::Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 2 * 1024 * 1024 * 1024);
+/// fs.mock_set_free_space(std::path::Path::new("/mnt/hidden-volume"), 2 * 1024 * 1024 * 1024);
 ///
 /// let result = check.run(&fs).unwrap();
 /// assert!(result.is_pass());

@@ -84,7 +84,7 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "serde_json"
         update-types: ["version-update:semver-major"]
-      - dependency-name: "serde_yaml"
+      - dependency-name: "serde-saphyr"
         update-types: ["version-update:semver-major"]
 
       # CLI framework - major versions can break user-facing interfaces

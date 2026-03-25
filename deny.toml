@@ -66,6 +66,9 @@ allow = [
 
     # Unicode license (common in text processing crates)
     "Unicode-3.0",
+
+    # BSD 3-Clause (used by encoding_rs via serde-saphyr, GPL-compatible)
+    "BSD-3-Clause",
 ]
 
 # Deny any license not in the allow list

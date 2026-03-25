@@ -16,13 +16,12 @@ use std::path::PathBuf;
 /// # Example
 ///
 /// ```rust
-/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::preflight::{SymlinkSupportCheck, PreFlightCheck};
 /// use nails_core::filesystem::MockFilesystem;
 /// use std::path::PathBuf;
 ///
 /// let fs = MockFilesystem::new();
-/// let check = SymlinkSupportCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT));
+/// let check = SymlinkSupportCheck::new(PathBuf::from("/mnt/hidden-volume"));
 ///
 /// // Mock supports symlinks by default
 /// let result = check.run(&fs).unwrap();

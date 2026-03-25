@@ -130,7 +130,6 @@ pub struct CliOverrides {
 /// # Example
 ///
 /// ```rust
-/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::config::Config;
 /// use std::path::PathBuf;
 ///
@@ -139,8 +138,8 @@ pub struct CliOverrides {
 ///
 /// // Or create custom config
 /// let config = Config {
-///     hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
-///     state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json"),
+///     hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
+///     state_file_path: PathBuf::from("/mnt/hidden-volume").join("state.json"),
 ///     overlays: vec![],
 ///     ..Config::default()
 /// };
