@@ -231,10 +231,14 @@ pub fn detect_session_context_with_executor<E: SessionCommandExecutor>(
 
     // If overrides were provided by the pre-detach environment, trust them.
     if override_session_id.is_some() || override_uid.is_some() || override_dm.is_some() {
+        // If display manager override wasn't provided, try to detect it
+        let display_manager =
+            override_dm.or_else(|| detect_display_manager(executor).ok().flatten());
+
         return Ok(SessionContext {
             kind: SessionKind::GraphicalUser,
             session_id: override_session_id.or(session_id),
-            display_manager: override_dm,
+            display_manager,
             target_uid: override_uid,
             target_user: override_user,
             logind_available,
@@ -1120,6 +1124,39 @@ mod tests {
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.session_id, Some("c2".to_string()));
         assert_eq!(ctx.target_uid, None);
+        assert_eq!(ctx.target_user, Some("alice".to_string()));
+
+        clear_session_env();
+    }
+
+    #[test]
+    #[serial]
+    fn detect_session_context_detects_dm_when_override_missing() {
+        // This test verifies the fix for the display manager restart timing bug:
+        // When overrides are present but NAILS_DISPLAY_MANAGER is NOT set,
+        // the code should fall back to detecting the display manager.
+        clear_session_env();
+        unsafe {
+            env::set_var("NAILS_SESSION_ID", "c2");
+            // Intentionally NOT setting NAILS_DISPLAY_MANAGER
+            env::set_var("NAILS_TARGET_UID", "1000");
+            env::set_var("NAILS_TARGET_USER", "alice");
+        }
+
+        // Mock executor returns "active" for display-manager detection
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![Ok((true, "active".to_string(), String::new()))],
+            vec![],
+            true,
+        );
+
+        let ctx = detect_session_context_with_executor(&exec).unwrap();
+
+        assert_eq!(ctx.kind, SessionKind::GraphicalUser);
+        assert_eq!(ctx.session_id, Some("c2".to_string()));
+        // Should detect display-manager even though override is missing
+        assert_eq!(ctx.display_manager, Some("display-manager".to_string()));
+        assert_eq!(ctx.target_uid, Some(1000));
         assert_eq!(ctx.target_user, Some("alice".to_string()));
 
         clear_session_env();
