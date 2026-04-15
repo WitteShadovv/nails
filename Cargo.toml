@@ -38,7 +38,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3.10"
 
 # Colored terminal output (UXR5)
-colored = "2.1"
+colored = "3.1"
 
 # Testing (for workspace-level consistency)
 assert_cmd = "2.1.1"
