@@ -16,7 +16,7 @@ repository = "https://github.com/WitteShadovv/nails"
 clap = { version = "4.5.54", features = ["derive", "cargo"] }
 
 # Error handling (AR6, AR7)
-thiserror = "1.0"
+thiserror = "2.0"
 anyhow = "1.0"
 
 # Logging (AR8)
