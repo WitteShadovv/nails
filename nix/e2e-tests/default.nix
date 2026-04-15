@@ -12,6 +12,8 @@ let
     emergency = pkgs.testers.runNixOSTest (importTest ./tests/03-emergency.nix);
     forensic-clean =
       pkgs.testers.runNixOSTest (importTest ./tests/04-forensic-clean.nix);
+    standard-deactivation-forensic = pkgs.testers.runNixOSTest
+      (importTest ./tests/05-standard-deactivation-forensic.nix);
     snapshot-diff =
       pkgs.testers.runNixOSTest (importTest ./tests/06-snapshot-diff.nix);
     performance =
@@ -61,6 +63,10 @@ in tests // {
     {
       name = "forensic-clean";
       path = tests.forensic-clean;
+    }
+    {
+      name = "standard-deactivation-forensic";
+      path = tests.standard-deactivation-forensic;
     }
     {
       name = "snapshot-diff";

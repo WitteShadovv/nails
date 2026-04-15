@@ -61,6 +61,7 @@
 //! {"timestamp":"2026-02-12T10:30:46.456Z","level":"ERROR","message":"Mount failed","fields":{"path":"/home","error":"busy"}}
 //! ```
 
+use crate::obfuscate;
 use colored::Colorize;
 use std::env;
 
@@ -80,7 +81,7 @@ pub use rotation::{DEFAULT_MAX_LOG_SIZE_MB, DEFAULT_RETENTION_DAYS, LOG_FILE_NAM
 /// Returns true if `NO_COLOR` or `NAILS_NO_COLOR` environment variables are set.
 /// Follows the NO_COLOR convention (<https://no-color.org/>).
 fn should_disable_color() -> bool {
-    env::var("NO_COLOR").is_ok() || env::var("NAILS_NO_COLOR").is_ok()
+    env::var("NO_COLOR").is_ok() || env::var(obfuscate::env_no_color()).is_ok()
 }
 
 /// Format an early error message for pre-logging output

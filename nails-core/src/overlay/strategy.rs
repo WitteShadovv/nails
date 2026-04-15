@@ -557,4 +557,47 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap().method, MountMethod::Pivot);
     }
+
+    #[test]
+    fn test_restart_services_after_failure_empty_list() {
+        // Should not panic with empty list - no systemctl calls made
+        restart_services_after_failure(&[]);
+    }
+
+    #[test]
+    fn test_overlay_incompatible_fstypes_constant_not_empty() {
+        assert!(!OVERLAY_INCOMPATIBLE_FSTYPES.is_empty());
+        assert!(OVERLAY_INCOMPATIBLE_FSTYPES.contains(&"vfat"));
+        assert!(OVERLAY_INCOMPATIBLE_FSTYPES.contains(&"ntfs3"));
+    }
+
+    #[test]
+    fn test_mount_overlay_with_strategy_direct_mount_succeeds_when_no_fstype() {
+        use crate::filesystem::MockFilesystem;
+        use std::path::Path;
+
+        // No filesystem type set (None) → fstype_supports_overlay returns true → direct mount
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/data", true);
+        fs.mock_set_path_exists("/mnt/upper", true);
+        fs.mock_set_path_exists("/mnt/work", true);
+
+        let options = super::OverlayStrategyOptions {
+            skip_process_detection: true,
+            allow_pivot: false,
+            ..Default::default()
+        };
+
+        let result = mount_overlay_with_strategy(
+            &fs,
+            &[Path::new("/data")],
+            Path::new("/mnt/upper"),
+            Path::new("/mnt/work"),
+            Path::new("/data"),
+            &options,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().method, MountMethod::Direct);
+    }
 }

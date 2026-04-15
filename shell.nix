@@ -8,7 +8,7 @@
 let
   # Rust toolchain pinned to 1.93.0
   rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
-    extensions = [ "rust-src" "rust-analyzer" ];
+    extensions = [ "rust-src" "rust-analyzer" "llvm-tools-preview" ];
     targets = [ "x86_64-unknown-linux-musl" ];
   };
 
@@ -21,6 +21,7 @@ in pkgs.mkShell {
     # Development tools
     pre-commit
     git
+    bc # Floating-point arithmetic for coverage threshold checks
 
     # Security and forensics tools (for testing)
     veracrypt
@@ -28,9 +29,11 @@ in pkgs.mkShell {
     # Rust security auditing
     cargo-audit
 
-    # Coverage enforcement (TDD workflow) - switched from tarpaulin to llvm-cov
+    # Dependency policy enforcement
+    cargo-deny
+
+    # Coverage enforcement (TDD workflow) - uses llvm-tools-preview from Rust toolchain
     cargo-llvm-cov
-    llvmPackages_latest.llvm
 
     # Rust linter
     clippy

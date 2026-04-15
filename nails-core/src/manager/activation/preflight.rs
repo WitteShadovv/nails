@@ -2,6 +2,8 @@
 //!
 //! Handles pre-activation validation and config preparation.
 
+use crate::cleanup::history::HistoryCleaner;
+use crate::obfuscate;
 use crate::{Filesystem, NailsManager, Result, Stopwatch, Verbosity};
 
 impl<F: Filesystem> NailsManager<F> {
@@ -11,6 +13,7 @@ impl<F: Filesystem> NailsManager<F> {
         no_preflight: bool,
         overlay_only: bool,
         verbosity: Verbosity,
+        pre_activation_cleanup: bool,
     ) -> Result<()> {
         // Step 2.5: Probe symlink support on hidden volume before staging.
         // Catches FAT32/exFAT volumes early with a clear error message.
@@ -56,6 +59,13 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
+        // Step 2.8: Pre-activation history cleanup (runs even with --no-preflight)
+        // Security feature: Clean shell history BEFORE overlays are mounted to remove
+        // evidence of cryptsetup, nails activate, etc. from the REAL disk.
+        if pre_activation_cleanup {
+            self.run_pre_activation_cleanup(verbosity);
+        }
+
         // Step 3: Run pre-flight checks (unless skipped)
         if no_preflight {
             if verbosity >= Verbosity::Normal {
@@ -80,5 +90,63 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         Ok(())
+    }
+
+    /// Run pre-activation history cleanup (best-effort)
+    ///
+    /// Cleans shell history BEFORE overlays are mounted to remove evidence of
+    /// sensitive commands (nails, cryptsetup, veracrypt, luks, etc.) from the
+    /// REAL disk. This is a critical security feature that ensures forensic
+    /// evidence is removed from the actual storage, not just the overlay.
+    ///
+    /// # Best-Effort Approach
+    ///
+    /// - Failures are logged as warnings but don't fail activation
+    /// - Continues even if individual shell history files can't be cleaned
+    /// - This is intentional: security cleanup shouldn't block activation
+    ///
+    /// # Security Note
+    ///
+    /// This runs even when `--no-preflight` is set because it's a security
+    /// feature, not a validation check.
+    fn run_pre_activation_cleanup(&self, verbosity: Verbosity) {
+        if verbosity >= Verbosity::Normal {
+            tracing::info!("Running pre-activation history cleanup...");
+        }
+
+        // Use obfuscated patterns for forensic resistance
+        let patterns = obfuscate::pre_activation_cleanup_patterns();
+
+        let cleaner = HistoryCleaner::new(self.filesystem.clone()).with_patterns(patterns.clone());
+
+        match cleaner.clean() {
+            Ok(cleaned_items) => {
+                if cleaned_items.is_empty() {
+                    if verbosity >= Verbosity::Verbose {
+                        tracing::debug!(
+                            "Pre-activation cleanup: no history entries matched patterns"
+                        );
+                    }
+                } else {
+                    for item in &cleaned_items {
+                        tracing::info!(cleanup_result = %item, "Pre-activation history cleanup");
+                    }
+                    if verbosity >= Verbosity::Normal {
+                        tracing::info!(
+                            patterns = ?patterns,
+                            items_cleaned = cleaned_items.len(),
+                            "Pre-activation history cleanup complete"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                // Best-effort: log warning but continue with activation
+                tracing::warn!(
+                    error = %e,
+                    "Pre-activation history cleanup failed (best-effort, continuing)"
+                );
+            }
+        }
     }
 }

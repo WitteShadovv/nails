@@ -19,13 +19,13 @@ use super::guards::NixDaemonGuard;
 impl<F: Filesystem> NailsManager<F> {
     /// Mount persistent and ephemeral overlays
     ///
-    /// Returns: (direct_mounts, pivot_mounts, mounted_overlays)
+    /// Returns: (direct_mounts, pivot_mounts, pivot_targets, mounted_overlays)
     /// Note: Tracker is committed before returning, so no rollback on drop
     pub(super) fn mount_overlays(
         &self,
         options: &crate::ActivateOptions,
         verbosity: Verbosity,
-    ) -> Result<(usize, usize, Vec<PathBuf>)> {
+    ) -> Result<(usize, usize, Vec<PathBuf>, Vec<PathBuf>)> {
         // Story 15.1, AC1: Verify base hardware-configuration.nix is forensically clean before
         // any overlays are mounted. Fail activation if the base config already contains
         // NAILS or hidden references that would betray the overlay approach.
@@ -76,6 +76,7 @@ impl<F: Filesystem> NailsManager<F> {
         // Track mount methods for logging
         let mut direct_mounts = 0;
         let mut pivot_mounts = 0;
+        let mut pivot_targets: Vec<PathBuf> = Vec::new();
 
         // Step 8a: Mount persistent overlays using universal algorithm (Story 4.15)
         // Story 14.10: Use dynamic target list based on overlay_mode
@@ -87,6 +88,7 @@ impl<F: Filesystem> NailsManager<F> {
                     verbosity,
                     &mut direct_mounts,
                     &mut pivot_mounts,
+                    &mut pivot_targets,
                 )?;
             }
             crate::OverlayMode::Explicit => {
@@ -96,6 +98,7 @@ impl<F: Filesystem> NailsManager<F> {
                     verbosity,
                     &mut direct_mounts,
                     &mut pivot_mounts,
+                    &mut pivot_targets,
                 )?;
             }
         }
@@ -125,7 +128,7 @@ impl<F: Filesystem> NailsManager<F> {
         // Commit tracker before returning to prevent rollback on drop
         tracker.commit();
 
-        Ok((direct_mounts, pivot_mounts, mounted_overlays))
+        Ok((direct_mounts, pivot_mounts, pivot_targets, mounted_overlays))
     }
 
     /// Mount overlays in Auto mode (dynamic target enumeration)
@@ -136,6 +139,7 @@ impl<F: Filesystem> NailsManager<F> {
         verbosity: Verbosity,
         direct_mounts: &mut usize,
         pivot_mounts: &mut usize,
+        pivot_targets: &mut Vec<PathBuf>,
     ) -> Result<()> {
         // Auto mode: enumerate root + apply exclusions, create overlays dynamically
         let overlay_targets = build_overlay_targets(&self.filesystem, &self.config)?;
@@ -264,6 +268,7 @@ impl<F: Filesystem> NailsManager<F> {
                         verbosity,
                         direct_mounts,
                         pivot_mounts,
+                        pivot_targets,
                         &mut nix_overlay_succeeded,
                     )?;
                 }
@@ -331,6 +336,7 @@ impl<F: Filesystem> NailsManager<F> {
         verbosity: Verbosity,
         direct_mounts: &mut usize,
         pivot_mounts: &mut usize,
+        pivot_targets: &mut Vec<PathBuf>,
     ) -> Result<()> {
         // Explicit mode: use pre-configured overlays (legacy behavior)
         // Security check: fail if no overlays configured (would leave system unprotected)
@@ -434,6 +440,7 @@ impl<F: Filesystem> NailsManager<F> {
                         verbosity,
                         direct_mounts,
                         pivot_mounts,
+                        pivot_targets,
                         &mut nix_overlay_succeeded,
                     )?;
                 }
@@ -472,6 +479,7 @@ impl<F: Filesystem> NailsManager<F> {
         verbosity: Verbosity,
         direct_mounts: &mut usize,
         pivot_mounts: &mut usize,
+        pivot_targets: &mut Vec<PathBuf>,
         nix_overlay_succeeded: &mut bool,
     ) -> Result<()> {
         use crate::overlay::MountMethod;
@@ -489,6 +497,7 @@ impl<F: Filesystem> NailsManager<F> {
             }
             MountMethod::Pivot => {
                 *pivot_mounts += 1;
+                pivot_targets.push(overlay.target.clone());
                 if verbosity >= Verbosity::Verbose {
                     tracing::warn!(
                         "  ⚠️  {} mounted (pivot, degraded security)",

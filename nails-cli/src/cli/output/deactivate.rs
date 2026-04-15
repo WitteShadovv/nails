@@ -260,6 +260,8 @@ mod tests {
             duration: Duration::from_millis(50),
             mode: CleanupMode::Fast,
             verification_passed: Some(true),
+            memory_sanitized: false,
+            canary_findings_count: 0,
         }
     }
 
@@ -270,6 +272,7 @@ mod tests {
             duration: Duration::from_millis(1234),
             final_state: SystemState::Inactive,
             was_already_inactive: false,
+            post_unmount_cleanup: nails_core::PostUnmountCleanupReport::default(),
         }
     }
 
@@ -280,6 +283,7 @@ mod tests {
             duration: Duration::from_millis(5),
             final_state: SystemState::Inactive,
             was_already_inactive: true,
+            post_unmount_cleanup: nails_core::PostUnmountCleanupReport::default(),
         }
     }
 
@@ -434,11 +438,14 @@ mod tests {
                 duration: Duration::from_millis(0),
                 mode: CleanupMode::Fast,
                 verification_passed: None,
+                memory_sanitized: false,
+                canary_findings_count: 0,
             },
             unmounted_overlays: vec![],
             duration: Duration::from_millis(100),
             final_state: SystemState::Inactive,
             was_already_inactive: false,
+            post_unmount_cleanup: nails_core::PostUnmountCleanupReport::default(),
         };
         print_deactivate_human(&Ok(report), Verbosity::Normal, false, None, false);
     }

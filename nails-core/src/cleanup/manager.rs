@@ -4,11 +4,13 @@
 //! temporary files, and log files during deactivation.
 
 use super::ShellType;
+use super::canary::{CanaryConfig, CanaryScanner};
 use super::history::HistoryCleaner;
 use super::logs::LogCleaner;
 use super::temp_files::TempFilesCleaner;
 use super::types::{CleanupConfig, CleanupMode, CleanupReport};
 use crate::{Filesystem, Result, output};
+use std::path::Path;
 use std::time::Instant;
 
 /// Manages cleanup operations for NAILS deactivation
@@ -63,6 +65,7 @@ impl<F: Filesystem> CleanupManager<F> {
     /// - Clears shell history (if configured)
     /// - Clears temporary files (if configured)
     /// - Clears log files (if configured)
+    /// - Performs memory sanitization (if configured)
     ///
     /// In Thorough mode with verify_cleanup=true, verifies each step.
     /// In Fast mode, skips verification for speed.
@@ -94,7 +97,12 @@ impl<F: Filesystem> CleanupManager<F> {
             self.cleanup_logs(&mut report);
         }
 
-        // Step 4: Verification (Thorough mode only)
+        // Step 4: Memory sanitization (if configured)
+        if self.config.sanitize_memory {
+            self.sanitize_memory(&mut report);
+        }
+
+        // Step 5: Verification (Thorough mode only)
         if let CleanupMode::Thorough {
             verify_cleanup: true,
         } = self.mode
@@ -112,7 +120,8 @@ impl<F: Filesystem> CleanupManager<F> {
     /// Uses HistoryCleaner to remove lines containing patterns from shell history files.
     fn cleanup_history(&self, report: &mut CleanupReport) {
         let history_cleaner = HistoryCleaner::new(self.filesystem.clone())
-            .with_patterns(self.config.history_patterns.clone());
+            .with_patterns(self.config.history_patterns.clone())
+            .with_secure_delete(self.config.secure_delete);
 
         match history_cleaner.clean() {
             Ok(cleaned_items) => {
@@ -136,7 +145,8 @@ impl<F: Filesystem> CleanupManager<F> {
         // Note: TempFilesCleaner uses default patterns ["nails"] which is different
         // from history_patterns. Temp files are always cleaned using "nails" pattern.
         let temp_cleaner = TempFilesCleaner::new(self.filesystem.clone())
-            .with_temp_dirs(self.config.temp_dirs.clone());
+            .with_temp_dirs(self.config.temp_dirs.clone())
+            .with_secure_delete(self.config.secure_delete);
 
         match temp_cleaner.clean() {
             Ok(items) => {
@@ -159,7 +169,8 @@ impl<F: Filesystem> CleanupManager<F> {
     fn cleanup_logs(&self, report: &mut CleanupReport) {
         let log_cleaner = LogCleaner::new(self.filesystem.clone())
             .with_log_path(self.config.log_path.clone())
-            .with_hidden_volume_path(self.config.hidden_volume_path.clone());
+            .with_hidden_volume_path(self.config.hidden_volume_path.clone())
+            .with_secure_delete(self.config.secure_delete);
 
         match log_cleaner.clean() {
             Ok(items) => report.extend_cleaned(items),
@@ -175,8 +186,10 @@ impl<F: Filesystem> CleanupManager<F> {
     ///
     /// Verifies all cleanup steps:
     /// - History: No nails commands in shell history files
+    /// - History size: History files should be small (< 10KB) or empty after cleanup
     /// - Temp files: No nails-related files in temp directories
     /// - Logs: No NAILS log files in hidden volume log directory
+    /// - Canary patterns: No forbidden patterns in scanned files
     ///
     /// Returns true if all verifications pass, false otherwise.
     fn verify_cleanup(&self, report: &mut CleanupReport) -> bool {
@@ -185,6 +198,11 @@ impl<F: Filesystem> CleanupManager<F> {
         // Verify history cleanup
         if self.config.clear_history && !self.verify_history_cleanup() {
             report.add_error("Verification: History may still contain 'nails' entries");
+            all_clean = false;
+        }
+
+        // Verify history file sizes (should be small after cleanup)
+        if self.config.clear_history && !self.verify_history_file_sizes(report) {
             all_clean = false;
         }
 
@@ -197,6 +215,11 @@ impl<F: Filesystem> CleanupManager<F> {
         // Verify log cleanup
         if self.config.clear_logs && !self.verify_log_cleanup() {
             report.add_error("Verification: NAILS log files may remain");
+            all_clean = false;
+        }
+
+        // Canary pattern scanning
+        if !self.verify_canary_patterns(report) {
             all_clean = false;
         }
 
@@ -251,6 +274,124 @@ impl<F: Filesystem> CleanupManager<F> {
             }
         }
         true
+    }
+
+    /// Verify history file sizes are reasonable after cleanup
+    ///
+    /// After cleaning, history files should either be empty or much smaller
+    /// than a typical "dirty" history file. Files larger than 10KB are suspicious.
+    fn verify_history_file_sizes(&self, report: &mut CleanupReport) -> bool {
+        const MAX_HISTORY_SIZE_BYTES: u64 = 10 * 1024; // 10KB threshold
+        let mut all_ok = true;
+
+        for shell in ShellType::all() {
+            if let Some(path) = shell.history_file_path() {
+                match self.filesystem.file_size(&path) {
+                    Ok(size) if size > MAX_HISTORY_SIZE_BYTES => {
+                        report.add_error(format!(
+                            "Verification: {} history file is large ({} bytes) - may contain artifacts",
+                            shell.name(),
+                            size
+                        ));
+                        all_ok = false;
+                    }
+                    Ok(_) => {
+                        // Size is acceptable
+                    }
+                    Err(_) => {
+                        // File doesn't exist or unreadable - that's fine for cleanup
+                    }
+                }
+            }
+        }
+
+        all_ok
+    }
+
+    /// Verify no canary patterns remain in scanned files
+    ///
+    /// Runs the canary scanner to detect any forbidden patterns that
+    /// should have been removed during cleanup.
+    fn verify_canary_patterns(&self, report: &mut CleanupReport) -> bool {
+        let canary_config = CanaryConfig::default();
+        let scanner = CanaryScanner::new(self.filesystem.clone(), canary_config);
+
+        let scan_result = scanner.scan();
+
+        report.canary_findings_count = scan_result.finding_count();
+
+        if !scan_result.is_clean() {
+            for finding in &scan_result.findings {
+                let msg = if let Some(line_num) = finding.line_number {
+                    format!(
+                        "Canary pattern '{}' found in {} at line {}",
+                        finding.pattern,
+                        finding.path.display(),
+                        line_num
+                    )
+                } else {
+                    format!(
+                        "Canary pattern '{}' found in {}",
+                        finding.pattern,
+                        finding.path.display()
+                    )
+                };
+                report.add_error(msg);
+            }
+            return false;
+        }
+
+        true
+    }
+
+    /// Sanitize memory by clearing page cache
+    ///
+    /// Writes "3" to /proc/sys/vm/drop_caches to clear:
+    /// - Page cache
+    /// - Dentries and inodes
+    ///
+    /// This helps prevent forensic recovery of cleanup artifacts from RAM.
+    /// Requires root privileges.
+    fn sanitize_memory(&self, report: &mut CleanupReport) {
+        // First, sync to ensure all pending writes are flushed
+        if let Err(e) = self.sync_filesystems() {
+            let msg = format!("Memory sanitization: sync failed: {}", e);
+            output::warn(&msg);
+            report.add_error(msg);
+            return;
+        }
+
+        // Drop caches by writing "3" to /proc/sys/vm/drop_caches
+        let drop_caches_path = Path::new("/proc/sys/vm/drop_caches");
+
+        match self.filesystem.write_file_content(drop_caches_path, "3") {
+            Ok(()) => {
+                report.memory_sanitized = true;
+                report.add_cleaned("Memory sanitized (page cache cleared)");
+            }
+            Err(e) => {
+                let msg = format!("Memory sanitization failed (requires root): {}", e);
+                output::warn(&msg);
+                report.add_error(msg);
+            }
+        }
+    }
+
+    /// Sync all filesystems before memory sanitization
+    fn sync_filesystems(&self) -> Result<()> {
+        // Use the sync command via std::process::Command
+        // This is more portable than using nix::unistd::sync() which requires the 'fs' feature
+        let status = std::process::Command::new("sync")
+            .status()
+            .map_err(crate::NailsError::IoError)?;
+
+        if !status.success() {
+            return Err(crate::NailsError::InvalidState(format!(
+                "sync command failed with exit code: {:?}",
+                status.code()
+            )));
+        }
+        Ok(())
     }
 
     /// Get a reference to the config

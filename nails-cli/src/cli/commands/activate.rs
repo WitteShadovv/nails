@@ -96,6 +96,7 @@ pub fn execute(
         overlay_only,
         skip_process_detection_override: None, // Use default test behavior
         session_kill_confirmed: false,
+        pre_activation_cleanup: true, // Default to running pre-activation cleanup
     };
 
     if options.kill_session {

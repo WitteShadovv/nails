@@ -85,6 +85,12 @@ pub mod logging;
 // Structured CLI output formatting module (Story 14.7: Standardize CLI Output)
 pub mod output;
 
+// Desktop notification signal files (post-activation user feedback)
+pub mod notification;
+
+// String obfuscation for forensic resistance (Finding C4)
+pub mod obfuscate;
+
 // Re-export for convenience
 pub use config::{
     CliOverrides, ColorProfile, ColorSchemeConfig, Config, ConfigBuilder, DecoyProfile,
@@ -169,7 +175,7 @@ pub use cleanup::{
 };
 
 // Deactivation orchestrator exports (Story 5.5: DeactivationOrchestrator with Cleanup + Unmount + Rollback)
-pub use deactivation::{DeactivationOrchestrator, DeactivationReport};
+pub use deactivation::{DeactivationOrchestrator, DeactivationReport, PostUnmountCleanupReport};
 
 // Emergency deactivation (thorough cleanup without reboot)
 pub use emergency::emergency_deactivate;
@@ -188,6 +194,9 @@ pub use logging::{LoggingConfig, LoggingManager};
 
 // Structured CLI output exports (Story 14.7: Standardize CLI Output)
 pub use output::{error, format_error, format_info, format_warn, info, set_plain_mode, warn};
+
+// Desktop notification exports
+pub use notification::{Notification, dispatch_all as dispatch_notifications};
 
 /// RAII guard for automatic state rollback on failure
 ///

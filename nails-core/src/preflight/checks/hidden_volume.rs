@@ -3,7 +3,7 @@
 //! Validates that the hidden volume is mounted and writable before activation.
 
 use super::super::{CheckResult, PreFlightCheck};
-use crate::{Filesystem, Result, config::DEFAULT_HIDDEN_VOLUME_ROOT};
+use crate::{Filesystem, Result, config::get_default_hidden_volume_root};
 use std::path::PathBuf;
 
 /// Pre-flight check that validates the hidden volume is mounted and accessible
@@ -23,18 +23,17 @@ use std::path::PathBuf;
 /// # Example
 ///
 /// ```rust
-/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::preflight::{HiddenVolumeCheck, PreFlightCheck};
 /// use nails_core::filesystem::MockFilesystem;
 /// use std::path::PathBuf;
 ///
 /// let fs = MockFilesystem::new();
-/// let check = HiddenVolumeCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT));
+/// let check = HiddenVolumeCheck::new(PathBuf::from("/mnt/hidden-volume"));
 ///
 /// // Set up mock state
-/// fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-/// fs.mock_set_mounted(std::path::Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
-/// fs.mock_set_writable(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+/// fs.mock_set_path_exists("/mnt/hidden-volume", true);
+/// fs.mock_set_mounted(std::path::Path::new("/mnt/hidden-volume"), true);
+/// fs.mock_set_writable("/mnt/hidden-volume", true);
 ///
 /// let result = check.run(&fs).unwrap();
 /// assert!(result.is_pass());
@@ -59,7 +58,7 @@ impl Default for HiddenVolumeCheck {
     /// Create check with default hidden volume path
     fn default() -> Self {
         Self {
-            hidden_volume_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+            hidden_volume_path: PathBuf::from(get_default_hidden_volume_root()),
         }
     }
 }
@@ -108,6 +107,7 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
     use crate::filesystem::MockFilesystem;
     use std::path::Path;
 

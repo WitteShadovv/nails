@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use super::colors::ColorSchemeConfig;
 use super::overlay::{ExtendedOverlayConfig, OverlayConfig, OverlayMode};
+use crate::obfuscate;
 
 /// Default hidden volume root path (single source of truth)
 ///
@@ -13,6 +14,36 @@ use super::overlay::{ExtendedOverlayConfig, OverlayConfig, OverlayMode};
 /// This constant is public for use in documentation examples and tests.
 /// Production code should use `Config::hidden_volume_root` field instead of
 /// hardcoding this value.
+///
+/// # Security Note
+///
+/// The actual path value is obfuscated in the binary. This function
+/// deobfuscates it at runtime to prevent the path from appearing in
+/// plaintext during disk scans.
+#[allow(dead_code)]
+pub fn default_hidden_volume_root() -> String {
+    obfuscate::hidden_volume_root()
+}
+
+/// Get the default hidden volume root path (runtime deobfuscation)
+///
+/// # Security Note
+///
+/// This function returns the default path by deobfuscating it at runtime,
+/// preventing the path from appearing in plaintext in the binary.
+/// Use this instead of hardcoding paths in production code.
+#[allow(dead_code)]
+pub fn get_default_hidden_volume_root() -> String {
+    obfuscate::hidden_volume_root()
+}
+
+/// Test-only constant for backwards compatibility
+///
+/// # Warning
+///
+/// This constant is ONLY available in test builds (`#[cfg(test)]`).
+/// Production code must use `get_default_hidden_volume_root()` instead.
+#[cfg(test)]
 pub const DEFAULT_HIDDEN_VOLUME_ROOT: &str = "/mnt/hidden-volume";
 
 /// Default exclusion list for dynamic overlay enumeration (Story 14.10)
@@ -91,6 +122,31 @@ pub struct CliOverrides {
     pub nixos_flake: Option<String>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_hidden_volume_root_returns_nonempty_string() {
+        let root = default_hidden_volume_root();
+        assert!(!root.is_empty());
+    }
+
+    #[test]
+    fn test_get_default_hidden_volume_root_returns_same_as_default() {
+        let root1 = default_hidden_volume_root();
+        let root2 = get_default_hidden_volume_root();
+        assert_eq!(root1, root2);
+    }
+
+    #[test]
+    fn test_default_overlay_exclusions_contains_proc() {
+        assert!(DEFAULT_OVERLAY_EXCLUSIONS.contains(&"/proc"));
+        assert!(DEFAULT_OVERLAY_EXCLUSIONS.contains(&"/sys"));
+        assert!(DEFAULT_OVERLAY_EXCLUSIONS.contains(&"/dev"));
+    }
+}
+
 /// Application configuration
 ///
 /// Complete configuration management with file loading, validation, and builder pattern.
@@ -99,7 +155,6 @@ pub struct CliOverrides {
 /// # Example
 ///
 /// ```rust
-/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::config::Config;
 /// use std::path::PathBuf;
 ///
@@ -108,8 +163,8 @@ pub struct CliOverrides {
 ///
 /// // Or create custom config
 /// let config = Config {
-///     hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
-///     state_file_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json"),
+///     hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
+///     state_file_path: PathBuf::from("/mnt/hidden-volume").join("state.json"),
 ///     overlays: vec![],
 ///     ..Config::default()
 /// };

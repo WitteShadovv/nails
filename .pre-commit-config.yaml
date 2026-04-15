@@ -117,6 +117,15 @@ repos:
         language: system
         pass_filenames: false
 
+      # Comprehensive dependency policy enforcement (AR50)
+      # Checks licenses, bans, sources, and advisories
+      - id: cargo-deny
+        name: Cargo Dependency Policy Check
+        entry: cargo deny check
+        language: system
+        pass_filenames: false
+        files: (Cargo\.toml|Cargo\.lock|deny\.toml)$
+
       - id: rust-fmt
         name: Format Rust code
         entry: cargo fmt --
@@ -153,10 +162,8 @@ repos:
 
             # Function to run coverage and produce cobertura XML
             run_coverage() {
-              export LLVM_COV=$(command -v llvm-cov 2>/dev/null || echo "")
-              export LLVM_PROFDATA=$(command -v llvm-profdata 2>/dev/null || echo "")
               mkdir -p /tmp/nails-coverage
-              cargo llvm-cov --workspace --all-features \
+              cargo llvm-cov --workspace --all-features --all-targets \
                 --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1
             }
 
@@ -167,10 +174,8 @@ repos:
             else
               # Not in nix-shell, so enter it
               coverage_output=$(nix-shell --run 'bash -c '"'"'
-                export LLVM_COV=$(command -v llvm-cov 2>/dev/null || echo "")
-                export LLVM_PROFDATA=$(command -v llvm-profdata 2>/dev/null || echo "")
                 mkdir -p /tmp/nails-coverage
-                cargo llvm-cov --workspace --all-features \
+                cargo llvm-cov --workspace --all-features --all-targets \
                   --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1
               '"'"'')
               coverage_status=$?

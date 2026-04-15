@@ -35,7 +35,7 @@
 //! let results = registry.run_all(&fs);
 //! ```
 
-use crate::{Filesystem, NailsError, Result};
+use crate::{Filesystem, NailsError, Result, obfuscate};
 use colored::Colorize;
 use std::env;
 use std::fmt;
@@ -100,7 +100,7 @@ impl CheckResult {
 /// Returns true if `NO_COLOR` or `NAILS_NO_COLOR` environment variables are set.
 /// This follows the standard NO_COLOR convention (https://no-color.org/).
 fn should_disable_color() -> bool {
-    env::var("NO_COLOR").is_ok() || env::var("NAILS_NO_COLOR").is_ok()
+    env::var("NO_COLOR").is_ok() || env::var(obfuscate::env_no_color()).is_ok()
 }
 
 impl fmt::Display for CheckResult {
@@ -370,3 +370,81 @@ pub mod checks;
 
 // Re-export all checks for convenience
 pub use checks::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_check_result_is_pass() {
+        assert!(CheckResult::Pass("ok".to_string()).is_pass());
+        assert!(!CheckResult::Warn("w".to_string()).is_pass());
+        assert!(!CheckResult::Fail("f".to_string()).is_pass());
+    }
+
+    #[test]
+    fn test_check_result_is_warn() {
+        assert!(CheckResult::Warn("w".to_string()).is_warn());
+        assert!(!CheckResult::Pass("ok".to_string()).is_warn());
+        assert!(!CheckResult::Fail("f".to_string()).is_warn());
+    }
+
+    #[test]
+    fn test_check_result_is_fail() {
+        assert!(CheckResult::Fail("f".to_string()).is_fail());
+        assert!(!CheckResult::Pass("ok".to_string()).is_fail());
+        assert!(!CheckResult::Warn("w".to_string()).is_fail());
+    }
+
+    #[test]
+    fn test_check_result_message() {
+        assert_eq!(
+            CheckResult::Pass("pass msg".to_string()).message(),
+            "pass msg"
+        );
+        assert_eq!(
+            CheckResult::Warn("warn msg".to_string()).message(),
+            "warn msg"
+        );
+        assert_eq!(
+            CheckResult::Fail("fail msg".to_string()).message(),
+            "fail msg"
+        );
+    }
+
+    #[test]
+    fn test_check_result_display_pass() {
+        let result = CheckResult::Pass("All good".to_string());
+        let s = format!("{}", result);
+        assert!(s.contains("All good") || s.contains("PASS"));
+    }
+
+    #[test]
+    fn test_check_result_display_warn() {
+        let result = CheckResult::Warn("Minor issue".to_string());
+        let s = format!("{}", result);
+        assert!(s.contains("Minor issue") || s.contains("WARN"));
+    }
+
+    #[test]
+    fn test_check_result_display_fail() {
+        let result = CheckResult::Fail("Critical issue".to_string());
+        let s = format!("{}", result);
+        assert!(s.contains("Critical issue") || s.contains("FAIL"));
+    }
+
+    #[test]
+    fn test_preflight_registry_new_and_len() {
+        use crate::filesystem::MockFilesystem;
+        let registry: PreFlightRegistry<MockFilesystem> = PreFlightRegistry::new();
+        assert_eq!(registry.len(), 0);
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn test_preflight_registry_default() {
+        use crate::filesystem::MockFilesystem;
+        let registry: PreFlightRegistry<MockFilesystem> = PreFlightRegistry::default();
+        assert!(registry.is_empty());
+    }
+}

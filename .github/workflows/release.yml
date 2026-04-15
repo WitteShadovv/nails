@@ -27,6 +27,7 @@ jobs:
       release-name: ${{ steps.metadata.outputs.release-name }}
       release-notes: ${{ steps.metadata.outputs.release-notes }}
       release-tag: ${{ steps.metadata.outputs.release-tag }}
+      slsa-subjects: ${{ steps.slsa-hash.outputs.subjects }}
 
     steps:
       - name: Checkout code
@@ -59,6 +60,29 @@ jobs:
           - Commit: ${GITHUB_SHA}
           - Canonical bundle attr: .#nails-release
           - Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
+
+          ## Supply Chain Security
+
+          This release includes SLSA Level 3 provenance attestation (\`nails.intoto.jsonl\`).
+
+          ### Verify SLSA Provenance
+
+          **Note:** This repository is private. SLSA provenance verification requires \`--source-uri\` to match the actual repository.
+
+          \`\`\`bash
+          # Install slsa-verifier
+          go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
+
+          # Verify the release archive
+          slsa-verifier verify-artifact nails-*.tar.gz \\
+            --provenance-path nails.intoto.jsonl \\
+            --source-uri github.com/WitteShadovv/nails
+
+          # Verify the binary
+          slsa-verifier verify-artifact nails \\
+            --provenance-path nails.intoto.jsonl \\
+            --source-uri github.com/WitteShadovv/nails
+          \`\`\`
           EOF
           )
               ;;
@@ -131,12 +155,57 @@ jobs:
           file "$extracted_dir/nails"
           "$extracted_dir/nails" --version
 
+      - name: Install Rust toolchain for SBOM
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: 1.93.0
+
+      - name: Install cargo-sbom
+        run: cargo install cargo-sbom --locked
+
+      - name: Generate CycloneDX SBOM
+        run: cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cdx.json
+
+      - name: Install CycloneDX CLI for validation
+        run: |
+          curl -sSfL https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.27.1/cyclonedx-linux-x64 -o /tmp/cyclonedx-cli
+          chmod +x /tmp/cyclonedx-cli
+
+      - name: Validate SBOM format
+        run: /tmp/cyclonedx-cli validate --input-file sbom.cdx.json --input-format json
+
       - name: Collect canonical release files
         run: |
           mkdir -p dist
           cp -R result/* dist/
+          cp sbom.cdx.json dist/
           printf '%s\n' "${{ steps.canonical.outputs.archive-name }}" > dist/archive-name.txt
           test -f "dist/${{ steps.canonical.outputs.archive-name }}"
+          test -f "dist/sbom.cdx.json"
+
+      - name: Generate SLSA provenance subjects
+        id: slsa-hash
+        run: |
+          # Generate base64-encoded SHA256 subjects for SLSA provenance
+          # Format: "<sha256 hash>  <filename>" per line, then base64 encode
+          archive_name="${{ steps.canonical.outputs.archive-name }}"
+
+          cd dist
+
+          # Generate subjects file with proper format (one subject per line)
+          {
+            sha256sum "${archive_name}"
+            sha256sum nails
+            sha256sum checksums.txt
+          } > subjects.txt
+
+          # Base64 encode with no line wrapping
+          encoded_subjects=$(base64 -w0 < subjects.txt)
+          echo "subjects=${encoded_subjects}" >> "$GITHUB_OUTPUT"
+
+          # Log for debugging
+          echo "SLSA subjects (decoded):"
+          cat subjects.txt
 
       - name: Upload canonical release artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
@@ -189,11 +258,34 @@ jobs:
         with:
           subject-checksums: dist/checksums.txt
 
+  # SLSA Level 3 Provenance Generation
+  # Uses the official SLSA GitHub generator to create signed provenance
+  # attestations for supply chain security. This provides:
+  # - Tamper-proof build provenance
+  # - Verification that artifacts were built from this repository
+  # - SLSA L3 compliance (isolated builds, signed provenance)
+  #
+  # Note: This repository is private. When verifying SLSA provenance, users must
+  # specify --source-uri github.com/WitteShadovv/nails to match the actual repository.
+  provenance:
+    name: Generate SLSA provenance
+    needs: [build-release, determinism]
+    if: needs.build-release.outputs.publish-release == 'true'
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build-release.outputs.slsa-subjects }}
+      upload-assets: false  # We upload manually to control release flow
+      provenance-name: nails.intoto.jsonl
+
   publish-release:
     name: Publish GitHub release
     runs-on: ubuntu-24.04
     if: needs.build-release.outputs.publish-release == 'true'
-    needs: [build-release, attest-release]
+    needs: [build-release, attest-release, provenance]
     permissions:
       contents: write
 
@@ -202,6 +294,12 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: ${{ needs.build-release.outputs.canonical-artifact-name }}
+          path: dist
+
+      - name: Download SLSA provenance
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: nails.intoto.jsonl
           path: dist
 
       - name: Publish GitHub release
@@ -219,6 +317,8 @@ jobs:
             dist/*.tar.gz \
             dist/nails \
             dist/checksums.txt \
+            dist/sbom.cdx.json \
+            dist/nails.intoto.jsonl \
             --target "$GITHUB_SHA" \
             --title "$RELEASE_NAME" \
             --notes-file "$notes_file" \

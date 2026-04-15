@@ -1,4 +1,6 @@
-# NAILS — NixOS Anti-forensics Isolation & Layering System
+<div align="center">
+  <img src="docs/assets/logo.png" alt="NAILS logo" width="160" />
+  <h1>NAILS — NixOS Anti-forensics Isolation & Layering System</h1>
 
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust 1.93+](https://img.shields.io/badge/rust-1.93+-orange.svg)](https://www.rust-lang.org/)
@@ -6,6 +8,8 @@
 [![CI](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml/badge.svg)](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml)
 [![Coverage: >=85%](https://img.shields.io/badge/coverage-%3E%3D85%25-brightgreen.svg)](CHANGELOG.md)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha-yellow.svg)](CHANGELOG.md)
+
+</div>
 
 > **Fast-switching dual-environment computing on NixOS, designed to support plausible deniability workflows.**
 >
@@ -168,7 +172,17 @@ This is evidence of deterministic output for the pinned source revision, build i
 tested CI environment. GitHub attestation provides provenance for the published artifact, but does
 not by itself prove reproducibility.
 
-For local rebuild instructions and the exact scope of the guarantee, see
+To reproduce the exact CI artifact locally, check out the commit you want to verify and run:
+
+```bash
+nix build -L .#nails-release -o result --option accept-flake-config false
+```
+
+The release files will be in `result/`. Running `cargo build` directly will not produce a
+byte-identical binary — the CI build is Nix-hermetic and embeds Nix store paths rather than local
+workspace paths.
+
+For the full scope of the guarantee and attestation details, see
 `docs/release-artifact-reproducibility.md`.
 
 ---

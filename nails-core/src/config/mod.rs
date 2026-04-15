@@ -7,12 +7,11 @@
 //! # Example
 //!
 //! ```rust
-//! use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 //! use nails_core::ConfigBuilder;
 //! use std::path::PathBuf;
 //!
 //! let config = ConfigBuilder::new()
-//!     .hidden_volume_path(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT))
+//!     .hidden_volume_path(PathBuf::from("/mnt/hidden-volume"))
 //!     .clear_history(false)
 //!     .default_verbosity("debug")
 //!     .build()
@@ -30,8 +29,11 @@ mod defaults;
 mod dynamic;
 mod loading;
 mod overrides;
-mod testing;
 mod types;
+
+// Test-only utilities module
+#[cfg(test)]
+mod testing;
 
 // Re-exports for public API - color types
 pub use colors::{ColorProfile, ColorSchemeConfig, DecoyProfile};
@@ -39,7 +41,11 @@ pub use ephemeral::EphemeralOverlayDir;
 pub use overlay::{ExtendedOverlayConfig, OverlayConfig, OverlayMode};
 
 // Re-exports for public API - core types
-pub use types::{CliOverrides, Config, DEFAULT_HIDDEN_VOLUME_ROOT, DEFAULT_OVERLAY_EXCLUSIONS};
+pub use types::{CliOverrides, Config, DEFAULT_OVERLAY_EXCLUSIONS, get_default_hidden_volume_root};
+
+// Test-only re-export of the constant
+#[cfg(test)]
+pub use types::DEFAULT_HIDDEN_VOLUME_ROOT;
 
 // Re-exports for public API - builder
 pub use builder::ConfigBuilder;

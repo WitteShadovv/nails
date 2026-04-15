@@ -4,10 +4,11 @@
 
 use super::{NixOSBuildMode, NixOSBuilder};
 use crate::error::{NailsError, Result};
+use crate::obfuscate;
 use std::path::PathBuf;
 
 fn system_profile_path() -> PathBuf {
-    std::env::var_os("NAILS_SYSTEM_PROFILE_PATH")
+    std::env::var_os(obfuscate::env_system_profile_path())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/nix/var/nix/profiles/system"))
 }

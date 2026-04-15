@@ -52,6 +52,7 @@ const FORBIDDEN_PATHS: &[&str] = &[
 /// - REFUSES to clean system-critical directories (/, /etc, /home, etc.)
 /// - Case-insensitive pattern matching for thorough cleanup
 /// - Best-effort removal - continues on individual failures
+/// - Optional secure deletion for forensic resistance
 ///
 /// # Generic Parameter
 ///
@@ -60,6 +61,8 @@ pub struct TempFilesCleaner<F: Filesystem> {
     filesystem: F,
     temp_dirs: Vec<PathBuf>,
     patterns: Vec<String>,
+    /// Use secure deletion (overwrite before delete)
+    pub(crate) secure_delete: bool,
 }
 
 impl<F: Filesystem> TempFilesCleaner<F> {
@@ -67,11 +70,13 @@ impl<F: Filesystem> TempFilesCleaner<F> {
     ///
     /// Default temp_dirs: ["/tmp"]
     /// Default patterns: ["nails"]
+    /// Default secure_delete: false
     pub fn new(filesystem: F) -> Self {
         Self {
             filesystem,
             temp_dirs: vec![PathBuf::from("/tmp")],
             patterns: vec!["nails".to_string()],
+            secure_delete: false,
         }
     }
 
@@ -84,6 +89,15 @@ impl<F: Filesystem> TempFilesCleaner<F> {
     /// Set custom patterns to match (replaces defaults)
     pub fn with_patterns(mut self, patterns: Vec<String>) -> Self {
         self.patterns = patterns;
+        self
+    }
+
+    /// Enable or disable secure deletion
+    ///
+    /// When enabled, files are securely deleted (overwritten with zeros,
+    /// random data, then zeros again) before being removed.
+    pub fn with_secure_delete(mut self, enabled: bool) -> Self {
+        self.secure_delete = enabled;
         self
     }
 
@@ -163,9 +177,16 @@ impl<F: Filesystem> TempFilesCleaner<F> {
     /// Remove a file or directory
     ///
     /// Uses the filesystem abstraction to remove files or recursively remove directories.
+    /// When secure_delete is enabled, uses secure deletion for better forensic resistance.
     fn remove_path(&self, path: &Path) -> Result<()> {
         if self.filesystem.is_directory(path)? {
-            self.filesystem.remove_dir_all(path)
+            if self.secure_delete {
+                self.filesystem.secure_delete_dir_all(path)
+            } else {
+                self.filesystem.remove_dir_all(path)
+            }
+        } else if self.secure_delete {
+            self.filesystem.secure_delete(path)
         } else {
             self.filesystem.remove_file(path)
         }

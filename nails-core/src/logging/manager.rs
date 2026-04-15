@@ -47,13 +47,12 @@ impl LoggingManager {
     /// # Examples
     ///
     /// ```
-    /// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
     /// use nails_core::logging::LoggingManager;
     /// use std::path::PathBuf;
     ///
     /// let manager = LoggingManager::new(
     ///     PathBuf::from("/mnt/hidden-volume/logs"),
-    ///     PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+    ///     PathBuf::from("/mnt/hidden-volume"),
     /// );
     /// assert_eq!(manager.max_log_size_mb, 10);
     /// assert_eq!(manager.retention_days, 7);

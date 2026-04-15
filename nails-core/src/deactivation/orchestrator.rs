@@ -3,7 +3,8 @@
 //! Implements the core deactivation workflow: state transitions, cleanup,
 //! overlay unmounting, and automatic rollback on failures.
 
-use super::report::DeactivationReport;
+use super::report::{DeactivationReport, PostUnmountCleanupReport};
+use crate::cleanup::history::truncate_all_history_files;
 use crate::manager::{ensure_run_current_system_symlink, select_system_profile};
 use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError,
@@ -125,6 +126,7 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
                 duration: start.elapsed(),
                 final_state: SystemState::Inactive,
                 was_already_inactive: true,
+                post_unmount_cleanup: PostUnmountCleanupReport::default(),
             });
         }
 
@@ -212,6 +214,17 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
             }
         };
 
+        // Step 3.5: Post-unmount cleanup - cleans REAL DISK (not overlay layer)
+        // This is critical for forensic safety: the Step 2 cleanup only cleaned
+        // the overlay layer. Now that overlays are unmounted, we can clean the
+        // actual underlying filesystem.
+        let post_unmount_report = if self.cleanup_config.post_unmount_cleanup {
+            self.execute_post_unmount_cleanup(&manager)
+        } else {
+            tracing::debug!("Post-unmount cleanup disabled in configuration");
+            PostUnmountCleanupReport::default()
+        };
+
         // Step 4: Clear overlay_status and transition to INACTIVE - AC2
         manager.clear_overlay_status_in_cache();
         let inactive_state = manager.current_state()?.complete_deactivation()?;
@@ -278,6 +291,7 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
             duration_ms = duration_ms,
             state_to = ?SystemState::Inactive,
             unmounted_count = unmounted.len(),
+            post_unmount_cleaned = post_unmount_report.cleaned_items.len(),
             "Deactivation complete"
         );
 
@@ -287,6 +301,7 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
             duration: start.elapsed(),
             final_state: SystemState::Inactive,
             was_already_inactive: false,
+            post_unmount_cleanup: post_unmount_report,
         })
     }
 
@@ -344,6 +359,64 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
         }
 
         Ok(report)
+    }
+
+    /// Execute post-unmount cleanup on the REAL disk
+    ///
+    /// This is Phase 2 of the two-phase cleanup process. It runs AFTER overlays
+    /// are unmounted to clean history files on the actual underlying filesystem,
+    /// not just the overlay layer.
+    ///
+    /// # Why Two-Phase Cleanup?
+    ///
+    /// The Phase 1 cleanup (execute_cleanup) runs while overlays are still mounted,
+    /// which means it only cleans files in the overlay's upper layer. The original
+    /// files on the real disk remain untouched. This is a forensic safety issue
+    /// because an adversary examining the disk would still see command history.
+    ///
+    /// Phase 2 runs after overlay unmount, directly cleaning the real disk.
+    ///
+    /// # Best-Effort Approach
+    ///
+    /// This method is intentionally best-effort - individual file cleanup failures
+    /// are logged as warnings but do NOT fail the entire deactivation. The rationale:
+    /// - Deactivation should complete to restore the innocent appearance
+    /// - Failed cleanups are logged for user awareness
+    /// - Some files may not exist on all systems
+    ///
+    /// # Arguments
+    ///
+    /// * `manager` - Reference to NailsManager for filesystem access
+    ///
+    /// # Returns
+    ///
+    /// PostUnmountCleanupReport with details of what was cleaned and any warnings
+    fn execute_post_unmount_cleanup(&self, manager: &NailsManager<F>) -> PostUnmountCleanupReport {
+        let post_unmount_start = Instant::now();
+        tracing::info!(
+            phase = "post_unmount_cleanup",
+            "Starting Phase 2 cleanup on real disk"
+        );
+
+        // Use truncate_all_history_files for complete forensic cleanup
+        // This truncates ALL history files to zero length rather than pattern-filtering,
+        // ensuring ZERO commands remain visible to an adversary
+        let cleaned_items = truncate_all_history_files(manager.filesystem(), true);
+
+        let report = PostUnmountCleanupReport {
+            cleaned_items,
+            warnings: Vec::new(), // truncate_all_history_files handles errors internally via logging
+            was_performed: true,
+        };
+
+        tracing::info!(
+            phase = "post_unmount_cleanup",
+            cleaned_count = report.cleaned_items.len(),
+            duration_ms = post_unmount_start.elapsed().as_millis() as u64,
+            "Phase 2 cleanup complete"
+        );
+
+        report
     }
 
     /// Unmount overlays in reverse order

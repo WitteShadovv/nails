@@ -36,7 +36,7 @@
 //! // let manager = NailsManager::new(fs, config, state_path);
 //! ```
 
-use crate::{Config, Filesystem, NailsError, Result, StateFile};
+use crate::{Config, Filesystem, NailsError, Result, StateFile, obfuscate};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -71,7 +71,7 @@ fn start_service_and_socket(service: &str) {
 
 /// Return the system profile path, honoring NAILS_SYSTEM_PROFILE_PATH if set.
 pub(crate) fn system_profile_path() -> PathBuf {
-    std::env::var_os("NAILS_SYSTEM_PROFILE_PATH")
+    std::env::var_os(obfuscate::env_system_profile_path())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/nix/var/nix/profiles/system"))
 }

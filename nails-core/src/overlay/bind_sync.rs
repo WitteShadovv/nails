@@ -88,6 +88,17 @@ pub fn compute_extra_lower_dirs(
             }
         };
 
+        // Safety net: skip if extra lower equals the target itself — this would
+        // create a circular lowerdir reference (ELOOP).
+        if extra_lower == target {
+            tracing::warn!(
+                target = %target.display(),
+                source = %source_path.display(),
+                "Extra lower dir equals target, skipping to avoid ELOOP"
+            );
+            continue;
+        }
+
         // Deduplicate — keep first occurrence, preserve order
         if !seen.contains(&extra_lower) {
             seen.push(extra_lower);
@@ -263,5 +274,21 @@ mod tests {
     fn test_strip_suffix_path_suffix_longer_than_path() {
         let p = Path::new("/etc");
         assert_eq!(p.strip_suffix_path(Path::new("persist/etc/nixos")), None);
+    }
+
+    #[test]
+    fn test_extra_lower_equals_target_skipped() {
+        // If source path computation yields an extra_lower equal to the target,
+        // it should be skipped to prevent ELOOP.
+        let sources = vec![(
+            PathBuf::from("/persist/nix/store"),
+            PathBuf::from("/persist/nix/store"),
+        )];
+        let result = compute_extra_lower_dirs(Path::new("/persist"), &sources);
+        assert!(
+            result.is_empty(),
+            "Extra lower equal to target should be skipped, got: {:?}",
+            result
+        );
     }
 }

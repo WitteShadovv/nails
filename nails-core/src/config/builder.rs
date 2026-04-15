@@ -19,12 +19,11 @@ use super::types::Config;
 /// # Example
 ///
 /// ```rust
-/// use nails_core::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 /// use nails_core::config::ConfigBuilder;
 /// use std::path::PathBuf;
 ///
 /// let config = ConfigBuilder::new()
-///     .hidden_volume_path(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT))
+///     .hidden_volume_path(PathBuf::from("/mnt/hidden-volume"))
 ///     .clear_history(false)
 ///     .default_verbosity("debug")
 ///     .build()

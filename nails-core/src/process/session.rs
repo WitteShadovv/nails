@@ -7,7 +7,7 @@
 //!
 //! Fallback behavior is included for non-logind environments.
 
-use crate::{NailsError, Result};
+use crate::{NailsError, Result, obfuscate};
 use nix::unistd::{Uid, User, getuid};
 use std::env;
 use std::fs;
@@ -99,6 +99,9 @@ pub trait SessionCommandExecutor {
     /// Execute loginctl command
     fn execute_loginctl(&self, args: &[&str]) -> Result<(bool, String, String)>;
 
+    /// Send a signal to a process (e.g., TERM, KILL)
+    fn execute_kill(&self, pid: u32, signal: &str) -> Result<bool>;
+
     /// Check whether loginctl is available
     fn loginctl_available(&self) -> bool;
 }
@@ -107,6 +110,7 @@ pub trait SessionCommandExecutor {
 pub struct RealSessionCommandExecutor;
 
 impl SessionCommandExecutor for RealSessionCommandExecutor {
+    #[cfg(not(test))]
     fn execute_systemctl(&self, args: &[&str]) -> Result<(bool, String, String)> {
         use std::process::Command;
         let output = Command::new("systemctl").args(args).output()?;
@@ -118,6 +122,14 @@ impl SessionCommandExecutor for RealSessionCommandExecutor {
         Ok((success, stdout, stderr))
     }
 
+    #[cfg(test)]
+    fn execute_systemctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+        panic!(
+            "RealSessionCommandExecutor::execute_systemctl called in test context - use a mock executor instead"
+        )
+    }
+
+    #[cfg(not(test))]
     fn execute_loginctl(&self, args: &[&str]) -> Result<(bool, String, String)> {
         use std::process::Command;
         let output = Command::new("loginctl").args(args).output()?;
@@ -129,31 +141,81 @@ impl SessionCommandExecutor for RealSessionCommandExecutor {
         Ok((success, stdout, stderr))
     }
 
+    #[cfg(test)]
+    fn execute_loginctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+        panic!(
+            "RealSessionCommandExecutor::execute_loginctl called in test context - use a mock executor instead"
+        )
+    }
+
+    #[cfg(not(test))]
+    fn execute_kill(&self, pid: u32, signal: &str) -> Result<bool> {
+        use std::process::Command;
+        Command::new("kill")
+            .arg(format!("-{}", signal))
+            .arg(pid.to_string())
+            .status()
+            .map(|s| s.success())
+            .map_err(|e| e.into())
+    }
+
+    #[cfg(test)]
+    fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
+        panic!(
+            "RealSessionCommandExecutor::execute_kill called in test context - use a mock executor instead"
+        )
+    }
+
+    #[cfg(not(test))]
     fn loginctl_available(&self) -> bool {
         use std::process::Command;
         Command::new("loginctl").arg("--version").output().is_ok()
     }
+
+    #[cfg(test)]
+    fn loginctl_available(&self) -> bool {
+        panic!(
+            "RealSessionCommandExecutor::loginctl_available called in test context - use a mock executor instead"
+        )
+    }
 }
 
 /// Detect the current session context
+///
+/// # Safety
+/// This function executes real system commands (loginctl, systemctl).
+/// In test builds, use `detect_session_context_with_executor` with a mock executor.
+#[cfg(not(test))]
 pub fn detect_session_context() -> Result<SessionContext> {
     detect_session_context_with_executor(&RealSessionCommandExecutor)
 }
 
-fn detect_session_context_with_executor<E: SessionCommandExecutor>(
+/// Detect the current session context (test-only stub that panics)
+#[cfg(test)]
+pub fn detect_session_context() -> Result<SessionContext> {
+    panic!(
+        "detect_session_context() cannot be called in tests - use detect_session_context_with_executor() with a mock"
+    )
+}
+
+/// Detect the current session context (with injectable executor for testing)
+///
+/// This function is public for testing purposes. Production code should use
+/// `detect_session_context()` which uses the real executor.
+pub fn detect_session_context_with_executor<E: SessionCommandExecutor>(
     executor: &E,
 ) -> Result<SessionContext> {
-    let logind_available = match env::var("NAILS_LOGIND_AVAILABLE") {
+    let logind_available = match env::var(obfuscate::env_logind_available()) {
         Ok(val) => val != "0",
         Err(_) => executor.loginctl_available(),
     };
     let session_id = env::var("XDG_SESSION_ID").ok();
-    let override_session_id = env::var("NAILS_SESSION_ID").ok();
-    let override_dm = env::var("NAILS_DISPLAY_MANAGER").ok();
-    let override_uid = env::var("NAILS_TARGET_UID")
+    let override_session_id = env::var(obfuscate::env_session_id()).ok();
+    let override_dm = env::var(obfuscate::env_display_manager()).ok();
+    let override_uid = env::var(obfuscate::env_target_uid())
         .ok()
         .and_then(|v| v.parse::<u32>().ok());
-    let override_user = env::var("NAILS_TARGET_USER").ok();
+    let override_user = env::var(obfuscate::env_target_user()).ok();
 
     // Check for SSH first
     if env::var("SSH_TTY").is_ok() || env::var("SSH_CONNECTION").is_ok() {
@@ -169,10 +231,14 @@ fn detect_session_context_with_executor<E: SessionCommandExecutor>(
 
     // If overrides were provided by the pre-detach environment, trust them.
     if override_session_id.is_some() || override_uid.is_some() || override_dm.is_some() {
+        // If display manager override wasn't provided, try to detect it
+        let display_manager =
+            override_dm.or_else(|| detect_display_manager(executor).ok().flatten());
+
         return Ok(SessionContext {
             kind: SessionKind::GraphicalUser,
             session_id: override_session_id.or(session_id),
-            display_manager: override_dm,
+            display_manager,
             target_uid: override_uid,
             target_user: override_user,
             logind_available,
@@ -276,6 +342,15 @@ fn detect_display_manager<E: SessionCommandExecutor>(executor: &E) -> Result<Opt
 
 /// Prompt user for confirmation before killing graphical session
 pub fn prompt_session_kill_confirmation(ctx: &SessionContext, yes_flag: bool) -> Result<()> {
+    prompt_session_kill_confirmation_with_reader(ctx, yes_flag, &mut std::io::stdin().lock())
+}
+
+/// Prompt user for confirmation before killing graphical session (with injectable reader)
+fn prompt_session_kill_confirmation_with_reader<R: std::io::BufRead>(
+    ctx: &SessionContext,
+    yes_flag: bool,
+    reader: &mut R,
+) -> Result<()> {
     if yes_flag {
         return Ok(());
     }
@@ -301,12 +376,12 @@ pub fn prompt_session_kill_confirmation(ctx: &SessionContext, yes_flag: bool) ->
     println!();
 
     // Prompt for confirmation
-    use std::io::{self, Write};
+    use std::io::Write;
     print!("    Continue? [y/N]: ");
-    io::stdout().flush()?;
+    std::io::stdout().flush()?;
 
     let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
+    reader.read_line(&mut input)?;
 
     let response = input.trim().to_lowercase();
     if response == "y" || response == "yes" {
@@ -319,8 +394,21 @@ pub fn prompt_session_kill_confirmation(ctx: &SessionContext, yes_flag: bool) ->
 }
 
 /// Kill the graphical session (logind-first)
+///
+/// # Safety
+/// This function executes real system commands (systemctl, loginctl, kill).
+/// In test builds, use `kill_graphical_session_with_executor` with a mock executor.
+#[cfg(not(test))]
 pub fn kill_graphical_session(ctx: &SessionContext) -> Result<SessionKillResult> {
     kill_graphical_session_with_executor(ctx, &RealSessionCommandExecutor)
+}
+
+/// Kill the graphical session (test-only stub that panics)
+#[cfg(test)]
+pub fn kill_graphical_session(_ctx: &SessionContext) -> Result<SessionKillResult> {
+    panic!(
+        "kill_graphical_session() cannot be called in tests - use kill_graphical_session_with_executor() with a mock"
+    )
 }
 
 fn kill_graphical_session_with_executor<E: SessionCommandExecutor>(
@@ -407,12 +495,12 @@ fn kill_graphical_session_with_executor<E: SessionCommandExecutor>(
 
         // Wait for user manager to stop (max 5 seconds)
         if !wait_for_user_manager_exit(executor, target_uid, Duration::from_secs(5))? {
-            let (terminated, force_killed) = kill_user_processes(target_uid)?;
+            let (terminated, force_killed) = kill_user_processes(target_uid, executor)?;
             result.fallback_processes_terminated = terminated;
             result.fallback_processes_force_killed = force_killed;
         }
     } else {
-        let (terminated, force_killed) = kill_user_processes(target_uid)?;
+        let (terminated, force_killed) = kill_user_processes(target_uid, executor)?;
         result.fallback_processes_terminated = terminated;
         result.fallback_processes_force_killed = force_killed;
     }
@@ -477,7 +565,7 @@ fn try_move_self_to_system_slice() -> bool {
     false
 }
 
-fn kill_user_processes(uid: u32) -> Result<(u32, u32)> {
+fn kill_user_processes<E: SessionCommandExecutor>(uid: u32, executor: &E) -> Result<(u32, u32)> {
     let mut pids = Vec::new();
     let proc_dir = fs::read_dir("/proc");
 
@@ -516,7 +604,7 @@ fn kill_user_processes(uid: u32) -> Result<(u32, u32)> {
 
     let mut terminated = 0;
     for pid in &pids {
-        if send_signal(*pid, "TERM") {
+        if executor.execute_kill(*pid, "TERM").unwrap_or(false) {
             terminated += 1;
         }
     }
@@ -525,7 +613,7 @@ fn kill_user_processes(uid: u32) -> Result<(u32, u32)> {
 
     let mut force_killed = 0;
     for pid in pids {
-        if process_exists(pid) && send_signal(pid, "KILL") {
+        if process_exists(pid) && executor.execute_kill(pid, "KILL").unwrap_or(false) {
             force_killed += 1;
         }
     }
@@ -551,19 +639,22 @@ fn process_exists(pid: u32) -> bool {
     std::path::Path::new(&format!("/proc/{}", pid)).exists()
 }
 
-fn send_signal(pid: u32, signal: &str) -> bool {
-    use std::process::Command;
-    Command::new("kill")
-        .arg(format!("-{}", signal))
-        .arg(pid.to_string())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
 /// Restart the display manager (best-effort)
+///
+/// # Safety
+/// This function executes real systemctl commands.
+/// In test builds, use `restart_display_manager_with_executor` with a mock executor.
+#[cfg(not(test))]
 pub fn restart_display_manager(service: &str) -> Result<()> {
     restart_display_manager_with_executor(service, &RealSessionCommandExecutor)
+}
+
+/// Restart the display manager (test-only stub that panics)
+#[cfg(test)]
+pub fn restart_display_manager(_service: &str) -> Result<()> {
+    panic!(
+        "restart_display_manager() cannot be called in tests - use restart_display_manager_with_executor() with a mock"
+    )
 }
 
 fn restart_display_manager_with_executor<E: SessionCommandExecutor>(
@@ -598,8 +689,21 @@ fn restart_display_manager_with_executor<E: SessionCommandExecutor>(
 }
 
 /// Restart the user manager (best-effort)
+///
+/// # Safety
+/// This function executes real systemctl commands.
+/// In test builds, use `restart_user_manager_with_executor` with a mock executor.
+#[cfg(not(test))]
 pub fn restart_user_manager(uid: u32) -> Result<()> {
     restart_user_manager_with_executor(uid, &RealSessionCommandExecutor)
+}
+
+/// Restart the user manager (test-only stub that panics)
+#[cfg(test)]
+pub fn restart_user_manager(_uid: u32) -> Result<()> {
+    panic!(
+        "restart_user_manager() cannot be called in tests - use restart_user_manager_with_executor() with a mock"
+    )
 }
 
 fn restart_user_manager_with_executor<E: SessionCommandExecutor>(
@@ -633,6 +737,18 @@ mod tests {
         systemctl_success: bool,
         loginctl_success: bool,
         loginctl_available: bool,
+        kill_success: bool,
+    }
+
+    impl MockSessionCommandExecutor {
+        fn new(systemctl_success: bool, loginctl_success: bool, loginctl_available: bool) -> Self {
+            Self {
+                systemctl_success,
+                loginctl_success,
+                loginctl_available,
+                kill_success: true,
+            }
+        }
     }
 
     impl SessionCommandExecutor for MockSessionCommandExecutor {
@@ -644,6 +760,10 @@ mod tests {
             Ok((self.loginctl_success, "".to_string(), "".to_string()))
         }
 
+        fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
+            Ok(self.kill_success)
+        }
+
         fn loginctl_available(&self) -> bool {
             self.loginctl_available
         }
@@ -653,6 +773,7 @@ mod tests {
         systemctl_responses: Mutex<Vec<Result<(bool, String, String)>>>,
         loginctl_responses: Mutex<Vec<Result<(bool, String, String)>>>,
         loginctl_available: bool,
+        kill_success: bool,
     }
 
     impl ScriptedSessionCommandExecutor {
@@ -665,6 +786,7 @@ mod tests {
                 systemctl_responses: Mutex::new(systemctl_responses),
                 loginctl_responses: Mutex::new(loginctl_responses),
                 loginctl_available,
+                kill_success: true,
             }
         }
     }
@@ -678,6 +800,10 @@ mod tests {
             self.loginctl_responses.lock().unwrap().remove(0)
         }
 
+        fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
+            Ok(self.kill_success)
+        }
+
         fn loginctl_available(&self) -> bool {
             self.loginctl_available
         }
@@ -689,6 +815,7 @@ mod tests {
         systemctl_calls: Mutex<Vec<Vec<String>>>,
         loginctl_calls: Mutex<Vec<Vec<String>>>,
         loginctl_available: bool,
+        kill_success: bool,
     }
 
     impl RecordingScriptedSessionCommandExecutor {
@@ -703,6 +830,7 @@ mod tests {
                 systemctl_calls: Mutex::new(Vec::new()),
                 loginctl_calls: Mutex::new(Vec::new()),
                 loginctl_available,
+                kill_success: true,
             }
         }
 
@@ -730,6 +858,10 @@ mod tests {
 
         fn loginctl_available(&self) -> bool {
             self.loginctl_available
+        }
+
+        fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
+            Ok(self.kill_success)
         }
     }
 
@@ -767,11 +899,7 @@ mod tests {
 
     #[test]
     fn detect_display_manager_none() {
-        let exec = MockSessionCommandExecutor {
-            systemctl_success: false,
-            loginctl_success: true,
-            loginctl_available: true,
-        };
+        let exec = MockSessionCommandExecutor::new(false, true, true);
         let dm = detect_display_manager(&exec).unwrap();
         assert!(dm.is_none());
     }
@@ -841,11 +969,7 @@ mod tests {
             env::set_var("NAILS_LOGIND_AVAILABLE", "0");
         }
 
-        let exec = MockSessionCommandExecutor {
-            systemctl_success: true,
-            loginctl_success: true,
-            loginctl_available: true,
-        };
+        let exec = MockSessionCommandExecutor::new(true, true, true);
 
         let ctx = detect_session_context_with_executor(&exec).unwrap();
 
@@ -868,11 +992,7 @@ mod tests {
             env::set_var("NAILS_TARGET_USER", "alice");
         }
 
-        let exec = MockSessionCommandExecutor {
-            systemctl_success: false,
-            loginctl_success: true,
-            loginctl_available: true,
-        };
+        let exec = MockSessionCommandExecutor::new(false, true, true);
 
         let ctx = detect_session_context_with_executor(&exec).unwrap();
 
@@ -894,11 +1014,7 @@ mod tests {
             env::set_var("NAILS_LOGIND_AVAILABLE", "0");
         }
 
-        let exec = MockSessionCommandExecutor {
-            systemctl_success: true,
-            loginctl_success: true,
-            loginctl_available: true,
-        };
+        let exec = MockSessionCommandExecutor::new(true, true, true);
 
         let ctx = detect_session_context_with_executor(&exec).unwrap();
 
@@ -943,11 +1059,7 @@ mod tests {
             env::set_var("NAILS_LOGIND_AVAILABLE", "0");
         }
 
-        let exec = MockSessionCommandExecutor {
-            systemctl_success: true,
-            loginctl_success: true,
-            loginctl_available: true,
-        };
+        let exec = MockSessionCommandExecutor::new(true, true, true);
 
         let ctx = detect_session_context_with_executor(&exec).unwrap();
 
@@ -964,11 +1076,7 @@ mod tests {
             env::set_var("XDG_SESSION_TYPE", "tty");
         }
 
-        let exec = MockSessionCommandExecutor {
-            systemctl_success: true,
-            loginctl_success: true,
-            loginctl_available: true,
-        };
+        let exec = MockSessionCommandExecutor::new(true, true, true);
 
         let ctx = detect_session_context_with_executor(&exec).unwrap();
 
@@ -988,11 +1096,7 @@ mod tests {
             env::set_var("NAILS_DISPLAY_MANAGER", "gdm");
         }
 
-        let exec = MockSessionCommandExecutor {
-            systemctl_success: true,
-            loginctl_success: true,
-            loginctl_available: true,
-        };
+        let exec = MockSessionCommandExecutor::new(true, true, true);
 
         let ctx = detect_session_context_with_executor(&exec).unwrap();
 
@@ -1013,17 +1117,46 @@ mod tests {
             env::set_var("NAILS_TARGET_USER", "alice");
         }
 
-        let exec = MockSessionCommandExecutor {
-            systemctl_success: true,
-            loginctl_success: true,
-            loginctl_available: true,
-        };
+        let exec = MockSessionCommandExecutor::new(true, true, true);
 
         let ctx = detect_session_context_with_executor(&exec).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.session_id, Some("c2".to_string()));
         assert_eq!(ctx.target_uid, None);
+        assert_eq!(ctx.target_user, Some("alice".to_string()));
+
+        clear_session_env();
+    }
+
+    #[test]
+    #[serial]
+    fn detect_session_context_detects_dm_when_override_missing() {
+        // This test verifies the fix for the display manager restart timing bug:
+        // When overrides are present but NAILS_DISPLAY_MANAGER is NOT set,
+        // the code should fall back to detecting the display manager.
+        clear_session_env();
+        unsafe {
+            env::set_var("NAILS_SESSION_ID", "c2");
+            // Intentionally NOT setting NAILS_DISPLAY_MANAGER
+            env::set_var("NAILS_TARGET_UID", "1000");
+            env::set_var("NAILS_TARGET_USER", "alice");
+        }
+
+        // Mock executor returns "active" for display-manager detection
+        let exec = ScriptedSessionCommandExecutor::new(
+            vec![Ok((true, "active".to_string(), String::new()))],
+            vec![],
+            true,
+        );
+
+        let ctx = detect_session_context_with_executor(&exec).unwrap();
+
+        assert_eq!(ctx.kind, SessionKind::GraphicalUser);
+        assert_eq!(ctx.session_id, Some("c2".to_string()));
+        // Should detect display-manager even though override is missing
+        assert_eq!(ctx.display_manager, Some("display-manager".to_string()));
+        assert_eq!(ctx.target_uid, Some(1000));
         assert_eq!(ctx.target_user, Some("alice".to_string()));
 
         clear_session_env();
@@ -1087,6 +1220,94 @@ mod tests {
     }
 
     #[test]
+    fn prompt_session_kill_confirmation_accepts_y_input() {
+        let ctx = SessionContext {
+            kind: SessionKind::GraphicalUser,
+            session_id: Some("c1".to_string()),
+            display_manager: Some("gdm".to_string()),
+            target_uid: Some(1000),
+            target_user: Some("alice".to_string()),
+            logind_available: true,
+        };
+
+        let mut reader = std::io::Cursor::new("y\n");
+        assert!(prompt_session_kill_confirmation_with_reader(&ctx, false, &mut reader).is_ok());
+    }
+
+    #[test]
+    fn prompt_session_kill_confirmation_accepts_yes_input() {
+        let ctx = SessionContext {
+            kind: SessionKind::GraphicalUser,
+            session_id: Some("c1".to_string()),
+            display_manager: Some("gdm".to_string()),
+            target_uid: Some(1000),
+            target_user: Some("alice".to_string()),
+            logind_available: true,
+        };
+
+        let mut reader = std::io::Cursor::new("yes\n");
+        assert!(prompt_session_kill_confirmation_with_reader(&ctx, false, &mut reader).is_ok());
+    }
+
+    #[test]
+    fn prompt_session_kill_confirmation_rejects_n_input() {
+        let ctx = SessionContext {
+            kind: SessionKind::GraphicalUser,
+            session_id: Some("c1".to_string()),
+            display_manager: Some("gdm".to_string()),
+            target_uid: Some(1000),
+            target_user: Some("alice".to_string()),
+            logind_available: true,
+        };
+
+        let mut reader = std::io::Cursor::new("n\n");
+        let err =
+            prompt_session_kill_confirmation_with_reader(&ctx, false, &mut reader).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("User declined session kill confirmation")
+        );
+    }
+
+    #[test]
+    fn prompt_session_kill_confirmation_rejects_empty_input() {
+        let ctx = SessionContext {
+            kind: SessionKind::GraphicalUser,
+            session_id: Some("c1".to_string()),
+            display_manager: Some("gdm".to_string()),
+            target_uid: Some(1000),
+            target_user: Some("alice".to_string()),
+            logind_available: true,
+        };
+
+        let mut reader = std::io::Cursor::new("\n");
+        let err =
+            prompt_session_kill_confirmation_with_reader(&ctx, false, &mut reader).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("User declined session kill confirmation")
+        );
+    }
+
+    #[test]
+    fn prompt_session_kill_confirmation_case_insensitive() {
+        let ctx = SessionContext {
+            kind: SessionKind::GraphicalUser,
+            session_id: Some("c1".to_string()),
+            display_manager: Some("gdm".to_string()),
+            target_uid: Some(1000),
+            target_user: Some("alice".to_string()),
+            logind_available: true,
+        };
+
+        let mut reader = std::io::Cursor::new("Y\n");
+        assert!(prompt_session_kill_confirmation_with_reader(&ctx, false, &mut reader).is_ok());
+
+        let mut reader = std::io::Cursor::new("YES\n");
+        assert!(prompt_session_kill_confirmation_with_reader(&ctx, false, &mut reader).is_ok());
+    }
+
+    #[test]
     fn kill_graphical_session_rejects_non_graphical_session() {
         let ctx = SessionContext {
             kind: SessionKind::Tty,
@@ -1096,11 +1317,7 @@ mod tests {
             target_user: None,
             logind_available: false,
         };
-        let exec = MockSessionCommandExecutor {
-            systemctl_success: true,
-            loginctl_success: true,
-            loginctl_available: true,
-        };
+        let exec = MockSessionCommandExecutor::new(true, true, true);
 
         let err = kill_graphical_session_with_executor(&ctx, &exec).unwrap_err();
         assert!(
@@ -1296,11 +1513,7 @@ mod tests {
 
     #[test]
     fn restart_display_manager_uses_systemctl() {
-        let exec = MockSessionCommandExecutor {
-            systemctl_success: true,
-            loginctl_success: true,
-            loginctl_available: true,
-        };
+        let exec = MockSessionCommandExecutor::new(true, true, true);
         let res = restart_display_manager_with_executor("display-manager", &exec);
         assert!(res.is_ok());
     }

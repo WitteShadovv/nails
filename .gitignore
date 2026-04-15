@@ -115,6 +115,13 @@ secrets/
 core
 *.core
 
+# SBOM and security scanning artifacts
+sbom.*.json
+sbom*.json
+cyclonedx
+cyclonedx-*
+jq
+
 # Temporary files
 tmp/
 temp/

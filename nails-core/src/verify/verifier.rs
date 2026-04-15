@@ -1,6 +1,7 @@
 //! Forensic validation verifier implementation
 
 use super::types::{Finding, ScanDepth, Severity, VerifyResult, VerifyStatus};
+use crate::obfuscate;
 use crate::{Filesystem, Result};
 
 /// Forensic validation verifier
@@ -95,18 +96,11 @@ impl<F: Filesystem> Verifier<F> {
     fn check_artifact_files(&self) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        // Define artifact paths to check
-        let artifact_paths = vec![
-            "/tmp/nails.log",
-            "/tmp/nails.toml",
-            "/var/log/nails.log",
-            "/etc/nails",
-            "/home/.nails",
-            "/root/.nails",
-        ];
+        // Use obfuscated artifact paths for forensic resistance
+        let artifact_paths = obfuscate::artifact_paths();
 
         for path in artifact_paths {
-            let path_buf = std::path::PathBuf::from(path);
+            let path_buf = std::path::PathBuf::from(&path);
             if self.filesystem.path_exists(&path_buf)? {
                 findings.push(
                     Finding::new(

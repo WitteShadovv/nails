@@ -28,7 +28,9 @@
 //! ```
 
 // Submodules
+pub mod canary;
 pub mod history;
+pub mod history_files;
 pub mod logs;
 pub mod temp_files;
 
@@ -39,7 +41,14 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub mod test_utils;
+
 // Public re-exports
-pub use history::ShellType;
+pub use canary::{CanaryConfig, CanaryFinding, CanaryScanResult, CanaryScanner};
+pub use history::{
+    ShellType, get_extended_history_files, get_extended_history_files_for_home,
+    truncate_all_history_files, truncate_all_history_files_for_home,
+};
 pub use manager::CleanupManager;
 pub use types::{CleanupConfig, CleanupMode, CleanupReport};

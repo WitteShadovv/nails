@@ -2,7 +2,8 @@
 //!
 //! Provides the configuration, mode, and reporting types used by the cleanup system.
 
-use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
+use crate::config::get_default_hidden_volume_root;
+use crate::obfuscate;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -54,7 +55,7 @@ pub struct CleanupConfig {
     pub clear_logs: bool,
 
     /// Patterns to match in history for removal (case-insensitive)
-    /// Default: ["nails", "NAILS"]
+    /// Default: ["nails", "veracrypt", "cryptsetup", "tcrypt", "/mnt/hidden", "hidden-volume", "hidden_volume"]
     pub history_patterns: Vec<String>,
 
     /// Directories to scan for temporary files
@@ -68,19 +69,56 @@ pub struct CleanupConfig {
     /// Path to hidden volume root (for security validation)
     /// Default: HIDDEN_VOLUME_ROOT
     pub hidden_volume_path: PathBuf,
+
+    /// Whether to sanitize memory after cleanup (default: false)
+    ///
+    /// When enabled, attempts to clear page cache by writing "3" to
+    /// /proc/sys/vm/drop_caches. Requires root privileges.
+    /// This helps prevent forensic recovery of cleanup artifacts from RAM.
+    #[serde(default)]
+    pub sanitize_memory: bool,
+
+    /// Use secure deletion (overwrite before delete) (default: false)
+    ///
+    /// When enabled, files are overwritten with zeros, random data, and zeros
+    /// again before being deleted. This makes forensic recovery more difficult.
+    #[serde(default)]
+    pub secure_delete: bool,
+
+    /// Whether to perform post-unmount cleanup on the real disk (default: true)
+    ///
+    /// When enabled, a second cleanup phase runs AFTER overlay unmount to clean
+    /// history files on the actual disk. This is critical for forensic safety
+    /// because the first cleanup phase only cleans the overlay layer, not the
+    /// real underlying filesystem.
+    ///
+    /// The post-unmount cleanup:
+    /// - Uses secure_delete=true for better forensic resistance
+    /// - Cleans an extended list of history file locations (not just shells)
+    /// - Is best-effort (failures don't abort deactivation)
+    #[serde(default = "default_post_unmount_cleanup")]
+    pub post_unmount_cleanup: bool,
+}
+
+fn default_post_unmount_cleanup() -> bool {
+    true
 }
 
 impl Default for CleanupConfig {
     fn default() -> Self {
-        let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let hidden_volume = PathBuf::from(get_default_hidden_volume_root());
         Self {
             clear_history: true,
             clear_temp_files: true,
             clear_logs: true,
-            history_patterns: vec!["nails".to_string(), "NAILS".to_string()],
+            // Use obfuscated patterns for forensic resistance
+            history_patterns: obfuscate::default_cleanup_patterns(),
             temp_dirs: vec![PathBuf::from("/tmp")],
             log_path: hidden_volume.join("logs"),
             hidden_volume_path: hidden_volume,
+            sanitize_memory: false,
+            secure_delete: false,
+            post_unmount_cleanup: true,
         }
     }
 }
@@ -107,6 +145,12 @@ pub struct CleanupReport {
     /// - Some(false): At least one verification failed
     /// - None: Verification was not performed (Fast mode or verify_cleanup=false)
     pub verification_passed: Option<bool>,
+
+    /// Whether memory sanitization was performed
+    pub memory_sanitized: bool,
+
+    /// Number of canary pattern findings during verification
+    pub canary_findings_count: usize,
 }
 
 impl CleanupReport {
@@ -118,6 +162,8 @@ impl CleanupReport {
             duration: Duration::ZERO,
             mode,
             verification_passed: None,
+            memory_sanitized: false,
+            canary_findings_count: 0,
         }
     }
 
@@ -189,7 +235,19 @@ impl fmt::Display for CleanupReport {
                 writeln!(f, "✓ Verification passed - no artifacts remain")?;
             } else {
                 writeln!(f, "⚠ Verification failed - some artifacts may remain")?;
+                if self.canary_findings_count > 0 {
+                    writeln!(
+                        f,
+                        "  Found {} canary pattern(s) in scanned files",
+                        self.canary_findings_count
+                    )?;
+                }
             }
+        }
+
+        if self.memory_sanitized {
+            writeln!(f)?;
+            writeln!(f, "✓ Memory sanitization completed (page cache cleared)")?;
         }
 
         Ok(())

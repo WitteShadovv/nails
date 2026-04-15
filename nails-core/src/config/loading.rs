@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use super::defaults::derive_hidden_volume_root;
-use super::types::{Config, DEFAULT_HIDDEN_VOLUME_ROOT};
+use super::types::{Config, get_default_hidden_volume_root};
 
 /// Discover configuration file path using binary-relative resolution
 ///
@@ -129,7 +129,7 @@ impl Config {
         })?;
 
         // Parse YAML with line number in errors
-        let mut config: Config = serde_yaml::from_str(&contents).map_err(|e| {
+        let mut config: Config = serde_saphyr::from_str(&contents).map_err(|e| {
             let line_info = if let Some(location) = e.location() {
                 format!(" at line {}", location.line())
             } else {
@@ -152,7 +152,8 @@ impl Config {
         }
 
         // Derive state_file_path from hidden_volume_root if it's still the default
-        let default_state_path = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json");
+        let default_state_path =
+            std::path::PathBuf::from(get_default_hidden_volume_root()).join("state.json");
         if config.state_file_path == default_state_path {
             config.state_file_path = config.hidden_volume_root.join("state.json");
         }
@@ -160,7 +161,8 @@ impl Config {
         // Derive log_path from hidden_volume_root if it's still the default
         // When hidden_volume_root is auto-derived, log_path still gets the constant default
         // via serde default function. This ensures log_path matches the derived root.
-        let default_log_path = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs");
+        let default_log_path =
+            std::path::PathBuf::from(get_default_hidden_volume_root()).join("logs");
         if config.log_path == default_log_path {
             config.log_path = config.hidden_volume_root.join("logs");
         }
@@ -173,6 +175,11 @@ impl Config {
     /// Provides a complete example config showing required and optional fields
     /// with their default values. Useful for error messages and documentation.
     ///
+    /// # Note
+    ///
+    /// The example configuration is generated dynamically at runtime to avoid
+    /// embedding sensitive paths in the binary. This ensures forensic resistance.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -181,10 +188,12 @@ impl Config {
     /// let example = Config::example_config();
     /// println!("{}", example);
     /// ```
-    pub fn example_config() -> &'static str {
-        r##"# NAILS Configuration
+    pub fn example_config() -> String {
+        let hidden_vol = get_default_hidden_volume_root();
+        format!(
+            r##"# NAILS Configuration
 # Required fields:
-hidden_volume_path: /mnt/hidden-volume
+hidden_volume_path: {hidden_vol}
 
 # Optional fields (defaults shown):
 clear_history: true
@@ -195,7 +204,7 @@ verify_on_deactivate: true
 milestone_tips: true
 
 # Logging configuration:
-log_path: /mnt/hidden-volume/logs
+log_path: {hidden_vol}/logs
 max_log_size_mb: 10
 retention_days: 7
 
@@ -232,8 +241,8 @@ color_scheme:
 # overlays:
 #   - name: home
 #     lower: /home
-#     upper: /mnt/hidden-volume/home
-#     work: /mnt/hidden-volume/.work/home
+#     upper: {hidden_vol}/home
+#     work: {hidden_vol}/.work/home
 #     target: /home
 
 # Extended overlay configuration (ephemeral tmpfs-backed overlays):
@@ -247,6 +256,7 @@ color_scheme:
 # NixOS flake reference (optional, auto-detected if not set):
 # nixos_flake: /etc/nixos#amnesia-virtualbox
 "##
+        )
     }
 
     /// Load configuration from file, or return default if file doesn't exist
