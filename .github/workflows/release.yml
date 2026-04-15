@@ -156,7 +156,7 @@ jobs:
           "$extracted_dir/nails" --version
 
       - name: Install Rust toolchain for SBOM
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: 1.93.0
 
@@ -208,7 +208,7 @@ jobs:
           cat subjects.txt
 
       - name: Upload canonical release artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ${{ steps.metadata.outputs.canonical-artifact-name }}
           path: dist/
