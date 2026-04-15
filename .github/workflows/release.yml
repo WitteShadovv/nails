@@ -280,6 +280,7 @@ jobs:
       base64-subjects: ${{ needs.build-release.outputs.slsa-subjects }}
       upload-assets: false  # We upload manually to control release flow
       provenance-name: nails.intoto.jsonl
+      private-repository: true  # Required: repo is private; provenance is still signed via Rekor
 
   publish-release:
     name: Publish GitHub release
