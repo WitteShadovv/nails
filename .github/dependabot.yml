@@ -13,8 +13,6 @@
 
 version: 2
 
-registries: {}
-
 updates:
   # ============================================================================
   # Cargo (Rust) Dependencies
@@ -146,11 +144,8 @@ updates:
         patterns:
           - "*"
 
-    # Ignore rules for actions that need special handling
-    ignore:
-      # None currently - all actions should be kept up to date
-      # Add entries here if specific actions cause issues
-      []
+    # No ignore rules for actions - all should be kept up to date
+    # Add ignore entries here if specific actions cause issues
 
 # ============================================================================
 # Notes on ecosystems NOT configured:
