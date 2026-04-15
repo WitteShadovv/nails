@@ -122,6 +122,31 @@ pub struct CliOverrides {
     pub nixos_flake: Option<String>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_hidden_volume_root_returns_nonempty_string() {
+        let root = default_hidden_volume_root();
+        assert!(!root.is_empty());
+    }
+
+    #[test]
+    fn test_get_default_hidden_volume_root_returns_same_as_default() {
+        let root1 = default_hidden_volume_root();
+        let root2 = get_default_hidden_volume_root();
+        assert_eq!(root1, root2);
+    }
+
+    #[test]
+    fn test_default_overlay_exclusions_contains_proc() {
+        assert!(DEFAULT_OVERLAY_EXCLUSIONS.contains(&"/proc"));
+        assert!(DEFAULT_OVERLAY_EXCLUSIONS.contains(&"/sys"));
+        assert!(DEFAULT_OVERLAY_EXCLUSIONS.contains(&"/dev"));
+    }
+}
+
 /// Application configuration
 ///
 /// Complete configuration management with file loading, validation, and builder pattern.

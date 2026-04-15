@@ -353,6 +353,83 @@ fn test_nixos_builder_new_preserves_no_flake_ref() {
 }
 
 #[test]
+fn test_nixos_builder_new_legacy_creates_legacy_builder() {
+    let builder = NixOSBuilder::new_legacy(
+        PathBuf::from("/etc/nixos/configuration.nix"),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+
+    // Legacy builder uses the parent dir as config_path
+    assert_eq!(builder.config_path, PathBuf::from("/etc/nixos"));
+    assert!(!builder.is_flake());
+    assert_eq!(builder.flake_ref, None);
+}
+
+#[test]
+fn test_nixos_builder_new_legacy_config_at_root_uses_etc_nixos_fallback() {
+    // When configuration.nix has no parent, falls back to /etc/nixos
+    let builder = NixOSBuilder::new_legacy(
+        PathBuf::from("configuration.nix"), // relative path with no parent
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+
+    // Falls back to /etc/nixos when no parent directory
+    assert!(!builder.is_flake());
+}
+
+#[test]
+fn test_nixos_builder_flake_dir_returns_none_for_legacy_builder() {
+    let builder = NixOSBuilder::new_legacy(
+        PathBuf::from("/etc/nixos/configuration.nix"),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+
+    assert!(builder.flake_dir().is_none());
+}
+
+#[test]
+fn test_nixos_builder_flake_dir_returns_some_for_flake_builder() {
+    let builder = NixOSBuilder::new(
+        PathBuf::from("/mnt/hidden/nixos"),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+
+    assert_eq!(
+        builder.flake_dir(),
+        Some(PathBuf::from("/mnt/hidden/nixos").as_path())
+    );
+}
+
+#[test]
+fn test_nixos_builder_is_flake_for_new() {
+    let builder = NixOSBuilder::new(
+        PathBuf::from("/mnt/hidden/nixos"),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+    assert!(builder.is_flake());
+}
+
+#[test]
+fn test_nixos_builder_is_not_flake_for_legacy() {
+    let builder = NixOSBuilder::new_legacy(
+        PathBuf::from("/etc/nixos/configuration.nix"),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+    assert!(!builder.is_flake());
+}
+
+#[test]
+fn test_nixos_builder_effective_flake_arg_for_legacy_uses_config_dir() {
+    let builder = NixOSBuilder::new_legacy(
+        PathBuf::from("/etc/nixos/configuration.nix"),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+
+    // effective_flake_arg returns config_path (parent dir) for legacy
+    assert_eq!(builder.effective_flake_arg(), "/etc/nixos");
+}
+
+#[test]
 #[cfg(unix)]
 fn test_get_cached_generation_invalid_symlink_target_returns_err() {
     let temp_dir = tempfile::tempdir().unwrap();

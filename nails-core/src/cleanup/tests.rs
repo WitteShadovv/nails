@@ -201,6 +201,65 @@ fn test_cleanup_report_is_successful() {
 }
 
 #[test]
+fn test_cleanup_report_extend_cleaned() {
+    let mut report = CleanupReport::new(CleanupMode::Fast);
+    report.extend_cleaned(vec![
+        "Item 1".to_string(),
+        "Item 2".to_string(),
+        "Item 3".to_string(),
+    ]);
+    assert_eq!(report.total_cleaned(), 3);
+    assert!(report.is_successful());
+}
+
+#[test]
+fn test_cleanup_report_display_with_verification_passed() {
+    let mut report = CleanupReport::new(CleanupMode::Thorough {
+        verify_cleanup: true,
+    });
+    report.add_cleaned("Removed shell history");
+    report.verification_passed = Some(true);
+
+    let output = format!("{}", report);
+    assert!(output.contains("✓ Verification passed"));
+}
+
+#[test]
+fn test_cleanup_report_display_with_verification_failed_with_canary_findings() {
+    let mut report = CleanupReport::new(CleanupMode::Thorough {
+        verify_cleanup: true,
+    });
+    report.verification_passed = Some(false);
+    report.canary_findings_count = 3;
+
+    let output = format!("{}", report);
+    assert!(output.contains("⚠ Verification failed"));
+    assert!(output.contains("3 canary pattern"));
+}
+
+#[test]
+fn test_cleanup_report_display_with_verification_failed_no_canary() {
+    let mut report = CleanupReport::new(CleanupMode::Thorough {
+        verify_cleanup: true,
+    });
+    report.verification_passed = Some(false);
+    report.canary_findings_count = 0;
+
+    let output = format!("{}", report);
+    assert!(output.contains("⚠ Verification failed"));
+    assert!(!output.contains("canary pattern"));
+}
+
+#[test]
+fn test_cleanup_report_display_with_memory_sanitized() {
+    let mut report = CleanupReport::new(CleanupMode::Fast);
+    report.memory_sanitized = true;
+
+    let output = format!("{}", report);
+    assert!(output.contains("Memory sanitization completed"));
+}
+
+#[test]
 fn test_cleanup_manager_new() {
     let fs = MockFilesystem::new();
     let config = CleanupConfig::default();

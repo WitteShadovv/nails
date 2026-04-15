@@ -1480,3 +1480,55 @@ fn test_example_config_mentions_nixos_flake() {
         "Example config should mention nixos_flake"
     );
 }
+
+#[test]
+fn test_discover_config_path_with_override_returns_exact_path() {
+    use crate::config::discover_config_path;
+
+    let override_path = PathBuf::from("/custom/myconfig.yaml");
+    let result = discover_config_path(Some(&override_path));
+    assert_eq!(result, override_path);
+}
+
+#[test]
+fn test_discover_config_path_without_override_returns_nails_yaml_path() {
+    use crate::config::discover_config_path;
+
+    let result = discover_config_path(None);
+    // Should end with config/nails.yaml regardless of how binary path is resolved
+    assert!(
+        result.ends_with("config/nails.yaml"),
+        "Expected path ending with config/nails.yaml, got: {}",
+        result.display()
+    );
+}
+
+#[test]
+fn test_load_or_default_with_malformed_yaml_returns_error() {
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    let mut file = NamedTempFile::new().unwrap();
+    writeln!(file, "this: is: invalid: yaml: [[[").unwrap();
+
+    // Malformed YAML should propagate the error (not return default)
+    let result = Config::load_or_default(file.path());
+    assert!(result.is_err(), "Expected error for malformed YAML");
+}
+
+#[test]
+fn test_load_with_empty_hidden_volume_root_derives_from_binary() {
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    let mut file = NamedTempFile::new().unwrap();
+    // Explicitly set hidden_volume_path to empty string
+    writeln!(file, "hidden_volume_path: \"\"").unwrap();
+
+    let config = Config::load(file.path()).unwrap();
+    // When hidden_volume_root is empty, it should be derived from binary (non-empty)
+    assert!(
+        !config.hidden_volume_root.as_os_str().is_empty(),
+        "hidden_volume_root should be auto-derived when empty in config"
+    );
+}
