@@ -31,7 +31,7 @@ jobs:
         with:
           extra_nix_config: |
             system-features = nixos-test benchmark big-parallel kvm
-            accept-flake-config = true
+            accept-flake-config = false
             max-jobs = auto
 
       - name: Setup Cachix

@@ -126,6 +126,13 @@ repos:
         pass_filenames: false
         files: (Cargo\.toml|Cargo\.lock|deny\.toml)$
 
+      - id: check-line-count
+        name: Enforce 500-line limit on Rust files
+        entry: scripts/check-line-count.sh
+        language: script
+        types: [rust]
+        pass_filenames: false
+
       - id: rust-fmt
         name: Format Rust code
         entry: cargo fmt --

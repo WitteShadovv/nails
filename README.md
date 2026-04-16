@@ -34,6 +34,7 @@
 - [Security Model](#security-model)
 - [Architecture](#architecture)
 - [Development](#development)
+- [Governance & Project Policies](#governance--project-policies)
 - [System Requirements](#system-requirements)
 - [Troubleshooting](#troubleshooting)
 - [Use Cases](#use-cases)
@@ -148,7 +149,7 @@ kernel does not support overlayfs on vfat — not even as a read-only lower laye
 support). NAILS detects this automatically and uses a **snapshot pivot** strategy: the contents of
 `/boot` are copied into a tmpfs in RAM, the tmpfs is used as the overlay lower layer, and the
 result is bind-mounted over the original `/boot`. A preflight check validates that the target is
-small enough (< 1 GB) to fit in RAM. This ensures `nixos-rebuild` writes new boot generations to
+small enough (< 1 GB) to fit in RAM. This is designed to ensure `nixos-rebuild` writes new boot generations to
 the overlay rather than the real `/boot` — preventing boot failures when the hidden volume is
 absent.
 
@@ -182,7 +183,7 @@ The release files will be in `result/`. Running `cargo build` directly will not 
 byte-identical binary — the CI build is Nix-hermetic and embeds Nix store paths rather than local
 workspace paths.
 
-For the full scope of the guarantee and attestation details, see
+For the full scope of the reproducibility claims and attestation details, see
 `docs/release-artifact-reproducibility.md`.
 
 ---
@@ -341,35 +342,22 @@ config with `hidden_volume_root`, or use `--config`.
 
 ### 1. Create the hidden configuration layout
 
-```bash
-mkdir -p /mnt/hidden-volume/etc/nixos
-cp /etc/nixos/hardware-configuration.nix /mnt/hidden-volume/etc/nixos/hardware-configuration.nix
-```
-
-NAILS does not yet provide a `nails init` subcommand, so create this base directory directly.
-On first activation, NAILS can bootstrap the rest of the hidden NixOS layout for you:
-
-- it stages `/mnt/hidden-volume/etc/nixos/nails/configuration.nix`
-- it auto-generates `/mnt/hidden-volume/config/nixos/configuration.nix` if it is missing
-- it keeps using your copied hidden `hardware-configuration.nix` as the visible import anchor
-
-Then make sure the hidden hardware config imports the staged hidden module:
+NAILS includes a bootstrap command for an **existing** mounted hidden root:
 
 ```bash
-$EDITOR /mnt/hidden-volume/etc/nixos/hardware-configuration.nix
+nails init /mnt/hidden-volume
 ```
 
-Add the hidden import to its `imports` list:
+`nails init` now creates the starter skeleton (including `state/`, `overlays/`, `logs/`,
+`config/`, `config/nixos/`, `etc/nixos/`, `home/`, `nix/`, and `.work/`), writes a documented
+`config/nails.yaml`, auto-generates `/mnt/hidden-volume/config/nixos/configuration.nix` if it is
+missing, stages `/mnt/hidden-volume/etc/nixos/nails/configuration.nix`, and bootstraps
+`/mnt/hidden-volume/etc/nixos/hardware-configuration.nix` from the decoy-side
+`/etc/nixos/hardware-configuration.nix` with the hidden import already injected.
 
-```nix
-{ config, pkgs, lib, modulesPath, ... }:
-{
-  imports = [
-    (modulesPath + "/installer/scan/not-detected.nix")
-    ./nails/configuration.nix
-  ];
-}
-```
+That means `nails activate` is ready to work immediately after `nails init` plus any minimal edits
+you want to make to `config/nails.yaml`, `config/nixos/configuration.nix`, or an optional hidden
+flake.
 
 If you want an explicit runtime config, place it at:
 
@@ -535,8 +523,9 @@ Everything you do is isolated in the overlay — the decoy is untouched.
 sudo nails deactivate
 ```
 
-`deactivate` currently returns the system to decoy state by triggering an immediate reboot. The
-hidden storage may still be mounted until the reboot completes, so treat the safe end-state as:
+`deactivate` now runs the shared deactivation workflow, unmounts active overlays, prepares the
+decoy system profile, and then reboots. The hidden storage itself may still remain mounted until
+you dismount it, so treat the safe end-state as:
 
 1. the machine has rebooted into the decoy system
 2. you are back in the decoy environment
@@ -616,13 +605,14 @@ Options:
 ```
 
 **What deactivation does:**
-1. Restores `/run/current-system` to the decoy system profile
-2. Calls `systemctl reboot`
-3. Returns you to the decoy environment after reboot
+1. Runs the shared deactivation workflow, including cleanup and overlay unmounting
+2. Prepares `/run/current-system` for the decoy system profile
+3. Calls `systemctl reboot` on success
+4. Returns you to the decoy environment after reboot
 
-This is the current fast path. It does **not** perform the thorough in-process unmount and cleanup
-sequence documented in older versions of this README. After the reboot, the operator must still
-confirm the decoy system is back and manually dismount the hidden storage.
+Normal `deactivate` now uses the same orchestrator-based deactivation path as `emergency`, but it
+still ends by rebooting instead of leaving you live in the decoy session. After reboot, the
+operator must still confirm the decoy system is back and manually dismount the hidden storage.
 
 ### `nails emergency`
 
@@ -648,12 +638,31 @@ Options:
 4. Switches back to the decoy configuration without reboot
 5. Verifies base config cleanliness when `/etc` was overlaid
 
-> **Important:** `--no-countdown` is currently accepted for compatibility only. Do not rely on it
-> to change emergency behavior.
+`--no-countdown` is implemented: it skips the 3-second emergency delay and proceeds immediately.
+The countdown is also suppressed in `--quiet` and `--json` modes.
 
 After `emergency`, the hidden storage may still be mounted. If you are safe to do so, dismount it
 manually before returning to ordinary decoy use. If you cannot dismount it cleanly, or if you are
 unsure cleanup completed, reboot immediately.
+
+### `nails init`
+
+Bootstrap a hidden-volume layout that is activation-ready on an existing mounted hidden root.
+
+```text
+nails init <PATH>
+```
+
+Current behavior:
+
+1. Requires `<PATH>` to already exist and be a directory
+2. Creates starter directories including `state/`, `overlays/`, `logs/`, `config/`, `config/nixos/`, `etc/nixos/`, `home/`, `nix/`, and `.work/` with restrictive permissions
+3. Creates `config/nails.yaml` with inline documentation if it does not already exist
+4. Bootstraps `config/nixos/configuration.nix`, `etc/nixos/hardware-configuration.nix`, and the staged `etc/nixos/nails/configuration.nix` symlink so `nails activate` can proceed after `init` plus minimal config edits
+
+`nails init` now copies the decoy-side `/etc/nixos/hardware-configuration.nix` into hidden storage,
+injects the hidden `./nails/configuration.nix` import, and keeps generated hidden NixOS files at
+restrictive permissions from the start.
 
 ### `nails status`
 
@@ -958,9 +967,9 @@ A few important details:
 
 - Operator-managed prerequisites:
   - the hidden backend is already mounted
-  - `<hidden_volume_root>/etc/nixos/` exists
   - optional `config/nails.yaml` and optional hidden flake/custom hidden module
 - NAILS-generated or staged files:
+  - `etc/nixos/hardware-configuration.nix` bootstrapped from the decoy-side hardware config with the hidden import injected
   - `config/nixos/configuration.nix` if missing
   - `etc/nixos/nails/configuration.nix` symlink
   - hidden upper/work directories such as `home/`, `etc/`, `var/`, and `.work/`
@@ -1076,8 +1085,8 @@ nails/
 
 ### State Machine
 
-NAILS enforces a type-safe state machine. Invalid transitions are rejected at the type level —
-the compiler prevents illegal states before code ever runs.
+NAILS enforces a type-safe state machine. Invalid transitions are rejected via the state
+machine's `Result`-based API, returning errors for illegal state changes.
 
 ```
   ┌─────────┐   activate    ┌────────────┐   complete    ┌────────┐
@@ -1236,6 +1245,14 @@ See the development guide for the full contribution workflow.
 
 ---
 
+## Governance & Project Policies
+
+- [Security policy](SECURITY.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Code owners](CODEOWNERS)
+
+---
+
 ## System Requirements
 
 | Component | Requirement |
@@ -1251,15 +1268,18 @@ See the development guide for the full contribution workflow.
 
 ### Performance
 
-Performance targets are tracked in the design and CI pipeline, but the benchmark harness is still
-being filled out. The current placeholder targets are:
+Performance targets are tracked in the design and CI pipeline. The current targets are benchmarked
+directly by name in the Criterion harnesses that CI executes:
 
-| Operation | Target |
-|---|---|
-| `activate` (subsequent) | < 5 s |
-| `emergency` | < 3 s |
-| `status` | < 500 ms |
-| Binary startup | < 10 ms |
+| Operation | Target | Criterion benchmark name | Harness |
+|---|---|---|---|
+| `activate` (subsequent) | < 5 s | `activate_subsequent` | `nails-core/benches/performance.rs` |
+| `emergency cleanup` | < 3 s | `emergency_cleanup` | `nails-core/benches/performance.rs` |
+| `status` | < 500 ms | `status` | `nails-core/benches/performance.rs` |
+| Binary startup | < 10 ms | `binary_startup` | `nails-cli/benches/startup.rs` |
+
+> **Note:** These remain design targets. Benchmarks now exist for each named target, but target
+> compliance still depends on benchmark results in CI or local runs.
 
 ---
 
@@ -1281,7 +1301,7 @@ ls -la /mnt/hidden-volume/
 If activation fails early during hidden NixOS bootstrap:
 
 - create `<hidden_volume_root>/etc/nixos/` if it does not exist yet
-- verify `/etc/nixos/hardware-configuration.nix` exists on the decoy side so NAILS can copy or stage from it
+- verify `/etc/nixos/hardware-configuration.nix` exists on the decoy side so `nails init` can bootstrap the hidden hardware config
 - verify either `/etc/nixos/configuration.nix` or `/etc/nixos/flake.nix` exists on the decoy side
 - if you replaced the generated hidden hardware config, make sure it imports `./nails/configuration.nix`
 
@@ -1386,10 +1406,11 @@ within minutes of power-off may recover them. This is shared by all comparable t
 Qubes, VeraCrypt). CPU-register key storage (TRESOR-style) is planned for a future release.
 
 **Tested tools, not all possible tools.**
-The forensic evaluation used Autopsy, Sleuth Kit, and Volatility under controlled conditions.
-Sufficiently motivated adversaries may develop detection techniques beyond what was tested.
-NAILS makes forensic analysis expensive and difficult — it does not claim to be undetectable
-by any conceivable adversary.
+Forensic validation using Autopsy, Sleuth Kit, and Volatility is planned for the v1.0.0 release
+(Jun 2026). The evaluation methodology has been prepared, but formal testing has not yet been
+completed. Sufficiently motivated adversaries may develop detection techniques beyond what will
+be tested. NAILS is designed to make forensic analysis expensive and difficult — it does not
+claim to be undetectable by any conceivable adversary.
 
 **Single-user systems only.**
 Multi-user setups with per-user hidden environments are not supported in the current release.

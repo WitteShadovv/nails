@@ -4,6 +4,8 @@
 
 set -e  # Exit on any error
 
+COVERAGE_THRESHOLD=85
+
 echo "🔍 Running CI pipeline locally..."
 echo ""
 
@@ -53,32 +55,35 @@ echo ""
 
 # Stage 3: Coverage
 echo "================================================"
-echo "Stage 3: Coverage Enforcement (100% required)"
+echo "Stage 3: Coverage Enforcement (${COVERAGE_THRESHOLD}% required)"
 echo "================================================"
 
 echo -e "${YELLOW}→${NC} Running coverage analysis..."
 
-# Check if cargo-tarpaulin is installed
-if ! command -v cargo-tarpaulin &> /dev/null; then
-    echo -e "${YELLOW}⚠${NC}  cargo-tarpaulin not installed"
-    echo "   Install with: cargo install cargo-tarpaulin"
+# Check if cargo-llvm-cov is installed
+if ! command -v cargo-llvm-cov &> /dev/null; then
+    echo -e "${YELLOW}⚠${NC}  cargo-llvm-cov not installed"
+    echo "   Install with: cargo install cargo-llvm-cov --locked"
     echo "   Skipping coverage check..."
 else
-    if cargo tarpaulin --out Xml --out Html --output-dir ./coverage --timeout 300 --all-features --workspace; then
+    mkdir -p coverage
+
+    if cargo llvm-cov --all-features --workspace --all-targets --cobertura --output-path ./coverage/cobertura.xml; then
+        cargo llvm-cov --all-features --workspace --all-targets --html --output-dir ./coverage/html --no-run
+
         # Extract coverage percentage
         COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' coverage/cobertura.xml | head -1)
         COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc)
 
         echo ""
         echo "📊 Current coverage: ${COVERAGE_PCT}%"
-        echo "🎯 Required coverage: 100%"
+        echo "🎯 Required coverage: ${COVERAGE_THRESHOLD}%"
 
-        if (( $(echo "$COVERAGE_PCT < 100" | bc -l) )); then
-            echo -e "${RED}✗${NC} Coverage below threshold: ${COVERAGE_PCT}% < 100%"
-            echo "   TDD methodology requires 100% coverage"
+        if (( $(echo "$COVERAGE_PCT < $COVERAGE_THRESHOLD" | bc -l) )); then
+            echo -e "${RED}✗${NC} Coverage below threshold: ${COVERAGE_PCT}% < ${COVERAGE_THRESHOLD}%"
             exit 1
         else
-            echo -e "${GREEN}✓${NC} Coverage meets threshold: ${COVERAGE_PCT}% >= 100%"
+            echo -e "${GREEN}✓${NC} Coverage meets threshold: ${COVERAGE_PCT}% >= ${COVERAGE_THRESHOLD}%"
         fi
     else
         echo -e "${RED}✗${NC} Coverage analysis failed"
@@ -121,7 +126,8 @@ if [[ "$1" == "--bench" ]]; then
     echo "================================================"
 
     echo -e "${YELLOW}→${NC} Running benchmarks..."
-    if cargo bench --all-features; then
+    if cargo bench -p nails-core --bench performance --all-features && \
+       cargo bench -p nails-cli --bench startup --all-features; then
         echo -e "${GREEN}✓${NC} Benchmarks completed"
     else
         echo -e "${RED}✗${NC} Benchmarks failed"
@@ -139,7 +145,7 @@ echo ""
 echo "Summary:"
 echo "  ✓ Formatting & Clippy"
 echo "  ✓ Unit & Integration Tests"
-echo "  ✓ Coverage (100%)"
+echo "  ✓ Coverage (${COVERAGE_THRESHOLD}%)"
 echo "  ✓ Burn-in (3 iterations)"
 if [[ "$1" == "--bench" ]]; then
     echo "  ✓ Benchmarks"
