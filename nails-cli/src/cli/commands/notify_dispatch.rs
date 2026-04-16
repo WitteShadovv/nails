@@ -16,10 +16,8 @@ use std::path::PathBuf;
 /// * `config_override` - Optional config file path override
 /// * `json` - Output results in JSON format
 pub fn execute(config_override: Option<PathBuf>, json: bool) -> ! {
-    use nails_core::Config;
-
     let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-    let config = Config::load_or_default(&config_path).unwrap_or_else(|_| Config::default());
+    let config = super::load_config_or_exit(&config_path);
 
     match nails_core::notification::dispatch_all(&config.hidden_volume_root) {
         Ok(initial_count) => {
@@ -74,5 +72,79 @@ pub fn execute(config_override: Option<PathBuf>, json: bool) -> ! {
             // error dialogs bothering the user for a non-critical feature.
             std::process::exit(0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execute;
+    use std::path::PathBuf;
+
+    const SUBPROCESS_TEST_NAME: &str =
+        "cli::commands::notify_dispatch::tests::subprocess_notify_dispatch_entrypoint";
+
+    fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::process::Output {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
+            .env("NAILS_NOTIFY_DISPATCH_SUBPROCESS_CASE", case);
+
+        if let Some(path) = config_path {
+            command.env("NAILS_NOTIFY_DISPATCH_SUBPROCESS_CONFIG", path);
+        }
+
+        command
+            .output()
+            .expect("failed to run notify-dispatch subprocess test")
+    }
+
+    #[test]
+    fn subprocess_notify_dispatch_entrypoint() {
+        let Ok(case) = std::env::var("NAILS_NOTIFY_DISPATCH_SUBPROCESS_CASE") else {
+            return;
+        };
+
+        let config_override =
+            std::env::var_os("NAILS_NOTIFY_DISPATCH_SUBPROCESS_CONFIG").map(PathBuf::from);
+
+        match case.as_str() {
+            "json" => execute(config_override, true),
+            "invalid-config" => execute(config_override, false),
+            other => panic!("unknown notify-dispatch subprocess case: {other}"),
+        }
+    }
+
+    #[test]
+    fn execute_notify_dispatch_json_reports_ok() {
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path().join("hidden-volume");
+        std::fs::create_dir_all(&hidden_root).unwrap();
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+
+        let output = run_subprocess("json", Some(config.path()));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(output.status.success(), "stdout={stdout}");
+        assert!(stdout.contains("\"status\":\"ok\""));
+        assert!(stdout.contains("\"dispatched\":0"));
+    }
+
+    #[test]
+    fn execute_notify_dispatch_fails_closed_for_invalid_config() {
+        use std::io::Write;
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        writeln!(config, "hidden_volume_path: [broken").unwrap();
+
+        let output = run_subprocess("invalid-config", Some(config.path()));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+        assert!(stderr.contains("Error loading config"));
+        assert!(stderr.contains("Invalid YAML"));
     }
 }

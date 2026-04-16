@@ -18,17 +18,17 @@ use std::path::PathBuf;
 ///
 /// # Returns
 ///
-/// Never returns - exits with code 0 on success, 1 on failure
+/// Never returns - exits with code 0 on success, 1 on deactivation failure, 2 on config failure
 pub fn execute(
     config_override: Option<PathBuf>,
-    _no_clear_history: bool,
+    no_clear_history: bool,
     quiet: bool,
     verbose: u8,
     json: bool,
     no_color: bool,
     plain: bool,
 ) -> ! {
-    use nails_core::{Config, NailsManager, RealFilesystem, Verbosity};
+    use nails_core::{NailsManager, RealFilesystem, Verbosity};
     use std::sync::{Arc, Mutex};
 
     // Configure color output
@@ -49,7 +49,13 @@ pub fn execute(
 
     // Load configuration
     let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-    let config = Config::load_or_default(&config_path).unwrap_or_else(|_| Config::default());
+    let mut config = super::load_config_or_exit(&config_path);
+
+    // Apply --no-clear-history CLI override
+    if no_clear_history {
+        config.clear_history = false;
+    }
+
     let state_path = config.state_file_path.clone();
 
     // Create manager
@@ -57,7 +63,8 @@ pub fn execute(
     let manager = Arc::new(Mutex::new(NailsManager::new(
         filesystem, config, state_path,
     )));
-    manager.lock().unwrap().set_verbosity(verbosity);
+    super::lock_manager_or_exit(&manager, "setting deactivation verbosity")
+        .set_verbosity(verbosity);
 
     // Run quick deactivation (restore symlink + reboot)
     match NailsManager::deactivate(Arc::clone(&manager)) {
@@ -82,5 +89,83 @@ pub fn execute(
             }
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execute;
+    use std::path::PathBuf;
+
+    const SUBPROCESS_TEST_NAME: &str =
+        "cli::commands::deactivate::tests::subprocess_deactivate_entrypoint";
+
+    fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::process::Output {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
+            .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", case);
+
+        if let Some(path) = config_path {
+            command.env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", path);
+        }
+
+        command
+            .output()
+            .expect("failed to run deactivate subprocess test")
+    }
+
+    #[test]
+    fn subprocess_deactivate_entrypoint() {
+        let Ok(case) = std::env::var("NAILS_DEACTIVATE_SUBPROCESS_CASE") else {
+            return;
+        };
+
+        let config_override =
+            std::env::var_os("NAILS_DEACTIVATE_SUBPROCESS_CONFIG").map(PathBuf::from);
+
+        match case.as_str() {
+            "invalid-config" => execute(config_override, false, false, 0, false, false, false),
+            "inactive-error" => execute(config_override, true, false, 2, true, true, true),
+            other => panic!("unknown deactivate subprocess case: {other}"),
+        }
+    }
+
+    #[test]
+    fn execute_deactivate_fails_closed_for_invalid_config() {
+        use std::io::Write;
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        writeln!(config, "hidden_volume_path: [broken").unwrap();
+
+        let output = run_subprocess("invalid-config", Some(config.path()));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+        assert!(stderr.contains("Error loading config"));
+        assert!(stderr.contains("Invalid YAML"));
+    }
+
+    #[test]
+    fn execute_deactivate_reports_inactive_error_path() {
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path().join("hidden-volume");
+        std::fs::create_dir_all(&hidden_root).unwrap();
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            config,
+            "hidden_volume_path: {}\noverlays: []",
+            hidden_root.display()
+        )
+        .unwrap();
+
+        let output = run_subprocess("inactive-error", Some(config.path()));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
+        assert!(stderr.contains("status") || stderr.contains("error") || stderr.contains("failed"));
     }
 }

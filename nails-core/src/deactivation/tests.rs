@@ -974,3 +974,114 @@ fn test_post_unmount_cleanup_report_with_data() {
     assert_eq!(report.warnings.len(), 1);
     assert!(report.was_performed);
 }
+
+#[test]
+#[serial]
+fn test_emergency_mode_skips_non_essential_steps() {
+    use crate::DeactivationMode;
+
+    let manager = setup_active_manager();
+
+    // Setup overlays as mounted
+    {
+        let m = manager.lock().unwrap();
+        m.filesystem().mock_set_mounted(Path::new("/home"), true);
+        m.filesystem().mock_set_mounted(Path::new("/etc"), true);
+    }
+
+    let orchestrator =
+        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
+            .with_mode(DeactivationMode::Emergency);
+
+    let result = orchestrator.run();
+    assert!(result.is_ok(), "Emergency deactivation should succeed");
+
+    let report = result.unwrap();
+    assert!(report.is_successful());
+    assert_eq!(report.final_state, SystemState::Inactive);
+    assert!(!report.was_already_inactive);
+
+    // Emergency mode should skip post-unmount cleanup
+    assert!(
+        !report.post_unmount_cleanup.was_performed,
+        "Emergency mode should skip post-unmount cleanup"
+    );
+}
+
+#[test]
+#[serial]
+fn test_emergency_mode_fails_on_inactive_state() {
+    use crate::DeactivationMode;
+
+    // Setup manager in INACTIVE state
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_hidden_vol = temp_dir.path();
+    std::fs::create_dir_all(mock_hidden_vol).unwrap();
+    let state_path = mock_hidden_vol.join("state.json");
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let mut manager = NailsManager::new(fs, config, state_path);
+    manager.force_state(SystemState::Inactive).unwrap();
+
+    let manager = Arc::new(Mutex::new(manager));
+    let orchestrator =
+        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
+            .with_mode(DeactivationMode::Emergency);
+
+    // Emergency mode should NOT be idempotent - must fail on Inactive
+    let result = orchestrator.run();
+    assert!(
+        result.is_err(),
+        "Emergency mode should fail on Inactive state"
+    );
+
+    match result {
+        Err(NailsError::InvalidState(msg)) => {
+            assert!(msg.contains("Cannot deactivate"));
+        }
+        _ => panic!("Expected InvalidState error"),
+    }
+}
+
+#[test]
+#[serial]
+fn test_normal_mode_is_idempotent_on_inactive() {
+    use crate::DeactivationMode;
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_hidden_vol = temp_dir.path();
+    std::fs::create_dir_all(mock_hidden_vol).unwrap();
+    let state_path = mock_hidden_vol.join("state.json");
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let mut manager = NailsManager::new(fs, config, state_path);
+    manager.force_state(SystemState::Inactive).unwrap();
+
+    let manager = Arc::new(Mutex::new(manager));
+    let orchestrator =
+        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
+            .with_mode(DeactivationMode::Normal);
+
+    // Normal mode should be idempotent
+    let result = orchestrator.run();
+    assert!(result.is_ok());
+    assert!(result.unwrap().was_already_inactive);
+}

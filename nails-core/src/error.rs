@@ -113,6 +113,10 @@ pub enum NailsError {
     #[error("NixOS switch failed for profile: {profile}")]
     NixOSSwitchFailed { profile: String },
 
+    /// Lock poisoned - a thread panicked while holding a mutex
+    #[error("Lock poisoned: {0}")]
+    LockPoisoned(String),
+
     /// Cleanup operation failed
     ///
     /// Used when artifact cleanup fails during deactivation.
@@ -127,6 +131,10 @@ pub enum NailsError {
     /// ```
     #[error("Cleanup failed: {0}")]
     CleanupError(String),
+
+    /// Checksum mismatch detected in state file (tamper detection)
+    #[error("Checksum mismatch: {0}")]
+    ChecksumMismatch(String),
 
     /// Fork operation failed during emergency deactivation
     ///
@@ -299,6 +307,7 @@ mod tests {
             profile: "test-profile".into(),
         };
         let _err16 = NailsError::ForkFailed("Resource temporarily unavailable".into());
+        let _err17 = NailsError::LockPoisoned("test lock poisoned".into());
     }
 
     #[test]

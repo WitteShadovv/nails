@@ -248,6 +248,19 @@ fn test_activate_json_output() {
         );
 }
 
+/// Test that activate command help advertises quiet mode
+#[test]
+fn test_activate_help_includes_quiet_flag() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["activate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("-q, --quiet"))
+        .stdout(predicates::str::contains(
+            "Quiet mode: only show final result",
+        ));
+}
+
 /// Test that activate command with --no-color doesn't produce ANSI codes
 #[test]
 fn test_activate_no_color_output() {
@@ -547,6 +560,64 @@ fn test_status_command_plain_output() {
 }
 
 #[test]
+fn test_status_fails_closed_on_invalid_config() {
+    let config_file = create_invalid_config_file();
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["--config", config_file.path().to_str().unwrap(), "status"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains("Error loading config from"))
+        .stderr(predicates::str::contains(
+            config_file.path().to_str().unwrap(),
+        ))
+        .stderr(predicates::str::contains("Invalid YAML"));
+}
+
+#[test]
+fn test_deactivate_fails_closed_on_unreadable_config_path() {
+    let config_dir = tempfile::tempdir().unwrap();
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args([
+        "--config",
+        config_dir.path().to_str().unwrap(),
+        "deactivate",
+    ])
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains("Error loading config from"))
+    .stderr(predicates::str::contains(
+        config_dir.path().to_str().unwrap(),
+    ))
+    .stderr(predicates::str::contains("Failed to read config"));
+}
+
+#[test]
+fn test_emergency_fails_closed_on_invalid_config_before_safety_guard() {
+    let config_file = create_invalid_config_file();
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args([
+        "--config",
+        config_file.path().to_str().unwrap(),
+        "emergency",
+        "--no-countdown",
+    ])
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains("Error loading config from"))
+    .stderr(predicates::str::contains(
+        config_file.path().to_str().unwrap(),
+    ))
+    .stderr(predicates::str::contains("Invalid YAML"))
+    .stderr(predicates::str::contains("TEST SAFETY GUARD").not());
+}
+
+#[test]
 fn test_verify_command_json_output() {
     let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
         .args(["verify", "--json"])
@@ -595,6 +666,110 @@ fn test_verify_command_deep_json_output() {
 }
 
 #[test]
+fn test_verify_command_human_output_reports_config_paths_and_missing_state_file() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let state_path = hidden_root.join("custom-state.json");
+    let log_path = hidden_root.join("logs");
+    let config_path = temp_dir.path().join("nails.yaml");
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nstate_file_path: {}\nlog_path: {}\noverlays:\n  - name: home\n    lower: /home\n    upper: {}/home\n    work: {}/.work/home\n    target: /home\n  - name: etc\n    lower: /etc\n    upper: {}/etc\n    work: {}/.work/etc\n    target: /etc",
+        hidden_root.display(),
+        state_path.display(),
+        log_path.display(),
+        hidden_root.display(),
+        hidden_root.display(),
+        hidden_root.display(),
+        hidden_root.display(),
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args(["--config", config_path.to_str().unwrap(), "verify"])
+        .output()
+        .expect("failed to run verify command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let code = output.status.code();
+
+    assert!(
+        code == Some(0) || code == Some(1),
+        "unexpected exit code: {:?}\nstdout={}\nstderr={}",
+        code,
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("checked 5 paths from config"));
+    assert!(stdout.contains(&format!(
+        "State file status: missing at {}",
+        state_path.display()
+    )));
+}
+
+#[test]
+fn test_verify_command_json_output_reports_present_state_file_status() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let state_path = hidden_root.join("state.json");
+    let config_path = temp_dir.path().join("nails.yaml");
+
+    let state_json = r#"{
+  \"version\": \"0.1.0\",
+  \"state\": \"Inactive\",
+  \"nixos_generation\": null,
+  \"config_fingerprint\": null,
+  \"overlay_status\": {},
+  \"failed_overlays\": [],
+  \"last_modified\": \"2026-01-01T00:00:00Z\"
+}"#
+    .to_string();
+    std::fs::write(&state_path, state_json).unwrap();
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        hidden_root.display(),
+        state_path.display(),
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "verify",
+            "--json",
+        ])
+        .output()
+        .expect("failed to run verify command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let code = output.status.code();
+
+    assert!(
+        code == Some(0) || code == Some(1),
+        "unexpected exit code: {:?}\nstdout={}\nstderr={}",
+        code,
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("\"state_file_status\""));
+    assert!(stdout.contains("\"kind\": \"present\""));
+    assert!(stdout.contains(&format!("\"path\": \"{}\"", state_path.display())));
+    assert!(stdout.contains("\"state\": \"INACTIVE\""));
+}
+
+#[test]
 fn test_activate_interactive_fails_before_any_real_ops() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["activate", "--interactive"])
@@ -622,6 +797,305 @@ fn test_activate_with_build_dir_config_hits_safety_guard() {
     .failure()
     .code(2)
     .stderr(predicates::str::contains("TEST SAFETY GUARD"));
+}
+
+#[test]
+fn test_activate_kill_session_detaches_via_systemd_run() {
+    use std::fs;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let fake_bin = temp_dir.path().join("bin");
+    let systemd_run_log = temp_dir.path().join("systemd-run.log");
+    let shell_path = locate_shell_path();
+
+    fs::create_dir_all(&hidden_root).unwrap();
+    fs::create_dir_all(&fake_bin).unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+
+    let systemd_run_path = fake_bin.join("systemd-run");
+    fs::write(
+        &systemd_run_path,
+        format!(
+            "#!{}\nprintf '%s\\n' \"$@\" > \"{}\"\nexit 0\n",
+            shell_path.display(),
+            systemd_run_log.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&systemd_run_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&systemd_run_path, perms).unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_file.path().to_str().unwrap(),
+            "activate",
+            "--kill-session",
+            "--no-preflight",
+        ])
+        .env("PATH", &fake_bin)
+        .env("DISPLAY", ":0")
+        .env("NAILS_SESSION_ID", "c42")
+        .env("NAILS_DISPLAY_MANAGER", "gdm")
+        .env("NAILS_TARGET_UID", "1000")
+        .env("NAILS_TARGET_USER", "amnesia")
+        .env("NAILS_LOGIND_AVAILABLE", "1")
+        .output()
+        .expect("failed to run activate detach handoff test");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={stderr}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(stderr.contains("Detached to background via systemd transient service."));
+    assert!(stderr.contains("Handoff complete; activation continues in background."));
+
+    let logged_args = fs::read_to_string(systemd_run_log).unwrap();
+    assert!(logged_args.contains("--unit"));
+    assert!(logged_args.contains("--slice=system.slice"));
+    assert!(logged_args.contains("--same-dir"));
+    assert!(logged_args.contains("--collect"));
+    assert!(logged_args.contains("--setenv=NAILS_DETACHED=1"));
+    assert!(logged_args.contains("--setenv=XDG_SESSION_ID="));
+    assert!(logged_args.contains("--setenv=NAILS_SESSION_ID=c42"));
+    assert!(logged_args.contains("--setenv=NAILS_DISPLAY_MANAGER=gdm"));
+    assert!(logged_args.contains("--setenv=NAILS_TARGET_UID=1000"));
+    assert!(logged_args.contains("--setenv=NAILS_TARGET_USER=amnesia"));
+    assert!(logged_args.contains("activate"));
+    assert!(logged_args.contains("--kill-session"));
+    assert!(logged_args.contains("--no-preflight"));
+}
+
+#[test]
+fn test_activate_kill_session_surfaces_systemd_run_failures() {
+    use std::fs;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let fake_bin = temp_dir.path().join("bin");
+    let shell_path = locate_shell_path();
+
+    fs::create_dir_all(&hidden_root).unwrap();
+    fs::create_dir_all(&fake_bin).unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+
+    let systemd_run_path = fake_bin.join("systemd-run");
+    fs::write(
+        &systemd_run_path,
+        format!(
+            "#!{}\nprintf 'mock detach failure' >&2\nexit 1\n",
+            shell_path.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&systemd_run_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&systemd_run_path, perms).unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_file.path().to_str().unwrap(),
+            "activate",
+            "--kill-session",
+            "--no-preflight",
+        ])
+        .env("PATH", &fake_bin)
+        .env("DISPLAY", ":0")
+        .env("NAILS_SESSION_ID", "c42")
+        .env("NAILS_DISPLAY_MANAGER", "gdm")
+        .env("NAILS_TARGET_UID", "1000")
+        .env("NAILS_TARGET_USER", "amnesia")
+        .env("NAILS_LOGIND_AVAILABLE", "1")
+        .output()
+        .expect("failed to run activate detach failure test");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert!(stderr.contains("systemd-run failed"), "stderr={stderr}");
+    assert!(stderr.contains("mock detach failure"), "stderr={stderr}");
+}
+
+#[test]
+fn test_activate_dry_run_skips_preflight_without_real_mutations() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args([
+        "--config",
+        config_file.path().to_str().unwrap(),
+        "activate",
+        "--dry-run",
+        "--no-preflight",
+        "--no-kill-session",
+        "--overlay-only",
+        "--plain",
+    ])
+    .assert()
+    .success()
+    .stdout(predicates::str::contains(
+        "=== NAILS Dry-Run: Activation Preview ===",
+    ))
+    .stdout(predicates::str::contains(
+        "[WARN] Pre-flight checks skipped (--no-preflight)",
+    ))
+    .stdout(predicates::str::contains(
+        "[INFO] Session kill disabled (--no-kill-session)",
+    ))
+    .stdout(predicates::str::contains(
+        "[INFO] Overlay-only mode: NixOS profile switch would be skipped",
+    ))
+    .stdout(predicates::str::contains(
+        "=== Dry-run complete. No changes were made. ===",
+    ));
+}
+
+#[test]
+fn test_activate_dry_run_executes_preflight_and_reports_results() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_file.path().to_str().unwrap(),
+            "activate",
+            "--dry-run",
+            "--no-kill-session",
+            "--plain",
+        ])
+        .output()
+        .expect("failed to run activate dry-run");
+
+    assert!(
+        output.status.success(),
+        "dry-run should succeed\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--- Pre-flight Checks ---"));
+    assert!(stdout.contains("--- Overlay Targets ---"));
+    assert!(stdout.contains("--- Session Management ---"));
+    assert!(stdout.contains("--- NixOS Profile ---"));
+    assert!(stdout.contains("[INFO] Session kill disabled (--no-kill-session)"));
+    assert!(
+        stdout.contains("[PASS]") || stdout.contains("[WARN]") || stdout.contains("[FAIL]"),
+        "expected preflight result markers in output: {stdout}"
+    );
+}
+
+#[test]
+fn test_activate_dry_run_checks_session_context_by_default() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args([
+        "--config",
+        config_file.path().to_str().unwrap(),
+        "activate",
+        "--dry-run",
+        "--no-preflight",
+        "--plain",
+    ])
+    .assert()
+    .success()
+    .stdout(predicates::str::contains("--- Session Management ---"))
+    .stdout(
+        predicates::str::contains("Graphical session detected")
+            .or(predicates::str::contains("No graphical session detected"))
+            .or(predicates::str::contains(
+                "Could not detect session context",
+            )),
+    );
+}
+
+#[test]
+fn test_activate_dry_run_reports_explicit_flake_reference() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nnixos_flake: /etc/nixos#test-host",
+        hidden_root.display()
+    )
+    .unwrap();
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args([
+        "--config",
+        config_file.path().to_str().unwrap(),
+        "activate",
+        "--dry-run",
+        "--no-preflight",
+        "--no-kill-session",
+        "-vv",
+        "--plain",
+    ])
+    .assert()
+    .success()
+    .stdout(predicates::str::contains(
+        "[INFO] NixOS flake: /etc/nixos#test-host",
+    ))
+    .stdout(predicates::str::contains("would build and switch profile"));
+}
+
+#[test]
+fn test_activate_fails_closed_on_invalid_config_before_safety_guard() {
+    let config_file = create_invalid_config_file();
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args([
+        "--config",
+        config_file.path().to_str().unwrap(),
+        "activate",
+        "--no-kill-session",
+        "--no-preflight",
+    ])
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains("Error loading config"))
+    .stderr(predicates::str::contains("Invalid YAML"))
+    .stderr(predicates::str::contains("TEST SAFETY GUARD").not());
 }
 
 #[test]
@@ -801,6 +1275,23 @@ fn create_test_config_file(volume_path: &str) -> tempfile::NamedTempFile {
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
     writeln!(config_file, "hidden_volume_path: {}", volume_path).unwrap();
     config_file
+}
+
+fn create_invalid_config_file() -> tempfile::NamedTempFile {
+    use std::io::Write;
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(config_file, "hidden_volume_path: [broken").unwrap();
+    config_file
+}
+
+fn locate_shell_path() -> std::path::PathBuf {
+    std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths)
+                .flat_map(|dir| [dir.join("bash"), dir.join("sh")])
+                .find(|candidate| candidate.is_file())
+        })
+        .expect("expected to locate a usable shell binary")
 }
 
 /// Helper function to create a test config file with standard content

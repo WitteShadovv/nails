@@ -18,9 +18,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Use workspace versions for consistency
-clap = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 nix = { workspace = true, features = ["mount", "user", "signal", "process", "fs"] }
@@ -31,6 +29,8 @@ serde-saphyr = { workspace = true }
 chrono = { workspace = true }
 tempfile = { workspace = true }
 colored = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 # Workspace testing dependencies
@@ -39,3 +39,8 @@ predicates = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = "0.2.5"
 serial_test = "3.1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "performance"
+harness = false

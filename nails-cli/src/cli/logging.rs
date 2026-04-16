@@ -13,6 +13,18 @@ use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+/// Stdout formatting mode for CLI command output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StdoutFormat {
+    /// Human-readable tracing output written to stderr.
+    Human,
+    /// Newline-delimited JSON tracing events written to stdout.
+    ///
+    /// Used by `nails activate --json` so structured progress events are emitted
+    /// during activation before the final JSON result object is printed.
+    ActivateJsonStream,
+}
+
 /// Initialize tracing subscriber with stdout and optional file logging
 ///
 /// Sets up a two-layer subscriber:
@@ -55,6 +67,23 @@ pub fn init_stdout_subscriber(
     no_logs: bool,
     config_override: Option<&std::path::Path>,
 ) {
+    init_stdout_subscriber_with_mode(
+        verbose_count,
+        quiet,
+        no_logs,
+        config_override,
+        StdoutFormat::Human,
+    );
+}
+
+/// Initialize tracing subscriber with an explicit stdout formatting mode.
+pub fn init_stdout_subscriber_with_mode(
+    verbose_count: u8,
+    quiet: bool,
+    no_logs: bool,
+    config_override: Option<&std::path::Path>,
+    stdout_format: StdoutFormat,
+) {
     // Map CLI flags to tracing level (AC #5)
     let stdout_level = if quiet {
         LevelFilter::WARN // Quiet mode: only WARN and ERROR
@@ -68,17 +97,7 @@ pub fn init_stdout_subscriber(
 
     // Skip file layer if --no-logs flag is set (AC: Story 9.3, Task 2.5)
     if no_logs {
-        // Stdout-only logging (no file layer)
-        tracing_subscriber::fmt()
-            .with_target(false)
-            .with_thread_ids(false)
-            .with_thread_names(false)
-            .with_file(false)
-            .with_line_number(false)
-            .with_level(true)
-            .with_writer(std::io::stderr)
-            .with_max_level(stdout_level)
-            .init();
+        init_stdout_only_subscriber(stdout_level, stdout_format);
         return;
     }
 
@@ -87,24 +106,47 @@ pub fn init_stdout_subscriber(
 
     match file_layer_result {
         Ok(Some(file_layer)) => {
-            // Dual-layer subscriber: file (JSON, all events) + stdout (fmt, filtered)
-            let stdout_layer = fmt::layer()
-                .with_target(false)
-                .with_thread_ids(false)
-                .with_thread_names(false)
-                .with_file(false)
-                .with_line_number(false)
-                .with_level(true)
-                .with_writer(std::io::stderr)
-                .with_filter(stdout_level);
+            let subscriber = tracing_subscriber::registry().with(file_layer);
 
-            tracing_subscriber::registry()
-                .with(file_layer)
-                .with(stdout_layer)
-                .init();
+            match stdout_format {
+                StdoutFormat::Human => {
+                    let stdout_layer = fmt::layer()
+                        .with_target(false)
+                        .with_thread_ids(false)
+                        .with_thread_names(false)
+                        .with_file(false)
+                        .with_line_number(false)
+                        .with_level(true)
+                        .with_writer(std::io::stderr)
+                        .with_filter(stdout_level);
+
+                    subscriber.with(stdout_layer).init();
+                }
+                StdoutFormat::ActivateJsonStream => {
+                    let stdout_layer = fmt::layer()
+                        .json()
+                        .flatten_event(true)
+                        .with_current_span(false)
+                        .with_span_list(false)
+                        .with_target(false)
+                        .with_level(true)
+                        .with_writer(std::io::stdout)
+                        .with_filter(stdout_level);
+
+                    subscriber.with(stdout_layer).init();
+                }
+            }
         }
         Ok(None) | Err(_) => {
             // Graceful fallback: stdout-only logging (Task 2.4)
+            init_stdout_only_subscriber(stdout_level, stdout_format);
+        }
+    }
+}
+
+fn init_stdout_only_subscriber(stdout_level: LevelFilter, stdout_format: StdoutFormat) {
+    match stdout_format {
+        StdoutFormat::Human => {
             tracing_subscriber::fmt()
                 .with_target(false)
                 .with_thread_ids(false)
@@ -113,6 +155,18 @@ pub fn init_stdout_subscriber(
                 .with_line_number(false)
                 .with_level(true)
                 .with_writer(std::io::stderr)
+                .with_max_level(stdout_level)
+                .init();
+        }
+        StdoutFormat::ActivateJsonStream => {
+            tracing_subscriber::fmt()
+                .json()
+                .flatten_event(true)
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_target(false)
+                .with_level(true)
+                .with_writer(std::io::stdout)
                 .with_max_level(stdout_level)
                 .init();
         }
@@ -231,4 +285,89 @@ fn init_file_layer(
         .with_filter(LevelFilter::TRACE); // Capture ALL events to file
 
     Ok(Some(file_layer))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
+
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedBuffer {
+        type Writer = SharedWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedWriter(Arc::clone(&self.0))
+        }
+    }
+
+    impl io::Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn activate_json_stream_formats_progress_events_as_structured_json() {
+        let output = SharedBuffer::default();
+        let captured = Arc::clone(&output.0);
+
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_current_span(false)
+            .with_span_list(false)
+            .with_target(false)
+            .with_level(true)
+            .with_writer(output)
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                event = "progress",
+                phase = "session_management",
+                current = 1,
+                total = 6,
+                "[1/6] Preparing session management..."
+            );
+        });
+
+        let payload = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        let line = payload
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .expect("expected one JSON log line");
+        let json: serde_json::Value = serde_json::from_str(line).unwrap();
+
+        assert_eq!(
+            json.get("event").and_then(|value| value.as_str()),
+            Some("progress")
+        );
+        assert_eq!(
+            json.get("phase").and_then(|value| value.as_str()),
+            Some("session_management")
+        );
+        assert_eq!(
+            json.get("current").and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(json.get("total").and_then(|value| value.as_u64()), Some(6));
+        assert_eq!(
+            json.get("level").and_then(|value| value.as_str()),
+            Some("INFO")
+        );
+        assert_eq!(
+            json.get("message").and_then(|value| value.as_str()),
+            Some("[1/6] Preparing session management...")
+        );
+    }
 }

@@ -1,7 +1,13 @@
-//! Tests for RealFilesystem
+//! Tests for `RealFilesystem`.
 //!
-//! Contains integration tests (require root, marked #[ignore]) and
-//! unit tests that use MockFilesystem to verify behaviors.
+//! This module intentionally keeps one opt-in ignored integration test for a
+//! real overlay mount. It is ignored because it must run as root against a real
+//! overlayfs-capable kernel, so it is not safe or portable for normal CI.
+//! Every remaining `#[ignore]` in this workspace is expected to carry this kind
+//! of explicit environment/host constraint inline.
+//!
+//! The rest of this module uses `MockFilesystem` or plain temporary
+//! directories so the behavior stays inspectable and runnable in normal tests.
 
 use super::RealFilesystem;
 use crate::NailsError;
@@ -10,15 +16,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 // ========================================================================
-// Integration Tests for RealFilesystem (require root privileges)
+// Integration Tests for RealFilesystem that require root + real overlayfs
 // ========================================================================
 
 #[test]
-#[ignore]
+#[ignore = "Requires root privileges and a real overlayfs-capable kernel; excluded from normal CI runs"]
 fn test_real_overlay_mount_creates_merged_view() {
     // AC4 Integration test: Verify actual overlay filesystem merge
-    // This test requires root privileges and is marked #[ignore] for CI/CD
-    //
+    // Ignored intentionally: this performs a real overlay mount and therefore
+    // needs root privileges, an overlayfs-capable kernel, and manual/isolated
+    // execution outside hermetic CI.
     // Run with: cargo test test_real_overlay_mount_creates_merged_view -- --ignored
     //
     // Test verifies:
@@ -912,6 +919,141 @@ fn test_real_list_directory_returns_created_entries() {
 }
 
 #[test]
+fn test_real_read_directory_returns_created_entries() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file = temp_dir.path().join("entry.txt");
+    let subdir = temp_dir.path().join("subdir");
+    fs::write(&file, "data").unwrap();
+    fs::create_dir_all(&subdir).unwrap();
+
+    let mut entries: Vec<_> = fs
+        .read_directory(temp_dir.path())
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.path())
+        .collect();
+    entries.sort();
+
+    assert_eq!(entries, vec![file, subdir]);
+}
+
+#[test]
+fn test_real_create_directory_and_path_queries_work() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let dir = temp_dir.path().join("nested/dir");
+
+    fs.create_directory(&dir).unwrap();
+
+    assert!(fs.path_exists(&dir).unwrap());
+    assert!(fs.is_directory(&dir).unwrap());
+    assert!(!fs.is_symlink(&dir).unwrap());
+}
+
+#[test]
+fn test_real_path_exists_and_is_directory_for_missing_path() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let missing = temp_dir.path().join("missing");
+
+    assert!(!fs.path_exists(&missing).unwrap());
+    assert!(!fs.is_directory(&missing).unwrap());
+    assert!(!fs.is_symlink(&missing).unwrap());
+}
+
+#[test]
+fn test_real_is_readable_returns_true_for_existing_file() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file = temp_dir.path().join("readable.txt");
+    fs::write(&file, "data").unwrap();
+
+    assert!(fs.is_readable(&file).unwrap());
+}
+
+#[test]
+fn test_real_is_readable_returns_false_for_missing_file() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let missing = temp_dir.path().join("missing.txt");
+
+    assert!(!fs.is_readable(&missing).unwrap());
+}
+
+#[test]
+fn test_real_rename_and_remove_file_round_trip() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let original = temp_dir.path().join("before.txt");
+    let renamed = temp_dir.path().join("after.txt");
+    fs::write(&original, "data").unwrap();
+
+    fs.rename_file(&original, &renamed).unwrap();
+
+    assert!(!original.exists());
+    assert!(renamed.exists());
+
+    fs.remove_file(&renamed).unwrap();
+    assert!(!renamed.exists());
+}
+
+#[test]
+fn test_real_remove_directory_variants_work() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let empty_dir = temp_dir.path().join("empty");
+    let nested_dir = temp_dir.path().join("nested");
+    fs::create_dir_all(&empty_dir).unwrap();
+    fs::create_dir_all(nested_dir.join("child")).unwrap();
+    fs::write(nested_dir.join("child/file.txt"), "data").unwrap();
+
+    fs.remove_directory(&empty_dir).unwrap();
+    assert!(!empty_dir.exists());
+
+    fs.remove_dir_all(&nested_dir).unwrap();
+    assert!(!nested_dir.exists());
+}
+
+#[test]
+fn test_real_secure_delete_removes_file() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file = temp_dir.path().join("secret.txt");
+    fs::write(&file, "super secret contents").unwrap();
+
+    fs.secure_delete(&file).unwrap();
+
+    assert!(!file.exists());
+}
+
+#[test]
+fn test_real_secure_delete_removes_zero_length_file() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file = temp_dir.path().join("empty.txt");
+    fs::write(&file, "").unwrap();
+
+    fs.secure_delete(&file).unwrap();
+
+    assert!(!file.exists());
+}
+
+#[test]
+fn test_real_secure_delete_dir_all_removes_nested_directory() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path().join("wipe-me");
+    fs::create_dir_all(root.join("nested")).unwrap();
+    fs::write(root.join("top.txt"), "top").unwrap();
+    fs::write(root.join("nested/bottom.txt"), "bottom").unwrap();
+
+    fs.secure_delete_dir_all(&root).unwrap();
+
+    assert!(!root.exists());
+}
+
+#[test]
 fn test_real_modified_time_returns_timestamp_for_existing_file() {
     let fs = RealFilesystem;
     let temp_dir = tempfile::tempdir().unwrap();
@@ -1138,4 +1280,17 @@ fn test_same_device_mixed_with_cross_device() {
             PathBuf::from("/persist/home/amnesia")
         )],
     );
+}
+
+// ========================================================================
+// statvfs / get_free_space tests
+// ========================================================================
+
+#[test]
+fn test_get_free_space_returns_realistic_value() {
+    let fs = RealFilesystem;
+    let free = fs
+        .get_free_space(Path::new("/"))
+        .expect("get_free_space should succeed on /");
+    assert_ne!(free, u64::MAX, "Free space should come from statvfs");
 }

@@ -72,7 +72,12 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
     }
 
     // Best-effort chown directory to target user so dispatch_all can delete files
-    if let Ok(user) =
+    if crate::runtime_safety::should_skip_host_interaction() {
+        tracing::debug!(
+            dir = %dir.display(),
+            "Skipping notifications directory chown in test/test-like context"
+        );
+    } else if let Ok(user) =
         std::env::var(obfuscate::env_target_user()).or_else(|_| std::env::var("SUDO_USER"))
     {
         let _ = std::process::Command::new("chown")
@@ -127,7 +132,12 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
     }
 
     // Best-effort chown to target user so dispatch_all can delete the file
-    if let Ok(user) =
+    if crate::runtime_safety::should_skip_host_interaction() {
+        tracing::debug!(
+            path = %path.display(),
+            "Skipping notification file chown in test/test-like context"
+        );
+    } else if let Ok(user) =
         std::env::var(obfuscate::env_target_user()).or_else(|_| std::env::var("SUDO_USER"))
     {
         let _ = std::process::Command::new("chown")
@@ -250,8 +260,15 @@ pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
         Ok(0)
     }
 
-    // LAYER 2: Runtime test guard - check NAILS_DISABLE_NOTIFICATIONS early
-    // This is the FIRST check, before we even read pending notifications
+    // LAYER 2: Runtime test guard - skip host dispatch from test binaries
+    #[cfg(not(test))]
+    if crate::runtime_safety::should_skip_host_interaction() {
+        tracing::debug!("Notification dispatch disabled in test/test-like runtime context");
+        return Ok(0);
+    }
+
+    // LAYER 3: Runtime environment guard - check NAILS_DISABLE_NOTIFICATIONS early
+    // This is the FIRST explicit env-var check, before we even read pending notifications
     #[cfg(not(test))]
     if is_notifications_disabled() {
         tracing::debug!("Notification dispatch disabled via NAILS_DISABLE_NOTIFICATIONS");

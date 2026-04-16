@@ -1,9 +1,11 @@
 //! Output formatting for the verify command
 
+use nails_core::{StateFileStatus, VerifyResult};
+
 /// Print verification results in human-readable format
 ///
 /// This function is pub(crate) to enable testing of the output formatting.
-pub fn print_verify_result(result: &nails_core::VerifyResult) {
+pub fn print_verify_result(result: &VerifyResult) {
     use colored::Colorize;
     use nails_core::{Severity, VerifyStatus};
 
@@ -52,6 +54,14 @@ pub fn print_verify_result(result: &nails_core::VerifyResult) {
         nails_core::ScanDepth::Standard => {}
     }
 
+    if let Some(summary) = config_scan_summary(result) {
+        println!("{}", summary);
+    }
+
+    if let Some(summary) = state_file_status_summary(result) {
+        println!("{}", summary);
+    }
+
     // Print findings
     if !result.findings.is_empty() {
         println!();
@@ -74,10 +84,39 @@ pub fn print_verify_result(result: &nails_core::VerifyResult) {
     }
 }
 
+pub(crate) fn config_scan_summary(result: &VerifyResult) -> Option<String> {
+    result.config_aware.then(|| {
+        format!(
+            "Config-aware scan: checked {} paths from config",
+            result.config_paths_checked
+        )
+    })
+}
+
+pub(crate) fn state_file_status_summary(result: &VerifyResult) -> Option<String> {
+    match &result.state_file_status {
+        StateFileStatus::NotChecked => None,
+        StateFileStatus::Missing { path } => {
+            Some(format!("State file status: missing at {}", path.display()))
+        }
+        StateFileStatus::Present { path, state } => Some(format!(
+            "State file status: present at {} ({})",
+            path.display(),
+            state
+        )),
+        StateFileStatus::Error { path, message } => Some(format!(
+            "State file status: error at {} ({})",
+            path.display(),
+            message
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nails_core::{Finding, ScanDepth, Severity, VerifyResult, VerifyStatus};
+    use nails_core::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
+    use std::path::PathBuf;
 
     #[test]
     fn test_print_verify_result_secure_status() {
@@ -191,5 +230,60 @@ mod tests {
             .collect();
         let result = VerifyResult::new(VerifyStatus::Critical, findings, ScanDepth::Deep);
         print_verify_result(&result);
+    }
+
+    #[test]
+    fn test_config_scan_summary_uses_requested_phrase() {
+        let result = VerifyResult::new_config_aware(
+            VerifyStatus::Secure,
+            vec![],
+            ScanDepth::Standard,
+            4,
+            StateFileStatus::Missing {
+                path: PathBuf::from("/mnt/hidden/state.json"),
+            },
+        );
+
+        assert_eq!(
+            config_scan_summary(&result).as_deref(),
+            Some("Config-aware scan: checked 4 paths from config")
+        );
+    }
+
+    #[test]
+    fn test_state_file_status_summary_for_missing_file() {
+        let result = VerifyResult::new_config_aware(
+            VerifyStatus::Secure,
+            vec![],
+            ScanDepth::Standard,
+            4,
+            StateFileStatus::Missing {
+                path: PathBuf::from("/mnt/hidden/state.json"),
+            },
+        );
+
+        assert_eq!(
+            state_file_status_summary(&result).as_deref(),
+            Some("State file status: missing at /mnt/hidden/state.json")
+        );
+    }
+
+    #[test]
+    fn test_state_file_status_summary_for_present_file() {
+        let result = VerifyResult::new_config_aware(
+            VerifyStatus::Warning,
+            vec![],
+            ScanDepth::Standard,
+            4,
+            StateFileStatus::Present {
+                path: PathBuf::from("/mnt/hidden/state.json"),
+                state: "INACTIVE".to_string(),
+            },
+        );
+
+        assert_eq!(
+            state_file_status_summary(&result).as_deref(),
+            Some("State file status: present at /mnt/hidden/state.json (INACTIVE)")
+        );
     }
 }

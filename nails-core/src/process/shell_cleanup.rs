@@ -169,10 +169,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // DANGEROUS: Actually kills shell processes - run only in isolated CI environment
+    #[ignore = "Invokes real process-kill logic and is unsafe outside an isolated test environment"]
     fn test_kill_user_shells_skips_own_pid() {
-        // This test verifies the function runs without panic and skips our own PID.
-        // We can't fully test SIGKILL in unit tests without spawning real processes.
+        // Ignored intentionally because it touches the real process table and
+        // kill path on the host OS. It should only run in a disposable,
+        // isolated environment where killing matching shell processes is safe.
+        // The assertion here verifies we still protect the current test PID.
         let report = kill_user_shells();
         // Our own shell process (if any) should not have been killed
         let own_pid = std::process::id();

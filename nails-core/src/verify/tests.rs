@@ -1,7 +1,7 @@
 //! Tests for forensic verification system
 
 use super::Verifier;
-use super::types::{Finding, ScanDepth, Severity, VerifyResult, VerifyStatus};
+use super::types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
 use crate::MockFilesystem;
 
 // ========================================================================
@@ -44,6 +44,29 @@ fn test_verify_result_new() {
     assert_eq!(result.status, VerifyStatus::Warning);
     assert_eq!(result.findings.len(), 1);
     assert_eq!(result.scan_depth, ScanDepth::Deep);
+    assert_eq!(result.state_file_status, StateFileStatus::NotChecked);
+}
+
+#[test]
+fn test_verify_result_new_config_aware_includes_state_file_status() {
+    let result = VerifyResult::new_config_aware(
+        VerifyStatus::Secure,
+        vec![],
+        ScanDepth::Standard,
+        4,
+        StateFileStatus::Missing {
+            path: std::path::PathBuf::from("/mnt/hidden/state.json"),
+        },
+    );
+
+    assert!(result.config_aware);
+    assert_eq!(result.config_paths_checked, 4);
+    assert_eq!(
+        result.state_file_status,
+        StateFileStatus::Missing {
+            path: std::path::PathBuf::from("/mnt/hidden/state.json")
+        }
+    );
 }
 
 #[test]
@@ -154,6 +177,7 @@ fn test_verify_result_serializes_to_json() {
     assert!(json.contains("\"status\":\"Warning\""));
     assert!(json.contains("\"scan_depth\":\"Deep\""));
     assert!(json.contains("\"findings\""));
+    assert!(json.contains("\"state_file_status\""));
 }
 
 #[test]
@@ -838,4 +862,185 @@ fn test_check_all_artifact_paths() {
         assert!(finding.fix_guidance.is_some());
         assert!(finding.fix_guidance.as_ref().unwrap().contains("rm"));
     }
+}
+
+// ========================================================================
+// Config-Aware and State-Aware Verification Tests
+// ========================================================================
+
+#[test]
+fn test_verify_with_config_is_config_aware() {
+    use crate::config::Config;
+
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+
+    let result = verifier.run(false).unwrap();
+    assert!(result.config_aware);
+    // Should have checked at least hidden_volume_root, log_path, state_file_path
+    assert!(result.config_paths_checked >= 3);
+}
+
+#[test]
+fn test_verify_without_config_not_config_aware() {
+    let fs = MockFilesystem::new();
+    let verifier = Verifier::new(fs);
+
+    let result = verifier.run(false).unwrap();
+    assert!(!result.config_aware);
+    assert_eq!(result.config_paths_checked, 0);
+}
+
+#[test]
+fn test_verify_detects_config_specific_hidden_volume() {
+    use crate::config::Config;
+    use std::path::PathBuf;
+
+    let fs = MockFilesystem::new();
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/test-hidden"),
+        ..Config::default()
+    };
+
+    // Mark hidden volume as accessible
+    fs.mock_set_path_exists("/mnt/test-hidden", true);
+
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+
+    let config_findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "config" && f.message.contains("Hidden volume"))
+        .collect();
+    assert_eq!(config_findings.len(), 1);
+    assert_eq!(config_findings[0].severity, Severity::Warn);
+}
+
+#[test]
+fn test_verify_detects_state_file_exists() {
+    use crate::config::Config;
+    use std::path::PathBuf;
+
+    let fs = MockFilesystem::new();
+    let config = Config {
+        state_file_path: PathBuf::from("/mnt/hidden/state.json"),
+        ..Config::default()
+    };
+
+    fs.mock_set_path_exists("/mnt/hidden/state.json", true);
+
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+
+    let state_findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "config" && f.message.contains("State file exists"))
+        .collect();
+    assert_eq!(state_findings.len(), 1);
+}
+
+#[test]
+fn test_verify_state_active_is_critical() {
+    use crate::SystemState;
+    use crate::state::StateFile;
+    use chrono::Utc;
+
+    let fs = MockFilesystem::new();
+    let state = StateFile {
+        state: SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![],
+        },
+        ..StateFile::default()
+    };
+
+    let config = crate::config::Config::default();
+    let verifier = Verifier::with_config(fs, config, Some(state), StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+
+    let state_findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "state" && f.severity == Severity::Critical)
+        .collect();
+    assert!(!state_findings.is_empty());
+    assert!(state_findings[0].message.contains("ACTIVE"));
+}
+
+#[test]
+fn test_verify_state_inactive_no_state_findings() {
+    use crate::state::StateFile;
+
+    let fs = MockFilesystem::new();
+    let state = StateFile::default(); // Inactive
+
+    let config = crate::config::Config::default();
+    let verifier = Verifier::with_config(fs, config, Some(state), StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+
+    let state_findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "state")
+        .collect();
+    assert!(state_findings.is_empty());
+}
+
+#[test]
+fn test_verify_state_emergency_is_critical() {
+    use crate::SystemState;
+    use crate::state::StateFile;
+    use chrono::Utc;
+
+    let fs = MockFilesystem::new();
+    let state = StateFile {
+        state: SystemState::Emergency {
+            triggered_at: Utc::now(),
+        },
+        ..StateFile::default()
+    };
+
+    let config = crate::config::Config::default();
+    let verifier = Verifier::with_config(fs, config, Some(state), StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+
+    let emergency_findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "state" && f.message.contains("EMERGENCY"))
+        .collect();
+    assert_eq!(emergency_findings.len(), 1);
+    assert_eq!(emergency_findings[0].severity, Severity::Critical);
+}
+
+#[test]
+fn test_verify_state_with_failed_overlays_info() {
+    use crate::state::{FailedOverlayInfo, StateFile};
+    use chrono::Utc;
+    use std::path::PathBuf;
+
+    let fs = MockFilesystem::new();
+    let state = StateFile {
+        failed_overlays: vec![FailedOverlayInfo {
+            target: PathBuf::from("/var"),
+            error_message: "Mount failed".to_string(),
+            failed_at: Utc::now(),
+        }],
+        ..StateFile::default()
+    };
+
+    let config = crate::config::Config::default();
+    let verifier = Verifier::with_config(fs, config, Some(state), StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+
+    let info_findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "state" && f.message.contains("failed overlay"))
+        .collect();
+    assert_eq!(info_findings.len(), 1);
+    assert_eq!(info_findings[0].severity, Severity::Info);
 }

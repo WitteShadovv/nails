@@ -567,7 +567,7 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
         let perms = std::fs::metadata(&state_path)
             .expect("Should get metadata")
             .permissions();
-        assert_eq!(perms.mode() & 0o777, 0o644);
+        assert_eq!(perms.mode() & 0o777, 0o600);
     }
 
     // Test that save_with_root rejects paths outside the custom root
@@ -1117,6 +1117,11 @@ fn test_integration_activate_panic_triggers_stateguard_rollback() {
 
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+    fs.mock_set_path_exists(
+        "/nix/var/nix/profiles/system/bin/switch-to-configuration",
+        true,
+    );
     let upper_dir = mock_hidden_vol.join("upper");
     let work_dir = mock_hidden_vol.join("work");
     std::fs::create_dir_all(&upper_dir).unwrap();
@@ -1470,4 +1475,137 @@ fn test_stateguard_end_to_end_workflow() {
     // Verify state persisted correctly
     let loaded = StateFile::load(&state_path).unwrap();
     assert_eq!(loaded.state, SystemState::Inactive);
+}
+
+#[test]
+#[cfg(unix)]
+fn test_state_file_permissions_are_0600() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let state_path = temp_dir.path().join("state.json");
+    let mock_hidden_vol_root = temp_dir.path().to_str().unwrap();
+
+    let state = StateFile {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        state: SystemState::Inactive,
+        nixos_generation: None,
+        overlay_status: std::collections::HashMap::new(),
+        failed_overlays: Vec::new(),
+        last_modified: Utc::now(),
+        checksum: None,
+        config_fingerprint: None,
+    };
+    state
+        .save_with_root(&state_path, mock_hidden_vol_root)
+        .expect("Failed to save state file");
+
+    let perms = std::fs::metadata(&state_path)
+        .expect("Should get metadata")
+        .permissions();
+    assert_eq!(
+        perms.mode() & 0o777,
+        0o600,
+        "State file permissions should be 0o600 (owner read/write only)"
+    );
+}
+
+// ========== Checksum Verification Tests ==========
+
+#[test]
+fn test_checksum_round_trip_save_load() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let mock_root = temp_dir.path().to_str().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+
+    let state = StateFile {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        state: SystemState::Inactive,
+        nixos_generation: Some("gen123".to_string()),
+        overlay_status: std::collections::HashMap::new(),
+        failed_overlays: Vec::new(),
+        last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
+        checksum: None,
+        config_fingerprint: None,
+    };
+
+    state
+        .save_with_root(&state_path, mock_root)
+        .expect("Should save");
+    let loaded = StateFile::load(&state_path).expect("Should load");
+    assert_eq!(loaded.state, SystemState::Inactive);
+    assert_eq!(loaded.nixos_generation, Some("gen123".to_string()));
+}
+
+#[test]
+fn test_checksum_tamper_detection() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let mock_root = temp_dir.path().to_str().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+
+    let state = StateFile::default();
+    state
+        .save_with_root(&state_path, mock_root)
+        .expect("Should save");
+
+    // Tamper with the file: change a field but keep checksum
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    raw["nixos_generation"] = serde_json::Value::String("TAMPERED".to_string());
+    std::fs::write(&state_path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    let result = StateFile::load(&state_path);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        NailsError::ChecksumMismatch(msg) => {
+            assert!(msg.contains("tampered"));
+        }
+        other => panic!("Expected ChecksumMismatch, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_checksum_missing_migration_accepted() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let state_path = temp_dir.path().join("state.json");
+
+    // Write a valid state file WITHOUT checksum (simulates old version)
+    let json = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "state": "Inactive",
+        "nixos_generation": null,
+        "overlay_status": {},
+        "failed_overlays": [],
+        "last_modified": "2025-01-27T10:30:00Z"
+    });
+    std::fs::write(&state_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+    let loaded = StateFile::load(&state_path).expect("Should load without checksum (migration)");
+    assert_eq!(loaded.state, SystemState::Inactive);
+    assert_eq!(loaded.checksum, None);
+}
+
+#[test]
+fn test_checksum_populated_after_save() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let mock_root = temp_dir.path().to_str().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+
+    let state = StateFile::default();
+    state
+        .save_with_root(&state_path, mock_root)
+        .expect("Should save");
+
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    let checksum = raw["checksum"]
+        .as_str()
+        .expect("checksum should be present");
+    assert_eq!(checksum.len(), 64, "SHA-256 hex should be 64 chars");
+    assert!(
+        checksum.chars().all(|c| c.is_ascii_hexdigit()),
+        "checksum should be hex"
+    );
 }

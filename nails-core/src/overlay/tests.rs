@@ -474,6 +474,9 @@ fn test_unmount_pivot_overlay_ephemeral_cleans_tmpfs() {
     assert!(!fs.is_mounted(Path::new("/mnt/nails-pivot/var")).unwrap());
     assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
     assert!(!fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+    assert!(!fs.path_exists(Path::new("/mnt/nails-pivot/var")).unwrap());
+    assert!(!fs.path_exists(Path::new("/run/nails/var-upper")).unwrap());
+    assert!(!fs.path_exists(Path::new("/run/nails/var-work")).unwrap());
 }
 
 #[test]

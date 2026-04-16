@@ -91,6 +91,8 @@ pub mod notification;
 // String obfuscation for forensic resistance (Finding C4)
 pub mod obfuscate;
 
+mod runtime_safety;
+
 // Re-export for convenience
 pub use config::{
     CliOverrides, ColorProfile, ColorSchemeConfig, Config, ConfigBuilder, DecoyProfile,
@@ -112,13 +114,15 @@ pub use preflight::{
 };
 
 // Forensic validation exports
-pub use verify::{Finding, ScanDepth, Severity, Verifier, VerifyResult, VerifyStatus};
+pub use verify::{
+    Finding, ScanDepth, Severity, StateFileStatus, Verifier, VerifyResult, VerifyStatus,
+};
 
 // NixOS profile builder exports
 pub use nixos::{
     NixOSBuilder, NixOSConfigInfo, compute_config_fingerprint, ensure_hidden_configuration_module,
-    inject_import_block, prepare_nixos_config_overlay, stage_hidden_config_symlink,
-    verify_base_config_clean,
+    ensure_hidden_hardware_configuration, inject_import_block, prepare_nixos_config_overlay,
+    stage_hidden_config_symlink, verify_base_config_clean,
 };
 
 // Timing utilities exports
@@ -175,7 +179,9 @@ pub use cleanup::{
 };
 
 // Deactivation orchestrator exports (Story 5.5: DeactivationOrchestrator with Cleanup + Unmount + Rollback)
-pub use deactivation::{DeactivationOrchestrator, DeactivationReport, PostUnmountCleanupReport};
+pub use deactivation::{
+    DeactivationMode, DeactivationOrchestrator, DeactivationReport, PostUnmountCleanupReport,
+};
 
 // Emergency deactivation (thorough cleanup without reboot)
 pub use emergency::emergency_deactivate;

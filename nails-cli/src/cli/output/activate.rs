@@ -1,8 +1,9 @@
 //! Output formatting for the activate command
 
 /// JSON output structure for activate command
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 struct ActivateResult {
+    event: &'static str,
     status: String,
     duration: f64,
     state: String,
@@ -13,7 +14,7 @@ struct ActivateResult {
     shell_instructions: Option<ShellInstructionsJson>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct ShellInstructionsJson {
     pub shell_type: String,
     pub prompt_script: String,
@@ -21,12 +22,24 @@ pub struct ShellInstructionsJson {
     pub instructions: Vec<String>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 struct FailedCheckJson {
     name: String,
     reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     fix: Option<String>,
+}
+
+fn manager_state_debug<F: nails_core::Filesystem>(
+    manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+) -> Option<String> {
+    match manager.lock() {
+        Ok(manager) => manager
+            .current_state()
+            .ok()
+            .map(|state| format!("{:?}", state)),
+        Err(_) => None,
+    }
 }
 
 /// Print activation result in JSON format
@@ -36,14 +49,23 @@ pub fn print_activate_json<F: nails_core::Filesystem>(
     manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
     shell_setup: Option<&nails_core::ShellSetupResult>,
 ) {
+    let output = build_activate_json_output(result, duration, manager, shell_setup);
+
+    println!(
+        "{}",
+        serde_json::to_string(&output).expect("Failed to serialize JSON")
+    );
+}
+
+fn build_activate_json_output<F: nails_core::Filesystem>(
+    result: &Result<(), nails_core::NailsError>,
+    duration: f64,
+    manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+    shell_setup: Option<&nails_core::ShellSetupResult>,
+) -> ActivateResult {
     use nails_core::NailsError;
 
-    let state = manager
-        .lock()
-        .unwrap()
-        .current_state()
-        .map(|s| format!("{:?}", s))
-        .unwrap_or_else(|_| "UNKNOWN".to_string());
+    let state = manager_state_debug(manager).unwrap_or_else(|| "UNKNOWN".to_string());
 
     // Convert shell setup result to JSON structure
     let shell_instructions_json = shell_setup.map(|setup| ShellInstructionsJson {
@@ -53,8 +75,9 @@ pub fn print_activate_json<F: nails_core::Filesystem>(
         instructions: setup.instructions.clone(),
     });
 
-    let output = match result {
+    match result {
         Ok(_) => ActivateResult {
+            event: "result",
             status: "success".to_string(),
             duration,
             state,
@@ -64,6 +87,7 @@ pub fn print_activate_json<F: nails_core::Filesystem>(
         },
         Err(e) => match e {
             NailsError::PreFlightCheckFailed(failures) => ActivateResult {
+                event: "result",
                 status: "error".to_string(),
                 duration,
                 state: state.clone(),
@@ -84,6 +108,7 @@ pub fn print_activate_json<F: nails_core::Filesystem>(
                 shell_instructions: None,
             },
             _ => ActivateResult {
+                event: "result",
                 status: "error".to_string(),
                 duration,
                 state,
@@ -92,12 +117,7 @@ pub fn print_activate_json<F: nails_core::Filesystem>(
                 shell_instructions: None,
             },
         },
-    };
-
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&output).expect("Failed to serialize JSON")
-    );
+    }
 }
 
 /// Print activation result in human-readable format
@@ -186,8 +206,8 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
             _ => {
                 eprintln!("{}", format!("✗ Activation failed: {}", e).red().bold());
                 eprintln!("  {}", "Automatic rollback completed.".dimmed());
-                if let Ok(state) = manager.lock().unwrap().current_state() {
-                    eprintln!("  {}: {:?}", "Current state".dimmed(), state);
+                if let Some(state) = manager_state_debug(manager) {
+                    eprintln!("  {}: {}", "Current state".dimmed(), state);
                 }
             }
         },
@@ -249,14 +269,22 @@ mod tests {
     #[test]
     fn test_json_success_no_shell() {
         let manager = make_manager();
-        print_activate_json(&Ok(()), 1.5, &manager, None);
+        let output = build_activate_json_output(&Ok(()), 1.5, &manager, None);
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(output.event, "result");
+        assert_eq!(output.status, "success");
+        assert_eq!(output.message, "Activation complete in 1.5s");
+        assert_eq!(json.get("event").and_then(|v| v.as_str()), Some("result"));
     }
 
     #[test]
     fn test_json_success_with_shell() {
         let manager = make_manager();
         let setup = make_shell_setup_rc_modified();
-        print_activate_json(&Ok(()), 2.3, &manager, Some(&setup));
+        let output = build_activate_json_output(&Ok(()), 2.3, &manager, Some(&setup));
+        assert_eq!(output.event, "result");
+        assert_eq!(output.status, "success");
+        assert!(output.shell_instructions.is_some());
     }
 
     #[test]
@@ -266,14 +294,40 @@ mod tests {
             ("hidden_volume".to_string(), "not mounted".to_string()),
             ("swap".to_string(), "swap enabled".to_string()),
         ]);
-        print_activate_json(&Err(err), 0.1, &manager, None);
+        let output = build_activate_json_output(&Err(err), 0.1, &manager, None);
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(output.event, "result");
+        assert_eq!(output.status, "error");
+        assert_eq!(output.message, "Pre-flight checks failed");
+        assert_eq!(output.failed_checks.as_ref().map(Vec::len), Some(2));
+        assert_eq!(json.get("event").and_then(|v| v.as_str()), Some("result"));
     }
 
     #[test]
     fn test_json_other_error() {
         let manager = make_manager();
         let err = NailsError::InvalidState("unexpected state".to_string());
-        print_activate_json(&Err(err), 0.5, &manager, None);
+        let output = build_activate_json_output(&Err(err), 0.5, &manager, None);
+        assert_eq!(output.event, "result");
+        assert_eq!(output.status, "error");
+        assert_eq!(
+            output.message,
+            "Activation failed: Invalid state: unexpected state"
+        );
+    }
+
+    #[test]
+    fn test_json_poisoned_manager_falls_back_to_unknown_state() {
+        let manager = make_manager();
+        let poison_target = Arc::clone(&manager);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target.lock().unwrap();
+            panic!("poison manager lock for test");
+        })
+        .join();
+
+        let output = build_activate_json_output(&Ok(()), 0.2, &manager, None);
+        assert_eq!(output.state, "UNKNOWN");
     }
 
     // ── print_activate_human ───────────────────────────────────────────────────
@@ -331,6 +385,20 @@ mod tests {
     #[test]
     fn test_human_other_error() {
         let manager = make_manager();
+        let err = NailsError::InvalidState("bad state".to_string());
+        print_activate_human(&Err(err), 0.3, &manager, None, false);
+    }
+
+    #[test]
+    fn test_human_error_with_poisoned_manager_does_not_panic() {
+        let manager = make_manager();
+        let poison_target = Arc::clone(&manager);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target.lock().unwrap();
+            panic!("poison manager lock for test");
+        })
+        .join();
+
         let err = NailsError::InvalidState("bad state".to_string());
         print_activate_human(&Err(err), 0.3, &manager, None, false);
     }
