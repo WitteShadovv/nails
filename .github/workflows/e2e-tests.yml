@@ -3,19 +3,33 @@
 
 name: E2E Tests
 
-# E2E tests temporarily disabled - in-progress fixes not yet complete
-# Re-enable by restoring the 'on' triggers below
 on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'nails-core/**'
+      - 'nails-cli/**'
+      - 'nix/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'nails-core/**'
+      - 'nails-cli/**'
+      - 'nix/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   workflow_dispatch:
     inputs:
       force_run:
         description: 'Force run e2e tests manually'
         required: false
         default: 'false'
-  # push:
-  #   branches: [main, dev]
-  # pull_request:
-  #   branches: [main, dev]
 
 jobs:
   e2e-tests:

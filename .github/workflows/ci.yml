@@ -72,10 +72,10 @@ jobs:
           shared-key: "audit"
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: cargo install cargo-audit@0.21.1 --locked
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: cargo install cargo-deny@0.16.4 --locked
 
       - name: Generate audit report (JSON)
         run: |
@@ -130,7 +130,7 @@ jobs:
           shared-key: "test-shard-${{ matrix.shard }}"
 
       - name: Install cargo-nextest
-        run: cargo install cargo-nextest --locked
+        run: cargo install cargo-nextest@0.9.72 --locked
 
       - name: Run tests (shard ${{ matrix.shard }}/4)
         run: |
@@ -177,7 +177,7 @@ jobs:
           cache-all-crates: "true"
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --version 0.8.4 --locked
+        run: cargo install cargo-llvm-cov@0.8.4 --locked
 
       - name: Run coverage analysis
         run: |
@@ -265,7 +265,7 @@ jobs:
           shared-key: "sbom"
 
       - name: Install cargo-sbom
-        run: cargo install cargo-sbom --locked
+        run: cargo install cargo-sbom@0.9.6 --locked
 
       - name: Generate CycloneDX SBOM
         run: |
@@ -309,7 +309,7 @@ jobs:
           shared-key: "geiger"
 
       - name: Install cargo-geiger
-        run: cargo install cargo-geiger --locked
+        run: cargo install cargo-geiger@0.11.7 --locked
 
       - name: Run unsafe code audit
         run: |
@@ -398,6 +398,61 @@ jobs:
         run: |
           cargo bench -p nails-core --bench performance --all-features
           cargo bench -p nails-cli --bench startup --all-features
+
+      - name: Check benchmark budgets
+        run: |
+          # Budget thresholds in nanoseconds (generous initial values)
+          declare -A BUDGETS=(
+            ["config_default"]=1000000            # 1 ms
+            ["config_builder"]=2000000            # 2 ms
+            ["state_file_default"]=1000000        # 1 ms
+            ["state_serialize_json"]=5000000      # 5 ms
+            ["state_deserialize_json"]=5000000    # 5 ms
+            ["state_save_load_roundtrip"]=10000000 # 10 ms
+            ["manager_new_mock"]=5000000          # 5 ms
+            ["status_query_current_state"]=5000000 # 5 ms
+            ["status"]=10000000                   # 10 ms
+            ["activate_subsequent"]=50000000      # 50 ms
+            ["emergency_cleanup"]=50000000        # 50 ms
+            ["state_transition_inactive_to_activating"]=1000000  # 1 ms
+            ["state_transition_full_cycle"]=2000000              # 2 ms
+            ["build_overlay_targets"]=5000000     # 5 ms
+            ["apply_exclusion_filter_50dirs"]=1000000             # 1 ms
+            ["cli_parse_time"]=5000000            # 5 ms
+          )
+
+          failed=0
+          for bench_name in "${!BUDGETS[@]}"; do
+            estimates_file="target/criterion/${bench_name}/new/estimates.json"
+            if [ ! -f "$estimates_file" ]; then
+              echo "SKIP: ${bench_name} (no results found)"
+              continue
+            fi
+
+            # Extract mean point_estimate (nanoseconds)
+            mean_ns=$(python3 -c "
+          import json, sys
+          with open('${estimates_file}') as f:
+              data = json.load(f)
+          print(int(data['mean']['point_estimate']))
+          ")
+            budget_ns=${BUDGETS[$bench_name]}
+            mean_ms=$(python3 -c "print(f'{${mean_ns}/1e6:.3f}')")
+            budget_ms=$(python3 -c "print(f'{${budget_ns}/1e6:.3f}')")
+
+            if [ "$mean_ns" -gt "$budget_ns" ]; then
+              echo "FAIL: ${bench_name}: ${mean_ms}ms > budget ${budget_ms}ms"
+              failed=1
+            else
+              echo "PASS: ${bench_name}: ${mean_ms}ms <= budget ${budget_ms}ms"
+            fi
+          done
+
+          if [ "$failed" -eq 1 ]; then
+            echo "Benchmark budget check FAILED"
+            exit 1
+          fi
+          echo "All benchmark budgets passed"
 
       - name: Upload benchmark results
         if: success()

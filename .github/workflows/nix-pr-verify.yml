@@ -39,9 +39,45 @@ jobs:
             accept-flake-config = false
 
       - name: Build canonical release artifact
-        run: nix build -L .#nails -o result --option accept-flake-config false
+        run: nix build -L .#nails-release -o result --option accept-flake-config false
 
-      - name: Smoke test release binary
+      - name: Verify release archive contents
         run: |
-          test -x result/bin/nails
-          result/bin/nails --version
+          # Find the release tarball
+          archive=$(ls result/*.tar.gz)
+          echo "Found archive: ${archive}"
+
+          # Extract the tarball
+          smoke_dir=$(mktemp -d)
+          tar -xzf "${archive}" -C "$smoke_dir"
+          extracted_dir=$(ls -d "$smoke_dir"/nails-*)
+
+          # Verify required files exist
+          echo "Checking LICENSE..."
+          test -f "$extracted_dir/LICENSE"
+
+          echo "Checking README.md..."
+          test -f "$extracted_dir/README.md"
+
+          echo "Checking binary..."
+          test -x "$extracted_dir/nails"
+
+          echo "Checking checksums file..."
+          test -s result/checksums.txt
+
+          # Run the binary with --version
+          echo "Running binary --version..."
+          "$extracted_dir/nails" --version
+
+          # Verify checksum matches
+          echo "Verifying checksum..."
+          archive_name=$(basename "${archive}")
+          cd result
+          if grep -q "${archive_name}" checksums.txt; then
+            sha256sum --check <(grep "${archive_name}" checksums.txt)
+            echo "Checksum verification passed"
+          else
+            echo "Warning: archive not found in checksums.txt"
+          fi
+
+          echo "All release artifact checks passed"
