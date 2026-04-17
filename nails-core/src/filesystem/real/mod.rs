@@ -240,5 +240,4 @@ impl Filesystem for RealFilesystem {
 }
 
 #[cfg(test)]
-#[path = "../real_tests.rs"]
 mod tests;
