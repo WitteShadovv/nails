@@ -2,7 +2,9 @@
 # Tests that no forensic artifacts remain after deactivation - NFR19
 
 { self, ... }:
-let hiddenVolume = import ./../lib/hidden-volume.nix;
+let
+  hiddenVolume = import ./../lib/hidden-volume.nix;
+  testHelpers = import ./../lib/test-helpers.nix;
 in {
   name = "forensic-clean";
 
@@ -16,39 +18,7 @@ in {
   testScript = _: ''
     import json
 
-    def write_headless_config(path):
-        machine.succeed(
-            """cat > %s <<'EOF'
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: explicit
-    overlays:
-      - name: etc
-        lower: /etc
-        upper: /mnt/hidden-volume/etc
-        work: /mnt/hidden-volume/.work/etc
-        target: /etc
-      - name: home
-        lower: /home
-        upper: /mnt/hidden-volume/home
-        work: /mnt/hidden-volume/.work/home
-        target: /home
-      - name: root
-        lower: /root
-        upper: /mnt/hidden-volume/root
-        work: /mnt/hidden-volume/.work/root
-        target: /root
-      - name: srv
-        lower: /srv
-        upper: /mnt/hidden-volume/srv
-        work: /mnt/hidden-volume/.work/srv
-        target: /srv
-      - name: tmp
-        lower: /tmp
-        upper: /mnt/hidden-volume/tmp
-        work: /mnt/hidden-volume/.work/tmp
-        target: /tmp
-    EOF""" % path
-        )
+    ${testHelpers.writeHeadlessConfigFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -106,96 +76,96 @@ in {
 
     print("\n=== Deactivating and Cleaning Up ===")
 
-    machine.execute("sudo nails deactivate", check_return=False, check_output=False)
+    machine.execute("sudo nails deactivate; reboot", check_return=False, check_output=False)
     machine.wait_for_shutdown()
     machine.start()
     machine.wait_for_unit("multi-user.target")
     print("✓ NAILS rebooted back to decoy state")
 
-            status = json.loads(machine.succeed("nails status --json"))
-            assert status["state"] == "Inactive", f"Expected Inactive status after reboot, got: {status}"
-            print("✓ NAILS status reports Inactive after reboot")
+    status = json.loads(machine.succeed("nails status --json"))
+    assert status["state"] == "Inactive", f"Expected Inactive status after reboot, got: {status}"
+    print("✓ NAILS status reports Inactive after reboot")
 
-            # Hidden storage may remain mounted until decoy-side cleanup, so dismount it now
-            machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
-            print("✓ Hidden volume unmounted from decoy state")
+    # Hidden storage may remain mounted until decoy-side cleanup, so dismount it now
+    machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
+    print("✓ Hidden volume unmounted from decoy state")
 
-            # ============================================================================
-            # FORENSIC ANALYSIS - GREP SCAN (AC: #3)
-            # ============================================================================
+    # ============================================================================
+    # FORENSIC ANALYSIS - GREP SCAN (AC: #3)
+    # ============================================================================
 
-            print("\n=== Forensic Analysis: Grep Scan ===")
+    print("\n=== Forensic Analysis: Grep Scan ===")
 
-            # Scan key filesystem locations for forensic markers
-            # Exclude pseudo-filesystems and nix store (read-only) to avoid timeouts under TCG
-            grep_result = machine.succeed("grep -r 'FORENSIC_MARKER' /home /etc /var /tmp /root 2>/dev/null || echo 'CLEAN'")
+    # Scan key filesystem locations for forensic markers
+    # Exclude pseudo-filesystems and nix store (read-only) to avoid timeouts under TCG
+    grep_result = machine.succeed("grep -r 'FORENSIC_MARKER' /home /etc /var /tmp /root 2>/dev/null || echo 'CLEAN'")
 
-            # Check if any markers were found
-            if "FORENSIC_MARKER" in grep_result:
-                print(f"FAIL: Found forensic markers: {grep_result}")
-                assert False, "Forensic markers found after deactivation"
-            else:
-                print("✓ No FORENSIC_MARKER strings found on filesystem")
+    # Check if any markers were found
+    if "FORENSIC_MARKER" in grep_result:
+        print(f"FAIL: Found forensic markers: {grep_result}")
+        assert False, "Forensic markers found after deactivation"
+    else:
+        print("✓ No FORENSIC_MARKER strings found on filesystem")
 
-            # ============================================================================
-            # FORENSIC ANALYSIS - SLEUTH KIT (AC: #4)
-            # ============================================================================
+    # ============================================================================
+    # FORENSIC ANALYSIS - SLEUTH KIT (AC: #4)
+    # ============================================================================
 
-            print("\n=== Forensic Analysis: Sleuth Kit fls ===")
+    print("\n=== Forensic Analysis: Sleuth Kit fls ===")
 
-            # Use fls to list deleted files on the secondary disk (hidden volume device)
-            # Note: the root filesystem may not support fls (tmpfs), so we check the secondary disk
-            fls_output = machine.succeed("fls -r /dev/vdb 2>/dev/null | grep -i 'nails\\|forensic\\|secret\\|hidden' || echo 'CLEAN'")
+    # Use fls to list deleted files on the secondary disk (hidden volume device)
+    # Note: the root filesystem may not support fls (tmpfs), so we check the secondary disk
+    fls_output = machine.succeed("fls -r /dev/vdb 2>/dev/null | grep -i 'nails\\|forensic\\|secret\\|hidden' || echo 'CLEAN'")
 
-            # Check if any NAILS-related deleted files were found
-            if "CLEAN" not in fls_output:
-                print(f"FAIL: Found NAILS artifacts in deleted files: {fls_output}")
-                assert False, "Sleuth Kit found NAILS artifacts in deleted files"
-            else:
-                print("✓ No NAILS-related deleted files found")
+    # Check if any NAILS-related deleted files were found
+    if "CLEAN" not in fls_output:
+        print(f"FAIL: Found NAILS artifacts in deleted files: {fls_output}")
+        assert False, "Sleuth Kit found NAILS artifacts in deleted files"
+    else:
+        print("✓ No NAILS-related deleted files found")
 
-            # ============================================================================
-            # SHELL HISTORY CHECK (AC: #5)
-            # ============================================================================
+    # ============================================================================
+    # SHELL HISTORY CHECK (AC: #5)
+    # ============================================================================
 
-            print("\n=== Forensic Analysis: Shell History ===")
+    print("\n=== Forensic Analysis: Shell History ===")
 
-            # Check shell history for forensic markers
-            history_check = machine.succeed("cat /home/testuser/.bash_history 2>/dev/null || echo 'NO_HISTORY'")
+    # Check shell history for forensic markers
+    history_check = machine.succeed("cat /home/testuser/.bash_history 2>/dev/null || echo 'NO_HISTORY'")
 
-            if "FORENSIC_MARKER" in history_check:
-                print(f"FAIL: Found forensic markers in shell history: {history_check}")
-                assert False, "Shell history contains forensic markers"
-            else:
-                print("✓ No FORENSIC_MARKER strings in shell history")
+    if "FORENSIC_MARKER" in history_check:
+        print(f"FAIL: Found forensic markers in shell history: {history_check}")
+        assert False, "Shell history contains forensic markers"
+    else:
+        print("✓ No FORENSIC_MARKER strings in shell history")
 
-            # ============================================================================
-            # FILESYSTEM DIFF AGAINST BASELINE (AC: #6)
-            # ============================================================================
+    # ============================================================================
+    # FILESYSTEM DIFF AGAINST BASELINE (AC: #6)
+    # ============================================================================
 
-            print("\n=== Forensic Analysis: Filesystem Diff ===")
+    print("\n=== Forensic Analysis: Filesystem Diff ===")
 
-            # Capture post-deactivation state
-            machine.succeed("find /home /etc /var -type f 2>/dev/null | sort > /tmp/post-files.txt || true")
-            machine.succeed("find /home /etc /var -type d 2>/dev/null | sort > /tmp/post-dirs.txt || true")
+    # Capture post-deactivation state
+    machine.succeed("find /home /etc /var -type f 2>/dev/null | sort > /tmp/post-files.txt || true")
+    machine.succeed("find /home /etc /var -type d 2>/dev/null | sort > /tmp/post-dirs.txt || true")
 
-            # Diff files against baseline
-            file_diff = machine.succeed("diff /tmp/baseline-files.txt /tmp/post-files.txt || echo 'DIFF_FOUND'")
+    # Diff files against baseline
+    file_diff = machine.succeed("diff /tmp/baseline-files.txt /tmp/post-files.txt || echo 'DIFF_FOUND'")
 
-            # Check for unexpected NAILS-related paths
-            # Filter out expected transient paths (logs, var/lib)
-            unexpected_paths = machine.succeed("""
-              grep -v '^/var/log/' /tmp/post-files.txt 2>/dev/null | \
-              grep -v '^/var/lib/' | \
-              grep -E '(secret|hidden|forensic)' || echo 'CLEAN'
-            """)
+    # Check for unexpected NAILS-related paths
+    # Filter out expected transient paths (logs, var/lib)
+    unexpected_paths = machine.succeed("""
+      grep -v '^/var/log/' /tmp/post-files.txt 2>/dev/null | \
+      grep -v '^/var/lib/' | \
+      grep -E '(secret|hidden|forensic)' || echo 'CLEAN'
+    """)
 
-            if "CLEAN" not in unexpected_paths:
-                print(f"FAIL: Found unexpected NAILS-related paths: {unexpected_paths}")
-                assert False, "Filesystem diff found unexpected NAILS paths"
-            else:
-                print("✓ No unexpected NAILS/secret/hidden/forensic paths outside transient locations")
+    if "CLEAN" not in unexpected_paths:
+        print(f"FAIL: Found unexpected NAILS-related paths: {unexpected_paths}")
+        assert False, "Filesystem diff found unexpected NAILS paths"
+    else:
+        print("✓ No unexpected NAILS/secret/hidden/forensic paths outside transient locations")
 
-            print("\n=== All Forensic Cleanliness Tests Passed ===")
+    print("\n=== All Forensic Cleanliness Tests Passed ===")
   '';
 }

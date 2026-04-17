@@ -170,8 +170,15 @@
           e2e-verify = e2e-tests.verify;
           e2e-emergency = e2e-tests.emergency;
           e2e-forensic-clean = e2e-tests.forensic-clean;
+          e2e-standard-deactivation-forensic =
+            e2e-tests.standard-deactivation-forensic;
           e2e-snapshot-diff = e2e-tests.snapshot-diff;
           e2e-performance = e2e-tests.performance;
+          e2e-config-handling = e2e-tests.config-handling;
+          e2e-state-integrity = e2e-tests.state-integrity;
+          e2e-permissions-security = e2e-tests.permissions-security;
+          e2e-reactivation = e2e-tests.reactivation;
+          e2e-status-verify = e2e-tests.status-verify;
           e2e-ci = e2e-tests.ci;
           e2e-all = e2e-tests.all;
         };

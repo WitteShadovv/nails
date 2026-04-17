@@ -3,7 +3,9 @@
 # Uses comprehensive canary pattern planting to verify complete cleanup
 
 { self, ... }:
-let hiddenVolume = import ./../lib/hidden-volume.nix;
+let
+  hiddenVolume = import ./../lib/hidden-volume.nix;
+  testHelpers = import ./../lib/test-helpers.nix;
 in {
   name = "standard-deactivation-forensic";
 
@@ -17,39 +19,7 @@ in {
   testScript = _: ''
         import json
 
-        def write_headless_config(path):
-            machine.succeed(
-                """cat > %s <<'EOF'
-        hidden_volume_root: /mnt/hidden-volume
-        overlay_mode: explicit
-        overlays:
-          - name: etc
-            lower: /etc
-            upper: /mnt/hidden-volume/etc
-            work: /mnt/hidden-volume/.work/etc
-            target: /etc
-          - name: home
-            lower: /home
-            upper: /mnt/hidden-volume/home
-            work: /mnt/hidden-volume/.work/home
-            target: /home
-          - name: root
-            lower: /root
-            upper: /mnt/hidden-volume/root
-            work: /mnt/hidden-volume/.work/root
-            target: /root
-          - name: srv
-            lower: /srv
-            upper: /mnt/hidden-volume/srv
-            work: /mnt/hidden-volume/.work/srv
-            target: /srv
-          - name: tmp
-            lower: /tmp
-            upper: /mnt/hidden-volume/tmp
-            work: /mnt/hidden-volume/.work/tmp
-            target: /tmp
-        EOF""" % path
-            )
+        ${testHelpers.writeHeadlessConfigFn}
 
         def run_verify(args=""):
             """Run nails verify and return exit status and JSON payload."""
@@ -164,7 +134,7 @@ in {
         print("=" * 70)
 
         print("Executing: nails deactivate")
-        machine.execute("sudo nails deactivate", check_return=False, check_output=False)
+        machine.execute("sudo nails deactivate; reboot", check_return=False, check_output=False)
         machine.wait_for_shutdown()
         print("✓ VM shut down after deactivation")
 
@@ -403,7 +373,7 @@ in {
             print(f"  ✓ Planted {cycle_canary}")
 
             # Deactivate
-            machine.execute("sudo nails deactivate", check_return=False, check_output=False)
+            machine.execute("sudo nails deactivate; reboot", check_return=False, check_output=False)
             machine.wait_for_shutdown()
             machine.start()
             machine.wait_for_unit("multi-user.target")

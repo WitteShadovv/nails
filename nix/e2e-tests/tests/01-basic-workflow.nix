@@ -2,8 +2,9 @@
 # Tests the happy path: activate -> user activities -> deactivate
 
 { self, ... }:
-let hiddenVolume = import ./../lib/hidden-volume.nix;
-
+let
+  hiddenVolume = import ./../lib/hidden-volume.nix;
+  testHelpers = import ./../lib/test-helpers.nix;
 in {
   name = "basic-workflow";
 
@@ -26,39 +27,8 @@ in {
         )
         return json.loads(machine.succeed("cat /tmp/nails-status.stdout"))
 
-    def write_headless_config(path):
-        machine.succeed(
-            """cat > %s <<'EOF'
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: explicit
-    overlays:
-      - name: etc
-        lower: /etc
-        upper: /mnt/hidden-volume/etc
-        work: /mnt/hidden-volume/.work/etc
-        target: /etc
-      - name: home
-        lower: /home
-        upper: /mnt/hidden-volume/home
-        work: /mnt/hidden-volume/.work/home
-        target: /home
-      - name: root
-        lower: /root
-        upper: /mnt/hidden-volume/root
-        work: /mnt/hidden-volume/.work/root
-        target: /root
-      - name: srv
-        lower: /srv
-        upper: /mnt/hidden-volume/srv
-        work: /mnt/hidden-volume/.work/srv
-        target: /srv
-      - name: tmp
-        lower: /tmp
-        upper: /mnt/hidden-volume/tmp
-        work: /mnt/hidden-volume/.work/tmp
-        target: /tmp
-    EOF""" % path
-        )
+    ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.runDetachedCommandFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -137,7 +107,10 @@ in {
 
     print("\n=== Testing Deactivation ===")
     start_time = time.time()
-    machine.execute("nails deactivate", check_return=False, check_output=False)
+    run_detached_command(
+        "nails-deactivate-basic-workflow",
+        f"nails --config {headless_config} deactivate",
+    )
     machine.wait_for_shutdown()
     machine.start()
     machine.wait_for_unit("multi-user.target")

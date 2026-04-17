@@ -18,6 +18,16 @@ let
       pkgs.testers.runNixOSTest (importTest ./tests/06-snapshot-diff.nix);
     performance =
       pkgs.testers.runNixOSTest (importTest ./tests/07-performance.nix);
+    config-handling =
+      pkgs.testers.runNixOSTest (importTest ./tests/08-config-handling.nix);
+    state-integrity =
+      pkgs.testers.runNixOSTest (importTest ./tests/09-state-integrity.nix);
+    permissions-security = pkgs.testers.runNixOSTest
+      (importTest ./tests/10-permissions-security.nix);
+    reactivation =
+      pkgs.testers.runNixOSTest (importTest ./tests/11-reactivation.nix);
+    status-verify =
+      pkgs.testers.runNixOSTest (importTest ./tests/12-status-verify.nix);
   };
 
   # Interactive test driver (for debugging)
@@ -43,6 +53,14 @@ in tests // {
     {
       name = "emergency";
       path = tests.emergency;
+    }
+    {
+      name = "config-handling";
+      path = tests.config-handling;
+    }
+    {
+      name = "status-verify";
+      path = tests.status-verify;
     }
   ];
 
@@ -75,6 +93,26 @@ in tests // {
     {
       name = "performance";
       path = tests.performance;
+    }
+    {
+      name = "config-handling";
+      path = tests.config-handling;
+    }
+    {
+      name = "state-integrity";
+      path = tests.state-integrity;
+    }
+    {
+      name = "permissions-security";
+      path = tests.permissions-security;
+    }
+    {
+      name = "reactivation";
+      path = tests.reactivation;
+    }
+    {
+      name = "status-verify";
+      path = tests.status-verify;
     }
   ];
 

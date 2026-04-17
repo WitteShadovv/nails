@@ -69,6 +69,10 @@ in {
     print("\n=== Verifying post-overlay cleanup ===")
     machine.succeed("umount /home")
 
+    # Unmount hidden volume and remove mount point so verify sees a clean state
+    machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
+    machine.succeed("rm -rf /mnt/hidden-volume")
+
     status, payload = run_verify("--deep")
     post_messages = [finding["message"] for finding in payload["findings"]]
     assert not any("Artifact file found" in message for message in post_messages), \
@@ -81,7 +85,6 @@ in {
         f"Expected post-emergency verify exit {baseline_status}, got {status}"
     print("✓ Verify returns to its decoy baseline after emergency cleanup")
 
-    machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
     print("\n=== Verify Command Tests Passed ===")
   '';
 }

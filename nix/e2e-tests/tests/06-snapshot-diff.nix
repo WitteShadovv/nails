@@ -2,7 +2,9 @@
 # Tests that system returns to exact initial state after full workflow
 
 { self, ... }:
-let hiddenVolume = import ./../lib/hidden-volume.nix;
+let
+  hiddenVolume = import ./../lib/hidden-volume.nix;
+  testHelpers = import ./../lib/test-helpers.nix;
 in {
   name = "snapshot-diff";
 
@@ -16,39 +18,7 @@ in {
   testScript = _: ''
     import json
 
-    def write_headless_config(path):
-        machine.succeed(
-            """cat > %s <<'EOF'
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: explicit
-    overlays:
-      - name: etc
-        lower: /etc
-        upper: /mnt/hidden-volume/etc
-        work: /mnt/hidden-volume/.work/etc
-        target: /etc
-      - name: home
-        lower: /home
-        upper: /mnt/hidden-volume/home
-        work: /mnt/hidden-volume/.work/home
-        target: /home
-      - name: root
-        lower: /root
-        upper: /mnt/hidden-volume/root
-        work: /mnt/hidden-volume/.work/root
-        target: /root
-      - name: srv
-        lower: /srv
-        upper: /mnt/hidden-volume/srv
-        work: /mnt/hidden-volume/.work/srv
-        target: /srv
-      - name: tmp
-        lower: /tmp
-        upper: /mnt/hidden-volume/tmp
-        work: /mnt/hidden-volume/.work/tmp
-        target: /tmp
-    EOF""" % path
-        )
+    ${testHelpers.writeHeadlessConfigFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -104,7 +74,7 @@ in {
     machine.succeed("su - testuser -c 'chmod +x ~/work/script.sh'")
     print("✓ Created executable shell script")
 
-    machine.execute("sudo nails deactivate", check_return=False, check_output=False)
+    machine.execute("sudo nails deactivate; reboot", check_return=False, check_output=False)
     machine.wait_for_shutdown()
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -122,82 +92,82 @@ in {
     # FINAL SNAPSHOT (AC: #3)
     # ============================================================================
 
-            print("\n=== Capturing FINAL Snapshot ===")
+    print("\n=== Capturing FINAL Snapshot ===")
 
-            # Capture filesystem state using find
-            machine.succeed("find /home /etc /var -type f 2>/dev/null | sort > /tmp/snapshot-final.txt || true")
+    # Capture filesystem state using find
+    machine.succeed("find /home /etc /var -type f 2>/dev/null | sort > /tmp/snapshot-final.txt || true")
 
-            # Capture MD5 checksums
-            machine.succeed("find /home -type f -exec md5sum {} \\; 2>/dev/null | sort > /tmp/checksums-final-home.txt || true")
-            machine.succeed("find /etc -type f -exec md5sum {} \\; 2>/dev/null | sort > /tmp/checksums-final-etc.txt || true")
-            machine.succeed("find /var -type f -exec md5sum {} \\; 2>/dev/null | sort > /tmp/checksums-final-var.txt || true")
+    # Capture MD5 checksums
+    machine.succeed("find /home -type f -exec md5sum {} \\; 2>/dev/null | sort > /tmp/checksums-final-home.txt || true")
+    machine.succeed("find /etc -type f -exec md5sum {} \\; 2>/dev/null | sort > /tmp/checksums-final-etc.txt || true")
+    machine.succeed("find /var -type f -exec md5sum {} \\; 2>/dev/null | sort > /tmp/checksums-final-var.txt || true")
 
-            # Capture mount state
-            machine.succeed("mount | sort > /tmp/mounts-final.txt")
-            print("✓ Final snapshot captured")
+    # Capture mount state
+    machine.succeed("mount | sort > /tmp/mounts-final.txt")
+    print("✓ Final snapshot captured")
 
-            # ============================================================================
-            # TREE DIFF COMPARISON (AC: #4)
-            # ============================================================================
+    # ============================================================================
+    # TREE DIFF COMPARISON (AC: #4)
+    # ============================================================================
 
-            print("\n=== Comparing Snapshots ===")
+    print("\n=== Comparing Snapshots ===")
 
-            # Diff filesystem trees
-            tree_diff = machine.succeed("diff /tmp/snapshot-initial.txt /tmp/snapshot-final.txt || echo 'DIFF_FOUND'")
+    # Diff filesystem trees
+    tree_diff = machine.succeed("diff /tmp/snapshot-initial.txt /tmp/snapshot-final.txt || echo 'DIFF_FOUND'")
 
-            # Check for new files that appeared after the workflow
-            # Only look at files that are in the final snapshot but NOT in the initial
-            filtered_diff = machine.succeed("""
-              diff /tmp/snapshot-initial.txt /tmp/snapshot-final.txt 2>/dev/null | \
-              grep '^>' | \
-              grep -v '/var/log/' | \
-              grep -v '/var/lib/systemd/' | \
-              grep -v '/tmp/' | \
-              grep -E '(work/project|secret|hidden|forensic)' || echo 'CLEAN'
-            """)
+    # Check for new files that appeared after the workflow
+    # Only look at files that are in the final snapshot but NOT in the initial
+    filtered_diff = machine.succeed("""
+      diff /tmp/snapshot-initial.txt /tmp/snapshot-final.txt 2>/dev/null | \
+      grep '^>' | \
+      grep -v '/var/log/' | \
+      grep -v '/var/lib/systemd/' | \
+      grep -v '/tmp/' | \
+      grep -E '(work/project|secret|hidden|forensic)' || echo 'CLEAN'
+    """)
 
-            if "CLEAN" not in filtered_diff:
-                print("FAIL: Found unexpected NAILS-related paths in filesystem")
-                assert False, "Filesystem tree diff shows unexpected NAILS paths"
-            else:
-                print("✓ No NAILS-related changes in filesystem tree")
+    if "CLEAN" not in filtered_diff:
+        print("FAIL: Found unexpected NAILS-related paths in filesystem")
+        assert False, "Filesystem tree diff shows unexpected NAILS paths"
+    else:
+        print("✓ No NAILS-related changes in filesystem tree")
 
-            # ============================================================================
-            # CHECKSUM COMPARISON (AC: #5)
-            # ============================================================================
+    # ============================================================================
+    # CHECKSUM COMPARISON (AC: #5)
+    # ============================================================================
 
-            print("\n=== Comparing Checksums ===")
+    print("\n=== Comparing Checksums ===")
 
-            # Compare home directory checksums
-            home_diff = machine.succeed("diff /tmp/checksums-initial-home.txt /tmp/checksums-final-home.txt || echo 'DIFF'")
-            # Filter out expected transient changes in /home/testuser
-            # Check that no NAILS artifacts remain in the final checksum list
-            home_filtered = machine.succeed("""
-              grep -E '(secret|hidden|forensic)' /tmp/checksums-final-home.txt 2>/dev/null || echo 'CLEAN'
-            """)
+    # Compare home directory checksums
+    home_diff = machine.succeed("diff /tmp/checksums-initial-home.txt /tmp/checksums-final-home.txt || echo 'DIFF'")
+    # Filter out expected transient changes in /home/testuser
+    # Check that no NAILS artifacts remain in the final checksum list
+    home_filtered = machine.succeed("""
+      grep -E '(secret|hidden|forensic)' /tmp/checksums-final-home.txt 2>/dev/null || echo 'CLEAN'
+    """)
 
-            if "CLEAN" not in home_filtered:
-                print("FAIL: Checksums differ - unexpected NAILS artifacts remain")
-                assert False, "Home directory checksums show unexpected differences"
-            else:
-                print("✓ Home directory checksums match (or only expected transient changes)")
+    if "CLEAN" not in home_filtered:
+        print("FAIL: Checksums differ - unexpected NAILS artifacts remain")
+        assert False, "Home directory checksums show unexpected differences"
+    else:
+        print("✓ Home directory checksums match (or only expected transient changes)")
 
-            # ============================================================================
-            # MOUNT STATE COMPARISON (AC: #6)
-            # ============================================================================
+    # ============================================================================
+    # MOUNT STATE COMPARISON (AC: #6)
+    # ============================================================================
 
-            print("\n=== Comparing Mount States ===")
+    print("\n=== Comparing Mount States ===")
 
-            # Check for overlay/hidden/nails entries in mounts
-            mount_check = machine.succeed("cat /tmp/mounts-final.txt | grep -E '(overlay|hidden-volume|nails)' || echo 'CLEAN'")
+    # Check for overlay/hidden/nails entries in mounts
+    mount_check = machine.succeed("cat /tmp/mounts-final.txt | grep -E '(overlay|hidden-volume|nails)' || echo 'CLEAN'")
 
-            if "CLEAN" not in mount_check:
-                print(f"FAIL: Mount state shows NAILS-related entries: {mount_check}")
-                assert False, "Mount state contains overlay/hidden/nails entries"
-            else:
-                print("✓ Mount state returned to initial (no overlay/hidden/nails)")
+    if "CLEAN" not in mount_check:
+        print(f"FAIL: Mount state shows NAILS-related entries: {mount_check}")
+        assert False, "Mount state contains overlay/hidden/nails entries"
+    else:
+        print("✓ Mount state returned to initial (no overlay/hidden/nails)")
 
-            print("\n=== All Snapshot Comparison Tests Passed ===")
-            print("✓ System returned to exact initial state after full workflow")
+    print("\n=== All Snapshot Comparison Tests Passed ===")
+    print("✓ System returned to exact initial state after full workflow")
   '';
 }
