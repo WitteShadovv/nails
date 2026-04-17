@@ -1,38 +1,42 @@
 ---
 name: Bug report
-about: Create a report to help us improve
+about: Report a bug in NAILS
 title: ''
-labels: ''
+labels: bug
 assignees: ''
 
 ---
+
+> **WARNING:** DO NOT report security vulnerabilities here. See [SECURITY.md](../../SECURITY.md) for private disclosure instructions.
 
 **Describe the bug**
 A clear and concise description of what the bug is.
 
 **To Reproduce**
 Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+1. Run '...'
+2. Observe '...'
+3. See error
 
 **Expected behavior**
 A clear and concise description of what you expected to happen.
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+**Environment:**
+- NixOS version: [e.g. 24.11]
+- Nails version: [output of `nails --version`]
+- Running via sudo: [yes/no]
+- Hidden volume configuration: [e.g. VeraCrypt, LUKS, SSHFS]
+- Overlay mode: [auto/explicit]
 
-**Desktop (please complete the following information):**
- - OS: [e.g. iOS]
- - Browser [e.g. chrome, safari]
- - Version [e.g. 22]
+**Status output**
+If relevant, paste the output of `nails status -v`:
 
-**Smartphone (please complete the following information):**
- - Device: [e.g. iPhone6]
- - OS: [e.g. iOS8.1]
- - Browser [e.g. stock browser, safari]
- - Version [e.g. 22]
+```
+<paste here>
+```
+
+**Logs**
+If available, include relevant log output from `{hidden_volume_root}/logs/`.
 
 **Additional context**
 Add any other context about the problem here.

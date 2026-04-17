@@ -576,6 +576,8 @@ Options:
   -y, --yes                  Skip all confirmation prompts (enabled by default)
       --interactive          Prompt for confirmations (interactive mode)
       --flake <FLAKE_REF>    NixOS flake reference (e.g. /etc/nixos#hostname)
+      --dry-run              Preview activation steps without making changes
+      --overlay-only         Mount overlays only, skip NixOS profile switch
 ```
 
 **What activation does:**
@@ -586,6 +588,9 @@ Options:
 5. Mounts overlays and applies the hidden NixOS configuration
 6. Uses `--flake`, then hidden `nixos/flake.nix`, then `/etc/nixos/flake.nix`, then legacy `/etc/nixos/configuration.nix`
 7. Leaves you in the hidden environment after you log in again if session kill was used
+
+`--dry-run` previews the activation plan without making changes. `--overlay-only` mounts overlays
+but skips the NixOS profile switch, useful for testing overlay behavior in isolation.
 
 ### `nails deactivate`
 
@@ -702,6 +707,17 @@ recoverable.
 For an operator-facing baseline: after rebooting back into decoy state and dismounting hidden
 storage, `nails verify` should no longer report active overlay findings. During an active hidden
 session it should report mounted overlays as critical.
+
+### `nails notify-dispatch`
+
+Dispatch pending desktop notifications. Called by XDG autostart on login.
+
+```text
+nails notify-dispatch [OPTIONS]
+
+Options:
+      --json                 Output results in JSON format
+```
 
 ## Common Workflows
 
@@ -1247,9 +1263,19 @@ See the development guide for the full contribution workflow.
 
 ## Governance & Project Policies
 
-- [Security policy](SECURITY.md)
-- [Contributing guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md) — vulnerability reporting and scope
+- [Contributing guide](CONTRIBUTING.md) — development workflow and standards
+- [Support](SUPPORT.md) — where to get help
+- [Code of Conduct](CODE_OF_CONDUCT.md) — community standards
 - [Code owners](CODEOWNERS)
+
+### Responsibility boundaries
+
+NAILS manages **overlay lifecycle, state tracking, forensic cleanup, and NixOS integration**.
+It does **not** implement encryption, key derivation, or secure erasure at the storage level.
+Those responsibilities belong to the storage backend you choose (VeraCrypt, LUKS/`cryptsetup`,
+or another tool). When this README or the security model refers to encryption, it describes what
+the external backend provides — not functionality built into NAILS.
 
 ---
 

@@ -27,10 +27,17 @@ The following components are covered by this security policy:
 | Component | Description |
 |-----------|-------------|
 | `nails` binary | The main command-line interface and all subcommands |
-| Core library (`libnails`) | All Rust library code in `src/` |
-| Cryptographic operations | Key derivation, encryption, secure erasure |
-| Hidden environment management | Creation, activation, and concealment mechanisms |
+| Core library (`nails-core`) | All Rust library code in the workspace |
+| Overlay management | OverlayFS mount/unmount, isolation, and rollback logic |
+| State file handling | State machine persistence and transition integrity |
+| Process detection & termination | Session kill, display manager restart, detached worker |
+| Forensic cleanup | Shell history clearing, log/temp sanitization, artifact removal |
+| Notification handling | Desktop notification dispatch and queuing |
+| Configuration management | Config loading, validation, and path discovery |
+| NixOS integration | Config injection, profile switching, flake discovery |
 | Build and release artifacts | Official releases and Nix flake outputs |
+
+> **Important:** NAILS does **not** implement encryption, key derivation (KDF), or secure erasure at the storage level. Those responsibilities belong to the storage backend (e.g., VeraCrypt, LUKS/`cryptsetup`). Vulnerabilities in encryption or key management should be reported to the respective upstream projects.
 
 ### Out of Scope
 
@@ -40,6 +47,7 @@ The following are **not** covered by this security policy:
 |-----------|--------|-----------------|
 | Upstream Nix packages | Maintained by Nixpkgs | [Nixpkgs Security](https://github.com/NixOS/nixpkgs/security) |
 | NixOS kernel/system | Maintained by NixOS | [NixOS Security](https://nixos.org/community/teams/security.html) |
+| Encryption / KDF / secure erasure | Handled by VeraCrypt, LUKS, or other storage backends | Report to respective upstream projects |
 | User misconfiguration | User responsibility | Open a Discussion for guidance |
 | Third-party integrations | Not maintained by us | Report to respective maintainers |
 | Physical security threats | Outside software scope | N/A |
@@ -136,8 +144,8 @@ We classify vulnerabilities using a four-tier system adapted for security-critic
 **Examples specific to NAILS:**
 - Remote code execution in the nails binary
 - Complete bypass of hidden environment concealment
-- Cryptographic key extraction without physical access
 - Silent data exfiltration from hidden environments
+- State file manipulation enabling undetected environment exposure
 
 **Response:** Emergency release within **24-72 hours**. All users will be notified immediately.
 
@@ -150,8 +158,8 @@ We classify vulnerabilities using a four-tier system adapted for security-critic
 **Examples specific to NAILS:**
 - Partial data leakage revealing hidden environment existence
 - Persistent code execution in hidden environments
-- Weak or predictable key derivation
-- Forensic artifacts that survive secure erasure
+- Forensic artifacts that survive the documented cleanup workflow
+- Overlay isolation bypass allowing host contamination
 - Local privilege escalation from the nails binary
 
 **Response:** Urgent fix within **7 days**. Emergency release if necessary.
@@ -164,7 +172,7 @@ We classify vulnerabilities using a four-tier system adapted for security-critic
 
 **Examples specific to NAILS:**
 - Information disclosure requiring local access and specific configuration
-- Timing side-channels in cryptographic operations
+- Timing side-channels in obfuscation or state-handling operations
 - Denial of service against nails operations
 - Local privilege escalation from non-primary vectors
 
@@ -178,7 +186,7 @@ We classify vulnerabilities using a four-tier system adapted for security-critic
 
 **Examples specific to NAILS:**
 - Information disclosure requiring physical access and rare configurations
-- Minor cryptographic implementation issues with theoretical impact
+- Minor implementation issues with theoretical impact
 - UI/UX issues that could lead to user error
 - Verbose error messages leaking non-sensitive information
 
@@ -283,13 +291,13 @@ NAILS implements multiple layers of security controls throughout development and
 | Pre-commit hooks | Automated checks before every commit |
 | Secret detection | Pre-commit hooks scan for accidental secret commits |
 
-### Cryptographic Security
+### Runtime Security
 
 | Measure | Description |
 |---------|-------------|
-| Audited libraries | Use of well-established cryptographic libraries |
-| No custom crypto | Avoid implementing custom cryptographic primitives |
-| Secure defaults | Cryptographic operations use secure defaults |
+| No custom crypto | NAILS does not implement encryption, KDF, or secure erasure — those are delegated to VeraCrypt/LUKS |
+| String obfuscation | Binary strings are XOR-obfuscated to resist casual `strings` scanning (not encryption) |
+| RAII cleanup guards | Deterministic resource cleanup on failure or panic |
 
 ### Future Enhancements
 
@@ -369,5 +377,5 @@ This security policy may be updated periodically. Significant changes will be an
 - Commit messages referencing this file
 - GitHub release notes (for major policy changes)
 
-**Last updated:** 2024-01-15
-**Policy version:** 1.0.0
+**Last updated:** 2026-04-16
+**Policy version:** 1.1.0
