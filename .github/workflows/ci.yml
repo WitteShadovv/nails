@@ -72,10 +72,10 @@ jobs:
           shared-key: "audit"
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit@0.21.1 --locked
+        run: cargo install cargo-audit@0.22.0 --locked
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny@0.16.4 --locked
+        run: cargo install cargo-deny@0.18.9 --locked
 
       - name: Generate audit report (JSON)
         run: |
