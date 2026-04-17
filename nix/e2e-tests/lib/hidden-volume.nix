@@ -123,14 +123,4 @@
     echo 'Hidden volume mounted at: /mnt/hidden-volume'
   '';
 
-  # Check if hidden volume is set up
-  checkHiddenVolume = ''
-    if [ -f /mnt/hidden-volume/nails/config.toml ]; then
-      echo 'Hidden volume is set up'
-      exit 0
-    else
-      echo 'Hidden volume is not set up'
-      exit 1
-    fi
-  '';
 }

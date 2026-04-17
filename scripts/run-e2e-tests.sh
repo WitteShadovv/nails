@@ -12,23 +12,61 @@ YELLOW='\033[1;33m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# Available tests
-AVAILABLE_TESTS=(
-    "basic-workflow:Basic activate/deactivate workflow test"
-    "verify:Verify command contract test"
-    "emergency:Functional emergency workflow and cleanup test"
-    "forensic-clean:Forensic cleanliness validation test"
-    "standard-deactivation-forensic:Standard deactivation forensic safety test"
-    "snapshot-diff:Snapshot comparison test"
-    "performance:Performance validation test, including emergency timing"
-    "config-handling:Config edge cases test"
-    "state-integrity:State file integrity test"
-    "permissions-security:Permission and path security test"
-    "reactivation:Re-activation workflow test"
-    "status-verify:Status and verify command coverage test"
-    "ci:CI smoke suite (basic-workflow, verify, emergency, config-handling, status-verify)"
-    "all:All tests"
-)
+AVAILABLE_TESTS=()
+SYSTEM="${NAILS_E2E_SYSTEM:-$(nix eval --impure --raw --expr builtins.currentSystem)}"
+
+describe_test() {
+    case "$1" in
+        basic-workflow) printf '%s' 'Basic activate/deactivate workflow test' ;;
+        verify) printf '%s' 'Verify command contract test' ;;
+        emergency) printf '%s' 'Functional emergency workflow and cleanup test' ;;
+        forensic-clean) printf '%s' 'Forensic cleanliness validation test' ;;
+        standard-deactivation-forensic) printf '%s' 'Standard deactivation forensic safety test' ;;
+        snapshot-diff) printf '%s' 'Snapshot comparison test' ;;
+        config-handling) printf '%s' 'Config edge cases test' ;;
+        state-integrity) printf '%s' 'State file integrity test' ;;
+        permissions-security) printf '%s' 'Permission and path security test' ;;
+        reactivation) printf '%s' 'Re-activation workflow test' ;;
+        status-verify) printf '%s' 'Status and verify command coverage test' ;;
+        ci) printf '%s' 'CI smoke suite' ;;
+        all) printf '%s' 'All tests' ;;
+        smoke|config|forensic|lifecycle|security|performance|preflight|nixos|session|shell|notification|overlay|state|contract)
+            printf '%s' "Tag suite: $1"
+            ;;
+        *) printf '%s' 'Auto-discovered E2E target' ;;
+    esac
+}
+
+load_available_tests() {
+    local names_json
+    names_json="$({
+        cd "$PROJECT_ROOT"
+        nix eval --json ".#e2e-tests.$SYSTEM" --apply 'tests: builtins.filter (name: !(builtins.substring 0 1 name == "_")) (builtins.attrNames tests)'
+    })"
+
+    mapfile -t AVAILABLE_TESTS < <(
+        python3 - <<'PY' "$names_json"
+import json
+import sys
+
+for name in json.loads(sys.argv[1]):
+    print(name)
+PY
+    )
+}
+
+test_exists() {
+    local candidate="$1"
+    local test_name
+
+    for test_name in "${AVAILABLE_TESTS[@]}"; do
+        if [[ "$test_name" == "$candidate" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
 
 print_header() {
     echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
@@ -48,42 +86,42 @@ print_usage() {
     echo "  -v, --verbose       More verbose output"
     echo ""
     echo "Arguments:"
-    echo "  TEST_NAME           Run specific test(s) by name (can specify multiple)"
+    echo "  TEST_NAME           Run specific test(s) or tag groups by name"
     echo ""
     echo "Use --list to see available tests."
     echo ""
     echo "Examples:"
     echo "  $0                          # Run all E2E tests"
-    echo "  $0 basic-workflow           # Run basic workflow test only"
-    echo "  $0 basic-workflow verify    # Run two tests"
-    echo "  $0 ci                       # Run CI smoke suite"
-    echo "  $0 -l                       # List available tests"
-    echo "  $0 -i                       # Launch interactive test driver"
+    echo "  $0 basic-workflow           # Run one test"
+    echo "  $0 smoke security          # Run tag groups"
+    echo "  $0 ci                       # Run CI subset"
+    echo "  $0 -i basic-workflow        # Interactive one-test run"
     echo ""
 }
 
 list_tests() {
+    local name
+
     echo -e "${BOLD}Available E2E Tests:${NC}"
     echo ""
-    for entry in "${AVAILABLE_TESTS[@]}"; do
-        name="${entry%%:*}"
-        desc="${entry#*:}"
-        printf "  ${GREEN}%-35s${NC} %s\n" "$name" "$desc"
+
+    for name in "${AVAILABLE_TESTS[@]}"; do
+        printf "  ${GREEN}%-35s${NC} %s\n" "$name" "$(describe_test "$name")"
     done
+
     echo ""
 }
 
 run_single_test() {
     local test_name="$1"
-    local start_time end_time duration
+    local start_time end_time duration target
 
-    if [ "$test_name" = "ci" ]; then
-        target=".#checks.x86_64-linux.e2e-ci"
-    elif [ "$test_name" = "all" ]; then
-        target=".#checks.x86_64-linux.e2e-all"
-    else
-        target=".#checks.x86_64-linux.e2e-$test_name"
+    if ! test_exists "$test_name"; then
+        echo -e "${RED}Unknown E2E target: $test_name${NC}" >&2
+        return 1
     fi
+
+    target=".#checks.$SYSTEM.e2e-$test_name"
 
     echo -e "${YELLOW}Running: $test_name${NC}"
     start_time=$(date +%s)
@@ -112,6 +150,7 @@ run_tests() {
     local fail=0
     local failed_tests=()
     local total_start total_end total_duration
+    local test_name
 
     print_header
     echo -e "${YELLOW}Running ${#tests[@]} test(s)...${NC}"
@@ -166,11 +205,15 @@ run_interactive() {
     cd "$PROJECT_ROOT"
 
     if [ -n "$test_name" ]; then
+        if ! test_exists "$test_name"; then
+            echo -e "${RED}Unknown E2E target: $test_name${NC}" >&2
+            exit 1
+        fi
         echo "Running interactive test for: $test_name"
-        nix run ".#checks.x86_64-linux.e2e-$test_name" --interactive
+        nix run ".#checks.$SYSTEM.e2e-$test_name" --interactive
     else
         echo "Running default interactive test driver"
-        nix run ".#apps.x86_64-linux.e2e-test-interactive"
+        nix run ".#apps.$SYSTEM.e2e-test-interactive"
     fi
 }
 
@@ -178,6 +221,8 @@ run_interactive() {
 TEST_NAMES=()
 INTERACTIVE=false
 VERBOSE=false
+
+load_available_tests
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -209,7 +254,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Execute
 if [ "$INTERACTIVE" = true ]; then
     run_interactive "${TEST_NAMES[0]:-}"
 elif [ "${#TEST_NAMES[@]}" -gt 0 ]; then

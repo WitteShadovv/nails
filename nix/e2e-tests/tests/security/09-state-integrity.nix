@@ -3,14 +3,15 @@
 
 { self, ... }:
 let
-  hiddenVolume = import ./../lib/hidden-volume.nix;
-  testHelpers = import ./../lib/test-helpers.nix;
+  hiddenVolume = import ./../../lib/hidden-volume.nix;
+  testHelpers = import ./../../lib/test-helpers.nix;
 in {
   name = "state-integrity";
+  meta.tags = [ "security" "state" ];
 
   nodes = {
     machine = { ... }: {
-      imports = [ ./../lib/vm-config.nix ];
+      imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [ self.packages.x86_64-linux.nails ];
     };
   };
@@ -27,13 +28,9 @@ in {
     write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    # ============================================================================
-    # TEST 1: Activate and check state file exists with correct permissions
-    # ============================================================================
     print("\n=== Test 1: State file existence and permissions after activate ===")
     machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
 
-    # Find the state file - check common locations
     state_file = machine.succeed(
         "find /run /tmp /var -name '*.state' -o -name 'nails.state' -o -name 'state.json' 2>/dev/null | head -1 || "
         "find /run /tmp /var -name '*nails*' -type f 2>/dev/null | grep -v config | head -1 || "
@@ -46,14 +43,10 @@ in {
     else:
         print("Note: No explicit state file found (state may be tracked via mounts/runtime)")
 
-    # Verify active state
     status = machine.succeed("nails status")
     assert "Active" in status or "ACTIVE" in status, f"Expected Active status, got: {status}"
     print("✓ NAILS reports Active state")
 
-    # ============================================================================
-    # TEST 2: Deactivate and verify state file integrity
-    # ============================================================================
     print("\n=== Test 2: Deactivate and verify state ===")
     machine.execute("nails deactivate; reboot", check_return=False, check_output=False)
     machine.wait_for_shutdown()
@@ -64,11 +57,7 @@ in {
     assert "Inactive" in status or "INACTIVE" in status, f"Expected Inactive after deactivate, got: {status}"
     print("✓ NAILS reports Inactive after deactivate")
 
-    # ============================================================================
-    # TEST 3: State persists across activate/deactivate cycles
-    # ============================================================================
     print("\n=== Test 3: State persistence across cycles ===")
-
     for cycle in range(1, 4):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")

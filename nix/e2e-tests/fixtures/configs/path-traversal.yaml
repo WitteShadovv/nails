@@ -1,0 +1,8 @@
+hidden_volume_root: ../../etc
+overlay_mode: explicit
+overlays:
+  - name: home
+    lower: /home
+    upper: ../../etc/home
+    work: ../../etc/.work/home
+    target: /home

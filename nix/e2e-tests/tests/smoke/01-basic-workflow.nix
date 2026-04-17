@@ -1,34 +1,28 @@
-# Story 13.4: Basic Workflow Test (activate/deactivate)
+# Test 01: Basic Workflow
 # Tests the happy path: activate -> user activities -> deactivate
 
 { self, ... }:
 let
-  hiddenVolume = import ./../lib/hidden-volume.nix;
-  testHelpers = import ./../lib/test-helpers.nix;
+  hiddenVolume = import ./../../lib/hidden-volume.nix;
+  testHelpers = import ./../../lib/test-helpers.nix;
 in {
   name = "basic-workflow";
+  meta.tags = [ "smoke" "lifecycle" "overlay" ];
 
   nodes = {
     machine = { ... }: {
-      imports = [ ./../lib/vm-config.nix ];
-
-      # Inject NAILS binary into VM
+      imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [ self.packages.x86_64-linux.nails ];
     };
   };
 
   testScript = _: ''
-    import json
     import time
-
-    def read_status_json():
-        machine.succeed(
-            "bash -lc 'nails status --json > /tmp/nails-status.stdout 2>/tmp/nails-status.stderr'"
-        )
-        return json.loads(machine.succeed("cat /tmp/nails-status.stdout"))
 
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.runDetachedCommandFn}
+    ${testHelpers.readStatusJsonFn}
+    ${testHelpers.canonicalDeactivateFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -107,13 +101,7 @@ in {
 
     print("\n=== Testing Deactivation ===")
     start_time = time.time()
-    run_detached_command(
-        "nails-deactivate-basic-workflow",
-        f"nails --config {headless_config} deactivate",
-    )
-    machine.wait_for_shutdown()
-    machine.start()
-    machine.wait_for_unit("multi-user.target")
+    canonical_deactivate(headless_config, unit_name="nails-deactivate-basic-workflow")
     deactivation_time = time.time() - start_time
     print(f"Deactivation reboot completed in {deactivation_time:.2f}s")
 

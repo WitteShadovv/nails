@@ -1,0 +1,38 @@
+hidden_volume_root: /mnt/hidden-volume
+overlay_mode: explicit
+overlays:
+  - name: etc
+    lower: /etc
+    upper: /mnt/hidden-volume/etc
+    work: /mnt/hidden-volume/.work/etc
+    target: /etc
+  - name: home
+    lower: /home
+    upper: /mnt/hidden-volume/home
+    work: /mnt/hidden-volume/.work/home
+    target: /home
+  - name: root
+    lower: /root
+    upper: /mnt/hidden-volume/root
+    work: /mnt/hidden-volume/.work/root
+    target: /root
+  - name: var
+    lower: /var
+    upper: /mnt/hidden-volume/var
+    work: /mnt/hidden-volume/.work/var
+    target: /var
+  - name: tmp
+    lower: /tmp
+    upper: /mnt/hidden-volume/tmp
+    work: /mnt/hidden-volume/.work/tmp
+    target: /tmp
+  - name: srv
+    lower: /srv
+    upper: /mnt/hidden-volume/srv
+    work: /mnt/hidden-volume/.work/srv
+    target: /srv
+  - name: opt
+    lower: /opt
+    upper: /mnt/hidden-volume/opt
+    work: /mnt/hidden-volume/.work/opt
+    target: /opt

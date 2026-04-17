@@ -1,0 +1,8 @@
+hidden_volume_root: /mnt/hidden-volume
+overlay_mode: 12345
+overlays:
+  - name: home
+    lower: /home
+    upper: /mnt/hidden-volume/home
+    work: /mnt/hidden-volume/.work/home
+    target: /home

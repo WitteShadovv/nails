@@ -1,31 +1,23 @@
-# Story 13.4b: Verify Command Contract Test
+# Test 02: Verify Command Contract
 # Tests clean, dirty, active, and post-emergency verification states
 
 { self, ... }:
-let hiddenVolume = import ./../lib/hidden-volume.nix;
+let
+  hiddenVolume = import ./../../lib/hidden-volume.nix;
+  testHelpers = import ./../../lib/test-helpers.nix;
 in {
   name = "verify";
+  meta.tags = [ "smoke" "contract" ];
 
   nodes = {
     machine = { ... }: {
-      imports = [ ./../lib/vm-config.nix ];
+      imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [ self.packages.x86_64-linux.nails ];
     };
   };
 
   testScript = _: ''
-    import json
-
-    def run_verify(args=""):
-        command = "nails verify --json"
-        if args:
-            command = f"{command} {args}"
-        machine.succeed(
-            f"bash -lc 'set +e; {command} > /tmp/verify.stdout 2>/tmp/verify.stderr; printf \"%s\" \"$?\" > /tmp/verify.rc'"
-        )
-        status = int(machine.succeed("cat /tmp/verify.rc"))
-        output = machine.succeed("cat /tmp/verify.stdout")
-        return status, json.loads(output)
+    ${testHelpers.runVerifyFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -68,8 +60,6 @@ in {
 
     print("\n=== Verifying post-overlay cleanup ===")
     machine.succeed("umount /home")
-
-    # Unmount hidden volume and remove mount point so verify sees a clean state
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
     machine.succeed("rm -rf /mnt/hidden-volume")
 

@@ -1,16 +1,17 @@
-# Story 13.7: Snapshot Comparison Test
+# Test 06: Snapshot Comparison
 # Tests that system returns to exact initial state after full workflow
 
 { self, ... }:
 let
-  hiddenVolume = import ./../lib/hidden-volume.nix;
-  testHelpers = import ./../lib/test-helpers.nix;
+  hiddenVolume = import ./../../lib/hidden-volume.nix;
+  testHelpers = import ./../../lib/test-helpers.nix;
 in {
   name = "snapshot-diff";
+  meta.tags = [ "forensic" ];
 
   nodes = {
     machine = { ... }: {
-      imports = [ ./../lib/vm-config.nix ];
+      imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [ self.packages.x86_64-linux.nails ];
     };
   };
