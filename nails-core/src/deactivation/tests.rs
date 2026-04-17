@@ -592,17 +592,24 @@ fn test_deactivate_returns_error_when_no_system_profile_exists() {
     let config = Config {
         hidden_volume_root: temp_dir.path().to_path_buf(),
         state_file_path: state_path.clone(),
+        log_path: temp_dir.path().join("logs"),
         overlays: vec![],
         ..Config::test_default()
     };
 
-    let mut manager_inner = NailsManager::new(fs, config, state_path);
-    manager_inner
-        .force_state(SystemState::Active {
-            activated_at: chrono::Utc::now(),
-            overlays: vec![],
-        })
-        .unwrap();
+    let active_state = SystemState::Active {
+        activated_at: chrono::Utc::now(),
+        overlays: vec![],
+    };
+    StateFile {
+        state: active_state,
+        nixos_generation: Some("1".to_string()),
+        ..StateFile::default()
+    }
+    .save_with_custom_root(&state_path, temp_dir.path())
+    .unwrap();
+
+    let manager_inner = NailsManager::new(fs, config, state_path);
     let manager = Arc::new(Mutex::new(manager_inner));
 
     let err = NailsManager::deactivate(Arc::clone(&manager)).unwrap_err();
@@ -611,6 +618,72 @@ fn test_deactivate_returns_error_when_no_system_profile_exists() {
             .contains("No system profile found. Cannot restore decoy configuration.")
     );
     assert!(manager.lock().unwrap().current_state().unwrap().is_active());
+}
+
+#[test]
+#[serial]
+fn test_deactivate_overlay_only_session_succeeds_without_system_profile() {
+    clear_system_profile_env();
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let upper_dir = hidden_root.join("overlays/home/upper");
+    let work_dir = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    write_state_with_overlay(
+        &state_path,
+        &hidden_root,
+        Path::new("/home"),
+        &upper_dir,
+        &work_dir,
+    );
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        config,
+        state_path.clone(),
+    )));
+
+    {
+        let manager_guard = manager.lock().unwrap();
+        let fs = manager_guard.filesystem();
+        fs.mock_set_mounted(Path::new("/home"), true);
+        fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+    }
+
+    NailsManager::deactivate(Arc::clone(&manager)).expect("overlay-only deactivation should work");
+
+    let manager_guard = manager.lock().unwrap();
+    assert_eq!(
+        manager_guard.current_state().unwrap(),
+        SystemState::Inactive
+    );
+    assert!(
+        !manager_guard
+            .filesystem()
+            .is_mounted(Path::new("/home"))
+            .unwrap()
+    );
+
+    let loaded = StateFile::load(&state_path).unwrap();
+    assert_eq!(loaded.state, SystemState::Inactive);
+    assert!(loaded.overlay_status.is_empty());
+
+    clear_system_profile_env();
 }
 
 #[test]
@@ -625,6 +698,7 @@ fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
     let config = Config {
         hidden_volume_root: hidden_root.clone(),
         state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
         overlays: vec![],
         ..Config::test_default()
     };
@@ -662,11 +736,8 @@ fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
         state_path.clone(),
     )));
 
-    let err = NailsManager::emergency_deactivate(Arc::clone(&manager)).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("System profile switch script missing")
-    );
+    NailsManager::emergency_deactivate(Arc::clone(&manager))
+        .expect("overlay-only emergency deactivation should work");
     assert_eq!(
         manager.lock().unwrap().current_state().unwrap(),
         SystemState::Inactive

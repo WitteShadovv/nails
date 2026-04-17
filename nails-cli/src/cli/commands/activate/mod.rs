@@ -140,12 +140,29 @@ pub fn execute(
     };
 
     // Load config with CLI overrides (Story 10.3, updated in Story 14.1)
+    // P0-04: Fail closed on explicit --config path errors
     let config_path = nails_core::config::discover_config_path(config_override.as_deref());
 
-    let config = Config::from_file_and_cli(&config_path, &cli_overrides).unwrap_or_else(|e| {
-        eprintln!("Error loading config: {}", e);
-        std::process::exit(2);
-    });
+    let config = if config_override.is_some() {
+        // Explicit --config: strict load, fail on missing/unreadable
+        Config::load(&config_path).unwrap_or_else(|e| {
+            eprintln!("Error loading config from {}: {}", config_path.display(), e);
+            std::process::exit(2);
+        })
+    } else {
+        // Implicit discovery: fall back to defaults when missing
+        Config::from_file_and_cli(&config_path, &cli_overrides).unwrap_or_else(|e| {
+            eprintln!("Error loading config: {}", e);
+            std::process::exit(2);
+        })
+    };
+
+    // Apply CLI overrides for explicit --config path too
+    let config = {
+        let mut c = config;
+        c.apply_cli_overrides(&cli_overrides);
+        c
+    };
 
     // TEST SAFETY GUARD (Layer 1): Check if real operations are allowed
     if let Err(msg) = check_real_ops(&config.hidden_volume_root) {

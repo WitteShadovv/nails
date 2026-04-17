@@ -51,7 +51,7 @@ pub fn execute(
 
     // Load config
     let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-    let config = super::load_config_or_exit(&config_path);
+    let config = super::load_config_or_exit(&config_path, config_override.as_deref());
 
     // TEST SAFETY GUARD
     if let Err(msg) = check_real_ops(&config.hidden_volume_root) {
@@ -84,10 +84,12 @@ pub fn execute(
             if !json {
                 println!("✓ Emergency deactivation complete");
                 println!("  System returned to decoy configuration");
+                eprintln!();
+                for line in EMERGENCY_RECOVERY_GUIDANCE {
+                    eprintln!("{line}");
+                }
             } else {
-                println!(
-                    "{{\"status\":\"success\",\"message\":\"Emergency deactivation complete\"}}"
-                );
+                println!("{}", emergency_success_json());
             }
             std::process::exit(0);
         }
@@ -102,9 +104,21 @@ pub fn execute(
     }
 }
 
+/// Build the JSON success response for emergency deactivation
+fn emergency_success_json() -> String {
+    r#"{"status":"success","message":"Emergency deactivation complete","recovery_guidance":["Dismount the hidden volume when it is safe to do so","If you are unsure cleanup was complete, reboot immediately"]}"#.to_string()
+}
+
+/// Recovery guidance lines for human-readable emergency output
+const EMERGENCY_RECOVERY_GUIDANCE: &[&str] = &[
+    "⚠ Critical: For maximum safety:",
+    "  1. Dismount the hidden volume when it is safe to do so",
+    "  2. If you are unsure cleanup was complete, reboot immediately",
+];
+
 #[cfg(test)]
 mod tests {
-    use super::execute;
+    use super::{EMERGENCY_RECOVERY_GUIDANCE, emergency_success_json, execute};
     use std::path::PathBuf;
 
     const SUBPROCESS_TEST_NAME: &str =
@@ -178,5 +192,23 @@ mod tests {
 
         assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
         assert!(stderr.contains("emergency guard blocked"));
+    }
+
+    #[test]
+    fn emergency_success_json_contains_recovery_guidance() {
+        let json_str = emergency_success_json();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["status"], "success");
+        let guidance = parsed["recovery_guidance"].as_array().unwrap();
+        assert_eq!(guidance.len(), 2);
+        assert!(guidance[0].as_str().unwrap().contains("Dismount"));
+        assert!(guidance[1].as_str().unwrap().contains("reboot"));
+    }
+
+    #[test]
+    fn emergency_recovery_guidance_contains_expected_text() {
+        let combined: String = EMERGENCY_RECOVERY_GUIDANCE.join("\n");
+        assert!(combined.contains("Dismount the hidden volume"));
+        assert!(combined.contains("reboot immediately"));
     }
 }

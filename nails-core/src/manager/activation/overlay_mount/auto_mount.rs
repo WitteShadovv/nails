@@ -28,19 +28,7 @@ impl<F: Filesystem> NailsManager<F> {
         let mut nix_guard = NixDaemonGuard::new(nix_in_targets);
         if nix_in_targets {
             tracing::info!("Stopping nix-daemon before /nix overlay...");
-            if crate::runtime_safety::should_skip_host_interaction() {
-                tracing::debug!(
-                    "Skipping nix-daemon stop commands in test/test-like context to avoid host interaction"
-                );
-            } else {
-                // Stop socket first (prevents socket-activation restart)
-                let _ = std::process::Command::new("systemctl")
-                    .args(["stop", "nix-daemon.socket"])
-                    .output();
-                let _ = std::process::Command::new("systemctl")
-                    .args(["stop", "nix-daemon.service"])
-                    .output();
-            }
+            let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();
         }
 
         // Track mount failures for best-effort mounting (Story 14.10, Task 8)

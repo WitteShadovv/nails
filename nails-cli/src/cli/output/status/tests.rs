@@ -1,8 +1,8 @@
 use super::*;
-use nails_core::SystemState;
 use nails_core::status::{
     OpSecReminder, OverlayMountStatus, ReminderSeverity, StatusReport, VerificationStatus,
 };
+use nails_core::{LoadOutcome, SystemState};
 use std::path::PathBuf;
 
 fn inactive_report() -> StatusReport {
@@ -17,6 +17,7 @@ fn inactive_report() -> StatusReport {
         opsec_reminders: vec![],
         overlay_details: None,
         overlay_mount_statuses: vec![],
+        load_outcome: LoadOutcome::FreshDefault,
     }
 }
 
@@ -47,6 +48,7 @@ fn active_report() -> StatusReport {
                 actually_mounted: false,
             },
         ],
+        load_outcome: LoadOutcome::Normal,
     }
 }
 
@@ -81,6 +83,7 @@ fn active_report_with_overlay_details() -> StatusReport {
             expected_mounted: true,
             actually_mounted: true,
         }],
+        load_outcome: LoadOutcome::Normal,
     }
 }
 
@@ -115,6 +118,7 @@ fn active_report_with_reminders() -> StatusReport {
         ],
         overlay_details: None,
         overlay_mount_statuses: vec![],
+        load_outcome: LoadOutcome::Normal,
     }
 }
 
@@ -131,6 +135,7 @@ fn emergency_report() -> StatusReport {
         opsec_reminders: vec![],
         overlay_details: None,
         overlay_mount_statuses: vec![],
+        load_outcome: LoadOutcome::FreshDefault,
     }
 }
 
@@ -173,6 +178,7 @@ fn test_print_status_human_inactive() {
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
+        &PathBuf::from("/mnt/hidden/logs"),
     );
 }
 
@@ -184,6 +190,7 @@ fn test_print_status_human_active_basic() {
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
+        &PathBuf::from("/mnt/hidden/logs"),
     );
 }
 
@@ -195,6 +202,7 @@ fn test_print_status_human_active_verbose_with_details() {
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
+        &PathBuf::from("/mnt/hidden/logs"),
     );
 }
 
@@ -206,6 +214,7 @@ fn test_print_status_human_active_verbose_no_details() {
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
+        &PathBuf::from("/mnt/hidden/logs"),
     );
 }
 
@@ -217,6 +226,7 @@ fn test_print_status_human_with_reminders() {
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
+        &PathBuf::from("/mnt/hidden/logs"),
     );
 }
 
@@ -246,6 +256,7 @@ fn test_print_status_human_with_logs() {
         false,
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
+        &PathBuf::from("/mnt/hidden"),
         dir.path(),
     );
 }
@@ -273,6 +284,7 @@ fn test_print_status_human_verbose_shows_debug_logs() {
         true,
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
+        &PathBuf::from("/mnt/hidden"),
         dir.path(),
     );
 }
@@ -300,6 +312,7 @@ fn test_print_status_human_logs_filtered_before_activation() {
         false,
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
+        &PathBuf::from("/mnt/hidden"),
         dir.path(),
     );
 }
@@ -327,6 +340,7 @@ fn test_print_status_human_logs_no_activation_time() {
         false,
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
+        &PathBuf::from("/mnt/hidden"),
         dir.path(),
     );
 }
@@ -349,6 +363,7 @@ fn test_print_status_human_logs_invalid_json_ignored() {
         false,
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
+        &PathBuf::from("/mnt/hidden"),
         dir.path(),
     );
 }
@@ -363,6 +378,7 @@ fn test_print_status_ascii_inactive() {
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
+        &PathBuf::from("/mnt/hidden/logs"),
     );
 }
 
@@ -374,6 +390,7 @@ fn test_print_status_ascii_active_basic() {
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
+        &PathBuf::from("/mnt/hidden/logs"),
     );
 }
 
@@ -385,6 +402,7 @@ fn test_print_status_ascii_active_verbose_with_details() {
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
+        &PathBuf::from("/mnt/hidden/logs"),
     );
 }
 
@@ -396,6 +414,7 @@ fn test_print_status_ascii_verbose_no_details() {
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
+        &PathBuf::from("/mnt/hidden/logs"),
     );
 }
 
@@ -407,6 +426,7 @@ fn test_print_status_ascii_with_all_reminder_severities() {
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
+        &PathBuf::from("/mnt/hidden/logs"),
     );
 }
 
@@ -433,6 +453,7 @@ fn test_print_status_ascii_with_logs() {
         false,
         &PathBuf::from("/etc/nails.yaml"),
         &PathBuf::from("/mnt/hidden/state.json"),
+        &PathBuf::from("/mnt/hidden"),
         dir.path(),
     );
 }

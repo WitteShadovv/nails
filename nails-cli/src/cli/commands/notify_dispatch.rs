@@ -17,7 +17,7 @@ use std::path::PathBuf;
 /// * `json` - Output results in JSON format
 pub fn execute(config_override: Option<PathBuf>, json: bool) -> ! {
     let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-    let config = super::load_config_or_exit(&config_path);
+    let config = super::load_config_or_exit(&config_path, config_override.as_deref());
 
     match nails_core::notification::dispatch_all(&config.hidden_volume_root) {
         Ok(initial_count) => {

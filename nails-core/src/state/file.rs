@@ -16,6 +16,27 @@ use std::path::{Path, PathBuf};
 
 use super::OverlayInfo;
 
+/// Describes HOW a state file was loaded, enabling callers to surface
+/// diagnostics without inspecting the file themselves.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoadOutcome {
+    /// No file existed — returned `StateFile::default()`
+    FreshDefault,
+    /// Loaded successfully, same version
+    Normal,
+    /// Loaded and migrated from an older (but compatible) version
+    Migrated { from_version: String },
+    /// File existed but was unreadable/malformed — returned `StateFile::default()`
+    RecoveredFromCorruption,
+}
+
+/// Result of `StateFile::load_with_outcome()`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadResult {
+    pub state_file: StateFile,
+    pub outcome: LoadOutcome,
+}
+
 /// State file for persistence to hidden volume
 ///
 /// The StateFile contains the current system state and all metadata needed
@@ -300,14 +321,37 @@ impl StateFile {
     /// let state = StateFile::load(Path::new("/mnt/hidden-volume/state.json"))?;
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
+    /// Load state file, discarding the load outcome metadata.
+    ///
+    /// This is the original convenience API. For callers that need to know
+    /// *how* the file was loaded (e.g. status display, diagnostics), use
+    /// [`load_with_outcome`](Self::load_with_outcome) instead.
     pub fn load(path: &Path) -> Result<StateFile> {
+        Ok(Self::load_with_outcome(path)?.state_file)
+    }
+
+    /// Load state file from disk with structured outcome metadata.
+    ///
+    /// Behaves identically to [`load`](Self::load) but additionally returns a
+    /// [`LoadOutcome`] that describes *how* the state was obtained (fresh
+    /// default, normal load, version migration, or corruption recovery).
+    ///
+    /// # Graceful Degradation (AR27, AR53)
+    ///
+    /// - **Missing file** → `Ok(LoadResult { outcome: FreshDefault, .. })`
+    /// - **Malformed JSON** → `Ok(LoadResult { outcome: RecoveredFromCorruption, .. })`
+    /// - **I/O error** → `Ok(LoadResult { outcome: RecoveredFromCorruption, .. })`
+    pub fn load_with_outcome(path: &Path) -> Result<LoadResult> {
         // Check if file exists
         if !path.exists() {
             tracing::warn!(
                 "State file not found at {}, assuming INACTIVE",
                 path.display()
             );
-            return Ok(StateFile::default());
+            return Ok(LoadResult {
+                state_file: StateFile::default(),
+                outcome: LoadOutcome::FreshDefault,
+            });
         }
 
         // Read file contents
@@ -319,16 +363,54 @@ impl StateFile {
                     path.display(),
                     e
                 );
-                return Ok(StateFile::default());
+                return Ok(LoadResult {
+                    state_file: StateFile::default(),
+                    outcome: LoadOutcome::RecoveredFromCorruption,
+                });
             }
         };
 
         // Parse JSON
         match serde_json::from_str::<StateFile>(&contents) {
             Ok(mut state_file) => {
-                // Version compatibility check
+                // Corruption-detection checksum verification BEFORE version migration.
+                // The checksum was computed with the original version string during save,
+                // so we must verify it before changing the version field.
+                match &state_file.checksum {
+                    Some(stored_checksum) => {
+                        let mut for_hash = state_file.clone();
+                        for_hash.checksum = None;
+                        let hash_value = serde_json::to_value(&for_hash).map_err(|e| {
+                            NailsError::ConfigError(format!(
+                                "Failed to serialize state for checksum verification: {}",
+                                e
+                            ))
+                        })?;
+                        let hash_json = hash_value.to_string();
+
+                        use sha2::Digest;
+                        let computed = hex::encode(sha2::Sha256::digest(hash_json.as_bytes()));
+
+                        if &computed != stored_checksum {
+                            return Err(NailsError::ChecksumMismatch(format!(
+                                "State file at {} may be corrupted (expected checksum {}, computed {})",
+                                path.display(),
+                                stored_checksum,
+                                computed
+                            )));
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            "State file has no checksum (migration from older version) - accepting without verification"
+                        );
+                    }
+                }
+
+                // Version compatibility check (after checksum verification)
                 let current_version = env!("CARGO_PKG_VERSION");
-                let stored_version = &state_file.version;
+                let stored_version = state_file.version.clone();
 
                 let current_major = current_version
                     .split('.')
@@ -354,49 +436,24 @@ impl StateFile {
                     )));
                 }
 
-                if stored_version != current_version {
+                let outcome = if stored_version != current_version {
                     tracing::info!(
                         current_version = %current_version,
                         stored_version = %stored_version,
                         "State file version differs from current version (loading anyway - compatible)"
                     );
                     state_file.version = current_version.to_string();
-                }
-
-                // Checksum verification for tamper detection
-                match &state_file.checksum {
-                    Some(stored_checksum) => {
-                        let mut for_hash = state_file.clone();
-                        for_hash.checksum = None;
-                        let hash_value = serde_json::to_value(&for_hash).map_err(|e| {
-                            NailsError::ConfigError(format!(
-                                "Failed to serialize state for checksum verification: {}",
-                                e
-                            ))
-                        })?;
-                        let hash_json = hash_value.to_string();
-
-                        use sha2::Digest;
-                        let computed = hex::encode(sha2::Sha256::digest(hash_json.as_bytes()));
-
-                        if &computed != stored_checksum {
-                            return Err(NailsError::ChecksumMismatch(format!(
-                                "State file at {} has been tampered with (expected {}, got {})",
-                                path.display(),
-                                stored_checksum,
-                                computed
-                            )));
-                        }
+                    LoadOutcome::Migrated {
+                        from_version: stored_version,
                     }
-                    None => {
-                        tracing::warn!(
-                            path = %path.display(),
-                            "State file has no checksum (migration from older version) - accepting without verification"
-                        );
-                    }
-                }
+                } else {
+                    LoadOutcome::Normal
+                };
 
-                Ok(state_file)
+                Ok(LoadResult {
+                    state_file,
+                    outcome,
+                })
             }
             Err(e) => {
                 tracing::warn!(
@@ -404,7 +461,10 @@ impl StateFile {
                     path.display(),
                     e
                 );
-                Ok(StateFile::default())
+                Ok(LoadResult {
+                    state_file: StateFile::default(),
+                    outcome: LoadOutcome::RecoveredFromCorruption,
+                })
             }
         }
     }

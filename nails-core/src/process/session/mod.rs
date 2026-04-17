@@ -180,6 +180,56 @@ pub(crate) mod tests_common {
         }
     }
 
+    pub struct ScriptedKillExecutor {
+        pub systemctl_responses: Mutex<Vec<Result<(bool, String, String)>>>,
+        pub loginctl_responses: Mutex<Vec<Result<(bool, String, String)>>>,
+        pub kill_responses: Mutex<Vec<Result<bool>>>,
+        pub loginctl_available: bool,
+    }
+
+    impl ScriptedKillExecutor {
+        pub fn new(
+            systemctl_responses: Vec<Result<(bool, String, String)>>,
+            loginctl_responses: Vec<Result<(bool, String, String)>>,
+            kill_responses: Vec<Result<bool>>,
+            loginctl_available: bool,
+        ) -> Self {
+            Self {
+                systemctl_responses: Mutex::new(systemctl_responses),
+                loginctl_responses: Mutex::new(loginctl_responses),
+                kill_responses: Mutex::new(kill_responses),
+                loginctl_available,
+            }
+        }
+    }
+
+    impl SessionCommandExecutor for ScriptedKillExecutor {
+        fn execute_systemctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+            self.systemctl_responses
+                .lock()
+                .expect("mutex poisoned")
+                .remove(0)
+        }
+
+        fn execute_loginctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+            self.loginctl_responses
+                .lock()
+                .expect("mutex poisoned")
+                .remove(0)
+        }
+
+        fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
+            self.kill_responses
+                .lock()
+                .expect("mutex poisoned")
+                .remove(0)
+        }
+
+        fn loginctl_available(&self) -> bool {
+            self.loginctl_available
+        }
+    }
+
     pub fn clear_session_env() {
         for key in [
             "SSH_TTY",

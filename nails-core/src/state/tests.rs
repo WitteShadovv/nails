@@ -1560,7 +1560,7 @@ fn test_checksum_tamper_detection() {
     assert!(result.is_err());
     match result.unwrap_err() {
         NailsError::ChecksumMismatch(msg) => {
-            assert!(msg.contains("tampered"));
+            assert!(msg.contains("corrupted"));
         }
         other => panic!("Expected ChecksumMismatch, got: {:?}", other),
     }
@@ -1608,4 +1608,282 @@ fn test_checksum_populated_after_save() {
         checksum.chars().all(|c| c.is_ascii_hexdigit()),
         "checksum should be hex"
     );
+}
+
+// ========== Symlink and Path Escape Regression Tests (P0-03) ==========
+
+#[test]
+#[cfg(unix)]
+fn test_symlinked_hidden_volume_root_rejected() {
+    // A symlink used as the hidden volume root should be rejected
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let real_dir = temp_dir.path().join("real-hv");
+    std::fs::create_dir_all(&real_dir).expect("Should create real dir");
+
+    let symlink_root = temp_dir.path().join("symlinked-hv");
+    std::os::unix::fs::symlink(&real_dir, &symlink_root).expect("Should create symlink");
+
+    // Create a file inside the real dir
+    std::fs::write(real_dir.join("state.json"), "{}").expect("Should write");
+
+    // Path through symlinked root should be rejected
+    let test_path = symlink_root.join("state.json");
+    let root_str = symlink_root.to_str().unwrap();
+    assert!(
+        !is_on_hidden_volume(&test_path, root_str),
+        "Symlinked hidden volume root should be rejected"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_symlinked_parent_in_path_rejected() {
+    // A symlink inside the hidden volume pointing outside should be rejected
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let hv_root = temp_dir.path().join("hv");
+    std::fs::create_dir_all(&hv_root).expect("Should create hv dir");
+
+    let outside_dir = temp_dir.path().join("outside");
+    std::fs::create_dir_all(&outside_dir).expect("Should create outside dir");
+    std::fs::write(outside_dir.join("state.json"), "{}").expect("Should write");
+
+    // Create symlink inside hidden volume pointing outside
+    let logs_symlink = hv_root.join("logs");
+    std::os::unix::fs::symlink(&outside_dir, &logs_symlink).expect("Should create symlink");
+
+    let test_path = logs_symlink.join("state.json");
+    let root_str = hv_root.to_str().unwrap();
+    assert!(
+        !is_on_hidden_volume(&test_path, root_str),
+        "Path through symlink escaping hidden volume should be rejected"
+    );
+}
+
+#[test]
+fn test_traversal_escape_rejected() {
+    // Paths using .. to escape the hidden volume must be rejected
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let hv_root = temp_dir.path().join("hv");
+    std::fs::create_dir_all(&hv_root).expect("Should create hv dir");
+    let root_str = hv_root.to_str().unwrap();
+
+    // ../.. should escape
+    let escape_path = hv_root.join("../../etc/shadow");
+    assert!(
+        !is_on_hidden_volume(&escape_path, root_str),
+        "Path traversal escape should be rejected"
+    );
+
+    // Single .. should escape
+    let escape_path2 = hv_root.join("../outside");
+    assert!(
+        !is_on_hidden_volume(&escape_path2, root_str),
+        "Single .. escape should be rejected"
+    );
+}
+
+#[test]
+fn test_nonexistent_root_rejected() {
+    // When root doesn't exist, string-based fallback is used.
+    // Paths that don't match the root prefix are rejected.
+    let nonexistent_root = "/tmp/nails-test-nonexistent-root-12345";
+    assert!(
+        !Path::new(nonexistent_root).exists(),
+        "Test precondition: root must not exist"
+    );
+
+    // An existing path outside the non-existent root should be rejected
+    assert!(
+        !is_on_hidden_volume(Path::new("/tmp"), nonexistent_root),
+        "Existing path should be rejected when it doesn't match root prefix"
+    );
+
+    // Traversal escapes are still caught with non-existent roots
+    assert!(
+        !is_on_hidden_volume(
+            Path::new("/tmp/nails-test-nonexistent-root-12345/../../../etc/shadow"),
+            nonexistent_root
+        ),
+        "Traversal escape should be rejected even with non-existent root"
+    );
+
+    // Matching string prefix still passes (config validation scenario)
+    assert!(
+        is_on_hidden_volume(
+            Path::new("/tmp/nails-test-nonexistent-root-12345/state.json"),
+            nonexistent_root
+        ),
+        "Matching path should pass string-based check for config validation"
+    );
+}
+
+// ========== P0-01 Regression Tests: Version Migration + Checksum ==========
+
+/// Helper: given a state file path, change the version string and recompute the checksum
+/// using the same method as save_internal (serialize StateFile with checksum=None).
+fn rewrite_version_and_recompute_checksum(state_path: &Path, new_version: &str) {
+    let raw_json = std::fs::read_to_string(state_path).unwrap();
+    let mut state_file: StateFile = serde_json::from_str(&raw_json).unwrap();
+    state_file.version = new_version.to_string();
+    state_file.checksum = None;
+
+    // Compute checksum the same way save_internal does
+    let hash_value = serde_json::to_value(&state_file).unwrap();
+    let hash_json = hash_value.to_string();
+    use sha2::Digest;
+    let computed = hex::encode(sha2::Sha256::digest(hash_json.as_bytes()));
+    state_file.checksum = Some(computed);
+
+    let json = serde_json::to_string_pretty(&state_file).unwrap();
+    std::fs::write(state_path, json).unwrap();
+}
+
+#[test]
+fn test_compatible_version_load_with_checksum() {
+    // Regression: previously, loading a state file written by a different minor/patch
+    // version would ALWAYS fail checksum verification because the version was updated
+    // in memory BEFORE the checksum was verified.
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let mock_root = temp_dir.path().to_str().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+
+    let state = StateFile {
+        nixos_generation: Some("gen-abc".to_string()),
+        last_modified: DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
+        ..StateFile::default()
+    };
+
+    state
+        .save_with_root(&state_path, mock_root)
+        .expect("Should save");
+
+    // Simulate a file saved by version "0.99.99" (same major, different minor/patch)
+    rewrite_version_and_recompute_checksum(&state_path, "0.99.99");
+
+    let loaded = StateFile::load(&state_path).expect(
+        "Should load state file with different compatible version without checksum failure",
+    );
+    assert_eq!(loaded.state, SystemState::Inactive);
+    assert_eq!(loaded.nixos_generation, Some("gen-abc".to_string()));
+    assert_eq!(loaded.version, env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
+fn test_tampered_compatible_version_failure() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let mock_root = temp_dir.path().to_str().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+
+    let state = StateFile::default();
+    state
+        .save_with_root(&state_path, mock_root)
+        .expect("Should save");
+
+    // Change version AND data but keep the OLD checksum
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    raw["version"] = serde_json::Value::String("0.99.99".to_string());
+    raw["nixos_generation"] = serde_json::Value::String("TAMPERED".to_string());
+    std::fs::write(&state_path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    let result = StateFile::load(&state_path);
+    assert!(result.is_err(), "Tampered file should fail checksum");
+    match result.unwrap_err() {
+        NailsError::ChecksumMismatch(msg) => {
+            assert!(msg.contains("corrupted"));
+        }
+        other => panic!("Expected ChecksumMismatch, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_future_major_version_rejection() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let mock_root = temp_dir.path().to_str().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+
+    let state = StateFile::default();
+    state
+        .save_with_root(&state_path, mock_root)
+        .expect("Should save");
+
+    // Change to future major version and recompute checksum
+    rewrite_version_and_recompute_checksum(&state_path, "999.0.0");
+
+    let result = StateFile::load(&state_path);
+    assert!(result.is_err(), "Future major version should be rejected");
+    match result.unwrap_err() {
+        NailsError::InvalidState(msg) => {
+            assert!(msg.contains("999.0.0"));
+            assert!(msg.contains("future major version"));
+        }
+        other => panic!("Expected InvalidState, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_version_migration_preserves_data() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let mock_root = temp_dir.path().to_str().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+
+    let mut overlay_status = std::collections::HashMap::new();
+    overlay_status.insert(
+        PathBuf::from("/home"),
+        OverlayInfo {
+            mount_path: PathBuf::from("/home"),
+            lower_dir: PathBuf::from("/home"),
+            upper_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
+            work_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+            mounted_at: DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        },
+    );
+
+    let state = StateFile {
+        state: SystemState::Active {
+            activated_at: DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            overlays: vec![PathBuf::from("/home")],
+        },
+        nixos_generation: Some("gen-xyz".to_string()),
+        config_fingerprint: Some("abcdef0123456789".to_string()),
+        overlay_status: overlay_status.clone(),
+        failed_overlays: vec![FailedOverlayInfo {
+            target: PathBuf::from("/var"),
+            error_message: "mount failed".to_string(),
+            failed_at: DateTime::parse_from_rfc3339("2025-06-01T12:01:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        }],
+        last_modified: DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
+        ..StateFile::default()
+    };
+
+    state
+        .save_with_root(&state_path, mock_root)
+        .expect("Should save");
+
+    // Change version and recompute checksum
+    rewrite_version_and_recompute_checksum(&state_path, "0.50.0");
+
+    let loaded = StateFile::load(&state_path).expect("Should load with version migration");
+
+    assert_eq!(loaded.version, env!("CARGO_PKG_VERSION"));
+    assert!(matches!(loaded.state, SystemState::Active { .. }));
+    assert_eq!(loaded.nixos_generation, Some("gen-xyz".to_string()));
+    assert_eq!(
+        loaded.config_fingerprint,
+        Some("abcdef0123456789".to_string())
+    );
+    assert_eq!(loaded.overlay_status.len(), 1);
+    assert!(loaded.overlay_status.contains_key(&PathBuf::from("/home")));
+    assert_eq!(loaded.failed_overlays.len(), 1);
+    assert_eq!(loaded.failed_overlays[0].target, PathBuf::from("/var"));
 }

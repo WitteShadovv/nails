@@ -1388,8 +1388,7 @@ fn test_binary_relative_config_loading_integration() {
         all_output
     );
 
-    // Test 2: Verify graceful behavior when config doesn't exist (AC3)
-    // Run with a non-existent config path to verify fallback to defaults
+    // Test 2: Explicit --config with non-existent path must FAIL (P0-04: fail closed)
     let nonexistent_config = temp_dir.path().join("nonexistent.yaml");
     let output2 = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
         .arg("--config")
@@ -1401,16 +1400,73 @@ fn test_binary_relative_config_loading_integration() {
     let _stdout2 = String::from_utf8_lossy(&output2.stdout);
     let stderr2 = String::from_utf8_lossy(&output2.stderr);
 
-    // Should succeed using defaults, not fail
+    // P0-04: Explicit --config with missing file must fail with clear error
     assert!(
-        output2.status.success(),
-        "Should succeed with defaults when config missing. stderr: {}",
+        !output2.status.success(),
+        "Explicit --config with missing file must fail. stderr: {}",
         stderr2
     );
+    assert!(
+        stderr2.contains("Config file not found"),
+        "Error should mention missing config file. stderr: {}",
+        stderr2
+    );
+    assert!(
+        stderr2.contains("nonexistent.yaml"),
+        "Error should name the missing path. stderr: {}",
+        stderr2
+    );
+}
 
-    // Note: Config loading errors are handled by Config::load_or_default()
-    // which logs an INFO message when config is not found.
-    // We just verify the command doesn't crash and succeeds.
+/// P0-04: Explicit --config with missing file must fail
+#[test]
+fn test_explicit_config_missing_fails() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["--config", "/nonexistent/path/nails.yaml", "status"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Config file not found"))
+        .stderr(predicates::str::contains("/nonexistent/path/nails.yaml"));
+}
+
+/// P0-04: Explicit --config with unreadable file must fail
+#[cfg(unix)]
+#[test]
+fn test_explicit_config_unreadable_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let config_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::set_permissions(config_file.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["--config", config_file.path().to_str().unwrap(), "status"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Error loading config from"));
+
+    // Restore permissions so temp file cleanup works
+    std::fs::set_permissions(config_file.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+/// P0-04: Implicit config (no --config) still works with defaults
+#[test]
+fn test_implicit_config_missing_succeeds() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.arg("status")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("NAILS Status Report"));
+}
+
+/// P0-04: Explicit --config with valid file succeeds
+#[test]
+fn test_explicit_config_valid_succeeds() {
+    let config_file = create_test_config_file("/tmp/test-p004-volume");
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["--config", config_file.path().to_str().unwrap(), "status"])
+        .assert()
+        .success();
 }
 
 /// Test that CLI --config flag overrides binary-relative config discovery (AC5)

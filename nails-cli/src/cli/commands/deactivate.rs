@@ -49,7 +49,7 @@ pub fn execute(
 
     // Load configuration
     let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-    let mut config = super::load_config_or_exit(&config_path);
+    let mut config = super::load_config_or_exit(&config_path, config_override.as_deref());
 
     // Apply --no-clear-history CLI override
     if no_clear_history {
@@ -73,10 +73,12 @@ pub fn execute(
             if !json {
                 println!("✓ System configuration restored");
                 println!("  Rebooting to decoy environment...");
+                eprintln!();
+                for line in DEACTIVATE_RECOVERY_GUIDANCE {
+                    eprintln!("{line}");
+                }
             } else {
-                println!(
-                    "{{\"status\":\"success\",\"message\":\"Rebooting to decoy configuration\"}}"
-                );
+                println!("{}", deactivate_success_json());
             }
             // Note: Reboot command was already issued, this code may not execute
             std::process::exit(0);
@@ -92,9 +94,21 @@ pub fn execute(
     }
 }
 
+/// Build the JSON success response for deactivation
+fn deactivate_success_json() -> String {
+    r#"{"status":"success","message":"Rebooting to decoy configuration","recovery_guidance":["Dismount hidden volume","Reboot to ensure clean state"]}"#.to_string()
+}
+
+/// Recovery guidance lines for human-readable deactivation output
+const DEACTIVATE_RECOVERY_GUIDANCE: &[&str] = &[
+    "⚠ Important: Hidden storage may still be mounted. Your system is not in a fully safe state until:",
+    "  1. The hidden volume is dismounted",
+    "  2. The system is rebooted",
+];
+
 #[cfg(test)]
 mod tests {
-    use super::execute;
+    use super::{DEACTIVATE_RECOVERY_GUIDANCE, deactivate_success_json, execute};
     use std::path::PathBuf;
 
     const SUBPROCESS_TEST_NAME: &str =
@@ -167,5 +181,23 @@ mod tests {
 
         assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
         assert!(stderr.contains("status") || stderr.contains("error") || stderr.contains("failed"));
+    }
+
+    #[test]
+    fn deactivate_success_json_contains_recovery_guidance() {
+        let json_str = deactivate_success_json();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["status"], "success");
+        let guidance = parsed["recovery_guidance"].as_array().unwrap();
+        assert_eq!(guidance.len(), 2);
+        assert!(guidance[0].as_str().unwrap().contains("Dismount"));
+        assert!(guidance[1].as_str().unwrap().contains("Reboot"));
+    }
+
+    #[test]
+    fn deactivate_recovery_guidance_contains_expected_text() {
+        let combined: String = DEACTIVATE_RECOVERY_GUIDANCE.join("\n");
+        assert!(combined.contains("hidden volume is dismounted"));
+        assert!(combined.contains("system is rebooted"));
     }
 }

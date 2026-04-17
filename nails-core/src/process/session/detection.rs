@@ -63,8 +63,19 @@ pub fn detect_session_context_with_executor<E: SessionCommandExecutor>(
         let display_manager =
             override_dm.or_else(|| detect_display_manager(executor).ok().flatten());
 
+        // GraphicalUser requires a valid target_uid; fall back to GraphicalRoot if missing
+        let kind = if override_uid.is_some() {
+            SessionKind::GraphicalUser
+        } else {
+            tracing::warn!(
+                "Override environment present but target UID is missing or invalid; \
+                 falling back to GraphicalRoot"
+            );
+            SessionKind::GraphicalRoot
+        };
+
         return Ok(SessionContext {
-            kind: SessionKind::GraphicalUser,
+            kind,
             session_id: override_session_id.or(session_id),
             display_manager,
             target_uid: override_uid,
@@ -401,7 +412,8 @@ mod tests {
 
         let ctx = detect_session_context_with_executor(&exec).unwrap();
 
-        assert_eq!(ctx.kind, SessionKind::GraphicalUser);
+        // Invalid UID means we fall back to GraphicalRoot, not GraphicalUser
+        assert_eq!(ctx.kind, SessionKind::GraphicalRoot);
         assert_eq!(ctx.session_id, Some("c2".to_string()));
         assert_eq!(ctx.target_uid, None);
         assert_eq!(ctx.target_user, Some("alice".to_string()));
@@ -432,6 +444,28 @@ mod tests {
         assert_eq!(ctx.display_manager, Some("display-manager".to_string()));
         assert_eq!(ctx.target_uid, Some(1000));
         assert_eq!(ctx.target_user, Some("alice".to_string()));
+
+        clear_session_env();
+    }
+
+    #[test]
+    #[serial]
+    fn detect_session_context_override_without_uid_returns_graphical_root() {
+        clear_session_env();
+        unsafe {
+            env::set_var("NAILS_SESSION_ID", "c5");
+            env::set_var("NAILS_DISPLAY_MANAGER", "sddm");
+            // No NAILS_TARGET_UID set
+        }
+
+        let exec = MockSessionCommandExecutor::new(true, true, true);
+        let ctx = detect_session_context_with_executor(&exec).unwrap();
+
+        // Without a valid target UID, must NOT be GraphicalUser
+        assert_eq!(ctx.kind, SessionKind::GraphicalRoot);
+        assert_eq!(ctx.target_uid, None);
+        assert_eq!(ctx.session_id, Some("c5".to_string()));
+        assert_eq!(ctx.display_manager, Some("sddm".to_string()));
 
         clear_session_env();
     }

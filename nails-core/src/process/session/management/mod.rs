@@ -30,14 +30,20 @@ pub fn prompt_session_kill_confirmation(ctx: &SessionContext, yes_flag: bool) ->
         ));
     }
 
-    prompt_session_kill_confirmation_with_reader(ctx, yes_flag, &mut std::io::stdin().lock())
+    prompt_session_kill_confirmation_with_io(
+        ctx,
+        yes_flag,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stderr(),
+    )
 }
 
-/// Prompt user for confirmation before killing graphical session (with injectable reader)
-fn prompt_session_kill_confirmation_with_reader<R: std::io::BufRead>(
+/// Prompt user for confirmation before killing graphical session (with injectable I/O)
+pub(crate) fn prompt_session_kill_confirmation_with_io<R: std::io::BufRead, W: std::io::Write>(
     ctx: &SessionContext,
     yes_flag: bool,
     reader: &mut R,
+    writer: &mut W,
 ) -> Result<()> {
     if yes_flag {
         return Ok(());
@@ -51,22 +57,30 @@ fn prompt_session_kill_confirmation_with_reader<R: std::io::BufRead>(
 
     let dm = ctx.display_manager.as_deref().unwrap_or("display-manager");
 
-    println!("⚠️  This will terminate your graphical session!");
-    println!("    All unsaved work in open applications will be LOST.");
-    println!();
-    println!("    The system will:");
-    println!("    1. Stop display manager ({})", dm);
-    println!("    2. Terminate your logind session and user processes");
-    println!("    3. Mount hidden environment overlays");
-    println!("    4. Restart display manager and user manager");
-    println!();
-    println!("    You will need to log in again after activation.");
-    println!();
+    writeln!(writer, "⚠️  This will terminate your graphical session!")?;
+    writeln!(
+        writer,
+        "    All unsaved work in open applications will be LOST."
+    )?;
+    writeln!(writer)?;
+    writeln!(writer, "    The system will:")?;
+    writeln!(writer, "    1. Stop display manager ({})", dm)?;
+    writeln!(
+        writer,
+        "    2. Terminate your logind session and user processes"
+    )?;
+    writeln!(writer, "    3. Mount hidden environment overlays")?;
+    writeln!(writer, "    4. Restart display manager and user manager")?;
+    writeln!(writer)?;
+    writeln!(
+        writer,
+        "    You will need to log in again after activation."
+    )?;
+    writeln!(writer)?;
 
     // Prompt for confirmation
-    use std::io::Write;
-    print!("    Continue? [y/N]: ");
-    std::io::stdout().flush()?;
+    write!(writer, "    Continue? [y/N]: ")?;
+    writer.flush()?;
 
     let mut input = String::new();
     reader.read_line(&mut input)?;
@@ -292,7 +306,7 @@ fn kill_user_processes<E: SessionCommandExecutor>(uid: u32, executor: &E) -> Res
 
     let mut terminated = 0;
     for pid in &pids {
-        if executor.execute_kill(*pid, "TERM").unwrap_or(false) {
+        if executor.execute_kill(*pid, "TERM")? {
             terminated += 1;
         }
     }
@@ -301,7 +315,7 @@ fn kill_user_processes<E: SessionCommandExecutor>(uid: u32, executor: &E) -> Res
 
     let mut force_killed = 0;
     for pid in pids {
-        if process_exists(pid) && executor.execute_kill(pid, "KILL").unwrap_or(false) {
+        if process_exists(pid) && executor.execute_kill(pid, "KILL")? {
             force_killed += 1;
         }
     }

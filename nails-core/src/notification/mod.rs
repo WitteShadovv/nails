@@ -61,9 +61,9 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
         ))
     })?;
 
-    // Set the notifications directory to 0o755 (owner rwx, group/other rx).
+    // Set the notifications directory to 0o700 (owner rwx only).
     // The directory is chown'd to the target user below so they can manage files.
-    if let Err(e) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)) {
+    if let Err(e) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)) {
         tracing::warn!(
             dir = %dir.display(),
             error = %e,
@@ -121,9 +121,9 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
         ))
     })?;
 
-    // Set the notification file to 0o644 (owner rw, group/other read-only).
+    // Set the notification file to 0o600 (owner rw only).
     // The file is chown'd to the target user below so dispatch_all can delete it.
-    if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)) {
+    if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
         tracing::warn!(
             path = %path.display(),
             error = %e,

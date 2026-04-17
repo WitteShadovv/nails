@@ -1,7 +1,7 @@
 //! Status report types: VerificationStatus, SecurityPosture, StatusReport
 
 use super::OpSecReminder;
-use crate::SystemState;
+use crate::{LoadOutcome, SystemState};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -200,6 +200,14 @@ pub struct StatusReport {
     /// Per-overlay mount status (Task 3: Fix status display)
     /// Contains expected vs actual mount status for each overlay
     pub overlay_mount_statuses: Vec<OverlayMountStatus>,
+
+    /// How the state file was loaded (P1-03: unified load outcome)
+    #[serde(skip, default = "default_load_outcome")]
+    pub load_outcome: LoadOutcome,
+}
+
+fn default_load_outcome() -> LoadOutcome {
+    LoadOutcome::FreshDefault
 }
 
 impl StatusReport {

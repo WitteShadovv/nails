@@ -45,7 +45,7 @@ use std::sync::{Arc, Mutex};
 // Module declarations
 pub mod activation;
 pub mod deactivation;
-mod helpers;
+pub(crate) mod helpers;
 pub mod mount_tracker;
 pub mod preflight_runner;
 pub mod state_management;

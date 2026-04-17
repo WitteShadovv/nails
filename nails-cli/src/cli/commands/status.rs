@@ -38,10 +38,11 @@ pub fn execute(
     // Load configuration (Story 14.1)
     let config_path = nails_core::config::discover_config_path(config_override.as_deref());
 
-    let config = super::load_config_or_exit(&config_path);
+    let config = super::load_config_or_exit(&config_path, config_override.as_deref());
 
     let state_path = config.state_file_path.clone();
     let hidden_volume_root = config.hidden_volume_root.clone();
+    let log_path = config.log_path.clone();
 
     // Create StatusCommand and run
     let filesystem = RealFilesystem;
@@ -129,6 +130,7 @@ pub fn execute(
             &config_path,
             &state_path,
             &hidden_volume_root,
+            &log_path,
         );
     } else {
         output::print_status_human(
@@ -137,6 +139,7 @@ pub fn execute(
             &config_path,
             &state_path,
             &hidden_volume_root,
+            &log_path,
         );
     }
 

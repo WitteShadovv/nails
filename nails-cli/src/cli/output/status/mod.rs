@@ -4,7 +4,7 @@ mod json;
 
 pub use json::print_status_json;
 
-/// Helper function to read recent log entries from the hidden volume
+/// Helper function to read recent log entries from the configured log path
 ///
 /// Filters logs by:
 /// - Activation time (only show logs after activation)
@@ -12,7 +12,7 @@ pub use json::print_status_json;
 ///
 /// Returns formatted log lines with timestamps and colored levels (if use_color is true)
 fn read_recent_logs(
-    hidden_volume_root: &std::path::Path,
+    log_path: &std::path::Path,
     activated_at: Option<chrono::DateTime<chrono::Utc>>,
     show_debug: bool,
     use_color: bool,
@@ -21,12 +21,12 @@ fn read_recent_logs(
     use std::fs::File;
     use std::io::{BufRead, BufReader};
 
-    let log_path = hidden_volume_root.join("nails.log");
-    if !log_path.exists() {
+    let log_file = log_path.join("nails.log");
+    if !log_file.exists() {
         return None;
     }
 
-    let file = File::open(&log_path).ok()?;
+    let file = File::open(&log_file).ok()?;
     let reader = BufReader::new(file);
 
     let mut recent_logs = Vec::new();
@@ -100,12 +100,16 @@ fn read_recent_logs(
 /// - State file path
 /// - Config file path
 /// - Mount timestamps for each overlay
+/// - Load outcome (how state was loaded)
+///
+/// When inactive and verbose, shows resolved config paths.
 pub fn print_status_human(
     report: &nails_core::status::StatusReport,
     verbose: bool,
     config_path: &std::path::Path,
     state_path: &std::path::Path,
     hidden_volume_root: &std::path::Path,
+    log_path: &std::path::Path,
 ) {
     use nails_core::SystemState;
 
@@ -159,7 +163,7 @@ pub fn print_status_human(
         println!("Run 'nails activate' to mount hidden environment");
     }
 
-    // Verbose mode: show detailed overlay info (AC8)
+    // Verbose mode: show detailed overlay info (AC8) or resolved paths when inactive
     if verbose && matches!(report.state, SystemState::Active { .. }) {
         println!();
         println!("Verbose Details:");
@@ -184,6 +188,28 @@ pub fn print_status_human(
         }
     }
 
+    // Verbose mode when inactive: show resolved paths (P1-03)
+    if verbose && matches!(report.state, SystemState::Inactive) {
+        use nails_core::LoadOutcome;
+
+        println!();
+        println!("Verbose Details:");
+        println!("  Config file:        {}", config_path.display());
+        println!("  Hidden volume root: {}", hidden_volume_root.display());
+        println!("  State file:         {}", state_path.display());
+        println!("  Log path:           {}", log_path.display());
+        match &report.load_outcome {
+            LoadOutcome::FreshDefault => println!("  State loaded:       fresh default (no file)"),
+            LoadOutcome::Normal => println!("  State loaded:       normal"),
+            LoadOutcome::Migrated { from_version } => {
+                println!("  State loaded:       migrated from v{}", from_version)
+            }
+            LoadOutcome::RecoveredFromCorruption => {
+                println!("  State loaded:       recovered from corruption (using defaults)")
+            }
+        }
+    }
+
     // Print OpSec reminders if present (AC10)
     if !report.opsec_reminders.is_empty() {
         println!();
@@ -192,8 +218,8 @@ pub fn print_status_human(
         }
     }
 
-    // Display recent logs if available
-    if let Some(logs) = read_recent_logs(hidden_volume_root, report.activated_at, verbose, true) {
+    // Display recent logs if available (P1-03: use config log_path)
+    if let Some(logs) = read_recent_logs(log_path, report.activated_at, verbose, true) {
         println!();
         println!("Recent Logs:");
         for log in logs.iter().take(20) {
@@ -216,6 +242,7 @@ pub fn print_status_ascii(
     config_path: &std::path::Path,
     state_path: &std::path::Path,
     hidden_volume_root: &std::path::Path,
+    log_path: &std::path::Path,
 ) {
     use nails_core::SystemState;
 
@@ -294,6 +321,28 @@ pub fn print_status_ascii(
         }
     }
 
+    // Verbose mode when inactive: show resolved paths (P1-03)
+    if verbose && matches!(report.state, SystemState::Inactive) {
+        use nails_core::LoadOutcome;
+
+        println!();
+        println!("Verbose Details:");
+        println!("  Config file:        {}", config_path.display());
+        println!("  Hidden volume root: {}", hidden_volume_root.display());
+        println!("  State file:         {}", state_path.display());
+        println!("  Log path:           {}", log_path.display());
+        match &report.load_outcome {
+            LoadOutcome::FreshDefault => println!("  State loaded:       fresh default (no file)"),
+            LoadOutcome::Normal => println!("  State loaded:       normal"),
+            LoadOutcome::Migrated { from_version } => {
+                println!("  State loaded:       migrated from v{}", from_version)
+            }
+            LoadOutcome::RecoveredFromCorruption => {
+                println!("  State loaded:       recovered from corruption (using defaults)")
+            }
+        }
+    }
+
     // Print OpSec reminders in ASCII format
     if !report.opsec_reminders.is_empty() {
         println!();
@@ -308,8 +357,8 @@ pub fn print_status_ascii(
         }
     }
 
-    // Display recent logs if available (no color in ASCII mode)
-    if let Some(logs) = read_recent_logs(hidden_volume_root, report.activated_at, verbose, false) {
+    // Display recent logs if available (P1-03: use config log_path, no color in ASCII mode)
+    if let Some(logs) = read_recent_logs(log_path, report.activated_at, verbose, false) {
         println!();
         println!("Recent Logs:");
         for log in logs.iter().take(20) {

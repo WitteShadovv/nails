@@ -62,6 +62,7 @@ pub struct DeactivationOrchestrator<F: Filesystem> {
     cleanup_config: CleanupConfig,
     mode: DeactivationMode,
     execute_switch_script: bool,
+    restore_decoy_profile: bool,
 }
 
 impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
@@ -93,6 +94,7 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
             cleanup_config,
             mode: DeactivationMode::Normal,
             execute_switch_script: true,
+            restore_decoy_profile: true,
         }
     }
 
@@ -109,6 +111,12 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
     /// Control whether the decoy switch script is executed after symlink preparation.
     pub(crate) fn with_switch_script_execution(mut self, execute_switch_script: bool) -> Self {
         self.execute_switch_script = execute_switch_script;
+        self
+    }
+
+    /// Control whether the decoy profile symlink/switch path runs at all.
+    pub(crate) fn with_decoy_profile_restore(mut self, restore_decoy_profile: bool) -> Self {
+        self.restore_decoy_profile = restore_decoy_profile;
         self
     }
 
@@ -300,9 +308,9 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
         manager.update_state(inactive_state)?;
 
         // Step 5: Switch to newest available base system generation (decoy)
-        let switch_error = if let Some(system_profile) =
-            select_system_profile(manager.filesystem())?
-        {
+        let switch_error = if !self.restore_decoy_profile {
+            None
+        } else if let Some(system_profile) = select_system_profile(manager.filesystem())? {
             tracing::info!("Switching to decoy NixOS configuration...");
 
             if let Err(e) = ensure_run_current_system_symlink(manager.filesystem(), &system_profile)

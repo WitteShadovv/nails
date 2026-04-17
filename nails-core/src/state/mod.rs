@@ -50,7 +50,7 @@ mod tests;
 mod transitions;
 
 // Re-export all public items for backward compatibility
-pub use file::StateFile;
+pub use file::{LoadOutcome, LoadResult, StateFile};
 pub use guard::StateGuard;
 
 /// Check if a path is within the hidden volume
@@ -71,51 +71,116 @@ pub fn is_on_hidden_volume(path: &Path, hidden_volume_root: &str) -> bool {
     is_on_hidden_volume_internal(path, hidden_volume_root)
 }
 
+/// Check if a path is a symlink using `symlink_metadata`
+fn is_symlink_path(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta.file_type().is_symlink(),
+        Err(_) => false,
+    }
+}
+
 /// Internal implementation of hidden volume path checking
+///
+/// Fail-closed: rejects symlinked roots and paths that escape the hidden
+/// volume boundary via symlinks or traversal. When the root doesn't exist
+/// on disk (e.g., during config validation before mount), falls back to
+/// cleaned string-prefix comparison.
 fn is_on_hidden_volume_internal(path: &Path, hidden_volume_root: &str) -> bool {
-    // Try to canonicalize to resolve symlinks
-    match path.canonicalize() {
-        Ok(canonical) => canonical.starts_with(hidden_volume_root),
-        // If path doesn't exist yet, we need to clean it manually
-        // to prevent path traversal attacks
+    let root_path = Path::new(hidden_volume_root);
+
+    // Reject symlinked hidden-volume roots
+    if is_symlink_path(root_path) {
+        return false;
+    }
+
+    // Try to canonicalize the root to get its real path
+    let canonical_root = match root_path.canonicalize() {
+        Ok(cr) => cr,
         Err(_) => {
-            // Convert to absolute path and clean ".." components
+            // Root doesn't exist — can't do filesystem-level checks.
+            // Fall through to string-based validation for config-time checks.
+            // Clean both paths to prevent traversal attacks.
+            let cleaned_root = clean_path_components(root_path);
+            let cleaned_path = if path.is_absolute() {
+                clean_path_components(path)
+            } else {
+                // Relative paths can't be on an absolute hidden volume root
+                return false;
+            };
+            return cleaned_path.starts_with(&cleaned_root);
+        }
+    };
+
+    // Try to canonicalize the target path to resolve symlinks
+    match path.canonicalize() {
+        Ok(canonical) => canonical.starts_with(&canonical_root),
+        // If path doesn't exist yet, we need to clean it manually
+        Err(_) => {
             let absolute = if path.is_absolute() {
                 path.to_path_buf()
             } else {
-                // If relative, make it absolute from current dir
                 std::env::current_dir()
                     .ok()
                     .and_then(|cwd| cwd.join(path).canonicalize().ok())
                     .unwrap_or_else(|| path.to_path_buf())
             };
 
-            // Manually clean path by resolving ".." components
-            let mut components = Vec::new();
-            for component in absolute.components() {
-                match component {
-                    std::path::Component::ParentDir => {
-                        components.pop();
+            let cleaned = clean_path_components(&absolute);
+
+            // Check if the nearest existing ancestor is a symlink
+            // pointing outside the hidden volume
+            let mut check = cleaned.clone();
+            while let Some(parent) = check.parent() {
+                if parent.exists() {
+                    if is_symlink_path(parent) {
+                        match parent.canonicalize() {
+                            Ok(real_parent) => {
+                                if !real_parent.starts_with(&canonical_root) {
+                                    return false;
+                                }
+                            }
+                            Err(_) => return false,
+                        }
                     }
-                    std::path::Component::Normal(c) => {
-                        components.push(c);
-                    }
-                    std::path::Component::RootDir => {
-                        components.clear();
-                    }
-                    _ => {}
+                    break;
                 }
+                if parent == Path::new("/") {
+                    break;
+                }
+                check = parent.to_path_buf();
             }
 
-            // Reconstruct path from components
-            let mut cleaned = PathBuf::from("/");
-            for component in components {
-                cleaned.push(component);
-            }
-
-            cleaned.starts_with(hidden_volume_root)
+            cleaned.starts_with(&canonical_root)
         }
     }
+}
+
+/// Clean a path by resolving ".." and "." components without filesystem access
+fn clean_path_components(path: &Path) -> PathBuf {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                components.pop();
+            }
+            std::path::Component::Normal(c) => {
+                components.push(c);
+            }
+            std::path::Component::RootDir => {
+                components.clear();
+            }
+            _ => {}
+        }
+    }
+    let mut cleaned = if path.is_absolute() {
+        PathBuf::from("/")
+    } else {
+        PathBuf::new()
+    };
+    for component in components {
+        cleaned.push(component);
+    }
+    cleaned
 }
 
 /// System state enum with type-safe transitions

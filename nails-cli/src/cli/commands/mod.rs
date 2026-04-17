@@ -33,9 +33,23 @@ pub(crate) fn exit_lock_error(context: &str, error: impl Display) -> ! {
     std::process::exit(2);
 }
 
-pub(crate) fn load_config_or_exit(config_path: &Path) -> nails_core::Config {
-    nails_core::Config::load_or_default(config_path)
-        .unwrap_or_else(|error| exit_config_error(config_path, error))
+/// Load configuration, failing closed when the user explicitly specified `--config`.
+///
+/// * `config_override` is `Some` → strict load; missing/unreadable file is a fatal error.
+/// * `config_override` is `None`  → implicit discovery; missing file falls back to defaults.
+pub(crate) fn load_config_or_exit(
+    config_path: &Path,
+    config_override: Option<&Path>,
+) -> nails_core::Config {
+    if config_override.is_some() {
+        // Explicit --config: fail closed on any error (including missing file)
+        nails_core::Config::load(config_path)
+            .unwrap_or_else(|error| exit_config_error(config_path, error))
+    } else {
+        // Implicit discovery: fall back to defaults when file is missing
+        nails_core::Config::load_or_default(config_path)
+            .unwrap_or_else(|error| exit_config_error(config_path, error))
+    }
 }
 
 pub(crate) fn lock_manager_or_exit<'a, F: nails_core::Filesystem>(

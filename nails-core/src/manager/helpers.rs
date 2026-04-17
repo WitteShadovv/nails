@@ -7,19 +7,94 @@
 use crate::{Config, Filesystem, NailsError, Result, obfuscate};
 use std::path::{Path, PathBuf};
 
-/// Start a systemd service and its socket (socket first), best-effort.
-pub(crate) fn start_service_and_socket(service: &str) {
-    // Skip actual systemctl calls during tests to prevent leaking to host system
-    if crate::runtime_safety::should_skip_host_interaction() {
-        return;
+/// Centralized socket-aware service lifecycle control.
+///
+/// All systemd service start/stop operations should go through this struct
+/// to ensure consistent ordering: stop socket BEFORE service, start socket
+/// to activate service.
+pub(crate) struct ServiceController;
+
+impl ServiceController {
+    /// Returns true when running in a test or test-like context where
+    /// host interaction (systemctl, etc.) should be skipped.
+    fn should_skip() -> bool {
+        crate::runtime_safety::should_skip_host_interaction()
     }
 
-    let _ = std::process::Command::new("systemctl")
-        .args(["start", &format!("{}.socket", service)])
-        .output();
-    let _ = std::process::Command::new("systemctl")
-        .args(["start", service])
-        .output();
+    /// Stop nix-daemon: stop socket first (prevents socket-activation restart),
+    /// then stop the service. Best-effort — errors are logged but returned so
+    /// callers can decide how to handle them.
+    pub fn stop_nix_daemon() -> std::result::Result<(), std::io::Error> {
+        if Self::should_skip() {
+            tracing::debug!(
+                "Skipping nix-daemon stop commands in test/test-like context to avoid host interaction"
+            );
+            return Ok(());
+        }
+
+        tracing::info!("Stopping nix-daemon.socket...");
+        let _ = std::process::Command::new("systemctl")
+            .args(["stop", "nix-daemon.socket"])
+            .output()?;
+
+        tracing::info!("Stopping nix-daemon.service...");
+        let _ = std::process::Command::new("systemctl")
+            .args(["stop", "nix-daemon.service"])
+            .output()?;
+
+        Ok(())
+    }
+
+    /// Start nix-daemon: start socket (which activates service on demand),
+    /// then start the service directly as well. Best-effort.
+    #[allow(dead_code)]
+    pub fn start_nix_daemon() {
+        Self::start_service_and_socket("nix-daemon");
+    }
+
+    /// Restart nix-daemon: stop then start.
+    #[allow(dead_code)]
+    pub fn restart_nix_daemon() {
+        let _ = Self::stop_nix_daemon();
+        Self::start_nix_daemon();
+    }
+
+    /// Start a systemd service and its socket (socket first), best-effort.
+    pub fn start_service_and_socket(service: &str) {
+        if Self::should_skip() {
+            return;
+        }
+
+        tracing::debug!(service, "Starting {}.socket", service);
+        let _ = std::process::Command::new("systemctl")
+            .args(["start", &format!("{}.socket", service)])
+            .output();
+
+        tracing::debug!(service, "Starting {}", service);
+        let _ = std::process::Command::new("systemctl")
+            .args(["start", service])
+            .output();
+    }
+
+    /// Best-effort restart of services that were stopped during overlay mounting
+    /// when the mount ultimately fails. Starts both socket and service for each.
+    pub fn restart_services_after_failure(services: &[String]) {
+        if Self::should_skip() {
+            tracing::debug!(
+                "Skipping service restart commands in test/test-like context to avoid host interaction"
+            );
+            return;
+        }
+
+        for service in services {
+            Self::start_service_and_socket(service);
+        }
+    }
+}
+
+/// Legacy wrapper — delegates to [`ServiceController::start_service_and_socket`].
+pub(crate) fn start_service_and_socket(service: &str) {
+    ServiceController::start_service_and_socket(service);
 }
 
 /// Return the system profile path, honoring NAILS_SYSTEM_PROFILE_PATH if set.

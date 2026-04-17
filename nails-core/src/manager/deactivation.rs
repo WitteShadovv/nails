@@ -43,6 +43,20 @@ struct OverlayContext {
     etc_was_overlaid: bool,
 }
 
+fn requires_decoy_restore<F: Filesystem>(manager: &NailsManager<F>) -> Result<bool> {
+    let _ = manager.current_state()?;
+
+    let cached = manager
+        .cached_state
+        .lock()
+        .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+
+    Ok(cached
+        .as_ref()
+        .and_then(|state_file| state_file.nixos_generation.as_ref())
+        .is_some())
+}
+
 fn build_cleanup_config<F: Filesystem>(
     manager: &NailsManager<F>,
     kind: ManagerDeactivationKind,
@@ -170,7 +184,9 @@ impl<F: Filesystem + 'static> NailsManager<F> {
                 ));
             }
 
-            if select_system_profile(manager.filesystem())?.is_none() {
+            if requires_decoy_restore(&manager)?
+                && select_system_profile(manager.filesystem())?.is_none()
+            {
                 return Err(NailsError::NixOSError(
                     "No system profile found. Cannot restore decoy configuration.".to_string(),
                 ));
@@ -200,14 +216,7 @@ impl<F: Filesystem + 'static> NailsManager<F> {
 
         if overlay_context.nix_was_overlaid {
             tracing::info!("Stopping nix-daemon before /nix overlay unmount...");
-            if !crate::runtime_safety::should_skip_host_interaction() {
-                let _ = std::process::Command::new("systemctl")
-                    .args(["stop", "nix-daemon.socket"])
-                    .output();
-                let _ = std::process::Command::new("systemctl")
-                    .args(["stop", "nix-daemon.service"])
-                    .output();
-            }
+            let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();
 
             tracing::info!("Unmounting /nix/store bind mount...");
             let manager = manager_arc
@@ -225,7 +234,13 @@ impl<F: Filesystem + 'static> NailsManager<F> {
 
         let orchestrator = DeactivationOrchestrator::new(Arc::clone(&manager_arc), cleanup_config)
             .with_mode(kind.orchestrator_mode())
-            .with_switch_script_execution(kind == ManagerDeactivationKind::Emergency);
+            .with_switch_script_execution(kind == ManagerDeactivationKind::Emergency)
+            .with_decoy_profile_restore({
+                let manager = manager_arc
+                    .lock()
+                    .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+                requires_decoy_restore(&manager)?
+            });
 
         let result = orchestrator.run();
 

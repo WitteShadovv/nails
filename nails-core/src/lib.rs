@@ -105,7 +105,7 @@ pub use manager::{
 };
 
 // State management exports
-pub use state::{FailedOverlayInfo, OverlayInfo, StateFile, SystemState};
+pub use state::{FailedOverlayInfo, LoadOutcome, LoadResult, OverlayInfo, StateFile, SystemState};
 
 // Pre-flight validation exports
 pub use preflight::{

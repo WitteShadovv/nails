@@ -210,17 +210,17 @@ fn init_file_layer(
 > {
     use nails_core::{LoggingManager, RealFilesystem};
     use std::fs::OpenOptions;
-    use std::path::PathBuf;
 
-    // Determine hidden volume path from config (Story 14.3: Task 5, AC #4)
+    // Determine log path from config (P1-03: honor config.log_path)
     let config_path = nails_core::config::discover_config_path(config_override);
-    let hidden_volume_path = nails_core::config::Config::load_or_default(&config_path)
-        .map(|c| c.hidden_volume_root)
-        .unwrap_or_else(|_| PathBuf::from(nails_core::obfuscate::hidden_volume_root()));
+    let config = nails_core::config::Config::load_or_default(&config_path)
+        .unwrap_or_else(|_| nails_core::config::Config::default());
 
-    // Create LoggingManager - log file goes directly in hidden volume root
-    let logging_manager =
-        LoggingManager::new(hidden_volume_path.clone(), hidden_volume_path.clone());
+    let log_dir = config.log_path.clone();
+    let hidden_volume_path = config.hidden_volume_root.clone();
+
+    // Create LoggingManager using configured log_path
+    let logging_manager = LoggingManager::new(log_dir, hidden_volume_path);
 
     // Initialize LoggingManager with validation (Task 2.2)
     // Returns Ok(None) for graceful degradation (hidden volume not available)
@@ -368,6 +368,54 @@ mod tests {
         assert_eq!(
             json.get("message").and_then(|value| value.as_str()),
             Some("[1/6] Preparing session management...")
+        );
+    }
+
+    #[test]
+    fn test_log_file_created_with_mode_0o600() {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let log_path = dir.path().join("test.log");
+
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&log_path)
+            .unwrap();
+        drop(file);
+
+        let mode = log_path.metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "Log file should be 0o600, got {:#o}", mode);
+    }
+
+    #[test]
+    fn test_existing_log_file_normalized_to_0o600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let log_path = dir.path().join("test.log");
+
+        // Create file with old permissive mode
+        std::fs::write(&log_path, "old log data\n").unwrap();
+        std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // Simulate what init_file_layer does: open for append, then normalize
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_path)
+            .unwrap();
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        drop(file);
+
+        let mode = log_path.metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "Reopened log file should be normalized to 0o600, got {:#o}",
+            mode
         );
     }
 }
