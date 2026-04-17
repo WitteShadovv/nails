@@ -265,7 +265,7 @@ jobs:
           shared-key: "sbom"
 
       - name: Install cargo-sbom
-        run: cargo install cargo-sbom@0.9.6 --locked
+        run: cargo install cargo-sbom@0.10.0 --locked
 
       - name: Generate CycloneDX SBOM
         run: |
