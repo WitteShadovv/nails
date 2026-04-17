@@ -71,30 +71,20 @@ jobs:
         with:
           shared-key: "audit"
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit@0.22.0 --locked
-
-      - name: Install cargo-deny
-        run: cargo install cargo-deny@0.18.9 --locked
+      - name: Install audit tools
+        uses: taiki-e/install-action@a2352fc6ce487f030a3aa709482d57823eadfb37
+        with:
+          tool: cargo-audit@0.22.0,cargo-deny@0.18.9
+          fallback: none
 
       - name: Generate audit report (JSON)
         run: |
           mkdir -p target
-          cargo audit --json > target/audit-report.json 2>&1 || true
-
-      - name: Run security audit (cargo-audit)
-        run: cargo audit
+          cargo audit --json > target/audit-report.json
 
       - name: Run dependency policy check (cargo-deny)
         run: |
-          echo "=== Checking advisories (vulnerabilities) ==="
-          cargo deny check advisories
-          echo "=== Checking licenses (GPL-3.0 compatibility) ==="
-          cargo deny check licenses
-          echo "=== Checking bans (blocked dependencies) ==="
-          cargo deny check bans
-          echo "=== Checking sources (registry restrictions) ==="
-          cargo deny check sources
+          cargo deny check advisories licenses bans sources
 
       - name: Upload audit results
         if: always()
