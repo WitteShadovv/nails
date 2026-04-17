@@ -309,7 +309,7 @@ jobs:
           shared-key: "geiger"
 
       - name: Install cargo-geiger
-        run: cargo install cargo-geiger@0.11.7 --locked
+        run: cargo install cargo-geiger@0.13.0 --locked
 
       - name: Run unsafe code audit
         run: |
