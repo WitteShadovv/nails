@@ -20,6 +20,7 @@ in {
     import json
 
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.canonicalDeactivateFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -52,10 +53,7 @@ in {
     print("✓ Verified markers exist during active session")
 
     print("\n=== Deactivating and Cleaning Up ===")
-    machine.execute("sudo nails deactivate; reboot", check_return=False, check_output=False)
-    machine.wait_for_shutdown()
-    machine.start()
-    machine.wait_for_unit("multi-user.target")
+    canonical_deactivate(headless_config, unit_name="nails-deactivate-forensic-clean")
     print("✓ NAILS rebooted back to decoy state")
 
     status = json.loads(machine.succeed("nails status --json"))

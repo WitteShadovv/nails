@@ -108,7 +108,9 @@
             "systemd-run --unit "
             + shlex.quote(unit_name)
             + " --no-block --service-type=exec /bin/sh -lc "
-            + shlex.quote(f"nails --config {config_path} deactivate")
+            + shlex.quote(
+                "nails --config " + shlex.quote(config_path) + " deactivate"
+            )
         )
         machine.wait_for_shutdown()
         machine.start()

@@ -17,7 +17,10 @@ in {
   };
 
   testScript = _: ''
-    import time
+    def now():
+        import time
+
+        return time.time()
 
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.runDetachedCommandFn}
@@ -48,9 +51,9 @@ in {
     print("✓ NAILS status reports Inactive before activation")
 
     print("\n=== Testing Activation ===")
-    start_time = time.time()
+    start_time = now()
     machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
-    activation_time = time.time() - start_time
+    activation_time = now() - start_time
     print(f"Activation completed in {activation_time:.2f}s")
 
     assert activation_time < 60, f"Activation too slow: {activation_time:.2f}s (limit: 60s)"
@@ -100,9 +103,9 @@ in {
     print("✓ Files stored in hidden volume overlay")
 
     print("\n=== Testing Deactivation ===")
-    start_time = time.time()
+    start_time = now()
     canonical_deactivate(headless_config, unit_name="nails-deactivate-basic-workflow")
-    deactivation_time = time.time() - start_time
+    deactivation_time = now() - start_time
     print(f"Deactivation reboot completed in {deactivation_time:.2f}s")
 
     machine.fail("mount | grep 'overlay on /home'")

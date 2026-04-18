@@ -23,8 +23,6 @@ in {
   };
 
   testScript = _: ''
-    import time
-
     ${testHelpers.writeHeadlessConfigFn}
     ${emergency.prepareTty1ShellFn}
     ${emergency.waitForConsoleLogFn}

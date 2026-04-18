@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nails.local/e2e/fixtures/verify.schema.json",
+  "title": "NAILS verify --json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "findings",
+    "scan_depth",
+    "config_aware",
+    "config_paths_checked",
+    "state_file_status"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["Secure", "Warning", "Critical"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "category", "message"],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["Info", "Warn", "Critical"]
+          },
+          "category": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fix_guidance": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "scan_depth": {
+      "type": "string",
+      "enum": ["Standard", "Deep"]
+    },
+    "config_aware": {
+      "type": "boolean"
+    },
+    "config_paths_checked": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "state_file_status": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "not_checked" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path"],
+          "properties": {
+            "kind": { "const": "missing" },
+            "path": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path", "state"],
+          "properties": {
+            "kind": { "const": "present" },
+            "path": { "type": "string", "minLength": 1 },
+            "state": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path", "message"],
+          "properties": {
+            "kind": { "const": "error" },
+            "path": { "type": "string", "minLength": 1 },
+            "message": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -17,9 +17,8 @@ in {
   };
 
   testScript = _: ''
-    import json
-
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.canonicalDeactivateFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -48,10 +47,7 @@ in {
     print("✓ NAILS reports Active state")
 
     print("\n=== Test 2: Deactivate and verify state ===")
-    machine.execute("nails deactivate; reboot", check_return=False, check_output=False)
-    machine.wait_for_shutdown()
-    machine.start()
-    machine.wait_for_unit("multi-user.target")
+    canonical_deactivate(headless_config, unit_name="nails-deactivate-state-integrity")
 
     status = machine.succeed("nails status")
     assert "Inactive" in status or "INACTIVE" in status, f"Expected Inactive after deactivate, got: {status}"
@@ -66,10 +62,10 @@ in {
         assert "Active" in status or "ACTIVE" in status, \
             f"Cycle {cycle}: Expected Active, got: {status}"
 
-        machine.execute("nails deactivate; reboot", check_return=False, check_output=False)
-        machine.wait_for_shutdown()
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
+        canonical_deactivate(
+            headless_config,
+            unit_name=f"nails-deactivate-state-integrity-cycle-{cycle}",
+        )
 
         status = machine.succeed("nails status")
         assert "Inactive" in status or "INACTIVE" in status, \

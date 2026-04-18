@@ -23,7 +23,10 @@ in {
   };
 
   testScript = _: ''
-    import time
+    def now():
+        import time
+
+        return time.time()
 
     ${testHelpers.writeHeadlessConfigFn}
     ${emergency.prepareTty1ShellFn}
@@ -53,9 +56,9 @@ in {
     print("\n=== Testing Status Command Performance ===")
     status_times = []
     for _ in range(1, 11):
-        start = time.time()
+        start = now()
         machine.succeed("nails status")
-        status_times.append(time.time() - start)
+        status_times.append(now() - start)
 
     status_times_sorted = sorted(status_times)
     p95_status = p95(status_times)
@@ -72,9 +75,9 @@ in {
     print("\n=== Testing Activation Performance ===")
     activation_times = []
     for _ in range(1, 6):
-        start = time.time()
+        start = now()
         machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
-        activation_times.append(time.time() - start)
+        activation_times.append(now() - start)
 
         machine.execute("sudo nails emergency")
         machine.crash()

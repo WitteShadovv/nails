@@ -66,6 +66,7 @@ let
     config = linkFarmForNames "config" (namesWithTag "config");
     forensic = linkFarmForNames "forensic" (namesWithTag "forensic");
     lifecycle = linkFarmForNames "lifecycle" (namesWithTag "lifecycle");
+    init = linkFarmForNames "init" (namesWithTag "init");
     security = linkFarmForNames "security" (namesWithTag "security");
     performance = linkFarmForNames "performance" (namesWithTag "performance");
     preflight = linkFarmForNames "preflight" (namesWithTag "preflight");

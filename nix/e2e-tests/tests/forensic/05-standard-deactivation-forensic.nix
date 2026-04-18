@@ -17,9 +17,11 @@ in {
   };
 
   testScript = _: ''
+    if True:
         import json
 
         ${testHelpers.writeHeadlessConfigFn}
+        ${testHelpers.canonicalDeactivateFn}
         ${testHelpers.runVerifyFn}
 
         machine.start()
@@ -95,12 +97,9 @@ in {
         print("=" * 70)
 
         print("Executing: nails deactivate")
-        machine.execute("sudo nails deactivate; reboot", check_return=False, check_output=False)
-        machine.wait_for_shutdown()
+        canonical_deactivate(headless_config, unit_name="nails-deactivate-standard-forensic")
         print("✓ VM shut down after deactivation")
 
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
         print("✓ VM rebooted to decoy state")
 
         status = json.loads(machine.succeed("nails status --json"))
@@ -256,10 +255,10 @@ in {
             machine.succeed(f"su - testuser -c 'grep {cycle_canary} ~/cycle-canary.txt'")
             print(f"  ✓ Planted {cycle_canary}")
 
-            machine.execute("sudo nails deactivate; reboot", check_return=False, check_output=False)
-            machine.wait_for_shutdown()
-            machine.start()
-            machine.wait_for_unit("multi-user.target")
+            canonical_deactivate(
+                headless_config,
+                unit_name=f"nails-deactivate-standard-forensic-cycle-{cycle}",
+            )
             print("  ✓ Rebooted to decoy state")
 
             machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")

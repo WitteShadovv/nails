@@ -9,10 +9,10 @@
   '';
 
   waitForConsoleLogFn = ''
-    import re
-    import time
-
     def wait_for_console_log(regex, timeout, start_index=0):
+        import re
+        import time
+
         deadline = time.time() + timeout
         while time.time() < deadline:
             console_log = machine.get_console_log()[start_index:]
@@ -32,6 +32,8 @@
 
   runEmergencyCommandFn = ''
     def run_emergency_command():
+        import time
+
         prepare_tty1_shell()
         console_start = len(machine.get_console_log())
 
