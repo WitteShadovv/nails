@@ -346,6 +346,7 @@ fn test_status_report_serialization() {
         opsec_reminders: vec![],
         overlay_details: None,
         overlay_mount_statuses: vec![],
+        load_outcome: crate::LoadOutcome::FreshDefault,
     };
 
     let json = serde_json::to_string(&report).unwrap();

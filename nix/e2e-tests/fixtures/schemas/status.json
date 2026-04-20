@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nails.local/e2e/fixtures/status.schema.json",
+  "title": "NAILS status --json",
+  "description": "Current CLI status JSON contract with optional forward-looking fields reserved by the E2E plan.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "state",
+    "security_posture",
+    "overlays",
+    "overlay_verification",
+    "opsec_reminders"
+  ],
+  "properties": {
+    "state": {
+      "type": "string",
+      "minLength": 1
+    },
+    "security_posture": {
+      "type": "string",
+      "enum": ["secure", "warning", "critical", "decoy"]
+    },
+    "activated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "uptime_seconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "uptime_formatted": {
+      "type": "string",
+      "minLength": 1
+    },
+    "uptime": {
+      "type": ["object", "string", "null"]
+    },
+    "overlays": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "status"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["mounted", "not_mounted"]
+          }
+        }
+      }
+    },
+    "overlay_verification": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nixos_generation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "opsec_reminders": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "message"],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["info", "warning", "critical"]
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "reminders": {
+      "type": "array"
+    },
+    "session": {
+      "type": ["object", "null"]
+    },
+    "verify": {
+      "type": ["object", "null"]
+    }
+  }
+}

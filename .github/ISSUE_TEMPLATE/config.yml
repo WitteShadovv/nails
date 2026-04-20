@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support and issue guidance
+    url: https://github.com/WitteShadovv/nails/blob/main/SUPPORT.md
+    about: Review alpha-stage support scope and issue guidance before opening a report.
+  - name: Private security reporting
+    url: https://github.com/WitteShadovv/nails/blob/main/SECURITY.md
+    about: Report suspected vulnerabilities privately by email; do not open a public issue.

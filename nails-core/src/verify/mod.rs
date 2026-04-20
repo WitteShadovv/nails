@@ -31,5 +31,5 @@ mod verifier;
 mod tests;
 
 // Re-export public types
-pub use types::{Finding, ScanDepth, Severity, VerifyResult, VerifyStatus};
+pub use types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
 pub use verifier::Verifier;

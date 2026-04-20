@@ -387,3 +387,32 @@ fn test_notification_equality() {
     assert_eq!(n1, n2);
     assert_ne!(n1, n3);
 }
+
+#[test]
+fn test_notification_directory_has_mode_0o700() {
+    let dir = TempDir::new().unwrap();
+    write_notification(dir.path(), &make_notification("Test", "body")).unwrap();
+
+    let notif_dir = notifications_dir(dir.path());
+    let mode = notif_dir.metadata().unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o700,
+        "Notification directory should be 0o700, got {:#o}",
+        mode
+    );
+}
+
+#[test]
+fn test_notification_file_has_mode_0o600() {
+    let dir = TempDir::new().unwrap();
+    write_notification(dir.path(), &make_notification("Test", "body")).unwrap();
+
+    let pending = read_pending(dir.path()).unwrap();
+    assert_eq!(pending.len(), 1);
+    let mode = pending[0].0.metadata().unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "Notification file should be 0o600, got {:#o}",
+        mode
+    );
+}

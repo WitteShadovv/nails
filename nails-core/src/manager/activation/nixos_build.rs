@@ -70,7 +70,10 @@ impl<F: Filesystem> NailsManager<F> {
 
         // --- Fast-path: check stored fingerprint + generation -------------
         let (stored_fp, stored_generation) = {
-            let cached = self.cached_state.lock().unwrap();
+            let cached = self
+                .cached_state
+                .lock()
+                .map_err(|e| crate::NailsError::LockPoisoned(e.to_string()))?;
             (
                 cached.as_ref().and_then(|sf| sf.config_fingerprint.clone()),
                 cached.as_ref().and_then(|sf| sf.nixos_generation.clone()),

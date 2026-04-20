@@ -1,0 +1,35 @@
+# Current harness equivalent of the plan's proposed overlay_mode: ephemeral.
+# The application currently exposes ephemeral overlays through extended_overlays.
+hidden_volume_root: /mnt/hidden-volume
+overlay_mode: explicit
+overlays:
+  - name: etc
+    lower: /etc
+    upper: /mnt/hidden-volume/etc
+    work: /mnt/hidden-volume/.work/etc
+    target: /etc
+  - name: home
+    lower: /home
+    upper: /mnt/hidden-volume/home
+    work: /mnt/hidden-volume/.work/home
+    target: /home
+  - name: root
+    lower: /root
+    upper: /mnt/hidden-volume/root
+    work: /mnt/hidden-volume/.work/root
+    target: /root
+extended_overlays:
+  enabled: true
+  directories:
+    - path: /var
+      tmpfs_upper_size: 256M
+      tmpfs_work_size: 128M
+    - path: /tmp
+      tmpfs_upper_size: 256M
+      tmpfs_work_size: 128M
+    - path: /srv
+      tmpfs_upper_size: 128M
+      tmpfs_work_size: 64M
+    - path: /opt
+      tmpfs_upper_size: 128M
+      tmpfs_work_size: 64M

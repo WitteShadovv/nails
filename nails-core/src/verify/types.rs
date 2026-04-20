@@ -1,6 +1,7 @@
 //! Data types for forensic verification
 
 use serde::Serialize;
+use std::path::PathBuf;
 
 /// Severity level for verification findings
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -72,6 +73,20 @@ pub enum ScanDepth {
     Deep,
 }
 
+/// Explicit state-file status captured during verification
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StateFileStatus {
+    /// State file status was not checked
+    NotChecked,
+    /// No state file exists at the configured path
+    Missing { path: PathBuf },
+    /// State file exists and was loaded successfully
+    Present { path: PathBuf, state: String },
+    /// State file exists but could not be loaded safely
+    Error { path: PathBuf, message: String },
+}
+
 /// Result of a verification scan
 #[derive(Debug, Clone, Serialize)]
 pub struct VerifyResult {
@@ -81,6 +96,12 @@ pub struct VerifyResult {
     pub findings: Vec<Finding>,
     /// Depth of scan performed
     pub scan_depth: ScanDepth,
+    /// Whether the scan was config-aware (had access to Config)
+    pub config_aware: bool,
+    /// Number of config-specific paths that were checked
+    pub config_paths_checked: usize,
+    /// Explicit state-file status observed for this verify run
+    pub state_file_status: StateFileStatus,
 }
 
 impl VerifyResult {
@@ -90,6 +111,27 @@ impl VerifyResult {
             status,
             findings,
             scan_depth,
+            config_aware: false,
+            config_paths_checked: 0,
+            state_file_status: StateFileStatus::NotChecked,
+        }
+    }
+
+    /// Create a new config-aware verify result
+    pub fn new_config_aware(
+        status: VerifyStatus,
+        findings: Vec<Finding>,
+        scan_depth: ScanDepth,
+        config_paths_checked: usize,
+        state_file_status: StateFileStatus,
+    ) -> Self {
+        Self {
+            status,
+            findings,
+            scan_depth,
+            config_aware: true,
+            config_paths_checked,
+            state_file_status,
         }
     }
 
@@ -99,6 +141,9 @@ impl VerifyResult {
             status: VerifyStatus::Secure,
             findings: Vec::new(),
             scan_depth,
+            config_aware: false,
+            config_paths_checked: 0,
+            state_file_status: StateFileStatus::NotChecked,
         }
     }
 }

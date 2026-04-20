@@ -22,7 +22,7 @@ use super::{
     select_system_profile, start_service_and_socket,
 };
 use crate::notification::{Notification, write_notification};
-use crate::{Filesystem, Result, Verbosity, obfuscate};
+use crate::{Filesystem, NailsError, Result, Verbosity, obfuscate};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -91,20 +91,33 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Step 1: Capture current state and verbosity for progress logging
         let (previous_state, verbosity) = {
-            let manager = manager_arc.lock().unwrap();
+            let manager = manager_arc
+                .lock()
+                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
             (manager.current_state()?, manager.verbosity)
         };
 
         // Step 2: Idempotent check - if already active, return early (AC: 7)
         if previous_state.is_active() {
             if verbosity >= Verbosity::Normal {
-                tracing::info!(state = ?previous_state, "System already active, nothing to do");
+                tracing::info!(event = "result", state = ?previous_state, "System already active, nothing to do");
             }
             return Ok(());
         }
 
         // Story 9.3 AC#1: Log activation started with structured state field
-        tracing::info!(state_from = ?previous_state, "Activation started");
+        tracing::info!(event = "activation_started", state_from = ?previous_state, "Activation started");
+
+        // Progress: Step 1 — Session management
+        if verbosity >= Verbosity::Normal {
+            tracing::info!(
+                event = "progress",
+                phase = "session_management",
+                current = 1,
+                total = 6,
+                "[1/6] Preparing session management..."
+            );
+        }
 
         // Step 2.5: Handle --kill-session flag (Story 4.15, AC8)
         let restart_plan = Self::handle_session_kill(verbosity, &options)?;
@@ -112,9 +125,32 @@ impl<F: Filesystem> NailsManager<F> {
         // Auto-restart session if we exit early with an error after killing it.
         let mut session_restart_guard = SessionRestartGuard::new(restart_plan.clone());
 
+        // Progress: Step 2 — Preflight checks
+        if verbosity >= Verbosity::Normal {
+            if no_preflight {
+                tracing::info!(
+                    event = "progress",
+                    phase = "preflight",
+                    current = 2,
+                    total = 6,
+                    "[2/6] Skipping preflight checks (--no-preflight)"
+                );
+            } else {
+                tracing::info!(
+                    event = "progress",
+                    phase = "preflight",
+                    current = 2,
+                    total = 6,
+                    "[2/6] Running preflight checks..."
+                );
+            }
+        }
+
         // Step 2.75 & 3: Stage config and run preflight checks
         {
-            let manager = manager_arc.lock().unwrap();
+            let manager = manager_arc
+                .lock()
+                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
             manager.run_preflight_phase(
                 no_preflight,
                 options.overlay_only,
@@ -131,20 +167,48 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Step 6: Transition to Activating state
         {
-            let mut manager = manager_arc.lock().unwrap();
+            let mut manager = manager_arc
+                .lock()
+                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
             manager.update_state(activating_state)?;
+        }
+
+        // Progress: Step 3 — Build NixOS profile
+        if verbosity >= Verbosity::Normal {
+            tracing::info!(
+                event = "progress",
+                phase = "nixos_build",
+                current = 3,
+                total = 6,
+                "[3/6] Building NixOS configuration..."
+            );
         }
 
         // Step 7: Build NixOS profile (if NixOSBuilder configured)
         let (generation, new_fingerprint) = {
-            let manager = manager_arc.lock().unwrap();
+            let manager = manager_arc
+                .lock()
+                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
             manager.build_nixos_profile(verbosity)?
         };
+
+        // Progress: Step 4 — Mount overlays
+        if verbosity >= Verbosity::Normal {
+            tracing::info!(
+                event = "progress",
+                phase = "overlay_mount",
+                current = 4,
+                total = 6,
+                "[4/6] Mounting overlays..."
+            );
+        }
 
         // Step 8: Mount persistent and ephemeral overlays
         let mount_timer = Stopwatch::start();
         let (direct_mounts, pivot_mounts, pivot_targets, mounted_overlays) = {
-            let manager = manager_arc.lock().unwrap();
+            let manager = manager_arc
+                .lock()
+                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
             manager.mount_overlays(&options, verbosity)?
         };
 
@@ -180,7 +244,9 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Write overlay status notification (best-effort)
         {
-            let manager = manager_arc.lock().unwrap();
+            let manager = manager_arc
+                .lock()
+                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
             let notif = Notification {
                 title: "NAILS Overlay Active".to_string(),
                 body: format!(
@@ -278,9 +344,22 @@ impl<F: Filesystem> NailsManager<F> {
             session_restart_guard.disarm();
         }
 
+        // Progress: Step 5 — Switch NixOS profile
+        if verbosity >= Verbosity::Normal {
+            tracing::info!(
+                event = "progress",
+                phase = "profile_switch",
+                current = 5,
+                total = 6,
+                "[5/6] Switching NixOS profile..."
+            );
+        }
+
         // Step 9: Switch NixOS profile
         {
-            let manager = manager_arc.lock().unwrap();
+            let manager = manager_arc
+                .lock()
+                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
             let switch_result =
                 manager.switch_nixos_profile(&generation, &new_fingerprint, verbosity);
             let hidden_root = manager.config().hidden_volume_root.clone();
@@ -332,9 +411,22 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
+        // Progress: Step 6 — Finalize activation
+        if verbosity >= Verbosity::Normal {
+            tracing::info!(
+                event = "progress",
+                phase = "finalize",
+                current = 6,
+                total = 6,
+                "[6/6] Finalizing activation..."
+            );
+        }
+
         // Step 10: Transition to Active state (Story 4.7, AC1, Task 3.4)
         {
-            let mut manager = manager_arc.lock().unwrap();
+            let mut manager = manager_arc
+                .lock()
+                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
             let current = manager.current_state()?;
             let active_state = current.complete_activation(mounted_overlays)?;
             manager.update_state(active_state)?;
@@ -345,14 +437,16 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Story 9.3 AC#1: Log activation complete with state transition and duration
         let final_state = {
-            let manager = manager_arc.lock().unwrap();
+            let manager = manager_arc
+                .lock()
+                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
             manager.current_state().ok()
         };
 
         // Always show completion message, even in Quiet mode (AC: 3)
         if verbosity >= Verbosity::Quiet {
             tracing::info!(
-                step = "activation_complete",
+                event = "activation_complete",
                 duration_ms = total_timer.elapsed().as_millis() as u64,
                 state_to = ?final_state,
                 "✓ Activation complete in {}",

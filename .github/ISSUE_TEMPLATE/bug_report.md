@@ -1,38 +1,64 @@
 ---
 name: Bug report
-about: Create a report to help us improve
-title: ''
-labels: ''
+about: Report a reproducible bug in NAILS
+title: "bug: "
+labels: bug
 assignees: ''
 
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+> **Security notice:** Do **not** report vulnerabilities here. For suspected security issues, follow [SECURITY.md](../../SECURITY.md) and use the private reporting channel.
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+> **Support note:** For usage questions or setup guidance, review [SUPPORT.md](../../SUPPORT.md) before opening an issue.
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+## Summary
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+Describe the problem clearly and concisely.
 
-**Desktop (please complete the following information):**
- - OS: [e.g. iOS]
- - Browser [e.g. chrome, safari]
- - Version [e.g. 22]
+## Steps to reproduce
 
-**Smartphone (please complete the following information):**
- - Device: [e.g. iPhone6]
- - OS: [e.g. iOS8.1]
- - Browser [e.g. stock browser, safari]
- - Version [e.g. 22]
+1.
+2.
+3.
 
-**Additional context**
-Add any other context about the problem here.
+## Expected behavior
+
+What did you expect to happen?
+
+## Actual behavior
+
+What happened instead? Include the exact error text if available.
+
+## Environment
+
+- NAILS version:
+- NixOS version:
+- Installation method:
+- Checked against latest published prerelease or current `main`: yes / no
+- Running with elevated privileges: yes / no
+- Storage or hidden-volume backend involved:
+- Relevant filesystem or overlay details:
+
+## Diagnostics
+
+If relevant, include sanitized output from commands such as:
+
+```text
+nails --version
+nails status -v
+```
+
+Paste sanitized output here:
+
+```text
+
+```
+
+## Additional context
+
+- Exact command or workflow:
+- Does this regress behavior that previously worked?
+- Does this happen consistently or intermittently?
+- Are there known workarounds?
+
+Please remove secrets, recovery material, private keys, and other sensitive data before submitting.

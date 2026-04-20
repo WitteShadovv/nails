@@ -3,19 +3,33 @@
 
 name: E2E Tests
 
-# E2E tests temporarily disabled - in-progress fixes not yet complete
-# Re-enable by restoring the 'on' triggers below
 on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'nails-core/**'
+      - 'nails-cli/**'
+      - 'nix/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'nails-core/**'
+      - 'nails-cli/**'
+      - 'nix/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   workflow_dispatch:
     inputs:
       force_run:
         description: 'Force run e2e tests manually'
         required: false
         default: 'false'
-  # push:
-  #   branches: [main, dev]
-  # pull_request:
-  #   branches: [main, dev]
 
 jobs:
   e2e-tests:
@@ -27,11 +41,11 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Nix
-        uses: cachix/install-nix-action@43082b822f2e4b696046793cdd9e9b5da14f3d75
+        uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b
         with:
           extra_nix_config: |
             system-features = nixos-test benchmark big-parallel kvm
-            accept-flake-config = true
+            accept-flake-config = false
             max-jobs = auto
 
       - name: Setup Cachix

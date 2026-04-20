@@ -1,83 +1,96 @@
 { self, pkgs }:
 
 let
-  # Load individual test modules
-  importTest = path: import path { inherit self pkgs; };
+  inherit (pkgs) lib;
+  testsRoot = ./tests;
 
-  # Individual test suites (each is a complete test module)
-  tests = {
-    basic-workflow =
-      pkgs.testers.runNixOSTest (importTest ./tests/01-basic-workflow.nix);
-    verify = pkgs.testers.runNixOSTest (importTest ./tests/02-verify.nix);
-    emergency = pkgs.testers.runNixOSTest (importTest ./tests/03-emergency.nix);
-    forensic-clean =
-      pkgs.testers.runNixOSTest (importTest ./tests/04-forensic-clean.nix);
-    standard-deactivation-forensic = pkgs.testers.runNixOSTest
-      (importTest ./tests/05-standard-deactivation-forensic.nix);
-    snapshot-diff =
-      pkgs.testers.runNixOSTest (importTest ./tests/06-snapshot-diff.nix);
-    performance =
-      pkgs.testers.runNixOSTest (importTest ./tests/07-performance.nix);
+  collectTestFiles = dir:
+    let entries = builtins.readDir dir;
+    in lib.concatMap (name:
+      let
+        path = dir + "/${name}";
+        kind = entries.${name};
+      in if kind == "directory" then
+        collectTestFiles path
+      else if kind == "regular" && lib.hasSuffix ".nix" name then
+        [ path ]
+      else
+        [ ]) (builtins.attrNames entries);
+
+  rawSpecs =
+    map (path: import path { inherit self pkgs; }) (collectTestFiles testsRoot);
+  rawNames = map (spec: spec.name) rawSpecs;
+
+  _assertUniqueNames =
+    if builtins.length rawNames == builtins.length (lib.unique rawNames) then
+      true
+    else
+      throw "Duplicate E2E test name detected under nix/e2e-tests/tests";
+
+  tests = builtins.listToAttrs (map (spec:
+    let
+      sanitizedMeta =
+        if spec ? meta then builtins.removeAttrs spec.meta [ "tags" ] else { };
+      sanitizedSpec =
+        if spec ? meta then spec // { meta = sanitizedMeta; } else spec;
+    in lib.nameValuePair spec.name (pkgs.testers.runNixOSTest sanitizedSpec))
+    rawSpecs);
+
+  metadata = builtins.listToAttrs (map (spec:
+    lib.nameValuePair spec.name {
+      tags = if spec ? meta && spec.meta ? tags then spec.meta.tags else [ ];
+    }) rawSpecs);
+
+  testNames = builtins.attrNames tests;
+
+  linkFarmForNames = groupName: names:
+    pkgs.linkFarm "e2e-${groupName}" (map (name: {
+      inherit name;
+      path = tests.${name};
+    }) names);
+
+  namesWithTag = tag:
+    lib.filter (name: lib.elem tag (metadata.${name}.tags or [ ])) testNames;
+
+  ciNames = lib.filter (name: builtins.elem name testNames) [
+    "basic-workflow"
+    "verify"
+    "emergency"
+    "forensic-clean"
+    "config-handling"
+    "status-verify"
+  ];
+
+  groups = {
+    smoke = linkFarmForNames "smoke" (namesWithTag "smoke");
+    config = linkFarmForNames "config" (namesWithTag "config");
+    forensic = linkFarmForNames "forensic" (namesWithTag "forensic");
+    lifecycle = linkFarmForNames "lifecycle" (namesWithTag "lifecycle");
+    init = linkFarmForNames "init" (namesWithTag "init");
+    security = linkFarmForNames "security" (namesWithTag "security");
+    performance = linkFarmForNames "performance" (namesWithTag "performance");
+    preflight = linkFarmForNames "preflight" (namesWithTag "preflight");
+    nixos = linkFarmForNames "nixos" (namesWithTag "nixos");
+    session = linkFarmForNames "session" (namesWithTag "session");
+    shell = linkFarmForNames "shell" (namesWithTag "shell");
+    notification =
+      linkFarmForNames "notification" (namesWithTag "notification");
+    overlay = linkFarmForNames "overlay" (namesWithTag "overlay");
+    state = linkFarmForNames "state" (namesWithTag "state");
+    contract = linkFarmForNames "contract" (namesWithTag "contract");
+    ci = linkFarmForNames "ci" ciNames;
+    all = linkFarmForNames "all" testNames;
   };
 
-  # Interactive test driver (for debugging)
-  interactive-driver = pkgs.writeShellScriptBin "interactive-test" ''
+  interactiveDriver = pkgs.writeShellScriptBin "interactive-test" ''
     #!/usr/bin/env bash
-    echo "Starting interactive NAILS E2E test VM..."
-    echo "You will be dropped into a shell inside the VM"
-    echo "Use 'exit' to quit"
-    echo ""
-    nix run .#checks.x86_64-linux.e2e-basic-workflow --interactive || true
+    set -euo pipefail
+
+    test_name="''${1:-basic-workflow}"
+    exec nix run ".#checks.${pkgs.system}.e2e-$test_name" --interactive
   '';
-
-in tests // {
-  ci = pkgs.linkFarm "e2e-ci" [
-    {
-      name = "basic-workflow";
-      path = tests.basic-workflow;
-    }
-    {
-      name = "verify";
-      path = tests.verify;
-    }
-    {
-      name = "emergency";
-      path = tests.emergency;
-    }
-  ];
-
-  # Run all tests
-  all = pkgs.linkFarm "e2e-all" [
-    {
-      name = "basic-workflow";
-      path = tests.basic-workflow;
-    }
-    {
-      name = "verify";
-      path = tests.verify;
-    }
-    {
-      name = "emergency";
-      path = tests.emergency;
-    }
-    {
-      name = "forensic-clean";
-      path = tests.forensic-clean;
-    }
-    {
-      name = "standard-deactivation-forensic";
-      path = tests.standard-deactivation-forensic;
-    }
-    {
-      name = "snapshot-diff";
-      path = tests.snapshot-diff;
-    }
-    {
-      name = "performance";
-      path = tests.performance;
-    }
-  ];
-
-  # Interactive driver
-  inherit interactive-driver;
-}
+in builtins.seq _assertUniqueNames (tests // groups // {
+  _interactive-driver = interactiveDriver;
+  _meta = metadata;
+  _testNames = testNames;
+})

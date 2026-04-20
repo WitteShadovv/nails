@@ -47,6 +47,9 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Enforce 500-line limit on Rust files
+        run: ./scripts/check-line-count.sh
+
   # Stage 2: Security audit for dependency vulnerabilities
   audit:
     name: Security Audit
@@ -68,30 +71,20 @@ jobs:
         with:
           shared-key: "audit"
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+      - name: Install audit tools
+        uses: taiki-e/install-action@a2352fc6ce487f030a3aa709482d57823eadfb37
+        with:
+          tool: cargo-audit@0.22.0,cargo-deny@0.18.9
+          fallback: none
 
       - name: Generate audit report (JSON)
         run: |
           mkdir -p target
-          cargo audit --json > target/audit-report.json 2>&1 || true
-
-      - name: Run security audit (cargo-audit)
-        run: cargo audit
+          cargo audit --json > target/audit-report.json
 
       - name: Run dependency policy check (cargo-deny)
         run: |
-          echo "=== Checking advisories (vulnerabilities) ==="
-          cargo deny check advisories
-          echo "=== Checking licenses (GPL-3.0 compatibility) ==="
-          cargo deny check licenses
-          echo "=== Checking bans (blocked dependencies) ==="
-          cargo deny check bans
-          echo "=== Checking sources (registry restrictions) ==="
-          cargo deny check sources
+          cargo deny check advisories licenses bans sources
 
       - name: Upload audit results
         if: always()
@@ -127,7 +120,7 @@ jobs:
           shared-key: "test-shard-${{ matrix.shard }}"
 
       - name: Install cargo-nextest
-        run: cargo install cargo-nextest --locked
+        run: cargo install cargo-nextest@0.9.72 --locked
 
       - name: Run tests (shard ${{ matrix.shard }}/4)
         run: |
@@ -174,7 +167,7 @@ jobs:
           cache-all-crates: "true"
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --version 0.8.4 --locked
+        run: cargo install cargo-llvm-cov@0.8.4 --locked
 
       - name: Run coverage analysis
         run: |
@@ -262,7 +255,7 @@ jobs:
           shared-key: "sbom"
 
       - name: Install cargo-sbom
-        run: cargo install cargo-sbom --locked
+        run: cargo install cargo-sbom@0.10.0 --locked
 
       - name: Generate CycloneDX SBOM
         run: |
@@ -284,7 +277,46 @@ jobs:
           path: sbom/
           retention-days: 90
 
-  # Stage 6: Burn-in loop for flaky test detection
+  # Stage 6: Unsafe code audit (cargo-geiger)
+  geiger:
+    name: Unsafe Code Audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: lint
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: 1.93.0
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          shared-key: "geiger"
+
+      - name: Install cargo-geiger
+        run: cargo install cargo-geiger@0.13.0 --locked
+
+      - name: Run unsafe code audit
+        run: |
+          echo "=== Unsafe Code Usage Report ==="
+          cargo geiger --all-features --all-targets 2>&1 | tee target/geiger-report.txt || true
+          echo "=== Report complete ==="
+          echo "Note: This is an informational audit. Review unsafe usage above."
+
+      - name: Upload geiger report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: geiger-report
+          path: target/geiger-report.txt
+          retention-days: 30
+
+  # Stage 7: Burn-in loop for flaky test detection
   burn-in:
     name: Burn-In Loop (Flaky Detection)
     runs-on: ubuntu-24.04
@@ -352,15 +384,65 @@ jobs:
         with:
           shared-key: "benchmarks"
 
-      - name: Check if benchmarks are real
-        run: |
-          if grep -q "placeholder" benches/performance.rs; then
-            echo "Benchmarks are placeholder, skipping"
-            exit 0
-          fi
-
       - name: Run benchmarks
-        run: cargo bench --all-features
+        run: |
+          cargo bench -p nails-core --bench performance --all-features
+          cargo bench -p nails-cli --bench startup --all-features
+
+      - name: Check benchmark budgets
+        run: |
+          # Budget thresholds in nanoseconds (generous initial values)
+          declare -A BUDGETS=(
+            ["config_default"]=1000000            # 1 ms
+            ["config_builder"]=2000000            # 2 ms
+            ["state_file_default"]=1000000        # 1 ms
+            ["state_serialize_json"]=5000000      # 5 ms
+            ["state_deserialize_json"]=5000000    # 5 ms
+            ["state_save_load_roundtrip"]=10000000 # 10 ms
+            ["manager_new_mock"]=5000000          # 5 ms
+            ["status_query_current_state"]=5000000 # 5 ms
+            ["status"]=10000000                   # 10 ms
+            ["activate_subsequent"]=50000000      # 50 ms
+            ["emergency_cleanup"]=50000000        # 50 ms
+            ["state_transition_inactive_to_activating"]=1000000  # 1 ms
+            ["state_transition_full_cycle"]=2000000              # 2 ms
+            ["build_overlay_targets"]=5000000     # 5 ms
+            ["apply_exclusion_filter_50dirs"]=1000000             # 1 ms
+            ["cli_parse_time"]=5000000            # 5 ms
+          )
+
+          failed=0
+          for bench_name in "${!BUDGETS[@]}"; do
+            estimates_file="target/criterion/${bench_name}/new/estimates.json"
+            if [ ! -f "$estimates_file" ]; then
+              echo "SKIP: ${bench_name} (no results found)"
+              continue
+            fi
+
+            # Extract mean point_estimate (nanoseconds)
+            mean_ns=$(python3 -c "
+          import json, sys
+          with open('${estimates_file}') as f:
+              data = json.load(f)
+          print(int(data['mean']['point_estimate']))
+          ")
+            budget_ns=${BUDGETS[$bench_name]}
+            mean_ms=$(python3 -c "print(f'{${mean_ns}/1e6:.3f}')")
+            budget_ms=$(python3 -c "print(f'{${budget_ns}/1e6:.3f}')")
+
+            if [ "$mean_ns" -gt "$budget_ns" ]; then
+              echo "FAIL: ${bench_name}: ${mean_ms}ms > budget ${budget_ms}ms"
+              failed=1
+            else
+              echo "PASS: ${bench_name}: ${mean_ms}ms <= budget ${budget_ms}ms"
+            fi
+          done
+
+          if [ "$failed" -eq 1 ]; then
+            echo "Benchmark budget check FAILED"
+            exit 1
+          fi
+          echo "All benchmark budgets passed"
 
       - name: Upload benchmark results
         if: success()
@@ -374,7 +456,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-24.04
-    needs: [lint, audit, test, coverage, sbom, burn-in, benchmarks]
+    needs: [lint, audit, test, coverage, sbom, geiger, burn-in, benchmarks]
     if: always()
 
     steps:
@@ -402,6 +484,11 @@ jobs:
 
           if [[ "${{ needs.sbom.result }}" != "success" ]]; then
             echo "SBOM generation failed"
+            exit 1
+          fi
+
+          if [[ "${{ needs.geiger.result }}" == "failure" ]]; then
+            echo "Unsafe code audit failed"
             exit 1
           fi
 

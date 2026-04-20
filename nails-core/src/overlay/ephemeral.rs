@@ -161,12 +161,8 @@ pub fn unmount_ephemeral_overlay<F: Filesystem>(fs: &F, info: &EphemeralMountInf
     // These directories were created during mount and should be removed after tmpfs unmount.
     // We use best-effort approach since the critical cleanup (tmpfs unmount) already happened.
     // Failures here don't compromise forensic safety - tmpfs data is already destroyed.
-    //
-    // Note: We use std::fs directly here since directory cleanup is a host filesystem
-    // operation that happens after all mounts are unmounted. The Filesystem trait
-    // is primarily for operations that need to be mocked during testing.
-    let _ = std::fs::remove_dir(&info.work);
-    let _ = std::fs::remove_dir(&info.upper);
+    let _ = fs.remove_directory(&info.work);
+    let _ = fs.remove_directory(&info.upper);
 
     if errors.is_empty() {
         Ok(())

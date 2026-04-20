@@ -1,20 +1,37 @@
 ---
 name: Feature request
-about: Suggest an idea for this project
-title: ''
-labels: ''
+about: Propose a focused improvement for NAILS
+title: "feat: "
+labels: enhancement
 assignees: ''
 
 ---
 
-**Is your feature request related to a problem? Please describe.**
-A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
+> **Template note:** Use this form for concrete product or documentation improvements. For suspected vulnerabilities, follow [SECURITY.md](../../SECURITY.md). For support expectations and issue scope, see [SUPPORT.md](../../SUPPORT.md).
 
-**Describe the solution you'd like**
-A clear and concise description of what you want to happen.
+## Summary
 
-**Describe alternatives you've considered**
-A clear and concise description of any alternative solutions or features you've considered.
+Describe the improvement you want to see.
 
-**Additional context**
-Add any other context or screenshots about the feature request here.
+## Problem or use case
+
+What user problem, operational gap, or workflow limitation does this address?
+
+## Proposed approach
+
+Describe the behavior you would like from NAILS. Keep proposals focused and concrete.
+
+## Threat model or safety impact
+
+Does this change any security assumptions, documented threat-model boundaries, cleanup behavior, or user safety expectations?
+
+## Alternatives considered
+
+Describe any alternative approaches, workarounds, or reasons to keep the current behavior.
+
+## Additional context
+
+- Relevant command or workflow:
+- Related issue or discussion:
+- Constraints or edge cases to consider:
+- Tradeoffs or compatibility concerns:

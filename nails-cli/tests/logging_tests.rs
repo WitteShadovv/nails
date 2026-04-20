@@ -16,6 +16,8 @@ fn test_init_stdout_subscriber_default() {
     // Instead, we verify the function exists and has the right signature
     let _: fn(u8, bool, bool, Option<&std::path::Path>) =
         nails::cli::logging::init_stdout_subscriber;
+    let _: fn(u8, bool, bool, Option<&std::path::Path>, nails::cli::logging::StdoutFormat) =
+        nails::cli::logging::init_stdout_subscriber_with_mode;
 }
 
 /// Test init_stdout_subscriber with quiet mode
@@ -51,6 +53,18 @@ fn test_init_no_logs_flag() {
     // Verify no_logs flag is accepted
     let no_logs = true;
     assert!(no_logs);
+}
+
+#[test]
+fn test_stdout_format_variants_are_available() {
+    assert_eq!(
+        nails::cli::logging::StdoutFormat::Human,
+        nails::cli::logging::StdoutFormat::Human
+    );
+    assert_eq!(
+        nails::cli::logging::StdoutFormat::ActivateJsonStream,
+        nails::cli::logging::StdoutFormat::ActivateJsonStream
+    );
 }
 
 /// Test config path discovery with custom path

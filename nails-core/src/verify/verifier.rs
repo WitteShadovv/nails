@@ -1,7 +1,9 @@
 //! Forensic validation verifier implementation
 
-use super::types::{Finding, ScanDepth, Severity, VerifyResult, VerifyStatus};
+use super::types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
+use crate::config::Config;
 use crate::obfuscate;
+use crate::state::StateFile;
 use crate::{Filesystem, Result};
 
 /// Forensic validation verifier
@@ -10,12 +12,35 @@ use crate::{Filesystem, Result};
 /// on the system after deactivation.
 pub struct Verifier<F: Filesystem> {
     filesystem: F,
+    config: Option<Config>,
+    state: Option<StateFile>,
+    state_file_status: StateFileStatus,
 }
 
 impl<F: Filesystem> Verifier<F> {
     /// Create a new verifier with the given filesystem
     pub fn new(filesystem: F) -> Self {
-        Self { filesystem }
+        Self {
+            filesystem,
+            config: None,
+            state: None,
+            state_file_status: StateFileStatus::NotChecked,
+        }
+    }
+
+    /// Create a new verifier with config and optional state
+    pub fn with_config(
+        filesystem: F,
+        config: Config,
+        state: Option<StateFile>,
+        state_file_status: StateFileStatus,
+    ) -> Self {
+        Self {
+            filesystem,
+            config: Some(config),
+            state,
+            state_file_status,
+        }
     }
 
     /// Run the verification process
@@ -29,6 +54,7 @@ impl<F: Filesystem> Verifier<F> {
     /// `VerifyResult` containing all findings and overall status
     pub fn run(&self, deep: bool) -> Result<VerifyResult> {
         let mut findings = Vec::new();
+        let mut config_paths_checked: usize = 0;
 
         // 1. Check for overlay mounts
         findings.extend(self.check_overlay_mounts()?);
@@ -42,7 +68,19 @@ impl<F: Filesystem> Verifier<F> {
         // 4. Check memory status
         findings.extend(self.check_memory_status()?);
 
-        // 5. Deep scan if requested
+        // 5. Config-aware checks (if config is available)
+        if let Some(ref config) = self.config {
+            let (config_findings, paths_checked) = self.check_config_paths(config)?;
+            findings.extend(config_findings);
+            config_paths_checked = paths_checked;
+        }
+
+        // 6. State-aware checks (if state is available)
+        if let Some(ref state) = self.state {
+            findings.extend(self.check_state(state)?);
+        }
+
+        // 7. Deep scan if requested
         if deep {
             findings.extend(self.deep_scan()?);
         }
@@ -62,7 +100,17 @@ impl<F: Filesystem> Verifier<F> {
             ScanDepth::Standard
         };
 
-        Ok(VerifyResult::new(status, findings, scan_depth))
+        if self.config.is_some() {
+            Ok(VerifyResult::new_config_aware(
+                status,
+                findings,
+                scan_depth,
+                config_paths_checked,
+                self.state_file_status.clone(),
+            ))
+        } else {
+            Ok(VerifyResult::new(status, findings, scan_depth))
+        }
     }
 
     /// Check for active overlay mounts
@@ -236,6 +284,158 @@ impl<F: Filesystem> Verifier<F> {
                     }
                 }
             }
+        }
+
+        Ok(findings)
+    }
+
+    /// Check config-specific paths for residual artifacts
+    ///
+    /// Checks overlay mount points from config, log directory, hidden volume path,
+    /// and state file location for any residual NAILS artifacts.
+    fn check_config_paths(&self, config: &Config) -> Result<(Vec<Finding>, usize)> {
+        let mut findings = Vec::new();
+        let mut paths_checked: usize = 0;
+
+        // 1. Check config overlay mount points for residual mounts
+        for overlay in &config.overlays {
+            let mount_path = &overlay.target;
+            paths_checked += 1;
+            if self.filesystem.is_overlay_mounted(mount_path)? {
+                findings.push(
+                    Finding::new(
+                        Severity::Critical,
+                        "config",
+                        format!(
+                            "Config overlay mount point still mounted: {}",
+                            mount_path.display()
+                        ),
+                    )
+                    .with_fix_guidance("Run 'nails deactivate' to unmount overlays"),
+                );
+            }
+        }
+
+        // 2. Check hidden volume path for accessibility
+        let hidden_vol = &config.hidden_volume_root;
+        paths_checked += 1;
+        if self.filesystem.path_exists(hidden_vol)? {
+            findings.push(
+                Finding::new(
+                    Severity::Warn,
+                    "config",
+                    format!("Hidden volume path is accessible: {}", hidden_vol.display()),
+                )
+                .with_fix_guidance("Ensure hidden volume is unmounted when not in use"),
+            );
+        }
+
+        // 3. Check log directory for remaining logs
+        let log_path = &config.log_path;
+        paths_checked += 1;
+        if self.filesystem.path_exists(log_path)? && self.filesystem.is_directory(log_path)? {
+            let log_files = self.filesystem.find_files_with_pattern(log_path, "nails")?;
+            for log_file in log_files {
+                findings.push(
+                    Finding::new(
+                        Severity::Warn,
+                        "config",
+                        format!(
+                            "Log file found in config log directory: {}",
+                            log_file.display()
+                        ),
+                    )
+                    .with_fix_guidance(format!("Delete log file: rm {}", log_file.display())),
+                );
+            }
+        }
+
+        // 4. Check state file location
+        let state_path = &config.state_file_path;
+        paths_checked += 1;
+        if self.filesystem.path_exists(state_path)? {
+            findings.push(
+                Finding::new(
+                    Severity::Warn,
+                    "config",
+                    format!(
+                        "State file exists at configured path: {}",
+                        state_path.display()
+                    ),
+                )
+                .with_fix_guidance("State file should only exist on hidden volume when active"),
+            );
+        }
+
+        Ok((findings, paths_checked))
+    }
+
+    /// Check state file for indicators of incomplete deactivation
+    fn check_state(&self, state: &StateFile) -> Result<Vec<Finding>> {
+        let mut findings = Vec::new();
+
+        // Check if state indicates system is still active or in transition
+        match &state.state {
+            crate::SystemState::Active { overlays, .. } => {
+                findings.push(
+                    Finding::new(
+                        Severity::Critical,
+                        "state",
+                        format!(
+                            "State file indicates system is ACTIVE with {} overlays",
+                            overlays.len()
+                        ),
+                    )
+                    .with_fix_guidance("Run 'nails deactivate' to properly shut down"),
+                );
+            }
+            crate::SystemState::Activating { .. } => {
+                findings.push(
+                    Finding::new(
+                        Severity::Critical,
+                        "state",
+                        "State file indicates system is stuck in ACTIVATING state",
+                    )
+                    .with_fix_guidance(
+                        "Run 'nails deactivate --force' to clean up partial activation",
+                    ),
+                );
+            }
+            crate::SystemState::Deactivating { .. } => {
+                findings.push(
+                    Finding::new(
+                        Severity::Critical,
+                        "state",
+                        "State file indicates system is stuck in DEACTIVATING state",
+                    )
+                    .with_fix_guidance("Run 'nails deactivate --force' to complete deactivation"),
+                );
+            }
+            crate::SystemState::Emergency { .. } => {
+                findings.push(
+                    Finding::new(
+                        Severity::Critical,
+                        "state",
+                        "State file indicates EMERGENCY state — system may have residual artifacts",
+                    )
+                    .with_fix_guidance("Run 'nails verify --deep' after manual cleanup"),
+                );
+            }
+            crate::SystemState::Inactive => {
+                // Good — system is inactive, no state-level concerns
+            }
+        }
+
+        // Check for failed overlays from previous activation
+        if !state.failed_overlays.is_empty() {
+            findings.push(Finding::new(
+                Severity::Info,
+                "state",
+                format!(
+                    "State records {} failed overlay(s) from previous activation",
+                    state.failed_overlays.len()
+                ),
+            ));
         }
 
         Ok(findings)

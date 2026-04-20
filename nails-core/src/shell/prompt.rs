@@ -274,8 +274,13 @@ mod tests {
         assert!(cleanup.contains("functions -e _nails_orig_prompt"));
     }
 
+    // These syntax-validation tests are intentionally ignored because they
+    // shell out to real bash/zsh/fish executables. The non-ignored tests above
+    // validate generated script content in hermetic CI; these are opt-in host
+    // compatibility checks for environments that actually have those shells.
+
     #[test]
-    #[ignore] // Requires real bash installation - run with `cargo test -- --ignored`
+    #[ignore = "Requires a real bash binary for syntax validation; skipped in hermetic CI"]
     fn test_bash_script_syntax_valid() {
         let script = generate_bash_prompt_script();
 
@@ -307,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires real zsh installation - run with `cargo test -- --ignored`
+    #[ignore = "Requires a real zsh binary for syntax validation; skipped in hermetic CI"]
     fn test_zsh_script_syntax_valid() {
         let script = generate_zsh_prompt_script();
 
@@ -339,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires real fish installation - run with `cargo test -- --ignored`
+    #[ignore = "Requires a real fish binary for syntax validation; skipped in hermetic CI"]
     fn test_fish_script_syntax_valid() {
         let script = generate_fish_prompt_script();
 
@@ -371,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires real bash installation - run with `cargo test -- --ignored`
+    #[ignore = "Requires a real bash binary for syntax validation; skipped in hermetic CI"]
     fn test_bash_cleanup_script_syntax_valid() {
         let cleanup = generate_bash_prompt_cleanup();
 
@@ -400,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires real zsh installation - run with `cargo test -- --ignored`
+    #[ignore = "Requires a real zsh binary for syntax validation; skipped in hermetic CI"]
     fn test_zsh_cleanup_script_syntax_valid() {
         let cleanup = generate_zsh_prompt_cleanup();
 
@@ -429,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires real fish installation - run with `cargo test -- --ignored`
+    #[ignore = "Requires a real fish binary for syntax validation; skipped in hermetic CI"]
     fn test_fish_cleanup_script_syntax_valid() {
         let cleanup = generate_fish_prompt_cleanup();
 

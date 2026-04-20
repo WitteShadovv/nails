@@ -1,0 +1,8 @@
+hidden_volume_root: /tmp/symlink-to-hidden
+overlay_mode: explicit
+overlays:
+  - name: home
+    lower: /home
+    upper: /tmp/symlink-to-hidden/home
+    work: /tmp/symlink-to-hidden/.work/home
+    target: /home

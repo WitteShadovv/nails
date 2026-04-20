@@ -13,11 +13,10 @@ repository = "https://github.com/WitteShadovv/nails"
 
 [workspace.dependencies]
 # CLI and argument parsing
-clap = { version = "4.5.54", features = ["derive", "cargo"] }
+clap = { version = "4.6.0", features = ["derive", "cargo"] }
 
 # Error handling (AR6, AR7)
 thiserror = "2.0"
-anyhow = "1.0"
 
 # Logging (AR8)
 tracing = "0.1"
@@ -38,10 +37,14 @@ chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3.10"
 
 # Colored terminal output (UXR5)
-colored = "3.1"
+colored = "3.1.1"
+
+# Cryptographic hashing (state file checksum)
+sha2 = "0.10"
+hex = "0.4"
 
 # Testing (for workspace-level consistency)
-assert_cmd = "2.1.1"
+assert_cmd = "2.2.1"
 predicates = "3.1.3"
 
 [profile.release]

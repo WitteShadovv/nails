@@ -45,7 +45,7 @@
 //! - NFR23: State verification (overlays match reality)
 //! - NFR4: Status <500ms
 
-use crate::{Config, Filesystem, Result, StateFile, SystemState};
+use crate::{Config, Filesystem, LoadOutcome, Result, StateFile, SystemState};
 use chrono::{DateTime, Duration, Utc};
 use std::path::PathBuf;
 
@@ -154,8 +154,10 @@ impl<F: Filesystem> StatusCommand<F> {
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
     pub fn run(&self) -> Result<StatusReport> {
-        // Load state file
-        let state_file = StateFile::load(&self.state_file_path)?;
+        // Load state file with outcome metadata (P1-03)
+        let load_result = StateFile::load_with_outcome(&self.state_file_path)?;
+        let state_file = load_result.state_file;
+        let load_outcome = load_result.outcome;
 
         tracing::debug!(state = ?state_file.state, phase = "status", "Status query executed");
 
@@ -237,6 +239,7 @@ impl<F: Filesystem> StatusCommand<F> {
             opsec_reminders,
             overlay_details,
             overlay_mount_statuses,
+            load_outcome,
         };
 
         Ok(report)
@@ -365,6 +368,7 @@ impl Default for StatusReport {
             opsec_reminders: vec![],
             overlay_details: None,
             overlay_mount_statuses: vec![],
+            load_outcome: LoadOutcome::FreshDefault,
         }
     }
 }

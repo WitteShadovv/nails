@@ -106,7 +106,10 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         // --- Persist generation + fingerprint -----------------------------
-        let mut cached = self.cached_state.lock().unwrap();
+        let mut cached = self
+            .cached_state
+            .lock()
+            .map_err(|e| crate::NailsError::LockPoisoned(e.to_string()))?;
         if let Some(ref mut state_file) = *cached {
             if let Some(generation_id) = generation {
                 state_file.nixos_generation = Some(generation_id.clone());
@@ -178,7 +181,7 @@ mod tests {
             state_path,
             builder,
         );
-        let mut cached = manager.cached_state.lock().unwrap();
+        let mut cached = manager.cached_state.lock().expect("manager mutex poisoned");
         *cached = Some(StateFile {
             state: SystemState::Inactive,
             ..StateFile::default()

@@ -4,6 +4,7 @@
 //! for the NAILS CLI application.
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 /// NixOS Anti-forensics Isolation & Layering System
 #[derive(Parser)]
@@ -96,6 +97,10 @@ pub enum Commands {
         #[arg(long = "flake", value_name = "FLAKE_REF")]
         nixos_flake: Option<String>,
 
+        /// Preview activation steps without making changes
+        #[arg(long)]
+        dry_run: bool,
+
         /// Mount overlays only, skip NixOS profile switch
         #[arg(long)]
         overlay_only: bool,
@@ -182,6 +187,8 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Initialize NAILS directory structure on a hidden volume
+    Init(InitArgs),
     /// Dispatch pending desktop notifications (called by XDG autostart on login)
     #[command(name = "notify-dispatch")]
     NotifyDispatch {
@@ -189,4 +196,10 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Parser, Debug)]
+pub struct InitArgs {
+    /// Path to the hidden volume mount point
+    pub path: PathBuf,
 }

@@ -2,7 +2,7 @@
 
 > **Version:** 1.0
 > **Last Updated:** March 2026
-> **Status:** Required reading before production use
+> **Status:** Required reading before any security-sensitive use
 
 This guide provides essential security information for NAILS users. Read this document completely before using NAILS in any security-sensitive context.
 
@@ -47,16 +47,16 @@ This guide provides essential security information for NAILS users. Read this do
 
 ### What NAILS Protects Against
 
-NAILS (NixOS Anti-forensics Isolation & Layering System) is designed to provide **plausible deniability** for hidden computing environments on NixOS systems. When properly used, NAILS helps protect against:
+NAILS (NixOS Anti-forensics Isolation & Layering System) is intended to support plausible-deniability workflows for hidden computing environments on NixOS systems. When properly used within its documented threat model, NAILS helps reduce exposure from:
 
 | Threat | NAILS Protection |
 |--------|------------------|
-| **Post-seizure disk forensics** | Hidden volumes appear as random data; no NAILS artifacts remain on decoy disk |
-| **Artifact-based forensics** | NixOS impermanence + cleanup workflows remove traces of hidden environment usage |
+| **Post-seizure disk forensics** | Hidden volumes may appear as random data and NAILS aims to reduce obvious host-side artifacts |
+| **Artifact-based forensics** | Impermanence-style setups and cleanup workflows can reduce known/common traces of hidden environment usage |
 | **Configuration fingerprinting** | Decoy system appears as a normal encrypted NixOS installation |
 | **Hidden package detection** | All hidden packages and services exist only inside the mounted hidden volume |
 
-**The fundamental goal:** After proper deactivation and dismounting, a forensic examiner analyzing your offline system should find only a normal NixOS installation with no evidence of a hidden computing environment.
+**The fundamental goal:** After proper deactivation and dismounting, the offline host should present as an ordinary decoy NixOS system within the documented threat model. This is a design objective, not a guarantee that no trace remains.
 
 ### Threat Model Overview
 
@@ -163,13 +163,13 @@ Disadvantages:
 **Emergency Deactivation (`nails emergency`)**
 
 Advantages:
-- Faster execution (target: < 3 seconds)
+- Faster execution than the standard reboot path
 - No reboot required
 - Kills shell processes before they can flush history
 - Immediate return to decoy appearance
 
 Disadvantages:
-- Slightly higher filesystem change footprint (~2.3% more changes)
+- More cleanup happens in-process instead of being delegated to a reboot
 - Relies on in-process cleanup rather than reboot guarantees
 - Hidden volume must still be manually dismounted
 - Higher risk of incomplete cleanup if interrupted
@@ -262,7 +262,7 @@ Take immediate action if you observe:
 
 ### The 5-Layer Defense System
 
-NAILS-OS implements a defense-in-depth approach to shell history protection:
+NAILS implements a defense-in-depth approach to shell history protection:
 
 **Layer 1: Environment Variables**
 ```bash
@@ -390,9 +390,8 @@ After power-off, DRAM retains data for a period depending on temperature:
 - Process memory
 
 **NAILS mitigations:**
-- Rust implementation uses deterministic RAII cleanup
-- Emergency deactivation can drop page cache (`echo 3 > /proc/sys/vm/drop_caches`)
-- No garbage collection pauses that might retain sensitive data
+- Emergency deactivation can optionally drop page cache (`echo 3 > /proc/sys/vm/drop_caches`)
+- Deactivation can reduce some residual host state, but it is not a defense against direct memory acquisition shortly after use
 
 **Your responsibility:**
 - Power off completely (not suspend) in threat situations
@@ -408,7 +407,7 @@ If an adversary can dump memory while the hidden environment is active:
 - Hidden file contents in cache are accessible
 - Process state reveals NAILS operation
 
-**There is no software defense against a running-system memory dump.** The only protection is preventing the adversary from gaining access while the system is running.
+**There is no complete software defense against a running-system memory dump.** The primary protection is preventing the adversary from gaining access while the system is running.
 
 ---
 
@@ -594,7 +593,7 @@ After recovering:
 - [NAILS README](../README.md) - Full project documentation
 - [SECURITY.md](../SECURITY.md) - Vulnerability reporting policy
 - [bash-history-forensics.md](./bash-history-forensics.md) - Technical details on history protection
-- [RELEASE-FIXES.md](./RELEASE-FIXES.md) - Known issues and fixes
+- [CHANGELOG.md](../CHANGELOG.md) - Release notes and published fixes
 
 ---
 

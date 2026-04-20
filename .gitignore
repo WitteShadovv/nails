@@ -46,6 +46,8 @@ env/
 .project
 .classpath
 .settings/
+
+# Local-only developer config
 settings.json
 
 # Editor/tool config files
@@ -78,14 +80,10 @@ safety/
 work/
 /overlay/
 *.baseline
+.secrets.baseline
 /config/
 # Prevent accidental commits of state files created during testing in build dirs
 target/**/.nails/
-
-# Documentation temporary files
-docs/sprint-artifacts/
-docs/*-report-*.md
-docs/*-readiness-*.md
 
 # OS specific
 .DS_Store
@@ -129,37 +127,41 @@ temp/
 *.bak
 
 # Editor backups
-*~
 \#*\#
 .\#*
 
-.bmad/
-bmad-custom-src/
+# Local/private planning workspace
+# These docs are intentionally kept out of the public repo until curated.
+# Public docs that are already tracked remain unaffected.
+docs/analysis/
+docs/architecture/
 docs/epics/
+docs/flowcharts/
+docs/research/
+docs/sprint-artifacts/
+docs/*-report-*.md
+docs/*-readiness-*.md
 docs/atdd-checklist-*.md
+docs/epics*.md
+docs/sprint-change-proposal-*.md
+docs/ux-clarifications-*.md
+docs/architecture.md
 docs/bmm-workflow-status.yaml
+docs/ci.md
 docs/definition-of-done.md
 docs/development-guide.md
+docs/impermanence-base-config.nix
+docs/MIGRATION_GUIDE.md
 docs/prd.md
-docs/epics*.md
-docs/implementation-readiness-report-*.md
-docs/sprint-change-proposal-*.md
+docs/RUST_ARCHITECTURE.md
+docs/RUST_TRANSITION_SUMMARY.md
 docs/test-design-system.md
 docs/test-safety.md
 docs/ux-design-specification.md
 docs/ux-validation-report.md
-docs/ux-clarifications-*.md
-docs/architecture.md
-docs/ci.md
-docs/MIGRATION_GUIDE.md
-docs/RUST_ARCHITECTURE.md
-docs/RUST_TRANSITION_SUMMARY.md
-docs/analysis/
-docs/architecture/
-docs/flowcharts/
-docs/research/
-docs/impermanence-base-config.nix
 
-# Local-only artifacts
+# Local-only artifacts and maintenance helpers
+.bmad/
+bmad-custom-src/
 epics.md
 scripts/clean-ai-traces.sh
