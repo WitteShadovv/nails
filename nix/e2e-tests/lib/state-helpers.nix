@@ -18,8 +18,6 @@
         return rc, stdout, stderr
 
     def run_detached_captured_command(unit_name, label, command):
-        import shlex
-
         prefix = "/tmp/" + label
         run_detached_command(
             unit_name,
@@ -48,6 +46,8 @@
         gate_path="/tmp/nails-nixos-rebuild.gate",
         entered_path="/tmp/nails-nixos-rebuild-entered",
     ):
+        import shlex
+
         real_nixos_rebuild = machine.succeed("command -v nixos-rebuild").strip()
         wrapper_path = bin_dir + "/nixos-rebuild"
 
@@ -69,5 +69,28 @@
         )
 
         return bin_dir, gate_path, entered_path
+  '';
+
+  installActivationGateFn = ''
+    def install_activation_gate(
+        gate_path="/run/nails-tests/nails-activation.gate",
+        entered_path="/run/nails-tests/nails-activation-entered",
+    ):
+        import shlex
+
+        gate_dir = "/".join(gate_path.split("/")[:-1]) or "."
+        machine.succeed(f"mkdir -p {shlex.quote(gate_dir)}")
+        machine.succeed(f"rm -f {shlex.quote(entered_path)}")
+        machine.succeed(f"touch {shlex.quote(gate_path)}")
+
+        env_prefix = (
+            "NAILS_TEST_ACTIVATING_GATE_PATH="
+            + shlex.quote(gate_path)
+            + " "
+            + "NAILS_TEST_ACTIVATING_ENTERED_PATH="
+            + shlex.quote(entered_path)
+        )
+
+        return env_prefix, gate_path, entered_path
   '';
 }

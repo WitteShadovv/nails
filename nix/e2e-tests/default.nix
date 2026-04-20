@@ -61,26 +61,27 @@ let
     "status-verify"
   ];
 
-  groups = {
-    smoke = linkFarmForNames "smoke" (namesWithTag "smoke");
-    config = linkFarmForNames "config" (namesWithTag "config");
-    forensic = linkFarmForNames "forensic" (namesWithTag "forensic");
-    lifecycle = linkFarmForNames "lifecycle" (namesWithTag "lifecycle");
-    init = linkFarmForNames "init" (namesWithTag "init");
-    security = linkFarmForNames "security" (namesWithTag "security");
-    performance = linkFarmForNames "performance" (namesWithTag "performance");
-    preflight = linkFarmForNames "preflight" (namesWithTag "preflight");
-    nixos = linkFarmForNames "nixos" (namesWithTag "nixos");
-    session = linkFarmForNames "session" (namesWithTag "session");
-    shell = linkFarmForNames "shell" (namesWithTag "shell");
-    notification =
-      linkFarmForNames "notification" (namesWithTag "notification");
-    overlay = linkFarmForNames "overlay" (namesWithTag "overlay");
-    state = linkFarmForNames "state" (namesWithTag "state");
-    contract = linkFarmForNames "contract" (namesWithTag "contract");
-    ci = linkFarmForNames "ci" ciNames;
-    all = linkFarmForNames "all" testNames;
+  groupMembers = {
+    smoke = namesWithTag "smoke";
+    config = namesWithTag "config";
+    forensic = namesWithTag "forensic";
+    lifecycle = namesWithTag "lifecycle";
+    init = namesWithTag "init";
+    security = namesWithTag "security";
+    performance = namesWithTag "performance";
+    preflight = namesWithTag "preflight";
+    nixos = namesWithTag "nixos";
+    session = namesWithTag "session";
+    shell = namesWithTag "shell";
+    notification = namesWithTag "notification";
+    overlay = namesWithTag "overlay";
+    state = namesWithTag "state";
+    contract = namesWithTag "contract";
+    ci = ciNames;
+    all = testNames;
   };
+
+  groups = lib.mapAttrs linkFarmForNames groupMembers;
 
   interactiveDriver = pkgs.writeShellScriptBin "interactive-test" ''
     #!/usr/bin/env bash
@@ -91,6 +92,7 @@ let
   '';
 in builtins.seq _assertUniqueNames (tests // groups // {
   _interactive-driver = interactiveDriver;
+  _groups = groupMembers;
   _meta = metadata;
   _testNames = testNames;
 })
