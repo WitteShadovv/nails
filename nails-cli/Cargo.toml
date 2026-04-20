@@ -8,7 +8,7 @@ license.workspace = true
 description = "CLI interface for NixOS Anti-forensics Isolation & Layering System"
 homepage.workspace = true
 repository.workspace = true
-readme = "../../README.md"
+readme = "../README.md"
 keywords = ["nixos", "anti-forensics", "security", "privacy", "veracrypt"]
 categories = ["command-line-utilities"]
 

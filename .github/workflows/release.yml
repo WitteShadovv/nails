@@ -116,7 +116,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Install Nix
-        uses: cachix/install-nix-action@43082b822f2e4b696046793cdd9e9b5da14f3d75
+        uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
