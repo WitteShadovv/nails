@@ -11,7 +11,7 @@
 
 </div>
 
-> **Fast-switching dual-environment computing on NixOS for plausible-deniability workflows.**
+> **A NixOS-only CLI for layering a hidden environment over a decoy system.**
 
 NAILS is a NixOS-only tool that layers a hidden environment on top of a believable decoy system by
 combining a user-managed hidden storage backend, OverlayFS, and declarative NixOS configuration.
@@ -76,7 +76,7 @@ NAILS is designed for a narrow threat model and operational style.
 ### Option 1: Use the latest GitHub prerelease bundle
 
 Download the latest published bundle from the canonical [GitHub Releases page](https://github.com/WitteShadovv/nails/releases).
-Current GitHub Releases are automated **prerelease** verification bundles built from `main`, so use the newest prerelease unless you are reproducing a specific revision. Mount the hidden storage first, then place the published `nails` executable on that hidden root:
+Current GitHub Releases are automated **prerelease** verification bundles built from `main`, so use the newest prerelease unless you are reproducing a specific revision. Mount the hidden storage first, then place the published `nails` executable directly on that hidden root. Do not leave the binary on the decoy filesystem:
 
 ```bash
 # Mount hidden storage first
@@ -216,6 +216,13 @@ nix build -L .#nails-release -o result --option accept-flake-config false
 
 See [`docs/release-artifact-reproducibility.md`](docs/release-artifact-reproducibility.md) for the
 scope of the reproducibility claim and artifact verification details.
+
+## Related projects
+
+- **NAILS** (this repository) is the NixOS-only CLI and workflow for layering a hidden environment over an existing decoy system you operate.
+- **[NAILS OS](https://github.com/WitteShadovv/nails-os)** is a separate installable NixOS distribution with its own live ISO, installer, persistence model, and system-level security design.
+
+They are related projects, but they are not interchangeable products and do not share the same installation or threat-model boundaries.
 
 ## Documentation and project policies
 

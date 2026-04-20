@@ -33,6 +33,9 @@ There is no separate stable release line yet. Because the project is pre-1.0, we
 
 ## Reporting a Vulnerability
 
+> [!NOTE]
+> NAILS is currently maintained by a solo developer. Response targets below are best-effort goals, not guaranteed SLAs.
+
 ### Private reporting channel
 
 Report vulnerabilities by email to **security@nails.run**.
@@ -60,7 +63,7 @@ We normally:
 - communicate an initial triage assessment within **7 days**
 - keep you informed if remediation will take longer
 
-These are response targets rather than guaranteed SLAs, but we use them to keep reports moving and reporters informed.
+These are best-effort response targets rather than guaranteed SLAs, but we use them to keep reports moving and reporters informed.
 
 ## Coordinated Disclosure
 

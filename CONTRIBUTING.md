@@ -4,6 +4,8 @@ Thanks for your interest in contributing to NAILS.
 
 NAILS is security-sensitive alpha software. We value contributions that are clear, testable, and consistent with the project's safety goals.
 
+Maintainers may decline changes that weaken the documented safety posture, broaden security claims beyond the documented threat model, or add public-facing language that is more certain than the implementation supports.
+
 > If you are reporting a security vulnerability, do **not** open a public issue. Follow [SECURITY.md](SECURITY.md) instead.
 
 ## Ways to Contribute
@@ -21,6 +23,7 @@ Before investing significant work:
 1. Search for an existing issue or pull request.
 2. For non-trivial changes, open an issue first so maintainers can confirm scope and fit.
 3. Keep proposals grounded in the current alpha status of the project.
+4. Make sure the change belongs in **NAILS** rather than the separate `nails-os` installable-distribution repository.
 
 ## Development Setup
 

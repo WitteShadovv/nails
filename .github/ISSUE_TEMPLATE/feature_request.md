@@ -23,7 +23,7 @@ Describe the behavior you would like from NAILS. Keep proposals focused and conc
 
 ## Threat model or safety impact
 
-Does this change any security assumptions, isolation guarantees, cleanup behavior, or user safety expectations?
+Does this change any security assumptions, documented threat-model boundaries, cleanup behavior, or user safety expectations?
 
 ## Alternatives considered
 
