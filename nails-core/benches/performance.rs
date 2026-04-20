@@ -159,6 +159,7 @@ fn create_emergency_orchestrator() -> DeactivationOrchestrator<MockFilesystem> {
     let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
     DeactivationOrchestrator::new(manager, CleanupConfig::default())
         .with_mode(DeactivationMode::Emergency)
+        .with_decoy_profile_restore(false)
 }
 
 /// Benchmark Config::default() creation

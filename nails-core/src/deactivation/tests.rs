@@ -312,6 +312,168 @@ fn test_successful_deactivation() {
 
 #[test]
 #[serial]
+fn test_deactivation_skips_decoy_restore_when_disabled() {
+    clear_system_profile_env();
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let upper_dir = hidden_root.join("overlays/home/upper");
+    let work_dir = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+    fs.mock_set_mounted(Path::new("/home"), true);
+
+    write_state_with_overlay(
+        &state_path,
+        &hidden_root,
+        Path::new("/home"),
+        &upper_dir,
+        &work_dir,
+    );
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        config,
+        state_path.clone(),
+    )));
+    let orchestrator =
+        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
+            .with_decoy_profile_restore(false);
+
+    let report = orchestrator
+        .run()
+        .expect("deactivation should succeed without restoring a decoy profile");
+
+    assert_eq!(report.final_state, SystemState::Inactive);
+    assert_eq!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive
+    );
+
+    let loaded = StateFile::load(&state_path).unwrap();
+    assert_eq!(loaded.state, SystemState::Inactive);
+    assert!(loaded.overlay_status.is_empty());
+}
+
+#[test]
+#[serial]
+fn test_deactivation_skips_switch_script_execution_when_disabled() {
+    let manager = setup_active_manager();
+
+    {
+        let m = manager.lock().unwrap();
+        m.filesystem().mock_set_mounted(Path::new("/home"), true);
+        m.filesystem().mock_set_mounted(Path::new("/etc"), true);
+    }
+
+    let orchestrator =
+        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
+            .with_switch_script_execution(false);
+
+    let report = orchestrator
+        .run()
+        .expect("deactivation should succeed without executing switch-to-configuration");
+
+    assert_eq!(report.final_state, SystemState::Inactive);
+    assert_eq!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive
+    );
+
+    clear_system_profile_env();
+}
+
+#[test]
+#[serial]
+fn test_deactivation_returns_error_when_no_decoy_profile_is_available() {
+    let manager = setup_active_manager();
+    clear_system_profile_env();
+
+    {
+        let m = manager.lock().unwrap();
+        m.filesystem().mock_set_mounted(Path::new("/home"), true);
+        m.filesystem().mock_set_mounted(Path::new("/etc"), true);
+    }
+
+    let orchestrator =
+        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+
+    let err = orchestrator
+        .run()
+        .expect_err("deactivation should report a missing decoy profile");
+
+    assert!(
+        err.to_string()
+            .contains("No system profile available for decoy switch")
+    );
+    assert_eq!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive
+    );
+}
+
+#[test]
+#[serial]
+fn test_deactivation_returns_error_when_switch_script_is_missing() {
+    clear_system_profile_env();
+
+    let manager = setup_active_manager();
+    let hidden_root = manager.lock().unwrap().config().hidden_volume_root.clone();
+    let system_profile = hidden_root.join("profiles/system");
+    let profiles_dir = system_profile.parent().unwrap().to_path_buf();
+    let generation_dir = profiles_dir.join("system-1-link");
+    std::fs::create_dir_all(&generation_dir).unwrap();
+    unsafe {
+        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
+    }
+
+    {
+        let m = manager.lock().unwrap();
+        m.filesystem()
+            .mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
+        m.filesystem()
+            .mock_set_path_type(profiles_dir.to_str().unwrap(), "directory");
+        m.filesystem()
+            .mock_set_directory_contents(&profiles_dir, vec![generation_dir.clone()]);
+        m.filesystem().mock_set_mounted(Path::new("/home"), true);
+        m.filesystem().mock_set_mounted(Path::new("/etc"), true);
+    }
+
+    let orchestrator =
+        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+
+    let err = orchestrator
+        .run()
+        .expect_err("deactivation should fail when switch-to-configuration is missing");
+
+    assert!(
+        err.to_string()
+            .contains("System profile switch script missing")
+    );
+    assert_eq!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive
+    );
+
+    clear_system_profile_env();
+}
+
+#[test]
+#[serial]
 fn test_deactivation_preserves_generation_and_fingerprint() {
     let fs = MockFilesystem::new();
     setup_system_profile_stub(&fs);

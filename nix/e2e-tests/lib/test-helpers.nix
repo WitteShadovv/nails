@@ -3,9 +3,14 @@
 {
   # Python function to write the standard headless config file.
   # Usage in testScript: ${testHelpers.writeHeadlessConfigFn}
-  # Then call: write_headless_config("/tmp/nails-headless.yaml")
+  # Then call: write_headless_config("/run/nails-tests/nails-headless.yaml")
   writeHeadlessConfigFn = ''
     def write_headless_config(path):
+        import os
+        import shlex
+
+        parent_dir = os.path.dirname(path) or "."
+        machine.succeed("mkdir -p " + shlex.quote(parent_dir))
         machine.succeed(
             """cat > %s <<'EOF'
     hidden_volume_root: /mnt/hidden-volume
@@ -102,6 +107,7 @@
 
   canonicalDeactivateFn = ''
     def canonical_deactivate(config_path, unit_name="nails-deactivate"):
+        import json
         import shlex
 
         machine.succeed(
@@ -112,7 +118,37 @@
                 "nails --config " + shlex.quote(config_path) + " deactivate"
             )
         )
-        machine.wait_for_shutdown()
+        try:
+            machine.wait_for_shutdown()
+        except Exception as exc:
+            diagnostics = {}
+            diagnostic_commands = {
+                "systemctl_status": (
+                    "timeout 10s systemctl status "
+                    + shlex.quote(unit_name)
+                    + " --no-pager --full || true"
+                ),
+                "journalctl": (
+                    "timeout 10s journalctl -u "
+                    + shlex.quote(unit_name)
+                    + " --no-pager -n 100 -o short-precise || true"
+                ),
+                "list_jobs": "timeout 10s systemctl list-jobs --no-pager || true",
+            }
+            for label, command in diagnostic_commands.items():
+                status, output = machine.execute(command)
+                diagnostics[label] = {
+                    "status": status,
+                    "output": output.strip(),
+                }
+            raise Exception(
+                "canonical_deactivate failed to reach shutdown for unit "
+                + unit_name
+                + ": "
+                + str(exc)
+                + "\nBounded diagnostics:\n"
+                + json.dumps(diagnostics, indent=2, sort_keys=True)
+            )
         machine.start()
         machine.wait_for_unit("multi-user.target")
   '';

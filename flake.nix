@@ -140,6 +140,11 @@
         rawE2eTests = import ./nix/e2e-tests { inherit self pkgs; };
         e2eTests =
           lib.filterAttrs (name: _: !(lib.hasPrefix "_" name)) rawE2eTests;
+        e2eTestMetadata = {
+          availableTargets = builtins.attrNames e2eTests;
+          leafTests = rawE2eTests._testNames;
+          groups = rawE2eTests._groups;
+        };
 
       in {
         # Packages
@@ -157,6 +162,7 @@
         };
 
         e2e-tests = e2eTests;
+        e2e-test-metadata = e2eTestMetadata;
 
         # Dev shell
         devShells.default = pkgs.mkShell {
