@@ -55,19 +55,18 @@ jobs:
               release_tag="v${version}-git.${short_rev}"
               release_name="nails ${version}-git.${short_rev}"
               release_notes=$(cat <<EOF
-          Deterministic release artifact verification for \'main\'.
+          Automated prerelease verification bundle for \`main\`.
 
           - Commit: ${GITHUB_SHA}
           - Canonical bundle attr: .#nails-release
           - Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
+          - Publication policy: pushes to \`main\` publish a GitHub prerelease; \`dev\` builds stay attached to the workflow run only
 
           ## Supply Chain Security
 
           This release includes SLSA Level 3 provenance attestation (\`nails.intoto.jsonl\`).
 
           ### Verify SLSA Provenance
-
-          **Note:** This repository is private. SLSA provenance verification requires \`--source-uri\` to match the actual repository.
 
           \`\`\`bash
           # Install slsa-verifier
@@ -89,11 +88,11 @@ jobs:
             dev)
               release_name="Dev deterministic verification build"
               release_notes=$(cat <<EOF
-          Deterministic release artifact verification for \'dev\'.
+          Deterministic verification build for \`dev\`.
 
           - Commit: ${GITHUB_SHA}
           - Canonical bundle attr: .#nails-release
-          - No GitHub release publication occurs for dev builds
+          - GitHub prereleases are not published from \`dev\`; download artifacts from this workflow run instead
           EOF
           )
               ;;
@@ -235,6 +234,7 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+      artifact-metadata: write
 
     steps:
       - name: Download canonical release artifact
@@ -258,15 +258,12 @@ jobs:
         with:
           subject-checksums: dist/checksums.txt
 
-  # SLSA Level 3 Provenance Generation
+  # SLSA Level 3 provenance generation for public release bundles.
   # Uses the official SLSA GitHub generator to create signed provenance
   # attestations for supply chain security. This provides:
   # - Tamper-proof build provenance
   # - Verification that artifacts were built from this repository
   # - SLSA L3 compliance (isolated builds, signed provenance)
-  #
-  # Note: This repository is private. When verifying SLSA provenance, users must
-  # specify --source-uri github.com/WitteShadovv/nails to match the actual repository.
   provenance:
     name: Generate SLSA provenance
     needs: [build-release, determinism]
@@ -278,9 +275,8 @@ jobs:
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: ${{ needs.build-release.outputs.slsa-subjects }}
-      upload-assets: false  # We upload manually to control release flow
+      upload-assets: false  # Uploaded manually with the canonical release bundle
       provenance-name: nails.intoto.jsonl
-      private-repository: true  # Required: repo is private; provenance is still signed via Rekor
 
   publish-release:
     name: Publish GitHub release

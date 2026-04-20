@@ -160,8 +160,19 @@
 
         # Dev shell
         devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
+          packages = with pkgs; [
             rustToolchain
+            pre-commit
+            bash
+            coreutils
+            gnugrep
+            ripgrep
+            nixfmt
+            deadnix
+            statix
+            shellcheck
+            cargo-audit
+            cargo-deny
             cargo-tarpaulin
             cargo-llvm-cov
             bc # Floating-point arithmetic for coverage threshold checks

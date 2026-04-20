@@ -1,381 +1,121 @@
 # Security Policy
 
-NAILS (NixOS Anti-forensics Integrated Livesystem) is a security-critical application designed to provide plausible deniability through hidden computing environments. Given the sensitive nature of this tool and its potential use in high-risk scenarios, we take security vulnerabilities extremely seriously.
+NAILS (NixOS Anti-forensics Isolation & Layering System) is security-sensitive software. This policy explains what qualifies as a security issue, how to report one privately, and how the project handles coordinated disclosure.
 
-This document outlines our security policy, vulnerability reporting process, and response procedures.
+## Scope
 
----
+This policy applies to security issues in the NAILS repository and its officially published release artifacts, including:
 
-## Table of Contents
+- the `nails` CLI and workspace crates
+- NAILS-specific state handling, cleanup, and isolation logic
+- NixOS integration that is implemented in this repository
+- official GitHub prerelease bundles published from this repository
 
-- [Security Scope](#security-scope)
-- [Supported Versions](#supported-versions)
-- [Reporting a Vulnerability](#reporting-a-vulnerability)
-- [Severity Classification](#severity-classification)
-- [Response Process](#response-process)
-- [Security Measures](#security-measures)
-- [Security Advisories](#security-advisories)
+This policy does **not** cover:
 
----
+- vulnerabilities in upstream projects such as NixOS, Nixpkgs, VeraCrypt, LUKS, or the Linux kernel
+- local deployment mistakes or unsupported operating environments
+- general hardening advice that does not describe a specific vulnerability in this repository
+- physical access, coercion, or other threats outside the software boundary
 
-## Security Scope
-
-### In Scope
-
-The following components are covered by this security policy:
-
-| Component | Description |
-|-----------|-------------|
-| `nails` binary | The main command-line interface and all subcommands |
-| Core library (`nails-core`) | All Rust library code in the workspace |
-| Overlay management | OverlayFS mount/unmount, isolation, and rollback logic |
-| State file handling | State machine persistence and transition integrity |
-| Process detection & termination | Session kill, display manager restart, detached worker |
-| Forensic cleanup | Shell history clearing, log/temp sanitization, artifact removal |
-| Notification handling | Desktop notification dispatch and queuing |
-| Configuration management | Config loading, validation, and path discovery |
-| NixOS integration | Config injection, profile switching, flake discovery |
-| Build and release artifacts | Official releases and Nix flake outputs |
-
-> **Important:** NAILS does **not** implement encryption, key derivation (KDF), or secure erasure at the storage level. Those responsibilities belong to the storage backend (e.g., VeraCrypt, LUKS/`cryptsetup`). Vulnerabilities in encryption or key management should be reported to the respective upstream projects.
-
-### Out of Scope
-
-The following are **not** covered by this security policy:
-
-| Component | Reason | Where to Report |
-|-----------|--------|-----------------|
-| Upstream Nix packages | Maintained by Nixpkgs | [Nixpkgs Security](https://github.com/NixOS/nixpkgs/security) |
-| NixOS kernel/system | Maintained by NixOS | [NixOS Security](https://nixos.org/community/teams/security.html) |
-| Encryption / KDF / secure erasure | Handled by VeraCrypt, LUKS, or other storage backends | Report to respective upstream projects |
-| User misconfiguration | User responsibility | Open a Discussion for guidance |
-| Third-party integrations | Not maintained by us | Report to respective maintainers |
-| Physical security threats | Outside software scope | N/A |
-| Social engineering attacks | Outside software scope | N/A |
-
-> **Note:** If you are unsure whether an issue falls within scope, please report it anyway. We would rather receive reports that turn out to be out of scope than miss a genuine vulnerability.
-
----
+If you are unsure whether something is in scope, report it anyway. We would rather review a borderline report than miss a real issue.
 
 ## Supported Versions
 
-NAILS is currently in alpha development. Security updates are provided for the following versions:
+NAILS is currently released as **alpha** software. Security fixes are applied to the latest supported release line first.
 
-| Version | Status | Security Updates |
-|---------|--------|------------------|
-| 0.1.x   | Alpha (current) | :white_check_mark: Supported |
-| < 0.1.0 | Pre-release | :x: Not supported |
+| Version | Status | Security support |
+| --- | --- | --- |
+| Latest GitHub prerelease from `main` | Current alpha verification bundle | Security fixes are applied here first |
+| Earlier GitHub prereleases in the current alpha series | Superseded | Not supported |
 
-> **Important:** As an alpha project, we strongly recommend always using the latest release. Older versions may contain known vulnerabilities and will not receive backported fixes.
-
-Once NAILS reaches stable release (1.0.0), we will maintain security updates for:
-- The current major version
-- The previous major version (for 6 months after a new major release)
-
----
+There is no separate stable release line yet. Because the project is pre-1.0, we recommend upgrading to the latest published prerelease bundle instead of relying on backported fixes.
 
 ## Reporting a Vulnerability
 
-### Contact Information
+### Private reporting channel
 
-**Email:** security@nails.run
+Report vulnerabilities by email to **security@nails.run**.
 
-> **Do not** report security vulnerabilities through public GitHub issues, discussions, or pull requests.
+Please **do not** open public GitHub issues, discussions, or pull requests for suspected vulnerabilities.
 
-### What to Include
+If you accidentally disclose something sensitive in a public issue, edit the report if possible and contact us at `security@nails.run`.
 
-Please provide as much of the following information as possible to help us triage and respond effectively:
+### What to include
 
-1. **Vulnerability Description**
-   - Clear, concise description of the vulnerability
-   - Affected component(s) and version(s)
-   - Type of vulnerability (e.g., data leakage, cryptographic weakness, privilege escalation)
+Please include as much of the following as you can:
 
-2. **Reproduction Steps**
-   - Step-by-step instructions to reproduce the issue
-   - Proof-of-concept code or commands (if applicable)
-   - Environment details (OS, Nix version, hardware if relevant)
+- affected version or commit
+- environment details relevant to reproduction
+- clear reproduction steps or proof of concept
+- expected security boundary and observed failure
+- impact assessment and any suggested mitigations
+- whether and how you would like to be credited
 
-3. **Impact Assessment**
-   - Your assessment of the severity and potential impact
-   - Attack scenarios and prerequisites
-   - Affected user population (all users, specific configurations, etc.)
+### What to expect from us
 
-4. **Additional Context**
-   - Any patches or mitigations you have identified
-   - Related CVEs or public disclosures
-   - Your preferred attribution (name, handle, or anonymous)
+We normally:
 
-### Response Timeline
+- acknowledge receipt within **72 hours**
+- communicate an initial triage assessment within **7 days**
+- keep you informed if remediation will take longer
 
-| Stage | Timeline |
-|-------|----------|
-| Initial acknowledgment | Within **48 hours** |
-| Preliminary assessment | Within **7 days** |
-| Severity classification | Within **14 days** |
-| Fix timeline communication | Within **14 days** |
+These are response targets rather than guaranteed SLAs, but we use them to keep reports moving and reporters informed.
 
-### Responsible Disclosure
+## Coordinated Disclosure
 
-We request that you:
+We ask reporters to avoid public disclosure until:
 
-- **Do not** publicly disclose the vulnerability until we have released a fix or mutually agreed on a disclosure date
-- **Do not** exploit the vulnerability beyond what is necessary for demonstration
-- **Do not** access, modify, or delete data belonging to others
-- **Do** provide us reasonable time to address the issue before public disclosure
+- a fix is available, or
+- we agree on a disclosure date together
 
-We commit to:
+In return, we will:
 
-- Working with you in good faith to understand and resolve the issue
-- Keeping you informed of our progress
-- Crediting you in our security advisory (unless you prefer anonymity)
-- A standard coordinated disclosure period of **90 days**, unless the severity requires faster action or mutual agreement extends this period
+- investigate reports in good faith
+- work toward a fix or mitigation appropriate to the severity
+- coordinate publication when a fix is ready
+- credit the reporter unless anonymity is requested
 
----
+Our default goal is coordinated disclosure within **90 days**, but we may shorten or extend that window depending on severity, active exploitation, fix complexity, or mutual agreement with the reporter.
 
-## Severity Classification
+## Severity Guidelines
 
-We classify vulnerabilities using a four-tier system adapted for security-critical anti-forensics software. The primary concern is maintaining plausible deniability and preventing data exposure.
+We prioritize issues based on impact to user safety, data exposure, isolation failure, and the reliability of NAILS cleanup and state guarantees.
 
-### Critical
+| Severity | Typical impact |
+| --- | --- |
+| Critical | Remote compromise, complete isolation failure, or direct exposure of protected data/workflows |
+| High | Significant local compromise, persistent artifacts, privilege escalation, or bypass of important safety guarantees |
+| Medium | Limited information disclosure, denial of service, or issues requiring narrow conditions |
+| Low | Defense-in-depth gaps, low-impact leaks, or issues with practical mitigations |
 
-**Definition:** Vulnerabilities that can be exploited remotely without unusual user interaction, or that fundamentally compromise the core security guarantees of the system.
+Examples of potentially high-priority reports include:
 
-**Examples specific to NAILS:**
-- Remote code execution in the nails binary
-- Complete bypass of hidden environment concealment
-- Silent data exfiltration from hidden environments
-- State file manipulation enabling undetected environment exposure
+- exposure of hidden-environment artifacts after documented cleanup
+- bypasses of isolation or rollback guarantees
+- privilege escalation through NAILS-managed operations
+- release artifact integrity problems
 
-**Response:** Emergency release within **24-72 hours**. All users will be notified immediately.
+## Security Advisories and Fix Publication
 
----
+When we publish a security fix, we communicate it through the repository's public release channels, which can include:
 
-### High
+- GitHub Security Advisories
+- GitHub Releases
+- `CHANGELOG.md`
 
-**Definition:** Vulnerabilities that compromise plausible deniability, enable persistent code execution, or allow privilege escalation from the primary attack surface.
+Publication format and timing depend on severity, remediation, and disclosure coordination. During the current alpha phase, some fixes may appear first in GitHub prerelease notes before a formal advisory is published.
 
-**Examples specific to NAILS:**
-- Partial data leakage revealing hidden environment existence
-- Persistent code execution in hidden environments
-- Forensic artifacts that survive the documented cleanup workflow
-- Overlay isolation bypass allowing host contamination
-- Local privilege escalation from the nails binary
+## Non-sensitive Security Questions
 
-**Response:** Urgent fix within **7 days**. Emergency release if necessary.
+For non-sensitive questions about hardening, threat model, or secure use:
 
----
-
-### Medium
-
-**Definition:** Vulnerabilities requiring specific conditions to exploit, or that enable local attacks not from the primary attack surface.
-
-**Examples specific to NAILS:**
-- Information disclosure requiring local access and specific configuration
-- Timing side-channels in obfuscation or state-handling operations
-- Denial of service against nails operations
-- Local privilege escalation from non-primary vectors
-
-**Response:** Prioritized fix in the next scheduled release, or within **30 days** for actively exploited issues.
-
----
-
-### Low
-
-**Definition:** Vulnerabilities with limited impact, requiring unusual conditions, or with effective mitigations available.
-
-**Examples specific to NAILS:**
-- Information disclosure requiring physical access and rare configurations
-- Minor implementation issues with theoretical impact
-- UI/UX issues that could lead to user error
-- Verbose error messages leaking non-sensitive information
-
-**Response:** Fix included in next regular release.
-
----
-
-### Severity Decision Matrix
-
-| Factor | Increases Severity | Decreases Severity |
-|--------|-------------------|-------------------|
-| Attack vector | Remote, network-based | Local, physical access required |
-| User interaction | None required | Complex actions required |
-| Privileges required | None | Root/admin required |
-| Impact on deniability | Direct compromise | Indirect/theoretical |
-| Exploitability | Known exploit exists | Theoretical only |
-
----
-
-## Response Process
-
-### 1. Receipt and Acknowledgment (0-48 hours)
-
-- Acknowledge receipt of the report
-- Assign a tracking identifier
-- Designate a response coordinator
-
-### 2. Triage and Assessment (48 hours - 7 days)
-
-- Reproduce the vulnerability
-- Assess scope and impact
-- Assign preliminary severity classification
-- Communicate initial findings to reporter
-
-### 3. Fix Development (Timeline varies by severity)
-
-| Severity | Fix Timeline | Release Type |
-|----------|--------------|--------------|
-| Critical | 24-72 hours | Emergency release |
-| High | 7 days | Emergency or expedited release |
-| Medium | 30 days | Next scheduled release |
-| Low | 90 days | Next scheduled release |
-
-### 4. Fix Verification
-
-- Internal testing of the fix
-- Verification that the fix addresses the root cause
-- Regression testing to ensure no new issues introduced
-- Optional: Request reporter to verify the fix
-
-### 5. Release and Disclosure
-
-- Coordinate disclosure timeline with reporter
-- Prepare security advisory
-- Release fixed version
-- Publish security advisory (see [Security Advisories](#security-advisories))
-- Update CHANGELOG with security fix notation
-
-### 6. Post-Mortem (Critical and High only)
-
-- Conduct internal review
-- Document lessons learned
-- Implement process improvements if needed
-
-### Credit and Recognition
-
-We believe in recognizing the valuable contributions of security researchers. Unless you prefer to remain anonymous, we will credit you in:
-
-- The GitHub Security Advisory
-- The CHANGELOG entry
-- Any public announcements
-
-Please indicate your preference when submitting your report.
-
----
-
-## Security Measures
-
-NAILS implements multiple layers of security controls throughout development and deployment.
-
-### Dependency Security
-
-| Measure | Implementation | Frequency |
-|---------|----------------|-----------|
-| `cargo-audit` | Pre-commit hook | Every commit |
-| `cargo-audit` | CI pipeline | Every PR and push to main |
-| Dependency review | Manual review of new dependencies | As needed |
-
-### Build Security
-
-| Measure | Description |
-|---------|-------------|
-| Static linking | Reduces runtime attack surface and dependency on system libraries |
-| Reproducible builds | Nix flake ensures bit-for-bit reproducible builds |
-| Minimal dependencies | Conscious effort to minimize dependency tree |
-
-### Code Quality
-
-| Measure | Implementation |
-|---------|----------------|
-| Clippy lints | Enforced in CI with security-relevant lints enabled |
-| Pre-commit hooks | Automated checks before every commit |
-| Secret detection | Pre-commit hooks scan for accidental secret commits |
-
-### Runtime Security
-
-| Measure | Description |
-|---------|-------------|
-| No custom crypto | NAILS does not implement encryption, KDF, or secure erasure — those are delegated to VeraCrypt/LUKS |
-| String obfuscation | Binary strings are XOR-obfuscated to resist casual `strings` scanning (not encryption) |
-| RAII cleanup guards | Deterministic resource cleanup on failure or panic |
-
-### Future Enhancements
-
-The following security measures are planned for future releases:
-
-- [ ] Fuzzing infrastructure for input parsing
-- [ ] Memory safety verification with Miri
-- [ ] Third-party security audit
-- [ ] Formal verification of critical components
-- [ ] Security-focused documentation review
-
----
-
-## Security Advisories
-
-### Communication Channels
-
-Security issues will be communicated through the following channels:
-
-| Channel | Purpose | Link |
-|---------|---------|------|
-| GitHub Security Advisories | Primary disclosure mechanism | [Security Advisories](../../security/advisories) |
-| CHANGELOG.md | Documented in release notes | [CHANGELOG](./CHANGELOG.md) |
-| GitHub Releases | Release notes for fixed versions | [Releases](../../releases) |
-
-> **Note:** This repository is private. Security advisories created here will only be visible to repository collaborators unless explicitly published. For broader security notifications, fixes will be documented in CHANGELOG.md and release notes.
-
-### Advisory Format
-
-Each security advisory will include:
-
-- **Advisory ID:** Unique identifier (format: `NAILS-YYYY-NNNN`)
-- **CVE ID:** If assigned
-- **Severity:** Critical, High, Medium, or Low
-- **Affected Versions:** Version range affected
-- **Fixed Versions:** Versions containing the fix
-- **Description:** Non-technical summary
-- **Technical Details:** Detailed technical description
-- **Impact:** What an attacker could achieve
-- **Mitigation:** Workarounds if immediate upgrade is not possible
-- **Credit:** Attribution to reporter (if desired)
-
-### Subscribing to Updates
-
-To receive security notifications:
-
-1. **Watch this repository** with "Security alerts" enabled
-2. **Check GitHub Security Advisories** periodically
-3. **Monitor releases** for security-related updates
-
-> **Future:** We plan to establish a security mailing list for advance notification of critical issues. This section will be updated when available.
-
----
-
-## Questions and Concerns
-
-For general security questions that are **not** vulnerability reports, please:
-
-1. Check existing [GitHub Discussions](../../discussions) for answers
-2. Open a new Discussion with the "Security" category (for non-sensitive questions)
-3. Email security@nails.run for sensitive questions
-
----
-
-## Acknowledgments
-
-This security policy is inspired by:
-- [Tails Security](https://tails.net/security/)
-- [Rust Security Policy](https://www.rust-lang.org/policies/security)
-- [GitHub Security Best Practices](https://docs.github.com/en/code-security)
-
----
+- review the existing documentation first
+- use the repository's public collaboration channels if appropriate and available
+- use `security@nails.run` only when the discussion itself would be sensitive
 
 ## Policy Updates
 
-This security policy may be updated periodically. Significant changes will be announced through:
-- Commit messages referencing this file
-- GitHub release notes (for major policy changes)
+This policy is maintained with the repository. Material updates will be reflected in this file.
 
-**Last updated:** 2026-04-16
-**Policy version:** 1.1.0
+**Last updated:** 2026-04-20

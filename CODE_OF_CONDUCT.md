@@ -62,10 +62,15 @@ Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at
 **security@nails.run**.
 
+Please use a clear subject line such as `Code of Conduct report` so the report
+can be triaged appropriately. This mailbox is also used for security reports,
+and conduct reports are handled separately from vulnerability disclosures.
+
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the
-reporter of any incident.
+reporter of any incident, and to handle shared details as discreetly as
+practical during review and follow-up.
 
 ## Attribution
 

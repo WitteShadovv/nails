@@ -1,3 +1,5 @@
+default_install_hook_types: [pre-commit, commit-msg]
+
 exclude: (hardware-configuration\.nix|flake\.lock)$
 
 repos:
@@ -23,8 +25,7 @@ repos:
     rev: v1.5.0
     hooks:
       - id: detect-secrets
-        args: ["--baseline", ".secrets.baseline"]
-        exclude: .*\.lock$|^\.secrets\.baseline$
+        exclude: .*\.lock$
         additional_dependencies: ["pyyaml", "gibberish-detector"]
 
   # Local hooks for Nix and project-specific checks
@@ -174,17 +175,12 @@ repos:
                 --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1
             }
 
-            # Check if we're already in nix-shell (IN_NIX_SHELL env var is set)
+            # Prefer the active flake dev shell; otherwise re-enter via nix develop.
             if [ -n "$IN_NIX_SHELL" ]; then
               coverage_output=$(run_coverage)
               coverage_status=$?
             else
-              # Not in nix-shell, so enter it
-              coverage_output=$(nix-shell --run 'bash -c '"'"'
-                mkdir -p /tmp/nails-coverage
-                cargo llvm-cov --workspace --all-features --all-targets \
-                  --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1
-              '"'"'')
+              coverage_output=$(nix develop --command bash -lc 'mkdir -p /tmp/nails-coverage && cargo llvm-cov --workspace --all-features --all-targets --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1')
               coverage_status=$?
             fi
 
@@ -206,7 +202,7 @@ repos:
             # Check if coverage meets threshold (85%)
             if (( $(echo "$line_coverage < 85" | bc -l) )); then
               echo "❌ Test coverage below 85% (current: ${line_coverage}%) - commit blocked"
-              echo "💡 Run 'nix-shell --run \"cargo llvm-cov --html\"' to see detailed coverage report"
+              echo "💡 Run 'nix develop --command cargo llvm-cov --html' to see detailed coverage report"
               exit 1
             fi
 
@@ -219,17 +215,16 @@ repos:
         entry: bash
         language: system
         stages: [commit-msg]
-        pass_filenames: false
         args:
           - -c
           - |
-            commit_msg_file=.git/COMMIT_EDITMSG
-            if [ ! -f "$commit_msg_file" ]; then
+            commit_msg_file="$1"
+            if [ -z "$commit_msg_file" ] || [ ! -f "$commit_msg_file" ]; then
               echo "Error: Commit message file not found"
               exit 1
             fi
 
-            commit_msg=$(cat "$commit_msg_file" | head -1)
+            IFS= read -r commit_msg < "$commit_msg_file"
 
             # Pattern: <type>[optional scope]: <description>
             if ! echo "$commit_msg" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?: .+$'; then
@@ -246,6 +241,7 @@ repos:
               echo ""
               exit 1
             fi
+          - --
 
 # CI-specific configuration
 ci:

@@ -1,29 +1,37 @@
 ---
 name: Feature request
-about: Suggest an idea for NAILS
-title: ''
+about: Propose a focused improvement for NAILS
+title: "feat: "
 labels: enhancement
 assignees: ''
 
 ---
 
-**Which nails command or workflow does this relate to?**
-[e.g. activate, deactivate, emergency, status, verify, init, or a new command]
+> **Template note:** Use this form for concrete product or documentation improvements. For suspected vulnerabilities, follow [SECURITY.md](../../SECURITY.md). For support expectations and issue scope, see [SUPPORT.md](../../SUPPORT.md).
 
-**Does this affect the threat model?**
-[e.g. No / Yes — describe how it changes what NAILS protects against]
+## Summary
 
-**What operational scenario requires this?**
-Describe the real-world situation where this feature would be needed.
+Describe the improvement you want to see.
 
-**Is your feature request related to a problem? Please describe.**
-A clear and concise description of the problem. E.g. "During border crossings, I need..."
+## Problem or use case
 
-**Describe the solution you'd like**
-A clear and concise description of what you want to happen.
+What user problem, operational gap, or workflow limitation does this address?
 
-**Describe alternatives you've considered**
-A clear and concise description of any alternative solutions or features you've considered.
+## Proposed approach
 
-**Additional context**
-Add any other context about the feature request here.
+Describe the behavior you would like from NAILS. Keep proposals focused and concrete.
+
+## Threat model or safety impact
+
+Does this change any security assumptions, isolation guarantees, cleanup behavior, or user safety expectations?
+
+## Alternatives considered
+
+Describe any alternative approaches, workarounds, or reasons to keep the current behavior.
+
+## Additional context
+
+- Relevant command or workflow:
+- Related issue or discussion:
+- Constraints or edge cases to consider:
+- Tradeoffs or compatibility concerns:

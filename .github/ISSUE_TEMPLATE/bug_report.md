@@ -1,42 +1,64 @@
 ---
 name: Bug report
-about: Report a bug in NAILS
-title: ''
+about: Report a reproducible bug in NAILS
+title: "bug: "
 labels: bug
 assignees: ''
 
 ---
 
-> **WARNING:** DO NOT report security vulnerabilities here. See [SECURITY.md](../../SECURITY.md) for private disclosure instructions.
+> **Security notice:** Do **not** report vulnerabilities here. For suspected security issues, follow [SECURITY.md](../../SECURITY.md) and use the private reporting channel.
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+> **Support note:** For usage questions or setup guidance, review [SUPPORT.md](../../SUPPORT.md) before opening an issue.
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Run '...'
-2. Observe '...'
-3. See error
+## Summary
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+Describe the problem clearly and concisely.
 
-**Environment:**
-- NixOS version: [e.g. 24.11]
-- Nails version: [output of `nails --version`]
-- Running via sudo: [yes/no]
-- Hidden volume configuration: [e.g. VeraCrypt, LUKS, SSHFS]
-- Overlay mode: [auto/explicit]
+## Steps to reproduce
 
-**Status output**
-If relevant, paste the output of `nails status -v`:
+1.
+2.
+3.
+
+## Expected behavior
+
+What did you expect to happen?
+
+## Actual behavior
+
+What happened instead? Include the exact error text if available.
+
+## Environment
+
+- NAILS version:
+- NixOS version:
+- Installation method:
+- Checked against latest release: yes / no
+- Running with elevated privileges: yes / no
+- Storage or hidden-volume backend involved:
+- Relevant filesystem or overlay details:
+
+## Diagnostics
+
+If relevant, include sanitized output from commands such as:
+
+```text
+nails --version
+nails status -v
+```
+
+Paste sanitized output here:
+
+```text
 
 ```
-<paste here>
-```
 
-**Logs**
-If available, include relevant log output from `{hidden_volume_root}/logs/`.
+## Additional context
 
-**Additional context**
-Add any other context about the problem here.
+- Exact command or workflow:
+- Does this regress behavior that previously worked?
+- Does this happen consistently or intermittently?
+- Are there known workarounds?
+
+Please remove secrets, recovery material, private keys, and other sensitive data before submitting.
