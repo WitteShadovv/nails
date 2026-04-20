@@ -33,6 +33,9 @@ mod overlay_mount;
 mod preflight;
 mod session;
 
+#[cfg(test)]
+mod tests;
+
 use guards::SessionRestartGuard;
 
 fn maybe_block_after_activating_state_transition() -> Result<()> {
