@@ -94,12 +94,24 @@ Use only:
 
 ## Running tests
 
-- One test: `nix build .#checks.x86_64-linux.e2e-basic-workflow --no-link -L`
-- Tag group: `nix build .#checks.x86_64-linux.e2e-smoke --no-link -L`
-- CI subset: `nix build .#checks.x86_64-linux.e2e-ci --no-link -L`
-- All: `nix build .#checks.x86_64-linux.e2e-all --no-link -L`
+- One test directly: `nix build .#checks.x86_64-linux.e2e-basic-workflow --no-link -L`
+- Runner, one test: `./scripts/run-e2e-tests.sh basic-workflow`
+- Runner, tag group: `./scripts/run-e2e-tests.sh smoke`
+- Runner, CI subset: `NAILS_E2E_DEFAULT_TARGET=ci ./scripts/run-e2e-tests.sh`
+- Runner, all tests: `./scripts/run-e2e-tests.sh all`
+- Resolve only / dry-run: `./scripts/run-e2e-tests.sh --dry-run ci`
 - Interactive: `nix run .#apps.x86_64-linux.e2e-test-interactive`
 - Specific interactive test: `scripts/run-e2e-tests.sh --interactive basic-workflow`
+
+The runner expands suites/groups such as `ci`, `all`, or tag names into concrete leaf tests using Nix metadata (`_testNames` and `_groups`) and then executes those leaf tests sequentially. Duplicate tests are removed in stable first-seen order, so mixed inputs such as `ci verify smoke` still run each resolved leaf test only once.
+
+Default target selection is environment-aware:
+
+- local shells default to `all`
+- `CI` or `GITHUB_ACTIONS` defaults to `ci`
+- `NAILS_E2E_DEFAULT_TARGET` overrides either default
+
+CI intentionally uses the runner instead of building the aggregate `e2e-ci` link farm directly so the workflow exercises the same suite expansion logic, emits per-leaf progress, and serializes execution in a CI-safe way.
 
 Inside a Python `testScript`, use `breakpoint()` for interactive debugging with `--interactive`.
 

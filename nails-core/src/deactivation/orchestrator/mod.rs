@@ -114,8 +114,12 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
         self
     }
 
-    /// Control whether the decoy profile symlink/switch path runs at all.
-    pub(crate) fn with_decoy_profile_restore(mut self, restore_decoy_profile: bool) -> Self {
+    /// Control whether the decoy profile restore path runs at all.
+    ///
+    /// This is primarily useful for tests and benchmarks that exercise
+    /// deactivation cleanup in environments without an available NixOS system
+    /// profile.
+    pub fn with_decoy_profile_restore(mut self, restore_decoy_profile: bool) -> Self {
         self.restore_decoy_profile = restore_decoy_profile;
         self
     }

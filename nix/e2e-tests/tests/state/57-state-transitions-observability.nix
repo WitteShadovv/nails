@@ -30,27 +30,45 @@ in {
     ${testHelpers.canonicalDeactivateFn}
     ${assertions.assertStatusStateFn}
     ${stateHelpers.captureCommandFns}
-    ${stateHelpers.installSlowNixosRebuildGateFn}
+    ${stateHelpers.installActivationGateFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/run/nails-tests/nails-headless.yaml"
     write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    bin_dir, gate_path, entered_path = install_slow_nixos_rebuild_gate(
-        gate_path="/tmp/nails-observe-rebuild.gate",
-        entered_path="/tmp/nails-observe-rebuild-entered",
+    env_prefix, gate_path, entered_path = install_activation_gate(
+        gate_path="/run/nails-tests/nails-observe-activation.gate",
+        entered_path="/run/nails-tests/nails-observe-activation-entered",
     )
 
     with subtest("activation exposes activating status before completion"):
         run_detached_captured_command(
             "nails-activate-observability",
             "state-observability-primary",
-            f"PATH={bin_dir}:$PATH nails --config {headless_config} activate --no-kill-session -y",
+            f"{env_prefix} nails --config {headless_config} activate --overlay-only --no-kill-session -y",
         )
-        machine.wait_until_succeeds(f"test -f {entered_path}", timeout=180)
+        primary_rc_path = "/tmp/state-observability-primary.rc"
+        machine.wait_until_succeeds(
+            f"test -f {entered_path} || test -f {primary_rc_path}",
+            timeout=180,
+        )
+        if machine.execute(f"test -f {primary_rc_path}")[0] == 0:
+            rc, stdout, stderr = wait_for_captured_command("state-observability-primary", timeout=5)
+            primary_status = machine.succeed(
+                "timeout 10s systemctl status nails-activate-observability --no-pager --full || true"
+            )
+            primary_journal = machine.succeed(
+                "timeout 10s journalctl -u nails-activate-observability --no-pager -n 100 -o short-precise || true"
+            )
+            raise AssertionError(
+                "Observability activation exited before reaching activation gate: "
+                f"rc={rc}, stdout={stdout!r}, stderr={stderr!r}, "
+                f"systemctl_status={primary_status!r}, journalctl={primary_journal!r}"
+            )
+        machine.succeed(f"test -f {entered_path}")
         machine.wait_until_succeeds(
             f"nails --config {headless_config} status --json | grep -F 'Activating'",
             timeout=180,
