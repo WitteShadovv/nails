@@ -42,7 +42,6 @@ env:
     INSTALLER_URL='https://install.determinate.systems/nix'
     INSTALLER_SHA256='1de1a9ddba23464d037aea82a16ca6cc800e1b06eda67c8007560ab6c56afdb7' # pragma: allowlist secret
     NIX_INSTALLER_BINARY_ROOT='https://install.determinate.systems/nix/tag/v3.17.3'
-    NIX_PROFILE_SCRIPT='/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh'
     NIX_BIN_DIR='/nix/var/nix/profiles/default/bin'
     TMP_DIR=$(mktemp -d)
     trap 'rm -rf "$TMP_DIR"' EXIT
@@ -65,11 +64,15 @@ env:
     accept-flake-config = false
     NIXCONF
     systemctl restart nix-daemon
+    mkdir -p /usr/local/bin
+    if [[ -d "$NIX_BIN_DIR" ]]; then
+      for bin in "$NIX_BIN_DIR"/*; do
+        [[ -e "$bin" ]] || continue
+        ln -sf "$bin" /usr/local/bin/
+      done
+    fi
     export PATH="/usr/local/bin:$PATH"
     if ! command -v nix >/dev/null 2>&1 || ! command -v nix-store >/dev/null 2>&1; then
-      if [[ -f "$NIX_PROFILE_SCRIPT" ]]; then
-        . "$NIX_PROFILE_SCRIPT"
-      fi
       if [[ -d "$NIX_BIN_DIR" ]]; then
         export PATH="$NIX_BIN_DIR:$PATH"
       fi
@@ -78,22 +81,16 @@ env:
     if ! command -v nix >/dev/null 2>&1 || ! command -v nix-store >/dev/null 2>&1; then
       echo 'Determinate Nix installed, but nix commands are unavailable after activation attempts.' >&2
       echo "PATH=$PATH" >&2
+      echo 'nix-daemon status for diagnostics:' >&2
+      systemctl status nix-daemon --no-pager 2>&1 >&2 || true
       echo 'Listing /nix/var/nix/profiles/default for diagnostics:' >&2
       ls -la /nix/var/nix/profiles/default 2>/dev/null >&2 || true
-      echo 'Listing /nix/var/nix/profiles/default/etc/profile.d for diagnostics:' >&2
-      ls -la /nix/var/nix/profiles/default/etc/profile.d 2>/dev/null >&2 || true
       echo "Listing $NIX_BIN_DIR for diagnostics:" >&2
       ls -la "$NIX_BIN_DIR" 2>/dev/null >&2 || true
       echo 'Listing /usr/local/bin/nix* for diagnostics:' >&2
       ls -la /usr/local/bin/nix* 2>/dev/null >&2 || true
       exit 1
     fi
-    mkdir -p /usr/local/bin
-    for bin in nix nix-store nix-build nix-shell nix-env nix-channel nix-collect-garbage; do
-      if resolved_bin=$(command -v "$bin" 2>/dev/null); then
-        ln -sf "$resolved_bin" "/usr/local/bin/$bin"
-      fi
-    done
 
 jobs:
   trust-gate:
@@ -538,35 +535,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          NIX_PROFILE_SCRIPT="/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
           NIX_BIN_DIR="/nix/var/nix/profiles/default/bin"
 
           echo "::group::Activate provisioned Nix"
 
           echo "/usr/local/bin" >> "$GITHUB_PATH"
-          export PATH="/usr/local/bin:$PATH"
-
-          if ! command -v nix >/dev/null 2>&1 || ! command -v nix-store >/dev/null 2>&1; then
-            if [[ -f "$NIX_PROFILE_SCRIPT" ]]; then
-              . "$NIX_PROFILE_SCRIPT"
-            fi
-
-            if [[ -d "$NIX_BIN_DIR" ]]; then
-              echo "$NIX_BIN_DIR" >> "$GITHUB_PATH"
-              export PATH="$NIX_BIN_DIR:$PATH"
-            fi
-
-            hash -r
-          fi
+          echo "$NIX_BIN_DIR" >> "$GITHUB_PATH"
+          export PATH="/usr/local/bin:$NIX_BIN_DIR:$PATH"
+          hash -r
 
           if ! command -v nix >/dev/null 2>&1; then
             echo "::error::nix is unavailable after PATH activation"
             echo "PATH=$PATH"
-            echo "Expected Nix profile script: $NIX_PROFILE_SCRIPT"
+            echo 'nix-daemon status for diagnostics:'
+            systemctl status nix-daemon --no-pager || true
             echo "Listing /nix/var/nix/profiles/default for diagnostics:"
             ls -la /nix/var/nix/profiles/default 2>/dev/null || true
-            echo "Listing /nix/var/nix/profiles/default/etc/profile.d for diagnostics:"
-            ls -la /nix/var/nix/profiles/default/etc/profile.d 2>/dev/null || true
             echo "Listing $NIX_BIN_DIR for diagnostics:"
             ls -la "$NIX_BIN_DIR" 2>/dev/null || true
             echo "Listing /usr/local/bin/nix* for diagnostics:"
@@ -577,11 +561,10 @@ jobs:
           if ! command -v nix-store >/dev/null 2>&1; then
             echo "::error::nix-store is unavailable after PATH activation"
             echo "PATH=$PATH"
-            echo "Expected Nix profile script: $NIX_PROFILE_SCRIPT"
+            echo 'nix-daemon status for diagnostics:'
+            systemctl status nix-daemon --no-pager || true
             echo "Listing /nix/var/nix/profiles/default for diagnostics:"
             ls -la /nix/var/nix/profiles/default 2>/dev/null || true
-            echo "Listing /nix/var/nix/profiles/default/etc/profile.d for diagnostics:"
-            ls -la /nix/var/nix/profiles/default/etc/profile.d 2>/dev/null || true
             echo "Listing $NIX_BIN_DIR for diagnostics:"
             ls -la "$NIX_BIN_DIR" 2>/dev/null || true
             echo "Listing /usr/local/bin/nix* for diagnostics:"
@@ -669,6 +652,12 @@ jobs:
           WORKFLOW_DEADLINE_UTC: ${{ steps.workflow-budget.outputs.deadline_utc }}
         run: |
           set -euo pipefail
+
+          if ! command -v nix >/dev/null 2>&1 || ! command -v nix-store >/dev/null 2>&1; then
+            echo "::error::nix and nix-store must be available before starting the full E2E suite"
+            echo "PATH=$PATH"
+            exit 1
+          fi
 
           if ! [[ "${E2E_TIMEOUT_SECONDS:-}" =~ ^[0-9]+$ ]]; then
             echo "::error::E2E timeout budget is missing or invalid: '${E2E_TIMEOUT_SECONDS:-}'"
