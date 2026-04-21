@@ -460,11 +460,155 @@ jobs:
     runs-on: ${{ needs.create-runner.outputs.label }}
     timeout-minutes: 360
     steps:
+      - name: Normalize self-hosted runner environment
+        run: |
+          set -euo pipefail
+
+          ensure_writable_dir() {
+            local dir="$1"
+            local probe_path
+
+            [[ -n "$dir" && "$dir" == /* ]] || return 1
+            mkdir -p "$dir"
+            probe_path="$dir/.github-actions-home-write-test.$$"
+            : > "$probe_path"
+            rm -f "$probe_path"
+          }
+
+          uid="$(id -u)"
+          passwd_entry=""
+
+          if command -v getent >/dev/null 2>&1; then
+            passwd_entry="$(getent passwd "$uid" || true)"
+          fi
+
+          if [[ -z "$passwd_entry" ]] && command -v python3 >/dev/null 2>&1; then
+            passwd_entry="$(python3 -c 'import os, pwd, sys; entry = pwd.getpwuid(os.getuid()); fields = [entry.pw_name, entry.pw_passwd or "x", str(entry.pw_uid), str(entry.pw_gid), entry.pw_gecos, entry.pw_dir, entry.pw_shell]; print(":".join(fields))' || true)"
+          fi
+
+          if [[ -z "$passwd_entry" ]]; then
+            echo "::error::Failed to resolve passwd entry for uid ${uid}; cannot normalize HOME."
+            exit 1
+          fi
+
+          IFS=: read -r passwd_user _ _ _ _ passwd_home passwd_shell <<< "$passwd_entry"
+
+          if [[ -z "$passwd_home" || "$passwd_home" != /* ]]; then
+            echo "::error::Passwd-derived HOME is missing or invalid: '${passwd_home:-}'"
+            exit 1
+          fi
+
+          current_home="${HOME:-}"
+
+          if ! ensure_writable_dir "$passwd_home"; then
+            echo "::error::Unable to determine a writable HOME from passwd. Current HOME='${current_home:-}', passwd HOME='${passwd_home}'."
+            exit 1
+          fi
+
+          normalized_home="$passwd_home"
+
+          user_was_missing=false
+          effective_user="${USER:-}"
+          if [[ -z "$effective_user" && -n "$passwd_user" ]]; then
+            effective_user="$passwd_user"
+            user_was_missing=true
+          fi
+
+          shell_was_missing=false
+          effective_shell="${SHELL:-}"
+          if [[ -z "$effective_shell" && -n "$passwd_shell" && "$passwd_shell" == /* ]]; then
+            effective_shell="$passwd_shell"
+            shell_was_missing=true
+          fi
+
+          export HOME="$normalized_home"
+          if [[ -n "$effective_user" ]]; then
+            export USER="$effective_user"
+          fi
+          if [[ -n "$effective_shell" ]]; then
+            export SHELL="$effective_shell"
+          fi
+
+          {
+            echo "HOME=$HOME"
+            if [[ "$user_was_missing" == "true" ]]; then
+              echo "USER=$effective_user"
+            fi
+            if [[ "$shell_was_missing" == "true" ]]; then
+              echo "SHELL=$effective_shell"
+            fi
+          } >> "$GITHUB_ENV"
+
+          echo "::group::Normalized self-hosted runner environment"
+          printf 'HOME=%s\n' "$HOME"
+          printf 'USER=%s\n' "${USER:-<unset>}"
+          printf 'SHELL=%s\n' "${SHELL:-<unset>}"
+          ls -ld "$HOME"
+          echo "::endgroup::"
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify normalized runner environment
+        run: |
+          set -euo pipefail
+
+          passwd_entry=""
+          if command -v getent >/dev/null 2>&1; then
+            passwd_entry="$(getent passwd "$(id -u)" || true)"
+          fi
+
+          echo "::group::Verify normalized runner environment"
+          printf 'HOME=%s\n' "${HOME:-<unset>}"
+          printf 'USER=%s\n' "${USER:-<unset>}"
+          printf 'SHELL=%s\n' "${SHELL:-<unset>}"
+
+          if [[ -z "${HOME:-}" ]]; then
+            echo "::error::HOME is unset after normalization."
+            exit 1
+          fi
+
+          if [[ "$HOME" != /* ]]; then
+            echo "::error::HOME must be an absolute path after normalization: '$HOME'"
+            exit 1
+          fi
+
+          if [[ ! -d "$HOME" ]]; then
+            echo "::error::HOME directory does not exist after normalization: '$HOME'"
+            exit 1
+          fi
+
+          if [[ ! -w "$HOME" ]]; then
+            echo "::error::HOME directory is not writable after normalization: '$HOME'"
+            exit 1
+          fi
+
+          if [[ -n "$passwd_entry" ]]; then
+            IFS=: read -r passwd_user _ _ _ _ passwd_home passwd_shell <<< "$passwd_entry"
+
+            if [[ "$HOME" != "$passwd_home" ]]; then
+              echo "::error::HOME does not match passwd-derived home after normalization: expected '$passwd_home', got '$HOME'"
+              exit 1
+            fi
+
+            if [[ -z "${USER:-}" && -n "$passwd_user" ]]; then
+              echo "::error::USER is unexpectedly unset after normalization."
+              exit 1
+            fi
+
+            if [[ -n "${SHELL:-}" && -n "$passwd_shell" && "$SHELL" != "$passwd_shell" ]]; then
+              echo "::warning::SHELL differs from passwd-derived shell: passwd='$passwd_shell' env='$SHELL'"
+            fi
+          fi
+
+          echo "passwd entry for current uid"
+          printf '%s\n' "${passwd_entry:-<unavailable>}"
+          echo "directory details"
+          ls -ld "$HOME"
+          echo "::endgroup::"
 
       - name: Install Nix
         uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b
@@ -478,11 +622,14 @@ jobs:
             sandbox = true
             accept-flake-config = false
 
-      - name: Verify Nix installation
+      - name: Verify normalized runner environment and Nix installation
         run: |
           set -euo pipefail
 
-          echo "::group::Verify Nix installation"
+          echo "::group::Verify normalized runner environment and Nix installation"
+          printf 'HOME=%s\n' "${HOME:-<unset>}"
+          printf 'USER=%s\n' "${USER:-<unset>}"
+          printf 'SHELL=%s\n' "${SHELL:-<unset>}"
           echo "PATH=$PATH"
 
           echo "nix path: $(command -v nix)"
