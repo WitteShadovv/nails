@@ -1,0 +1,621 @@
+name: Full E2E Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'nails-core/**'
+      - 'nails-cli/**'
+      - 'nix/**'
+      - 'scripts/run-e2e-tests.sh'
+      - '.github/workflows/e2e-tests.yml'
+      - '.github/workflows/e2e-tests-full.yml'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  push:
+    branches: [main]
+    paths:
+      - 'nails-core/**'
+      - 'nails-cli/**'
+      - 'nix/**'
+      - 'scripts/run-e2e-tests.sh'
+      - '.github/workflows/e2e-tests.yml'
+      - '.github/workflows/e2e-tests-full.yml'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  NIX_SETUP_SCRIPT: | # pragma: allowlist secret
+    set -euo pipefail
+    INSTALLER_URL='https://install.determinate.systems/nix'
+    INSTALLER_SHA256='1de1a9ddba23464d037aea82a16ca6cc800e1b06eda67c8007560ab6c56afdb7' # pragma: allowlist secret
+    NIX_INSTALLER_BINARY_ROOT='https://install.determinate.systems/nix/tag/v3.17.3'
+    TMP_DIR=$(mktemp -d)
+    trap 'rm -rf "$TMP_DIR"' EXIT
+    INSTALLER="$TMP_DIR/determinate-nix-installer.sh"
+    curl --proto '=https' --tlsv1.2 -sSf -L "$INSTALLER_URL" -o "$INSTALLER"
+    ACTUAL_SHA256=$(sha256sum "$INSTALLER" | awk '{print $1}')
+    if [ "$ACTUAL_SHA256" != "$INSTALLER_SHA256" ]; then
+      echo "Determinate installer checksum mismatch: expected $INSTALLER_SHA256 got $ACTUAL_SHA256" >&2
+      exit 1
+    fi
+    chmod 0755 "$INSTALLER"
+    NIX_INSTALLER_BINARY_ROOT="$NIX_INSTALLER_BINARY_ROOT" sh "$INSTALLER" install --no-confirm
+    mkdir -p /etc/nix
+    cat > /etc/nix/nix.conf << 'NIXCONF'
+    experimental-features = nix-command flakes
+    system-features = nixos-test benchmark big-parallel kvm
+    max-jobs = auto
+    cores = 0
+    sandbox = true
+    accept-flake-config = false
+    NIXCONF
+    systemctl restart nix-daemon
+    for bin in /nix/var/nix/profiles/default/bin/*; do
+      ln -sf "$bin" /usr/local/bin/
+    done
+
+jobs:
+  trust-gate:
+    name: Trust gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      trusted: ${{ steps.gate.outputs.trusted }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - name: Determine whether this run may use the Hetzner runner
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+        run: |
+          set -euo pipefail
+
+          trusted=false
+          reason=""
+
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            trusted=true
+            reason="Trusted event (${EVENT_NAME}); Hetzner-backed full E2E suite is allowed."
+          elif [[ "$HEAD_REPOSITORY" == "$REPOSITORY" ]]; then
+            trusted=true
+            reason="Trusted same-repository pull request; Hetzner-backed full E2E suite is allowed."
+          else
+            reason="Fork pull requests cannot run this workflow because secret-backed self-hosted Hetzner runners are unsafe in untrusted contexts. Use a same-repository PR for a passing in-PR check, or ask a maintainer to run workflow_dispatch separately for trusted manual validation."
+          fi
+
+          {
+            echo "trusted=${trusted}"
+            echo "reason<<EOF"
+            printf '%s\n' "$reason"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            cat <<'EOF'
+          ## Trust gate
+
+          | Property | Value |
+          |---|---|
+          EOF
+            printf "| Event | \`%s\` |\n" "$EVENT_NAME"
+            printf "| Trusted | \`%s\` |\n" "$trusted"
+            printf "| Reason | %s |\n" "$reason"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  create-runner:
+    name: Provision Hetzner runner
+    needs: trust-gate
+    if: needs.trust-gate.outputs.trusted == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      HCLOUD_SSH_KEY_ID_EFFECTIVE: ${{ secrets.HCLOUD_SSH_KEY_ID || vars.HCLOUD_SSH_KEY_ID }}
+    outputs:
+      label: ${{ steps.determine-combo.outputs.label }}
+      server_id: ${{ steps.determine-combo.outputs.server_id }}
+      server_type: ${{ steps.determine-combo.outputs.server_type }}
+      location: ${{ steps.determine-combo.outputs.location }}
+    steps:
+      - name: Validate Hetzner runner secrets
+        env:
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: | # pragma: allowlist secret
+          set -euo pipefail
+
+          missing=0
+
+          if [[ -z "${PERSONAL_ACCESS_TOKEN:-}" ]]; then
+            echo "::error::PERSONAL_ACCESS_TOKEN is required to register the ephemeral self-hosted runner."
+            missing=1
+          fi
+
+          if [[ -z "${HCLOUD_TOKEN:-}" ]]; then
+            echo "::error::HCLOUD_TOKEN is required to create and delete Hetzner servers."
+            missing=1
+          fi
+
+          if [[ -z "${HCLOUD_SSH_KEY_ID_EFFECTIVE:-}" ]]; then
+            echo "::error::HCLOUD_SSH_KEY_ID is required for Hetzner runner provisioning. Configure it as a repository secret or repository variable."
+            missing=1
+          fi
+
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: "Try combo 1: ccx33 @ nbg1"
+        id: combo-1
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: ccx33
+          location: nbg1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
+
+      - name: "Try combo 2: ccx33 @ hel1"
+        id: combo-2
+        if: steps.combo-1.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: ccx33
+          location: hel1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
+
+      - name: "Try combo 3: ccx33 @ fsn1"
+        id: combo-3
+        if: steps.combo-1.outcome == 'failure' && steps.combo-2.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: ccx33
+          location: fsn1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
+
+      - name: "Try combo 4: ccx23 @ nbg1"
+        id: combo-4
+        if: >-
+          steps.combo-1.outcome == 'failure' &&
+          steps.combo-2.outcome == 'failure' &&
+          steps.combo-3.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: ccx23
+          location: nbg1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
+
+      - name: "Try combo 5: ccx23 @ hel1"
+        id: combo-5
+        if: >-
+          steps.combo-1.outcome == 'failure' &&
+          steps.combo-2.outcome == 'failure' &&
+          steps.combo-3.outcome == 'failure' &&
+          steps.combo-4.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: ccx23
+          location: hel1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
+
+      - name: "Try combo 6: ccx23 @ fsn1"
+        id: combo-6
+        if: >-
+          steps.combo-1.outcome == 'failure' &&
+          steps.combo-2.outcome == 'failure' &&
+          steps.combo-3.outcome == 'failure' &&
+          steps.combo-4.outcome == 'failure' &&
+          steps.combo-5.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: ccx23
+          location: fsn1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
+
+      - name: "Try combo 7: cpx41 @ nbg1"
+        id: combo-7
+        if: >-
+          steps.combo-1.outcome == 'failure' &&
+          steps.combo-2.outcome == 'failure' &&
+          steps.combo-3.outcome == 'failure' &&
+          steps.combo-4.outcome == 'failure' &&
+          steps.combo-5.outcome == 'failure' &&
+          steps.combo-6.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: cpx41
+          location: nbg1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
+
+      - name: "Try combo 8: cpx41 @ hel1"
+        id: combo-8
+        if: >-
+          steps.combo-1.outcome == 'failure' &&
+          steps.combo-2.outcome == 'failure' &&
+          steps.combo-3.outcome == 'failure' &&
+          steps.combo-4.outcome == 'failure' &&
+          steps.combo-5.outcome == 'failure' &&
+          steps.combo-6.outcome == 'failure' &&
+          steps.combo-7.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: cpx41
+          location: hel1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
+
+      - name: "Try combo 9: cpx41 @ fsn1"
+        id: combo-9
+        if: >-
+          steps.combo-1.outcome == 'failure' &&
+          steps.combo-2.outcome == 'failure' &&
+          steps.combo-3.outcome == 'failure' &&
+          steps.combo-4.outcome == 'failure' &&
+          steps.combo-5.outcome == 'failure' &&
+          steps.combo-6.outcome == 'failure' &&
+          steps.combo-7.outcome == 'failure' &&
+          steps.combo-8.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: cpx41
+          location: fsn1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
+
+      - name: Determine successful combo
+        id: determine-combo
+        run: |
+          set -euo pipefail
+          echo "::group::Evaluating combo results"
+
+          combos=(
+            "combo-1|ccx33|nbg1"
+            "combo-2|ccx33|hel1"
+            "combo-3|ccx33|fsn1"
+            "combo-4|ccx23|nbg1"
+            "combo-5|ccx23|hel1"
+            "combo-6|ccx23|fsn1"
+            "combo-7|cpx41|nbg1"
+            "combo-8|cpx41|hel1"
+            "combo-9|cpx41|fsn1"
+          )
+
+          outcomes=(
+            "${{ steps.combo-1.outcome }}"
+            "${{ steps.combo-2.outcome }}"
+            "${{ steps.combo-3.outcome }}"
+            "${{ steps.combo-4.outcome }}"
+            "${{ steps.combo-5.outcome }}"
+            "${{ steps.combo-6.outcome }}"
+            "${{ steps.combo-7.outcome }}"
+            "${{ steps.combo-8.outcome }}"
+            "${{ steps.combo-9.outcome }}"
+          )
+
+          labels=(
+            "${{ steps.combo-1.outputs.label }}"
+            "${{ steps.combo-2.outputs.label }}"
+            "${{ steps.combo-3.outputs.label }}"
+            "${{ steps.combo-4.outputs.label }}"
+            "${{ steps.combo-5.outputs.label }}"
+            "${{ steps.combo-6.outputs.label }}"
+            "${{ steps.combo-7.outputs.label }}"
+            "${{ steps.combo-8.outputs.label }}"
+            "${{ steps.combo-9.outputs.label }}"
+          )
+
+          server_ids=(
+            "${{ steps.combo-1.outputs.server_id }}"
+            "${{ steps.combo-2.outputs.server_id }}"
+            "${{ steps.combo-3.outputs.server_id }}"
+            "${{ steps.combo-4.outputs.server_id }}"
+            "${{ steps.combo-5.outputs.server_id }}"
+            "${{ steps.combo-6.outputs.server_id }}"
+            "${{ steps.combo-7.outputs.server_id }}"
+            "${{ steps.combo-8.outputs.server_id }}"
+            "${{ steps.combo-9.outputs.server_id }}"
+          )
+
+          found=false
+          for i in "${!combos[@]}"; do
+            IFS='|' read -r step_id server_type location <<< "${combos[$i]}"
+            outcome="${outcomes[$i]}"
+            echo "  $step_id ($server_type @ $location): $outcome"
+
+            if [[ "$outcome" == "success" && "$found" == "false" ]]; then
+              found=true
+              {
+                echo "label=${labels[$i]}"
+                echo "server_id=${server_ids[$i]}"
+                echo "server_type=$server_type"
+                echo "location=$location"
+              } >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+          echo "::endgroup::"
+
+          if [[ "$found" == "false" ]]; then
+            echo "::error::All Hetzner server fallback combinations failed."
+            exit 1
+          fi
+
+      - name: Cleanup orphaned servers from failed combos
+        if: always()
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: | # pragma: allowlist secret
+          set -euo pipefail
+          [[ -n "${HCLOUD_TOKEN:-}" ]] && echo "::add-mask::$HCLOUD_TOKEN"
+          echo "::group::Cleaning up orphaned Hetzner servers"
+
+          KEEP_SERVER_ID="${{ steps.determine-combo.outputs.server_id }}"
+          all_server_ids=(
+            "${{ steps.combo-1.outputs.server_id }}"
+            "${{ steps.combo-2.outputs.server_id }}"
+            "${{ steps.combo-3.outputs.server_id }}"
+            "${{ steps.combo-4.outputs.server_id }}"
+            "${{ steps.combo-5.outputs.server_id }}"
+            "${{ steps.combo-6.outputs.server_id }}"
+            "${{ steps.combo-7.outputs.server_id }}"
+            "${{ steps.combo-8.outputs.server_id }}"
+            "${{ steps.combo-9.outputs.server_id }}"
+          )
+
+          failed_deletions=()
+
+          for sid in "${all_server_ids[@]}"; do
+            if [[ -z "$sid" || "$sid" == "$KEEP_SERVER_ID" ]]; then
+              continue
+            fi
+
+            echo "Deleting orphaned server $sid"
+            deleted=false
+            for attempt in 1 2 3; do
+              http_code=$({
+                printf '%s\n' "header = \"Authorization: Bearer $HCLOUD_TOKEN\""
+              } | curl -s --connect-timeout 10 --max-time 30 -X DELETE \
+                --config - \
+                "https://api.hetzner.cloud/v1/servers/$sid" \
+                -o /dev/null -w "%{http_code}")
+              if [[ "$http_code" =~ ^(200|204|404)$ ]]; then
+                echo "  HTTP $http_code on attempt $attempt"
+                deleted=true
+                break
+              fi
+              echo "  HTTP $http_code on attempt $attempt; retrying in 5s"
+              sleep 5
+            done
+
+            if [[ "$deleted" != "true" ]]; then
+              failed_deletions+=("$sid")
+            fi
+          done
+
+          echo "::endgroup::"
+
+          if (( ${#failed_deletions[@]} > 0 )); then
+            printf '::error::Failed to delete orphaned Hetzner servers: %s\n' "${failed_deletions[*]}"
+            exit 1
+          fi
+
+  run-full-e2e:
+    name: Run full E2E suite
+    needs: [trust-gate, create-runner]
+    if: needs.trust-gate.outputs.trusted == 'true' && needs.create-runner.result == 'success'
+    runs-on: ${{ needs.create-runner.outputs.label }}
+    timeout-minutes: 420
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Activate provisioned Nix
+        run: |
+          # shellcheck disable=SC2016
+          set -euo pipefail
+          NIX_BIN_DIR="/nix/var/nix/profiles/default/bin"
+
+          if ! command -v nix >/dev/null 2>&1; then
+            echo "$NIX_BIN_DIR" >> "$GITHUB_PATH"
+            export PATH="$NIX_BIN_DIR:$PATH"
+          fi
+
+          if ! command -v nix >/dev/null 2>&1; then
+            echo "::error::nix is unavailable after activating the provisioned runner environment"
+            exit 1
+          fi
+
+          nix --version
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c
+        with:
+          name: nix-community
+          skipPush: true
+
+      - name: Run full E2E suite
+        run: ./scripts/run-e2e-tests.sh --verbose all
+
+      - name: Upload test results as artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: full-e2e-test-results
+          path: |
+            **/*.log
+          retention-days: 30
+
+      - name: Upload performance metrics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: full-e2e-performance-metrics
+          path: |
+            **/performance.txt
+            **/metrics.json
+          retention-days: 30
+
+  delete-runner:
+    name: Delete Hetzner runner
+    needs: [create-runner, run-full-e2e]
+    if: always() && needs.create-runner.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Delete Hetzner Cloud runner
+        if: needs.create-runner.outputs.server_id != ''
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: delete
+          delete_wait: '90'
+          name: ${{ needs.create-runner.outputs.label }}
+          server_id: ${{ needs.create-runner.outputs.server_id }}
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+
+  full-e2e-result:
+    name: Full E2E Result
+    needs: [trust-gate, create-runner, run-full-e2e, delete-runner]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check workflow outcome
+        env:
+          TRUSTED: ${{ needs.trust-gate.outputs.trusted }}
+          TRUST_REASON: ${{ needs.trust-gate.outputs.reason }}
+          CREATE_RESULT: ${{ needs.create-runner.result }}
+          RUN_RESULT: ${{ needs.run-full-e2e.result }}
+          DELETE_RESULT: ${{ needs.delete-runner.result }}
+        run: |
+          set -euo pipefail
+
+          {
+            cat <<'EOF'
+          ## Full E2E workflow result
+
+          | Job | Result |
+          |---|---|
+          EOF
+            printf "| Trust gate | \`%s\` |\n" "${TRUSTED}"
+            printf "| Provision Hetzner runner | \`%s\` |\n" "${CREATE_RESULT}"
+            printf "| Run full E2E suite | \`%s\` |\n" "${RUN_RESULT}"
+            printf "| Delete Hetzner runner | \`%s\` |\n" "${DELETE_RESULT}"
+            printf "\n%s\n" "${TRUST_REASON}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$TRUSTED" != "true" ]]; then
+            echo "::error::${TRUST_REASON}"
+            exit 1
+          fi
+
+          if [[ "$CREATE_RESULT" != "success" ]]; then
+            echo "::error::Hetzner runner provisioning failed."
+            exit 1
+          fi
+
+          if [[ "$RUN_RESULT" != "success" ]]; then
+            echo "::error::Full E2E suite failed or did not complete successfully."
+            exit 1
+          fi
+
+          if [[ "$DELETE_RESULT" != "success" ]]; then
+            echo "::error::Hetzner runner cleanup failed. Check for orphaned infrastructure."
+            exit 1
+          fi
+
+          echo "Full E2E workflow completed successfully."
