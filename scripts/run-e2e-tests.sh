@@ -19,10 +19,24 @@ NC='\033[0m'
 
 AVAILABLE_TARGETS=()
 LEAF_TESTS=()
+declare -A LEAF_TEST_NODE_COUNTS=()
 SYSTEM="${NAILS_E2E_SYSTEM:-$(nix eval --impure --raw --expr builtins.currentSystem)}"
 INTERACTIVE=false
 VERBOSE=false
 DRY_RUN=false
+SHARD_INDEX=""
+SHARD_COUNT=""
+E2E_METADATA_JSON=""
+HOST_CPU_COUNT=""
+VM_CPU_PLAN_MODE=""
+VM_CPU_PLAN_HOST_CORES=""
+VM_CPU_PLAN_TARGET_PERCENT=""
+VM_CPU_PLAN_RESERVED_CORES=""
+VM_CPU_PLAN_MIN_CORES=""
+VM_CPU_PLAN_MAX_CORES=""
+VM_CPU_PLAN_NODE_COUNT=""
+VM_CPU_PLAN_TOTAL_BUDGET=""
+VM_CPU_PLAN_PER_VM_CORES=""
 
 describe_target() {
     case "$1" in
@@ -48,6 +62,7 @@ describe_target() {
 
 load_e2e_metadata() {
     local metadata_json
+    local metadata_entry_name metadata_entry_count
 
     metadata_json="$({
         cd "$PROJECT_ROOT"
@@ -76,7 +91,205 @@ for name in payload["leafTests"]:
 PY
     )
 
+    LEAF_TEST_NODE_COUNTS=()
+    while IFS=$'\t' read -r metadata_entry_name metadata_entry_count; do
+        [[ -n "$metadata_entry_name" ]] || continue
+        LEAF_TEST_NODE_COUNTS["$metadata_entry_name"]="$metadata_entry_count"
+    done < <(
+        python3 - <<'PY' "$metadata_json"
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+for name in payload["leafTests"]:
+    print(f"{name}\t{payload['nodeCounts'].get(name, 1)}")
+PY
+    )
+
     E2E_METADATA_JSON="$metadata_json"
+}
+
+leaf_test_node_count() {
+    local candidate="$1"
+
+    if [[ -n "${LEAF_TEST_NODE_COUNTS[$candidate]+x}" ]]; then
+        printf '%s\n' "${LEAF_TEST_NODE_COUNTS[$candidate]}"
+    else
+        printf '%s\n' "1"
+    fi
+}
+
+warn_invalid_env_default() {
+    local env_name="$1"
+    local env_value="$2"
+    local default_value="$3"
+
+    printf '%s\n' "Warning: ignoring invalid ${env_name}=${env_value@Q}; using ${default_value}." >&2
+}
+
+positive_integer_from_env_or_default() {
+    local env_name="$1"
+    local default_value="$2"
+    local env_value="${!env_name:-}"
+
+    if [[ -z "$env_value" ]]; then
+        printf '%s\n' "$default_value"
+        return 0
+    fi
+
+    if [[ "$env_value" =~ ^[1-9][0-9]*$ ]]; then
+        printf '%s\n' "$env_value"
+        return 0
+    fi
+
+    warn_invalid_env_default "$env_name" "$env_value" "$default_value"
+    printf '%s\n' "$default_value"
+}
+
+percentage_from_env_or_default() {
+    local env_name="$1"
+    local default_value="$2"
+    local env_value="${!env_name:-}"
+
+    if [[ -z "$env_value" ]]; then
+        printf '%s\n' "$default_value"
+        return 0
+    fi
+
+    if [[ "$env_value" =~ ^([1-9][0-9]?|100)$ ]]; then
+        printf '%s\n' "$env_value"
+        return 0
+    fi
+
+    warn_invalid_env_default "$env_name" "$env_value" "$default_value"
+    printf '%s\n' "$default_value"
+}
+
+detect_host_cpu_count() {
+    local detected=""
+
+    if [[ -n "$HOST_CPU_COUNT" ]]; then
+        printf '%s\n' "$HOST_CPU_COUNT"
+        return 0
+    fi
+
+    if [[ -n "${NAILS_E2E_HOST_CPU_COUNT_OVERRIDE:-}" ]]; then
+        if [[ "${NAILS_E2E_HOST_CPU_COUNT_OVERRIDE}" =~ ^[1-9][0-9]*$ ]]; then
+            HOST_CPU_COUNT="$NAILS_E2E_HOST_CPU_COUNT_OVERRIDE"
+            printf '%s\n' "$HOST_CPU_COUNT"
+            return 0
+        fi
+
+        echo -e "${RED}Error: NAILS_E2E_HOST_CPU_COUNT_OVERRIDE must be a positive integer${NC}" >&2
+        exit 1
+    fi
+
+    if command -v nproc >/dev/null 2>&1; then
+        detected="$(nproc)"
+    elif command -v getconf >/dev/null 2>&1; then
+        detected="$(getconf _NPROCESSORS_ONLN)"
+    fi
+
+    if ! [[ "$detected" =~ ^[1-9][0-9]*$ ]]; then
+        detected="4"
+    fi
+
+    HOST_CPU_COUNT="$detected"
+    printf '%s\n' "$HOST_CPU_COUNT"
+}
+
+compute_vm_cpu_plan() {
+    local node_count="${1:-1}"
+    local explicit_vm_cores="${NAILS_E2E_VM_CORES:-}"
+    local host_cores target_percent reserved_cores min_cores max_cores
+    local percent_budget reserved_budget total_budget per_vm_cores
+
+    # Auto-sizing defaults are intentionally conservative: target ~90% of the
+    # CPUs visible to the runner, always leave some host headroom when possible,
+    # then divide that budget across all VMs declared by the selected test.
+    # Optional overrides:
+    #   NAILS_E2E_VM_CORES                Force a fixed per-VM core count
+    #   NAILS_E2E_HOST_CPU_COUNT_OVERRIDE Override detected runner CPU count
+    #   NAILS_E2E_VM_CPU_TARGET_PERCENT   Default 90
+    #   NAILS_E2E_VM_HOST_RESERVED_CORES  Default 2
+    #   NAILS_E2E_VM_MIN_CORES            Default 1
+    #   NAILS_E2E_VM_MAX_CORES            Default 16
+
+    if ! [[ "$node_count" =~ ^[1-9][0-9]*$ ]]; then
+        node_count="1"
+    fi
+
+    host_cores="$(detect_host_cpu_count)"
+
+    if [[ -n "$explicit_vm_cores" ]]; then
+        if ! [[ "$explicit_vm_cores" =~ ^[1-9][0-9]*$ ]]; then
+            echo -e "${RED}Error: NAILS_E2E_VM_CORES must be a positive integer when set${NC}" >&2
+            exit 1
+        fi
+
+        VM_CPU_PLAN_MODE="override"
+        VM_CPU_PLAN_HOST_CORES="$host_cores"
+        VM_CPU_PLAN_TARGET_PERCENT="n/a"
+        VM_CPU_PLAN_RESERVED_CORES="n/a"
+        VM_CPU_PLAN_MIN_CORES="n/a"
+        VM_CPU_PLAN_MAX_CORES="n/a"
+        VM_CPU_PLAN_NODE_COUNT="$node_count"
+        VM_CPU_PLAN_TOTAL_BUDGET="$((explicit_vm_cores * node_count))"
+        VM_CPU_PLAN_PER_VM_CORES="$explicit_vm_cores"
+        return 0
+    fi
+
+    target_percent="$(percentage_from_env_or_default "NAILS_E2E_VM_CPU_TARGET_PERCENT" "90")"
+    reserved_cores="$(positive_integer_from_env_or_default "NAILS_E2E_VM_HOST_RESERVED_CORES" "2")"
+    min_cores="$(positive_integer_from_env_or_default "NAILS_E2E_VM_MIN_CORES" "1")"
+    max_cores="$(positive_integer_from_env_or_default "NAILS_E2E_VM_MAX_CORES" "16")"
+
+    if (( min_cores > max_cores )); then
+        warn_invalid_env_default "NAILS_E2E_VM_MIN_CORES/NAILS_E2E_VM_MAX_CORES" "${min_cores}/${max_cores}" "1/${max_cores}"
+        min_cores="1"
+    fi
+
+    percent_budget=$(( host_cores * target_percent / 100 ))
+    if (( percent_budget < 1 )); then
+        percent_budget=1
+    fi
+
+    reserved_budget=$(( host_cores - reserved_cores ))
+    if (( reserved_budget < 1 )); then
+        reserved_budget=1
+    fi
+
+    total_budget="$percent_budget"
+    if (( reserved_budget < total_budget )); then
+        total_budget="$reserved_budget"
+    fi
+
+    per_vm_cores=$(( total_budget / node_count ))
+    if (( per_vm_cores < 1 )); then
+        per_vm_cores=1
+    fi
+
+    if (( per_vm_cores < min_cores )); then
+        per_vm_cores="$min_cores"
+    fi
+
+    if (( per_vm_cores > max_cores )); then
+        per_vm_cores="$max_cores"
+    fi
+
+    if (( per_vm_cores > host_cores )); then
+        per_vm_cores="$host_cores"
+    fi
+
+    VM_CPU_PLAN_MODE="auto"
+    VM_CPU_PLAN_HOST_CORES="$host_cores"
+    VM_CPU_PLAN_TARGET_PERCENT="$target_percent"
+    VM_CPU_PLAN_RESERVED_CORES="$reserved_cores"
+    VM_CPU_PLAN_MIN_CORES="$min_cores"
+    VM_CPU_PLAN_MAX_CORES="$max_cores"
+    VM_CPU_PLAN_NODE_COUNT="$node_count"
+    VM_CPU_PLAN_TOTAL_BUDGET="$total_budget"
+    VM_CPU_PLAN_PER_VM_CORES="$per_vm_cores"
 }
 
 leaf_test_exists() {
@@ -157,6 +370,8 @@ print_usage() {
     echo "  -v, --verbose           More verbose output"
     echo "      --dry-run           Print final resolved leaf tests without running"
     echo "      --resolve-only      Alias for --dry-run"
+    echo "      --shard-index N     Run only shard N (1-based) of the resolved tests"
+    echo "      --shard-count N     Total number of deterministic shards"
     echo ""
     echo "Arguments:"
     echo "  TEST_NAME               Run specific test(s), tag groups, or suite targets"
@@ -170,8 +385,46 @@ print_usage() {
     echo "  $0 smoke security          # Expand groups and run sequentially"
     echo "  $0 ci                       # Expand CI suite and run leaf tests"
     echo "  $0 --dry-run all           # Print resolved leaf tests"
+    echo "  $0 --shard-index 2 --shard-count 4 all"
     echo "  $0 -i basic-workflow        # Interactive one-test run"
     echo ""
+}
+
+option_requires_value() {
+    local option_name="$1"
+    local option_value="${2:-}"
+
+    if [[ -z "$option_value" || "$option_value" == -* ]]; then
+        echo -e "${RED}Error: $option_name requires a value${NC}" >&2
+        print_usage
+        exit 1
+    fi
+}
+
+validate_shard_configuration() {
+    if [[ -z "$SHARD_INDEX" && -z "$SHARD_COUNT" ]]; then
+        return 0
+    fi
+
+    if [[ -z "$SHARD_INDEX" || -z "$SHARD_COUNT" ]]; then
+        echo -e "${RED}Error: --shard-index and --shard-count must be provided together${NC}" >&2
+        exit 1
+    fi
+
+    if ! [[ "$SHARD_INDEX" =~ ^[1-9][0-9]*$ ]]; then
+        echo -e "${RED}Error: --shard-index must be a positive integer${NC}" >&2
+        exit 1
+    fi
+
+    if ! [[ "$SHARD_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+        echo -e "${RED}Error: --shard-count must be a positive integer${NC}" >&2
+        exit 1
+    fi
+
+    if (( SHARD_INDEX > SHARD_COUNT )); then
+        echo -e "${RED}Error: --shard-index must be less than or equal to --shard-count${NC}" >&2
+        exit 1
+    fi
 }
 
 list_tests() {
@@ -196,9 +449,31 @@ print_resolved_tests() {
     done
 }
 
+select_shard_tests() {
+    local tests=("$@")
+    local selected_tests=()
+    local test_name
+    local index
+
+    if [[ -z "$SHARD_INDEX" || -z "$SHARD_COUNT" ]]; then
+        print_resolved_tests "${tests[@]}"
+        return 0
+    fi
+
+    for index in "${!tests[@]}"; do
+        test_name="${tests[$index]}"
+        if (( (index % SHARD_COUNT) + 1 == SHARD_INDEX )); then
+            selected_tests+=("$test_name")
+        fi
+    done
+
+    print_resolved_tests "${selected_tests[@]}"
+}
+
 run_single_test() {
     local test_name="$1"
     local start_time end_time duration target
+    local node_count
 
     if ! leaf_test_exists "$test_name"; then
         echo -e "${RED}Unknown leaf E2E test: $test_name${NC}" >&2
@@ -206,8 +481,15 @@ run_single_test() {
     fi
 
     target=".#checks.$SYSTEM.e2e-$test_name"
+    node_count="$(leaf_test_node_count "$test_name")"
+    compute_vm_cpu_plan "$node_count"
 
     echo -e "${YELLOW}Running: $test_name${NC}"
+    if [[ "$VM_CPU_PLAN_MODE" == "override" ]]; then
+        echo -e "${YELLOW}  VM CPU plan:${NC} override=${VM_CPU_PLAN_PER_VM_CORES} core(s)/VM across ${VM_CPU_PLAN_NODE_COUNT} node(s) on a ${VM_CPU_PLAN_HOST_CORES}-CPU host."
+    else
+        echo -e "${YELLOW}  VM CPU plan:${NC} host=${VM_CPU_PLAN_HOST_CORES}, target=${VM_CPU_PLAN_TARGET_PERCENT}%, reserve=${VM_CPU_PLAN_RESERVED_CORES}, nodes=${VM_CPU_PLAN_NODE_COUNT}, guest-budget=${VM_CPU_PLAN_TOTAL_BUDGET}, per-vm=${VM_CPU_PLAN_PER_VM_CORES} (bounds ${VM_CPU_PLAN_MIN_CORES}-${VM_CPU_PLAN_MAX_CORES})."
+    fi
     start_time=$(date +%s)
 
     local nix_args=(build "$target" --no-link)
@@ -215,7 +497,7 @@ run_single_test() {
         nix_args+=(-L)
     fi
 
-    if nix "${nix_args[@]}"; then
+    if NAILS_E2E_VM_CORES="$VM_CPU_PLAN_PER_VM_CORES" nix "${nix_args[@]}"; then
         end_time=$(date +%s)
         duration=$((end_time - start_time))
         echo -e "${GREEN}  PASS${NC} $test_name (${duration}s)"
@@ -238,6 +520,9 @@ run_tests() {
 
     print_header
     echo -e "${YELLOW}Running ${#tests[@]} resolved leaf test(s)...${NC}"
+    if [[ -n "$SHARD_INDEX" && -n "$SHARD_COUNT" ]]; then
+        echo -e "${YELLOW}Shard ${SHARD_INDEX}/${SHARD_COUNT} selected deterministically by resolved test order.${NC}"
+    fi
     echo ""
 
     cd "$PROJECT_ROOT"
@@ -327,6 +612,16 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --shard-index)
+            option_requires_value "$1" "${2:-}"
+            SHARD_INDEX="$2"
+            shift 2
+            ;;
+        --shard-count)
+            option_requires_value "$1" "${2:-}"
+            SHARD_COUNT="$2"
+            shift 2
+            ;;
         -*)
             echo -e "${RED}Error: Unknown option: $1${NC}" >&2
             print_usage
@@ -339,7 +634,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+validate_shard_configuration
+
 if [ "$INTERACTIVE" = true ]; then
+    if [[ -n "$SHARD_INDEX" || -n "$SHARD_COUNT" ]]; then
+        echo -e "${RED}Error: sharding is not supported with --interactive${NC}" >&2
+        exit 1
+    fi
     run_interactive "${TEST_NAMES[0]:-}"
     exit 0
 fi
@@ -352,6 +653,18 @@ mapfile -t RESOLVED_TESTS < <(resolve_targets "${TEST_NAMES[@]}")
 
 if [ "${#RESOLVED_TESTS[@]}" -eq 0 ]; then
     echo -e "${RED}No E2E tests resolved from requested targets: ${TEST_NAMES[*]}${NC}" >&2
+    exit 1
+fi
+
+mapfile -t RESOLVED_TESTS < <(select_shard_tests "${RESOLVED_TESTS[@]}")
+
+if [ "${#RESOLVED_TESTS[@]}" -eq 0 ]; then
+    if [[ -n "$SHARD_INDEX" && -n "$SHARD_COUNT" ]]; then
+        echo -e "${YELLOW}No tests assigned to shard ${SHARD_INDEX}/${SHARD_COUNT}; nothing to run.${NC}"
+        exit 0
+    fi
+
+    echo -e "${RED}No E2E tests resolved from requested targets after sharding: ${TEST_NAMES[*]}${NC}" >&2
     exit 1
 fi
 
