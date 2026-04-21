@@ -492,7 +492,11 @@ run_single_test() {
     fi
     start_time=$(date +%s)
 
-    local nix_args=(build "$target" --no-link)
+    # nix/e2e-tests/lib/vm-config.nix intentionally reads NAILS_E2E_VM_CORES
+    # via builtins.getEnv, so the flake check evaluation for the actual test
+    # build must be explicitly impure for the computed per-VM core plan to take
+    # effect. Scope that impurity to the per-test build only.
+    local nix_args=(build "$target" --no-link --impure)
     if [ "$VERBOSE" = true ]; then
         nix_args+=(-L)
     fi

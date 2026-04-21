@@ -5,8 +5,10 @@
 { lib, pkgs, ... }:
 let
   # CI computes a safe per-VM core count automatically and exports it through
-  # NAILS_E2E_VM_CORES before each NixOS test build. Keep the local fallback at
-  # 4 cores so ad-hoc runs behave as they did previously.
+  # NAILS_E2E_VM_CORES before each NixOS test build. Because this value is read
+  # with builtins.getEnv, the corresponding flake build must opt into impure
+  # evaluation at that call site. Keep the local fallback at 4 cores so ad-hoc
+  # runs behave as they did previously.
   vmCoresEnv = builtins.getEnv "NAILS_E2E_VM_CORES";
   vmCores =
     if builtins.match "[1-9][0-9]*" vmCoresEnv != null then builtins.fromJSON vmCoresEnv else 4;
