@@ -36,62 +36,6 @@ concurrency:
   group: full-e2e-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
-env:
-  NIX_SETUP_SCRIPT: | # pragma: allowlist secret
-    set -euo pipefail
-    INSTALLER_URL='https://install.determinate.systems/nix'
-    INSTALLER_SHA256='1de1a9ddba23464d037aea82a16ca6cc800e1b06eda67c8007560ab6c56afdb7' # pragma: allowlist secret
-    NIX_INSTALLER_BINARY_ROOT='https://install.determinate.systems/nix/tag/v3.17.3'
-    NIX_BIN_DIR='/nix/var/nix/profiles/default/bin'
-    TMP_DIR=$(mktemp -d)
-    trap 'rm -rf "$TMP_DIR"' EXIT
-    INSTALLER="$TMP_DIR/determinate-nix-installer.sh"
-    curl --proto '=https' --tlsv1.2 -sSf -L "$INSTALLER_URL" -o "$INSTALLER"
-    ACTUAL_SHA256=$(sha256sum "$INSTALLER" | awk '{print $1}')
-    if [ "$ACTUAL_SHA256" != "$INSTALLER_SHA256" ]; then
-      echo "Determinate installer checksum mismatch: expected $INSTALLER_SHA256 got $ACTUAL_SHA256" >&2
-      exit 1
-    fi
-    chmod 0755 "$INSTALLER"
-    NIX_INSTALLER_BINARY_ROOT="$NIX_INSTALLER_BINARY_ROOT" sh "$INSTALLER" install --no-confirm
-    mkdir -p /etc/nix
-    cat > /etc/nix/nix.conf << 'NIXCONF'
-    experimental-features = nix-command flakes
-    system-features = nixos-test benchmark big-parallel kvm
-    max-jobs = auto
-    cores = 0
-    sandbox = true
-    accept-flake-config = false
-    NIXCONF
-    systemctl restart nix-daemon
-    mkdir -p /usr/local/bin
-    if [[ -d "$NIX_BIN_DIR" ]]; then
-      for bin in "$NIX_BIN_DIR"/*; do
-        [[ -e "$bin" ]] || continue
-        ln -sf "$bin" /usr/local/bin/
-      done
-    fi
-    export PATH="/usr/local/bin:$PATH"
-    if ! command -v nix >/dev/null 2>&1 || ! command -v nix-store >/dev/null 2>&1; then
-      if [[ -d "$NIX_BIN_DIR" ]]; then
-        export PATH="$NIX_BIN_DIR:$PATH"
-      fi
-      hash -r
-    fi
-    if ! command -v nix >/dev/null 2>&1 || ! command -v nix-store >/dev/null 2>&1; then
-      echo 'Determinate Nix installed, but nix commands are unavailable after activation attempts.' >&2
-      echo "PATH=$PATH" >&2
-      echo 'nix-daemon status for diagnostics:' >&2
-      systemctl status nix-daemon --no-pager 2>&1 >&2 || true
-      echo 'Listing /nix/var/nix/profiles/default for diagnostics:' >&2
-      ls -la /nix/var/nix/profiles/default 2>/dev/null >&2 || true
-      echo "Listing $NIX_BIN_DIR for diagnostics:" >&2
-      ls -la "$NIX_BIN_DIR" 2>/dev/null >&2 || true
-      echo 'Listing /usr/local/bin/nix* for diagnostics:' >&2
-      ls -la /usr/local/bin/nix* 2>/dev/null >&2 || true
-      exit 1
-    fi
-
 jobs:
   trust-gate:
     name: Trust gate
@@ -202,7 +146,6 @@ jobs:
           github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
-          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
 
       - name: "Try combo 2: ccx33 @ hel1"
         id: combo-2
@@ -220,7 +163,6 @@ jobs:
           github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
-          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
 
       - name: "Try combo 3: ccx33 @ fsn1"
         id: combo-3
@@ -238,7 +180,6 @@ jobs:
           github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
-          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
 
       - name: "Try combo 4: ccx23 @ nbg1"
         id: combo-4
@@ -259,7 +200,6 @@ jobs:
           github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
-          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
 
       - name: "Try combo 5: ccx23 @ hel1"
         id: combo-5
@@ -281,7 +221,6 @@ jobs:
           github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
-          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
 
       - name: "Try combo 6: ccx23 @ fsn1"
         id: combo-6
@@ -304,7 +243,6 @@ jobs:
           github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
-          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
 
       - name: "Try combo 7: cpx41 @ nbg1"
         id: combo-7
@@ -328,7 +266,6 @@ jobs:
           github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
-          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
 
       - name: "Try combo 8: cpx41 @ hel1"
         id: combo-8
@@ -353,7 +290,6 @@ jobs:
           github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
-          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
 
       - name: "Try combo 9: cpx41 @ fsn1"
         id: combo-9
@@ -379,7 +315,6 @@ jobs:
           github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
-          pre_runner_script: ${{ env.NIX_SETUP_SCRIPT }}
 
       - name: Determine successful combo
         id: determine-combo
@@ -531,51 +466,44 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Activate provisioned Nix
+      - name: Install Nix
+        uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b
+        with:
+          enable_kvm: true
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            system-features = nixos-test benchmark big-parallel kvm
+            max-jobs = auto
+            cores = 0
+            sandbox = true
+            accept-flake-config = false
+
+      - name: Verify Nix installation
         run: |
           set -euo pipefail
 
-          NIX_BIN_DIR="/nix/var/nix/profiles/default/bin"
+          echo "::group::Verify Nix installation"
+          echo "PATH=$PATH"
 
-          echo "::group::Activate provisioned Nix"
-
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
-          echo "$NIX_BIN_DIR" >> "$GITHUB_PATH"
-          export PATH="/usr/local/bin:$NIX_BIN_DIR:$PATH"
-          hash -r
-
-          if ! command -v nix >/dev/null 2>&1; then
-            echo "::error::nix is unavailable after PATH activation"
-            echo "PATH=$PATH"
-            echo 'nix-daemon status for diagnostics:'
-            systemctl status nix-daemon --no-pager || true
-            echo "Listing /nix/var/nix/profiles/default for diagnostics:"
-            ls -la /nix/var/nix/profiles/default 2>/dev/null || true
-            echo "Listing $NIX_BIN_DIR for diagnostics:"
-            ls -la "$NIX_BIN_DIR" 2>/dev/null || true
-            echo "Listing /usr/local/bin/nix* for diagnostics:"
-            ls -la /usr/local/bin/nix* 2>/dev/null || true
-            exit 1
-          fi
-
-          if ! command -v nix-store >/dev/null 2>&1; then
-            echo "::error::nix-store is unavailable after PATH activation"
-            echo "PATH=$PATH"
-            echo 'nix-daemon status for diagnostics:'
-            systemctl status nix-daemon --no-pager || true
-            echo "Listing /nix/var/nix/profiles/default for diagnostics:"
-            ls -la /nix/var/nix/profiles/default 2>/dev/null || true
-            echo "Listing $NIX_BIN_DIR for diagnostics:"
-            ls -la "$NIX_BIN_DIR" 2>/dev/null || true
-            echo "Listing /usr/local/bin/nix* for diagnostics:"
-            ls -la /usr/local/bin/nix* 2>/dev/null || true
-            exit 1
-          fi
-
-          echo "Activated nix: $(command -v nix)"
-          echo "Activated nix-store: $(command -v nix-store)"
+          echo "nix path: $(command -v nix)"
+          echo "nix-store path: $(command -v nix-store)"
           nix --version
           nix-store --version
+
+          echo "Listing /nix/var/nix/profiles/default/bin"
+          ls -la /nix/var/nix/profiles/default/bin || true
+
+          echo "nix-daemon status"
+          systemctl status nix-daemon --no-pager || true
+
+          echo "Relevant nix configuration"
+          nix show-config experimental-features
+          nix show-config system-features
+          nix show-config max-jobs
+          nix show-config cores
+          nix show-config sandbox
+          nix show-config accept-flake-config
+
           echo "::endgroup::"
 
       - name: Compute remaining workflow budget
