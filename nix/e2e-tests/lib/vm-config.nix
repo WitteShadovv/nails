@@ -2,7 +2,8 @@
 # Simplified: let NixOS test framework handle boot/filesystems
 # Secondary disk (/dev/vdb) is available for LUKS hidden volume testing
 
-{ lib, pkgs, ... }: {
+{ lib, pkgs, ... }:
+{
   # Virtual hardware configuration
   virtualisation = {
     memorySize = 4096; # 4GB RAM
@@ -40,6 +41,39 @@
     sleuthkit # For forensic analysis (fls, etc.)
     coreutils # Basic utilities
     util-linux # For mount operations
+  ];
+
+  # Provide a baseline /etc/nixos tree matching a normal NixOS install.
+  # Several activation/preflight tests exercise the product's current
+  # contract around base configuration discovery and hidden hardware-config
+  # bootstrapping, so the VM fixture must expose these files up front.
+  environment.etc = {
+    "nixos/configuration.nix".text = ''
+      { ... }: {
+        imports = [ /etc/nixos/hardware-configuration.nix ];
+        boot.loader.grub.enable = false;
+        documentation.nixos.enable = false;
+        fileSystems."/" = {
+          device = "/dev/disk/by-label/nixos";
+          fsType = "ext4";
+        };
+        system.stateVersion = "25.11";
+      }
+    '';
+
+    "nixos/hardware-configuration.nix".text = ''
+      { ... }: {
+        imports = [ ];
+      }
+    '';
+  };
+
+  # Mirror the normal legacy NixOS rebuild environment so tests exercising
+  # `nixos-rebuild test -I nixos-config=...` do not fail for unrelated fixture
+  # reasons when the VM lacks channel-based defaults.
+  nix.nixPath = [
+    "nixpkgs=${pkgs.path}"
+    "nixos-config=/etc/nixos/configuration.nix"
   ];
 
   # Networking: disable firewall, basic config for test framework management connection

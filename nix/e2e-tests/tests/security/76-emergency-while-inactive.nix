@@ -7,14 +7,17 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   securityHelpers = import ./../../lib/security-helpers.nix;
-in {
+in
+{
   name = "emergency-while-inactive";
   meta.tags = [ "security" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
@@ -37,12 +40,13 @@ in {
         assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
 
     with subtest("emergency from inactive is explicit and leaves system unchanged"):
-        prefix = "/tmp/emergency-while-inactive"
-        run_captured_command(
+        prefix = "/run/nails-tests/emergency-while-inactive"
+        capture = run_captured_command(
             prefix,
             f"nails --config {headless_config} emergency --no-countdown",
+            unit_name="nails-emergency-while-inactive",
         )
-        result = read_command_result(prefix)
+        result = read_command_result(prefix, unit_name=capture["unit_name"], timeout=30)
 
         assert result["rc"] == 1, f"Expected explicit inactive-state failure, got: {result}"
         assert "Inactive" in result["stderr"], result

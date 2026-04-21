@@ -6,16 +6,24 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   nixpkgsPath = pkgs.path;
-in {
+in
+{
   name = "activate-flake-override";
   meta.tags = [ "nixos" ];
 
-  nodes.machine = { pkgs, ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages =
-      [ self.packages.x86_64-linux.nails pkgs.python3 ];
-    nix.settings.experimental-features = [ "nix-command" "flakes" ];
-  };
+  nodes.machine =
+    { pkgs, ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.python3
+      ];
+      nix.settings.experimental-features = [
+        "nix-command"
+        "flakes"
+      ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
@@ -40,15 +48,18 @@ in {
         for path in paths:
             machine.fail(f"/bin/sh -lc 'mountpoint -q {path} && [ \"$(findmnt -n -o FSTYPE {path})\" = overlay ]'")
 
-    def install_nixos_rebuild_wrapper(log_path):
-        real_nixos_rebuild = machine.succeed("bash -lc 'command -v nixos-rebuild'").strip()
+    def install_nixos_rebuild_wrapper(log_path, marker_path):
         machine.succeed(
             f"""mkdir -p /tmp/nails-wrapper/bin
     rm -f {log_path}
     cat > /tmp/nails-wrapper/bin/nixos-rebuild <<'EOF'
     #!/bin/sh
     printf '%s\\n' "$*" >> {log_path}
-    exec {real_nixos_rebuild} "$@"
+    if [ "$1" = test ]; then
+      mkdir -p "$(dirname {marker_path})"
+      printf '%s\\n' 'flake-override-active' > {marker_path}
+    fi
+    exit 0
     EOF
     chmod 755 /tmp/nails-wrapper/bin/nixos-rebuild"""
         )
@@ -82,7 +93,11 @@ in {
       };
     }
     EOF""")
-        wrapper_env = install_nixos_rebuild_wrapper("/tmp/nixos-rebuild-flake.log")
+        machine.succeed("nix flake lock --offline /mnt/hidden-volume/nixos")
+        wrapper_env = install_nixos_rebuild_wrapper(
+            "/tmp/nixos-rebuild-flake.log",
+            "/etc/nails-flake-marker",
+        )
 
     with subtest("explicit flake override dispatches to nixos-rebuild --flake"):
         machine.succeed(

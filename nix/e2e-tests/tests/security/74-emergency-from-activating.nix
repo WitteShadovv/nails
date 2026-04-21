@@ -7,14 +7,17 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   securityHelpers = import ./../../lib/security-helpers.nix;
-in {
+in
+{
   name = "emergency-from-activating";
   meta.tags = [ "security" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
@@ -47,12 +50,13 @@ in {
         assert_overlay_mounted("/etc")
 
     with subtest("emergency fails closed while activation is in progress"):
-        prefix = "/tmp/emergency-from-activating"
-        run_captured_command(
+        prefix = "/run/nails-tests/emergency-from-activating"
+        capture = run_captured_command(
             prefix,
             f"nails --config {headless_config} emergency --no-countdown",
+            unit_name="nails-emergency-from-activating",
         )
-        result = read_command_result(prefix)
+        result = read_command_result(prefix, unit_name=capture["unit_name"], timeout=30)
 
         assert result["rc"] == 1, f"Expected emergency to fail from Activating, got: {result}"
         assert "Activating" in result["stderr"], result
@@ -68,12 +72,13 @@ in {
         status = read_status_json(config_path=headless_config)
         assert status["state"].startswith("Active"), status
 
-        prefix = "/tmp/emergency-from-activating-cleanup"
-        run_captured_command(
+        prefix = "/run/nails-tests/emergency-from-activating-cleanup"
+        capture = run_captured_command(
             prefix,
             f"nails --config {headless_config} emergency --no-countdown",
+            unit_name="nails-emergency-from-activating-cleanup",
         )
-        result = read_command_result(prefix)
+        result = read_command_result(prefix, unit_name=capture["unit_name"], timeout=30)
 
         assert result["rc"] == 0, result
         assert "Emergency deactivation complete" in result["stdout"], result

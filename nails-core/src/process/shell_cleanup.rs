@@ -8,10 +8,35 @@
 #[cfg(not(test))]
 use nix::libc;
 #[cfg(not(test))]
+use std::fs;
+#[cfg(not(test))]
 use std::path::Path;
 
 /// Names of shell processes to kill
 const SHELL_NAMES: &[&str] = &["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh"];
+
+/// Service-scoped shell processes that should never be killed.
+///
+/// `backdoor.service` is the NixOS test-driver guest agent. Killing it severs
+/// test harness communication and makes emergency E2E validation impossible,
+/// but it does not exist in production deployments.
+#[cfg(not(test))]
+const SKIPPED_SERVICE_NAMES: &[&str] = &["backdoor"];
+
+#[cfg(not(test))]
+fn read_service_name(pid: u32) -> Option<String> {
+    let cgroup_path = Path::new("/proc").join(pid.to_string()).join("cgroup");
+    let content = fs::read_to_string(cgroup_path).ok()?;
+
+    for line in content.lines() {
+        let service = line.rsplit('/').next()?;
+        if service.ends_with(".service") {
+            return Some(service.trim_end_matches(".service").to_string());
+        }
+    }
+
+    None
+}
 
 /// Report of shell kill operation
 #[derive(Debug, Clone, Default)]
@@ -100,6 +125,14 @@ pub fn kill_user_shells() -> ShellKillReport {
 
             // Check if this is a shell process
             if !SHELL_NAMES.contains(&comm.as_str()) {
+                continue;
+            }
+
+            if let Some(service_name) = read_service_name(pid)
+                && SKIPPED_SERVICE_NAMES.contains(&service_name.as_str())
+            {
+                tracing::debug!(pid = pid, comm = %comm, service = %service_name, "Skipping protected shell process");
+                report.skipped.push(pid);
                 continue;
             }
 
