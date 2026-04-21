@@ -42,6 +42,8 @@ env:
     INSTALLER_URL='https://install.determinate.systems/nix'
     INSTALLER_SHA256='1de1a9ddba23464d037aea82a16ca6cc800e1b06eda67c8007560ab6c56afdb7' # pragma: allowlist secret
     NIX_INSTALLER_BINARY_ROOT='https://install.determinate.systems/nix/tag/v3.17.3'
+    NIX_PROFILE_SCRIPT='/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh'
+    NIX_BIN_DIR='/nix/var/nix/profiles/default/bin'
     TMP_DIR=$(mktemp -d)
     trap 'rm -rf "$TMP_DIR"' EXIT
     INSTALLER="$TMP_DIR/determinate-nix-installer.sh"
@@ -63,8 +65,34 @@ env:
     accept-flake-config = false
     NIXCONF
     systemctl restart nix-daemon
-    for bin in /nix/var/nix/profiles/default/bin/*; do
-      ln -sf "$bin" /usr/local/bin/
+    export PATH="/usr/local/bin:$PATH"
+    if ! command -v nix >/dev/null 2>&1 || ! command -v nix-store >/dev/null 2>&1; then
+      if [[ -f "$NIX_PROFILE_SCRIPT" ]]; then
+        . "$NIX_PROFILE_SCRIPT"
+      fi
+      if [[ -d "$NIX_BIN_DIR" ]]; then
+        export PATH="$NIX_BIN_DIR:$PATH"
+      fi
+      hash -r
+    fi
+    if ! command -v nix >/dev/null 2>&1 || ! command -v nix-store >/dev/null 2>&1; then
+      echo 'Determinate Nix installed, but nix commands are unavailable after activation attempts.' >&2
+      echo "PATH=$PATH" >&2
+      echo 'Listing /nix/var/nix/profiles/default for diagnostics:' >&2
+      ls -la /nix/var/nix/profiles/default 2>/dev/null >&2 || true
+      echo 'Listing /nix/var/nix/profiles/default/etc/profile.d for diagnostics:' >&2
+      ls -la /nix/var/nix/profiles/default/etc/profile.d 2>/dev/null >&2 || true
+      echo "Listing $NIX_BIN_DIR for diagnostics:" >&2
+      ls -la "$NIX_BIN_DIR" 2>/dev/null >&2 || true
+      echo 'Listing /usr/local/bin/nix* for diagnostics:' >&2
+      ls -la /usr/local/bin/nix* 2>/dev/null >&2 || true
+      exit 1
+    fi
+    mkdir -p /usr/local/bin
+    for bin in nix nix-store nix-build nix-shell nix-env nix-channel nix-collect-garbage; do
+      if resolved_bin=$(command -v "$bin" 2>/dev/null); then
+        ln -sf "$resolved_bin" "/usr/local/bin/$bin"
+      fi
     done
 
 jobs:
@@ -510,39 +538,54 @@ jobs:
         run: |
           set -euo pipefail
 
+          NIX_PROFILE_SCRIPT="/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
           NIX_BIN_DIR="/nix/var/nix/profiles/default/bin"
 
           echo "::group::Activate provisioned Nix"
 
-          if [[ ! -d "$NIX_BIN_DIR" ]]; then
-            echo "::error::Expected Nix bin directory does not exist: $NIX_BIN_DIR"
-            echo "Listing /nix/var/nix/profiles/default for diagnostics:"
-            ls -la /nix/var/nix/profiles/default 2>/dev/null || true
-            exit 1
-          fi
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          export PATH="/usr/local/bin:$PATH"
 
-          echo "$NIX_BIN_DIR" >> "$GITHUB_PATH"
-          export PATH="$NIX_BIN_DIR:$PATH"
+          if ! command -v nix >/dev/null 2>&1 || ! command -v nix-store >/dev/null 2>&1; then
+            if [[ -f "$NIX_PROFILE_SCRIPT" ]]; then
+              . "$NIX_PROFILE_SCRIPT"
+            fi
+
+            if [[ -d "$NIX_BIN_DIR" ]]; then
+              echo "$NIX_BIN_DIR" >> "$GITHUB_PATH"
+              export PATH="$NIX_BIN_DIR:$PATH"
+            fi
+
+            hash -r
+          fi
 
           if ! command -v nix >/dev/null 2>&1; then
             echo "::error::nix is unavailable after PATH activation"
             echo "PATH=$PATH"
-            echo "Expected Nix bin directory: $NIX_BIN_DIR"
+            echo "Expected Nix profile script: $NIX_PROFILE_SCRIPT"
             echo "Listing /nix/var/nix/profiles/default for diagnostics:"
             ls -la /nix/var/nix/profiles/default 2>/dev/null || true
+            echo "Listing /nix/var/nix/profiles/default/etc/profile.d for diagnostics:"
+            ls -la /nix/var/nix/profiles/default/etc/profile.d 2>/dev/null || true
             echo "Listing $NIX_BIN_DIR for diagnostics:"
             ls -la "$NIX_BIN_DIR" 2>/dev/null || true
+            echo "Listing /usr/local/bin/nix* for diagnostics:"
+            ls -la /usr/local/bin/nix* 2>/dev/null || true
             exit 1
           fi
 
           if ! command -v nix-store >/dev/null 2>&1; then
             echo "::error::nix-store is unavailable after PATH activation"
             echo "PATH=$PATH"
-            echo "Expected Nix bin directory: $NIX_BIN_DIR"
+            echo "Expected Nix profile script: $NIX_PROFILE_SCRIPT"
             echo "Listing /nix/var/nix/profiles/default for diagnostics:"
             ls -la /nix/var/nix/profiles/default 2>/dev/null || true
+            echo "Listing /nix/var/nix/profiles/default/etc/profile.d for diagnostics:"
+            ls -la /nix/var/nix/profiles/default/etc/profile.d 2>/dev/null || true
             echo "Listing $NIX_BIN_DIR for diagnostics:"
             ls -la "$NIX_BIN_DIR" 2>/dev/null || true
+            echo "Listing /usr/local/bin/nix* for diagnostics:"
+            ls -la /usr/local/bin/nix* 2>/dev/null || true
             exit 1
           fi
 
