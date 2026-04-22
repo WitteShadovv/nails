@@ -1,4 +1,4 @@
-name: Full Forensics Eval Shard
+name: Full Forensics Eval Runner
 
 on:
   workflow_call:
@@ -7,30 +7,33 @@ on:
         description: Unix epoch when the parent workflow started
         required: true
         type: string
-      shard-index:
-        description: 1-based shard index
+      target:
+        description: Forensics target group or leaf to run
         required: true
-        type: number
-      shard-count:
-        description: Total number of shards
+        type: string
+    secrets:
+      PERSONAL_ACCESS_TOKEN:
         required: true
-        type: number
+      HCLOUD_TOKEN:
+        required: true
+      HCLOUD_SSH_KEY_ID:
+        required: false
 
 permissions:
   contents: read
 
 jobs:
   create-runner:
-    name: Provision Hetzner runner (shard ${{ inputs.shard-index }}/${{ inputs.shard-count }})
+    name: Provision Hetzner runner
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       HCLOUD_SSH_KEY_ID_EFFECTIVE: ${{ secrets.HCLOUD_SSH_KEY_ID || vars.HCLOUD_SSH_KEY_ID }}
     outputs:
-      label: ${{ steps.determine-combo.outputs.label }}
-      server_id: ${{ steps.determine-combo.outputs.server_id }}
-      server_type: ${{ steps.determine-combo.outputs.server_type }}
-      location: ${{ steps.determine-combo.outputs.location }}
+      label: ${{ steps.validate-runner-selection.outputs.label }}
+      server_id: ${{ steps.validate-runner-selection.outputs.server_id }}
+      server_type: ${{ steps.validate-runner-selection.outputs.server_type }}
+      location: ${{ steps.validate-runner-selection.outputs.location }}
     steps:
       - name: Validate Hetzner runner secrets
         env:
@@ -323,6 +326,46 @@ jobs:
             exit 1
           fi
 
+      - name: Validate selected runner outputs
+        id: validate-runner-selection
+        env:
+          RAW_LABEL: ${{ steps.determine-combo.outputs.label }}
+          RAW_SERVER_ID: ${{ steps.determine-combo.outputs.server_id }}
+          SERVER_TYPE: ${{ steps.determine-combo.outputs.server_type }}
+          LOCATION: ${{ steps.determine-combo.outputs.location }}
+        run: |
+          set -euo pipefail
+
+          label="${RAW_LABEL:-}"
+          server_id="${RAW_SERVER_ID:-}"
+
+          if [[ -z "$label" ]]; then
+            echo "::error::Provisioned runner label is empty."
+            exit 1
+          fi
+
+          if ! [[ "$label" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+            echo "::error::Provisioned runner label is invalid: '$label'"
+            exit 1
+          fi
+
+          if [[ -z "$server_id" ]]; then
+            echo "::error::Provisioned Hetzner server_id is empty."
+            exit 1
+          fi
+
+          if ! [[ "$server_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::Provisioned Hetzner server_id is invalid: '$server_id'"
+            exit 1
+          fi
+
+          {
+            echo "label=$label"
+            echo "server_id=$server_id"
+            echo "server_type=${SERVER_TYPE}"
+            echo "location=${LOCATION}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Cleanup orphaned servers from failed combos
         if: always()
         env:
@@ -332,7 +375,7 @@ jobs:
           [[ -n "${HCLOUD_TOKEN:-}" ]] && echo "::add-mask::$HCLOUD_TOKEN"
           echo "::group::Cleaning up orphaned Hetzner servers"
 
-          KEEP_SERVER_ID="${{ steps.determine-combo.outputs.server_id }}"
+          KEEP_SERVER_ID="${{ steps.validate-runner-selection.outputs.server_id }}"
           all_server_ids=(
             "${{ steps.combo-1.outputs.server_id }}"
             "${{ steps.combo-2.outputs.server_id }}"
@@ -345,10 +388,17 @@ jobs:
             "${{ steps.combo-9.outputs.server_id }}"
           )
 
+          invalid_server_ids=()
           failed_deletions=()
 
           for sid in "${all_server_ids[@]}"; do
             if [[ -z "$sid" || "$sid" == "$KEEP_SERVER_ID" ]]; then
+              continue
+            fi
+
+            if ! [[ "$sid" =~ ^[0-9]+$ ]]; then
+              echo "::error::Refusing to delete invalid Hetzner server_id '$sid' from runner action output."
+              invalid_server_ids+=("$sid")
               continue
             fi
 
@@ -377,13 +427,18 @@ jobs:
 
           echo "::endgroup::"
 
+          if (( ${#invalid_server_ids[@]} > 0 )); then
+            printf '::error::Refused to delete non-numeric Hetzner server ids from runner action outputs: %s\n' "${invalid_server_ids[*]}"
+            exit 1
+          fi
+
           if (( ${#failed_deletions[@]} > 0 )); then
             printf '::error::Failed to delete orphaned Hetzner servers: %s\n' "${failed_deletions[*]}"
             exit 1
           fi
 
   run-full-forensics-eval:
-    name: Run full forensics eval shard ${{ inputs.shard-index }}/${{ inputs.shard-count }}
+    name: Run full forensics eval (${{ inputs.target }})
     needs: create-runner
     if: needs.create-runner.result == 'success'
     runs-on: ${{ needs.create-runner.outputs.label }}
@@ -626,12 +681,12 @@ jobs:
 
           {
             cat <<'EOF'
-          ## Full forensics eval shard workflow budget
+          ## Full forensics eval workflow budget
 
           | Property | Value |
           |---|---|
           EOF
-            printf '| Shard | `%s/%s` |\n' '${{ inputs.shard-index }}' '${{ inputs.shard-count }}'
+            printf '| Target | `%s` |\n' '${{ inputs.target }}'
             printf '| Workflow start (epoch) | `%s` |\n' "${WORKFLOW_STARTED_EPOCH}"
             printf '| Elapsed | `%ss` |\n' "${ELAPSED_SECONDS}"
             printf '| Remaining before 6h deadline | `%ss` |\n' "${REMAINING_SECONDS}"
@@ -651,7 +706,7 @@ jobs:
           name: nix-community
           skipPush: true
 
-      - name: Run full forensics eval shard
+      - name: Run full forensics eval target
         env:
           FORENSICS_TIMEOUT_SECONDS: ${{ steps.workflow-budget.outputs.forensics_timeout_seconds }}
           WORKFLOW_DEADLINE_UTC: ${{ steps.workflow-budget.outputs.deadline_utc }}
@@ -669,19 +724,19 @@ jobs:
             exit 1
           fi
 
-          echo "::group::Run full forensics eval shard"
-          echo "Running ./scripts/run-forensics-eval-tests.sh --shard-index ${{ inputs.shard-index }} --shard-count ${{ inputs.shard-count }} all with an internal timeout of ${FORENSICS_TIMEOUT_SECONDS}s."
+          echo "::group::Run full forensics eval target"
+          echo "Running ./scripts/run-forensics-eval-tests.sh ${{ inputs.target }} with an internal timeout of ${FORENSICS_TIMEOUT_SECONDS}s."
           echo "The timeout preserves a cleanup window for timeout termination, artifact upload, and Hetzner runner deletion before the 6-hour workflow budget expires at ${WORKFLOW_DEADLINE_UTC}."
 
           set +e
-          timeout --signal=TERM --kill-after=5m "${FORENSICS_TIMEOUT_SECONDS}s" ./scripts/run-forensics-eval-tests.sh --shard-index "${{ inputs.shard-index }}" --shard-count "${{ inputs.shard-count }}" all
+          timeout --signal=TERM --kill-after=5m "${FORENSICS_TIMEOUT_SECONDS}s" ./scripts/run-forensics-eval-tests.sh "${{ inputs.target }}"
           status=$?
           set -e
 
           echo "::endgroup::"
 
           if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
-            echo "::error::Full forensics eval shard exceeded the 6-hour total workflow budget. The test command was stopped after ${FORENSICS_TIMEOUT_SECONDS}s to preserve time for timeout termination, artifact upload, and Hetzner runner deletion before ${WORKFLOW_DEADLINE_UTC}."
+            echo "::error::Full forensics eval exceeded the 6-hour total workflow budget. The test command was stopped after ${FORENSICS_TIMEOUT_SECONDS}s to preserve time for timeout termination, artifact upload, and Hetzner runner deletion before ${WORKFLOW_DEADLINE_UTC}."
             exit 1
           fi
 
@@ -689,19 +744,24 @@ jobs:
             exit "$status"
           fi
 
-      - name: Upload forensics eval shard artifacts
+      - name: Upload forensics eval artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: full-forensics-eval-results-shard-${{ inputs.shard-index }}-of-${{ inputs.shard-count }}
+          name: full-forensics-eval-results
           path: |
-            tmp/forensics-eval/**
-            tmp/forensics-eval-*/**
+            tmp/forensics-eval/*/summary.json
+            tmp/forensics-eval/*/report.md
+            tmp/forensics-eval/*/run-manifest.json
+            tmp/forensics-eval/*/compare/summary.json
+            tmp/forensics-eval/*/compare/report.md
+            tmp/forensics-eval/campaign-summary.json
+            tmp/forensics-eval/campaign-summary.md
           if-no-files-found: warn
           retention-days: 30
 
   delete-runner:
-    name: Delete Hetzner runner (shard ${{ inputs.shard-index }}/${{ inputs.shard-count }})
+    name: Delete Hetzner runner
     needs: [create-runner, run-full-forensics-eval]
     if: always() && needs.create-runner.result != 'skipped'
     runs-on: ubuntu-24.04
