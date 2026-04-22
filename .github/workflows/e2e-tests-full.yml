@@ -52,8 +52,6 @@ jobs:
         id: gate
         env:
           EVENT_NAME: ${{ github.event_name }}
-          REPOSITORY: ${{ github.repository }}
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
         run: |
           set -euo pipefail
 
@@ -61,14 +59,13 @@ jobs:
           reason=""
           workflow_started_epoch="$(date -u +%s)"
 
-          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+          if [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
             trusted=true
             reason="Trusted event (${EVENT_NAME}); Hetzner-backed full E2E suite is allowed."
-          elif [[ "$HEAD_REPOSITORY" == "$REPOSITORY" ]]; then
-            trusted=true
-            reason="Trusted same-repository pull request; Hetzner-backed full E2E suite is allowed."
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            reason="Pull request runs never auto-provision secret-backed Hetzner runners. Maintainers must use workflow_dispatch for trusted manual validation."
           else
-            reason="Fork pull requests cannot run this workflow because secret-backed self-hosted Hetzner runners are unsafe in untrusted contexts. Use a same-repository PR for a passing in-PR check, or ask a maintainer to run workflow_dispatch separately for trusted manual validation."
+            reason="Event '${EVENT_NAME}' is not allowed to provision secret-backed Hetzner runners. Use workflow_dispatch for trusted manual validation."
           fi
 
           {
@@ -102,7 +99,10 @@ jobs:
     uses: ./.github/workflows/e2e-tests-full-shard.yml
     permissions:
       contents: read
-    secrets: inherit
+    secrets:
+      PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+      HCLOUD_SSH_KEY_ID: ${{ secrets.HCLOUD_SSH_KEY_ID }}
     with:
       workflow-started-epoch: ${{ needs.trust-gate.outputs.workflow_started_epoch }}
       shard-index: ${{ matrix.shard_index }}

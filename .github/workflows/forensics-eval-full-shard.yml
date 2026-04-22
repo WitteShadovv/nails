@@ -751,12 +751,8 @@ jobs:
           name: full-forensics-eval-results
           path: |
             tmp/forensics-eval/*/summary.json
-            tmp/forensics-eval/*/report.md
-            tmp/forensics-eval/*/run-manifest.json
             tmp/forensics-eval/*/compare/summary.json
-            tmp/forensics-eval/*/compare/report.md
             tmp/forensics-eval/campaign-summary.json
-            tmp/forensics-eval/campaign-summary.md
           if-no-files-found: warn
           retention-days: 30
 

@@ -15,6 +15,13 @@ on:
         description: Total number of shards
         required: true
         type: number
+    secrets:
+      PERSONAL_ACCESS_TOKEN:
+        required: true
+      HCLOUD_TOKEN:
+        required: true
+      HCLOUD_SSH_KEY_ID:
+        required: false
 
 permissions:
   contents: read
@@ -27,10 +34,10 @@ jobs:
     env:
       HCLOUD_SSH_KEY_ID_EFFECTIVE: ${{ secrets.HCLOUD_SSH_KEY_ID || vars.HCLOUD_SSH_KEY_ID }}
     outputs:
-      label: ${{ steps.determine-combo.outputs.label }}
-      server_id: ${{ steps.determine-combo.outputs.server_id }}
-      server_type: ${{ steps.determine-combo.outputs.server_type }}
-      location: ${{ steps.determine-combo.outputs.location }}
+      label: ${{ steps.validate-runner-selection.outputs.label }}
+      server_id: ${{ steps.validate-runner-selection.outputs.server_id }}
+      server_type: ${{ steps.validate-runner-selection.outputs.server_type }}
+      location: ${{ steps.validate-runner-selection.outputs.location }}
     steps:
       - name: Validate Hetzner runner secrets
         env:
@@ -323,6 +330,46 @@ jobs:
             exit 1
           fi
 
+      - name: Validate selected runner outputs
+        id: validate-runner-selection
+        env:
+          RAW_LABEL: ${{ steps.determine-combo.outputs.label }}
+          RAW_SERVER_ID: ${{ steps.determine-combo.outputs.server_id }}
+          SERVER_TYPE: ${{ steps.determine-combo.outputs.server_type }}
+          LOCATION: ${{ steps.determine-combo.outputs.location }}
+        run: |
+          set -euo pipefail
+
+          label="${RAW_LABEL:-}"
+          server_id="${RAW_SERVER_ID:-}"
+
+          if [[ -z "$label" ]]; then
+            echo "::error::Provisioned runner label is empty."
+            exit 1
+          fi
+
+          if ! [[ "$label" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+            echo "::error::Provisioned runner label is invalid: '$label'"
+            exit 1
+          fi
+
+          if [[ -z "$server_id" ]]; then
+            echo "::error::Provisioned Hetzner server_id is empty."
+            exit 1
+          fi
+
+          if ! [[ "$server_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::Provisioned Hetzner server_id is invalid: '$server_id'"
+            exit 1
+          fi
+
+          {
+            echo "label=$label"
+            echo "server_id=$server_id"
+            echo "server_type=${SERVER_TYPE}"
+            echo "location=${LOCATION}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Cleanup orphaned servers from failed combos
         if: always()
         env:
@@ -332,7 +379,7 @@ jobs:
           [[ -n "${HCLOUD_TOKEN:-}" ]] && echo "::add-mask::$HCLOUD_TOKEN"
           echo "::group::Cleaning up orphaned Hetzner servers"
 
-          KEEP_SERVER_ID="${{ steps.determine-combo.outputs.server_id }}"
+          KEEP_SERVER_ID="${{ steps.validate-runner-selection.outputs.server_id }}"
           all_server_ids=(
             "${{ steps.combo-1.outputs.server_id }}"
             "${{ steps.combo-2.outputs.server_id }}"
@@ -345,10 +392,17 @@ jobs:
             "${{ steps.combo-9.outputs.server_id }}"
           )
 
+          invalid_server_ids=()
           failed_deletions=()
 
           for sid in "${all_server_ids[@]}"; do
             if [[ -z "$sid" || "$sid" == "$KEEP_SERVER_ID" ]]; then
+              continue
+            fi
+
+            if ! [[ "$sid" =~ ^[0-9]+$ ]]; then
+              echo "::error::Refusing to delete invalid Hetzner server_id '$sid' from runner action output."
+              invalid_server_ids+=("$sid")
               continue
             fi
 
@@ -376,6 +430,11 @@ jobs:
           done
 
           echo "::endgroup::"
+
+          if (( ${#invalid_server_ids[@]} > 0 )); then
+            printf '::error::Refused to delete non-numeric Hetzner server ids from runner action outputs: %s\n' "${invalid_server_ids[*]}"
+            exit 1
+          fi
 
           if (( ${#failed_deletions[@]} > 0 )); then
             printf '::error::Failed to delete orphaned Hetzner servers: %s\n' "${failed_deletions[*]}"
@@ -688,25 +747,6 @@ jobs:
           if [[ "$status" -ne 0 ]]; then
             exit "$status"
           fi
-
-      - name: Upload test results as artifacts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: full-e2e-test-results-shard-${{ inputs.shard-index }}-of-${{ inputs.shard-count }}
-          path: |
-            **/*.log
-          retention-days: 30
-
-      - name: Upload performance metrics
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: full-e2e-performance-metrics-shard-${{ inputs.shard-index }}-of-${{ inputs.shard-count }}
-          path: |
-            **/performance.txt
-            **/metrics.json
-          retention-days: 30
 
   delete-runner:
     name: Delete Hetzner runner (shard ${{ inputs.shard-index }}/${{ inputs.shard-count }})
