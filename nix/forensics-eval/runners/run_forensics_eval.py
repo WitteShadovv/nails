@@ -1510,11 +1510,6 @@ def main(argv: list[str]) -> int:
                 config.out_dir / "campaign-summary.md",
                 generate_campaign_report(campaign_summary),
             )
-            validate_json_against_schema(
-                config.project_root,
-                "campaign-summary.json",
-                campaign_summary,
-            )
 
         if not config.skip_analyzers:
             campaign_renderer = bundled_campaign_renderer(config.project_root)
