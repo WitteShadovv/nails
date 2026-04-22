@@ -7,8 +7,16 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      rust-overlay,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
@@ -19,17 +27,20 @@
 
         # Native Rust toolchain pinned for local development.
         rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
-          extensions = [ "rust-src" "rust-analyzer" "llvm-tools-preview" ];
+          extensions = [
+            "rust-src"
+            "rust-analyzer"
+            "llvm-tools-preview"
+          ];
           targets = [ targetTriple ];
         };
 
         # Dedicated musl cross toolchain for the canonical release build.
         pkgsMusl = pkgs.pkgsCross.musl64;
-        rustToolchainMusl =
-          pkgsMusl.buildPackages.rust-bin.stable."1.93.0".default.override {
-            extensions = [ "rust-src" ];
-            targets = [ targetTriple ];
-          };
+        rustToolchainMusl = pkgsMusl.buildPackages.rust-bin.stable."1.93.0".default.override {
+          extensions = [ "rust-src" ];
+          targets = [ targetTriple ];
+        };
         rustPlatformMusl = pkgsMusl.makeRustPlatform {
           cargo = rustToolchainMusl;
           rustc = rustToolchainMusl;
@@ -68,7 +79,9 @@
 
           src = sourceFiles;
 
-          cargoLock = { lockFile = ./Cargo.lock; };
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+          };
           cargoDepsName = pname;
 
           inherit (pkgsMusl) stdenv;
@@ -76,16 +89,19 @@
           allowSubstitutes = false;
           preferLocalBuild = true;
 
-          cargoBuildFlags = [ "--package" "nails-cli" "--bin" "nails" ];
+          cargoBuildFlags = [
+            "--package"
+            "nails-cli"
+            "--bin"
+            "nails"
+          ];
 
           CARGO_BUILD_TARGET = targetTriple;
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER =
-            "${pkgsMusl.stdenv.cc}/bin/${pkgsMusl.stdenv.cc.targetPrefix}cc";
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${pkgsMusl.stdenv.cc}/bin/${pkgsMusl.stdenv.cc.targetPrefix}cc";
 
           CARGO_INCREMENTAL = "0";
           SOURCE_DATE_EPOCH = sourceDateEpoch;
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS =
-            reproducibleRustFlags;
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS = reproducibleRustFlags;
 
           doCheck = false;
 
@@ -96,57 +112,68 @@
           '';
         };
 
-        nails-release = pkgs.runCommand "nails-release-${releaseVersion}" {
-          nativeBuildInputs = [ pkgs.coreutils pkgs.gnutar pkgs.gzip ];
-          SOURCE_DATE_EPOCH = sourceDateEpoch;
-          allowSubstitutes = false;
-          preferLocalBuild = true;
-        } ''
-          set -euo pipefail
+        nails-release =
+          pkgs.runCommand "nails-release-${releaseVersion}"
+            {
+              nativeBuildInputs = [
+                pkgs.coreutils
+                pkgs.gnutar
+                pkgs.gzip
+              ];
+              SOURCE_DATE_EPOCH = sourceDateEpoch;
+              allowSubstitutes = false;
+              preferLocalBuild = true;
+            }
+            ''
+              set -euo pipefail
 
-          export LC_ALL=C
-          export TZ=UTC
-          umask 022
+              export LC_ALL=C
+              export TZ=UTC
+              umask 022
 
-          package_dir="nails-${releaseVersion}-${targetTriple}"
-          stage_dir="$TMPDIR/stage/$package_dir"
-          mkdir -p "$stage_dir" "$out"
+              package_dir="nails-${releaseVersion}-${targetTriple}"
+              stage_dir="$TMPDIR/stage/$package_dir"
+              mkdir -p "$stage_dir" "$out"
 
-          install -m 0755 ${nails}/bin/nails "$stage_dir/nails"
-          install -m 0644 ${sourceFiles}/LICENSE "$stage_dir/LICENSE"
-          install -m 0644 ${sourceFiles}/README.md "$stage_dir/README.md"
+              install -m 0755 ${nails}/bin/nails "$stage_dir/nails"
+              install -m 0644 ${sourceFiles}/LICENSE "$stage_dir/LICENSE"
+              install -m 0644 ${sourceFiles}/README.md "$stage_dir/README.md"
 
-          tar \
-            --sort=name \
-            --format=gnu \
-            --mtime="@${sourceDateEpoch}" \
-            --owner=0 \
-            --group=0 \
-            --numeric-owner \
-            -C "$TMPDIR/stage" \
-            -cf - \
-            "$package_dir" | gzip -n > "$out/${releaseArchiveName}"
+              tar \
+                --sort=name \
+                --format=gnu \
+                --mtime="@${sourceDateEpoch}" \
+                --owner=0 \
+                --group=0 \
+                --numeric-owner \
+                -C "$TMPDIR/stage" \
+                -cf - \
+                "$package_dir" | gzip -n > "$out/${releaseArchiveName}"
 
-          install -m 0755 ${nails}/bin/nails "$out/nails"
+              install -m 0755 ${nails}/bin/nails "$out/nails"
 
-          archive_sha256=$(sha256sum "$out/${releaseArchiveName}" | cut -d' ' -f1)
-          binary_sha256=$(sha256sum "$out/nails" | cut -d' ' -f1)
+              archive_sha256=$(sha256sum "$out/${releaseArchiveName}" | cut -d' ' -f1)
+              binary_sha256=$(sha256sum "$out/nails" | cut -d' ' -f1)
 
-          printf '%s  %s\n' "$archive_sha256" "${releaseArchiveName}" > "$out/checksums.txt"
-          printf '%s  %s\n' "$binary_sha256" "nails" >> "$out/checksums.txt"
-        '';
+              printf '%s  %s\n' "$archive_sha256" "${releaseArchiveName}" > "$out/checksums.txt"
+              printf '%s  %s\n' "$binary_sha256" "nails" >> "$out/checksums.txt"
+            '';
 
         # Import E2E tests (impermanence is now local)
         rawE2eTests = import ./nix/e2e-tests { inherit self pkgs; };
-        e2eTests =
-          lib.filterAttrs (name: _: !(lib.hasPrefix "_" name)) rawE2eTests;
+        e2eTests = lib.filterAttrs (name: _: !(lib.hasPrefix "_" name)) rawE2eTests;
         e2eTestMetadata = {
           availableTargets = builtins.attrNames e2eTests;
           leafTests = rawE2eTests._testNames;
           groups = rawE2eTests._groups;
+          nodeCounts = lib.mapAttrs (_: meta: meta.nodeCount) rawE2eTests._meta;
         };
 
-      in {
+        rawForensicsEval = import ./nix/forensics-eval { inherit self pkgs; };
+        forensicsEvalMetadata = rawForensicsEval.metadata;
+
+      in
+      {
         # Packages
         packages = {
           inherit nails nails-release;
@@ -163,6 +190,7 @@
 
         e2e-tests = e2eTests;
         e2e-test-metadata = e2eTestMetadata;
+        forensics-eval-metadata = forensicsEvalMetadata;
 
         # Dev shell
         devShells.default = pkgs.mkShell {
@@ -186,8 +214,7 @@
         };
 
         # E2E test checks
-        checks =
-          lib.mapAttrs' (name: value: lib.nameValuePair "e2e-${name}" value)
-          e2eTests;
-      });
+        checks = lib.mapAttrs' (name: value: lib.nameValuePair "e2e-${name}" value) e2eTests;
+      }
+    );
 }

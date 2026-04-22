@@ -1,0 +1,47 @@
+{
+  "contractVersion": "1",
+  "title": "NAILS Forensics Analyzer Registry",
+  "description": "Built-in analyzer and optional adapter registry for the automated forensic leak-evaluation subsystem.",
+  "analyzers": [
+    {
+      "id": "path_delta",
+      "module": "plugins.path_delta",
+      "class": "PathDeltaAnalyzer",
+      "enabled": true,
+      "optional": false,
+      "description": "Compares exported stage trees against baseline and preserves only unallowlisted evidence-backed deltas."
+    },
+    {
+      "id": "canary_scan",
+      "module": "plugins.canary_scan",
+      "class": "CanaryScanAnalyzer",
+      "enabled": true,
+      "optional": false,
+      "description": "Searches exported evidence for run-specific canary tokens with baseline-aware suppression."
+    },
+    {
+      "id": "indicator_scan",
+      "module": "plugins.indicator_scan",
+      "class": "IndicatorScanAnalyzer",
+      "enabled": true,
+      "optional": false,
+      "description": "Scans exported files for generic hidden-environment indicators and sensitive test markers."
+    },
+    {
+      "id": "bulk_extractor_adapter",
+      "module": "plugins.bulk_extractor_adapter",
+      "class": "BulkExtractorAdapter",
+      "enabled": true,
+      "optional": true,
+      "description": "Analyzes supplied bulk_extractor exports when present and cleanly skips when unavailable."
+    },
+    {
+      "id": "autopsy_adapter",
+      "module": "plugins.autopsy_adapter",
+      "class": "AutopsyAdapter",
+      "enabled": true,
+      "optional": true,
+      "description": "Analyzes pre-exported autopsy artifacts when provided and otherwise cleanly skips."
+    }
+  ]
+}

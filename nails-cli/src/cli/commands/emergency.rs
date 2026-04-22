@@ -71,8 +71,11 @@ pub fn execute(
 
     // Countdown before emergency deactivation (skip if --no-countdown, --quiet, or --json)
     if !no_countdown && !quiet && !json {
+        use std::io::Write;
+
         for i in (1..=3).rev() {
             eprint!("\r  Emergency deactivation in {}... ", i);
+            let _ = std::io::stderr().flush();
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
         eprintln!("\r  Emergency deactivation starting now!  ");

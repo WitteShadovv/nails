@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nails.local/forensics-eval/summary.schema.json",
+  "title": "Forensics analyzer summary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion",
+    "runId",
+    "profileId",
+    "scenarioId",
+    "status",
+    "stageCount",
+    "totals",
+    "stages",
+    "findings"
+  ],
+  "properties": {
+    "contractVersion": { "type": "string" },
+    "runId": { "type": "string", "minLength": 1 },
+    "profileId": { "type": "string", "minLength": 1 },
+    "scenarioId": { "type": "string", "minLength": 1 },
+    "iteration": { "type": ["integer", "null"] },
+    "runDir": { "type": "string", "minLength": 1 },
+    "outputDir": { "type": "string", "minLength": 1 },
+    "manifest": { "type": "string", "minLength": 1 },
+    "allowlists": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["clean", "finding", "skipped", "error"]
+    },
+    "stageCount": { "type": "integer", "minimum": 0 },
+    "totals": { "type": "object" },
+    "stages": { "type": "array", "items": { "type": "object" } },
+    "findings": { "type": "array", "items": { "type": "object" } }
+  }
+}

@@ -1,0 +1,799 @@
+name: Full Forensics Eval Runner
+
+on:
+  workflow_call:
+    inputs:
+      workflow-started-epoch:
+        description: Unix epoch when the parent workflow started
+        required: true
+        type: string
+      checkout-repository:
+        description: Repository to checkout for this run
+        required: true
+        type: string
+      checkout-sha:
+        description: Exact commit SHA to execute on the Hetzner runner
+        required: true
+        type: string
+      target:
+        description: Forensics target group or leaf to run
+        required: true
+        type: string
+    secrets:
+      PERSONAL_ACCESS_TOKEN:
+        required: true
+      HCLOUD_TOKEN:
+        required: true
+      HCLOUD_SSH_KEY_ID:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  create-runner:
+    name: Provision Hetzner runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      HCLOUD_SSH_KEY_ID_EFFECTIVE: ${{ secrets.HCLOUD_SSH_KEY_ID || vars.HCLOUD_SSH_KEY_ID }}
+    outputs:
+      label: ${{ steps.validate-runner-selection.outputs.label }}
+      server_id: ${{ steps.validate-runner-selection.outputs.server_id }}
+      server_type: ${{ steps.validate-runner-selection.outputs.server_type }}
+      location: ${{ steps.validate-runner-selection.outputs.location }}
+    steps:
+      - name: Validate Hetzner runner secrets
+        env:
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: | # pragma: allowlist secret
+          set -euo pipefail
+
+          missing=0
+
+          if [[ -z "${PERSONAL_ACCESS_TOKEN:-}" ]]; then
+            echo "::error::PERSONAL_ACCESS_TOKEN is required to register the ephemeral self-hosted runner."
+            missing=1
+          fi
+
+          if [[ -z "${HCLOUD_TOKEN:-}" ]]; then
+            echo "::error::HCLOUD_TOKEN is required to create and delete Hetzner servers."
+            missing=1
+          fi
+
+          if [[ -z "${HCLOUD_SSH_KEY_ID_EFFECTIVE:-}" ]]; then
+            echo "::error::HCLOUD_SSH_KEY_ID is required for Hetzner runner provisioning. Configure it as a repository secret or repository variable."
+            missing=1
+          fi
+
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: "Try combo 1: ccx33 @ nbg1"
+        id: combo-1
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: ccx33
+          location: nbg1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+
+      - name: "Try combo 2: ccx33 @ hel1"
+        id: combo-2
+        if: steps.combo-1.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: ccx33
+          location: hel1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+
+      - name: "Try combo 3: ccx33 @ fsn1"
+        id: combo-3
+        if: steps.combo-1.outcome == 'failure' && steps.combo-2.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: ccx33
+          location: fsn1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+
+      - name: "Try combo 4: ccx23 @ nbg1"
+        id: combo-4
+        if: >-
+          steps.combo-1.outcome == 'failure' &&
+          steps.combo-2.outcome == 'failure' &&
+          steps.combo-3.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: ccx23
+          location: nbg1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+
+      - name: "Try combo 5: ccx23 @ hel1"
+        id: combo-5
+        if: >-
+          steps.combo-1.outcome == 'failure' &&
+          steps.combo-2.outcome == 'failure' &&
+          steps.combo-3.outcome == 'failure' &&
+          steps.combo-4.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: ccx23
+          location: hel1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+
+      - name: "Try combo 6: ccx23 @ fsn1"
+        id: combo-6
+        if: >-
+          steps.combo-1.outcome == 'failure' &&
+          steps.combo-2.outcome == 'failure' &&
+          steps.combo-3.outcome == 'failure' &&
+          steps.combo-4.outcome == 'failure' &&
+          steps.combo-5.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: ccx23
+          location: fsn1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+
+      - name: "Try combo 7: cpx41 @ nbg1"
+        id: combo-7
+        if: >-
+          steps.combo-1.outcome == 'failure' &&
+          steps.combo-2.outcome == 'failure' &&
+          steps.combo-3.outcome == 'failure' &&
+          steps.combo-4.outcome == 'failure' &&
+          steps.combo-5.outcome == 'failure' &&
+          steps.combo-6.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: cpx41
+          location: nbg1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+
+      - name: "Try combo 8: cpx41 @ hel1"
+        id: combo-8
+        if: >-
+          steps.combo-1.outcome == 'failure' &&
+          steps.combo-2.outcome == 'failure' &&
+          steps.combo-3.outcome == 'failure' &&
+          steps.combo-4.outcome == 'failure' &&
+          steps.combo-5.outcome == 'failure' &&
+          steps.combo-6.outcome == 'failure' &&
+          steps.combo-7.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: cpx41
+          location: hel1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+
+      - name: "Try combo 9: cpx41 @ fsn1"
+        id: combo-9
+        if: >-
+          steps.combo-1.outcome == 'failure' &&
+          steps.combo-2.outcome == 'failure' &&
+          steps.combo-3.outcome == 'failure' &&
+          steps.combo-4.outcome == 'failure' &&
+          steps.combo-5.outcome == 'failure' &&
+          steps.combo-6.outcome == 'failure' &&
+          steps.combo-7.outcome == 'failure' &&
+          steps.combo-8.outcome == 'failure'
+        continue-on-error: true
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: create
+          server_type: cpx41
+          location: fsn1
+          image: ubuntu-24.04
+          create_wait: '60'
+          server_wait: '30'
+          runner_wait: '120'
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          ssh_key: ${{ env.HCLOUD_SSH_KEY_ID_EFFECTIVE }}
+
+      - name: Determine successful combo
+        id: determine-combo
+        run: |
+          set -euo pipefail
+          echo "::group::Evaluating combo results"
+
+          combos=(
+            "combo-1|ccx33|nbg1"
+            "combo-2|ccx33|hel1"
+            "combo-3|ccx33|fsn1"
+            "combo-4|ccx23|nbg1"
+            "combo-5|ccx23|hel1"
+            "combo-6|ccx23|fsn1"
+            "combo-7|cpx41|nbg1"
+            "combo-8|cpx41|hel1"
+            "combo-9|cpx41|fsn1"
+          )
+
+          outcomes=(
+            "${{ steps.combo-1.outcome }}"
+            "${{ steps.combo-2.outcome }}"
+            "${{ steps.combo-3.outcome }}"
+            "${{ steps.combo-4.outcome }}"
+            "${{ steps.combo-5.outcome }}"
+            "${{ steps.combo-6.outcome }}"
+            "${{ steps.combo-7.outcome }}"
+            "${{ steps.combo-8.outcome }}"
+            "${{ steps.combo-9.outcome }}"
+          )
+
+          labels=(
+            "${{ steps.combo-1.outputs.label }}"
+            "${{ steps.combo-2.outputs.label }}"
+            "${{ steps.combo-3.outputs.label }}"
+            "${{ steps.combo-4.outputs.label }}"
+            "${{ steps.combo-5.outputs.label }}"
+            "${{ steps.combo-6.outputs.label }}"
+            "${{ steps.combo-7.outputs.label }}"
+            "${{ steps.combo-8.outputs.label }}"
+            "${{ steps.combo-9.outputs.label }}"
+          )
+
+          server_ids=(
+            "${{ steps.combo-1.outputs.server_id }}"
+            "${{ steps.combo-2.outputs.server_id }}"
+            "${{ steps.combo-3.outputs.server_id }}"
+            "${{ steps.combo-4.outputs.server_id }}"
+            "${{ steps.combo-5.outputs.server_id }}"
+            "${{ steps.combo-6.outputs.server_id }}"
+            "${{ steps.combo-7.outputs.server_id }}"
+            "${{ steps.combo-8.outputs.server_id }}"
+            "${{ steps.combo-9.outputs.server_id }}"
+          )
+
+          found=false
+          for i in "${!combos[@]}"; do
+            IFS='|' read -r step_id server_type location <<< "${combos[$i]}"
+            outcome="${outcomes[$i]}"
+            echo "  $step_id ($server_type @ $location): $outcome"
+
+            if [[ "$outcome" == "success" && "$found" == "false" ]]; then
+              found=true
+              {
+                echo "label=${labels[$i]}"
+                echo "server_id=${server_ids[$i]}"
+                echo "server_type=$server_type"
+                echo "location=$location"
+              } >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+          echo "::endgroup::"
+
+          if [[ "$found" == "false" ]]; then
+            echo "::error::All Hetzner server fallback combinations failed."
+            exit 1
+          fi
+
+      - name: Validate selected runner outputs
+        id: validate-runner-selection
+        env:
+          RAW_LABEL: ${{ steps.determine-combo.outputs.label }}
+          RAW_SERVER_ID: ${{ steps.determine-combo.outputs.server_id }}
+          SERVER_TYPE: ${{ steps.determine-combo.outputs.server_type }}
+          LOCATION: ${{ steps.determine-combo.outputs.location }}
+        run: |
+          set -euo pipefail
+
+          label="${RAW_LABEL:-}"
+          server_id="${RAW_SERVER_ID:-}"
+
+          if [[ -z "$label" ]]; then
+            echo "::error::Provisioned runner label is empty."
+            exit 1
+          fi
+
+          if ! [[ "$label" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+            echo "::error::Provisioned runner label is invalid: '$label'"
+            exit 1
+          fi
+
+          if [[ -z "$server_id" ]]; then
+            echo "::error::Provisioned Hetzner server_id is empty."
+            exit 1
+          fi
+
+          if ! [[ "$server_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::Provisioned Hetzner server_id is invalid: '$server_id'"
+            exit 1
+          fi
+
+          {
+            echo "label=$label"
+            echo "server_id=$server_id"
+            echo "server_type=${SERVER_TYPE}"
+            echo "location=${LOCATION}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Cleanup orphaned servers from failed combos
+        if: always()
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: | # pragma: allowlist secret
+          set -euo pipefail
+          [[ -n "${HCLOUD_TOKEN:-}" ]] && echo "::add-mask::$HCLOUD_TOKEN"
+          echo "::group::Cleaning up orphaned Hetzner servers"
+
+          KEEP_SERVER_ID="${{ steps.validate-runner-selection.outputs.server_id }}"
+          all_server_ids=(
+            "${{ steps.combo-1.outputs.server_id }}"
+            "${{ steps.combo-2.outputs.server_id }}"
+            "${{ steps.combo-3.outputs.server_id }}"
+            "${{ steps.combo-4.outputs.server_id }}"
+            "${{ steps.combo-5.outputs.server_id }}"
+            "${{ steps.combo-6.outputs.server_id }}"
+            "${{ steps.combo-7.outputs.server_id }}"
+            "${{ steps.combo-8.outputs.server_id }}"
+            "${{ steps.combo-9.outputs.server_id }}"
+          )
+
+          invalid_server_ids=()
+          failed_deletions=()
+
+          for sid in "${all_server_ids[@]}"; do
+            if [[ -z "$sid" || "$sid" == "$KEEP_SERVER_ID" ]]; then
+              continue
+            fi
+
+            if ! [[ "$sid" =~ ^[0-9]+$ ]]; then
+              echo "::error::Refusing to delete invalid Hetzner server_id '$sid' from runner action output."
+              invalid_server_ids+=("$sid")
+              continue
+            fi
+
+            echo "Deleting orphaned server $sid"
+            deleted=false
+            for attempt in 1 2 3; do
+              http_code=$({
+                printf '%s\n' "header = \"Authorization: Bearer $HCLOUD_TOKEN\""
+              } | curl -s --connect-timeout 10 --max-time 30 -X DELETE \
+                --config - \
+                "https://api.hetzner.cloud/v1/servers/$sid" \
+                -o /dev/null -w "%{http_code}")
+              if [[ "$http_code" =~ ^(200|204|404)$ ]]; then
+                echo "  HTTP $http_code on attempt $attempt"
+                deleted=true
+                break
+              fi
+              echo "  HTTP $http_code on attempt $attempt; retrying in 5s"
+              sleep 5
+            done
+
+            if [[ "$deleted" != "true" ]]; then
+              failed_deletions+=("$sid")
+            fi
+          done
+
+          echo "::endgroup::"
+
+          if (( ${#invalid_server_ids[@]} > 0 )); then
+            printf '::error::Refused to delete non-numeric Hetzner server ids from runner action outputs: %s\n' "${invalid_server_ids[*]}"
+            exit 1
+          fi
+
+          if (( ${#failed_deletions[@]} > 0 )); then
+            printf '::error::Failed to delete orphaned Hetzner servers: %s\n' "${failed_deletions[*]}"
+            exit 1
+          fi
+
+  run-full-forensics-eval:
+    name: Run full forensics eval (${{ inputs.target }})
+    needs: create-runner
+    if: needs.create-runner.result == 'success'
+    runs-on: ${{ needs.create-runner.outputs.label }}
+    timeout-minutes: 360
+    steps:
+      - name: Normalize self-hosted runner environment
+        run: |
+          set -euo pipefail
+
+          ensure_writable_dir() {
+            local dir="$1"
+            local probe_path
+
+            [[ -n "$dir" && "$dir" == /* ]] || return 1
+            mkdir -p "$dir"
+            probe_path="$dir/.github-actions-home-write-test.$$"
+            : > "$probe_path"
+            rm -f "$probe_path"
+          }
+
+          uid="$(id -u)"
+          passwd_entry=""
+
+          if command -v getent >/dev/null 2>&1; then
+            passwd_entry="$(getent passwd "$uid" || true)"
+          fi
+
+          if [[ -z "$passwd_entry" ]] && command -v python3 >/dev/null 2>&1; then
+            passwd_entry="$(python3 -c 'import os, pwd, sys; entry = pwd.getpwuid(os.getuid()); fields = [entry.pw_name, entry.pw_passwd or "x", str(entry.pw_uid), str(entry.pw_gid), entry.pw_gecos, entry.pw_dir, entry.pw_shell]; print(":".join(fields))' || true)"
+          fi
+
+          if [[ -z "$passwd_entry" ]]; then
+            echo "::error::Failed to resolve passwd entry for uid ${uid}; cannot normalize HOME."
+            exit 1
+          fi
+
+          IFS=: read -r passwd_user _ _ _ _ passwd_home passwd_shell <<< "$passwd_entry"
+
+          if [[ -z "$passwd_home" || "$passwd_home" != /* ]]; then
+            echo "::error::Passwd-derived HOME is missing or invalid: '${passwd_home:-}'"
+            exit 1
+          fi
+
+          current_home="${HOME:-}"
+
+          if ! ensure_writable_dir "$passwd_home"; then
+            echo "::error::Unable to determine a writable HOME from passwd. Current HOME='${current_home:-}', passwd HOME='${passwd_home}'."
+            exit 1
+          fi
+
+          normalized_home="$passwd_home"
+
+          user_was_missing=false
+          effective_user="${USER:-}"
+          if [[ -z "$effective_user" && -n "$passwd_user" ]]; then
+            effective_user="$passwd_user"
+            user_was_missing=true
+          fi
+
+          shell_was_missing=false
+          effective_shell="${SHELL:-}"
+          if [[ -z "$effective_shell" && -n "$passwd_shell" && "$passwd_shell" == /* ]]; then
+            effective_shell="$passwd_shell"
+            shell_was_missing=true
+          fi
+
+          export HOME="$normalized_home"
+          if [[ -n "$effective_user" ]]; then
+            export USER="$effective_user"
+          fi
+          if [[ -n "$effective_shell" ]]; then
+            export SHELL="$effective_shell"
+          fi
+
+          {
+            echo "HOME=$HOME"
+            if [[ "$user_was_missing" == "true" ]]; then
+              echo "USER=$effective_user"
+            fi
+            if [[ "$shell_was_missing" == "true" ]]; then
+              echo "SHELL=$effective_shell"
+            fi
+          } >> "$GITHUB_ENV"
+
+          echo "::group::Normalized self-hosted runner environment"
+          printf 'HOME=%s\n' "$HOME"
+          printf 'USER=%s\n' "${USER:-<unset>}"
+          printf 'SHELL=%s\n' "${SHELL:-<unset>}"
+          ls -ld "$HOME"
+          echo "::endgroup::"
+
+      - name: Checkout repository at exact approved SHA
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: ${{ inputs.checkout-repository }}
+          ref: ${{ inputs.checkout-sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checked out revision
+        run: |
+          set -euo pipefail
+
+          expected_sha='${{ inputs.checkout-sha }}'
+          actual_sha="$(git rev-parse HEAD)"
+
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "::error::Checked out SHA '$actual_sha' does not match expected '$expected_sha'."
+            exit 1
+          fi
+
+          echo "Checked out exact SHA $actual_sha from ${{ inputs.checkout-repository }}."
+
+      - name: Verify normalized runner environment
+        run: |
+          set -euo pipefail
+
+          passwd_entry=""
+          if command -v getent >/dev/null 2>&1; then
+            passwd_entry="$(getent passwd "$(id -u)" || true)"
+          fi
+
+          echo "::group::Verify normalized runner environment"
+          printf 'HOME=%s\n' "${HOME:-<unset>}"
+          printf 'USER=%s\n' "${USER:-<unset>}"
+          printf 'SHELL=%s\n' "${SHELL:-<unset>}"
+
+          if [[ -z "${HOME:-}" ]]; then
+            echo "::error::HOME is unset after normalization."
+            exit 1
+          fi
+
+          if [[ "$HOME" != /* ]]; then
+            echo "::error::HOME must be an absolute path after normalization: '$HOME'"
+            exit 1
+          fi
+
+          if [[ ! -d "$HOME" ]]; then
+            echo "::error::HOME directory does not exist after normalization: '$HOME'"
+            exit 1
+          fi
+
+          if [[ ! -w "$HOME" ]]; then
+            echo "::error::HOME directory is not writable after normalization: '$HOME'"
+            exit 1
+          fi
+
+          if [[ -n "$passwd_entry" ]]; then
+            IFS=: read -r passwd_user _ _ _ _ passwd_home passwd_shell <<< "$passwd_entry"
+
+            if [[ "$HOME" != "$passwd_home" ]]; then
+              echo "::error::HOME does not match passwd-derived home after normalization: expected '$passwd_home', got '$HOME'"
+              exit 1
+            fi
+
+            if [[ -z "${USER:-}" && -n "$passwd_user" ]]; then
+              echo "::error::USER is unexpectedly unset after normalization."
+              exit 1
+            fi
+
+            if [[ -n "${SHELL:-}" && -n "$passwd_shell" && "$SHELL" != "$passwd_shell" ]]; then
+              echo "::warning::SHELL differs from passwd-derived shell: passwd='$passwd_shell' env='$SHELL'"
+            fi
+          fi
+
+          echo "passwd entry for current uid"
+          printf '%s\n' "${passwd_entry:-<unavailable>}"
+          echo "directory details"
+          ls -ld "$HOME"
+          echo "::endgroup::"
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b
+        with:
+          enable_kvm: true
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            system-features = nixos-test benchmark big-parallel kvm
+            max-jobs = auto
+            cores = 0
+            sandbox = true
+            accept-flake-config = false
+
+      - name: Verify normalized runner environment and Nix installation
+        run: |
+          set -euo pipefail
+
+          echo "::group::Verify normalized runner environment and Nix installation"
+          printf 'HOME=%s\n' "${HOME:-<unset>}"
+          printf 'USER=%s\n' "${USER:-<unset>}"
+          printf 'SHELL=%s\n' "${SHELL:-<unset>}"
+          echo "PATH=$PATH"
+
+          echo "nix path: $(command -v nix)"
+          echo "nix-store path: $(command -v nix-store)"
+          nix --version
+          nix-store --version
+
+          echo "Listing /nix/var/nix/profiles/default/bin"
+          ls -la /nix/var/nix/profiles/default/bin || true
+
+          echo "nix-daemon status"
+          systemctl status nix-daemon --no-pager || true
+
+          echo "Relevant nix configuration"
+          nix show-config experimental-features
+          nix show-config system-features
+          nix show-config max-jobs
+          nix show-config cores
+          nix show-config sandbox
+          nix show-config accept-flake-config
+
+          echo "::endgroup::"
+
+      - name: Compute remaining workflow budget
+        id: workflow-budget
+        env:
+          WORKFLOW_STARTED_EPOCH: ${{ inputs.workflow-started-epoch }}
+        run: |
+          set -euo pipefail
+
+          TOTAL_BUDGET_SECONDS=$((6 * 60 * 60))
+          TIMEOUT_TERMINATION_GRACE_SECONDS=$((5 * 60))
+          ARTIFACT_UPLOAD_RESERVE_SECONDS=$((10 * 60))
+          DELETE_RUNNER_RESERVE_SECONDS=$((15 * 60))
+          SCHEDULING_BUFFER_SECONDS=$((5 * 60))
+          RESERVED_SECONDS=$((TIMEOUT_TERMINATION_GRACE_SECONDS + ARTIFACT_UPLOAD_RESERVE_SECONDS + DELETE_RUNNER_RESERVE_SECONDS + SCHEDULING_BUFFER_SECONDS))
+          NOW_EPOCH="$(date -u +%s)"
+
+          if ! [[ "${WORKFLOW_STARTED_EPOCH:-}" =~ ^[0-9]+$ ]]; then
+            echo "::error::workflow_started_epoch is missing or invalid: '${WORKFLOW_STARTED_EPOCH:-}'"
+            exit 1
+          fi
+
+          if (( NOW_EPOCH < WORKFLOW_STARTED_EPOCH )); then
+            echo "::error::Current time predates recorded workflow start. Refusing to compute an invalid budget."
+            exit 1
+          fi
+
+          ELAPSED_SECONDS=$((NOW_EPOCH - WORKFLOW_STARTED_EPOCH))
+          REMAINING_SECONDS=$((TOTAL_BUDGET_SECONDS - ELAPSED_SECONDS))
+          FORENSICS_TIMEOUT_SECONDS=$((REMAINING_SECONDS - RESERVED_SECONDS))
+          DEADLINE_EPOCH=$((WORKFLOW_STARTED_EPOCH + TOTAL_BUDGET_SECONDS))
+          DEADLINE_UTC="$(date -u -d "@${DEADLINE_EPOCH}" '+%Y-%m-%dT%H:%M:%SZ')"
+
+          {
+            echo "total_budget_seconds=${TOTAL_BUDGET_SECONDS}"
+            echo "timeout_termination_grace_seconds=${TIMEOUT_TERMINATION_GRACE_SECONDS}"
+            echo "reserved_seconds=${RESERVED_SECONDS}"
+            echo "elapsed_seconds=${ELAPSED_SECONDS}"
+            echo "remaining_seconds=${REMAINING_SECONDS}"
+            echo "forensics_timeout_seconds=${FORENSICS_TIMEOUT_SECONDS}"
+            echo "deadline_epoch=${DEADLINE_EPOCH}"
+            echo "deadline_utc=${DEADLINE_UTC}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            cat <<'EOF'
+          ## Full forensics eval workflow budget
+
+          | Property | Value |
+          |---|---|
+          EOF
+            printf '| Target | `%s` |\n' '${{ inputs.target }}'
+            printf '| Workflow start (epoch) | `%s` |\n' "${WORKFLOW_STARTED_EPOCH}"
+            printf '| Elapsed | `%ss` |\n' "${ELAPSED_SECONDS}"
+            printf '| Remaining before 6h deadline | `%ss` |\n' "${REMAINING_SECONDS}"
+            printf '| Reserved for timeout grace + artifacts + cleanup + scheduling | `%ss` |\n' "${RESERVED_SECONDS}"
+            printf '| Forensics eval command budget | `%ss` |\n' "${FORENSICS_TIMEOUT_SECONDS}"
+            printf '| Workflow deadline (UTC) | `%s` |\n' "${DEADLINE_UTC}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if (( FORENSICS_TIMEOUT_SECONDS < 60 )); then
+            echo "::error::Less than 60 seconds remain for the full forensics eval command after reserving time for timeout termination, artifact upload, and Hetzner cleanup. Refusing to start the suite so deletion can still proceed."
+            exit 1
+          fi
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c
+        with:
+          name: nix-community
+          skipPush: true
+
+      - name: Run full forensics eval target
+        env:
+          FORENSICS_TIMEOUT_SECONDS: ${{ steps.workflow-budget.outputs.forensics_timeout_seconds }}
+          WORKFLOW_DEADLINE_UTC: ${{ steps.workflow-budget.outputs.deadline_utc }}
+        run: |
+          set -euo pipefail
+
+          if ! command -v nix >/dev/null 2>&1 || ! command -v nix-store >/dev/null 2>&1; then
+            echo "::error::nix and nix-store must be available before starting the full forensics eval suite"
+            echo "PATH=$PATH"
+            exit 1
+          fi
+
+          if ! [[ "${FORENSICS_TIMEOUT_SECONDS:-}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Forensics eval timeout budget is missing or invalid: '${FORENSICS_TIMEOUT_SECONDS:-}'"
+            exit 1
+          fi
+
+          echo "::group::Run full forensics eval target"
+          echo "Running ./scripts/run-forensics-eval-tests.sh ${{ inputs.target }} with an internal timeout of ${FORENSICS_TIMEOUT_SECONDS}s."
+          echo "The timeout preserves a cleanup window for timeout termination, artifact upload, and Hetzner runner deletion before the 6-hour workflow budget expires at ${WORKFLOW_DEADLINE_UTC}."
+
+          set +e
+          timeout --signal=TERM --kill-after=5m "${FORENSICS_TIMEOUT_SECONDS}s" ./scripts/run-forensics-eval-tests.sh "${{ inputs.target }}"
+          status=$?
+          set -e
+
+          echo "::endgroup::"
+
+          if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+            echo "::error::Full forensics eval exceeded the 6-hour total workflow budget. The test command was stopped after ${FORENSICS_TIMEOUT_SECONDS}s to preserve time for timeout termination, artifact upload, and Hetzner runner deletion before ${WORKFLOW_DEADLINE_UTC}."
+            exit 1
+          fi
+
+          if [[ "$status" -ne 0 ]]; then
+            exit "$status"
+          fi
+
+      - name: Upload forensics eval artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: full-forensics-eval-results
+          path: |
+            tmp/forensics-eval/*/summary.json
+            tmp/forensics-eval/*/compare/summary.json
+            tmp/forensics-eval/campaign-summary.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  delete-runner:
+    name: Delete Hetzner runner
+    needs: [create-runner, run-full-forensics-eval]
+    if: always() && needs.create-runner.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Delete Hetzner Cloud runner
+        if: needs.create-runner.outputs.server_id != ''
+        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        with:
+          mode: delete
+          delete_wait: '90'
+          name: ${{ needs.create-runner.outputs.label }}
+          server_id: ${{ needs.create-runner.outputs.server_id }}
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}

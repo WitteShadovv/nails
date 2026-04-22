@@ -1,0 +1,58 @@
+{
+  "contractVersion": "1",
+  "title": "Default forensics analyzer allowlists",
+  "profiles": {
+    "default": {
+      "global": {
+        "pathRegex": [
+          "^README\\.md$",
+          "^manifest\\.json$",
+          "^export-metadata\\.json$"
+        ],
+        "contentRegex": [
+          "^placeholder$"
+        ],
+        "findingIds": []
+      },
+      "analyzers": {
+        "path_delta": {
+          "pathRegex": [
+            "^logs/",
+            "^tmp/"
+          ],
+          "contentRegex": [],
+          "findingIds": []
+        }
+      }
+    },
+    "direct-headless": {
+      "global": {
+        "pathRegex": [
+          "^metadata/",
+          "^notes/"
+        ],
+        "contentRegex": [],
+        "findingIds": []
+      },
+      "analyzers": {
+        "indicator_scan": {
+          "pathRegex": [
+            "^artifacts/nix/hidden-store-matches\\.txt$"
+          ],
+          "contentRegex": [
+            "tor-browser",
+            "keepassxc"
+          ],
+          "findingIds": []
+        },
+        "bulk_extractor_adapter": {
+          "pathRegex": [
+            "^bulk.*/wordlist\\.txt$"
+          ],
+          "contentRegex": [],
+          "findingIds": []
+        }
+      }
+    }
+  }
+}

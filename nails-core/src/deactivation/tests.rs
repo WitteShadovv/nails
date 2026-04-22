@@ -102,6 +102,28 @@ fn setup_active_manager() -> Arc<Mutex<NailsManager<MockFilesystem>>> {
     Arc::new(Mutex::new(manager))
 }
 
+fn setup_manager_in_state(state: SystemState) -> Arc<Mutex<NailsManager<MockFilesystem>>> {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_hidden_vol = temp_dir.keep();
+    std::fs::create_dir_all(&mock_hidden_vol).unwrap();
+    let state_path = mock_hidden_vol.join("state.json");
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.clone(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let mut manager = NailsManager::new(fs, config, state_path);
+    manager.force_state(state).unwrap();
+
+    Arc::new(Mutex::new(manager))
+}
+
 fn write_state_with_overlay(
     state_path: &Path,
     hidden_root: &Path,
@@ -680,6 +702,76 @@ fn test_emergency_deactivate_from_inactive_state_returns_error() {
         manager.lock().unwrap().current_state().unwrap(),
         SystemState::Inactive
     );
+}
+
+#[test]
+#[serial]
+fn test_emergency_deactivate_from_activating_state_returns_error_without_unmounting() {
+    let manager = setup_manager_in_state(SystemState::Activating {
+        started_at: chrono::Utc::now(),
+    });
+
+    {
+        let guard = manager.lock().unwrap();
+        let fs = guard.filesystem();
+        fs.mock_set_mounted(Path::new("/home"), true);
+        fs.mock_set_mounted(Path::new("/etc"), true);
+    }
+
+    let err = NailsManager::emergency_deactivate(Arc::clone(&manager)).unwrap_err();
+    assert!(matches!(err, NailsError::InvalidState(_)));
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("Activating"),
+        "unexpected error: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("Must be ACTIVE"),
+        "unexpected error: {err_msg}"
+    );
+
+    let guard = manager.lock().unwrap();
+    assert!(matches!(
+        guard.current_state().unwrap(),
+        SystemState::Activating { .. }
+    ));
+    assert!(guard.filesystem().is_mounted(Path::new("/home")).unwrap());
+    assert!(guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
+}
+
+#[test]
+#[serial]
+fn test_emergency_deactivate_from_deactivating_state_returns_error_without_unmounting() {
+    let manager = setup_manager_in_state(SystemState::Deactivating {
+        started_at: chrono::Utc::now(),
+    });
+
+    {
+        let guard = manager.lock().unwrap();
+        let fs = guard.filesystem();
+        fs.mock_set_mounted(Path::new("/home"), true);
+        fs.mock_set_mounted(Path::new("/etc"), true);
+    }
+
+    let err = NailsManager::emergency_deactivate(Arc::clone(&manager)).unwrap_err();
+    assert!(matches!(err, NailsError::InvalidState(_)));
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("Deactivating"),
+        "unexpected error: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("Must be ACTIVE"),
+        "unexpected error: {err_msg}"
+    );
+
+    let guard = manager.lock().unwrap();
+    assert!(matches!(
+        guard.current_state().unwrap(),
+        SystemState::Deactivating { .. }
+    ));
+    assert!(guard.filesystem().is_mounted(Path::new("/home")).unwrap());
+    assert!(guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
 }
 
 #[test]

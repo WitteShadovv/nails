@@ -191,6 +191,21 @@ impl<F: Filesystem + 'static> NailsManager<F> {
                     "No system profile found. Cannot restore decoy configuration.".to_string(),
                 ));
             }
+        } else {
+            let manager = manager_arc
+                .lock()
+                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+
+            let state = manager.current_state()?;
+            if !matches!(state, SystemState::Active { .. }) {
+                let message = if state == SystemState::Inactive {
+                    "Cannot deactivate from state Inactive. Must be ACTIVE.".to_string()
+                } else {
+                    format!("Cannot deactivate from state {:?}. Must be ACTIVE.", state)
+                };
+
+                return Err(NailsError::InvalidState(message));
+            }
         }
 
         #[cfg(not(test))]

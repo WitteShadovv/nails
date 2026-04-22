@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nails.local/forensics-eval/findings-diff.schema.json",
+  "title": "Forensics analyzer findings diff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "stages", "comparisons"],
+  "properties": {
+    "contractVersion": { "type": "string" },
+    "stages": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["findingCount", "findings"],
+        "properties": {
+          "findingCount": { "type": "integer", "minimum": 0 },
+          "findings": { "type": "array", "items": { "type": "object" } }
+        }
+      }
+    },
+    "comparisons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["left", "right", "counts", "onlyLeft", "onlyRight"],
+        "properties": {
+          "left": { "type": "string", "minLength": 1 },
+          "right": { "type": "string", "minLength": 1 },
+          "counts": { "type": "object" },
+          "onlyLeft": { "type": "array", "items": { "type": "string" } },
+          "onlyRight": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

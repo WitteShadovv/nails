@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nails.local/forensics-eval/allowlist.schema.json",
+  "title": "Forensics analyzer allowlist",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "profiles"],
+  "properties": {
+    "contractVersion": { "type": "string" },
+    "title": { "type": "string" },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "global": { "$ref": "#/definitions/rules" },
+          "analyzers": {
+            "type": "object",
+            "additionalProperties": { "$ref": "#/definitions/rules" }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pathRegex": { "type": "array", "items": { "type": "string" } },
+        "contentRegex": { "type": "array", "items": { "type": "string" } },
+        "findingIds": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

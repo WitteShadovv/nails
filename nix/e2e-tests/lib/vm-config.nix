@@ -2,11 +2,22 @@
 # Simplified: let NixOS test framework handle boot/filesystems
 # Secondary disk (/dev/vdb) is available for LUKS hidden volume testing
 
-{ lib, pkgs, ... }: {
+{ lib, pkgs, ... }:
+let
+  # CI computes a safe per-VM core count automatically and exports it through
+  # NAILS_E2E_VM_CORES before each NixOS test build. Because this value is read
+  # with builtins.getEnv, the corresponding flake build must opt into impure
+  # evaluation at that call site. Keep the local fallback at 4 cores so ad-hoc
+  # runs behave as they did previously.
+  vmCoresEnv = builtins.getEnv "NAILS_E2E_VM_CORES";
+  vmCores =
+    if builtins.match "[1-9][0-9]*" vmCoresEnv != null then builtins.fromJSON vmCoresEnv else 4;
+in
+{
   # Virtual hardware configuration
   virtualisation = {
     memorySize = 4096; # 4GB RAM
-    cores = 4; # 4 CPU cores
+    cores = vmCores;
     diskSize = 20480; # 20GB primary disk
 
     # Secondary disk for hidden volume simulation (2GB)
@@ -40,6 +51,39 @@
     sleuthkit # For forensic analysis (fls, etc.)
     coreutils # Basic utilities
     util-linux # For mount operations
+  ];
+
+  # Provide a baseline /etc/nixos tree matching a normal NixOS install.
+  # Several activation/preflight tests exercise the product's current
+  # contract around base configuration discovery and hidden hardware-config
+  # bootstrapping, so the VM fixture must expose these files up front.
+  environment.etc = {
+    "nixos/configuration.nix".text = ''
+      { ... }: {
+        imports = [ /etc/nixos/hardware-configuration.nix ];
+        boot.loader.grub.enable = false;
+        documentation.nixos.enable = false;
+        fileSystems."/" = {
+          device = "/dev/disk/by-label/nixos";
+          fsType = "ext4";
+        };
+        system.stateVersion = "25.11";
+      }
+    '';
+
+    "nixos/hardware-configuration.nix".text = ''
+      { ... }: {
+        imports = [ ];
+      }
+    '';
+  };
+
+  # Mirror the normal legacy NixOS rebuild environment so tests exercising
+  # `nixos-rebuild test -I nixos-config=...` do not fail for unrelated fixture
+  # reasons when the VM lacks channel-based defaults.
+  nix.nixPath = [
+    "nixpkgs=${pkgs.path}"
+    "nixos-config=/etc/nixos/configuration.nix"
   ];
 
   # Networking: disable firewall, basic config for test framework management connection
