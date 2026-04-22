@@ -114,6 +114,22 @@ fn test_mount_ephemeral_overlay_validates_sizes() {
 }
 
 #[test]
+fn test_mount_ephemeral_overlay_rejects_root_target_without_file_name() {
+    let fs = MockFilesystem::new();
+    let config = EphemeralOverlayDir {
+        path: PathBuf::from("/"),
+        tmpfs_upper_size: "1G".to_string(),
+        tmpfs_work_size: "512M".to_string(),
+    };
+
+    let result = mount_ephemeral_overlay(&fs, &config, Path::new("/"));
+
+    assert!(result.is_err());
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("Invalid path: /"));
+}
+
+#[test]
 fn test_mount_ephemeral_overlay_multiple_directories() {
     // AC2: Can mount multiple ephemeral overlays
     let fs = MockFilesystem::new();
@@ -198,6 +214,34 @@ fn test_unmount_ephemeral_overlay_best_effort() {
     // No mounts exist, but unmount should still succeed (idempotent)
     let result = unmount_ephemeral_overlay(&fs, &info);
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_unmount_ephemeral_overlay_reports_all_failures_after_force_fallback() {
+    let fs = MockFilesystem::new();
+    let config = EphemeralOverlayDir {
+        path: PathBuf::from("/var"),
+        tmpfs_upper_size: "1G".to_string(),
+        tmpfs_work_size: "512M".to_string(),
+    };
+
+    fs.mock_set_path_exists("/var", true);
+    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
+    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+
+    let info = mount_ephemeral_overlay(&fs, &config, Path::new("/var")).unwrap();
+
+    fs.mock_set_unmount_should_fail("/var", true);
+    fs.mock_set_unmount_should_fail("/run/nails/var-work", true);
+    fs.mock_set_unmount_should_fail("/run/nails/var-upper", true);
+
+    let result = unmount_ephemeral_overlay(&fs, &info);
+
+    assert!(result.is_err());
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("overlay /var"));
+    assert!(error.contains("work tmpfs /run/nails/var-work"));
+    assert!(error.contains("upper tmpfs /run/nails/var-upper"));
 }
 
 #[test]
