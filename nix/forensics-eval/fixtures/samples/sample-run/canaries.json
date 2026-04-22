@@ -1,0 +1,14 @@
+{
+  "contractVersion": "1",
+  "namespace": "nails.forensics.sample",
+  "entries": [
+    {
+      "label": "history",
+      "token": "nails.forensics.sample:history:1111"
+    },
+    {
+      "label": "document",
+      "token": "nails.forensics.sample:document:2222"
+    }
+  ]
+}

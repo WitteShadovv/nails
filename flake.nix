@@ -169,6 +169,9 @@
           nodeCounts = lib.mapAttrs (_: meta: meta.nodeCount) rawE2eTests._meta;
         };
 
+        rawForensicsEval = import ./nix/forensics-eval { inherit self pkgs; };
+        forensicsEvalMetadata = rawForensicsEval.metadata;
+
       in
       {
         # Packages
@@ -187,6 +190,7 @@
 
         e2e-tests = e2eTests;
         e2e-test-metadata = e2eTestMetadata;
+        forensics-eval-metadata = forensicsEvalMetadata;
 
         # Dev shell
         devShells.default = pkgs.mkShell {

@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nails.local/forensics-eval/manifest.schema.json",
+  "title": "Forensics analyzer manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "analyzers"],
+  "properties": {
+    "contractVersion": { "type": "string" },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "analyzers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "module", "class"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "module": { "type": "string", "minLength": 1 },
+          "class": { "type": "string", "minLength": 1 },
+          "enabled": { "type": "boolean" },
+          "optional": { "type": "boolean" },
+          "description": { "type": "string" },
+          "options": { "type": "object" }
+        }
+      }
+    }
+  }
+}

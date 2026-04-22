@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+fixtures/samples/*/compare/
+fixtures/samples/*/compare-test/
+fixtures/samples/*/campaign-summary.json
+fixtures/samples/*/campaign-summary.md

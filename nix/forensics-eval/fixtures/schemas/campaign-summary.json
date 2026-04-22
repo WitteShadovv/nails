@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nails.local/forensics-eval/campaign-summary.schema.json",
+  "title": "Forensics analyzer campaign summary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "campaignDir", "runCount", "status", "totals", "runs"],
+  "properties": {
+    "contractVersion": { "type": "string" },
+    "campaignDir": { "type": "string", "minLength": 1 },
+    "runCount": { "type": "integer", "minimum": 0 },
+    "status": {
+      "type": "string",
+      "enum": ["clean", "finding", "error"]
+    },
+    "totals": { "type": "object" },
+    "runs": { "type": "array", "items": { "type": "object" } }
+  }
+}

@@ -1,0 +1,140 @@
+name: Full Forensics Eval
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'nix/forensics-eval/**'
+      - 'scripts/run-forensics-eval.sh'
+      - 'scripts/run-forensics-eval-tests.sh'
+      - '.github/workflows/forensics-eval-full.yml'
+      - '.github/workflows/forensics-eval-full-shard.yml'
+      - 'flake.nix'
+      - 'flake.lock'
+  push:
+    branches: [main]
+    paths:
+      - 'nix/forensics-eval/**'
+      - 'scripts/run-forensics-eval.sh'
+      - 'scripts/run-forensics-eval-tests.sh'
+      - '.github/workflows/forensics-eval-full.yml'
+      - '.github/workflows/forensics-eval-full-shard.yml'
+      - 'flake.nix'
+      - 'flake.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-forensics-eval-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  trust-gate:
+    name: Trust gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      trusted: ${{ steps.gate.outputs.trusted }}
+      reason: ${{ steps.gate.outputs.reason }}
+      workflow_started_epoch: ${{ steps.gate.outputs.workflow_started_epoch }}
+    steps:
+      - name: Determine whether this run may use the Hetzner runner
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+        run: |
+          set -euo pipefail
+
+          trusted=false
+          reason=""
+          workflow_started_epoch="$(date -u +%s)"
+
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            trusted=true
+            reason="Trusted event (${EVENT_NAME}); Hetzner-backed full forensics eval is allowed."
+          elif [[ "$HEAD_REPOSITORY" == "$REPOSITORY" ]]; then
+            trusted=true
+            reason="Trusted same-repository pull request; Hetzner-backed full forensics eval is allowed."
+          else
+            reason="Fork pull requests cannot run this workflow because secret-backed self-hosted Hetzner runners are unsafe in untrusted contexts. Use a same-repository PR for a passing in-PR check, or ask a maintainer to run workflow_dispatch separately for trusted manual validation."
+          fi
+
+          {
+            echo "trusted=${trusted}"
+            echo "workflow_started_epoch=${workflow_started_epoch}"
+            echo "reason<<EOF"
+            printf '%s\n' "$reason"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            cat <<'EOF'
+          ## Trust gate
+
+          | Property | Value |
+          |---|---|
+          EOF
+            printf '| Event | `%s` |\n' "$EVENT_NAME"
+            printf '| Trusted | `%s` |\n' "$trusted"
+            printf '| Reason | %s |\n' "$reason"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  run-full-forensics-eval-shards:
+    name: Run full forensics eval shard ${{ matrix.shard_index }}/4
+    needs: trust-gate
+    if: needs.trust-gate.outputs.trusted == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: [1, 2, 3, 4]
+    uses: ./.github/workflows/forensics-eval-full-shard.yml
+    permissions:
+      contents: read
+    secrets: inherit
+    with:
+      workflow-started-epoch: ${{ needs.trust-gate.outputs.workflow_started_epoch }}
+      shard-index: ${{ matrix.shard_index }}
+      shard-count: 4
+
+  full-forensics-eval-result:
+    name: Full Forensics Eval Result
+    needs: [trust-gate, run-full-forensics-eval-shards]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check workflow outcome
+        env:
+          TRUSTED: ${{ needs.trust-gate.outputs.trusted }}
+          TRUST_REASON: ${{ needs.trust-gate.outputs.reason }}
+          RUN_RESULT: ${{ needs.run-full-forensics-eval-shards.result }}
+        run: |
+          set -euo pipefail
+
+          {
+            cat <<'EOF'
+          ## Full forensics eval workflow result
+
+          | Job | Result |
+          |---|---|
+          EOF
+            printf '| Trust gate | `%s` |\n' "${TRUSTED}"
+            printf '| Run full forensics eval shards (4 runners) | `%s` |\n' "${RUN_RESULT}"
+            printf '\n%s\n' "${TRUST_REASON}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$TRUSTED" != "true" ]]; then
+            echo "::error::${TRUST_REASON}"
+            exit 1
+          fi
+
+          if [[ "$RUN_RESULT" != "success" ]]; then
+            echo "::error::One or more full forensics eval shards failed or did not complete successfully."
+            exit 1
+          fi
+
+          echo "Full forensics eval workflow completed successfully across all 4 shards."
