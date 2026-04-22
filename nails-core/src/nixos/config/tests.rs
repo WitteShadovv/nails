@@ -174,6 +174,68 @@ fn test_inject_import_block_idempotent_when_already_injected() {
 }
 
 #[test]
+fn test_ensure_nails_import_block_inserts_into_existing_imports_as_first_entry() {
+    let original = "{ ... }: {\n  imports = [\n    ./foo.nix\n    ./bar.nix\n  ];\n}\n";
+
+    let updated = ensure_nails_import_block(original);
+
+    assert_eq!(
+        updated,
+        "{ ... }: {\n  imports = [\n    ./nails/configuration.nix\n    ./foo.nix\n    ./bar.nix\n  ];\n}\n"
+    );
+}
+
+#[test]
+fn test_ensure_nails_import_block_detects_imports_without_spaces() {
+    let original = "{ ... }: {\n  imports=[\n    ./foo.nix\n  ];\n}\n";
+
+    let updated = ensure_nails_import_block(original);
+
+    assert_eq!(
+        updated,
+        "{ ... }: {\n  imports=[\n    ./nails/configuration.nix\n    ./foo.nix\n  ];\n}\n"
+    );
+}
+
+#[test]
+fn test_ensure_nails_import_block_ignores_commented_out_nails_path() {
+    let original =
+        "{ ... }: {\n  # ./nails/configuration.nix\n  imports = [\n    ./foo.nix\n  ];\n}\n";
+
+    let updated = ensure_nails_import_block(original);
+
+    assert_eq!(
+        updated,
+        "{ ... }: {\n  # ./nails/configuration.nix\n  imports = [\n    ./nails/configuration.nix\n    ./foo.nix\n  ];\n}\n"
+    );
+}
+
+#[test]
+fn test_ensure_nails_import_block_ignores_string_literal_nails_path() {
+    let original = "{ ... }: {\n  environment.etc.\"example\".text = \"./nails/configuration.nix\";\n  imports = [\n    ./foo.nix\n  ];\n}\n";
+
+    let updated = ensure_nails_import_block(original);
+
+    assert_eq!(
+        updated,
+        "{ ... }: {\n  environment.etc.\"example\".text = \"./nails/configuration.nix\";\n  imports = [\n    ./nails/configuration.nix\n    ./foo.nix\n  ];\n}\n"
+    );
+}
+
+#[test]
+fn test_ensure_nails_import_block_ignores_dotted_and_larger_identifier_matches() {
+    let original =
+        "{ ... }: {\n  config.imports = [ ./foo.nix ];\n  importsExtra = [ ./bar.nix ];\n}\n";
+
+    let updated = ensure_nails_import_block(original);
+
+    assert_eq!(
+        updated,
+        "# NAILS: injected import (do not edit)\nimports = [\n  ./nails/configuration.nix\n];\n\n{ ... }: {\n  config.imports = [ ./foo.nix ];\n  importsExtra = [ ./bar.nix ];\n}\n"
+    );
+}
+
+#[test]
 fn test_stage_hidden_config_symlink_creates_dir_and_symlink() {
     let fs = MockFilesystem::new();
     let hidden_path = std::path::PathBuf::from("/mnt/hidden");
