@@ -51,7 +51,6 @@ jobs:
           EOF
             printf '| PR | `#%s` |\n' '${{ github.event.pull_request.number }}'
             printf '| Head repository | `%s` |\n' '${{ github.event.pull_request.head.repo.full_name }}'
-            printf '| Head ref | `%s` |\n' '${{ github.event.pull_request.head.ref }}'
             printf '| Head SHA | `%s` |\n' '${{ github.event.pull_request.head.sha }}'
             printf '| Base branch | `%s` |\n' '${{ github.event.pull_request.base.ref }}'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -68,7 +67,6 @@ jobs:
       reason: ${{ steps.resolve.outputs.reason }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
       checkout_repository: ${{ steps.resolve.outputs.checkout_repository }}
-      checkout_ref: ${{ steps.resolve.outputs.checkout_ref }}
       checkout_sha: ${{ steps.resolve.outputs.checkout_sha }}
     steps:
       - name: Resolve trusted checkout target
@@ -96,7 +94,6 @@ jobs:
           reason = ""
           pr_number = os.environ.get("PR_NUMBER", "")
           checkout_repository = repo
-          checkout_ref = os.environ["GITHUB_REF"]
           checkout_sha = os.environ["GITHUB_SHA"]
 
           def write_output(name, value):
@@ -131,7 +128,6 @@ jobs:
               if pr["base"]["ref"] != "main":
                   raise SystemExit(f"PR #{pr_number} no longer targets main.")
               checkout_repository = pr["head"]["repo"]["full_name"]
-              checkout_ref = pr["head"]["ref"]
               checkout_sha = pr["head"]["sha"]
               run_mode = "pr"
               reason = (
@@ -147,7 +143,6 @@ jobs:
           write_output("reason", reason)
           write_output("pr_number", pr_number)
           write_output("checkout_repository", checkout_repository)
-          write_output("checkout_ref", checkout_ref)
           write_output("checkout_sha", checkout_sha)
 
           with open(summary_path, "a", encoding="utf-8") as summary:
@@ -158,7 +153,6 @@ jobs:
               summary.write(f"| Run mode | `{run_mode}` |\n")
               summary.write(f"| PR number | `{pr_number or 'n/a'}` |\n")
               summary.write(f"| Checkout repository | `{checkout_repository}` |\n")
-              summary.write(f"| Checkout ref | `{checkout_ref}` |\n")
               summary.write(f"| Checkout SHA | `{checkout_sha}` |\n")
               summary.write(f"| Reason | {reason} |\n")
           PY
@@ -178,7 +172,6 @@ jobs:
       workflow-started-epoch: ${{ needs.resolve-run-context.outputs.workflow_started_epoch }}
       target: live
       checkout-repository: ${{ needs.resolve-run-context.outputs.checkout_repository }}
-      checkout-ref: ${{ needs.resolve-run-context.outputs.checkout_ref }}
       checkout-sha: ${{ needs.resolve-run-context.outputs.checkout_sha }}
 
   full-forensics-eval-result:
