@@ -1,26 +1,6 @@
 name: Full Forensics Eval
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'nix/forensics-eval/**'
-      - 'scripts/run-forensics-eval.sh'
-      - 'scripts/run-forensics-eval-tests.sh'
-      - '.github/workflows/forensics-eval-full.yml'
-      - '.github/workflows/forensics-eval-full-shard.yml'
-      - 'flake.nix'
-      - 'flake.lock'
-  push:
-    branches: [main]
-    paths:
-      - 'nix/forensics-eval/**'
-      - 'scripts/run-forensics-eval.sh'
-      - 'scripts/run-forensics-eval-tests.sh'
-      - '.github/workflows/forensics-eval-full.yml'
-      - '.github/workflows/forensics-eval-full-shard.yml'
-      - 'flake.nix'
-      - 'flake.lock'
   workflow_dispatch:
 
 permissions:
