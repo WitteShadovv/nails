@@ -10,8 +10,9 @@ This repository is public. The CI and release workflows are written for a public
 |---|---|---|
 | `.github/workflows/ci.yml` | Primary quality gate for Rust code, coverage, dependency policy, SBOM generation, flaky-test detection, and benchmark enforcement | Push to `main`/`dev`, PRs targeting `main`/`dev`, weekly schedule, manual dispatch |
 | `.github/workflows/e2e-tests.yml` | Nix-based end-to-end validation for the fast CI E2E subset | Push/PR to `dev` with path filters, manual dispatch |
-| `.github/workflows/e2e-tests-full.yml` | Full Hetzner-backed E2E suite for trusted `main` pushes and maintainer-triggered manual runs | Push to `main`, PRs targeting `main`, manual dispatch |
-| `.github/workflows/forensics-eval-full.yml` | Full Hetzner-backed forensics-eval suite, executed as a single live-target job on trusted manual runs | PRs targeting `main`, manual dispatch |
+| `.github/workflows/hetzner-pr-approval.yml` | Metadata-only maintainer approval gate for Hetzner-backed PR follow-up runs | `pull_request_target` on `main` for open/sync/label events |
+| `.github/workflows/e2e-tests-full.yml` | Full Hetzner-backed E2E suite for trusted `main` pushes, manual runs, and approved PR follow-up dispatches | Push to `main` with path filters, manual dispatch |
+| `.github/workflows/forensics-eval-full.yml` | Full Hetzner-backed forensics-eval suite, executed as a single live-target job on trusted manual runs and approved PR follow-up dispatches | Manual dispatch |
 | `.github/workflows/nix-pr-verify.yml` | Verifies the canonical `.#nails-release` derivation on pushes and PRs | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
 | `.github/workflows/release.yml` | Builds the canonical release bundle, verifies determinism, generates SBOMs, creates attestations, and publishes public prereleases from `main` | Push to `main`/`dev`, manual dispatch |
 | `.github/workflows/reproducibility.yml` | Reusable workflow that performs two independent rebuilds and compares the resulting release bundles | Called from `release.yml`, manual dispatch |
@@ -54,8 +55,12 @@ This keeps suite membership in one source of truth under `nix/e2e-tests/default.
 ### `e2e-tests-full.yml` behavior
 
 - The workflow runs `./scripts/run-e2e-tests.sh all` on an ephemeral Hetzner self-hosted runner.
-- It uses `pull_request` (never `pull_request_target`), but only provisions the runner for trusted `push` and `workflow_dispatch` contexts.
-- All PRs fail at the trust gate with an explicit message instead of provisioning, because secret-backed self-hosted runners are unsafe in PR contexts. Maintainers must use `workflow_dispatch` for trusted manual validation.
+- Public PR approval now flows through `.github/workflows/hetzner-pr-approval.yml`, which uses `pull_request_target` in a strictly metadata-only way: it never checks out or executes PR code.
+- Maintainers approve a PR for the full suite by applying the `safe-to-test:e2e-full` label.
+- The approval label is bound to the current PR head SHA. On new commits (`synchronize`), the metadata-only approval workflow removes the label and requires re-approval.
+- After approval, the trusted default-branch workflow is dispatched via `workflow_dispatch`, re-validates that the PR is still open, still carries the required approval label, and still points at the approved repository/ref/SHA, then provisions Hetzner runners only if that validation still passes.
+- Commit-status visibility is provided on same-repository PR heads with the `Hetzner / Full E2E` context; fork PR approvals still work, but cross-repository status writes are intentionally skipped.
+- The shard workflow checks out the exact approved SHA with `persist-credentials: false` and verifies that `HEAD` matches before executing PR code.
 - The workflow provisions the runner on a GitHub-hosted job, runs the suite on the returned self-hosted label, and always attempts teardown afterward.
 - The reusable shard workflow now uses an explicit minimal secret contract instead of `secrets: inherit`: `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID`.
 - Required repository configuration: `PERSONAL_ACCESS_TOKEN` for self-hosted runner registration, `HCLOUD_TOKEN` for Hetzner API create/delete, and `HCLOUD_SSH_KEY_ID` as a repository secret or repository variable for SSH bootstrap.
@@ -66,8 +71,10 @@ This keeps suite membership in one source of truth under `nix/e2e-tests/default.
 - The workflow runs a single Hetzner-backed job through `.github/workflows/forensics-eval-full-shard.yml` on one ephemeral self-hosted runner.
 - That reusable workflow now invokes `./scripts/run-forensics-eval-tests.sh live` with no sharding.
 - The `live` target is the metadata-defined built-in live-supported group, which currently resolves to `direct-baseline/direct-headless`.
-- The workflow runs on `workflow_dispatch` and on pull requests targeting `main`.
-- PR-triggered runs fail at the trust gate and never auto-provision secret-backed Hetzner runners. Maintainers must use `workflow_dispatch` for trusted manual validation.
+- Public PR approval uses the same metadata-only `.github/workflows/hetzner-pr-approval.yml` gate, with the `safe-to-test:forensics-full` label.
+- Approval is invalidated on new commits, and the trusted follow-up run re-validates the PR metadata plus current approval-label presence before provisioning any Hetzner runner.
+- Commit-status visibility is provided on same-repository PR heads with the `Hetzner / Full Forensics Eval` context; fork PR approvals still work, but cross-repository status writes are intentionally skipped.
+- The reusable worker checks out the exact approved SHA with `persist-credentials: false` and verifies that `HEAD` matches before executing PR code.
 - The reusable shard workflow now uses an explicit minimal secret contract instead of `secrets: inherit`: `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID`.
 - The single run uploads only JSON summaries (`summary.json`, compare `summary.json`, and `campaign-summary.json`); markdown reports, raw evidence bundles, analyzer markdown reports with evidence snippets, and `run-manifest.json` are not uploaded.
 - Required repository configuration matches the full E2E workflow: `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID` (the SSH key ID may be stored as a repository variable instead of a secret).

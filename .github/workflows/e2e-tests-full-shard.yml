@@ -7,6 +7,18 @@ on:
         description: Unix epoch when the parent workflow started
         required: true
         type: string
+      checkout-repository:
+        description: Repository to checkout for this shard
+        required: true
+        type: string
+      checkout-ref:
+        description: Ref metadata associated with the approved checkout target
+        required: true
+        type: string
+      checkout-sha:
+        description: Exact commit SHA to execute on the Hetzner runner
+        required: true
+        type: string
       shard-index:
         description: 1-based shard index
         required: true
@@ -534,11 +546,27 @@ jobs:
           ls -ld "$HOME"
           echo "::endgroup::"
 
-      - name: Checkout repository
+      - name: Checkout repository at exact approved SHA
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          fetch-depth: 0
+          repository: ${{ inputs.checkout-repository }}
+          ref: ${{ inputs.checkout-sha }}
+          fetch-depth: 1
           persist-credentials: false
+
+      - name: Verify checked out revision
+        run: |
+          set -euo pipefail
+
+          expected_sha='${{ inputs.checkout-sha }}'
+          actual_sha="$(git rev-parse HEAD)"
+
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "::error::Checked out SHA '$actual_sha' does not match expected '$expected_sha'."
+            exit 1
+          fi
+
+          echo "Checked out exact SHA $actual_sha from ${{ inputs.checkout-repository }} (${{ inputs.checkout-ref }})."
 
       - name: Verify normalized runner environment
         run: |
