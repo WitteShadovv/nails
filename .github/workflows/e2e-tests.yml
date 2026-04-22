@@ -1,5 +1,5 @@
 # E2E Tests for NAILS
-# Runs comprehensive end-to-end tests using NixOS VM testing
+# Runs the fast smoke E2E subset using NixOS VM testing
 
 name: E2E Tests
 
@@ -10,6 +10,8 @@ on:
       - 'nails-core/**'
       - 'nails-cli/**'
       - 'nix/**'
+      - 'scripts/run-e2e-tests.sh'
+      - '.github/workflows/e2e-tests.yml'
       - 'flake.nix'
       - 'flake.lock'
       - 'Cargo.toml'
@@ -20,6 +22,8 @@ on:
       - 'nails-core/**'
       - 'nails-cli/**'
       - 'nix/**'
+      - 'scripts/run-e2e-tests.sh'
+      - '.github/workflows/e2e-tests.yml'
       - 'flake.nix'
       - 'flake.lock'
       - 'Cargo.toml'
@@ -30,6 +34,10 @@ on:
         description: 'Force run e2e tests manually'
         required: false
         default: 'false'
+
+concurrency:
+  group: e2e-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   e2e-tests:
@@ -54,7 +62,7 @@ jobs:
           name: nix-community
           skipPush: true
 
-      - name: Run CI E2E suite
+      - name: Run CI smoke E2E suite
         env:
           NAILS_E2E_DEFAULT_TARGET: ci
         run: ./scripts/run-e2e-tests.sh --verbose
