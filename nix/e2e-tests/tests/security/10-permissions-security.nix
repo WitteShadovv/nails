@@ -7,15 +7,18 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   symlinkFixture = ./../../fixtures/configs/symlink-target.yaml;
   traversalFixture = ./../../fixtures/configs/path-traversal.yaml;
-in {
+in
+{
   name = "permissions-security";
   meta.tags = [ "security" ];
 
   nodes = {
-    machine = { ... }: {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
+    machine =
+      { ... }:
+      {
+        imports = [ ./../../lib/vm-config.nix ];
+        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+      };
   };
 
   testScript = _: ''
@@ -32,10 +35,11 @@ in {
     machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
 
     log_files = machine.succeed(
-        "find /var/log /tmp /run -name '*nails*' -type f 2>/dev/null || echo 'NO_LOGS'"
+        "find /var/log /run /mnt/hidden-volume/logs /tmp -type f "
+        "\\( -name 'nails*.log' -o -path '*/log/*nails*' \\) 2>/dev/null || true"
     ).strip()
 
-    if "NO_LOGS" not in log_files:
+    if log_files:
         for log_file in log_files.split("\n"):
             log_file = log_file.strip()
             if log_file:

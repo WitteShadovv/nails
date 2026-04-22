@@ -1,15 +1,22 @@
 # Test 46: Init Idempotency
 
 { self, ... }:
-let hiddenVolume = import ./../../lib/hidden-volume.nix;
-in {
+let
+  hiddenVolume = import ./../../lib/hidden-volume.nix;
+in
+{
   name = "init-idempotency";
-  meta.tags = [ "init" "smoke" ];
+  meta.tags = [
+    "init"
+    "smoke"
+  ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     machine.start()
@@ -18,16 +25,6 @@ in {
     with subtest("prepare bare hidden volume"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("bash -lc 'shopt -s dotglob nullglob && rm -rf /mnt/hidden-volume/*'")
-        machine.succeed("mkdir -p /etc/nixos")
-        machine.succeed(
-            """cat > /etc/nixos/hardware-configuration.nix <<'EOF'
-    { config, lib, pkgs, modulesPath, ... }:
-    {
-      imports = [ (modulesPath + \"/installer/scan/not-detected.nix\") ];
-    }
-    EOF"""
-        )
-
     with subtest("first init establishes baseline"):
         machine.succeed("nails init /mnt/hidden-volume")
         machine.succeed("printf '\n# SENTINEL_KEEP\n' >> /mnt/hidden-volume/config/nails.yaml")

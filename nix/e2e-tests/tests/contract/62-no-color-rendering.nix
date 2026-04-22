@@ -6,15 +6,20 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   contractHelpers = import ./../../lib/contract-helpers.nix;
-in {
+in
+{
   name = "no-color-rendering";
   meta.tags = [ "contract" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages =
-      [ self.packages.x86_64-linux.nails pkgs.python3 ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.python3
+      ];
+    };
 
   testScript = _: ''
     import shlex
@@ -48,6 +53,9 @@ in {
         assert_has_ansi(baseline["combined"], "baseline activation output")
         canonical_deactivate(headless_config, unit_name="nails-deactivate-no-color-baseline")
 
+    with subtest("remount hidden volume after baseline reboot"):
+        machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
+
     with subtest("--no-color suppresses ANSI escapes"):
         disabled = run_pty_command_capture(
             "no-color-flag",
@@ -60,6 +68,9 @@ in {
         assert disabled["rc"] == 0, disabled
         assert_no_ansi(disabled["combined"], "--no-color activation output")
         canonical_deactivate(headless_config, unit_name="nails-deactivate-no-color-flag")
+
+    with subtest("remount hidden volume after no-color reboot"):
+        machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
 
     with subtest("NO_COLOR environment variable suppresses ANSI escapes"):
         env_disabled = activate_via_tty("no-color-env", command_prefix="NO_COLOR=1")

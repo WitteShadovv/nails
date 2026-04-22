@@ -1,7 +1,7 @@
 # Test 74: Emergency From Activating
 # Self-checks: with subtest; no time.sleep sync; hard assertions only; meta.tags set; shared helpers only; forensic invariants preserved.
 
-{ self, ... }:
+{ self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -16,7 +16,10 @@ in
     { ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.python3
+      ];
     };
 
   testScript = _: ''
@@ -72,13 +75,17 @@ in
         status = read_status_json(config_path=headless_config)
         assert status["state"].startswith("Active"), status
 
-        prefix = "/run/nails-tests/emergency-from-activating-cleanup"
-        capture = run_captured_command(
-            prefix,
-            f"nails --config {headless_config} emergency --no-countdown",
+        result = run_shellless_transient_command(
+            "/run/nails-tests/emergency-from-activating-cleanup",
+            [
+                "nails",
+                "--config",
+                headless_config,
+                "emergency",
+                "--no-countdown",
+            ],
             unit_name="nails-emergency-from-activating-cleanup",
         )
-        result = read_command_result(prefix, unit_name=capture["unit_name"], timeout=30)
 
         assert result["rc"] == 0, result
         assert "Emergency deactivation complete" in result["stdout"], result

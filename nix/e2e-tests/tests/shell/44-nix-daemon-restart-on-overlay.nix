@@ -8,14 +8,17 @@ let
   assertions = import ./../../lib/assertions.nix;
   shellHelpers = import ./../../lib/shell-helpers.nix;
   sessionHelpers = import ./../../lib/session-helpers.nix;
-in {
+in
+{
   name = "nix-daemon-restart-on-overlay";
   meta.tags = [ "shell" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.runDetachedCommandFn}

@@ -31,14 +31,21 @@ pub fn execute(
     // Configure color output (must be done before any colored output)
     // Story 14.7: Integrate output module with NO_COLOR/--no-color/--plain support
     // Note: set_plain_mode() already handles colored::control::set_override()
-    if no_color || plain || std::env::var("NO_COLOR").is_ok() {
-        nails_core::set_plain_mode(true);
-    }
+    nails_core::set_plain_mode(plain);
+    nails_core::set_color_enabled(
+        !(plain
+            || no_color
+            || std::env::var("NO_COLOR").is_ok()
+            || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()),
+    );
 
     // Load configuration (Story 14.1)
     let config_path = nails_core::config::discover_config_path(config_override.as_deref());
 
-    let config = super::load_config_or_exit(&config_path, config_override.as_deref());
+    let mut config = super::load_config_or_exit(&config_path, config_override.as_deref());
+    config.loaded_config_path = config_override
+        .clone()
+        .or_else(|| Some(config_path.clone()));
 
     let state_path = config.state_file_path.clone();
     let hidden_volume_root = config.hidden_volume_root.clone();
@@ -170,6 +177,29 @@ mod tests {
             .expect("failed to run status subprocess test")
     }
 
+    fn run_subprocess_with_env(
+        case: &str,
+        config_path: Option<&std::path::Path>,
+        envs: &[(&str, &str)],
+    ) -> std::process::Output {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
+            .env("NAILS_STATUS_SUBPROCESS_CASE", case);
+
+        if let Some(path) = config_path {
+            command.env("NAILS_STATUS_SUBPROCESS_CONFIG", path);
+        }
+
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+
+        command
+            .output()
+            .expect("failed to run status subprocess test")
+    }
+
     #[test]
     fn subprocess_status_entrypoint() {
         let Ok(case) = std::env::var("NAILS_STATUS_SUBPROCESS_CASE") else {
@@ -181,6 +211,7 @@ mod tests {
         match case.as_str() {
             "plain" => execute(config_override, false, false, true, true),
             "json" => execute(config_override, true, false, false, false),
+            "no-color" => execute(config_override, false, true, false, true),
             "invalid-config" => execute(config_override, false, false, false, false),
             other => panic!("unknown status subprocess case: {other}"),
         }
@@ -237,6 +268,58 @@ mod tests {
         assert!(output.status.success(), "stdout={stdout}");
         assert!(stdout.contains("\"state\""));
         assert!(stdout.contains("\"security_posture\""));
+    }
+
+    #[test]
+    fn execute_status_no_color_keeps_unicode_without_ansi() {
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path().join("hidden-volume");
+        std::fs::create_dir_all(&hidden_root).unwrap();
+        let state_path = hidden_root.join("state.json");
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            config,
+            "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+            hidden_root.display(),
+            state_path.display()
+        )
+        .unwrap();
+
+        let output = run_subprocess("no-color", Some(config.path()));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(output.status.success(), "stdout={stdout}");
+        assert!(stdout.contains("🟢") || stdout.contains("🟡") || stdout.contains("🔴"));
+        assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
+    }
+
+    #[test]
+    fn execute_status_no_color_env_keeps_unicode_without_ansi() {
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path().join("hidden-volume");
+        std::fs::create_dir_all(&hidden_root).unwrap();
+        let state_path = hidden_root.join("state.json");
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            config,
+            "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+            hidden_root.display(),
+            state_path.display()
+        )
+        .unwrap();
+
+        let output = run_subprocess_with_env("no-color", Some(config.path()), &[("NO_COLOR", "1")]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(output.status.success(), "stdout={stdout}");
+        assert!(!stdout.is_ascii(), "stdout={stdout}");
+        assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
     }
 
     #[test]

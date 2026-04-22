@@ -5,15 +5,21 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-in {
+in
+{
   name = "state-integrity";
-  meta.tags = [ "security" "state" ];
+  meta.tags = [
+    "security"
+    "state"
+  ];
 
   nodes = {
-    machine = { ... }: {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
+    machine =
+      { ... }:
+      {
+        imports = [ ./../../lib/vm-config.nix ];
+        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+      };
   };
 
   testScript = _: ''

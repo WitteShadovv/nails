@@ -27,7 +27,7 @@ fn setup_nixos_config_check(fs: &MockFilesystem, hidden_root: &Path) {
     fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
     fs.mock_set_file_content(
         "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ imports = [ ./nails/configuration.nix ]; }",
+        "{ config, lib, pkgs, ... }:\n{ }",
     );
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
     fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
@@ -4804,6 +4804,12 @@ fn test_extended_overlay_full_lifecycle_integration() {
     assert!(fs.is_mounted(Path::new("/tmp")).unwrap());
 
     // PHASE 3: Emergency deactivation (AC5)
+    // MockFilesystem does not automatically reveal the clean underlay view after
+    // unmounting /etc, so simulate the base config that deactivation verifies.
+    fs.mock_set_file_content(
+        "/etc/nixos/hardware-configuration.nix",
+        "{ config, lib, pkgs, ... }:\n{ }",
+    );
     let result = NailsManager::emergency_deactivate(Arc::clone(&manager));
     assert!(result.is_ok(), "Deactivation should succeed: {:?}", result);
 
@@ -5862,6 +5868,112 @@ fn test_activation_ephemeral_mount_failure_rolls_back_persistent_mounts() {
         manager.lock().unwrap().current_state().unwrap(),
         SystemState::Inactive
     );
+}
+
+#[test]
+fn test_activation_rebuild_failure_rolls_back_all_mounted_state() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_file_content("/etc/nixos/hardware-configuration.nix", "{ ... }: { }");
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists("/etc", true);
+    fs.mock_set_path_exists("/home", true);
+
+    let upper_etc = hidden_root.join("overlays/etc/upper");
+    let work_etc = hidden_root.join("overlays/etc/work");
+    let upper_home = hidden_root.join("overlays/home/upper");
+    let work_home = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_etc).unwrap();
+    std::fs::create_dir_all(&work_etc).unwrap();
+    std::fs::create_dir_all(&upper_home).unwrap();
+    std::fs::create_dir_all(&work_home).unwrap();
+    fs.mock_set_path_exists(upper_etc.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
+    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+
+    let bin_dir = hidden_root.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let rebuild_script = bin_dir.join("nixos-rebuild");
+    std::fs::write(
+        &rebuild_script,
+        "#!/bin/sh\nprintf 'boom\\n' 1>&2\nexit 2\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&rebuild_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&rebuild_script, perms).unwrap();
+    }
+
+    let old_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var("PATH", &bin_dir);
+    }
+
+    let builder = crate::nixos::NixOSBuilder::new(
+        hidden_root.join("config"),
+        hidden_root.join("nails-system"),
+    );
+
+    let manager = Arc::new(Mutex::new(NailsManager::with_nixos(
+        fs.clone(),
+        Config {
+            hidden_volume_root: hidden_root.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![
+                OverlayConfig {
+                    name: "etc".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: upper_etc.clone(),
+                    work: work_etc.clone(),
+                    target: PathBuf::from("/etc"),
+                },
+                OverlayConfig {
+                    name: "home".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: upper_home.clone(),
+                    work: work_home.clone(),
+                    target: PathBuf::from("/home"),
+                },
+            ],
+            ..Config::test_default()
+        },
+        state_path.clone(),
+        builder,
+    )));
+
+    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("NixOS build+switch failed:"),
+        "unexpected activation error: {err_text}"
+    );
+
+    let manager_guard = manager.lock().unwrap();
+    assert_eq!(
+        manager_guard.current_state().unwrap(),
+        SystemState::Inactive
+    );
+    drop(manager_guard);
+
+    let loaded = StateFile::load(&state_path).unwrap();
+    assert_eq!(loaded.state, SystemState::Inactive);
+    assert!(loaded.overlay_status.is_empty());
+    assert!(loaded.failed_overlays.is_empty());
+
+    match old_path {
+        Some(path) => unsafe { std::env::set_var("PATH", path) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
 }
 
 // ========== Story 14.10: Error Format Validation Test ==========

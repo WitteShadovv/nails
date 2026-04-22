@@ -199,7 +199,10 @@ pub use shell::{ShellCleanupResult, ShellInstrumentation, ShellSetupResult};
 pub use logging::{LoggingConfig, LoggingManager};
 
 // Structured CLI output exports (Story 14.7: Standardize CLI Output)
-pub use output::{error, format_error, format_info, format_warn, info, set_plain_mode, warn};
+pub use output::{
+    error, format_error, format_info, format_warn, info, is_color_disabled, is_plain_mode_enabled,
+    set_color_enabled, set_plain_mode, warn,
+};
 
 // Desktop notification exports
 pub use notification::{Notification, dispatch_all as dispatch_notifications};

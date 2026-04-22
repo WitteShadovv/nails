@@ -239,6 +239,39 @@ fn test_cleanup_continues_on_permission_error() {
 }
 
 #[test]
+fn test_cleanup_preserves_explicit_config_path() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/tmp", true);
+    fs.mock_set_files_with_pattern(
+        "/tmp",
+        "nails",
+        &[
+            Path::new("/tmp/nails-tracker-integrity.yaml"),
+            Path::new("/tmp/nails-status.stdout"),
+        ],
+    );
+    fs.mock_set_path_exists("/tmp/nails-tracker-integrity.yaml", true);
+    fs.mock_set_path_exists("/tmp/nails-status.stdout", true);
+    fs.mock_set_path_type("/tmp/nails-tracker-integrity.yaml", "file");
+    fs.mock_set_path_type("/tmp/nails-status.stdout", "file");
+
+    let cleaner = TempFilesCleaner::new(fs.clone())
+        .with_preserved_paths(vec![PathBuf::from("/tmp/nails-tracker-integrity.yaml")]);
+
+    let cleaned = cleaner.clean().unwrap();
+
+    assert!(
+        cleaned.iter().any(|s| s.contains("nails-status.stdout")),
+        "expected non-preserved temp file to be cleaned"
+    );
+    assert!(
+        fs.path_exists(Path::new("/tmp/nails-tracker-integrity.yaml"))
+            .expect("preserved config path should still be queryable"),
+        "explicit config path should be preserved"
+    );
+}
+
+#[test]
 fn test_filesystem_trait_contract_honored() {
     // Verify MockFilesystem::find_files_with_pattern honors the trait contract
     // by only returning files that actually match the pattern

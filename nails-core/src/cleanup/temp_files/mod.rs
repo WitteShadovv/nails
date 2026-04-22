@@ -64,6 +64,7 @@ pub struct TempFilesCleaner<F: Filesystem> {
     filesystem: F,
     temp_dirs: Vec<PathBuf>,
     patterns: Vec<String>,
+    preserved_paths: Vec<PathBuf>,
     /// Use secure deletion (overwrite before delete)
     pub(crate) secure_delete: bool,
 }
@@ -79,6 +80,7 @@ impl<F: Filesystem> TempFilesCleaner<F> {
             filesystem,
             temp_dirs: vec![PathBuf::from("/tmp")],
             patterns: vec!["nails".to_string()],
+            preserved_paths: Vec::new(),
             secure_delete: false,
         }
     }
@@ -92,6 +94,12 @@ impl<F: Filesystem> TempFilesCleaner<F> {
     /// Set custom patterns to match (replaces defaults)
     pub fn with_patterns(mut self, patterns: Vec<String>) -> Self {
         self.patterns = patterns;
+        self
+    }
+
+    /// Preserve exact paths from cleanup even if they match a pattern.
+    pub fn with_preserved_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.preserved_paths = paths;
         self
     }
 
@@ -195,6 +203,12 @@ impl<F: Filesystem> TempFilesCleaner<F> {
         }
     }
 
+    fn should_preserve(&self, path: &Path) -> bool {
+        self.preserved_paths
+            .iter()
+            .any(|preserved| preserved == path)
+    }
+
     /// Execute temp files cleanup
     ///
     /// Scans configured directories and removes files/dirs matching patterns.
@@ -221,6 +235,10 @@ impl<F: Filesystem> TempFilesCleaner<F> {
                 match self.filesystem.find_files_with_pattern(temp_dir, pattern) {
                     Ok(files) => {
                         for file in files {
+                            if self.should_preserve(&file) {
+                                continue;
+                            }
+
                             // DESIGN DECISION: We trust Filesystem trait implementation
                             // find_files_with_pattern() is guaranteed to return only matching files
                             // No additional pattern verification needed here - that would violate DRY

@@ -6,14 +6,17 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   assertions = import ./../../lib/assertions.nix;
   overlayHelpers = import ./../../lib/overlay-helpers.nix;
-in {
+in
+{
   name = "overlay-bind-sync";
   meta.tags = [ "overlay" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${overlayHelpers.writeSrvOnlyConfigFn}

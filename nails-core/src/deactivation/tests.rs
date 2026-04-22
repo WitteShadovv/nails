@@ -565,6 +565,129 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
 
 #[test]
 #[serial]
+fn test_deactivation_clears_failed_overlays_tracker_state() {
+    let fs = MockFilesystem::new();
+    setup_system_profile_stub(&fs);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let state_file = StateFile {
+        state: SystemState::Active {
+            activated_at: chrono::Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+        },
+        failed_overlays: vec![crate::FailedOverlayInfo {
+            target: PathBuf::from("/etc"),
+            error_message: "previous failure".to_string(),
+            failed_at: chrono::Utc::now(),
+        }],
+        ..StateFile::default()
+    };
+    state_file
+        .save_with_custom_root(&state_path, &hidden_root)
+        .unwrap();
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        config,
+        state_path.clone(),
+    )));
+    {
+        let m = manager.lock().unwrap();
+        m.filesystem().mock_set_mounted(Path::new("/home"), true);
+    }
+
+    let orchestrator =
+        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
+            .with_decoy_profile_restore(false);
+
+    let report = orchestrator.run().expect("deactivation should succeed");
+    assert_eq!(report.final_state, SystemState::Inactive);
+
+    let loaded = StateFile::load(&state_path).unwrap();
+    assert!(loaded.failed_overlays.is_empty());
+    assert!(loaded.overlay_status.is_empty());
+}
+
+#[test]
+#[serial]
+fn test_emergency_cleanup_preserves_explicit_config_path() {
+    let fs = MockFilesystem::new();
+    setup_system_profile_stub(&fs);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let config_path = PathBuf::from("/tmp/nails-tracker-integrity.yaml");
+
+    fs.mock_set_path_exists("/tmp", true);
+    fs.mock_set_files_with_pattern(
+        "/tmp",
+        "nails",
+        &[config_path.as_path(), Path::new("/tmp/nails-status.stdout")],
+    );
+    fs.mock_set_path_exists(config_path.to_str().unwrap(), true);
+    fs.mock_set_path_type(config_path.to_str().unwrap(), "file");
+    fs.mock_set_path_exists("/tmp/nails-status.stdout", true);
+    fs.mock_set_path_type("/tmp/nails-status.stdout", "file");
+
+    let state_file = StateFile {
+        state: SystemState::Active {
+            activated_at: chrono::Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+        },
+        ..StateFile::default()
+    };
+    state_file
+        .save_with_custom_root(&state_path, &hidden_root)
+        .unwrap();
+
+    let mut config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+    config.loaded_config_path = Some(config_path.clone());
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        config,
+        state_path.clone(),
+    )));
+    {
+        let m = manager.lock().unwrap();
+        m.filesystem().mock_set_mounted(Path::new("/home"), true);
+    }
+
+    NailsManager::emergency_deactivate(Arc::clone(&manager))
+        .expect("emergency deactivation should succeed");
+
+    let m = manager.lock().unwrap();
+    assert!(
+        m.filesystem()
+            .path_exists(&config_path)
+            .expect("config path query should succeed"),
+        "explicit config path should survive emergency cleanup"
+    );
+    assert!(
+        !m.filesystem()
+            .path_exists(Path::new("/tmp/nails-status.stdout"))
+            .expect("temp status file query should succeed"),
+        "other temp files should still be cleaned"
+    );
+}
+
+#[test]
+#[serial]
 fn test_cleanup_failure_rollback() {
     let manager = setup_active_manager();
 

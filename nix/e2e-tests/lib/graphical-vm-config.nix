@@ -1,4 +1,5 @@
-{ lib, pkgs, ... }: {
+{ lib, pkgs, ... }:
+{
   imports = [ ./vm-config.nix ];
 
   swapDevices = lib.mkForce [ ];
@@ -20,5 +21,10 @@
   programs.zsh.enable = true;
   programs.fish.enable = true;
 
-  environment.systemPackages = with pkgs; [ zsh fish libnotify xterm ];
+  environment.systemPackages = with pkgs; [
+    zsh
+    fish
+    libnotify
+    xterm
+  ];
 }

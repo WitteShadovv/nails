@@ -4,14 +4,17 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   notificationHelpers = import ./../../lib/notification-helpers.nix;
-in {
+in
+{
   name = "notify-dispatch-signal-flow";
   meta.tags = [ "notification" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/graphical-vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/graphical-vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     import json

@@ -354,21 +354,21 @@
   '';
 
   transitionalStateFns = ''
-        import json
-        import shlex
+    import json
+    import shlex
 
-        def backup_state_file(state_path, backup_path):
-            machine.succeed(
-                "cp " + shlex.quote(state_path) + " " + shlex.quote(backup_path)
-            )
+    def backup_state_file(state_path, backup_path):
+        machine.succeed(
+            "cp " + shlex.quote(state_path) + " " + shlex.quote(backup_path)
+        )
 
-        def restore_state_file(state_path, backup_path):
-            machine.succeed(
-                "cp " + shlex.quote(backup_path) + " " + shlex.quote(state_path)
-            )
+    def restore_state_file(state_path, backup_path):
+        machine.succeed(
+            "cp " + shlex.quote(backup_path) + " " + shlex.quote(state_path)
+        )
 
-        def force_state_file_state(state_path, target_state):
-            script = f"""python3 - <<'PY'
+    def force_state_file_state(state_path, target_state):
+        script = f"""python3 - <<'PY'
     import json
 
     state_path = {json.dumps(state_path)}
@@ -403,6 +403,6 @@
     with open(state_path, 'w', encoding='utf-8') as handle:
         json.dump(payload, handle)
     PY"""
-            machine.succeed("/bin/sh -lc " + shlex.quote(script))
+        machine.succeed(script)
   '';
 }

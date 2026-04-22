@@ -116,6 +116,13 @@ pub enum OverlayMode {
 /// - Destroying data immediately on unmount
 /// - Preventing hidden storage capacity waste on transient files
 ///
+/// # Current Support Status
+///
+/// `extended_overlays` is configuration-gated but currently rejected during
+/// preflight. The present implementation/layout is not valid for overlayfs,
+/// because overlayfs requires `upperdir` and `workdir` to reside on the same
+/// mount.
+///
 /// # Forensic Rationale (Thesis Section 4.3.6)
 ///
 /// - Persistent overlays (home/etc): Data on hidden encrypted storage

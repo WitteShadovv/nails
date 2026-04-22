@@ -74,6 +74,63 @@ fn test_verify_base_config_clean_suspicious_hidden_path() {
 }
 
 #[test]
+fn test_verify_base_config_clean_detects_relative_nails_import() {
+    let fs = MockFilesystem::new();
+    let base_config = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
+
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        &base_config,
+        "{ ... }: { imports = [ ./nails/configuration.nix ]; }",
+    )
+    .unwrap();
+
+    let is_clean = verify_base_config_clean(&fs).unwrap();
+    assert!(
+        !is_clean,
+        "Base config should not be clean with relative nails import"
+    );
+}
+
+#[test]
+fn test_verify_base_config_clean_detects_nails_token_without_spaces() {
+    let fs = MockFilesystem::new();
+    let base_config = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
+
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        &base_config,
+        "{ config.nails.enable = true; }",
+    )
+    .unwrap();
+
+    let is_clean = verify_base_config_clean(&fs).unwrap();
+    assert!(
+        !is_clean,
+        "Base config should not be clean with dotted nails reference"
+    );
+}
+
+#[test]
+fn test_verify_base_config_clean_ignores_embedded_non_token_nails_text() {
+    let fs = MockFilesystem::new();
+    let base_config = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
+
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        &base_config,
+        "{ networking.hostName = \"snails-box\"; }",
+    )
+    .unwrap();
+
+    let is_clean = verify_base_config_clean(&fs).unwrap();
+    assert!(
+        is_clean,
+        "Base config should remain clean when 'nails' only appears inside a larger token"
+    );
+}
+
+#[test]
 fn test_inject_import_block_no_imports_prepends_full_block() {
     let fs = MockFilesystem::new();
     let target = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");

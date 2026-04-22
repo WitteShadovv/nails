@@ -14,19 +14,23 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   stateHelpers = import ./../../lib/state-helpers.nix;
-in {
+in
+{
   name = "state-crash-mid-activation";
   meta.tags = [ "state" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.runDetachedCommandFn}
     ${testHelpers.readStatusJsonFn}
+    ${testHelpers.waitForStatusStateFn}
     ${assertions.assertStatusStateFn}
     ${assertions.assertNoOverlaysFn}
     ${stateHelpers.captureCommandFns}
@@ -51,10 +55,7 @@ in {
             f"PATH={bin_dir}:$PATH nails --config {headless_config} activate --no-kill-session -y",
         )
         machine.wait_until_succeeds(f"test -f {entered_path}", timeout=180)
-        machine.wait_until_succeeds(
-            f"nails --config {headless_config} status --json | grep -F 'Activating'",
-            timeout=180,
-        )
+        wait_for_status_state("Activating", config_path=headless_config, timeout=180)
         assert_status_state("Activating", config_path=headless_config)
 
     with subtest("crash the machine mid-activation"):

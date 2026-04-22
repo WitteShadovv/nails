@@ -265,6 +265,7 @@ impl ConfigBuilder {
             milestone_tips,
             show_opsec_reminders,
             log_path,
+            loaded_config_path: None,
             max_log_size_mb,
             retention_days,
             color_scheme,

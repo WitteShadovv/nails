@@ -20,12 +20,27 @@
 //! let msg = output::format_error("Something went wrong");
 //! ```
 
+use crate::obfuscate;
 use colored::{Color, Colorize, control};
 use std::io::{Write, stderr, stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Global plain mode flag (thread-safe)
 static PLAIN_MODE: AtomicBool = AtomicBool::new(false);
+/// Global explicit color-disable flag (thread-safe)
+static COLOR_DISABLED: AtomicBool = AtomicBool::new(false);
+
+fn env_disables_color() -> bool {
+    std::env::var("NO_COLOR").is_ok() || std::env::var(obfuscate::env_no_color()).is_ok()
+}
+
+fn sync_color_override() {
+    if is_color_disabled() {
+        control::set_override(false);
+    } else {
+        control::unset_override();
+    }
+}
 
 /// Set plain mode globally (ASCII symbols instead of Unicode)
 ///
@@ -42,21 +57,25 @@ static PLAIN_MODE: AtomicBool = AtomicBool::new(false);
 /// ```
 pub fn set_plain_mode(plain: bool) {
     PLAIN_MODE.store(plain, Ordering::Relaxed);
-    // Update colored crate's override when plain mode changes
-    if plain {
-        control::set_override(false);
-    } else {
-        control::unset_override();
-    }
+    sync_color_override();
+}
+
+/// Explicitly enable or disable ANSI color output globally.
+pub fn set_color_enabled(enabled: bool) {
+    COLOR_DISABLED.store(!enabled, Ordering::Relaxed);
+    sync_color_override();
 }
 
 /// Check if plain mode is active
 ///
-/// Returns true if:
-/// - Plain mode was explicitly set via `set_plain_mode(true)`
-/// - NO_COLOR environment variable is set
-fn is_plain_mode() -> bool {
-    PLAIN_MODE.load(Ordering::Relaxed) || std::env::var("NO_COLOR").is_ok()
+/// Returns true if plain mode was explicitly set via `set_plain_mode(true)`.
+pub fn is_plain_mode_enabled() -> bool {
+    PLAIN_MODE.load(Ordering::Relaxed)
+}
+
+/// Check if ANSI color output is disabled.
+pub fn is_color_disabled() -> bool {
+    is_plain_mode_enabled() || COLOR_DISABLED.load(Ordering::Relaxed) || env_disables_color()
 }
 
 /// Format error message with red ✗ symbol (or [FAIL] in plain mode)
@@ -73,8 +92,10 @@ fn is_plain_mode() -> bool {
 /// // Plain mode: "[FAIL] Database connection failed"
 /// ```
 pub fn format_error(msg: &str) -> String {
-    if is_plain_mode() {
+    if is_plain_mode_enabled() {
         format!("[FAIL] {}", msg)
+    } else if is_color_disabled() {
+        format!("✗ {}", msg)
     } else {
         format!("{} {}", "✗".color(Color::Red), msg)
     }
@@ -94,8 +115,10 @@ pub fn format_error(msg: &str) -> String {
 /// // Plain mode: "[WARN] Disk space low"
 /// ```
 pub fn format_warn(msg: &str) -> String {
-    if is_plain_mode() {
+    if is_plain_mode_enabled() {
         format!("[WARN] {}", msg)
+    } else if is_color_disabled() {
+        format!("⚠ {}", msg)
     } else {
         format!("{} {}", "⚠".color(Color::Yellow), msg)
     }
@@ -115,8 +138,10 @@ pub fn format_warn(msg: &str) -> String {
 /// // Plain mode: "[PASS] All checks passed"
 /// ```
 pub fn format_info(msg: &str) -> String {
-    if is_plain_mode() {
+    if is_plain_mode_enabled() {
         format!("[PASS] {}", msg)
+    } else if is_color_disabled() {
+        format!("✓ {}", msg)
     } else {
         format!("{} {}", "✓".color(Color::Green), msg)
     }
@@ -192,10 +217,12 @@ mod tests {
     use serial_test::serial;
 
     // Helper to reset plain mode between tests
-    fn reset_plain_mode() {
+    fn reset_render_mode() {
         set_plain_mode(false);
+        set_color_enabled(true);
         unsafe {
             std::env::remove_var("NO_COLOR");
+            std::env::remove_var("NAILS_NO_COLOR");
         }
         // Force colored crate to always output colors in tests
         control::set_override(true);
@@ -204,7 +231,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_format_error_with_color() {
-        reset_plain_mode();
+        reset_render_mode();
         let result = format_error("test message");
         // Should contain the ✗ symbol and ANSI color codes
         assert!(result.contains("✗"));
@@ -216,7 +243,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_format_warn_with_color() {
-        reset_plain_mode();
+        reset_render_mode();
         let result = format_warn("warning text");
         // Should contain the ⚠ symbol and ANSI color codes
         assert!(result.contains("⚠"));
@@ -228,7 +255,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_format_info_with_color() {
-        reset_plain_mode();
+        reset_render_mode();
         let result = format_info("info text");
         // Should contain the ✓ symbol and ANSI color codes
         assert!(result.contains("✓"));
@@ -240,7 +267,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_format_error_plain_mode() {
-        reset_plain_mode();
+        reset_render_mode();
         set_plain_mode(true);
         let result = format_error("test message");
         assert_eq!(result, "[FAIL] test message");
@@ -251,7 +278,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_format_warn_plain_mode() {
-        reset_plain_mode();
+        reset_render_mode();
         set_plain_mode(true);
         let result = format_warn("warning text");
         assert_eq!(result, "[WARN] warning text");
@@ -262,7 +289,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_format_info_plain_mode() {
-        reset_plain_mode();
+        reset_render_mode();
         set_plain_mode(true);
         let result = format_info("info text");
         assert_eq!(result, "[PASS] info text");
@@ -273,14 +300,15 @@ mod tests {
     #[test]
     #[serial]
     fn test_no_color_env_var() {
-        reset_plain_mode();
+        reset_render_mode();
         unsafe {
             std::env::set_var("NO_COLOR", "1");
         }
 
-        // NO_COLOR should trigger plain mode
+        // NO_COLOR should disable ANSI colors without forcing ASCII/plain output
         let result = format_error("test");
-        assert_eq!(result, "[FAIL] test");
+        assert_eq!(result, "✗ test");
+        assert!(!result.contains("\u{001b}"));
 
         unsafe {
             std::env::remove_var("NO_COLOR");
@@ -290,39 +318,54 @@ mod tests {
     #[test]
     #[serial]
     fn test_is_plain_mode_explicit() {
-        reset_plain_mode();
-        assert!(!is_plain_mode());
+        reset_render_mode();
+        assert!(!is_plain_mode_enabled());
 
         set_plain_mode(true);
-        assert!(is_plain_mode());
+        assert!(is_plain_mode_enabled());
 
         set_plain_mode(false);
         control::set_override(true); // Re-enable for other tests
-        assert!(!is_plain_mode());
+        assert!(!is_plain_mode_enabled());
     }
 
     #[test]
     #[serial]
     fn test_is_plain_mode_no_color_env() {
-        reset_plain_mode();
-        assert!(!is_plain_mode());
+        reset_render_mode();
+        assert!(!is_plain_mode_enabled());
+        assert!(!is_color_disabled());
 
         unsafe {
             std::env::set_var("NO_COLOR", "1");
         }
-        assert!(is_plain_mode());
+        assert!(!is_plain_mode_enabled());
+        assert!(is_color_disabled());
 
         unsafe {
             std::env::remove_var("NO_COLOR");
         }
-        assert!(!is_plain_mode());
+        assert!(!is_plain_mode_enabled());
+        assert!(!is_color_disabled());
+    }
+
+    #[test]
+    #[serial]
+    fn test_explicit_no_color_disables_ansi_without_ascii_fallback() {
+        reset_render_mode();
+        set_color_enabled(false);
+
+        let result = format_warn("warning text");
+
+        assert_eq!(result, "⚠ warning text");
+        assert!(!result.contains("\u{001b}"));
     }
 
     // Integration test: verify that error/warn/info functions don't panic
     #[test]
     #[serial]
     fn test_print_functions_dont_panic() {
-        reset_plain_mode();
+        reset_render_mode();
         error("test error");
         warn("test warning");
         info("test info");

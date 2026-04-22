@@ -1,16 +1,25 @@
 # Test 18: Preflight Symlink Support
 
 { self, pkgs, ... }:
-let preflightHelpers = import ./../../lib/preflight-helpers.nix;
-in {
+let
+  preflightHelpers = import ./../../lib/preflight-helpers.nix;
+in
+{
   name = "preflight-symlink-support";
-  meta.tags = [ "preflight" "smoke" ];
+  meta.tags = [
+    "preflight"
+    "smoke"
+  ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages =
-      [ self.packages.x86_64-linux.nails pkgs.dosfstools ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.dosfstools
+      ];
+    };
 
   testScript = _: ''
     ${preflightHelpers.writeTextFileFn}

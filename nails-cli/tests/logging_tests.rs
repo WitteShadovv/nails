@@ -16,8 +16,15 @@ fn test_init_stdout_subscriber_default() {
     // Instead, we verify the function exists and has the right signature
     let _: fn(u8, bool, bool, Option<&std::path::Path>) =
         nails::cli::logging::init_stdout_subscriber;
-    let _: fn(u8, bool, bool, Option<&std::path::Path>, nails::cli::logging::StdoutFormat) =
-        nails::cli::logging::init_stdout_subscriber_with_mode;
+    let _: fn(
+        u8,
+        bool,
+        bool,
+        bool,
+        bool,
+        Option<&std::path::Path>,
+        nails::cli::logging::StdoutFormat,
+    ) = nails::cli::logging::init_stdout_subscriber_with_mode;
 }
 
 /// Test init_stdout_subscriber with quiet mode

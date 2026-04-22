@@ -11,6 +11,7 @@
 use super::manager::CleanupManager;
 use super::test_utils::{TEST_HOME, assert_path_is_safe, set_safe_test_home};
 use super::types::{CleanupConfig, CleanupMode, CleanupReport};
+use crate::Filesystem;
 use crate::MockFilesystem;
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 use std::path::{Path, PathBuf};
@@ -79,6 +80,7 @@ fn test_cleanup_config_custom() {
         temp_dirs: vec![PathBuf::from("/custom/tmp")],
         log_path: hidden_volume.join("logs"),
         hidden_volume_path: hidden_volume,
+        config_file_path: None,
         sanitize_memory: false,
         secure_delete: false,
         post_unmount_cleanup: true,
@@ -358,6 +360,7 @@ fn test_cleanup_manager_selective_cleanup() {
         temp_dirs: vec![],
         log_path: hidden_volume.join("logs"),
         hidden_volume_path: hidden_volume,
+        config_file_path: None,
         sanitize_memory: true, // Enable memory sanitization
         secure_delete: false,
         post_unmount_cleanup: true,
@@ -408,6 +411,7 @@ fn test_cleanup_manager_config_accessor() {
         temp_dirs: vec![PathBuf::from("/custom")],
         log_path: hidden_volume.join("logs"),
         hidden_volume_path: hidden_volume,
+        config_file_path: None,
         sanitize_memory: false,
         secure_delete: false,
         post_unmount_cleanup: true,
@@ -460,6 +464,7 @@ fn test_cleanup_manager_temp_files_integration() {
         temp_dirs: vec![PathBuf::from("/tmp")],
         log_path: hidden_volume.join("logs"),
         hidden_volume_path: hidden_volume,
+        config_file_path: None,
         sanitize_memory: false,
         secure_delete: false,
         post_unmount_cleanup: true,
@@ -534,6 +539,7 @@ fn test_cleanup_manager_temp_files_with_errors() {
         temp_dirs: vec![PathBuf::from("/tmp")],
         log_path: hidden_volume.join("logs"),
         hidden_volume_path: hidden_volume,
+        config_file_path: None,
         sanitize_memory: false,
         secure_delete: false,
         post_unmount_cleanup: true,
@@ -553,6 +559,121 @@ fn test_cleanup_manager_temp_files_with_errors() {
     );
     // TempFilesCleaner handles errors internally, doesn't propagate to report
     assert!(report.is_successful() || !report.errors.is_empty());
+}
+
+#[test]
+fn test_cleanup_manager_verification_ignores_preserved_explicit_temp_config() {
+    let fs = MockFilesystem::new();
+    let config_path = PathBuf::from("/tmp/nails-headless.yaml");
+
+    fs.mock_set_path_exists("/tmp", true);
+    fs.mock_set_files_with_pattern("/tmp", "nails", &[config_path.as_path()]);
+    fs.mock_set_path_exists(config_path.to_str().unwrap(), true);
+    fs.mock_set_path_type(config_path.to_str().unwrap(), "file");
+
+    let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+    let config = CleanupConfig {
+        clear_history: false,
+        clear_temp_files: true,
+        clear_logs: false,
+        history_patterns: vec!["nails".to_string(), "cryptsetup".to_string()],
+        temp_dirs: vec![PathBuf::from("/tmp")],
+        log_path: hidden_volume.join("logs"),
+        hidden_volume_path: hidden_volume,
+        config_file_path: Some(config_path.clone()),
+        sanitize_memory: false,
+        secure_delete: false,
+        post_unmount_cleanup: true,
+    };
+
+    let manager = CleanupManager::new(
+        fs.clone(),
+        config,
+        CleanupMode::Thorough {
+            verify_cleanup: true,
+        },
+    );
+
+    let report = manager.cleanup().unwrap();
+
+    assert_eq!(report.verification_passed, Some(true));
+    assert!(
+        !report
+            .errors
+            .iter()
+            .any(|error| error.contains("Temp files with 'nails' pattern may remain")),
+        "preserved explicit config path should not fail temp verification: {:?}",
+        report.errors
+    );
+    assert!(
+        fs.path_exists(&config_path)
+            .expect("preserved config path should remain queryable"),
+        "explicit config path should remain preserved"
+    );
+}
+
+#[test]
+fn test_cleanup_manager_verification_still_flags_non_preserved_temp_residue() {
+    let fs = MockFilesystem::new();
+    let config_path = PathBuf::from("/tmp/nails-headless.yaml");
+    let leftover_path = PathBuf::from("/tmp/nails-status.stdout");
+
+    fs.mock_set_path_exists("/tmp", true);
+    fs.mock_set_files_with_pattern(
+        "/tmp",
+        "nails",
+        &[config_path.as_path(), leftover_path.as_path()],
+    );
+    fs.mock_set_path_exists(config_path.to_str().unwrap(), true);
+    fs.mock_set_path_type(config_path.to_str().unwrap(), "file");
+    fs.mock_set_path_exists(leftover_path.to_str().unwrap(), true);
+    fs.mock_set_path_type(leftover_path.to_str().unwrap(), "file");
+    fs.mock_set_remove_should_fail(leftover_path.to_str().unwrap(), true);
+
+    let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+    let config = CleanupConfig {
+        clear_history: false,
+        clear_temp_files: true,
+        clear_logs: false,
+        history_patterns: vec!["nails".to_string(), "cryptsetup".to_string()],
+        temp_dirs: vec![PathBuf::from("/tmp")],
+        log_path: hidden_volume.join("logs"),
+        hidden_volume_path: hidden_volume,
+        config_file_path: Some(config_path.clone()),
+        sanitize_memory: false,
+        secure_delete: false,
+        post_unmount_cleanup: true,
+    };
+
+    let manager = CleanupManager::new(
+        fs.clone(),
+        config,
+        CleanupMode::Thorough {
+            verify_cleanup: true,
+        },
+    );
+
+    let report = manager.cleanup().unwrap();
+
+    assert_eq!(report.verification_passed, Some(false));
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.contains("Temp files with 'nails' pattern may remain")),
+        "non-preserved nails residue should still fail verification: {:?}",
+        report.errors
+    );
+    assert!(
+        fs.path_exists(&config_path)
+            .expect("preserved config path should remain queryable"),
+        "explicit config path should remain preserved"
+    );
+    assert!(
+        fs.path_exists(&leftover_path)
+            .expect("leftover temp path should remain after failed removal"),
+        "non-preserved residue should still exist for verification to catch"
+    );
 }
 
 /// AC6: Integration test verifying all three cleaners are invoked
@@ -629,6 +750,7 @@ fn test_full_cleanup_cycle_all_cleaners_invoked() {
         temp_dirs: vec![PathBuf::from("/tmp")],
         log_path: log_dir.clone(),
         hidden_volume_path: hidden_volume.clone(),
+        config_file_path: None,
         sanitize_memory: false,
         secure_delete: false,
         post_unmount_cleanup: true,
@@ -837,6 +959,7 @@ fn test_verification_fails_when_artifacts_remain() {
         temp_dirs: vec![PathBuf::from("/tmp")],
         log_path: hidden_volume.join("logs"),
         hidden_volume_path: hidden_volume,
+        config_file_path: None,
         sanitize_memory: false,
         secure_delete: false,
         post_unmount_cleanup: true,
@@ -882,6 +1005,7 @@ fn test_memory_sanitization_tracking() {
         temp_dirs: vec![],
         log_path: hidden_volume.join("logs"),
         hidden_volume_path: hidden_volume,
+        config_file_path: None,
         sanitize_memory: true, // Enable memory sanitization
         secure_delete: false,
         post_unmount_cleanup: true,
@@ -941,6 +1065,7 @@ fn test_cleanup_report_tracks_canary_findings() {
         temp_dirs: vec![PathBuf::from("/tmp")],
         log_path: hidden_volume.join("logs"),
         hidden_volume_path: hidden_volume,
+        config_file_path: None,
         sanitize_memory: false,
         secure_delete: false,
         post_unmount_cleanup: true,
@@ -1030,6 +1155,7 @@ fn test_cleanup_manager_uses_secure_delete_when_configured() {
         temp_dirs: vec![PathBuf::from("/tmp")],
         log_path: log_dir.clone(),
         hidden_volume_path: hidden_volume,
+        config_file_path: None,
         sanitize_memory: false,
         secure_delete: true, // Enable secure delete
         post_unmount_cleanup: true,

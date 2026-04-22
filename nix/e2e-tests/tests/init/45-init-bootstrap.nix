@@ -1,15 +1,22 @@
 # Test 45: Init Bootstrap
 
 { self, ... }:
-let hiddenVolume = import ./../../lib/hidden-volume.nix;
-in {
+let
+  hiddenVolume = import ./../../lib/hidden-volume.nix;
+in
+{
   name = "init-bootstrap";
-  meta.tags = [ "init" "smoke" ];
+  meta.tags = [
+    "init"
+    "smoke"
+  ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     machine.start()
@@ -42,16 +49,6 @@ in {
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("bash -lc 'shopt -s dotglob nullglob && rm -rf /mnt/hidden-volume/*'")
         machine.succeed("test -z \"$(ls -A /mnt/hidden-volume)\"")
-        machine.succeed("mkdir -p /etc/nixos")
-        machine.succeed(
-            """cat > /etc/nixos/hardware-configuration.nix <<'EOF'
-    { config, lib, pkgs, modulesPath, ... }:
-    {
-      imports = [ (modulesPath + \"/installer/scan/not-detected.nix\") ];
-    }
-    EOF"""
-        )
-
     with subtest("run init bootstrap"):
         machine.succeed("nails init /mnt/hidden-volume")
 

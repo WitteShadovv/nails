@@ -510,11 +510,11 @@ nails status
 
 ```bash
 # Check state file
-cat /mnt/hidden/state.json
+cat /mnt/hidden-volume/state.json
 
 # Force state reset (DANGEROUS - verify overlays are down first)
 findmnt | grep overlay  # Must be empty
-sudo rm /mnt/hidden/state.json
+sudo rm /mnt/hidden-volume/state.json
 
 # Re-run status
 nails status  # Should show INACTIVE

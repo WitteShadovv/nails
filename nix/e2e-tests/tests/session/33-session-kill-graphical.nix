@@ -7,19 +7,23 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   sessionHelpers = import ./../../lib/session-helpers.nix;
-in {
+in
+{
   name = "session-kill-graphical";
   meta.tags = [ "session" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/graphical-vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/graphical-vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.runDetachedCommandFn}
     ${testHelpers.readStatusJsonFn}
+    ${testHelpers.waitForStatusStateFn}
     ${testHelpers.canonicalDeactivateFn}
     ${assertions.assertStatusStateFn}
     ${assertions.assertOverlayMountedFn}
@@ -56,6 +60,7 @@ in {
         machine.wait_until_succeeds(
             "/bin/sh -lc 'mountpoint -q /home && [ \"$(findmnt -n -o FSTYPE /home)\" = overlay ]'"
         )
+        wait_for_status_state("active", config_path=headless_config)
         display_manager_after = read_systemd_active_enter_monotonic("display-manager.service")
         user_manager_after = read_systemd_active_enter_monotonic("user@1000.service")
         assert display_manager_after > display_manager_before, (

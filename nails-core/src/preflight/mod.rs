@@ -35,9 +35,8 @@
 //! let results = registry.run_all(&fs);
 //! ```
 
-use crate::{Filesystem, NailsError, Result, obfuscate};
+use crate::{Filesystem, NailsError, Result};
 use colored::Colorize;
-use std::env;
 use std::fmt;
 
 // ============================================================================
@@ -95,36 +94,35 @@ impl CheckResult {
     }
 }
 
-/// Check if color output should be disabled
-///
-/// Returns true if `NO_COLOR` or `NAILS_NO_COLOR` environment variables are set.
-/// This follows the standard NO_COLOR convention (https://no-color.org/).
-fn should_disable_color() -> bool {
-    env::var("NO_COLOR").is_ok() || env::var(obfuscate::env_no_color()).is_ok()
-}
-
 impl fmt::Display for CheckResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let no_color = should_disable_color();
+        let plain = crate::output::is_plain_mode_enabled();
+        let no_color = crate::output::is_color_disabled();
 
         match self {
             CheckResult::Pass(msg) => {
-                if no_color {
+                if plain {
                     write!(f, "[PASS] {}", msg)
+                } else if no_color {
+                    write!(f, "✓ {}", msg)
                 } else {
                     write!(f, "{} {}", "✓".green().bold(), msg.green())
                 }
             }
             CheckResult::Warn(msg) => {
-                if no_color {
+                if plain {
                     write!(f, "[WARN] {}", msg)
+                } else if no_color {
+                    write!(f, "⚠ {}", msg)
                 } else {
                     write!(f, "{} {}", "⚠".yellow().bold(), msg.yellow())
                 }
             }
             CheckResult::Fail(msg) => {
-                if no_color {
+                if plain {
                     write!(f, "[FAIL] {}", msg)
+                } else if no_color {
+                    write!(f, "✗ {}", msg)
                 } else {
                     write!(f, "{} {}", "✗".red().bold(), msg.red())
                 }
@@ -431,6 +429,30 @@ mod tests {
         let result = CheckResult::Fail("Critical issue".to_string());
         let s = format!("{}", result);
         assert!(s.contains("Critical issue") || s.contains("FAIL"));
+    }
+
+    #[test]
+    fn test_check_result_display_no_color_keeps_unicode_without_ansi() {
+        crate::output::set_plain_mode(false);
+        crate::output::set_color_enabled(false);
+
+        let rendered = format!("{}", CheckResult::Warn("Minor issue".to_string()));
+
+        assert_eq!(rendered, "⚠ Minor issue");
+        assert!(!rendered.contains('\u{001b}'));
+
+        crate::output::set_color_enabled(true);
+    }
+
+    #[test]
+    fn test_check_result_display_plain_uses_ascii() {
+        crate::output::set_plain_mode(true);
+
+        let rendered = format!("{}", CheckResult::Warn("Minor issue".to_string()));
+
+        assert_eq!(rendered, "[WARN] Minor issue");
+
+        crate::output::set_plain_mode(false);
     }
 
     #[test]

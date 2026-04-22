@@ -32,9 +32,13 @@ pub fn execute(
     use std::sync::{Arc, Mutex};
 
     // Configure color output
-    if no_color || plain || std::env::var("NO_COLOR").is_ok() {
-        nails_core::set_plain_mode(true);
-    }
+    nails_core::set_plain_mode(plain);
+    nails_core::set_color_enabled(
+        !(plain
+            || no_color
+            || std::env::var("NO_COLOR").is_ok()
+            || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()),
+    );
 
     // Convert CLI flags to Verbosity enum
     let verbosity = if quiet {
@@ -50,6 +54,9 @@ pub fn execute(
     // Load configuration
     let config_path = nails_core::config::discover_config_path(config_override.as_deref());
     let mut config = super::load_config_or_exit(&config_path, config_override.as_deref());
+    config.loaded_config_path = config_override
+        .clone()
+        .or_else(|| Some(config_path.clone()));
 
     // Apply --no-clear-history CLI override
     if no_clear_history {
@@ -71,10 +78,11 @@ pub fn execute(
         Ok(()) => {
             // Success - system will reboot
             if !json {
-                println!("✓ System configuration restored");
+                let success_prefix = if plain { "[PASS]" } else { "✓" };
+                println!("{success_prefix} System configuration restored");
                 println!("  Rebooting to decoy environment...");
                 eprintln!();
-                for line in DEACTIVATE_RECOVERY_GUIDANCE {
+                for line in deactivate_recovery_guidance(plain) {
                     eprintln!("{line}");
                 }
             } else {
@@ -85,7 +93,8 @@ pub fn execute(
         }
         Err(e) => {
             if !json {
-                eprintln!("✗ Deactivation failed: {}", e);
+                let error_prefix = if plain { "[FAIL]" } else { "✗" };
+                eprintln!("{error_prefix} Deactivation failed: {}", e);
             } else {
                 eprintln!("{{\"status\":\"error\",\"message\":\"{}\"}}", e);
             }
@@ -106,9 +115,26 @@ const DEACTIVATE_RECOVERY_GUIDANCE: &[&str] = &[
     "  2. The system is rebooted",
 ];
 
+const DEACTIVATE_RECOVERY_GUIDANCE_PLAIN: &[&str] = &[
+    "[WARN] Important: Hidden storage may still be mounted. Your system is not in a fully safe state until:",
+    "  1. The hidden volume is dismounted",
+    "  2. The system is rebooted",
+];
+
+fn deactivate_recovery_guidance(plain: bool) -> &'static [&'static str] {
+    if plain {
+        DEACTIVATE_RECOVERY_GUIDANCE_PLAIN
+    } else {
+        DEACTIVATE_RECOVERY_GUIDANCE
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DEACTIVATE_RECOVERY_GUIDANCE, deactivate_success_json, execute};
+    use super::{
+        DEACTIVATE_RECOVERY_GUIDANCE, deactivate_recovery_guidance, deactivate_success_json,
+        execute,
+    };
     use std::path::PathBuf;
 
     const SUBPROCESS_TEST_NAME: &str =
@@ -181,6 +207,14 @@ mod tests {
 
         assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
         assert!(stderr.contains("status") || stderr.contains("error") || stderr.contains("failed"));
+    }
+
+    #[test]
+    fn deactivate_plain_recovery_guidance_is_ascii_only() {
+        let combined = deactivate_recovery_guidance(true).join("\n");
+
+        assert!(combined.is_ascii(), "guidance={combined}");
+        assert!(combined.contains("[WARN]"));
     }
 
     #[test]

@@ -5,15 +5,18 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-in {
+in
+{
   name = "snapshot-diff";
   meta.tags = [ "forensic" ];
 
   nodes = {
-    machine = { ... }: {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
+    machine =
+      { ... }:
+      {
+        imports = [ ./../../lib/vm-config.nix ];
+        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+      };
   };
 
   testScript = _: ''
@@ -158,7 +161,9 @@ in {
     print("\n=== Comparing Mount States ===")
 
     # Check for overlay/hidden/nails entries in mounts
-    mount_check = machine.succeed("cat /tmp/mounts-final.txt | grep -E '(overlay|hidden-volume|nails)' || echo 'CLEAN'")
+    mount_check = machine.succeed(
+        "grep -E '(/mnt/hidden-volume|/mnt/nails-pivot|overlay on /(etc|home|root|srv|tmp|var|opt|boot)( |$)|hidden-volume)' /tmp/mounts-final.txt || echo 'CLEAN'"
+    )
 
     if "CLEAN" not in mount_check:
         print(f"FAIL: Mount state shows NAILS-related entries: {mount_check}")

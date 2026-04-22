@@ -19,7 +19,7 @@ use std::path::PathBuf;
 ///
 /// - `/mnt/hidden` or similar hidden mount points
 /// - `hidden/nixos` or similar hidden config paths
-/// - `nails` references (word boundary to avoid false positives like "snails")
+/// - Active `nails` references such as `./nails/configuration.nix`
 /// - `plausible` or `deniability` keywords
 /// - Standalone `hidden` keyword (with word boundaries)
 ///
@@ -79,57 +79,14 @@ pub fn verify_base_config_clean<F: Filesystem>(fs: &F) -> Result<bool> {
         return Ok(false);
     }
 
-    // Word boundary patterns (check for "hidden" as whole word)
-    // This catches: "hidden ", " hidden", " hidden ", "#hidden", etc.
-    // But NOT: "hiddenstorage", "snails", etc.
-    let hidden_word_boundaries = [
-        " hidden ",   // Middle of line with spaces
-        "\nhidden ",  // Start of line
-        " hidden\n",  // End of line
-        "\nhidden\n", // Whole line
-        "#hidden ",   // Comment without leading space
-        "#hidden\n",  // Comment at end of line
-        ";hidden ",   // After semicolon (Nix syntax)
-        ";hidden\n",  // Semicolon then end of line
-        ";hidden=",   // After semicolon with assignment (e.g., ;hidden=true)
-        " hidden\"",  // Before quote
-        "\"hidden ",  // After quote
-        " hidden=",   // Assignment without space (e.g., hidden=true)
-        "=hidden ",   // Assignment value
-        "=hidden\n",  // Assignment value at end of line
-    ];
-
-    for pattern in &hidden_word_boundaries {
-        if content_lower.contains(pattern) {
-            tracing::warn!("Base hardware-configuration.nix contains suspicious 'hidden' keyword");
-            return Ok(false);
-        }
+    if contains_bounded_ascii_token(&content_lower, "hidden") {
+        tracing::warn!("Base hardware-configuration.nix contains suspicious 'hidden' keyword");
+        return Ok(false);
     }
 
-    // "nails" keyword with word boundaries to avoid false positives
-    // like "snails", "fingernails", etc.
-    let nails_word_boundaries = [
-        " nails ",
-        "\nnails ",
-        " nails\n",
-        "\nnails\n",
-        "#nails ",
-        "#nails\n",
-        ";nails ",
-        ";nails\n",
-        " nails\"",
-        "\"nails ",
-        ".nails ", // After dot (e.g., config.nails)
-        ".nails\n",
-        ".nails.", // Dot notation (e.g., config.nails.enable)
-        ".nails=", // Assignment (e.g., config.nails=true)
-    ];
-
-    for pattern in &nails_word_boundaries {
-        if content_lower.contains(pattern) {
-            tracing::warn!("Base hardware-configuration.nix contains suspicious 'nails' keyword");
-            return Ok(false);
-        }
+    if contains_bounded_ascii_token(&content_lower, "nails") {
+        tracing::warn!("Base hardware-configuration.nix contains suspicious 'nails' keyword");
+        return Ok(false);
     }
 
     // Plausible deniability keywords (these are unlikely to appear legitimately)
@@ -139,4 +96,35 @@ pub fn verify_base_config_clean<F: Filesystem>(fs: &F) -> Result<bool> {
     }
 
     Ok(true)
+}
+
+fn contains_bounded_ascii_token(content: &str, token: &str) -> bool {
+    let bytes = content.as_bytes();
+    let token = token.as_bytes();
+
+    if token.is_empty() || bytes.len() < token.len() {
+        return false;
+    }
+
+    let mut i = 0usize;
+    while i + token.len() <= bytes.len() {
+        if &bytes[i..i + token.len()] == token {
+            let prev = i.checked_sub(1).and_then(|idx| bytes.get(idx)).copied();
+            let next = bytes.get(i + token.len()).copied();
+
+            if prev.is_none_or(|b| !is_ascii_identifier_char(b))
+                && next.is_none_or(|b| !is_ascii_identifier_char(b))
+            {
+                return true;
+            }
+        }
+
+        i += 1;
+    }
+
+    false
+}
+
+fn is_ascii_identifier_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
 }

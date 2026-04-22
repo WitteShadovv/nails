@@ -1,4 +1,6 @@
 # Test 24: Config Extended Overlays
+# Historical file name only: covers explicit persistent overlays for additional
+# targets, not `extended_overlays`.
 
 { self, ... }:
 let
@@ -6,14 +8,17 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   extendedFixture = ./../../fixtures/configs/extended-overlays.yaml;
-in {
+in
+{
   name = "config-extended-overlays";
   meta.tags = [ "config" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.canonicalDeactivateFn}
@@ -31,14 +36,14 @@ in {
     machine.succeed("cp ${extendedFixture} /tmp/extended-overlays.yaml")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    with subtest("extended overlay config mounts every configured target"):
+    with subtest("explicit persistent overlay config mounts every configured target"):
         machine.succeed("nails --config /tmp/extended-overlays.yaml activate --overlay-only --no-kill-session -y")
         for path in configured_targets:
             assert_overlay_mounted(path)
         status = assert_status_state("active", config_path="/tmp/extended-overlays.yaml")
         assert {overlay["path"] for overlay in status["overlays"]} == set(configured_targets), status
 
-    with subtest("writes land on hidden storage for persistent extended overlays"):
+    with subtest("writes land on hidden storage for explicitly configured persistent overlays"):
         machine.succeed("touch /var/lib/extended-proof")
         machine.succeed("touch /tmp/extended-proof")
         machine.succeed("mkdir -p /srv/extended /opt/extended")
@@ -49,7 +54,7 @@ in {
         assert_hidden_volume_has("/srv/extended/proof")
         assert_hidden_volume_has("/opt/extended/proof")
 
-    with subtest("reactivation restores persisted extended-overlay data"):
+    with subtest("reactivation restores persisted data for explicitly configured extended targets"):
         canonical_deactivate("/tmp/extended-overlays.yaml", unit_name="nails-deactivate-config-extended-phase-1")
         assert_status_state("inactive")
         assert_no_overlays(configured_targets)
@@ -72,7 +77,7 @@ in {
         machine.succeed("test -e /srv/extended/proof")
         machine.succeed("test -e /opt/extended/proof")
 
-    with subtest("clean deactivation removes overlays and hides persisted writes from the decoy boot"):
+    with subtest("clean deactivation removes explicit overlays and hides persisted writes from the decoy boot"):
         canonical_deactivate("/tmp/extended-overlays.yaml", unit_name="nails-deactivate-config-extended-phase-2")
         assert_status_state("inactive")
         assert_no_overlays(configured_targets)
@@ -81,7 +86,7 @@ in {
         machine.fail("test -e /srv/extended/proof")
         machine.fail("test -e /opt/extended/proof")
 
-    with subtest("hidden storage still contains persistent extended overlay writes"):
+    with subtest("hidden storage still contains persisted writes for explicitly configured extended targets"):
         machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
         assert_hidden_volume_has("/var/lib/extended-proof")
         assert_hidden_volume_has("/tmp/extended-proof")

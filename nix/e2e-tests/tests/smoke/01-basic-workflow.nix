@@ -5,15 +5,22 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-in {
+in
+{
   name = "basic-workflow";
-  meta.tags = [ "smoke" "lifecycle" "overlay" ];
+  meta.tags = [
+    "smoke"
+    "lifecycle"
+    "overlay"
+  ];
 
   nodes = {
-    machine = { ... }: {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
+    machine =
+      { ... }:
+      {
+        imports = [ ./../../lib/vm-config.nix ];
+        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+      };
   };
 
   testScript = _: ''

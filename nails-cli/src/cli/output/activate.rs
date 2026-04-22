@@ -131,14 +131,24 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
     use colored::Colorize;
     use nails_core::NailsError;
 
+    let plain = nails_core::is_plain_mode_enabled();
+    let no_color = nails_core::is_color_disabled();
+    let success_prefix = if plain { "[PASS]" } else { "✓" };
+    let error_prefix = if plain { "[FAIL]" } else { "✗" };
+    let bullet = if plain { "-" } else { "•" };
+
     match result {
         Ok(_) => {
-            println!(
-                "{}",
-                format!("✓ Activation complete in {:.1}s", duration)
-                    .green()
-                    .bold()
-            );
+            if no_color {
+                println!("{success_prefix} Activation complete in {:.1}s", duration);
+            } else {
+                println!(
+                    "{}",
+                    format!("✓ Activation complete in {:.1}s", duration)
+                        .green()
+                        .bold()
+                );
+            }
 
             // Print shell integration instructions (unless quiet mode)
             if !quiet {
@@ -146,68 +156,128 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
                     if let Some(ref warn) = setup.warning {
                         // Script generation failed, show warning with reason
                         println!();
-                        println!("{}", format!("Shell prompt not updated: {}", warn).yellow());
-                        println!(
-                            "{}",
-                            "You can manually source scripts from the hidden volume if needed"
-                                .dimmed()
-                        );
+                        if no_color {
+                            println!("Shell prompt not updated: {}", warn);
+                            println!(
+                                "You can manually source scripts from the hidden volume if needed"
+                            );
+                        } else {
+                            println!("{}", format!("Shell prompt not updated: {}", warn).yellow());
+                            println!(
+                                "{}",
+                                "You can manually source scripts from the hidden volume if needed"
+                                    .dimmed()
+                            );
+                        }
                     } else if setup.rc_modified {
                         // RC file was modified - new terminals auto-configured
                         println!();
-                        println!("{}", "Shell Integration:".cyan().bold());
-                        println!(
-                            "{}",
-                            "✓ New terminals will automatically have prompt, alias, and color scheme."
-                                .green()
-                        );
+                        if no_color {
+                            println!("Shell Integration:");
+                            println!(
+                                "{success_prefix} New terminals will automatically have prompt, alias, and color scheme."
+                            );
+                        } else {
+                            println!("{}", "Shell Integration:".cyan().bold());
+                            println!(
+                                "{}",
+                                "✓ New terminals will automatically have prompt, alias, and color scheme."
+                                    .green()
+                            );
+                        }
                         println!();
-                        println!("{}", "To apply to this terminal now, run:".dimmed());
+                        if no_color {
+                            println!("To apply to this terminal now, run:");
+                        } else {
+                            println!("{}", "To apply to this terminal now, run:".dimmed());
+                        }
                         for cmd in &setup.instructions {
-                            println!("  {}", cmd.bright_white());
+                            if no_color {
+                                println!("  {}", cmd);
+                            } else {
+                                println!("  {}", cmd.bright_white());
+                            }
                         }
                     } else {
                         // RC file not modified - show fallback instructions
                         println!();
-                        println!("{}", "Shell Integration:".cyan().bold());
-                        println!(
-                            "{}",
-                            "To update your prompt and add the 'nails' alias, run:".dimmed()
-                        );
+                        if no_color {
+                            println!("Shell Integration:");
+                            println!("To update your prompt and add the 'nails' alias, run:");
+                        } else {
+                            println!("{}", "Shell Integration:".cyan().bold());
+                            println!(
+                                "{}",
+                                "To update your prompt and add the 'nails' alias, run:".dimmed()
+                            );
+                        }
                         for cmd in &setup.instructions {
-                            println!("  {}", cmd.bright_white());
+                            if no_color {
+                                println!("  {}", cmd);
+                            } else {
+                                println!("  {}", cmd.bright_white());
+                            }
                         }
                     }
                 } else {
                     // No shell detected or unsupported shell
                     println!();
-                    println!(
-                        "{}",
-                        "Shell prompt not updated - no supported shell detected".yellow()
-                    );
-                    println!(
-                        "{}",
-                        "You can manually source scripts from the hidden volume if needed".dimmed()
-                    );
+                    if no_color {
+                        println!("Shell prompt not updated - no supported shell detected");
+                        println!(
+                            "You can manually source scripts from the hidden volume if needed"
+                        );
+                    } else {
+                        println!(
+                            "{}",
+                            "Shell prompt not updated - no supported shell detected".yellow()
+                        );
+                        println!(
+                            "{}",
+                            "You can manually source scripts from the hidden volume if needed"
+                                .dimmed()
+                        );
+                    }
                 }
             }
         }
         Err(e) => match e {
             NailsError::PreFlightCheckFailed(failures) => {
-                eprintln!("{}", "✗ Pre-flight checks failed:".red().bold());
-                for (name, reason) in failures {
-                    eprintln!("  • {}: {}", name.yellow(), reason);
+                if no_color {
+                    eprintln!("{error_prefix} Pre-flight checks failed:");
+                } else {
+                    eprintln!("{}", "✗ Pre-flight checks failed:".red().bold());
                 }
-                eprintln!(
-                    "\n  {}",
-                    "Fix: Review system state and ensure hidden volume is mounted".yellow()
-                );
+                for (name, reason) in failures {
+                    if no_color {
+                        eprintln!("  {bullet} {name}: {reason}");
+                    } else {
+                        eprintln!("  • {}: {}", name.yellow(), reason);
+                    }
+                }
+                if no_color {
+                    eprintln!("\n  Fix: Review system state and ensure hidden volume is mounted");
+                } else {
+                    eprintln!(
+                        "\n  {}",
+                        "Fix: Review system state and ensure hidden volume is mounted".yellow()
+                    );
+                }
             }
             _ => {
-                eprintln!("{}", format!("✗ Activation failed: {}", e).red().bold());
-                eprintln!("  {}", "Automatic rollback completed.".dimmed());
+                if no_color {
+                    eprintln!("{error_prefix} Activation failed: {}", e);
+                    eprintln!("  Automatic rollback completed.");
+                } else {
+                    eprintln!("{}", format!("✗ Activation failed: {}", e).red().bold());
+                    eprintln!("  {}", "Automatic rollback completed.".dimmed());
+                }
                 if let Some(state) = manager_state_debug(manager) {
-                    eprintln!("  {}: {}", "Current state".dimmed(), state);
+                    if no_color {
+                        eprintln!("  Current state: {}", state);
+                    } else {
+                        eprintln!("  {}: {}", "Current state".dimmed(), state);
+                    }
                 }
             }
         },

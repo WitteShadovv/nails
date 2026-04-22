@@ -146,6 +146,7 @@ impl<F: Filesystem> CleanupManager<F> {
         // from history_patterns. Temp files are always cleaned using "nails" pattern.
         let temp_cleaner = TempFilesCleaner::new(self.filesystem.clone())
             .with_temp_dirs(self.config.temp_dirs.clone())
+            .with_preserved_paths(self.config.config_file_path.iter().cloned().collect())
             .with_secure_delete(self.config.secure_delete);
 
         match temp_cleaner.clean() {
@@ -249,16 +250,25 @@ impl<F: Filesystem> CleanupManager<F> {
 
     /// Verify temp files are clean
     fn verify_temp_cleanup(&self) -> bool {
+        const TEMP_FILE_PATTERN: &str = "nails";
+
         for temp_dir in &self.config.temp_dirs {
-            for pattern in &self.config.history_patterns {
-                if let Ok(files) = self.filesystem.find_files_with_pattern(temp_dir, pattern)
-                    && !files.is_empty()
-                {
-                    return false;
-                }
+            if let Ok(files) = self
+                .filesystem
+                .find_files_with_pattern(temp_dir, TEMP_FILE_PATTERN)
+                && files.iter().any(|file| !self.is_preserved_temp_path(file))
+            {
+                return false;
             }
         }
         true
+    }
+
+    fn is_preserved_temp_path(&self, path: &Path) -> bool {
+        self.config
+            .config_file_path
+            .as_ref()
+            .is_some_and(|preserved| preserved == path)
     }
 
     /// Verify log files are clean

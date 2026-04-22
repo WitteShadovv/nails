@@ -7,15 +7,21 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   shellHelpers = import ./../../lib/shell-helpers.nix;
-in {
+in
+{
   name = "shell-rc-integration-zsh";
   meta.tags = [ "shell" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    programs.zsh.enable = true;
-    environment.systemPackages = [ self.packages.x86_64-linux.nails pkgs.zsh ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      programs.zsh.enable = true;
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.zsh
+      ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

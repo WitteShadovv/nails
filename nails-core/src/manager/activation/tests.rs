@@ -1,4 +1,6 @@
-use super::maybe_block_after_activating_state_transition;
+use super::test_gate::{
+    activation_gate_test_lock, maybe_block_after_activating_state_transition_inner,
+};
 use serial_test::serial;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -81,15 +83,17 @@ fn spawn_gate_releaser(gate_path: PathBuf, entered_path: PathBuf) -> std::thread
 #[test]
 #[serial]
 fn test_activation_gate_returns_immediately_when_disabled() {
+    let _gate_lock = activation_gate_test_lock().lock().unwrap();
     let _env_guard = ActivationGateEnvGuard::capture();
     ActivationGateEnvGuard::clear();
 
-    assert!(maybe_block_after_activating_state_transition().is_ok());
+    assert!(maybe_block_after_activating_state_transition_inner().is_ok());
 }
 
 #[test]
 #[serial]
 fn test_activation_gate_writes_default_entered_marker() {
+    let _gate_lock = activation_gate_test_lock().lock().unwrap();
     let _env_guard = ActivationGateEnvGuard::capture();
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let gate_path = temp_dir.path().join("activation.gate");
@@ -98,7 +102,7 @@ fn test_activation_gate_writes_default_entered_marker() {
     ActivationGateEnvGuard::set(&gate_path, None);
 
     let releaser = spawn_gate_releaser(gate_path.clone(), entered_path.clone());
-    maybe_block_after_activating_state_transition().expect("gate should be released");
+    maybe_block_after_activating_state_transition_inner().expect("gate should be released");
     releaser.join().expect("releaser thread should finish");
 
     assert!(
@@ -111,6 +115,7 @@ fn test_activation_gate_writes_default_entered_marker() {
 #[test]
 #[serial]
 fn test_activation_gate_writes_custom_entered_marker_and_creates_parent_dirs() {
+    let _gate_lock = activation_gate_test_lock().lock().unwrap();
     let _env_guard = ActivationGateEnvGuard::capture();
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let gate_path = temp_dir.path().join("activation.gate");
@@ -119,7 +124,7 @@ fn test_activation_gate_writes_custom_entered_marker_and_creates_parent_dirs() {
     ActivationGateEnvGuard::set(&gate_path, Some(&entered_path));
 
     let releaser = spawn_gate_releaser(gate_path.clone(), entered_path.clone());
-    maybe_block_after_activating_state_transition().expect("gate should be released");
+    maybe_block_after_activating_state_transition_inner().expect("gate should be released");
     releaser.join().expect("releaser thread should finish");
 
     assert!(
@@ -135,6 +140,7 @@ fn test_activation_gate_writes_custom_entered_marker_and_creates_parent_dirs() {
 #[test]
 #[serial]
 fn test_activation_gate_reports_directory_creation_failures() {
+    let _gate_lock = activation_gate_test_lock().lock().unwrap();
     let _env_guard = ActivationGateEnvGuard::capture();
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let blocker = temp_dir.path().join("not-a-directory");
@@ -143,7 +149,7 @@ fn test_activation_gate_reports_directory_creation_failures() {
     std::fs::write(&blocker, b"blocker").expect("blocker file");
     ActivationGateEnvGuard::set(&gate_path, Some(&entered_path));
 
-    let err = maybe_block_after_activating_state_transition().expect_err("should fail");
+    let err = maybe_block_after_activating_state_transition_inner().expect_err("should fail");
     let msg = err.to_string();
 
     assert!(msg.contains("Failed to prepare activation test marker directory"));
@@ -152,6 +158,7 @@ fn test_activation_gate_reports_directory_creation_failures() {
 #[test]
 #[serial]
 fn test_activation_gate_reports_marker_write_failures() {
+    let _gate_lock = activation_gate_test_lock().lock().unwrap();
     let _env_guard = ActivationGateEnvGuard::capture();
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let gate_path = temp_dir.path().join("activation.gate");
@@ -159,7 +166,7 @@ fn test_activation_gate_reports_marker_write_failures() {
     std::fs::create_dir_all(&entered_path).expect("entered dir");
     ActivationGateEnvGuard::set(&gate_path, Some(&entered_path));
 
-    let err = maybe_block_after_activating_state_transition().expect_err("should fail");
+    let err = maybe_block_after_activating_state_transition_inner().expect_err("should fail");
     let msg = err.to_string();
 
     assert!(msg.contains("Failed to write activation test marker"));

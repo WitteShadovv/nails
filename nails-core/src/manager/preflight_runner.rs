@@ -108,20 +108,34 @@ impl<F: Filesystem> NailsManager<F> {
         )));
 
         // Compute overlay targets for compatibility check
-        let overlay_target_paths: Vec<std::path::PathBuf> = match self.config.overlay_mode {
-            crate::config::OverlayMode::Auto => {
-                build_overlay_targets(&self.filesystem, &self.config)?
-            }
-            crate::config::OverlayMode::Explicit => self
-                .config
-                .overlays
-                .iter()
-                .map(|o| o.lower.clone())
-                .collect(),
-        };
+        let persistent_overlay_target_paths: Vec<std::path::PathBuf> =
+            match self.config.overlay_mode {
+                crate::config::OverlayMode::Auto => {
+                    build_overlay_targets(&self.filesystem, &self.config)?
+                }
+                crate::config::OverlayMode::Explicit => self
+                    .config
+                    .overlays
+                    .iter()
+                    .map(|o| o.lower.clone())
+                    .collect(),
+            };
+
+        let ephemeral_overlay_target_paths: Vec<std::path::PathBuf> =
+            if self.config.extended_overlays.enabled {
+                self.config
+                    .extended_overlays
+                    .directories
+                    .iter()
+                    .map(|dir| dir.path.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         registry.add_check(Box::new(OverlayCompatibilityCheck::new(
-            overlay_target_paths,
+            persistent_overlay_target_paths,
+            ephemeral_overlay_target_paths,
             self.config.hidden_volume_root.clone(),
         )));
 

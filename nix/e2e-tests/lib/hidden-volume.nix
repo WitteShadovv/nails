@@ -36,7 +36,6 @@
     mkdir -p /mnt/hidden-volume/config
     mkdir -p /mnt/hidden-volume/config/nixos
     mkdir -p /mnt/hidden-volume/nixos
-    mkdir -p /mnt/hidden-volume/.nails
 
     echo 'Hidden volume setup complete!'
     echo 'Volume mounted at: /mnt/hidden-volume'

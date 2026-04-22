@@ -1,4 +1,4 @@
-# Test 66: Overlay Ephemeral Semantics
+# Test 66: Overlay Ephemeral Semantics (unsupported layout)
 # Uses subtests, deterministic waits, hard assertions, and overlay tags only.
 
 { self, ... }:
@@ -6,20 +6,23 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
-in {
+  preflightHelpers = import ./../../lib/preflight-helpers.nix;
+in
+{
   name = "overlay-ephemeral";
   meta.tags = [ "overlay" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeEphemeralConfigFn}
-    ${testHelpers.runDetachedCommandFn}
-    ${testHelpers.canonicalDeactivateFn}
-    ${assertions.assertOverlayMountedFn}
+    ${preflightHelpers.runCommandCaptureFn}
+    ${preflightHelpers.commandAssertionsFn}
     ${assertions.assertNoOverlaysFn}
 
     machine.start()
@@ -29,26 +32,33 @@ in {
     write_ephemeral_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    with subtest("phase 1: activate RAM-backed extended overlays"):
-        machine.succeed(
+    with subtest("phase 1: unsupported ephemeral overlay layout is rejected before mount"):
+        activation = run_command_capture(
+            "overlay-ephemeral-activate",
             f"nails --config {config_path} activate --overlay-only --no-kill-session -y"
         )
-        for path in ["/var", "/tmp", "/srv", "/opt"]:
-            assert_overlay_mounted(path)
-        machine.succeed("findmnt -n -o FSTYPE /run/nails/srv-upper | grep -qx tmpfs")
-        machine.succeed("findmnt -n -o FSTYPE /run/nails/srv-work | grep -qx tmpfs")
+        assert_command_failed(activation)
+        assert_text_contains(
+            activation["stderr"],
+            [
+                "Pre-flight checks failed:",
+                "overlay-compatibility",
+                "Extended ephemeral overlays are currently unsupported",
+                "upperdir and workdir to reside on the same mount",
+            ],
+        )
 
-    with subtest("phase 2: writes land in tmpfs and not hidden storage"):
-        machine.succeed("touch /srv/ephemeral-marker")
-        machine.succeed("test -f /run/nails/srv-upper/ephemeral-marker")
-        machine.fail("test -e /mnt/hidden-volume/srv/ephemeral-marker")
-
-    with subtest("phase 3: deactivation drops ephemeral writes"):
-        canonical_deactivate(config_path, unit_name="nails-deactivate-overlay-ephemeral")
+    with subtest("phase 2: activation rejection leaves no ephemeral mounts behind"):
         assert_no_overlays(["/var", "/tmp", "/srv", "/opt"])
-        machine.fail("test -e /srv/ephemeral-marker")
-        machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
+        for path in [
+            "/run/nails/var-ephemeral",
+            "/run/nails/tmp-ephemeral",
+            "/run/nails/srv-ephemeral",
+            "/run/nails/opt-ephemeral",
+        ]:
+            machine.fail(f"mountpoint -q {path}")
+
+    with subtest("phase 3: hidden storage remains untouched"):
         machine.fail("test -e /mnt/hidden-volume/srv/ephemeral-marker")
-        machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';
 }

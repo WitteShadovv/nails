@@ -65,9 +65,13 @@ pub fn execute(
     // Configure color output (must be done before any colored output)
     // Story 14.7: Integrate output module with NO_COLOR/--no-color/--plain support
     // Note: set_plain_mode() already handles colored::control::set_override()
-    if no_color || plain || std::env::var("NO_COLOR").is_ok() {
-        nails_core::set_plain_mode(true);
-    }
+    nails_core::set_plain_mode(plain);
+    nails_core::set_color_enabled(
+        !(plain
+            || no_color
+            || std::env::var("NO_COLOR").is_ok()
+            || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()),
+    );
 
     // Convert CLI flags to Verbosity enum
     let verbosity = if quiet {
@@ -158,11 +162,14 @@ pub fn execute(
     };
 
     // Apply CLI overrides for explicit --config path too
-    let config = {
+    let mut config = {
         let mut c = config;
         c.apply_cli_overrides(&cli_overrides);
         c
     };
+    config.loaded_config_path = config_override
+        .clone()
+        .or_else(|| Some(config_path.clone()));
 
     // TEST SAFETY GUARD (Layer 1): Check if real operations are allowed
     if let Err(msg) = check_real_ops(&config.hidden_volume_root) {

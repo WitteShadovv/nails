@@ -5,32 +5,44 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-in {
+  assertions = import ./../../lib/assertions.nix;
+in
+{
   name = "reactivation";
   meta.tags = [ "lifecycle" ];
 
   nodes = {
-    machine = { ... }: {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
+    machine =
+      { ... }:
+      {
+        imports = [ ./../../lib/vm-config.nix ];
+        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+      };
   };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.runDetachedCommandFn}
+    ${testHelpers.readStatusJsonFn}
+    ${testHelpers.waitForStatusStateFn}
     ${testHelpers.canonicalDeactivateFn}
+    ${assertions.assertStatusStateFn}
+    ${assertions.assertOverlayMountedFn}
+    ${assertions.assertNoOverlaysFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/var/lib/nails-tests/nails-headless.yaml"
     write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
     print("\n=== Phase 1: First Activation ===")
     machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
     machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
+    wait_for_status_state("Active", config_path=headless_config)
+    assert_overlay_mounted("/home")
+    assert_status_state("Active", config_path=headless_config)
 
     machine.succeed("su - testuser -c 'echo REACTIVATION_DATA_1 > ~/reactivation-test.txt'")
     machine.succeed("su - testuser -c 'mkdir -p ~/reactivation-project/src'")
@@ -44,6 +56,8 @@ in {
     print("\n=== Phase 2: Deactivate ===")
     canonical_deactivate(headless_config, unit_name="nails-deactivate-reactivation-phase-2")
 
+    assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
+    assert_status_state("Inactive", config_path=headless_config)
     machine.fail("su - testuser -c 'test -f ~/reactivation-test.txt'")
     machine.fail("su - testuser -c 'test -d ~/reactivation-project'")
     print("✓ Data not visible in decoy state")
@@ -58,6 +72,9 @@ in {
 
     machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
     machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
+    wait_for_status_state("Active", config_path=headless_config)
+    assert_overlay_mounted("/home")
+    assert_status_state("Active", config_path=headless_config)
 
     machine.succeed("su - testuser -c 'test -f ~/reactivation-test.txt'")
     content = machine.succeed("su - testuser -c 'cat ~/reactivation-test.txt'").strip()
@@ -74,14 +91,13 @@ in {
     print("\n=== Phase 4: Final Deactivate ===")
     canonical_deactivate(headless_config, unit_name="nails-deactivate-reactivation-phase-4")
 
+    assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
+    assert_status_state("Inactive", config_path=headless_config)
     machine.fail("su - testuser -c 'test -f ~/reactivation-test.txt'")
     machine.fail("su - testuser -c 'test -f ~/reactivation-test2.txt'")
     machine.fail("su - testuser -c 'test -d ~/reactivation-project'")
-    machine.fail("mount | grep 'overlay on /home'")
     print("✓ All data cleaned after final deactivation")
 
-    status = machine.succeed("nails status")
-    assert "Inactive" in status or "INACTIVE" in status, f"Expected Inactive, got: {status}"
     print("✓ NAILS reports Inactive")
 
     print("\n=== All Re-activation Tests Passed ===")

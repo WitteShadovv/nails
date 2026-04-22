@@ -310,9 +310,10 @@ impl<F: Filesystem> NailsManager<F> {
         Ok(())
     }
 
-    /// Clear overlay_status in cached state without altering other fields.
+    /// Clear transient mount-tracking state in cached state without altering other fields.
     ///
-    /// Used during deactivation to avoid losing nixos_generation/config_fingerprint.
+    /// Used during deactivation to avoid losing nixos_generation/config_fingerprint
+    /// while still returning to a clean inactive tracker state.
     pub(crate) fn clear_overlay_status_in_cache(&self) -> Result<()> {
         let mut cached = self
             .cached_state
@@ -320,6 +321,7 @@ impl<F: Filesystem> NailsManager<F> {
             .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
         if let Some(ref mut state_file) = *cached {
             state_file.overlay_status.clear();
+            state_file.failed_overlays.clear();
         }
         Ok(())
     }

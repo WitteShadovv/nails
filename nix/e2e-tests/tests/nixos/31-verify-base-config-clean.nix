@@ -5,16 +5,24 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-in {
+in
+{
   name = "verify-base-config-clean";
   meta.tags = [ "nixos" ];
 
-  nodes.machine = { pkgs, ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages =
-      [ self.packages.x86_64-linux.nails pkgs.python3 ];
-    nix.settings.experimental-features = [ "nix-command" "flakes" ];
-  };
+  nodes.machine =
+    { pkgs, ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.python3
+      ];
+      nix.settings.experimental-features = [
+        "nix-command"
+        "flakes"
+      ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

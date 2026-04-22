@@ -2,16 +2,22 @@
 # Self-checks: with subtest; no time.sleep sync; hard assertions only; meta.tags set; shared helpers only; forensic invariants preserved.
 
 { self, pkgs, ... }:
-let testBinary = "${self.packages.x86_64-linux.nails}/bin/nails";
-in {
+let
+  testBinary = "${self.packages.x86_64-linux.nails}/bin/nails";
+in
+{
   name = "binary-obfuscation-scan";
   meta.tags = [ "security" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages =
-      [ self.packages.x86_64-linux.nails pkgs.binutils ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.binutils
+      ];
+    };
 
   testScript = _: ''
     machine.start()
@@ -28,7 +34,7 @@ in {
             "/tmp/nails.log",
             "/var/log/nails.log",
             "/mnt/hidden-volume",
-            ".nails/state.json",
+            "/mnt/hidden-volume/state.json",
             "NAILS_CANARY",
         ]
 

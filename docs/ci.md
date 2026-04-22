@@ -9,11 +9,11 @@ This repository is public. The CI and release workflows are written for a public
 | Workflow | Purpose | Triggers |
 |---|---|---|
 | `.github/workflows/ci.yml` | Primary quality gate for Rust code, coverage, dependency policy, SBOM generation, flaky-test detection, and benchmark enforcement | Push to `main`/`dev`, PRs targeting `main`/`dev`, weekly schedule, manual dispatch |
-| `.github/workflows/e2e-tests.yml` | Nix-based end-to-end validation for the fast CI E2E subset | Push/PR to `dev` with path filters, manual dispatch |
-| `.github/workflows/e2e-tests-full.yml` | Full Hetzner-backed E2E suite for trusted `main` pushes, manual runs, and PR runs gated by native GitHub environment approval | Push to `main` with path filters, `pull_request_target` to `main` with path filters, manual dispatch |
+| `.github/workflows/e2e-tests.yml` | Nix-based smoke validation for the fast CI E2E subset | Push/PR to `dev` with path filters, manual dispatch |
+| `.github/workflows/e2e-tests-full.yml` | Full Hetzner-backed E2E suite for trusted manual runs and PR runs gated by native GitHub environment approval | `pull_request_target` to `main` with path filters, manual dispatch |
 | `.github/workflows/forensics-eval-full.yml` | Full Hetzner-backed forensics-eval suite, executed as a single live-target job on trusted manual runs and PR runs gated by native GitHub environment approval | `pull_request_target` to `main` with path filters, manual dispatch |
 | `.github/workflows/nix-pr-verify.yml` | Verifies the canonical `.#nails-release` derivation on pushes and PRs | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
-| `.github/workflows/release.yml` | Builds the canonical release bundle, verifies determinism, generates SBOMs, creates attestations, and publishes public prereleases from `main` | Push to `main`/`dev`, manual dispatch |
+| `.github/workflows/release.yml` | Builds the canonical release bundle, verifies determinism, generates SBOMs, creates attestations, and publishes GitHub prereleases from matching version tags | Push of `v*` tags, manual dispatch |
 | `.github/workflows/reproducibility.yml` | Reusable workflow that performs two independent rebuilds and compares the resulting release bundles | Called from `release.yml`, manual dispatch |
 
 ## CI policy
@@ -47,7 +47,10 @@ This split is deliberate: the repository keeps fast, broadly applicable CI in `c
 - In CI, the runner defaults to the `ci` suite (or can be pinned explicitly with `NAILS_E2E_DEFAULT_TARGET=ci`).
 - The runner expands suites/groups from Nix metadata into concrete leaf tests, deduplicates them in stable first-seen order, and executes them sequentially.
 - `./scripts/run-e2e-tests.sh --dry-run ci` prints the exact resolved leaf test list without executing it.
+- The workflow is explicitly positioned as the **smoke** E2E lane, while `e2e-tests-full.yml` remains the comprehensive gated suite.
+- Workflow concurrency is branch/PR-aware with `cancel-in-progress: true`, so superseded smoke runs are cancelled automatically.
 - Trigger scope: pushes to `dev`, PRs targeting `dev`, and manual dispatch. `main` and PRs to `main` are owned by `e2e-tests-full.yml` to avoid duplicate E2E runs.
+- Path coverage includes the E2E runner script, relevant workflow files, flake inputs, Cargo manifests, and `shell.nix` so smoke runs follow CI/E2E infrastructure changes more reliably.
 
 This keeps suite membership in one source of truth under `nix/e2e-tests/default.nix`, while making CI execution order explicit and safer for shared-host runner state than invoking the aggregate `e2e-ci` derivation as a single build target.
 
@@ -88,13 +91,12 @@ The environment job is approval-only; it does not need environment secrets. Repo
 
 ## Release policy
 
-### Branch behavior
+### Release trigger behavior
 
-- **`main`**: builds the canonical release bundle and publishes a **GitHub prerelease**.
-- **`dev`**: runs the same canonical build and determinism checks, but **does not publish a GitHub release**.
-- **`workflow_dispatch`**: allows maintainers to run the release workflow manually for validation.
+- **Version tags (`v*`)**: automatic runs build the canonical release bundle and publish a **GitHub prerelease** when the tag matches `Cargo.toml` (`v<version>`).
+- **`workflow_dispatch`**: allows maintainers to run the release workflow manually on a selected branch or tag for verification; manual runs never publish a GitHub release, and a selected tag ref must still match `Cargo.toml`.
 
-This is the conservative public-facing policy: only `main` produces publicly visible release entries, while `dev` remains a verification branch.
+This is the conservative public-facing policy: ordinary branch pushes no longer trigger the heavy release workflow, and publication only happens from explicit release tags.
 
 ### What `release.yml` does
 
@@ -108,14 +110,14 @@ On every run, the workflow:
 6. Calls `reproducibility.yml` to perform two independent rebuild comparisons.
 7. Generates a GitHub artifact attestation when repository visibility supports it.
 
-On `main`, it also:
+On automatic matching version-tag runs, it also:
 
 8. Generates **SLSA Level 3 provenance** (`nails.intoto.jsonl`).
 9. Publishes a **GitHub prerelease** containing the canonical artifacts.
 
 ### Release assets
 
-Public prereleases from `main` contain:
+Public prereleases from version tags contain:
 
 - `nails-*.tar.gz`
 - `nails`
@@ -137,7 +139,7 @@ nix build -L .#nails-release -o result --option accept-flake-config false
 sha256sum --check checksums.txt
 ```
 
-### Verify SLSA provenance for a `main` prerelease
+### Verify SLSA provenance for a tagged prerelease
 
 ```bash
 go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
@@ -178,8 +180,8 @@ nix build -L .#nails-release -o result --option accept-flake-config false
 
 ## Operational caveats
 
-- Workflow artifacts are useful for maintainers and contributors, but the **public distribution channel is the GitHub prerelease published from `main`**.
-- `dev` release runs are validation-only by design.
+- Workflow artifacts are useful for maintainers and contributors, but the **public distribution channel is the GitHub prerelease published from version tags**.
+- Manual `release.yml` runs are always validation-only; if a tag ref is selected, it must match `Cargo.toml`.
 - E2E validation and Nix release-path verification are separate workflows and should be treated as part of the overall release posture even though they are not aggregated into `ci-success`.
 - Forensics-eval CI currently runs only the metadata-defined `live` target, so unsupported non-live leaves remain excluded until live support expands.
 - The pinned `Cyclenerd/hcloud-github-runner` action still embeds the GitHub runner registration token into Hetzner cloud-init/user-data during runner creation. This patch prevents PR-context provisioning and narrows data handling, but the upstream bootstrap-token exposure remains a caveat until the action design changes.

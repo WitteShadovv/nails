@@ -1,11 +1,15 @@
-{ lib, pkgs, ... }: {
+{ lib, pkgs, ... }:
+{
   imports = [ ./vm-config.nix ];
 
   swapDevices = lib.mkForce [ ];
 
   boot.supportedFilesystems = [ "vfat" ];
 
-  virtualisation.emptyDiskImages = lib.mkForce [ 2048 256 ];
+  virtualisation.emptyDiskImages = lib.mkForce [
+    2048
+    256
+  ];
 
   environment.systemPackages = with pkgs; [ dosfstools ];
 
@@ -14,6 +18,11 @@
     wantedBy = [ "multi-user.target" ];
     before = [ "multi-user.target" ];
     after = [ "local-fs.target" ];
+    path = with pkgs; [
+      coreutils
+      dosfstools
+      util-linux
+    ];
     serviceConfig.Type = "oneshot";
     script = ''
       if ! blkid /dev/vdc >/dev/null 2>&1; then

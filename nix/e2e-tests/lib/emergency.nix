@@ -53,8 +53,7 @@
     description = "NAILS emergency test runner";
     serviceConfig = {
       Type = "exec";
-      ExecStart =
-        "${nailsPackage}/bin/nails --config ${configPath} emergency --no-countdown";
+      ExecStart = "${nailsPackage}/bin/nails --config ${configPath} emergency --no-countdown";
       StandardOutput = "journal+console";
       StandardError = "journal+console";
     };

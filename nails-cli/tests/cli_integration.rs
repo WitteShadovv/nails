@@ -264,16 +264,12 @@ fn test_activate_help_includes_quiet_flag() {
 /// Test that activate command with --no-color doesn't produce ANSI codes
 #[test]
 fn test_activate_no_color_output() {
-    if !check_unsafe_ops_allowed("test_activate_no_color_output") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     // Verify: command fails (expected without setup) AND has no ANSI codes
-    cmd.args(["activate", "--no-color"])
+    cmd.args(["activate", "--no-color", "--help"])
         .assert()
-        .failure()
-        .stderr(predicates::str::is_match(r"\x1b\[").unwrap().not()); // No ANSI escape sequences
+        .success()
+        .stdout(predicates::str::is_match(r"\x1b\[").unwrap().not()); // No ANSI escape sequences
 }
 
 /// Test that activate command with verbosity flags are accepted

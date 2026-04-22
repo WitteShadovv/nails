@@ -8,6 +8,24 @@ use clap::Parser;
 use nails::cli::logging::StdoutFormat;
 use nails::cli::{Cli, Commands, execute_command};
 
+fn render_flags_for_command(command: &Commands) -> (bool, bool) {
+    match command {
+        Commands::Activate {
+            no_color, plain, ..
+        }
+        | Commands::Deactivate {
+            no_color, plain, ..
+        }
+        | Commands::Emergency {
+            no_color, plain, ..
+        }
+        | Commands::Status {
+            no_color, plain, ..
+        } => (*no_color, *plain),
+        _ => (false, false),
+    }
+}
+
 fn stdout_format_for_command(command: &Commands) -> StdoutFormat {
     match command {
         Commands::Activate { json: true, .. } => StdoutFormat::ActivateJsonStream,
@@ -18,12 +36,16 @@ fn stdout_format_for_command(command: &Commands) -> StdoutFormat {
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Parse CLI args to extract verbosity BEFORE initializing tracing
     let cli = Cli::parse();
+    let (no_color, plain) = render_flags_for_command(&cli.command);
 
     // Configure output formatting (NO_COLOR environment variable)
-    // Story 14.7: Integrate output module with NO_COLOR support
-    if std::env::var("NO_COLOR").is_ok() {
-        nails_core::set_plain_mode(true);
-    }
+    nails_core::set_plain_mode(plain);
+    nails_core::set_color_enabled(
+        !(plain
+            || no_color
+            || std::env::var("NO_COLOR").is_ok()
+            || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()),
+    );
 
     let stdout_format = stdout_format_for_command(&cli.command);
 
@@ -33,6 +55,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         cli.verbose,
         cli.quiet,
         cli.no_logs,
+        no_color,
+        plain,
         cli.config.as_deref(),
         stdout_format,
     );
@@ -63,6 +87,28 @@ mod tests {
             dry_run: false,
             overlay_only: false,
         }
+    }
+
+    #[test]
+    fn status_render_flags_are_detected() {
+        let command = Commands::Status {
+            json: false,
+            no_color: true,
+            plain: false,
+            verbose: false,
+        };
+
+        assert_eq!(render_flags_for_command(&command), (true, false));
+    }
+
+    #[test]
+    fn non_rendering_commands_default_to_colored_human_mode() {
+        let command = Commands::Verify {
+            deep: false,
+            json: false,
+        };
+
+        assert_eq!(render_flags_for_command(&command), (false, false));
     }
 
     #[test]

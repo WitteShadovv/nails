@@ -4,15 +4,23 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
-in {
+in
+{
   name = "preflight-overlay-compat";
-  meta.tags = [ "preflight" "smoke" ];
+  meta.tags = [
+    "preflight"
+    "smoke"
+  ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages =
-      [ self.packages.x86_64-linux.nails pkgs.dosfstools ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.dosfstools
+      ];
+    };
 
   testScript = _: ''
     ${preflightHelpers.writeTextFileFn}

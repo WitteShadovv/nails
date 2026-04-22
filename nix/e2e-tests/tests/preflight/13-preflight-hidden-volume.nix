@@ -6,15 +6,23 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
-in {
+in
+{
   name = "preflight-hidden-volume";
-  meta.tags = [ "preflight" "smoke" ];
+  meta.tags = [
+    "preflight"
+    "smoke"
+  ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages =
-      [ self.packages.x86_64-linux.nails pkgs.e2fsprogs ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.e2fsprogs
+      ];
+    };
 
   testScript = _: ''
     ${preflightHelpers.writeTextFileFn}

@@ -4,14 +4,20 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
-in {
+in
+{
   name = "preflight-nixos-build-target";
-  meta.tags = [ "preflight" "smoke" ];
+  meta.tags = [
+    "preflight"
+    "smoke"
+  ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${preflightHelpers.writeTextFileFn}

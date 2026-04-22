@@ -7,15 +7,21 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   shellHelpers = import ./../../lib/shell-helpers.nix;
-in {
+in
+{
   name = "shell-history-fish";
   meta.tags = [ "shell" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    programs.fish.enable = true;
-    environment.systemPackages = [ self.packages.x86_64-linux.nails pkgs.fish ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      programs.fish.enable = true;
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.fish
+      ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
@@ -36,7 +42,10 @@ in {
     with subtest("prepare lower-disk fish history and activate"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("install -d -m 0755 -o testuser -g users /home/testuser/.local/share/fish")
-        machine.succeed("printf '%s\n' '- cmd: lower-fish-entry' '  when: 1' > " + history_path)
+        machine.succeed(
+            "sudo -u testuser env HOME=/home/testuser /bin/sh -lc "
+            + "\"printf '%s\\n' '- cmd: lower-fish-entry' '  when: 1' > ~/.local/share/fish/fish_history\""
+        )
         activate_for_user(config_path, shell_path)
         assert_status_state("active", config_path=config_path)
 

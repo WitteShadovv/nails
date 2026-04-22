@@ -1,7 +1,7 @@
 {
   detectTcgThresholdMultiplierFn = ''
     def detect_tcg_threshold_multiplier():
-        cpu_model = machine.succeed("python - <<'PY'\nfrom pathlib import Path\nprint(Path('/proc/cpuinfo').read_text())\nPY").strip()
+        cpu_model = machine.succeed("cat /proc/cpuinfo").strip()
         is_tcg = "QEMU TCG" in cpu_model
         return is_tcg, (3.0 if is_tcg else 1.0)
   '';

@@ -234,7 +234,7 @@ fn benchmark_manager_construction(c: &mut Criterion) {
         b.iter(|| {
             let fs = MockFilesystem::new();
             let config = Config::default();
-            let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+            let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
             let manager = NailsManager::new(fs, config, state_path);
             black_box(manager);
         });

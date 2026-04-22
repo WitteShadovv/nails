@@ -76,6 +76,7 @@ impl Config {
             milestone_tips: default_milestone_tips(),
             show_opsec_reminders: default_show_opsec_reminders(),
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root
+            loaded_config_path: None,
             max_log_size_mb: default_max_log_size_mb(),
             retention_days: default_retention_days(),
             color_scheme: ColorSchemeConfig::default(),

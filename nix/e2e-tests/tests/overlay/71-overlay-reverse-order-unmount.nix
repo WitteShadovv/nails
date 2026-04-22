@@ -6,17 +6,19 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   assertions = import ./../../lib/assertions.nix;
   overlayHelpers = import ./../../lib/overlay-helpers.nix;
-in {
+in
+{
   name = "overlay-reverse-order-unmount";
   meta.tags = [ "overlay" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
-    import re
     import shlex
 
     ${overlayHelpers.writeOrderedOverlayConfigFn}
@@ -49,9 +51,10 @@ in {
         for line in log_text.splitlines():
             if "Overlay unmounted" not in line:
                 continue
-            match = re.search(r"path=([^ ]+)", line)
-            if match:
-                unmounted.append(match.group(1))
+            for field in line.split():
+                if field.startswith("path="):
+                    unmounted.append(field.split("=", 1)[1])
+                    break
         assert unmounted[:3] == ["/srv", "/etc", "/home"], \
             f"Expected reverse unmount order ['/srv', '/etc', '/home'], got: {unmounted}\nLogs:\n{log_text}"
         assert_no_overlays(["/home", "/etc", "/srv"])

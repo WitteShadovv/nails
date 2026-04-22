@@ -65,6 +65,7 @@ fn build_cleanup_config<F: Filesystem>(
         clear_history: manager.config().clear_history,
         log_path: manager.config().log_path.clone(),
         hidden_volume_path: manager.config().hidden_volume_root.clone(),
+        config_file_path: manager.config().loaded_config_path.clone(),
         ..CleanupConfig::default()
     };
 

@@ -7,14 +7,17 @@ let
   assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
   ephemeralFixture = ./../../fixtures/configs/ephemeral.yaml;
-in {
+in
+{
   name = "config-ephemeral-mode";
   meta.tags = [ "config" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.canonicalDeactivateFn}
@@ -31,44 +34,35 @@ in {
     machine.succeed("cp ${ephemeralFixture} /tmp/ephemeral.yaml")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    with subtest("ephemeral overlay config currently fails with overlayfs same-mount constraint"):
-        console_start = len(machine.get_console_log())
+    with subtest("ephemeral overlay config is rejected up front as unsupported"):
         activation = run_command_capture(
             "config-ephemeral-mode-activate",
             "nails --config /tmp/ephemeral.yaml activate --overlay-only --no-kill-session -y",
         )
         assert_command_failed(activation)
-        combined_output = activation["stdout"] + activation["stderr"]
         assert_text_contains(
-            combined_output,
+            activation["stderr"],
             [
-                "Ephemeral overlay mount failed",
-                "Failed to mount /mnt/nails-pivot/var: EINVAL: Invalid argument",
-                "Automatic rollback completed.",
-                "Current state: Inactive",
+                "Pre-flight checks failed:",
+                "overlay-compatibility",
+                "Extended ephemeral overlays are currently unsupported",
+                "upperdir and workdir to reside on the same mount",
+                "Disable extended_overlays.enabled.",
             ],
         )
-        assert_text_contains(
-            machine.get_console_log()[console_start:],
-            ["overlayfs: workdir and upperdir must reside under the same mount"],
-        )
 
-    with subtest("failed ephemeral activation rolls back all overlays and tmpfs uppers"):
+    with subtest("rejected ephemeral activation leaves all overlays and tmpfs mounts untouched"):
         assert_status_state("inactive", config_path="/tmp/ephemeral.yaml")
         assert_no_overlays(["/etc", "/home", "/root", "/var", "/tmp", "/srv", "/opt"])
         for tmpfs_path in [
-            "/run/nails/var-upper",
-            "/run/nails/var-work",
-            "/run/nails/tmp-upper",
-            "/run/nails/tmp-work",
-            "/run/nails/srv-upper",
-            "/run/nails/srv-work",
-            "/run/nails/opt-upper",
-            "/run/nails/opt-work",
+            "/run/nails/var-ephemeral",
+            "/run/nails/tmp-ephemeral",
+            "/run/nails/srv-ephemeral",
+            "/run/nails/opt-ephemeral",
         ]:
             machine.fail(f"mountpoint -q {tmpfs_path}")
 
-    with subtest("failed ephemeral activation leaves hidden storage untouched"):
+    with subtest("rejected ephemeral activation leaves hidden storage untouched"):
         machine.fail("test -e /mnt/hidden-volume/var/lib/ephemeral-proof")
         machine.fail("test -e /mnt/hidden-volume/tmp/ephemeral-proof")
         machine.fail("test -e /mnt/hidden-volume/srv/ephemeral/proof")

@@ -5,21 +5,27 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
+  assertions = import ./../../lib/assertions.nix;
   sessionHelpers = import ./../../lib/session-helpers.nix;
-in {
+in
+{
   name = "session-detection";
   meta.tags = [ "session" ];
 
   nodes = {
-    tty = { ... }: {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
+    tty =
+      { ... }:
+      {
+        imports = [ ./../../lib/vm-config.nix ];
+        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+      };
 
-    graphical = { ... }: {
-      imports = [ ./../../lib/graphical-vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
+    graphical =
+      { ... }:
+      {
+        imports = [ ./../../lib/graphical-vm-config.nix ];
+        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+      };
   };
 
   testScript = _: ''
@@ -31,6 +37,10 @@ in {
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.runDetachedCommandFn}
     ${testHelpers.readStatusJsonFn}
+    ${testHelpers.waitForStatusStateFn}
+    ${testHelpers.canonicalDeactivateFn}
+    ${assertions.assertStatusStateFn}
+    ${assertions.assertOverlayMountedFn}
     ${sessionHelpers.waitForActivationTransientUnitFn}
     ${sessionHelpers.assertUnitInSystemSliceFn}
 
@@ -39,70 +49,49 @@ in {
     graphical.wait_for_unit("display-manager.service")
     graphical.wait_until_succeeds("systemctl is-active user@1000.service")
 
-    tty_config = "/tmp/nails-headless.yaml"
-    graphical_config = "/tmp/nails-headless.yaml"
+    tty_config = "/var/lib/nails-tests/tty-headless.yaml"
+    graphical_config = "/var/lib/nails-tests/graphical-headless.yaml"
+
+    def bind_node(node):
+        for helper in [
+            write_headless_config,
+            read_status_json,
+            wait_for_status_state,
+            assert_status_state,
+            assert_overlay_mounted,
+            canonical_deactivate,
+            wait_for_activation_transient_unit,
+            assert_unit_in_system_slice,
+        ]:
+            helper.__globals__["machine"] = node
 
     def write_headless_config_for(node, path):
-        node.succeed(
-            """cat > %s <<'EOF'
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: explicit
-    overlays:
-      - name: etc
-        lower: /etc
-        upper: /mnt/hidden-volume/etc
-        work: /mnt/hidden-volume/.work/etc
-        target: /etc
-      - name: home
-        lower: /home
-        upper: /mnt/hidden-volume/home
-        work: /mnt/hidden-volume/.work/home
-        target: /home
-      - name: root
-        lower: /root
-        upper: /mnt/hidden-volume/root
-        work: /mnt/hidden-volume/.work/root
-        target: /root
-      - name: srv
-        lower: /srv
-        upper: /mnt/hidden-volume/srv
-        work: /mnt/hidden-volume/.work/srv
-        target: /srv
-      - name: tmp
-        lower: /tmp
-        upper: /mnt/hidden-volume/tmp
-        work: /mnt/hidden-volume/.work/tmp
-        target: /tmp
-    EOF""" % path
-        )
+        bind_node(node)
+        write_headless_config(path)
+
+    def wait_for_status_state_for(node, expected, config_path):
+        bind_node(node)
+        return wait_for_status_state(expected, config_path=config_path)
 
     write_headless_config_for(tty, tty_config)
     write_headless_config_for(graphical, graphical_config)
 
     def assert_status_state_for(node, expected, config_path):
-        read_status_json.__globals__["machine"] = node
-        payload = read_status_json(config_path=config_path)
-        actual = str(payload["state"]).lower()
-        assert actual.startswith(expected), f"Expected {expected!r}, got {payload}"
+        bind_node(node)
+        return assert_status_state(expected, config_path=config_path)
 
     def assert_overlay_mounted_for(node, path):
-        node.succeed(f"mountpoint -q {path}")
-        fs_type = node.succeed(f"findmnt -n -o FSTYPE {path}").strip()
-        assert fs_type == "overlay", f"Expected overlay at {path}, got {fs_type!r}"
+        bind_node(node)
+        return assert_overlay_mounted(path)
 
     def canonical_deactivate_for(node, config_path, unit_name):
-        run_detached_command.__globals__["machine"] = node
-        run_detached_command(
-            unit_name,
-            f"nails --config {config_path} deactivate",
-        )
-        node.wait_for_shutdown()
-        node.start()
-        node.wait_for_unit("multi-user.target")
+        bind_node(node)
+        canonical_deactivate(config_path, unit_name=unit_name)
 
     with subtest("tty session path skips graphical detach"):
         tty.succeed("""${hiddenVolume.setupHiddenVolume}""")
         tty.succeed(f"nails --config {tty_config} activate --overlay-only --kill-session -y")
+        wait_for_status_state_for(tty, "active", tty_config)
         assert_overlay_mounted_for(tty, "/home")
         assert_status_state_for(tty, "active", tty_config)
         tty_units = tty.succeed("systemctl list-units --all --plain --no-legend 'nails-activate-*' || true")
@@ -110,8 +99,7 @@ in {
         canonical_deactivate_for(tty, tty_config, "nails-deactivate-session-detection-tty")
 
     with subtest("graphical x11 path detaches into transient systemd service"):
-        wait_for_activation_transient_unit.__globals__["machine"] = graphical
-        assert_unit_in_system_slice.__globals__["machine"] = graphical
+        bind_node(graphical)
 
         graphical.succeed("""${hiddenVolume.setupHiddenVolume}""")
         graphical.succeed(
@@ -124,6 +112,7 @@ in {
         graphical.wait_until_succeeds(
             "/bin/sh -lc 'mountpoint -q /home && [ \"$(findmnt -n -o FSTYPE /home)\" = overlay ]'"
         )
+        wait_for_status_state_for(graphical, "active", graphical_config)
         assert_overlay_mounted_for(graphical, "/home")
         assert_status_state_for(graphical, "active", graphical_config)
         canonical_deactivate_for(graphical, graphical_config, "nails-deactivate-session-detection-graphical")
