@@ -118,8 +118,9 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_early_error_with_color() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         unsafe {
             std::env::remove_var("NO_COLOR");
             std::env::remove_var("NAILS_NO_COLOR");
@@ -130,8 +131,9 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_early_error_without_color() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         unsafe {
             std::env::set_var("NO_COLOR", "1");
         }
@@ -143,8 +145,9 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_early_warning_with_color() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         unsafe {
             std::env::remove_var("NO_COLOR");
             std::env::remove_var("NAILS_NO_COLOR");
@@ -155,8 +158,9 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_early_warning_without_color() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         unsafe {
             std::env::set_var("NO_COLOR", "1");
         }
@@ -168,8 +172,9 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_early_error_respects_nails_no_color() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         unsafe {
             std::env::remove_var("NO_COLOR");
             std::env::set_var("NAILS_NO_COLOR", "1");
@@ -182,8 +187,9 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_early_warning_respects_nails_no_color() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         unsafe {
             std::env::remove_var("NO_COLOR");
             std::env::set_var("NAILS_NO_COLOR", "1");
@@ -196,13 +202,13 @@ mod tests {
     }
 
     #[test]
+    #[serial(render_state)]
     fn test_format_early_warning_plain_mode_uses_ascii() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         crate::output::set_plain_mode(true);
 
         let result = format_early_warning("Test warning");
 
         assert_eq!(result, "[WARN] Test warning");
-
-        crate::output::set_plain_mode(false);
     }
 }

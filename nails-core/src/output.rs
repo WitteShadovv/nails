@@ -212,26 +212,43 @@ pub fn check_result(name: &str, result: &crate::preflight::CheckResult) {
 }
 
 #[cfg(test)]
+pub(crate) fn reset_render_state_for_tests() {
+    set_plain_mode(false);
+    set_color_enabled(true);
+    unsafe {
+        std::env::remove_var("NO_COLOR");
+        std::env::remove_var("NAILS_NO_COLOR");
+    }
+    control::set_override(true);
+}
+
+#[cfg(test)]
+pub(crate) struct RenderStateTestGuard;
+
+#[cfg(test)]
+impl RenderStateTestGuard {
+    pub(crate) fn new() -> Self {
+        reset_render_state_for_tests();
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for RenderStateTestGuard {
+    fn drop(&mut self) {
+        reset_render_state_for_tests();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
 
-    // Helper to reset plain mode between tests
-    fn reset_render_mode() {
-        set_plain_mode(false);
-        set_color_enabled(true);
-        unsafe {
-            std::env::remove_var("NO_COLOR");
-            std::env::remove_var("NAILS_NO_COLOR");
-        }
-        // Force colored crate to always output colors in tests
-        control::set_override(true);
-    }
-
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_error_with_color() {
-        reset_render_mode();
+        let _guard = RenderStateTestGuard::new();
         let result = format_error("test message");
         // Should contain the ✗ symbol and ANSI color codes
         assert!(result.contains("✗"));
@@ -241,9 +258,9 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_warn_with_color() {
-        reset_render_mode();
+        let _guard = RenderStateTestGuard::new();
         let result = format_warn("warning text");
         // Should contain the ⚠ symbol and ANSI color codes
         assert!(result.contains("⚠"));
@@ -253,9 +270,9 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_info_with_color() {
-        reset_render_mode();
+        let _guard = RenderStateTestGuard::new();
         let result = format_info("info text");
         // Should contain the ✓ symbol and ANSI color codes
         assert!(result.contains("✓"));
@@ -265,9 +282,9 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_error_plain_mode() {
-        reset_render_mode();
+        let _guard = RenderStateTestGuard::new();
         set_plain_mode(true);
         let result = format_error("test message");
         assert_eq!(result, "[FAIL] test message");
@@ -276,9 +293,9 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_warn_plain_mode() {
-        reset_render_mode();
+        let _guard = RenderStateTestGuard::new();
         set_plain_mode(true);
         let result = format_warn("warning text");
         assert_eq!(result, "[WARN] warning text");
@@ -287,9 +304,9 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_info_plain_mode() {
-        reset_render_mode();
+        let _guard = RenderStateTestGuard::new();
         set_plain_mode(true);
         let result = format_info("info text");
         assert_eq!(result, "[PASS] info text");
@@ -298,9 +315,9 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_no_color_env_var() {
-        reset_render_mode();
+        let _guard = RenderStateTestGuard::new();
         unsafe {
             std::env::set_var("NO_COLOR", "1");
         }
@@ -316,23 +333,22 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_is_plain_mode_explicit() {
-        reset_render_mode();
+        let _guard = RenderStateTestGuard::new();
         assert!(!is_plain_mode_enabled());
 
         set_plain_mode(true);
         assert!(is_plain_mode_enabled());
 
         set_plain_mode(false);
-        control::set_override(true); // Re-enable for other tests
         assert!(!is_plain_mode_enabled());
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_is_plain_mode_no_color_env() {
-        reset_render_mode();
+        let _guard = RenderStateTestGuard::new();
         assert!(!is_plain_mode_enabled());
         assert!(!is_color_disabled());
 
@@ -350,9 +366,9 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_explicit_no_color_disables_ansi_without_ascii_fallback() {
-        reset_render_mode();
+        let _guard = RenderStateTestGuard::new();
         set_color_enabled(false);
 
         let result = format_warn("warning text");
@@ -363,9 +379,9 @@ mod tests {
 
     // Integration test: verify that error/warn/info functions don't panic
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_print_functions_dont_panic() {
-        reset_render_mode();
+        let _guard = RenderStateTestGuard::new();
         error("test error");
         warn("test warning");
         info("test info");

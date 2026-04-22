@@ -372,6 +372,7 @@ pub use checks::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_check_result_is_pass() {
@@ -432,7 +433,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(render_state)]
     fn test_check_result_display_no_color_keeps_unicode_without_ansi() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         crate::output::set_plain_mode(false);
         crate::output::set_color_enabled(false);
 
@@ -440,19 +443,17 @@ mod tests {
 
         assert_eq!(rendered, "⚠ Minor issue");
         assert!(!rendered.contains('\u{001b}'));
-
-        crate::output::set_color_enabled(true);
     }
 
     #[test]
+    #[serial(render_state)]
     fn test_check_result_display_plain_uses_ascii() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         crate::output::set_plain_mode(true);
 
         let rendered = format!("{}", CheckResult::Warn("Minor issue".to_string()));
 
         assert_eq!(rendered, "[WARN] Minor issue");
-
-        crate::output::set_plain_mode(false);
     }
 
     #[test]
