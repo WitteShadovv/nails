@@ -2,83 +2,86 @@ name: Full Forensics Eval
 
 on:
   workflow_dispatch:
-    inputs:
-      pr_number:
-        description: PR number for approved follow-up runs
-        required: false
-        type: string
-      approved_sha:
-        description: Approved PR head SHA to validate and execute
-        required: false
-        type: string
-      checkout_repository:
-        description: Repository to checkout for approved follow-up runs
-        required: false
-        type: string
-      checkout_ref:
-        description: Ref to validate for approved follow-up runs
-        required: false
-        type: string
-      approval_label:
-        description: Maintainer approval label that authorized the run
-        required: false
-        type: string
-      approval_actor:
-        description: Maintainer who applied the approval label
-        required: false
-        type: string
-      pr_is_fork:
-        description: Whether the approved PR head repository is a fork
-        required: false
-        type: string
+  pull_request_target:
+    branches: [main]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    paths:
+      - 'nails-core/**'
+      - 'nails-cli/**'
+      - 'nix/**'
+      - 'scripts/run-forensics-eval-tests.sh'
+      - '.github/workflows/forensics-eval-full.yml'
+      - '.github/workflows/forensics-eval-full-shard.yml'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
 
 permissions:
   contents: read
   pull-requests: read
-  statuses: write
 
 concurrency:
-  group: full-forensics-eval-${{ github.event.inputs.pr_number || github.ref }}
-  cancel-in-progress: false
+  group: full-forensics-eval-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  approve-pr:
+    name: Await Hetzner PR approval
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: hetzner-pr
+    steps:
+      - name: Record approval gate context
+        run: |
+          {
+            cat <<'EOF'
+          ## Hetzner PR approval
+
+          This job is metadata-only. It does not check out or execute PR code.
+
+          | Property | Value |
+          |---|---|
+          EOF
+            printf '| PR | `#%s` |\n' '${{ github.event.pull_request.number }}'
+            printf '| Head repository | `%s` |\n' '${{ github.event.pull_request.head.repo.full_name }}'
+            printf '| Head ref | `%s` |\n' '${{ github.event.pull_request.head.ref }}'
+            printf '| Head SHA | `%s` |\n' '${{ github.event.pull_request.head.sha }}'
+            printf '| Base branch | `%s` |\n' '${{ github.event.pull_request.base.ref }}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   resolve-run-context:
     name: Resolve trusted run context
+    needs: [approve-pr]
+    if: ${{ always() && (github.event_name != 'pull_request_target' || needs.approve-pr.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      can_provision: ${{ steps.resolve.outputs.can_provision }}
-      reason: ${{ steps.resolve.outputs.reason }}
       workflow_started_epoch: ${{ steps.resolve.outputs.workflow_started_epoch }}
       run_mode: ${{ steps.resolve.outputs.run_mode }}
-      is_approved_pr: ${{ steps.resolve.outputs.is_approved_pr }}
+      reason: ${{ steps.resolve.outputs.reason }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
-      approval_actor: ${{ steps.resolve.outputs.approval_actor }}
-      approval_label: ${{ steps.resolve.outputs.approval_label }}
-      pr_is_fork: ${{ steps.resolve.outputs.pr_is_fork }}
       checkout_repository: ${{ steps.resolve.outputs.checkout_repository }}
       checkout_ref: ${{ steps.resolve.outputs.checkout_ref }}
       checkout_sha: ${{ steps.resolve.outputs.checkout_sha }}
     steps:
-      - name: Resolve trusted run metadata and validate approved PRs
+      - name: Resolve trusted checkout target
         id: resolve
         env:
           EVENT_NAME: ${{ github.event_name }}
           GITHUB_TOKEN: ${{ github.token }}
-          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number || '' }}
-          INPUT_APPROVED_SHA: ${{ github.event.inputs.approved_sha || '' }}
-          INPUT_CHECKOUT_REPOSITORY: ${{ github.event.inputs.checkout_repository || '' }}
-          INPUT_CHECKOUT_REF: ${{ github.event.inputs.checkout_ref || '' }}
-          INPUT_APPROVAL_LABEL: ${{ github.event.inputs.approval_label || '' }}
-          INPUT_APPROVAL_ACTOR: ${{ github.event.inputs.approval_actor || '' }}
-          INPUT_PR_IS_FORK: ${{ github.event.inputs.pr_is_fork || '' }}
-          EXPECTED_APPROVAL_LABEL: safe-to-test:forensics-full
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
           python3 <<'PY'
           import json
           import os
           import time
-          import urllib.error
           import urllib.request
 
           api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com")
@@ -87,30 +90,14 @@ jobs:
           event_name = os.environ["EVENT_NAME"]
           output_path = os.environ["GITHUB_OUTPUT"]
           summary_path = os.environ["GITHUB_STEP_SUMMARY"]
-          expected_label = os.environ["EXPECTED_APPROVAL_LABEL"]
 
           workflow_started_epoch = str(int(time.time()))
-          can_provision = False
-          run_mode = "unknown"
-          is_approved_pr = False
+          run_mode = ""
           reason = ""
-          pr_number = os.environ.get("INPUT_PR_NUMBER", "")
-          approval_actor = os.environ.get("INPUT_APPROVAL_ACTOR", "")
-          approval_label = os.environ.get("INPUT_APPROVAL_LABEL", "")
-          pr_is_fork = os.environ.get("INPUT_PR_IS_FORK", "")
+          pr_number = os.environ.get("PR_NUMBER", "")
           checkout_repository = repo
           checkout_ref = os.environ["GITHUB_REF"]
           checkout_sha = os.environ["GITHUB_SHA"]
-
-          approved_inputs = {
-              "pr_number": os.environ.get("INPUT_PR_NUMBER", ""),
-              "approved_sha": os.environ.get("INPUT_APPROVED_SHA", ""),
-              "checkout_repository": os.environ.get("INPUT_CHECKOUT_REPOSITORY", ""),
-              "checkout_ref": os.environ.get("INPUT_CHECKOUT_REF", ""),
-              "approval_label": os.environ.get("INPUT_APPROVAL_LABEL", ""),
-              "approval_actor": os.environ.get("INPUT_APPROVAL_ACTOR", ""),
-              "pr_is_fork": os.environ.get("INPUT_PR_IS_FORK", ""),
-          }
 
           def write_output(name, value):
               value = "" if value is None else str(value)
@@ -132,97 +119,33 @@ jobs:
               with urllib.request.urlopen(request) as response:
                   return json.loads(response.read().decode("utf-8"))
 
-          approved_mode_requested = any(value for value in approved_inputs.values())
-
-          if event_name == "workflow_dispatch" and not approved_mode_requested:
+          if event_name == "workflow_dispatch":
               run_mode = "manual"
-              can_provision = True
               reason = "Trusted manual workflow_dispatch run; provisioning Hetzner-backed full forensics eval is allowed."
-          elif event_name == "workflow_dispatch":
-              run_mode = "approved-pr"
-              is_approved_pr = True
-              checkout_repository = approved_inputs["checkout_repository"]
-              checkout_ref = approved_inputs["checkout_ref"]
-              checkout_sha = approved_inputs["approved_sha"]
-              missing = [name for name, value in approved_inputs.items() if not value]
-
-              if missing:
-                  reason = "Approved PR dispatch is missing required inputs: " + ", ".join(missing)
-              elif approved_inputs["approval_label"] != expected_label:
-                  reason = (
-                      f"Approved PR dispatch used unexpected label `{approved_inputs['approval_label']}`; "
-                      f"expected `{expected_label}`."
-                  )
-              elif not approved_inputs["pr_number"].isdigit():
-                  reason = f"Approved PR dispatch provided invalid pr_number `{approved_inputs['pr_number']}`."
-              else:
-                  try:
-                      pr = api_get(f"/repos/{repo}/pulls/{approved_inputs['pr_number']}")
-                      current_repo = pr["head"]["repo"]["full_name"]
-                      current_ref = pr["head"]["ref"]
-                      current_sha = pr["head"]["sha"]
-                      current_is_fork = str(pr["head"]["repo"].get("fork", False)).lower()
-                      current_labels = {label["name"] for label in pr.get("labels", [])}
-
-                      if pr["state"] != "open":
-                          reason = f"PR #{approved_inputs['pr_number']} is no longer open."
-                      elif pr["base"]["ref"] != "main":
-                          reason = f"PR #{approved_inputs['pr_number']} no longer targets main."
-                      elif expected_label not in current_labels:
-                          reason = (
-                              f"PR #{approved_inputs['pr_number']} no longer has required approval label "
-                              f"`{expected_label}`."
-                          )
-                      elif current_sha != approved_inputs["approved_sha"]:
-                          reason = (
-                              f"PR #{approved_inputs['pr_number']} head changed from approved SHA "
-                              f"`{approved_inputs['approved_sha']}` to `{current_sha}`."
-                          )
-                      elif current_repo != approved_inputs["checkout_repository"]:
-                          reason = (
-                              f"PR #{approved_inputs['pr_number']} head repository changed from "
-                              f"`{approved_inputs['checkout_repository']}` to `{current_repo}`."
-                          )
-                      elif current_ref != approved_inputs["checkout_ref"]:
-                          reason = (
-                              f"PR #{approved_inputs['pr_number']} head ref changed from "
-                              f"`{approved_inputs['checkout_ref']}` to `{current_ref}`."
-                          )
-                      elif current_is_fork != approved_inputs["pr_is_fork"].lower():
-                          reason = (
-                              f"PR #{approved_inputs['pr_number']} fork metadata changed from "
-                              f"`{approved_inputs['pr_is_fork']}` to `{current_is_fork}`."
-                          )
-                      else:
-                          can_provision = True
-                          reason = (
-                              f"Approved PR #{approved_inputs['pr_number']} validated for SHA "
-                              f"`{approved_inputs['approved_sha']}`; provisioning is allowed."
-                          )
-                          pr_is_fork = current_is_fork
-                  except urllib.error.HTTPError as exc:
-                      reason = (
-                          f"Failed to validate approved PR #{approved_inputs['pr_number']} before provisioning: "
-                          f"GitHub API returned HTTP {exc.code}."
-                      )
-                  except Exception as exc:  # pragma: no cover - defensive workflow guard
-                      reason = (
-                          f"Failed to validate approved PR #{approved_inputs['pr_number']} before provisioning: {exc}"
-                      )
-          else:
+          elif event_name == "pull_request_target":
+              if not pr_number.isdigit():
+                  raise SystemExit(f"Invalid pull request number: {pr_number!r}")
+              pr = api_get(f"/repos/{repo}/pulls/{pr_number}")
+              if pr["state"] != "open":
+                  raise SystemExit(f"PR #{pr_number} is no longer open.")
+              if pr["base"]["ref"] != "main":
+                  raise SystemExit(f"PR #{pr_number} no longer targets main.")
+              checkout_repository = pr["head"]["repo"]["full_name"]
+              checkout_ref = pr["head"]["ref"]
+              checkout_sha = pr["head"]["sha"]
+              run_mode = "pr"
               reason = (
+                  f"Approved pull_request_target run for PR #{pr_number}; provisioning the live forensics target for the current head SHA is allowed."
+              )
+          else:
+              raise SystemExit(
                   f"Event `{event_name}` is not allowed to provision secret-backed Hetzner runners."
               )
 
-          write_output("can_provision", str(can_provision).lower())
-          write_output("reason", reason)
           write_output("workflow_started_epoch", workflow_started_epoch)
           write_output("run_mode", run_mode)
-          write_output("is_approved_pr", str(is_approved_pr).lower())
+          write_output("reason", reason)
           write_output("pr_number", pr_number)
-          write_output("approval_actor", approval_actor)
-          write_output("approval_label", approval_label)
-          write_output("pr_is_fork", pr_is_fork)
           write_output("checkout_repository", checkout_repository)
           write_output("checkout_ref", checkout_ref)
           write_output("checkout_sha", checkout_sha)
@@ -233,11 +156,7 @@ jobs:
               summary.write("|---|---|\n")
               summary.write(f"| Event | `{event_name}` |\n")
               summary.write(f"| Run mode | `{run_mode}` |\n")
-              summary.write(f"| May provision Hetzner runner | `{str(can_provision).lower()}` |\n")
-              summary.write(f"| Approved PR mode | `{str(is_approved_pr).lower()}` |\n")
               summary.write(f"| PR number | `{pr_number or 'n/a'}` |\n")
-              summary.write(f"| Approval actor | `{approval_actor or 'n/a'}` |\n")
-              summary.write(f"| Approval label | `{approval_label or 'n/a'}` |\n")
               summary.write(f"| Checkout repository | `{checkout_repository}` |\n")
               summary.write(f"| Checkout ref | `{checkout_ref}` |\n")
               summary.write(f"| Checkout SHA | `{checkout_sha}` |\n")
@@ -247,7 +166,7 @@ jobs:
   run-full-forensics-eval:
     name: Run full forensics eval (live target)
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.can_provision == 'true'
+    if: needs.resolve-run-context.result == 'success'
     uses: ./.github/workflows/forensics-eval-full-shard.yml
     permissions:
       contents: read
@@ -264,68 +183,15 @@ jobs:
 
   full-forensics-eval-result:
     name: Full Forensics Eval Result
-    needs: [resolve-run-context, run-full-forensics-eval]
+    needs: [approve-pr, resolve-run-context, run-full-forensics-eval]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Update approved PR commit status
-        if: ${{ needs.resolve-run-context.outputs.is_approved_pr == 'true' && needs.resolve-run-context.outputs.checkout_sha != '' && needs.resolve-run-context.outputs.checkout_repository != '' && needs.resolve-run-context.outputs.pr_is_fork != 'true' }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          STATUS_REPOSITORY: ${{ needs.resolve-run-context.outputs.checkout_repository }}
-          STATUS_SHA: ${{ needs.resolve-run-context.outputs.checkout_sha }}
-          STATUS_STATE: ${{ needs.resolve-run-context.outputs.can_provision == 'true' && needs.run-full-forensics-eval.result == 'success' && 'success' || 'failure' }}
-          STATUS_CONTEXT: Hetzner / Full Forensics Eval
-          STATUS_DESCRIPTION_SUCCESS: Approved PR forensics eval succeeded.
-          STATUS_DESCRIPTION_FAILURE: Approved PR forensics eval failed or approval became stale.
-        run: |
-          python3 <<'PY'
-          import json
-          import os
-          import urllib.error
-          import urllib.request
-
-          api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com")
-          token = os.environ["GITHUB_TOKEN"]
-          repo = os.environ["STATUS_REPOSITORY"]
-          sha = os.environ["STATUS_SHA"]
-          state = os.environ["STATUS_STATE"]
-          context = os.environ["STATUS_CONTEXT"]
-          description = os.environ[
-              "STATUS_DESCRIPTION_SUCCESS" if state == "success" else "STATUS_DESCRIPTION_FAILURE"
-          ]
-          payload = {
-              "state": state,
-              "context": context,
-              "description": description[:140],
-              "target_url": f"{os.environ['GITHUB_SERVER_URL']}/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
-          }
-          request = urllib.request.Request(
-              f"{api_url}/repos/{repo}/statuses/{sha}",
-              data=json.dumps(payload).encode("utf-8"),
-              method="POST",
-              headers={
-                  "Authorization": f"Bearer {token}",
-                  "Accept": "application/vnd.github+json",
-                  "X-GitHub-Api-Version": "2022-11-28",
-                  "Content-Type": "application/json",
-              },
-          )
-          try:
-              with urllib.request.urlopen(request):
-                  pass
-          except urllib.error.HTTPError as exc:
-              body = exc.read().decode("utf-8")
-              print(
-                  f"::warning::Unable to update commit status {context!r} on {sha}: HTTP {exc.code}: {body}"
-              )
-          PY
-
       - name: Check workflow outcome
         env:
-          CAN_PROVISION: ${{ needs.resolve-run-context.outputs.can_provision }}
-          PR_IS_FORK: ${{ needs.resolve-run-context.outputs.pr_is_fork }}
+          APPROVAL_RESULT: ${{ needs.approve-pr.result }}
+          RESOLVE_RESULT: ${{ needs.resolve-run-context.result }}
           TRUST_REASON: ${{ needs.resolve-run-context.outputs.reason }}
           RUN_MODE: ${{ needs.resolve-run-context.outputs.run_mode }}
           RUN_RESULT: ${{ needs.run-full-forensics-eval.result }}
@@ -340,14 +206,14 @@ jobs:
           |---|---|
           EOF
             printf '| Run mode | `%s` |\n' "${RUN_MODE}"
-            printf '| May provision Hetzner runner | `%s` |\n' "${CAN_PROVISION}"
-            printf '| Approved PR is fork | `%s` |\n' "${PR_IS_FORK:-n/a}"
+            printf '| PR approval gate | `%s` |\n' "${APPROVAL_RESULT}"
+            printf '| Resolve trusted run context | `%s` |\n' "${RESOLVE_RESULT}"
             printf '| Run full forensics eval (`live` target, 1 runner) | `%s` |\n' "${RUN_RESULT}"
             printf '\n%s\n' "${TRUST_REASON}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [[ "$CAN_PROVISION" != "true" ]]; then
-            echo "::error::${TRUST_REASON}"
+          if [[ "$RESOLVE_RESULT" != "success" ]]; then
+            echo "::error::Failed to resolve a trusted checkout target."
             exit 1
           fi
 
