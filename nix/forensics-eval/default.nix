@@ -13,7 +13,6 @@ let
   profileLib = import ./lib/profiles.nix {
     inherit
       pkgs
-      self
       sharedHelpers
       contracts
       ;
@@ -25,28 +24,19 @@ let
   profileList = [
     (import ./profiles/direct-headless.nix {
       inherit
-        pkgs
-        self
         sharedHelpers
-        contracts
         profileLib
         ;
     })
     (import ./profiles/graphical.nix {
       inherit
-        pkgs
-        self
         sharedHelpers
-        contracts
         profileLib
         ;
     })
     (import ./profiles/vfat-boot.nix {
       inherit
-        pkgs
-        self
         sharedHelpers
-        contracts
         profileLib
         ;
     })
@@ -58,9 +48,6 @@ let
   scenarioList = [
     (import ./scenarios/direct-baseline.nix {
       inherit
-        pkgs
-        self
-        sharedHelpers
         contracts
         canaries
         profiles
