@@ -172,6 +172,20 @@ fn clear_system_profile_env() {
     }
 }
 
+fn prepend_path(dir: &Path, old_path: &Option<std::ffi::OsString>) {
+    let mut paths = vec![dir.to_path_buf()];
+    if let Some(existing) = old_path {
+        paths.extend(std::env::split_paths(existing));
+    }
+
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            std::env::join_paths(paths).expect("failed to compose PATH for test"),
+        );
+    }
+}
+
 fn write_executable_script(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
     let mut perms = fs::metadata(path).unwrap().permissions();
@@ -987,13 +1001,11 @@ fn test_real_command_executor_execute_nixos_rebuild_uses_path_and_captures_outpu
     let script = temp_dir.path().join("nixos-rebuild");
     write_executable_script(
         &script,
-        "#!/bin/sh\nprintf 'rebuilt ok\\n'\nprintf 'warn\\n' 1>&2\nexit 0\n",
+        "#!/usr/bin/env sh\nprintf 'rebuilt ok\\n'\nprintf 'warn\\n' 1>&2\nexit 0\n",
     );
 
     let old_path = std::env::var_os("PATH");
-    unsafe {
-        std::env::set_var("PATH", temp_dir.path());
-    }
+    prepend_path(temp_dir.path(), &old_path);
 
     let result = RealCommandExecutor
         .execute_nixos_rebuild(&["test"])
@@ -1022,13 +1034,11 @@ fn test_real_command_executor_execute_nixos_rebuild_returns_false_on_nonzero_exi
     let script = temp_dir.path().join("nixos-rebuild");
     write_executable_script(
         &script,
-        "#!/bin/sh\nprintf 'partial out\\n'\nprintf 'build failed\\n' 1>&2\nexit 17\n",
+        "#!/usr/bin/env sh\nprintf 'partial out\\n'\nprintf 'build failed\\n' 1>&2\nexit 17\n",
     );
 
     let old_path = std::env::var_os("PATH");
-    unsafe {
-        std::env::set_var("PATH", temp_dir.path());
-    }
+    prepend_path(temp_dir.path(), &old_path);
 
     let result = RealCommandExecutor.execute_nixos_rebuild(&[]).unwrap();
 
@@ -1086,7 +1096,7 @@ fn test_real_command_executor_execute_switch_to_configuration_runs_exact_script_
     let script = temp_dir.path().join("switch-to-configuration");
     write_executable_script(
         &script,
-        "#!/bin/sh\nprintf 'mode=%s\\n' \"$1\"\nprintf 'note\\n' 1>&2\nexit 0\n",
+        "#!/usr/bin/env sh\nprintf 'mode=%s\\n' \"$1\"\nprintf 'note\\n' 1>&2\nexit 0\n",
     );
 
     let result = RealCommandExecutor
