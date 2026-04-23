@@ -1,0 +1,54 @@
+name: Full Forensics Eval PR Metadata
+
+on:
+  pull_request_target:
+    branches: [main]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    paths:
+      - 'nails-core/**'
+      - 'nails-cli/**'
+      - 'nix/**'
+      - 'scripts/run-forensics-eval-tests.sh'
+      - '.github/workflows/forensics-eval-full.yml'
+      - '.github/workflows/forensics-eval-full-pr-metadata.yml'
+      - '.github/workflows/forensics-eval-full-shard.yml'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: full-forensics-eval-pr-metadata-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  record-pr-metadata:
+    name: Record pull_request_target metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Record metadata-only PR context
+        run: |
+          {
+            cat <<'EOF'
+          ## pull_request_target metadata only
+
+          This workflow is intentionally metadata-only. It does not provision runners, check out code, call reusable Hetzner workflows, or execute PR head content.
+          Run `forensics-eval-full.yml` manually with workflow_dispatch from a trusted context if a full eval is required.
+
+          | Property | Value |
+          |---|---|
+          EOF
+            printf '| PR | `#%s` |\n' '${{ github.event.pull_request.number }}'
+            printf '| Head repository | `%s` |\n' '${{ github.event.pull_request.head.repo.full_name }}'
+            printf '| Head SHA | `%s` |\n' '${{ github.event.pull_request.head.sha }}'
+            printf '| Base branch | `%s` |\n' '${{ github.event.pull_request.base.ref }}'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -23,13 +23,25 @@ declare -A LEAF_SCENARIOS=()
 declare -A LEAF_PROFILES=()
 declare -A LEAF_MODES=()
 FLAKE_REF="${NAILS_FORENSICS_EVAL_FLAKE_REF:-path:$PROJECT_ROOT}"
-SYSTEM="${NAILS_FORENSICS_EVAL_SYSTEM:-$(nix eval --impure --raw --expr builtins.currentSystem)}"
+SYSTEM="${NAILS_FORENSICS_EVAL_SYSTEM:-}"
 DRY_RUN=false
 PLAN_JSON=false
 SHARD_INDEX=""
 SHARD_COUNT=""
 FORENSICS_METADATA_JSON=""
+FORENSICS_METADATA_OVERRIDE_JSON="${NAILS_FORENSICS_EVAL_METADATA_JSON:-}"
 FORWARD_ARGS=()
+
+resolve_system() {
+    if [[ -n "$SYSTEM" ]]; then
+        printf '%s' "$SYSTEM"
+    else
+        (
+            cd "$PROJECT_ROOT"
+            nix eval --impure --raw --expr builtins.currentSystem
+        )
+    fi
+}
 
 leaf_test_exists() {
     local candidate="$1"
@@ -65,10 +77,15 @@ load_forensics_metadata() {
     local metadata_json
     local leaf_id scenario_id profile_id recommended_mode
 
-    metadata_json="$({
-        cd "$PROJECT_ROOT"
-        nix eval --json "${FLAKE_REF}#forensics-eval-metadata.$SYSTEM"
-    })"
+    if [[ -n "$FORENSICS_METADATA_OVERRIDE_JSON" ]]; then
+        # Test seam: allow deterministic resolution/sharding without nix eval.
+        metadata_json="$FORENSICS_METADATA_OVERRIDE_JSON"
+    else
+        metadata_json="$({
+            cd "$PROJECT_ROOT"
+            nix eval --json "${FLAKE_REF}#forensics-eval-metadata.$(resolve_system)"
+        })"
+    fi
 
     mapfile -t AVAILABLE_TARGETS < <(
         python3 - <<'PY' "$metadata_json"
@@ -122,6 +139,12 @@ PY
     )
 
     FORENSICS_METADATA_JSON="$metadata_json"
+}
+
+ensure_forensics_metadata_loaded() {
+    if [[ -z "$FORENSICS_METADATA_JSON" ]]; then
+        load_forensics_metadata
+    fi
 }
 
 resolve_targets() {
@@ -247,6 +270,8 @@ validate_shard_configuration() {
 
 list_tests() {
     local name
+
+    ensure_forensics_metadata_loaded
 
     echo -e "${BOLD}Available Forensics Eval Targets:${NC}"
     echo ""
@@ -469,8 +494,6 @@ run_tests() {
 
 TEST_NAMES=()
 
-load_forensics_metadata
-
 while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--help)
@@ -522,6 +545,8 @@ validate_shard_configuration
 if [ "${#TEST_NAMES[@]}" -eq 0 ]; then
     TEST_NAMES=("$(default_target)")
 fi
+
+ensure_forensics_metadata_loaded
 
 mapfile -t RESOLVED_TESTS < <(resolve_targets "${TEST_NAMES[@]}")
 

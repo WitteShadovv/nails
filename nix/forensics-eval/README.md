@@ -1,5 +1,21 @@
 # Forensics Evaluation Subsystem
 
+This subsystem is the campaign-style forensic evaluation layer. It is responsible for
+staged evidence export, baseline-aware analysis, report generation, and comparing
+forensic outcomes across a scenario timeline.
+
+It is not the owner of normal product-behavior validation. Keep these boundaries explicit:
+
+- Normal E2E owns product behavior, lifecycle flows, cleanup, verify/preflight paths,
+  state transitions, session handling, and similar end-user/system behavior.
+- Legacy forensic E2E owns coarse VM-internal forensic spot checks.
+- `forensics-eval` owns staged evidence export, baseline-aware analysis, reports, and
+  campaign-style forensic evaluation.
+
+Do not duplicate normal E2E coverage in `forensics-eval`. If a test is primarily checking
+behavioral correctness rather than forensic outputs and evidence deltas, it belongs in the
+normal E2E suite instead.
+
 This subsystem now supports two execution modes:
 
 - **Live mode (default)**: real acquisition/export for `direct-headless` + `direct-baseline`.
@@ -56,7 +72,10 @@ scripts/run-forensics-eval-tests.sh --shard-index 1 --shard-count 2 all -- \
 
 Useful targets currently include:
 
-- `ci` / `live`: built-in live-supported leaves
+- `ci`: the ordered fast-test subset used by CI. It is currently the same single built-in
+  live-supported leaf, but it is documented as the CI subset rather than as a promise about
+  broader live support.
+- `live`: built-in live-supported leaves only.
 - `all`: every supported scenario/profile leaf from Nix metadata
 - `scenario:<id>`: all leaves for one scenario
 - `profile:<id>`: all leaves for one profile
@@ -73,7 +92,8 @@ python3 -m unittest discover -s nix/forensics-eval/tests -p 'test_*.py'
 
 ## Current built-in live support
 
-Built-in real acquisition is intentionally minimal-safe and currently targets only:
+Built-in real acquisition is intentionally narrow and currently supports only the single
+built-in live path below:
 
 - profile: `direct-headless`
 - scenario: `direct-baseline`
