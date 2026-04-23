@@ -404,6 +404,17 @@ def validate_outputs(
         )
 
 
+def _raise_on_enforced_contract_failures(summary: dict[str, Any]) -> None:
+    failures = summary.get("contractFailures", [])
+    if not failures:
+        return
+    messages = []
+    for failure in failures:
+        detail = "; ".join(failure.get("failures", [])) or "unspecified failure"
+        messages.append(f"{failure.get('stage')} {failure.get('kind')}: {detail}")
+    raise AnalyzerError("Enforced analyzer contracts failed: " + " | ".join(messages))
+
+
 def main(argv: list[str]) -> int:
     try:
         args = parse_args(argv)
@@ -464,6 +475,7 @@ def main(argv: list[str]) -> int:
             run_dir=str(resolved["run_dir"]),
             output_dir=str(resolved["output_dir"]),
             stages=resolved["selected_stages"],
+            manifest=manifest,
             manifest_path=str(resolved["manifest_path"]),
             allowlist_paths=[str(path) for path in resolved["allowlist_paths"]],
             results=results,
@@ -475,6 +487,7 @@ def main(argv: list[str]) -> int:
         )
         report = render_report(report_template, summary, results, diff_summary)
         write_text(resolved["report_output"], report)
+        _raise_on_enforced_contract_failures(summary)
 
         if resolved["campaign_dir"]:
             campaign_runs = collect_run_summaries(resolved["campaign_dir"])

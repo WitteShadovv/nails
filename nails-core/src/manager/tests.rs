@@ -5902,7 +5902,7 @@ fn test_activation_rebuild_failure_rolls_back_all_mounted_state() {
     let rebuild_script = bin_dir.join("nixos-rebuild");
     std::fs::write(
         &rebuild_script,
-        "#!/bin/sh\nprintf 'boom\\n' 1>&2\nexit 2\n",
+        "#!/usr/bin/env sh\nprintf 'boom\\n' 1>&2\nexit 2\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -5914,8 +5914,15 @@ fn test_activation_rebuild_failure_rolls_back_all_mounted_state() {
     }
 
     let old_path = std::env::var_os("PATH");
+    let mut paths = vec![bin_dir.clone()];
+    if let Some(existing) = &old_path {
+        paths.extend(std::env::split_paths(existing));
+    }
     unsafe {
-        std::env::set_var("PATH", &bin_dir);
+        std::env::set_var(
+            "PATH",
+            std::env::join_paths(paths).expect("failed to compose PATH for test"),
+        );
     }
 
     let builder = crate::nixos::NixOSBuilder::new(

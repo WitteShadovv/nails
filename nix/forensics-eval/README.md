@@ -36,6 +36,9 @@ scripts/run-forensics-eval.sh \
 - Profile and scenario ids are validated against the Nix subsystem definitions.
 - Built-in analyzer outputs are schema-validated against the bundled schemas under `fixtures/schemas/`.
 - The live exporter writes host/export metadata for each stage under `metadata/`.
+- The analyzer lane now enforces the `active` positive-control contract and fails if the
+  supported required analyzers skip/error there or if active findings are fully absent/
+  allowlist-masked.
 
 ## Metadata-driven local sharding
 
@@ -61,6 +64,13 @@ Useful targets currently include:
 Extra arguments after `--` are passed through to `scripts/run-forensics-eval.sh` for
 each selected leaf.
 
+The ordinary GitHub Actions regression lane is intentionally non-privileged and fixture-backed:
+
+```bash
+python3 -m unittest discover -s nix/forensics-eval/tests -p 'test_*.py'
+./nix/forensics-eval/checks/smoke-demo.sh "$PWD/tmp/forensics-eval-smoke"
+```
+
 ## Current built-in live support
 
 Built-in real acquisition is intentionally minimal-safe and currently targets only:
@@ -68,4 +78,4 @@ Built-in real acquisition is intentionally minimal-safe and currently targets on
 - profile: `direct-headless`
 - scenario: `direct-baseline`
 
-Other combinations must currently provide an explicit `--stage-export-cmd`.
+Other combinations must currently provide an explicit `--stage-export-cmd`. In particular, `graphical` and `vfat-boot` are not currently treated as built-in live-supported.

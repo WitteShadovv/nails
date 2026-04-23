@@ -1,0 +1,4 @@
+visible path leak /mnt/hidden
+nails activate
+nails.forensics.sample:history:1111
+Operation Nightingale

@@ -7,6 +7,11 @@ on:
         description: Unix epoch when the parent workflow started
         required: true
         type: string
+      iterations:
+        description: Campaign iteration count for each resolved leaf
+        required: false
+        default: '1'
+        type: string
       checkout-repository:
         description: Repository to checkout for this run
         required: true
@@ -665,6 +670,7 @@ jobs:
         id: workflow-budget
         env:
           WORKFLOW_STARTED_EPOCH: ${{ inputs.workflow-started-epoch }}
+          REQUESTED_TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
 
@@ -710,13 +716,13 @@ jobs:
           | Property | Value |
           |---|---|
           EOF
-            printf '| Target | `%s` |\n' '${{ inputs.target }}'
-            printf '| Workflow start (epoch) | `%s` |\n' "${WORKFLOW_STARTED_EPOCH}"
-            printf '| Elapsed | `%ss` |\n' "${ELAPSED_SECONDS}"
-            printf '| Remaining before 6h deadline | `%ss` |\n' "${REMAINING_SECONDS}"
-            printf '| Reserved for timeout grace + artifacts + cleanup + scheduling | `%ss` |\n' "${RESERVED_SECONDS}"
-            printf '| Forensics eval command budget | `%ss` |\n' "${FORENSICS_TIMEOUT_SECONDS}"
-            printf '| Workflow deadline (UTC) | `%s` |\n' "${DEADLINE_UTC}"
+            printf "| Target | \`%s\` |\n" "${REQUESTED_TARGET}"
+            printf "| Workflow start (epoch) | \`%s\` |\n" "${WORKFLOW_STARTED_EPOCH}"
+            printf "| Elapsed | \`%ss\` |\n" "${ELAPSED_SECONDS}"
+            printf "| Remaining before 6h deadline | \`%ss\` |\n" "${REMAINING_SECONDS}"
+            printf "| Reserved for timeout grace + artifacts + cleanup + scheduling | \`%ss\` |\n" "${RESERVED_SECONDS}"
+            printf "| Forensics eval command budget | \`%ss\` |\n" "${FORENSICS_TIMEOUT_SECONDS}"
+            printf "| Workflow deadline (UTC) | \`%s\` |\n" "${DEADLINE_UTC}"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if (( FORENSICS_TIMEOUT_SECONDS < 60 )); then
@@ -730,10 +736,77 @@ jobs:
           name: nix-community
           skipPush: true
 
+      - name: Resolve forensics plan and validate iterations
+        id: forensics-plan
+        env:
+          REQUESTED_TARGET: ${{ inputs.target }}
+          REQUESTED_ITERATIONS: ${{ inputs.iterations }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$REQUESTED_TARGET" == "live" ]]; then
+            python3 ./scripts/forensics_live_scope_guard.py \
+              --target "$REQUESTED_TARGET" \
+              --iterations "$REQUESTED_ITERATIONS" \
+              --github-output "$GITHUB_OUTPUT" \
+              --github-step-summary "$GITHUB_STEP_SUMMARY" \
+              --summary-title "Forensics eval preflight" \
+              --summary-intro "Honest live-run note: built-in live acquisition is limited to the supported default leaf only. Other leaves still require fixture input or a custom stage exporter."
+            exit 0
+          fi
+
+          if ! [[ "${REQUESTED_ITERATIONS:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::iterations must be a positive integer. Received '${REQUESTED_ITERATIONS:-}'."
+            exit 1
+          fi
+
+          if (( REQUESTED_ITERATIONS > 5 )); then
+            echo "::error::iterations must be <= 5 for trusted live workflow safety. Received '${REQUESTED_ITERATIONS}'."
+            exit 1
+          fi
+
+          plan_json="$(./scripts/run-forensics-eval-tests.sh --plan-json "$REQUESTED_TARGET" -- --iterations "$REQUESTED_ITERATIONS")"
+
+          resolved_leaves="$(python3 -c 'import json, sys; payload = json.loads(sys.argv[1]); print("\n".join(payload["resolvedLeaves"]))' "$plan_json")"
+          builtin_live_leaves="$(python3 -c 'import json, sys; payload = json.loads(sys.argv[1]); print("\n".join(payload["builtinLiveSupportedLeaves"]))' "$plan_json")"
+          resolved_leaves_display="$(python3 -c 'import json, sys; payload = json.loads(sys.argv[1]); print(", ".join(payload["resolvedLeaves"]) or "n/a")' "$plan_json")"
+          builtin_live_leaves_display="$(python3 -c 'import json, sys; payload = json.loads(sys.argv[1]); print(", ".join(payload["builtinLiveSupportedLeaves"]) or "none")' "$plan_json")"
+          resolved_modes="$(python3 -c 'import json, sys; payload = json.loads(sys.argv[1]); print(",".join(payload["modes"]))' "$plan_json")"
+          resolved_iterations="$(python3 -c 'import json, sys; payload = json.loads(sys.argv[1]); print(payload["iterations"])' "$plan_json")"
+
+          {
+            echo "iterations=${resolved_iterations}"
+            echo "modes=${resolved_modes}"
+            echo 'resolved_leaves<<EOF'
+            printf '%s\n' "$resolved_leaves"
+            echo 'EOF'
+            echo 'builtin_live_leaves<<EOF'
+            printf '%s\n' "$builtin_live_leaves"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            cat <<'EOF'
+          ## Forensics eval preflight
+
+          Honest live-run note: built-in live acquisition is limited to the supported default leaf only. Other leaves still require fixture input or a custom stage exporter.
+
+          | Property | Value |
+          |---|---|
+          EOF
+            printf "| Requested target | \`%s\` |\n" "$REQUESTED_TARGET"
+            printf "| Requested iterations | \`%s\` |\n" "$resolved_iterations"
+            printf "| Resolved leaves | \`%s\` |\n" "$resolved_leaves_display"
+            printf "| Built-in live-supported leaves | \`%s\` |\n" "$builtin_live_leaves_display"
+            printf "| Modes | \`%s\` |\n" "$resolved_modes"
+            printf "| Live support scope | \`%s\` |\n" "Built-in live support is limited to the listed built-in live-supported leaves."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run full forensics eval target
         env:
           FORENSICS_TIMEOUT_SECONDS: ${{ steps.workflow-budget.outputs.forensics_timeout_seconds }}
           WORKFLOW_DEADLINE_UTC: ${{ steps.workflow-budget.outputs.deadline_utc }}
+          FORENSICS_ITERATIONS: ${{ steps.forensics-plan.outputs.iterations }}
         run: |
           set -euo pipefail
 
@@ -749,11 +822,11 @@ jobs:
           fi
 
           echo "::group::Run full forensics eval target"
-          echo "Running ./scripts/run-forensics-eval-tests.sh ${{ inputs.target }} with an internal timeout of ${FORENSICS_TIMEOUT_SECONDS}s."
+          echo "Running ./scripts/run-forensics-eval-tests.sh ${{ inputs.target }} -- --iterations ${FORENSICS_ITERATIONS} with an internal timeout of ${FORENSICS_TIMEOUT_SECONDS}s."
           echo "The timeout preserves a cleanup window for timeout termination, artifact upload, and Hetzner runner deletion before the 6-hour workflow budget expires at ${WORKFLOW_DEADLINE_UTC}."
 
           set +e
-          timeout --signal=TERM --kill-after=5m "${FORENSICS_TIMEOUT_SECONDS}s" ./scripts/run-forensics-eval-tests.sh "${{ inputs.target }}"
+          timeout --signal=TERM --kill-after=5m "${FORENSICS_TIMEOUT_SECONDS}s" ./scripts/run-forensics-eval-tests.sh "${{ inputs.target }}" -- --iterations "${FORENSICS_ITERATIONS}"
           status=$?
           set -e
 
@@ -769,15 +842,43 @@ jobs:
           fi
 
       - name: Upload forensics eval artifacts
+        id: review-bundle
         if: always()
+        run: |
+          set -euo pipefail
+
+          python3 ./scripts/prepare-forensics-review-bundle.py \
+            --campaign-dir ./tmp/forensics-eval \
+            --bundle-dir ./tmp/forensics-eval-review-bundle
+
+          python3 - <<'PY' "$GITHUB_STEP_SUMMARY"
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(
+              Path("tmp/forensics-eval-review-bundle/review-bundle-manifest.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          with open(sys.argv[1], "a", encoding="utf-8") as summary:
+              summary.write("## Review bundle\n\n")
+              summary.write("The uploaded artifact is intentionally bounded to review-oriented summaries, diffs, analyzer JSON, live metadata JSON, and command return codes. Raw stage trees and command stdout/stderr are omitted by default.\n\n")
+              summary.write("| Property | Value |\n")
+              summary.write("|---|---|\n")
+              summary.write(f"| Runs | `{manifest['runCount']}` |\n")
+              summary.write(f"| Acquisition modes | `{', '.join(manifest['acquisitionModes'])}` |\n")
+              summary.write(f"| Included files | `{len(manifest['includedFiles'])}` |\n")
+              summary.write(f"| Omitted by default | `{', '.join(manifest['omittedByDefault'])}` |\n")
+          PY
+
+      - name: Upload forensics eval artifacts
+        if: always() && steps.review-bundle.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: full-forensics-eval-results
-          path: |
-            tmp/forensics-eval/*/summary.json
-            tmp/forensics-eval/*/compare/summary.json
-            tmp/forensics-eval/campaign-summary.json
-          if-no-files-found: warn
+          path: tmp/forensics-eval-review-bundle/
+          if-no-files-found: error
           retention-days: 30
 
   delete-runner:

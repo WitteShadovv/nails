@@ -575,6 +575,52 @@ def build_canaries(namespace: str) -> dict[str, Any]:
     }
 
 
+def default_fls_oracle_metadata() -> dict[str, Any]:
+    return {
+        "flsOracle": {
+            "exactStageExpectations": {
+                "active": [
+                    {
+                        "label": "document-artifact",
+                        "path": "/home/testuser/Documents/forensics-document.txt",
+                    },
+                    {
+                        "label": "financial-artifact",
+                        "path": "/home/testuser/financial-data.csv",
+                    },
+                    {
+                        "label": "hidden-dotfile",
+                        "path": "/home/testuser/.hidden-secrets",
+                    },
+                    {
+                        "label": "nested-sensitive-artifact",
+                        "path": "/home/testuser/forensics-eval/projects/confidential/keys.txt",
+                    },
+                    {
+                        "label": "temp-artifact",
+                        "path": "/tmp/forensics-eval/temp-token.txt",
+                    },
+                    {
+                        "label": "history-canary",
+                        "pathTemplate": "/history/{canary:history}",
+                    },
+                ],
+                "post-standard": [
+                    {
+                        "label": "financial-artifact",
+                        "path": "/home/testuser/financial-data.csv",
+                    },
+                    {
+                        "label": "temp-artifact",
+                        "path": "/tmp/forensics-eval/temp-token.txt",
+                    },
+                ],
+                "post-emergency": [],
+            }
+        }
+    }
+
+
 def default_scenario_payload(
     config: Config,
     campaign_id: str,
@@ -592,6 +638,7 @@ def default_scenario_payload(
         "requestedModes": config.modes,
         "canaryNamespace": canary_namespace,
         "generatedBy": "nix/forensics-eval/runners/run_forensics_eval.py",
+        "oracles": default_fls_oracle_metadata(),
         "assumptions": [
             "No external scenario provider configured; generated contract placeholder.",
             "Stage export/analyzer integrations may replace placeholder behavior without changing bundle layout.",
@@ -640,6 +687,7 @@ def resolve_scenario_payload(
     payload.setdefault("scenarioId", config.scenario_id)
     payload.setdefault("profileId", config.profile)
     payload.setdefault("requestedModes", config.modes)
+    payload.setdefault("oracles", default_fls_oracle_metadata())
     payload["campaignId"] = campaign_id
     payload["runId"] = run_id
     payload["iteration"] = iteration
@@ -1127,6 +1175,17 @@ def generate_report(summary: dict[str, Any]) -> str:
                 f"- `{check['stage']}`: {'ok' if check['match'] else 'MUTATED'}"
             )
 
+    if summary.get("analysisStages"):
+        lines.extend(["", "## Analyzer stage coverage", ""])
+        for stage in summary["analysisStages"]:
+            expectation = stage.get("expectation", {})
+            lines.append(
+                f"- `{stage['stage']}`: analyzed=`{stage['analyzed']}` expectation=`{expectation.get('kind', 'n/a')}` expectedFindings=`{expectation.get('expectedFindings')}`"
+            )
+            notes = expectation.get("notes")
+            if notes:
+                lines.append(f"  - {notes}")
+
     lines.extend(
         [
             "",
@@ -1249,7 +1308,7 @@ def execute_run(
     selected_analysis_stages = [
         stage["name"]
         for stage in stages
-        if stage["selected"] and stage["name"].startswith("post-")
+        if stage["selected"] and stage["name"] != "baseline"
     ]
     if config.analyzer_cmd:
         log(f"[{run_id}] analyzer")
@@ -1406,6 +1465,28 @@ def execute_run(
         "acquisitionMode": "fixture" if config.fixture_run_dir else "live",
         "findingCount": finding_count,
         "mutationCount": mutation_count,
+        "analysisStages": [
+            {
+                "stage": stage["name"],
+                "analyzed": stage["name"] in selected_analysis_stages,
+                "expectation": {
+                    "kind": "positive-control"
+                    if stage["name"] == "active"
+                    else "post-cleanup"
+                    if stage["name"].startswith("post-")
+                    else "baseline",
+                    "expectedFindings": stage["name"] == "active",
+                    "notes": (
+                        "Active stage is intentionally analyzed as a positive control and is expected to contain findings."
+                        if stage["name"] == "active"
+                        else "Post-cleanup stages are analyzed alongside the active positive control."
+                        if stage["name"].startswith("post-")
+                        else "Baseline is exported for comparison and suppression but not analyzed as a target stage."
+                    ),
+                },
+            }
+            for stage in stages
+        ],
         "stages": stages,
         "comparisons": comparisons,
         "integrityChecks": integrity_checks,

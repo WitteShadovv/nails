@@ -2,6 +2,12 @@ name: Full Forensics Eval
 
 on:
   workflow_dispatch:
+    inputs:
+      iterations:
+        description: Conservative campaign depth for the built-in live target (1-5)
+        required: false
+        default: '1'
+        type: string
   pull_request_target:
     branches: [main]
     types:
@@ -14,6 +20,8 @@ on:
       - 'nails-cli/**'
       - 'nix/**'
       - 'scripts/run-forensics-eval-tests.sh'
+      - 'scripts/forensics_live_scope_guard.py'
+      - 'scripts/prepare-forensics-review-bundle.py'
       - '.github/workflows/forensics-eval-full.yml'
       - '.github/workflows/forensics-eval-full-shard.yml'
       - 'flake.nix'
@@ -39,6 +47,11 @@ jobs:
       name: hetzner-pr
     steps:
       - name: Record approval gate context
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
         run: |
           {
             cat <<'EOF'
@@ -49,10 +62,10 @@ jobs:
           | Property | Value |
           |---|---|
           EOF
-            printf '| PR | `#%s` |\n' '${{ github.event.pull_request.number }}'
-            printf '| Head repository | `%s` |\n' '${{ github.event.pull_request.head.repo.full_name }}'
-            printf '| Head SHA | `%s` |\n' '${{ github.event.pull_request.head.sha }}'
-            printf '| Base branch | `%s` |\n' '${{ github.event.pull_request.base.ref }}'
+            printf "| PR | \`#%s\` |\n" "$PR_NUMBER"
+            printf "| Head repository | \`%s\` |\n" "$HEAD_REPOSITORY"
+            printf "| Head SHA | \`%s\` |\n" "$HEAD_SHA"
+            printf "| Base branch | \`%s\` |\n" "$BASE_BRANCH"
           } >> "$GITHUB_STEP_SUMMARY"
 
   resolve-run-context:
@@ -159,8 +172,8 @@ jobs:
 
   run-full-forensics-eval:
     name: Run full forensics eval (live target)
-    needs: resolve-run-context
-    if: needs.resolve-run-context.result == 'success'
+    needs: [resolve-run-context, preflight-live-target]
+    if: needs.resolve-run-context.result == 'success' && needs.preflight-live-target.result == 'success'
     uses: ./.github/workflows/forensics-eval-full-shard.yml
     permissions:
       contents: read
@@ -171,12 +184,67 @@ jobs:
     with:
       workflow-started-epoch: ${{ needs.resolve-run-context.outputs.workflow_started_epoch }}
       target: live
+      iterations: ${{ needs.preflight-live-target.outputs.iterations }}
       checkout-repository: ${{ needs.resolve-run-context.outputs.checkout_repository }}
       checkout-sha: ${{ needs.resolve-run-context.outputs.checkout_sha }}
 
+  preflight-live-target:
+    name: Preflight live target scope
+    needs: resolve-run-context
+    if: needs.resolve-run-context.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      iterations: ${{ steps.guard.outputs.iterations }}
+      resolved_leaves: ${{ steps.guard.outputs.resolved_leaves }}
+    steps:
+      - name: Checkout repository at exact approved SHA
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: ${{ needs.resolve-run-context.outputs.checkout_repository }}
+          ref: ${{ needs.resolve-run-context.outputs.checkout_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checked out revision
+        run: |
+          set -euo pipefail
+
+          expected_sha='${{ needs.resolve-run-context.outputs.checkout_sha }}'
+          actual_sha="$(git rev-parse HEAD)"
+
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "::error::Checked out SHA '$actual_sha' does not match expected '$expected_sha'."
+            exit 1
+          fi
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b
+        with:
+          extra_nix_config: |
+            accept-flake-config = false
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c
+        with:
+          name: nix-community
+          skipPush: true
+
+      - name: Validate live scope and iterations
+        id: guard
+        env:
+          REQUESTED_ITERATIONS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.iterations || '1' }}
+        run: |
+          python3 ./scripts/forensics_live_scope_guard.py \
+            --target live \
+            --iterations "$REQUESTED_ITERATIONS" \
+            --github-output "$GITHUB_OUTPUT" \
+            --github-step-summary "$GITHUB_STEP_SUMMARY" \
+            --summary-title "Hosted live-target preflight"
+
   full-forensics-eval-result:
     name: Full Forensics Eval Result
-    needs: [approve-pr, resolve-run-context, run-full-forensics-eval]
+    needs: [approve-pr, resolve-run-context, preflight-live-target, run-full-forensics-eval]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -185,9 +253,11 @@ jobs:
         env:
           APPROVAL_RESULT: ${{ needs.approve-pr.result }}
           RESOLVE_RESULT: ${{ needs.resolve-run-context.result }}
+          PREFLIGHT_RESULT: ${{ needs.preflight-live-target.result }}
           TRUST_REASON: ${{ needs.resolve-run-context.outputs.reason }}
           RUN_MODE: ${{ needs.resolve-run-context.outputs.run_mode }}
           RUN_RESULT: ${{ needs.run-full-forensics-eval.result }}
+          REQUESTED_ITERATIONS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.iterations || '1' }}
         run: |
           set -euo pipefail
 
@@ -198,15 +268,22 @@ jobs:
           | Job | Result |
           |---|---|
           EOF
-            printf '| Run mode | `%s` |\n' "${RUN_MODE}"
-            printf '| PR approval gate | `%s` |\n' "${APPROVAL_RESULT}"
-            printf '| Resolve trusted run context | `%s` |\n' "${RESOLVE_RESULT}"
-            printf '| Run full forensics eval (`live` target, 1 runner) | `%s` |\n' "${RUN_RESULT}"
-            printf '\n%s\n' "${TRUST_REASON}"
+            printf "| Run mode | \`%s\` |\n" "${RUN_MODE}"
+            printf "| PR approval gate | \`%s\` |\n" "${APPROVAL_RESULT}"
+            printf "| Resolve trusted run context | \`%s\` |\n" "${RESOLVE_RESULT}"
+            printf "| Hosted live-target preflight | \`%s\` |\n" "${PREFLIGHT_RESULT}"
+            printf "| Requested iterations | \`%s\` |\n" "${REQUESTED_ITERATIONS}"
+            printf "| Run full forensics eval (\`live\` target, 1 runner) | \`%s\` |\n" "${RUN_RESULT}"
+            printf "\n%s\n" "${TRUST_REASON}"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [[ "$RESOLVE_RESULT" != "success" ]]; then
             echo "::error::Failed to resolve a trusted checkout target."
+            exit 1
+          fi
+
+          if [[ "$PREFLIGHT_RESULT" != "success" ]]; then
+            echo "::error::Hosted live-target preflight failed; refusing to treat this workflow as successful."
             exit 1
           fi
 
