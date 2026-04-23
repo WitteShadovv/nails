@@ -10,8 +10,10 @@
     "profileId",
     "scenarioId",
     "status",
+    "contractFailures",
     "stageCount",
     "totals",
+    "analyzerCoverage",
     "stages",
     "findings"
   ],
@@ -32,8 +34,13 @@
       "type": "string",
       "enum": ["clean", "finding", "skipped", "error"]
     },
+    "contractFailures": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
     "stageCount": { "type": "integer", "minimum": 0 },
     "totals": { "type": "object" },
+    "analyzerCoverage": { "type": "object" },
     "stages": { "type": "array", "items": { "type": "object" } },
     "findings": { "type": "array", "items": { "type": "object" } }
   }

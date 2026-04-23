@@ -144,6 +144,7 @@ builtins.seq _assertUniqueLeafIds (
     metadata = {
       inherit
         availableTargets
+        builtinLiveLeafTests
         groups
         leaves
         leafTests

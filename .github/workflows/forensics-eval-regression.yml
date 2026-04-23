@@ -1,0 +1,64 @@
+name: Forensics Eval Regression
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    branches:
+      - main
+      - dev
+  workflow_dispatch:
+
+concurrency:
+  group: forensics-eval-regression-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  forensics-regression:
+    name: Forensics Eval Regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b
+        with:
+          extra_nix_config: |
+            accept-flake-config = false
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c
+        with:
+          name: nix-community
+          skipPush: true
+
+      - name: Run Python forensics tests
+        run: python3 -m unittest discover -s nix/forensics-eval/tests -p 'test_*.py'
+
+      - name: Run fixture-backed forensics smoke check
+        env:
+          SMOKE_OUT: ${{ runner.temp }}/forensics-eval-smoke
+        run: ./nix/forensics-eval/checks/smoke-demo.sh "$SMOKE_OUT"
+
+      - name: Summarize regression lane
+        if: always()
+        run: |
+          {
+            cat <<'EOF'
+          ## Forensics eval regression lane
+
+          This lane is non-privileged and fixture-backed. It does not provision Hetzner runners or use repository secrets.
+
+          | Check | Scope |
+          |---|---|
+          EOF
+            printf "| Python tests | \`%s\` |\n" "nix/forensics-eval/tests"
+            printf "| Smoke check | \`%s\` |\n" "./nix/forensics-eval/checks/smoke-demo.sh"
+            printf "| Live support note | \`%s\` |\n" "Built-in live support remains limited to direct-baseline/direct-headless."
+          } >> "$GITHUB_STEP_SUMMARY"

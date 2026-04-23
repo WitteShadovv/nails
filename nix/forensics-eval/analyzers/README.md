@@ -22,3 +22,7 @@ The analyzer runner writes:
 - `findings-diff.md`
 
 The framework is intentionally read-only with respect to stage evidence. Scratch files are kept under a separate scratch directory.
+
+The `active` stage is an enforced positive-control contract in the supported lane: the
+runner exits non-zero if required analyzers skip/error there or if all expected active
+findings are absent or fully masked by allowlists.

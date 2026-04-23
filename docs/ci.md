@@ -9,6 +9,7 @@ This repository is public. The CI and release workflows are written for a public
 | Workflow | Purpose | Triggers |
 |---|---|---|
 | `.github/workflows/ci.yml` | Primary quality gate for Rust code, coverage, dependency policy, SBOM generation, flaky-test detection, and benchmark enforcement | Push to `main`/`dev`, PRs targeting `main`/`dev`, weekly schedule, manual dispatch |
+| `.github/workflows/forensics-eval-regression.yml` | Cheap non-privileged forensics regression lane covering Python tests plus a fixture-backed smoke run | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
 | `.github/workflows/e2e-tests.yml` | Nix-based smoke validation for the fast CI E2E subset | Push/PR to `dev` with path filters, manual dispatch |
 | `.github/workflows/e2e-tests-full.yml` | Full Hetzner-backed E2E suite for trusted manual runs and PR runs gated by native GitHub environment approval | `pull_request_target` to `main` with path filters, manual dispatch |
 | `.github/workflows/forensics-eval-full.yml` | Full Hetzner-backed forensics-eval suite, executed as a single live-target job on trusted manual runs and PR runs gated by native GitHub environment approval | `pull_request_target` to `main` with path filters, manual dispatch |
@@ -41,6 +42,14 @@ The main CI workflow runs these jobs:
 
 This split is deliberate: the repository keeps fast, broadly applicable CI in `ci.yml` while preserving deeper release-path and NixOS validation in dedicated workflows.
 
+### `forensics-eval-regression.yml` behavior
+
+- The workflow is the cheap, branch-protection-friendly forensics lane for ordinary push/PR/manual CI.
+- It runs on GitHub-hosted runners without repository secrets or Hetzner provisioning.
+- It executes `python3 -m unittest discover -s nix/forensics-eval/tests -p 'test_*.py'`.
+- It also executes the fixture-backed smoke check `./nix/forensics-eval/checks/smoke-demo.sh`, so the new Python/fixture path is visibly covered in normal CI.
+- This lane is intentionally fixture/demo-only; it does **not** claim live support for graphical or vfat profiles.
+
 ### `e2e-tests.yml` behavior
 
 - The workflow runs `./scripts/run-e2e-tests.sh`, not the aggregate `e2e-ci` link-farm target directly.
@@ -72,12 +81,17 @@ This keeps suite membership in one source of truth under `nix/e2e-tests/default.
 - The workflow runs a single Hetzner-backed job through `.github/workflows/forensics-eval-full-shard.yml` on one ephemeral self-hosted runner.
 - That reusable workflow now invokes `./scripts/run-forensics-eval-tests.sh live` with no sharding.
 - The `live` target is the metadata-defined built-in live-supported group, which currently resolves to `direct-baseline/direct-headless`.
+- A hosted preflight now checks out the exact approved SHA, validates iterations, resolves `live` from current metadata, and fails closed unless it remains exactly `direct-baseline/direct-headless`.
+- That fail-closed guard is deliberate: unsupported leaves such as `graphical` and `vfat-boot` are not treated as built-in live-supported.
 - Public PR approval uses the workflow's own `pull_request_target` trigger plus the metadata-only `hetzner-pr` environment gate.
 - After approval, the trusted GitHub-hosted resolver job fetches the current PR head repository/ref/SHA from the GitHub API and passes that exact target into the reusable Hetzner worker.
 - Workflow concurrency is PR-aware and uses `cancel-in-progress: true`, so newer PR updates cancel older waiting/running privileged runs.
 - The reusable worker checks out the exact approved SHA with `persist-credentials: false` and verifies that `HEAD` matches before executing PR code.
 - The reusable shard workflow now uses an explicit minimal secret contract instead of `secrets: inherit`: `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID`.
-- The single run uploads only JSON summaries (`summary.json`, compare `summary.json`, and `campaign-summary.json`); markdown reports, raw evidence bundles, analyzer markdown reports with evidence snippets, and `run-manifest.json` are not uploaded.
+- Before upload, the privileged run now builds a bounded review bundle manifest, fails if required review artifacts are missing, and sanitizes copied review-bundle analyzer evidence/snippet content without mutating the source campaign outputs in `tmp/`.
+- The uploaded `full-forensics-eval-results` bundle is intentionally limited to campaign summaries, per-run manifests/summaries/reports/scenario JSON, compare summaries and findings diffs, baseline-vs-stage JSON diffs, stage-hash JSON, analyzer JSON outputs, live stage metadata JSON, and command return-code files.
+- The review-bundle manifest now records whether sanitization was applied and which copied files were redacted.
+- Current limitation: the artifact bundle still does not upload raw stage trees, disk images, blanket runner logs, or command stdout/stderr, so it is useful for review and triage but not a complete offline-forensics evidence package.
 - Required repository configuration matches the full E2E workflow: `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID` (the SSH key ID may be stored as a repository variable instead of a secret).
 
 ### Required GitHub environment configuration for privileged PR runs
@@ -183,7 +197,7 @@ nix build -L .#nails-release -o result --option accept-flake-config false
 - Workflow artifacts are useful for maintainers and contributors, but the **public distribution channel is the GitHub prerelease published from version tags**.
 - Manual `release.yml` runs are always validation-only; if a tag ref is selected, it must match `Cargo.toml`.
 - E2E validation and Nix release-path verification are separate workflows and should be treated as part of the overall release posture even though they are not aggregated into `ci-success`.
-- Forensics-eval CI currently runs only the metadata-defined `live` target, so unsupported non-live leaves remain excluded until live support expands.
+- Ordinary forensics CI is fixture-backed; the privileged live workflow is fail-closed to `direct-baseline/direct-headless` until built-in live support expands.
 - The pinned `Cyclenerd/hcloud-github-runner` action still embeds the GitHub runner registration token into Hetzner cloud-init/user-data during runner creation. This patch prevents PR-context provisioning and narrows data handling, but the upstream bootstrap-token exposure remains a caveat until the action design changes.
 
 ## Related documents

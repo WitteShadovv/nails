@@ -28,6 +28,14 @@
       "description": "Scans exported files for generic hidden-environment indicators and sensitive test markers."
     },
     {
+      "id": "fls_oracle",
+      "module": "plugins.fls_oracle",
+      "class": "FlsOracleAnalyzer",
+      "enabled": true,
+      "optional": false,
+      "description": "Analyzes exported Sleuth Kit fls listings and preserves evidence-backed hidden-volume path indicators."
+    },
+    {
       "id": "bulk_extractor_adapter",
       "module": "plugins.bulk_extractor_adapter",
       "class": "BulkExtractorAdapter",
