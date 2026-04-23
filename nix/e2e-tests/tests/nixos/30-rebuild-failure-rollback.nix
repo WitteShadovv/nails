@@ -75,9 +75,23 @@ in
         payload = json.loads(machine.succeed(f"nails --config {config_path} status --json"))
         assert str(payload["state"]).lower() == "inactive", f"Expected inactive state, got: {payload}"
 
+    def path_exists(path):
+        rc, _stdout, _stderr = run_command_capture(
+            "path-exists",
+            f"test -e {shlex.quote(path)}",
+        )
+        return rc == 0
+
     def assert_no_overlays_local(paths):
         for path in paths:
-            machine.fail(f"/bin/sh -lc 'mountpoint -q {path} && [ \"$(findmnt -n -o FSTYPE {path})\" = overlay ]'")
+            machine.fail(
+                "/bin/sh -lc "
+                + shlex.quote(
+                    "while IFS=' ' read -r _ mountpoint fstype _; do "
+                    + f"[ \"$mountpoint\" = {shlex.quote(path)} ] && [ \"$fstype\" = overlay ] && exit 0; "
+                    + "done < /proc/self/mounts; exit 1"
+                )
+            )
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -93,7 +107,7 @@ in
     }
     EOF""")
         baseline_run_current = run_current_system_target()
-        wrapper_env = install_nixos_rebuild_wrapper("/tmp/nixos-rebuild-failure.log")
+        wrapper_env = install_nixos_rebuild_wrapper("/run/nixos-rebuild-failure.log")
 
     with subtest("failed rebuild rolls activation back to inactive"):
         rc, stdout, stderr = run_command_capture(
@@ -101,11 +115,15 @@ in
             f"{wrapper_env} nails --config {headless_config} activate --no-kill-session -y",
         )
         assert rc != 0, f"Expected activation failure, got rc=0 stdout={stdout!r} stderr={stderr!r}"
-        rebuild_log = machine.succeed("cat /tmp/nixos-rebuild-failure.log")
-        assert "test" in rebuild_log, f"Expected nixos-rebuild invocation before rollback, got: {rebuild_log!r}"
         combined_output = stdout + stderr
         assert "Activation started" in combined_output, \
             f"Expected activation attempt output before rollback, got: {combined_output!r}"
+        assert path_exists("/run/nixos-rebuild-failure.log"), \
+            f"Expected wrapper log proving nixos-rebuild execution, got output: {combined_output!r}"
+        rebuild_log = machine.succeed("cat /run/nixos-rebuild-failure.log")
+        assert rebuild_log.strip(), "Expected non-empty nixos-rebuild wrapper log"
+        assert "test" in rebuild_log, \
+            f"Expected wrapped nixos-rebuild test invocation before rollback, got: {rebuild_log!r}"
 
     with subtest("rollback cleans mounts, state, and decoy /etc"):
         assert_inactive_status_local(headless_config)

@@ -1,6 +1,7 @@
 //! Explicit mode overlay mounting (pre-configured overlays)
 
 use super::{MountTracker, clean_stale_network_config};
+use crate::manager::activation::guards::NixDaemonGuard;
 use crate::{Filesystem, NailsError, NailsManager, Result, Verbosity};
 use std::path::{Path, PathBuf};
 
@@ -33,6 +34,27 @@ impl<F: Filesystem> NailsManager<F> {
                 )));
             }
         }
+
+        let nix_in_targets = self
+            .config
+            .overlays
+            .iter()
+            .any(|overlay| overlay.target == Path::new("/nix"));
+        let mut nix_guard = NixDaemonGuard::new(nix_in_targets);
+        if nix_in_targets && !crate::runtime_safety::should_skip_host_interaction() {
+            crate::manager::helpers::cache_nix_overlay_runtime_commands().map_err(|err| {
+                NailsError::NixOSError(format!(
+                    "Failed to cache /nix overlay runtime commands before /nix overlay: {}",
+                    err
+                ))
+            })?;
+        }
+        if nix_in_targets {
+            tracing::info!("Stopping nix-daemon before /nix overlay...");
+            let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();
+        }
+
+        let mut nix_overlay_succeeded = false;
 
         for overlay in &self.config.overlays {
             // Strip opaque xattrs from upper layer to prevent previous activation
@@ -109,7 +131,6 @@ impl<F: Filesystem> NailsManager<F> {
                 strategy_options,
             ) {
                 Ok(mount_result) => {
-                    let mut nix_overlay_succeeded = false;
                     self.handle_mount_success(
                         tracker,
                         overlay,
@@ -141,6 +162,10 @@ impl<F: Filesystem> NailsManager<F> {
                     return Err(e);
                 }
             }
+        }
+
+        if nix_overlay_succeeded {
+            self.restore_nix_security_model(&mut nix_guard)?;
         }
 
         Ok(())

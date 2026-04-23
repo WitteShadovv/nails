@@ -7,11 +7,11 @@
 //! The file layer implements graceful fallback: if the hidden volume is not mounted
 //! or LoggingManager initialization fails, logging continues with stdout-only mode.
 
-use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::Layer;
 
 #[cfg(test)]
 mod tests;
@@ -179,8 +179,8 @@ fn emit_logging_init_message(render_mode: RenderMode, is_error: bool, message: &
     let formatted = match (render_mode, is_error) {
         (RenderMode::Plain, true) => format!("[FAIL] {message}"),
         (RenderMode::Plain, false) => format!("[WARN] {message}"),
-        (RenderMode::NoColor, true) => format!("✗ {message}"),
-        (RenderMode::NoColor, false) => format!("⚠ {message}"),
+        (RenderMode::NoColor, true) => format!("X {message}"),
+        (RenderMode::NoColor, false) => format!("! {message}"),
         (RenderMode::Human, true) => nails_core::logging::format_early_error(message),
         (RenderMode::Human, false) => nails_core::logging::format_early_warning(message),
     };
@@ -314,14 +314,19 @@ fn init_file_layer(
     let log_file = match log_file_result {
         Ok(file) => file,
         Err(e) => {
-            emit_logging_init_message(
-                render_mode,
-                false,
-                &format!(
-                    "Failed to open log file: {}, continuing without file logging",
-                    e
-                ),
-            );
+            if matches!(render_mode, RenderMode::Human) {
+                emit_logging_init_message(
+                    render_mode,
+                    false,
+                    &format!(
+                        "Failed to open log file: {}, continuing without file logging",
+                        e
+                    ),
+                );
+            } else {
+                // Plain/no-color command output should stay focused on the command payload.
+                tracing::debug!(error = %e, "Failed to open log file; continuing without file logging");
+            }
             return Ok(None);
         }
     };

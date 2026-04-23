@@ -1,9 +1,9 @@
 //! Auto mode overlay mounting (dynamic target enumeration)
 
 use super::{
-    MountTracker, NixDaemonGuard, build_overlay_targets, clean_stale_network_config,
-    create_overlay_config,
+    MountTracker, build_overlay_targets, clean_stale_network_config, create_overlay_config,
 };
+use crate::manager::activation::guards::NixDaemonGuard;
 use crate::{Filesystem, NailsError, NailsManager, Result, Verbosity};
 use std::path::{Path, PathBuf};
 
@@ -26,6 +26,14 @@ impl<F: Filesystem> NailsManager<F> {
         // in the blocking process list with its mount namespace references.
         let nix_in_targets = overlay_targets.iter().any(|t| t == Path::new("/nix"));
         let mut nix_guard = NixDaemonGuard::new(nix_in_targets);
+        if nix_in_targets && !crate::runtime_safety::should_skip_host_interaction() {
+            crate::manager::helpers::cache_nix_overlay_runtime_commands().map_err(|err| {
+                NailsError::NixOSError(format!(
+                    "Failed to cache /nix overlay runtime commands before /nix overlay: {}",
+                    err
+                ))
+            })?;
+        }
         if nix_in_targets {
             tracing::info!("Stopping nix-daemon before /nix overlay...");
             let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();

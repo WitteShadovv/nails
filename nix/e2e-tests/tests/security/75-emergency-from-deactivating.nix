@@ -24,13 +24,68 @@ in
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
-    ${testHelpers.runDetachedCommandFn}
     ${testHelpers.readStatusJsonFn}
     ${assertions.assertStatusStateFn}
     ${assertions.assertOverlayMountedFn}
     ${assertions.assertNoOverlaysFn}
     ${securityHelpers.capturedCommandFns}
-    ${securityHelpers.transitionalStateFns}
+
+    import json
+    import shlex
+
+    expected_overlays = ["/etc", "/home", "/root", "/srv", "/tmp"]
+
+    def assert_expected_overlays(paths):
+        for path in paths:
+            assert_overlay_mounted(path)
+
+    def backup_state_file(state_path, backup_path):
+        machine.succeed(
+            "cp " + shlex.quote(state_path) + " " + shlex.quote(backup_path)
+        )
+
+    def restore_state_file(state_path, backup_path):
+        machine.succeed(
+            "cp " + shlex.quote(backup_path) + " " + shlex.quote(state_path)
+        )
+
+    def force_state_file_state(state_path, target_state):
+        script = f"""python3 - <<'PY'
+    import json
+
+    state_path = {json.dumps(state_path)}
+    target_state = {json.dumps(target_state)}
+
+    with open(state_path, 'r', encoding='utf-8') as handle:
+        payload = json.load(handle)
+
+    state = payload['state']
+
+    if isinstance(state, dict):
+        previous = next(iter(state.values())) or {{}}
+        timestamp = (
+            previous.get('started_at')
+            or previous.get('activated_at')
+            or previous.get('triggered_at')
+            or '1970-01-01T00:00:00Z'
+        )
+        if target_state in ('Activating', 'Deactivating'):
+            payload['state'] = {{target_state: {{'started_at': timestamp}}}}
+        elif target_state == 'Inactive':
+            payload['state'] = 'Inactive'
+        else:
+            raise SystemExit(f'Unsupported target state: {{target_state}}')
+    elif isinstance(state, str):
+        payload['state'] = target_state
+    else:
+        raise SystemExit(f'Unsupported state encoding: {{state!r}}')
+
+    payload.pop('checksum', None)
+
+    with open(state_path, 'w', encoding='utf-8') as handle:
+        json.dump(payload, handle)
+    PY"""
+        machine.succeed("/bin/sh -lc " + shlex.quote(script))
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -49,17 +104,16 @@ in
 
         status = read_status_json(config_path=headless_config)
         assert_status_state("deactivating", payload=status)
-        assert_overlay_mounted("/home")
-        assert_overlay_mounted("/etc")
+        assert_expected_overlays(expected_overlays)
 
     with subtest("emergency fails closed while deactivation is in progress"):
         prefix = "/run/nails-tests/emergency-from-deactivating"
-        capture = run_captured_command(
+        result = run_shellless_transient_command(
             prefix,
-            f"nails --config {headless_config} emergency --no-countdown",
+            ["nails", "--config", headless_config, "emergency", "--no-countdown"],
             unit_name="nails-emergency-from-deactivating",
+            timeout=30,
         )
-        result = read_command_result(prefix, unit_name=capture["unit_name"], timeout=30)
 
         assert result["rc"] == 1, f"Expected emergency to fail from Deactivating, got: {result}"
         assert "Deactivating" in result["stderr"], result
@@ -67,30 +121,25 @@ in
 
         status = read_status_json(config_path=headless_config)
         assert_status_state("deactivating", payload=status)
-        assert_overlay_mounted("/home")
-        assert_overlay_mounted("/etc")
+        assert_expected_overlays(expected_overlays)
 
     with subtest("restored active state can still be emergency-cleaned"):
         restore_state_file(state_path, backup_path)
         status = read_status_json(config_path=headless_config)
         assert status["state"].startswith("Active"), status
 
+        prefix = "/run/nails-tests/emergency-from-deactivating-cleanup"
         result = run_shellless_transient_command(
-            "/run/nails-tests/emergency-from-deactivating-cleanup",
-            [
-                "nails",
-                "--config",
-                headless_config,
-                "emergency",
-                "--no-countdown",
-            ],
+            prefix,
+            ["nails", "--config", headless_config, "emergency", "--no-countdown"],
             unit_name="nails-emergency-from-deactivating-cleanup",
+            timeout=30,
         )
 
         assert result["rc"] == 0, result
         assert "Emergency deactivation complete" in result["stdout"], result
 
-        assert_no_overlays(["/home", "/etc"])
+        assert_no_overlays(expected_overlays)
         status = read_status_json(config_path=headless_config)
         assert_status_state("inactive", payload=status)
   '';

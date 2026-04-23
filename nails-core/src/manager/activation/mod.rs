@@ -16,29 +16,33 @@
 //! rollback on failure, ensuring the system doesn't get left in a partially
 //! activated state.
 
+#[allow(unused_imports)]
 use super::{
-    MountInfo, MountTracker, MountType, NailsManager, build_overlay_targets,
-    clean_stale_network_config, create_overlay_config, ensure_run_current_system_symlink,
-    select_system_profile, start_service_and_socket,
+    MountInfo, MountType, build_overlay_targets, clean_stale_network_config, create_overlay_config,
+    ensure_run_current_system_symlink, select_system_profile, start_service_and_socket,
 };
+#[allow(unused_imports)]
+use super::{MountTracker, NailsManager};
 use crate::notification::{Notification, write_notification};
 use crate::{Filesystem, NailsError, Result, Verbosity, obfuscate};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+mod gate;
 mod guards;
 mod nixos_build;
 mod nixos_switch;
 mod overlay_mount;
 mod preflight;
+mod rollback;
 mod session;
-mod test_gate;
 
 #[cfg(test)]
 mod tests;
 
+use gate::maybe_block_after_activating_state_transition;
 use guards::SessionRestartGuard;
-use test_gate::maybe_block_after_activating_state_transition;
+use rollback::rollback_overlay_mounts_after_activation_failure;
 
 impl<F: Filesystem> NailsManager<F> {
     pub fn activate(manager_arc: Arc<Mutex<Self>>, no_preflight: bool) -> Result<()> {
@@ -413,6 +417,25 @@ impl<F: Filesystem> NailsManager<F> {
                             write_err
                         );
                     }
+
+                    let cleanup_result = {
+                        let manager = manager_arc
+                            .lock()
+                            .map_err(|lock_err| NailsError::LockPoisoned(lock_err.to_string()))?;
+                        rollback_overlay_mounts_after_activation_failure(
+                            &manager,
+                            &mounted_overlays,
+                        )
+                    };
+                    if let Err(cleanup_err) = cleanup_result {
+                        tracing::error!(
+                            error = %cleanup_err,
+                            rollback = true,
+                            "Activation rollback cleanup failed after NixOS switch error"
+                        );
+                        return Err(cleanup_err);
+                    }
+
                     return Err(e);
                 }
             }

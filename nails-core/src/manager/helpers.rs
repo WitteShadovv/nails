@@ -4,98 +4,25 @@
 //! building, system profile selection, network config cleanup, and overlay
 //! configuration creation.
 
+mod command_cache;
+mod runtime_cache;
+mod service_controller;
+
 use crate::{Config, Filesystem, NailsError, Result, obfuscate};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-/// Centralized socket-aware service lifecycle control.
-///
-/// All systemd service start/stop operations should go through this struct
-/// to ensure consistent ordering: stop socket BEFORE service, start socket
-/// to activate service.
-pub(crate) struct ServiceController;
+static SYSTEMCTL_COMMAND: OnceLock<command_cache::CachedCommand> = OnceLock::new();
+static NIX_DAEMON_PATH: OnceLock<PathBuf> = OnceLock::new();
+static NIX_COMMAND_PATH: OnceLock<PathBuf> = OnceLock::new();
+static CURRENT_SYSTEM_PROFILE: OnceLock<PathBuf> = OnceLock::new();
+static ORIGINAL_NIX_STORE_BIND_SOURCE: OnceLock<PathBuf> = OnceLock::new();
 
-impl ServiceController {
-    /// Returns true when running in a test or test-like context where
-    /// host interaction (systemctl, etc.) should be skipped.
-    fn should_skip() -> bool {
-        crate::runtime_safety::should_skip_host_interaction()
-    }
-
-    /// Stop nix-daemon: stop socket first (prevents socket-activation restart),
-    /// then stop the service. Best-effort — errors are logged but returned so
-    /// callers can decide how to handle them.
-    pub fn stop_nix_daemon() -> std::result::Result<(), std::io::Error> {
-        if Self::should_skip() {
-            tracing::debug!(
-                "Skipping nix-daemon stop commands in test/test-like context to avoid host interaction"
-            );
-            return Ok(());
-        }
-
-        tracing::info!("Stopping nix-daemon.socket...");
-        let _ = std::process::Command::new("systemctl")
-            .args(["stop", "nix-daemon.socket"])
-            .output()?;
-
-        tracing::info!("Stopping nix-daemon.service...");
-        let _ = std::process::Command::new("systemctl")
-            .args(["stop", "nix-daemon.service"])
-            .output()?;
-
-        Ok(())
-    }
-
-    /// Start nix-daemon: start socket (which activates service on demand),
-    /// then start the service directly as well. Best-effort.
-    #[allow(dead_code)]
-    pub fn start_nix_daemon() {
-        Self::start_service_and_socket("nix-daemon");
-    }
-
-    /// Restart nix-daemon: stop then start.
-    #[allow(dead_code)]
-    pub fn restart_nix_daemon() {
-        let _ = Self::stop_nix_daemon();
-        Self::start_nix_daemon();
-    }
-
-    /// Start a systemd service and its socket (socket first), best-effort.
-    pub fn start_service_and_socket(service: &str) {
-        if Self::should_skip() {
-            return;
-        }
-
-        tracing::debug!(service, "Starting {}.socket", service);
-        let _ = std::process::Command::new("systemctl")
-            .args(["start", &format!("{}.socket", service)])
-            .output();
-
-        tracing::debug!(service, "Starting {}", service);
-        let _ = std::process::Command::new("systemctl")
-            .args(["start", service])
-            .output();
-    }
-
-    /// Best-effort restart of services that were stopped during overlay mounting
-    /// when the mount ultimately fails. Starts both socket and service for each.
-    pub fn restart_services_after_failure(services: &[String]) {
-        if Self::should_skip() {
-            tracing::debug!(
-                "Skipping service restart commands in test/test-like context to avoid host interaction"
-            );
-            return;
-        }
-
-        for service in services {
-            Self::start_service_and_socket(service);
-        }
-    }
-}
-
-/// Legacy wrapper — delegates to [`ServiceController::start_service_and_socket`].
-pub(crate) fn start_service_and_socket(service: &str) {
-    ServiceController::start_service_and_socket(service);
-}
+pub(crate) use runtime_cache::{
+    cache_nix_overlay_runtime_commands, cached_current_system_profile,
+    cached_original_nix_store_bind_source,
+};
+pub(crate) use service_controller::{ServiceController, start_service_and_socket};
 
 /// Return the system profile path, honoring NAILS_SYSTEM_PROFILE_PATH if set.
 pub(crate) fn system_profile_path() -> PathBuf {

@@ -2,9 +2,9 @@
 use super::*;
 use crate::filesystem::{Filesystem, MockOp};
 use crate::{
+    config::OverlayMode, config::DEFAULT_HIDDEN_VOLUME_ROOT, inject_import_block,
     EphemeralOverlayDir, ExtendedOverlayConfig, MockFilesystem, OverlayConfig, OverlayInfo,
-    StateFile, Stopwatch, SystemState, Verbosity, config::DEFAULT_HIDDEN_VOLUME_ROOT,
-    config::OverlayMode, inject_import_block,
+    StateFile, Stopwatch, SystemState, Verbosity,
 };
 use chrono::Utc;
 use serial_test::serial;
@@ -1069,7 +1069,7 @@ fn test_deactivate_from_non_active_returns_error() {
 
 #[test]
 fn test_deactivate_returns_lock_poisoned_when_manager_mutex_is_poisoned() {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     let manager = Arc::new(Mutex::new(create_test_manager()));
 
@@ -3543,16 +3543,12 @@ fn test_rollback_tr45_first_mount_fails() {
     {
         let manager = manager_arc.lock().unwrap();
         let fs_ref = manager.filesystem();
-        assert!(
-            !fs_ref
-                .is_mounted(Path::new("/home"))
-                .expect("Should check mount")
-        );
-        assert!(
-            !fs_ref
-                .is_mounted(Path::new("/etc"))
-                .expect("Should check mount")
-        );
+        assert!(!fs_ref
+            .is_mounted(Path::new("/home"))
+            .expect("Should check mount"));
+        assert!(!fs_ref
+            .is_mounted(Path::new("/etc"))
+            .expect("Should check mount"));
     } // Release lock before verify
 
     // AND: State consistency verified
@@ -3800,18 +3796,14 @@ fn test_rollback_tr49_cleanup_fails_remounts_overlays() {
         manager_guard.current_state().unwrap(),
         SystemState::Active { .. }
     ));
-    assert!(
-        manager_guard
-            .filesystem()
-            .is_mounted(Path::new("/home"))
-            .unwrap()
-    );
-    assert!(
-        manager_guard
-            .filesystem()
-            .is_mounted(Path::new("/etc"))
-            .unwrap()
-    );
+    assert!(manager_guard
+        .filesystem()
+        .is_mounted(Path::new("/home"))
+        .unwrap());
+    assert!(manager_guard
+        .filesystem()
+        .is_mounted(Path::new("/etc"))
+        .unwrap());
 }
 
 // ============================================================================
@@ -4522,8 +4514,9 @@ fn create_ephemeral_overlay_test_manager(
         .map(|target| {
             fs.mock_set_path_exists(target, true);
             let name = target.trim_start_matches('/');
-            fs.mock_set_directory_creatable(&format!("/run/nails/{}-upper", name), true);
-            fs.mock_set_directory_creatable(&format!("/run/nails/{}-work", name), true);
+            fs.mock_set_directory_creatable(&format!("/run/nails/{}-ephemeral", name), true);
+            fs.mock_set_directory_creatable(&format!("/run/nails/{}-ephemeral/upper", name), true);
+            fs.mock_set_directory_creatable(&format!("/run/nails/{}-ephemeral/work", name), true);
             fs.mock_set_directory_creatable(&format!("/mnt/nails-pivot/{}", name), true);
 
             EphemeralOverlayDir {
@@ -4576,8 +4569,9 @@ fn test_activate_with_ephemeral_overlays_enabled() {
 
     assert!(fs.is_mounted(Path::new("/home")).unwrap());
     assert!(fs.is_mounted(Path::new("/var")).unwrap());
-    assert!(fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
-    assert!(fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+    assert!(fs
+        .is_mounted(Path::new("/run/nails/var-ephemeral"))
+        .unwrap());
 
     let state = manager.lock().unwrap().current_state().unwrap();
     assert!(matches!(state, SystemState::Active { .. }));
@@ -4648,8 +4642,9 @@ fn test_deactivate_unmounts_ephemeral_before_persistent() {
     assert!(result.is_ok(), "Deactivation should succeed: {:?}", result);
 
     assert!(!fs.is_mounted(Path::new("/var")).unwrap());
-    assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
-    assert!(!fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+    assert!(!fs
+        .is_mounted(Path::new("/run/nails/var-ephemeral"))
+        .unwrap());
     assert!(
         !fs.is_mounted(Path::new("/home")).unwrap(),
         "Persistent overlays should be unmounted during normal deactivate()"
@@ -4771,20 +4766,14 @@ fn test_extended_overlay_full_lifecycle_integration() {
 
     // Verify tmpfs backing stores mounted (AC2)
     assert!(
-        fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap(),
-        "var-upper tmpfs should be mounted"
+        fs.is_mounted(Path::new("/run/nails/var-ephemeral"))
+            .unwrap(),
+        "var ephemeral tmpfs should be mounted"
     );
     assert!(
-        fs.is_mounted(Path::new("/run/nails/var-work")).unwrap(),
-        "var-work tmpfs should be mounted"
-    );
-    assert!(
-        fs.is_mounted(Path::new("/run/nails/tmp-upper")).unwrap(),
-        "tmp-upper tmpfs should be mounted"
-    );
-    assert!(
-        fs.is_mounted(Path::new("/run/nails/tmp-work")).unwrap(),
-        "tmp-work tmpfs should be mounted"
+        fs.is_mounted(Path::new("/run/nails/tmp-ephemeral"))
+            .unwrap(),
+        "tmp ephemeral tmpfs should be mounted"
     );
 
     // Verify state is ACTIVE
@@ -4804,8 +4793,8 @@ fn test_extended_overlay_full_lifecycle_integration() {
     assert!(fs.is_mounted(Path::new("/tmp")).unwrap());
 
     // PHASE 3: Emergency deactivation (AC5)
-    // MockFilesystem does not automatically reveal the clean underlay view after
-    // unmounting /etc, so simulate the base config that deactivation verifies.
+    // MockFs does not expose the clean base /etc view automatically after the
+    // overlay unmount, so restore the clean base fixture before verification.
     fs.mock_set_file_content(
         "/etc/nixos/hardware-configuration.nix",
         "{ config, lib, pkgs, ... }:\n{ }",
@@ -4833,20 +4822,14 @@ fn test_extended_overlay_full_lifecycle_integration() {
 
     // Verify tmpfs backing stores destroyed (AC5 - forensic safety)
     assert!(
-        !fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap(),
-        "var-upper tmpfs should be destroyed"
+        !fs.is_mounted(Path::new("/run/nails/var-ephemeral"))
+            .unwrap(),
+        "var ephemeral tmpfs should be destroyed"
     );
     assert!(
-        !fs.is_mounted(Path::new("/run/nails/var-work")).unwrap(),
-        "var-work tmpfs should be destroyed"
-    );
-    assert!(
-        !fs.is_mounted(Path::new("/run/nails/tmp-upper")).unwrap(),
-        "tmp-upper tmpfs should be destroyed"
-    );
-    assert!(
-        !fs.is_mounted(Path::new("/run/nails/tmp-work")).unwrap(),
-        "tmp-work tmpfs should be destroyed"
+        !fs.is_mounted(Path::new("/run/nails/tmp-ephemeral"))
+            .unwrap(),
+        "tmp ephemeral tmpfs should be destroyed"
     );
 
     // Verify state is INACTIVE
@@ -5689,10 +5672,9 @@ fn test_activate_explicit_mode_rejects_critical_system_root_overlay_bin() {
     )));
 
     let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("Overlaying critical system root /bin is blocked")
-    );
+    assert!(err
+        .to_string()
+        .contains("Overlaying critical system root /bin is blocked"));
     assert!(fs.mock_ops().is_empty());
 }
 
@@ -5827,8 +5809,9 @@ fn test_activation_ephemeral_mount_failure_rolls_back_persistent_mounts() {
     std::fs::create_dir_all(&work_home).unwrap();
     fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
     fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
-    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral/upper", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral/work", true);
 
     let mut config = Config {
         hidden_volume_root: mock_hidden_vol.to_path_buf(),
@@ -6786,8 +6769,8 @@ fn test_config_fingerprint_field_persistence() {
 #[test]
 #[tracing_test::traced_test]
 fn test_nixos_build_logs_fast_path_when_fingerprint_matches_and_generation_exists() {
-    use crate::NixOSBuilder;
     use crate::nixos::compute_config_fingerprint;
+    use crate::NixOSBuilder;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
@@ -6856,8 +6839,8 @@ fn test_nixos_build_logs_fast_path_when_fingerprint_matches_and_generation_exist
 #[test]
 #[tracing_test::traced_test]
 fn test_nixos_build_does_not_take_fast_path_when_generation_missing() {
-    use crate::NixOSBuilder;
     use crate::nixos::compute_config_fingerprint;
+    use crate::NixOSBuilder;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
@@ -6925,8 +6908,8 @@ fn test_nixos_build_does_not_take_fast_path_when_generation_missing() {
 #[test]
 #[tracing_test::traced_test]
 fn test_nixos_build_uses_empty_content_when_both_reads_fail() {
-    use crate::NixOSBuilder;
     use crate::nixos::compute_config_fingerprint;
+    use crate::NixOSBuilder;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();

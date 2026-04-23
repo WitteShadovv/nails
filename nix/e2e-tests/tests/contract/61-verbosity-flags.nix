@@ -69,6 +69,7 @@ in
             counts[label] = count_nonempty_lines(result["combined"])
             assert counts[label] > 0, (label, result)
             canonical_deactivate(headless_config, unit_name=f"nails-deactivate-verbosity-{label}")
+            machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
 
     with subtest("verbosity increases output monotonically"):
         assert counts["quiet"] < counts["verbose"], counts

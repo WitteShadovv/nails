@@ -9,7 +9,9 @@
 
 mod auto_mount;
 mod explicit_mount;
+mod restore;
 
+#[allow(unused_imports)]
 use super::{
     MountInfo, MountTracker, MountType, build_overlay_targets, clean_stale_network_config,
     create_overlay_config, start_service_and_socket,
@@ -20,8 +22,6 @@ use crate::{
 };
 use chrono::Utc;
 use std::path::{Path, PathBuf};
-
-use super::guards::NixDaemonGuard;
 
 impl<F: Filesystem> NailsManager<F> {
     /// Mount persistent and ephemeral overlays
@@ -178,6 +178,16 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Post-mount: restart stopped services so they write to overlay
         for service in &mount_result.stopped_services {
+            if overlay.target == Path::new("/nix") && service == "nix-daemon" {
+                tracing::info!(
+                    service = %service,
+                    target = %overlay.target.display(),
+                    "Deferring {} restart to post-/nix restore path",
+                    service
+                );
+                continue;
+            }
+
             start_service_and_socket(service);
             tracing::info!(
                 service = %service,
@@ -363,54 +373,6 @@ impl<F: Filesystem> NailsManager<F> {
                 tracing::warn!("Failed to save failed_overlays to state: {}", e);
             }
         }
-
-        Ok(())
-    }
-
-    /// Restore NixOS security model after /nix overlay
-    pub(super) fn restore_nix_security_model(&self, nix_guard: &mut NixDaemonGuard) -> Result<()> {
-        // Step 1: Recreate read-only bind mount on /nix/store
-        // The overlay on /nix hides the boot-time bind mount; we recreate it
-        // so regular processes see /nix/store as read-only (defense-in-depth)
-        tracing::info!("Restoring read-only bind mount on /nix/store...");
-        let nix_store = Path::new("/nix/store");
-        if let Err(e) = self.filesystem.bind_mount(nix_store, nix_store) {
-            tracing::warn!(
-                error = %e,
-                "Could not recreate /nix/store bind mount (non-fatal)"
-            );
-        } else if crate::runtime_safety::should_skip_host_interaction() {
-            tracing::debug!(
-                "Skipping /nix/store remount command in test/test-like context to avoid host interaction"
-            );
-        } else {
-            // Remount as read-only (uses Command since Filesystem trait lacks remount_readonly)
-            let remount_result = std::process::Command::new("mount")
-                .args(["-o", "remount,ro,bind", "/nix/store"])
-                .output();
-            match remount_result {
-                Ok(output) if output.status.success() => {
-                    tracing::info!("Read-only bind mount on /nix/store restored");
-                }
-                Ok(output) => {
-                    tracing::warn!(
-                        stderr = %String::from_utf8_lossy(&output.stderr),
-                        "Remount /nix/store as read-only failed (non-fatal)"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Remount /nix/store command failed (non-fatal)"
-                    );
-                }
-            }
-        }
-
-        // Step 2: Restart nix-daemon (inherits overlay, creates own rw namespace)
-        tracing::info!("Restarting nix-daemon (now writing to overlay)...");
-        start_service_and_socket("nix-daemon");
-        nix_guard.disarm();
 
         Ok(())
     }
