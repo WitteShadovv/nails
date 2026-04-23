@@ -34,7 +34,16 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
         let mount_point = PathBuf::from(parts[4]);
 
         if fs_root == "/" {
-            device_root_mounts.insert(dev_id.to_string(), mount_point);
+            match device_root_mounts.get_mut(dev_id) {
+                Some(existing) => {
+                    if mount_point.components().count() < existing.components().count() {
+                        *existing = mount_point;
+                    }
+                }
+                None => {
+                    device_root_mounts.insert(dev_id.to_string(), mount_point);
+                }
+            }
         }
 
         // Track the target's device ID (last-wins for overmounts)
@@ -75,23 +84,35 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
         } else if mount_source.starts_with("/dev/") {
             // Device-backed mount — resolve via device_root_mounts
             if let Some(root_mount_point) = device_root_mounts.get(dev_id) {
-                // Skip submounts on the same device as the target
-                if let Some(ref target_dev) = target_dev_id
-                    && dev_id == target_dev
-                {
-                    tracing::trace!(
-                        mount_point = %mount_point.display(),
-                        dev_id = %dev_id,
-                        "Skipping same-device submount (content visible through target)"
-                    );
-                    continue;
-                }
                 if fs_root == "/" {
                     // Direct mount of entire partition under target — skip
                     continue;
                 }
                 let source_path =
                     root_mount_point.join(fs_root.strip_prefix('/').unwrap_or(fs_root));
+
+                if source_path == mount_point {
+                    tracing::trace!(
+                        mount_point = %mount_point.display(),
+                        source = %source_path.display(),
+                        dev_id = %dev_id,
+                        "Skipping self-backed submount (content already visible through target)"
+                    );
+                    continue;
+                }
+
+                if let Some(ref target_dev) = target_dev_id
+                    && dev_id == target_dev
+                {
+                    tracing::debug!(
+                        mount_point = %mount_point.display(),
+                        source = %source_path.display(),
+                        dev_id = %dev_id,
+                        fs_root = %fs_root,
+                        "Preserving same-device bind submount under target"
+                    );
+                }
+
                 tracing::debug!(
                     mount_point = %mount_point.display(),
                     dev_id = %dev_id,

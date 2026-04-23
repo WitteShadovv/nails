@@ -34,35 +34,36 @@ in
     machine.succeed("cp ${ephemeralFixture} /tmp/ephemeral.yaml")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    with subtest("ephemeral overlay config is rejected up front as unsupported"):
-        activation = run_command_capture(
-            "config-ephemeral-mode-activate",
-            "nails --config /tmp/ephemeral.yaml activate --overlay-only --no-kill-session -y",
+    with subtest("ephemeral overlay config activates with shared tmpfs backing"):
+        machine.succeed(
+            "nails --config /tmp/ephemeral.yaml activate --overlay-only --no-kill-session -y"
         )
-        assert_command_failed(activation)
-        assert_text_contains(
-            activation["stderr"],
-            [
-                "Pre-flight checks failed:",
-                "overlay-compatibility",
-                "Extended ephemeral overlays are currently unsupported",
-                "upperdir and workdir to reside on the same mount",
-                "Disable extended_overlays.enabled.",
-            ],
-        )
-
-    with subtest("rejected ephemeral activation leaves all overlays and tmpfs mounts untouched"):
-        assert_status_state("inactive", config_path="/tmp/ephemeral.yaml")
-        assert_no_overlays(["/etc", "/home", "/root", "/var", "/tmp", "/srv", "/opt"])
-        for tmpfs_path in [
+        assert_status_state("active", config_path="/tmp/ephemeral.yaml")
+        for path in ["/var", "/tmp", "/srv", "/opt"]:
+            assert_overlay_mounted(path)
+        for tmpfs_root in [
             "/run/nails/var-ephemeral",
             "/run/nails/tmp-ephemeral",
             "/run/nails/srv-ephemeral",
             "/run/nails/opt-ephemeral",
         ]:
-            machine.fail(f"mountpoint -q {tmpfs_path}")
+            machine.succeed(f"mountpoint -q {tmpfs_root}")
+            machine.succeed(f"test -d {tmpfs_root}/upper")
+            machine.succeed(f"test -d {tmpfs_root}/work")
 
-    with subtest("rejected ephemeral activation leaves hidden storage untouched"):
+    with subtest("deactivation removes ephemeral overlays and shared tmpfs roots"):
+        canonical_deactivate("/tmp/ephemeral.yaml", unit_name="nails-deactivate-config-ephemeral-mode")
+        assert_status_state("inactive", config_path="/tmp/ephemeral.yaml")
+        assert_no_overlays(["/etc", "/home", "/root", "/var", "/tmp", "/srv", "/opt"])
+        for tmpfs_root in [
+            "/run/nails/var-ephemeral",
+            "/run/nails/tmp-ephemeral",
+            "/run/nails/srv-ephemeral",
+            "/run/nails/opt-ephemeral",
+        ]:
+            machine.fail(f"mountpoint -q {tmpfs_root}")
+
+    with subtest("ephemeral activation leaves hidden storage untouched"):
         machine.fail("test -e /mnt/hidden-volume/var/lib/ephemeral-proof")
         machine.fail("test -e /mnt/hidden-volume/tmp/ephemeral-proof")
         machine.fail("test -e /mnt/hidden-volume/srv/ephemeral/proof")

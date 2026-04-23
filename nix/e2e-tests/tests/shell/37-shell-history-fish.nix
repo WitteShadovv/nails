@@ -50,6 +50,7 @@ in
         assert_status_state("active", config_path=config_path)
 
     with subtest("active session writes structured fish history into overlay"):
+        machine.succeed("chown testuser:users " + history_path)
         machine.succeed(
             "sudo -u testuser env HOME=/home/testuser "
             + shell_path

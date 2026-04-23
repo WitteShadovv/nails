@@ -23,20 +23,20 @@ in
     machine.wait_for_unit("multi-user.target")
 
     expected_dirs = [
-        "/mnt/hidden-volume/state",
-        "/mnt/hidden-volume/overlays",
-        "/mnt/hidden-volume/logs",
-        "/mnt/hidden-volume/config",
-        "/mnt/hidden-volume/config/nixos",
-        "/mnt/hidden-volume/etc",
-        "/mnt/hidden-volume/etc/nixos",
-        "/mnt/hidden-volume/etc/nixos/nails",
-        "/mnt/hidden-volume/home",
-        "/mnt/hidden-volume/nix",
-        "/mnt/hidden-volume/.work",
-        "/mnt/hidden-volume/.work/etc",
-        "/mnt/hidden-volume/.work/home",
-        "/mnt/hidden-volume/.work/nix",
+        "/mnt/hidden-volume/state"
+        "/mnt/hidden-volume/overlays"
+        "/mnt/hidden-volume/logs"
+        "/mnt/hidden-volume/config"
+        "/mnt/hidden-volume/config/nixos"
+        "/mnt/hidden-volume/etc"
+        "/mnt/hidden-volume/etc/nixos"
+        "/mnt/hidden-volume/etc/nixos/nails"
+        "/mnt/hidden-volume/home"
+        "/mnt/hidden-volume/nix"
+        "/mnt/hidden-volume/.work"
+        "/mnt/hidden-volume/.work/etc"
+        "/mnt/hidden-volume/.work/home"
+        "/mnt/hidden-volume/.work/nix"
     ]
 
     expected_files = {
@@ -49,6 +49,17 @@ in
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("bash -lc 'shopt -s dotglob nullglob && rm -rf /mnt/hidden-volume/*'")
         machine.succeed("test -z \"$(ls -A /mnt/hidden-volume)\"")
+        machine.succeed("mkdir -p /tmp/init-bootstrap-etc-nixos")
+        machine.succeed(
+            """cat > /tmp/init-bootstrap-etc-nixos/hardware-configuration.nix <<'EOF'
+    { config, lib, pkgs, modulesPath, ... }:
+    {
+      imports = [ (modulesPath + \"/installer/scan/not-detected.nix\") ];
+    }
+    EOF"""
+        )
+        machine.succeed("mount --bind /tmp/init-bootstrap-etc-nixos /etc/nixos")
+
     with subtest("run init bootstrap"):
         machine.succeed("nails init /mnt/hidden-volume")
 

@@ -156,6 +156,7 @@ fn test_pattern_matching_case_insensitive() {
     assert!(cleaner.matches_pattern("NAILS-build-cache"));
     assert!(cleaner.matches_pattern("some-NaIlS-temp.txt"));
     assert!(cleaner.matches_pattern("prefix-nails-suffix"));
+    assert!(!cleaner.matches_pattern("nails-headless.yaml"));
     assert!(!cleaner.matches_pattern("unrelated-file.txt"));
 }
 
@@ -194,6 +195,39 @@ fn test_cleanup_removes_matching_files() {
     assert_eq!(result.len(), 2);
     assert!(result.iter().any(|s| s.contains("nails-12345.lock")));
     assert!(result.iter().any(|s| s.contains("nails_cache")));
+}
+
+#[test]
+fn test_cleanup_preserves_nails_config_files() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/tmp", true);
+    fs.mock_set_files_with_pattern(
+        "/tmp",
+        "nails",
+        &[
+            Path::new("/tmp/nails-headless.yaml"),
+            Path::new("/tmp/nails-overlay.toml"),
+            Path::new("/tmp/nails-12345.lock"),
+        ],
+    );
+    fs.mock_set_path_exists("/tmp/nails-headless.yaml", true);
+    fs.mock_set_path_exists("/tmp/nails-overlay.toml", true);
+    fs.mock_set_path_exists("/tmp/nails-12345.lock", true);
+    fs.mock_set_path_type("/tmp/nails-headless.yaml", "file");
+    fs.mock_set_path_type("/tmp/nails-overlay.toml", "file");
+    fs.mock_set_path_type("/tmp/nails-12345.lock", "file");
+
+    let cleaner = TempFilesCleaner::new(fs.clone());
+    let result = cleaner.clean().unwrap();
+
+    assert_eq!(result.len(), 1);
+    assert!(result.iter().any(|s| s.contains("nails-12345.lock")));
+    assert!(fs
+        .path_exists(Path::new("/tmp/nails-headless.yaml"))
+        .unwrap());
+    assert!(fs
+        .path_exists(Path::new("/tmp/nails-overlay.toml"))
+        .unwrap());
 }
 
 #[test]

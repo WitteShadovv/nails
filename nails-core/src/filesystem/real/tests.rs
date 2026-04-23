@@ -1225,16 +1225,34 @@ fn test_same_device_submount_skipped_persist() {
 fn test_same_device_submount_skipped_nix() {
     use super::parse_submount_sources;
     // Target /nix is bind-mounted from persist (device 254:1).
-    // Submount /nix/store is also on 254:1.
-    // Same device → should be skipped.
+    // Submount /nix/store is also on 254:1, but backed by a different fs_root.
+    // The source must be preserved so overlayfs can still see /nix/store.
     let mountinfo = "\
 42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
 50 1 254:1 /nix /nix rw,relatime - ext4 /dev/mapper/persist rw
 73 50 254:1 /nix/store /nix/store rw,relatime - ext4 /dev/mapper/persist rw";
     let result = parse_submount_sources(mountinfo, Path::new("/nix"));
+    assert_eq!(
+        result,
+        vec![(
+            PathBuf::from("/nix/store"),
+            PathBuf::from("/persist/nix/store")
+        )],
+        "Distinct same-device bind submount should be preserved"
+    );
+}
+
+#[test]
+fn test_same_device_self_backed_submount_still_skipped() {
+    use super::parse_submount_sources;
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+50 1 254:1 /persist /persist rw,relatime - ext4 /dev/mapper/persist rw
+73 50 254:1 /nix/store /persist/nix/store rw,relatime - ext4 /dev/mapper/persist rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/persist"));
     assert!(
         result.is_empty(),
-        "Same-device submount should be skipped, got: {:?}",
+        "Self-backed submount should still be skipped, got: {:?}",
         result
     );
 }

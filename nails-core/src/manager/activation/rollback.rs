@@ -25,8 +25,8 @@ fn cleanup_ephemeral_overlays_after_activation_failure<F: Filesystem>(
                 crate::overlay::PIVOT_STAGING_BASE,
                 dir_name
             )),
-            upper: PathBuf::from(format!("/run/nails/{}-upper", dir_name)),
-            work: PathBuf::from(format!("/run/nails/{}-work", dir_name)),
+            upper: PathBuf::from(format!("/run/nails/{}-ephemeral/upper", dir_name)),
+            work: PathBuf::from(format!("/run/nails/{}-ephemeral/work", dir_name)),
             lower: ephemeral_dir.path.clone(),
             is_ephemeral: true,
         };
@@ -78,15 +78,22 @@ pub(super) fn rollback_overlay_mounts_after_activation_failure<F: Filesystem>(
         rollback_errors.push(err.to_string());
     }
 
-    if nix_was_overlaid {
+    let rollback_cleanup_succeeded = rollback_errors.is_empty();
+
+    if nix_was_overlaid && rollback_cleanup_succeeded {
         tracing::info!(
             rollback = true,
             "Restarting nix-daemon after activation rollback cleanup"
         );
         crate::manager::helpers::ServiceController::start_nix_daemon();
+    } else if nix_was_overlaid {
+        tracing::warn!(
+            rollback = true,
+            "Skipping nix-daemon restart because activation rollback cleanup did not complete cleanly"
+        );
     }
 
-    if rollback_errors.is_empty() {
+    if rollback_cleanup_succeeded {
         Ok(())
     } else {
         Err(NailsError::OverlayError(format!(

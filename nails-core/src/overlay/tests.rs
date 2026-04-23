@@ -402,8 +402,9 @@ fn test_pivot_ephemeral_mount_success() {
     };
 
     fs.mock_set_path_exists("/var", true);
-    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral/upper", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral/work", true);
     fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
 
     let result = pivot_ephemeral_mount(&fs, &config, Path::new("/var"));
@@ -416,12 +417,14 @@ fn test_pivot_ephemeral_mount_success() {
 
     // Verify paths
     assert_eq!(info.target, PathBuf::from("/var"));
-    assert_eq!(info.upper, PathBuf::from("/run/nails/var-upper"));
-    assert_eq!(info.work, PathBuf::from("/run/nails/var-work"));
+    assert_eq!(info.upper, PathBuf::from("/run/nails/var-ephemeral/upper"));
+    assert_eq!(info.work, PathBuf::from("/run/nails/var-ephemeral/work"));
 
     // Verify all mounts created
-    assert!(fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap()); // tmpfs
-    assert!(fs.is_mounted(Path::new("/run/nails/var-work")).unwrap()); // tmpfs
+    assert!(
+        fs.is_mounted(Path::new("/run/nails/var-ephemeral"))
+            .unwrap()
+    ); // tmpfs
     assert!(fs.is_mounted(Path::new("/mnt/nails-pivot/var")).unwrap()); // overlay
     assert!(fs.is_mounted(Path::new("/var")).unwrap()); // bind
 }
@@ -436,8 +439,9 @@ fn test_pivot_ephemeral_mount_rollback_on_overlay_failure() {
     };
 
     fs.mock_set_path_exists("/var", true);
-    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral/upper", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral/work", true);
     fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
 
     // Make staging overlay mount fail
@@ -447,8 +451,10 @@ fn test_pivot_ephemeral_mount_rollback_on_overlay_failure() {
     assert!(result.is_err());
 
     // Tmpfs mounts should be cleaned up (rolled back)
-    assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
-    assert!(!fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+    assert!(
+        !fs.is_mounted(Path::new("/run/nails/var-ephemeral"))
+            .unwrap()
+    );
 }
 
 // ========== unmount_pivot_overlay Tests ==========
@@ -495,8 +501,9 @@ fn test_unmount_pivot_overlay_ephemeral_cleans_tmpfs() {
     };
 
     fs.mock_set_path_exists("/var", true);
-    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral/upper", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral/work", true);
     fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
 
     // Mount ephemeral pivot
@@ -506,8 +513,10 @@ fn test_unmount_pivot_overlay_ephemeral_cleans_tmpfs() {
     // Verify all mounts
     assert!(fs.is_mounted(Path::new("/var")).unwrap());
     assert!(fs.is_mounted(Path::new("/mnt/nails-pivot/var")).unwrap());
-    assert!(fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
-    assert!(fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+    assert!(
+        fs.is_mounted(Path::new("/run/nails/var-ephemeral"))
+            .unwrap()
+    );
 
     // Unmount
     let result = unmount_pivot_overlay(&fs, &info);
@@ -516,11 +525,15 @@ fn test_unmount_pivot_overlay_ephemeral_cleans_tmpfs() {
     // Verify all unmounted (including tmpfs)
     assert!(!fs.is_mounted(Path::new("/var")).unwrap());
     assert!(!fs.is_mounted(Path::new("/mnt/nails-pivot/var")).unwrap());
-    assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
-    assert!(!fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+    assert!(
+        !fs.is_mounted(Path::new("/run/nails/var-ephemeral"))
+            .unwrap()
+    );
     assert!(!fs.path_exists(Path::new("/mnt/nails-pivot/var")).unwrap());
-    assert!(!fs.path_exists(Path::new("/run/nails/var-upper")).unwrap());
-    assert!(!fs.path_exists(Path::new("/run/nails/var-work")).unwrap());
+    assert!(
+        !fs.path_exists(Path::new("/run/nails/var-ephemeral"))
+            .unwrap()
+    );
 }
 
 #[test]
@@ -550,8 +563,9 @@ fn test_unmount_pivot_overlay_full_ephemeral_cycle() {
     };
 
     fs.mock_set_path_exists("/var", true);
-    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral/upper", true);
+    fs.mock_set_directory_creatable("/run/nails/var-ephemeral/work", true);
     fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
 
     // Full cycle: mount -> verify -> unmount
@@ -566,6 +580,8 @@ fn test_unmount_pivot_overlay_full_ephemeral_cycle() {
 
     // No forensic artifacts remain
     assert!(!fs.is_mounted(Path::new("/var")).unwrap());
-    assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
-    assert!(!fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+    assert!(
+        !fs.is_mounted(Path::new("/run/nails/var-ephemeral"))
+            .unwrap()
+    );
 }

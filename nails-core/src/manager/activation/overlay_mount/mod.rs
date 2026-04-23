@@ -300,8 +300,11 @@ impl<F: Filesystem> NailsManager<F> {
                         mount_info.target.clone(),
                         vec![
                             mount_info.staging.clone(), // staging (overlay mount point)
-                            mount_info.upper.clone(),   // tmpfs upper
-                            mount_info.work.clone(),    // tmpfs work
+                            mount_info
+                                .upper
+                                .parent()
+                                .expect("ephemeral upper should have shared tmpfs parent")
+                                .to_path_buf(), // shared tmpfs backing
                         ],
                     ));
 

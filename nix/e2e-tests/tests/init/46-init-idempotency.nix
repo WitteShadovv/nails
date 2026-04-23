@@ -25,6 +25,17 @@ in
     with subtest("prepare bare hidden volume"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("bash -lc 'shopt -s dotglob nullglob && rm -rf /mnt/hidden-volume/*'")
+        machine.succeed("mkdir -p /tmp/init-idempotency-etc-nixos")
+        machine.succeed(
+            """cat > /tmp/init-idempotency-etc-nixos/hardware-configuration.nix <<'EOF'
+    { config, lib, pkgs, modulesPath, ... }:
+    {
+      imports = [ (modulesPath + \"/installer/scan/not-detected.nix\") ];
+    }
+    EOF"""
+        )
+        machine.succeed("mount --bind /tmp/init-idempotency-etc-nixos /etc/nixos")
+
     with subtest("first init establishes baseline"):
         machine.succeed("nails init /mnt/hidden-volume")
         machine.succeed("printf '\n# SENTINEL_KEEP\n' >> /mnt/hidden-volume/config/nails.yaml")

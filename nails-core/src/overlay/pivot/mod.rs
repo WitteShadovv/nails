@@ -123,8 +123,8 @@ pub fn pivot_overlay_mount<F: Filesystem>(
 ///
 /// # Mount Sequence
 ///
-/// 1. Create tmpfs at upper path
-/// 2. Create tmpfs at work path
+/// 1. Mount a shared tmpfs backing directory
+/// 2. Create `upper` and `work` beneath it
 /// 3. Mount overlay to staging
 /// 4. Bind mount staging to target
 ///
@@ -175,33 +175,41 @@ pub fn pivot_ephemeral_mount<F: Filesystem>(
         })?
         .to_string_lossy();
 
-    let upper = base.join(format!("{}-upper", dir_name));
-    let work = base.join(format!("{}-work", dir_name));
+    let backing = base.join(format!("{}-ephemeral", dir_name));
+    let upper = backing.join("upper");
+    let work = backing.join("work");
 
-    // Step 1: Create directories
-    fs.create_directory(&upper)?;
-    fs.create_directory(&work)?;
+    // Step 1: Mount a shared tmpfs backing directory
+    fs.create_directory(&backing)?;
 
-    // Step 2: Mount tmpfs for upper
-    fs.mount_tmpfs(&upper, &config.tmpfs_upper_size)?;
+    fs.mount_tmpfs(&backing, &config.tmpfs_upper_size)?;
 
-    // Step 3: Mount tmpfs for work
-    if let Err(e) = fs.mount_tmpfs(&work, &config.tmpfs_work_size) {
-        // Rollback: unmount upper tmpfs
-        let _ = fs.unmount_tmpfs(&upper);
+    // Step 2: Create upper/work directories inside the tmpfs
+    if let Err(e) = fs.create_directory(&upper) {
+        let _ = fs.unmount_tmpfs(&backing);
+        cleanup_empty_directory(fs, &backing);
         return Err(e);
     }
 
-    // Step 4: Pivot mount overlay to target
+    if let Err(e) = fs.create_directory(&work) {
+        let _ = fs.remove_directory(&upper);
+        let _ = fs.unmount_tmpfs(&backing);
+        cleanup_empty_directory(fs, &backing);
+        return Err(e);
+    }
+
+    // Step 3: Pivot mount overlay to target
     match pivot_overlay_mount(fs, &[lower], &upper, &work, &config.path) {
         Ok(mut info) => {
             info.is_ephemeral = true;
             Ok(info)
         }
         Err(e) => {
-            // Rollback: unmount tmpfs layers
-            let _ = fs.unmount_tmpfs(&work);
-            let _ = fs.unmount_tmpfs(&upper);
+            // Rollback: unmount shared tmpfs backing
+            let _ = fs.remove_directory(&work);
+            let _ = fs.remove_directory(&upper);
+            let _ = fs.unmount_tmpfs(&backing);
+            cleanup_empty_directory(fs, &backing);
             Err(e)
         }
     }
@@ -353,17 +361,22 @@ pub fn unmount_pivot_overlay<F: Filesystem>(fs: &F, info: &PivotMountInfo) -> Re
         cleanup_empty_directory(fs, &info.lower);
     }
 
-    // Step 4: If ephemeral, unmount tmpfs layers
+    // Step 4: If ephemeral, remove upper/work and unmount shared tmpfs backing
     if info.is_ephemeral {
-        if let Err(e) = fs.unmount_tmpfs(&info.work) {
-            errors.push(format!("work tmpfs {}: {}", info.work.display(), e));
-        }
-        if let Err(e) = fs.unmount_tmpfs(&info.upper) {
-            errors.push(format!("upper tmpfs {}: {}", info.upper.display(), e));
-        }
-        // Clean up tmpfs directories (best effort)
+        let Some(backing) = info.upper.parent() else {
+            errors.push(format!(
+                "invalid ephemeral upper path: {}",
+                info.upper.display()
+            ));
+            return Err(NailsError::OverlayError(errors.join("; ")));
+        };
+
         cleanup_empty_directory(fs, &info.work);
         cleanup_empty_directory(fs, &info.upper);
+        if let Err(e) = fs.unmount_tmpfs(backing) {
+            errors.push(format!("ephemeral tmpfs {}: {}", backing.display(), e));
+        }
+        cleanup_empty_directory(fs, backing);
     }
 
     if errors.is_empty() {

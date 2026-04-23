@@ -32,6 +32,7 @@ in
     config_path = "/tmp/nails-extended.yaml"
     write_extended_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    machine.succeed("mkdir -p /opt")
     machine.succeed(
         "mkdir -p /mnt/hidden-volume/{root,tmp,srv,opt} /mnt/hidden-volume/.work/{root,tmp,srv,opt}"
     )

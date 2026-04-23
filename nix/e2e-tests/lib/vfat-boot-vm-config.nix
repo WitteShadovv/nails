@@ -1,4 +1,10 @@
 { lib, pkgs, ... }:
+let
+  blkidBin = lib.getExe' pkgs.util-linux "blkid";
+  mkfsVfatBin = lib.getExe' pkgs.dosfstools "mkfs.vfat";
+  mountBin = lib.getExe' pkgs.util-linux "mount";
+  mountpointBin = lib.getExe' pkgs.util-linux "mountpoint";
+in
 {
   imports = [ ./vm-config.nix ];
 
@@ -25,14 +31,14 @@
     ];
     serviceConfig.Type = "oneshot";
     script = ''
-      if ! blkid /dev/vdc >/dev/null 2>&1; then
-        mkfs.vfat -F 32 /dev/vdc
+      if ! ${blkidBin} /dev/vdc >/dev/null 2>&1; then
+        ${mkfsVfatBin} -F 32 /dev/vdc
       fi
 
       mkdir -p /boot
 
-      if ! mountpoint -q /boot; then
-        mount -t vfat /dev/vdc /boot
+      if ! ${mountpointBin} -q /boot; then
+        ${mountBin} -t vfat /dev/vdc /boot
       fi
     '';
   };

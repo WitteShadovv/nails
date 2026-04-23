@@ -52,6 +52,7 @@
 
 mod orchestrator;
 mod report;
+pub(crate) mod test_gate;
 
 #[cfg(test)]
 mod tests;
