@@ -222,12 +222,14 @@ fn test_cleanup_preserves_nails_config_files() {
 
     assert_eq!(result.len(), 1);
     assert!(result.iter().any(|s| s.contains("nails-12345.lock")));
-    assert!(fs
-        .path_exists(Path::new("/tmp/nails-headless.yaml"))
-        .unwrap());
-    assert!(fs
-        .path_exists(Path::new("/tmp/nails-overlay.toml"))
-        .unwrap());
+    assert!(
+        fs.path_exists(Path::new("/tmp/nails-headless.yaml"))
+            .unwrap()
+    );
+    assert!(
+        fs.path_exists(Path::new("/tmp/nails-overlay.toml"))
+            .unwrap()
+    );
 }
 
 #[test]

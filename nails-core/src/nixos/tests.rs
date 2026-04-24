@@ -586,9 +586,10 @@ fn test_build_profile_missing_only_rejects_legacy_mode() {
     );
 
     let err = builder.build_profile_missing_only().unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("Legacy NixOS builds are not supported in the missing-only path"));
+    assert!(
+        err.to_string()
+            .contains("Legacy NixOS builds are not supported in the missing-only path")
+    );
 }
 
 #[test]
@@ -710,9 +711,10 @@ fn test_build_and_switch_returns_error_when_flake_test_fails() {
     );
 
     let err = builder.build_and_switch().unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("nixos-rebuild test failed: flake boom"));
+    assert!(
+        err.to_string()
+            .contains("nixos-rebuild test failed: flake boom")
+    );
 }
 
 #[test]
@@ -727,9 +729,10 @@ fn test_switch_profile_returns_error_when_profile_generation_missing() {
     );
 
     let err = builder.switch_profile("123", "switch").unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("Profile not found: 123. Run 'nails activate' to rebuild."));
+    assert!(
+        err.to_string()
+            .contains("Profile not found: 123. Run 'nails activate' to rebuild.")
+    );
 }
 
 #[test]
@@ -990,9 +993,10 @@ fn test_switch_to_system_profile_returns_stderr_when_switch_fails() {
     );
 
     let err = builder.switch_to_system_profile().unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("System profile switch failed: denied"));
+    assert!(
+        err.to_string()
+            .contains("System profile switch failed: denied")
+    );
 
     clear_system_profile_env();
 }

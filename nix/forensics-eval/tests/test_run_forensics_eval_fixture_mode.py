@@ -175,7 +175,7 @@ class RunForensicsEvalFixtureModeTests(unittest.TestCase):
                 stage_statuses,
                 {
                     "baseline": "exported",
-                    "active": "placeholder",
+                    "active": "exported",
                     "post-standard": "exported",
                     "post-emergency": "exported",
                 },

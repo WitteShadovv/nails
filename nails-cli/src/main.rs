@@ -6,7 +6,7 @@
 
 use clap::Parser;
 use nails::cli::logging::StdoutFormat;
-use nails::cli::{execute_command, Cli, Commands};
+use nails::cli::{Cli, Commands, execute_command};
 
 fn render_flags_for_command(command: &Commands) -> (bool, bool) {
     match command {

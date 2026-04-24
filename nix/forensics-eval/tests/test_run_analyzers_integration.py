@@ -78,21 +78,21 @@ class RunAnalyzersIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 summary["totals"],
                 {
-                    "findings": 5,
+                    "findings": 6,
                     "errors": 0,
                     "skipped": 3,
-                    "clean": 2,
-                    "analyzers": 10,
+                    "clean": 3,
+                    "analyzers": 12,
                 },
             )
 
             stage_summary = {entry["stage"]: entry for entry in summary["stages"]}
             self.assertEqual(set(stage_summary), {"post-standard", "post-emergency"})
             self.assertEqual(stage_summary["post-standard"]["status"], "finding")
-            self.assertEqual(stage_summary["post-standard"]["resultCount"], 5)
+            self.assertEqual(stage_summary["post-standard"]["resultCount"], 6)
             self.assertGreater(stage_summary["post-standard"]["findingCount"], 0)
             self.assertEqual(stage_summary["post-emergency"]["status"], "finding")
-            self.assertEqual(stage_summary["post-emergency"]["resultCount"], 5)
+            self.assertEqual(stage_summary["post-emergency"]["resultCount"], 6)
             self.assertGreater(stage_summary["post-emergency"]["findingCount"], 0)
 
             self.assertEqual(
@@ -116,11 +116,13 @@ class RunAnalyzersIntegrationTests(unittest.TestCase):
                 ("post-standard", "path_delta"): "finding",
                 ("post-standard", "canary_scan"): "finding",
                 ("post-standard", "indicator_scan"): "finding",
+                ("post-standard", "fls_oracle"): "finding",
                 ("post-standard", "bulk_extractor_adapter"): "finding",
                 ("post-standard", "autopsy_adapter"): "skipped",
                 ("post-emergency", "path_delta"): "finding",
                 ("post-emergency", "canary_scan"): "clean",
                 ("post-emergency", "indicator_scan"): "clean",
+                ("post-emergency", "fls_oracle"): "clean",
                 ("post-emergency", "bulk_extractor_adapter"): "skipped",
                 ("post-emergency", "autopsy_adapter"): "skipped",
             }

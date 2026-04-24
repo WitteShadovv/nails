@@ -319,7 +319,8 @@ fn test_explicit_nix_overlay_restores_nix_store_bind_mount() {
         .expect("state");
     assert!(matches!(state, SystemState::Active { .. }));
     assert!(fs.is_mounted(Path::new("/nix")).expect("/nix mounted"));
-    assert!(fs
-        .is_mounted(Path::new("/nix/store"))
-        .expect("/nix/store bind mount restored"));
+    assert!(
+        fs.is_mounted(Path::new("/nix/store"))
+            .expect("/nix/store bind mount restored")
+    );
 }

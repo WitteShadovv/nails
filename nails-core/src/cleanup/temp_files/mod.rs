@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-use crate::{output, Filesystem, NailsError, Result};
+use crate::{Filesystem, NailsError, Result, output};
 use std::path::{Path, PathBuf};
 
 const FORBIDDEN_PATHS: &[&str] = &[

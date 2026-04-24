@@ -7,11 +7,11 @@
 //! The file layer implements graceful fallback: if the hidden volume is not mounted
 //! or LoggingManager initialization fails, logging continues with stdout-only mode.
 
+use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::Layer;
 
 #[cfg(test)]
 mod tests;
