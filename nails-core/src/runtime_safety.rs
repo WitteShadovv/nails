@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+const TEST_RUNTIME_ENV: &str = "NAILS_TEST_RUNTIME";
+
 /// Return true when running under a Rust test harness/integration-test binary.
 ///
 /// `cfg!(test)` only protects unit-test builds of the current crate. Integration
@@ -9,6 +11,10 @@ use std::path::Path;
 /// standard Cargo test binary layout (`target/.../deps/<name>-<hash>`).
 pub(crate) fn should_skip_host_interaction() -> bool {
     if cfg!(test) {
+        return true;
+    }
+
+    if std::env::var_os(TEST_RUNTIME_ENV).is_some() {
         return true;
     }
 

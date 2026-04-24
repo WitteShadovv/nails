@@ -383,3 +383,90 @@ fn test_init_with_realistic_custom_hidden_volume_path() {
         "Should return Some(LoggingConfig) when volume is mounted"
     );
 }
+
+#[test]
+fn test_should_rotate_delegates_to_rotation_helper() {
+    let manager = LoggingManager {
+        log_path: PathBuf::from("/mnt/hidden-volume/logs"),
+        hidden_volume_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+        max_log_size_mb: 10,
+        retention_days: 7,
+    };
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/hidden-volume/logs/nails.log", true);
+    fs.mock_set_file_size("/mnt/hidden-volume/logs/nails.log", 11_000_000);
+
+    assert!(manager.should_rotate(&fs).unwrap());
+}
+
+#[test]
+fn test_rotate_logs_delegates_to_rotation_helper() {
+    let manager = LoggingManager {
+        log_path: PathBuf::from("/mnt/hidden-volume/logs"),
+        hidden_volume_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+        max_log_size_mb: 10,
+        retention_days: 3,
+    };
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/mnt/hidden-volume/logs", true);
+    fs.mock_set_path_type("/mnt/hidden-volume/logs", "directory");
+    fs.mock_set_path_exists("/mnt/hidden-volume/logs/nails.log", true);
+    fs.mock_set_file_size("/mnt/hidden-volume/logs/nails.log", 11_000_000);
+    fs.mock_set_file_content("/mnt/hidden-volume/logs/nails.log", "current");
+    fs.mock_set_path_exists("/mnt/hidden-volume/logs/nails.log.1", true);
+    fs.mock_set_file_content("/mnt/hidden-volume/logs/nails.log.1", "older");
+    fs.mock_set_directory_contents(
+        &PathBuf::from("/mnt/hidden-volume/logs"),
+        vec![
+            PathBuf::from("/mnt/hidden-volume/logs/nails.log"),
+            PathBuf::from("/mnt/hidden-volume/logs/nails.log.1"),
+        ],
+    );
+
+    manager.rotate_logs(&fs).unwrap();
+
+    assert_eq!(
+        fs.read_file_content(PathBuf::from("/mnt/hidden-volume/logs/nails.log.1").as_path())
+            .unwrap(),
+        "current"
+    );
+    assert_eq!(
+        fs.read_file_content(PathBuf::from("/mnt/hidden-volume/logs/nails.log.2").as_path())
+            .unwrap(),
+        "older"
+    );
+    assert_eq!(
+        fs.read_file_content(PathBuf::from("/mnt/hidden-volume/logs/nails.log").as_path())
+            .unwrap(),
+        ""
+    );
+}
+
+#[test]
+fn test_enforce_retention_delegates_to_rotation_helper() {
+    let manager = LoggingManager {
+        log_path: PathBuf::from("/mnt/hidden-volume/logs"),
+        hidden_volume_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+        max_log_size_mb: 10,
+        retention_days: 7,
+    };
+    let fs = MockFilesystem::new();
+    let old_log = PathBuf::from("/mnt/hidden-volume/logs/nails.log.8");
+    let fresh_log = PathBuf::from("/mnt/hidden-volume/logs/nails.log.1");
+
+    fs.mock_set_path_exists("/mnt/hidden-volume/logs", true);
+    fs.mock_set_path_type("/mnt/hidden-volume/logs", "directory");
+    fs.mock_set_path_exists(old_log.to_str().unwrap(), true);
+    fs.mock_set_path_exists(fresh_log.to_str().unwrap(), true);
+    fs.mock_set_directory_contents(
+        &PathBuf::from("/mnt/hidden-volume/logs"),
+        vec![fresh_log.clone(), old_log.clone()],
+    );
+    fs.mock_set_modified_time(&old_log, chrono::Utc::now() - chrono::Duration::days(10));
+
+    manager.enforce_retention(&fs).unwrap();
+
+    assert!(fs.path_exists(&fresh_log).unwrap());
+    assert!(!fs.path_exists(&old_log).unwrap());
+}

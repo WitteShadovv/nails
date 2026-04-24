@@ -47,8 +47,9 @@ in
             + shlex.quote(f"nails --config {config_path} emergency")
         )
         log_text = machine.succeed("journalctl -u nails-overlay-order-test -o cat")
+        clean_log_text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", log_text)
         unmounted = []
-        for line in log_text.splitlines():
+        for line in clean_log_text.splitlines():
             if "Overlay unmounted" not in line:
                 continue
             for field in line.split():
@@ -56,7 +57,7 @@ in
                     unmounted.append(field.split("=", 1)[1])
                     break
         assert unmounted[:3] == ["/srv", "/etc", "/home"], \
-            f"Expected reverse unmount order ['/srv', '/etc', '/home'], got: {unmounted}\nLogs:\n{log_text}"
+            f"Expected reverse unmount order ['/srv', '/etc', '/home'], got: {unmounted}\nLogs:\n{clean_log_text}"
         assert_no_overlays(["/home", "/etc", "/srv"])
   '';
 }

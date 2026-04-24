@@ -137,6 +137,44 @@ mod tests {
     }
 
     #[test]
+    fn execute_notify_dispatch_json_skips_queued_notifications_in_test_runtime() {
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path().join("hidden-volume");
+        std::fs::create_dir_all(&hidden_root).unwrap();
+
+        nails_core::notification::write_notification(
+            &hidden_root,
+            &nails_core::Notification {
+                title: "Queued".to_string(),
+                body: "Body".to_string(),
+                urgency: "critical".to_string(),
+                icon: Some("dialog-error".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+
+        let output = run_subprocess("json", Some(config.path()));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(output.status.success(), "stdout={stdout}");
+        assert!(stdout.contains("\"status\":\"ok\""));
+        assert!(stdout.contains("\"dispatched\":0"));
+        assert_eq!(
+            nails_core::notification::read_pending(&hidden_root)
+                .unwrap()
+                .len(),
+            1,
+            "test-harness subprocess must preserve queued notification"
+        );
+    }
+
+    #[test]
     fn execute_notify_dispatch_fails_closed_for_invalid_config() {
         use std::io::Write;
 

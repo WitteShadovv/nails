@@ -25,6 +25,16 @@ in
     with subtest("prepare bare hidden volume with obstructing file"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("bash -lc 'shopt -s dotglob nullglob && rm -rf /mnt/hidden-volume/*'")
+        machine.succeed("mkdir -p /tmp/init-refuse-overwrite-etc-nixos")
+        machine.succeed(
+            """cat > /tmp/init-refuse-overwrite-etc-nixos/hardware-configuration.nix <<'EOF'
+    { config, lib, pkgs, modulesPath, ... }:
+    {
+      imports = [ (modulesPath + \"/installer/scan/not-detected.nix\") ];
+    }
+    EOF"""
+        )
+        machine.succeed("mount --bind /tmp/init-refuse-overwrite-etc-nixos /etc/nixos")
         machine.succeed("printf 'do-not-overwrite\n' > /mnt/hidden-volume/config")
         machine.succeed("test -f /mnt/hidden-volume/config")
 

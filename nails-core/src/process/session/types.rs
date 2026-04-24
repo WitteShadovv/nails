@@ -107,7 +107,9 @@ impl SessionCommandExecutor for RealSessionCommandExecutor {
                 "Refusing to execute systemctl from test/test-like runtime context; use a mock session executor instead".into(),
             ));
         }
-        let output = Command::new("systemctl").args(args).output()?;
+        let output = Command::new("/run/current-system/sw/bin/systemctl")
+            .args(args)
+            .output()?;
 
         let success = output.status.success();
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();

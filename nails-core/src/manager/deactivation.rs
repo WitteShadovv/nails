@@ -6,6 +6,8 @@
 use super::{NailsManager, select_system_profile, start_service_and_socket};
 use crate::cleanup::history::truncate_all_history_files;
 #[cfg(not(test))]
+use crate::deactivation::test_gate::should_skip_shell_cleanup_before_deactivation_gate;
+#[cfg(not(test))]
 use crate::process::kill_user_shells;
 use crate::{
     CleanupConfig, DeactivationMode, Filesystem, NailsError, Result, SystemState,
@@ -123,8 +125,8 @@ fn unmount_ephemeral_overlays<F: Filesystem>(manager: &NailsManager<F>) {
                 crate::overlay::PIVOT_STAGING_BASE,
                 dir_name
             )),
-            upper: PathBuf::from(format!("/run/nails/{}-upper", dir_name)),
-            work: PathBuf::from(format!("/run/nails/{}-work", dir_name)),
+            upper: PathBuf::from(format!("/run/nails/{}-ephemeral/upper", dir_name)),
+            work: PathBuf::from(format!("/run/nails/{}-ephemeral/work", dir_name)),
             lower: ephemeral_dir.path.clone(),
             is_ephemeral: true,
         };
@@ -210,7 +212,11 @@ impl<F: Filesystem + 'static> NailsManager<F> {
         }
 
         #[cfg(not(test))]
-        {
+        if should_skip_shell_cleanup_before_deactivation_gate() {
+            tracing::info!(
+                "Skipping pre-deactivation shell cleanup because the deactivation test gate is armed"
+            );
+        } else {
             tracing::info!("Killing user shell processes before deactivation");
             let report = kill_user_shells();
             tracing::info!(
@@ -305,7 +311,7 @@ impl<F: Filesystem + 'static> NailsManager<F> {
             }
 
             if !crate::runtime_safety::should_skip_host_interaction() {
-                std::process::Command::new("systemctl")
+                std::process::Command::new("/run/current-system/sw/bin/systemctl")
                     .arg("reboot")
                     .output()
                     .map_err(|e| {

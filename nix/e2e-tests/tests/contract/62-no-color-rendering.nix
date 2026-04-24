@@ -30,6 +30,10 @@ in
     ${contractHelpers.runPtyCommandCaptureFn}
     ${contractHelpers.assertNoAnsiFn}
 
+    def remount_hidden_volume_and_rewrite_config():
+        write_headless_config(headless_config)
+        machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
+
     def activate_via_tty(name, command_prefix=""):
         prefix = (command_prefix + " ").strip()
         command = " ".join(part for part in [
@@ -43,7 +47,7 @@ in
     with subtest("boot and prepare hidden volume"):
         machine.start()
         machine.wait_for_unit("multi-user.target")
-        headless_config = "/tmp/nails-headless.yaml"
+        headless_config = "/run/nails-tests/no-color-headless.yaml"
         write_headless_config(headless_config)
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
@@ -52,6 +56,7 @@ in
         assert baseline["rc"] == 0, baseline
         assert_has_ansi(baseline["combined"], "baseline activation output")
         canonical_deactivate(headless_config, unit_name="nails-deactivate-no-color-baseline")
+        remount_hidden_volume_and_rewrite_config()
 
     with subtest("remount hidden volume after baseline reboot"):
         machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
@@ -68,6 +73,7 @@ in
         assert disabled["rc"] == 0, disabled
         assert_no_ansi(disabled["combined"], "--no-color activation output")
         canonical_deactivate(headless_config, unit_name="nails-deactivate-no-color-flag")
+        remount_hidden_volume_and_rewrite_config()
 
     with subtest("remount hidden volume after no-color reboot"):
         machine.succeed("""${hiddenVolume.mountHiddenVolume}""")

@@ -279,6 +279,18 @@ fn test_activate_without_flake_flag() {
 }
 
 #[test]
+fn test_global_verbose_flag_is_preserved_for_activate_command() {
+    let cli = Cli::try_parse_from(["nails", "-v", "activate", "--no-kill-session"]).unwrap();
+    assert_eq!(cli.verbose, 1);
+
+    if let Commands::Activate { verbose, .. } = cli.command {
+        assert_eq!(verbose, 0);
+    } else {
+        panic!("Expected Activate command");
+    }
+}
+
+#[test]
 fn test_activate_flake_flag_with_equals_syntax() {
     let cli = Cli::try_parse_from(["nails", "activate", "--flake=/etc/nixos#my-host"]).unwrap();
     if let Commands::Activate { nixos_flake, .. } = cli.command {

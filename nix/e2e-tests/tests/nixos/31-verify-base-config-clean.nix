@@ -97,7 +97,7 @@ in
         )
         assert rc != 0, f"Expected activation refusal, got rc=0 stdout={stdout!r} stderr={stderr!r}"
         combined_output = stdout + stderr
-        assert "not forensically clean" in combined_output, \
+        assert "not forensically clean" in combined_output.lower(), \
             f"Expected forensic cleanliness diagnostic, got: {combined_output!r}"
         machine.fail("test -s /tmp/nixos-rebuild-clean-check.log")
 

@@ -12,7 +12,15 @@ pub use safety::check_real_operations_allowed;
 
 /// Execute the CLI command - extracted for testability
 pub fn execute_command(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    match cli.command {
+    let Cli {
+        config,
+        verbose: global_verbose,
+        quiet: global_quiet,
+        no_logs: _,
+        command,
+    } = cli;
+
+    match command {
         Commands::Activate {
             no_preflight,
             quiet,
@@ -32,8 +40,8 @@ pub fn execute_command(cli: Cli) -> std::result::Result<(), Box<dyn std::error::
             overlay_only,
         } => commands::activate::execute(
             no_preflight,
-            quiet,
-            verbose,
+            quiet || global_quiet,
+            verbose.max(global_verbose),
             json,
             no_color,
             plain,
@@ -44,7 +52,7 @@ pub fn execute_command(cli: Cli) -> std::result::Result<(), Box<dyn std::error::
             nixos_flake,
             dry_run,
             overlay_only,
-            cli.config,
+            config,
             check_real_operations_allowed,
         ),
         Commands::Deactivate {
@@ -55,10 +63,10 @@ pub fn execute_command(cli: Cli) -> std::result::Result<(), Box<dyn std::error::
             no_color,
             plain,
         } => commands::deactivate::execute(
-            cli.config,
+            config,
             no_clear_history,
-            quiet,
-            verbose,
+            quiet || global_quiet,
+            verbose.max(global_verbose),
             json,
             no_color,
             plain,
@@ -71,10 +79,10 @@ pub fn execute_command(cli: Cli) -> std::result::Result<(), Box<dyn std::error::
             no_color,
             plain,
         } => commands::emergency::execute(
-            cli.config,
+            config,
             no_countdown,
-            quiet,
-            verbose,
+            quiet || global_quiet,
+            verbose.max(global_verbose),
             json,
             no_color,
             plain,
@@ -85,10 +93,10 @@ pub fn execute_command(cli: Cli) -> std::result::Result<(), Box<dyn std::error::
             no_color,
             plain,
             verbose,
-        } => commands::status::execute(cli.config, json, no_color, plain, verbose),
-        Commands::Verify { deep, json } => commands::verify::execute(deep, json, cli.config),
+        } => commands::status::execute(config, json, no_color, plain, verbose),
+        Commands::Verify { deep, json } => commands::verify::execute(deep, json, config),
         Commands::Init(args) => commands::init::execute(args),
-        Commands::NotifyDispatch { json } => commands::notify_dispatch::execute(cli.config, json),
+        Commands::NotifyDispatch { json } => commands::notify_dispatch::execute(config, json),
     }
 }
 

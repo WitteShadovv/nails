@@ -180,8 +180,8 @@ fn test_pivot_ephemeral_mount_success() {
     let info = result.unwrap();
     assert!(info.is_ephemeral);
     assert_eq!(info.target, PathBuf::from("/tmp"));
-    assert!(info.upper.to_string_lossy().ends_with("-upper"));
-    assert!(info.work.to_string_lossy().ends_with("-work"));
+    assert!(info.upper.to_string_lossy().ends_with("-ephemeral/upper"));
+    assert!(info.work.to_string_lossy().ends_with("-ephemeral/work"));
 }
 
 #[test]

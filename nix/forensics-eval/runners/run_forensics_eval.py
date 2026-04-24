@@ -82,6 +82,24 @@ class ForensicsDefinitions:
     scenario_profiles: dict[str, tuple[str, ...]]
 
 
+def parse_forensics_definitions_payload(payload: Any) -> ForensicsDefinitions:
+    if not isinstance(payload, dict):
+        raise RunnerError("Forensics definitions payload must be a JSON object")
+    try:
+        return ForensicsDefinitions(
+            profile_ids=tuple(payload["profileIds"]),
+            scenario_ids=tuple(payload["scenarioIds"]),
+            defaults=dict(payload["defaults"]),
+            scenario_profiles={
+                key: tuple(value) for key, value in payload["scenarioProfiles"].items()
+            },
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RunnerError(
+            "Forensics definitions payload is missing required keys or has invalid structure"
+        ) from exc
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -99,7 +117,7 @@ def json_loads(raw: str) -> Any:
 
 
 @lru_cache(maxsize=4)
-def load_forensics_definitions(project_root: Path) -> ForensicsDefinitions:
+def load_forensics_definitions_via_nix(project_root: Path) -> ForensicsDefinitions:
     metadata_process = subprocess.run(
         ["nix", "flake", "metadata", "--json", "."],
         cwd=str(project_root),
@@ -170,14 +188,19 @@ builtins.toJSON {{
             + process.stderr.strip()
         )
     payload = json_loads(process.stdout)
-    return ForensicsDefinitions(
-        profile_ids=tuple(payload["profileIds"]),
-        scenario_ids=tuple(payload["scenarioIds"]),
-        defaults=dict(payload["defaults"]),
-        scenario_profiles={
-            key: tuple(value) for key, value in payload["scenarioProfiles"].items()
-        },
-    )
+    return parse_forensics_definitions_payload(payload)
+
+
+def load_forensics_definitions(project_root: Path) -> ForensicsDefinitions:
+    override_json = os.environ.get("NAILS_FORENSICS_EVAL_DEFINITIONS_JSON")
+    if override_json:
+        try:
+            return parse_forensics_definitions_payload(json_loads(override_json))
+        except json.JSONDecodeError as exc:
+            raise RunnerError(
+                "Failed to parse NAILS_FORENSICS_EVAL_DEFINITIONS_JSON as JSON"
+            ) from exc
+    return load_forensics_definitions_via_nix(project_root)
 
 
 def resolve_builtin_stage_exporter(config: Config) -> Path | None:

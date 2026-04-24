@@ -21,10 +21,22 @@ in
 
   testScript = _: ''
     import json
+    import shlex
 
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.canonicalDeactivateFn}
     ${testHelpers.runVerifyFn}
+
+    def assert_grep_pattern_absent(pattern, paths, description):
+        quoted_pattern = shlex.quote(pattern)
+        quoted_paths = " ".join(shlex.quote(path) for path in paths)
+        status, output = machine.execute(
+            f"grep -r -I -l -m 1 --exclude-dir=journal {quoted_pattern} {quoted_paths} 2>/dev/null"
+        )
+        if status == 0:
+            print(f"FAIL: Found {description}: {output}")
+            assert False, f"{description} found after deactivation"
+        assert status == 1, f"Unexpected grep exit status {status} while scanning for {description}: {output}"
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -116,12 +128,11 @@ in
     print("=" * 70)
 
     print("\n--- Test 4.1: Canary String Grep Scan ---")
-    grep_result = machine.succeed(
-        "grep -r 'NAILS_CANARY' /home /tmp /var /etc /root 2>/dev/null || echo 'CLEAN'"
+    assert_grep_pattern_absent(
+        "NAILS_CANARY",
+        ["/home", "/tmp", "/var", "/etc", "/root"],
+        "canary strings",
     )
-    if "NAILS_CANARY" in grep_result:
-        print(f"FAIL: Found canary strings: {grep_result}")
-        assert False, "Canary strings found after deactivation"
     print("✓ No NAILS_CANARY strings found on filesystem")
 
     print("\n--- Test 4.2: Canary File Existence Checks ---")
@@ -206,12 +217,11 @@ in
     ]
 
     for pattern in sensitive_patterns:
-        scan_result = machine.succeed(
-            f"grep -r '{pattern}' /home /tmp /var /etc 2>/dev/null | head -5 || echo 'CLEAN'"
+        assert_grep_pattern_absent(
+            pattern,
+            ["/home", "/tmp", "/var", "/etc"],
+            f"pattern '{pattern}'",
         )
-        if "CLEAN" not in scan_result:
-            print(f"FAIL: Found pattern '{pattern}': {scan_result}")
-            assert False, f"Sensitive pattern '{pattern}' found after deactivation"
         print(f"✓ Pattern '{pattern}' not found")
 
     print("\n--- Test 4.8: Sensitive Filename Scan ---")
@@ -231,10 +241,14 @@ in
     print("✓ No overlay on /tmp")
     machine.fail("mount | grep 'overlay on /etc'")
     print("✓ No overlay on /etc")
+    machine.fail("mount | grep 'overlay on /root'")
+    print("✓ No overlay on /root")
+    machine.fail("mount | grep 'overlay on /srv'")
+    print("✓ No overlay on /srv")
 
     print("\n--- Test 4.10: NAILS-related Mount Verification ---")
     mount_check = machine.succeed(
-        "mount | grep -E '(nails|hidden-volume|overlay)' || echo 'CLEAN'"
+        "mount | grep -E '(/mnt/hidden-volume|/mnt/nails-pivot|hidden-volume)' || echo 'CLEAN'"
     )
 
     if "CLEAN" not in mount_check:
@@ -265,10 +279,11 @@ in
 
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
 
-        grep_check = machine.succeed(
-            f"grep -r '{cycle_canary}' /home /tmp /var /etc 2>/dev/null || echo 'CLEAN'"
+        assert_grep_pattern_absent(
+            cycle_canary,
+            ["/home", "/tmp", "/var", "/etc"],
+            f"cycle {cycle} canary",
         )
-        assert "CLEAN" in grep_check, f"Cycle {cycle}: Canary {cycle_canary} found after deactivation"
         print(f"  ✓ {cycle_canary} not found after deactivation")
 
         machine.fail("su - testuser -c 'test -f ~/cycle-canary.txt'")

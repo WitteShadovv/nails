@@ -176,6 +176,12 @@ mod tests {
         let mut perms = fs::metadata(path).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(path, perms).unwrap();
+
+        assert!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o111 != 0,
+            "script should be executable: {}",
+            path.display()
+        );
     }
 
     fn make_manager(
@@ -266,7 +272,7 @@ mod tests {
         fs::create_dir_all(system_generation.join("bin")).unwrap();
         write_executable_script(
             &system_generation.join("bin/switch-to-configuration"),
-            "#!/usr/bin/env sh\nexit 1\n",
+            "#!/usr/bin/env bash\nexit 1\n",
         );
         symlink(&system_generation, &system_profile).unwrap();
         unsafe {
@@ -278,7 +284,7 @@ mod tests {
         let marker = hidden_root.join("rebuild-called");
         write_executable_script(
             &bin_dir.join("nixos-rebuild"),
-            &format!("#!/usr/bin/env sh\n: > '{}'\nexit 0\n", marker.display()),
+            &format!("#!/usr/bin/env bash\n: > '{}'\nexit 0\n", marker.display()),
         );
 
         let old_path = std::env::var_os("PATH");
@@ -327,7 +333,7 @@ mod tests {
         fs::create_dir_all(&bin_dir).unwrap();
         write_executable_script(
             &bin_dir.join("nixos-rebuild"),
-            "#!/usr/bin/env sh\nprintf 'boom\\n' 1>&2\nexit 2\n",
+            "#!/usr/bin/env bash\nprintf 'boom\\n' 1>&2\nexit 2\n",
         );
 
         let old_path = std::env::var_os("PATH");

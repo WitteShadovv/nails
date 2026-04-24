@@ -336,4 +336,155 @@ mod tests {
         assert!(stderr.contains("Error loading config"));
         assert!(stderr.contains("Invalid YAML"));
     }
+
+    #[test]
+    fn execute_status_no_color_verbose_reports_migrated_load_outcome() {
+        use nails_core::{StateFile, SystemState};
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path().join("hidden-volume");
+        let state_path = hidden_root.join("state.json");
+        std::fs::create_dir_all(&hidden_root).unwrap();
+
+        let state = StateFile {
+            version: "0.0.5".to_string(),
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        };
+        std::fs::write(&state_path, serde_json::to_string(&state).unwrap()).unwrap();
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            config,
+            "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+            hidden_root.display(),
+            state_path.display()
+        )
+        .unwrap();
+
+        let output = run_subprocess("no-color", Some(config.path()));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(output.status.success(), "stdout={stdout}");
+        assert!(stdout.contains("Verbose Details:"), "stdout={stdout}");
+        assert!(
+            stdout.contains("State loaded:       migrated from v0.0.5"),
+            "stdout={stdout}"
+        );
+        assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
+    }
+
+    #[test]
+    fn execute_status_no_color_verbose_reports_recovered_from_corruption() {
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path().join("hidden-volume");
+        let state_path = hidden_root.join("state.json");
+        std::fs::create_dir_all(&hidden_root).unwrap();
+        std::fs::write(&state_path, "{ definitely-not-json").unwrap();
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            config,
+            "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+            hidden_root.display(),
+            state_path.display()
+        )
+        .unwrap();
+
+        let output = run_subprocess("no-color", Some(config.path()));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(output.status.success(), "stdout={stdout}");
+        assert!(stdout.contains("Verbose Details:"), "stdout={stdout}");
+        assert!(
+            stdout.contains("State loaded:       recovered from corruption (using defaults)"),
+            "stdout={stdout}"
+        );
+        assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
+    }
+
+    #[test]
+    fn execute_status_no_color_verbose_active_shows_overlay_details_and_logs() {
+        use nails_core::{OverlayInfo, StateFile, SystemState};
+        use std::collections::HashMap;
+        use std::io::Write;
+        use std::path::PathBuf;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path().join("hidden-volume");
+        let log_dir = hidden_root.join("logs");
+        let state_path = hidden_root.join("state.json");
+        let mounted_at = chrono::Utc::now() - chrono::Duration::minutes(3);
+        let activated_at = mounted_at - chrono::Duration::minutes(7);
+        std::fs::create_dir_all(&log_dir).unwrap();
+
+        let mut overlay_status = HashMap::new();
+        overlay_status.insert(
+            PathBuf::from("/home"),
+            OverlayInfo {
+                mount_path: PathBuf::from("/home"),
+                lower_dir: PathBuf::from("/home"),
+                upper_dir: hidden_root.join("overlays/home/upper"),
+                work_dir: hidden_root.join("overlays/home/work"),
+                mounted_at,
+            },
+        );
+        let state = StateFile {
+            state: SystemState::Active {
+                activated_at,
+                overlays: vec![PathBuf::from("/home")],
+            },
+            nixos_generation: Some("nails-gen-77".to_string()),
+            overlay_status,
+            ..StateFile::default()
+        };
+        std::fs::write(&state_path, serde_json::to_string(&state).unwrap()).unwrap();
+
+        let mut log_file = std::fs::File::create(log_dir.join("nails.log")).unwrap();
+        writeln!(
+            log_file,
+            r#"{{"timestamp":"{}","level":"DEBUG","fields":{{"message":"debug log visible"}}}}"#,
+            chrono::Utc::now().to_rfc3339()
+        )
+        .unwrap();
+        writeln!(
+            log_file,
+            r#"{{"timestamp":"{}","level":"INFO","fields":{{"message":"info log visible"}}}}"#,
+            chrono::Utc::now().to_rfc3339()
+        )
+        .unwrap();
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            config,
+            "hidden_volume_path: {}\nstate_file_path: {}\nlog_path: {}\noverlays:\n  - name: home\n    lower: /home\n    upper: {}/overlays/home/upper\n    work: {}/overlays/home/work\n    target: /home",
+            hidden_root.display(),
+            state_path.display(),
+            log_dir.display(),
+            hidden_root.display(),
+            hidden_root.display(),
+        )
+        .unwrap();
+
+        let output = run_subprocess("no-color", Some(config.path()));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(output.status.success(), "stdout={stdout}");
+        assert!(
+            stdout.contains("NixOS Generation:   nails-gen-77"),
+            "stdout={stdout}"
+        );
+        assert!(stdout.contains("Overlay Mount Details:"), "stdout={stdout}");
+        assert!(stdout.contains("Mount:     /home"), "stdout={stdout}");
+        assert!(stdout.contains("Recent Logs:"), "stdout={stdout}");
+        assert!(
+            stdout.contains("DEBUG debug log visible"),
+            "stdout={stdout}"
+        );
+        assert!(stdout.contains("INFO info log visible"), "stdout={stdout}");
+        assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
+    }
 }

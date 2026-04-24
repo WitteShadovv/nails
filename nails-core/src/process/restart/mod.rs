@@ -81,7 +81,9 @@ impl CommandExecutor for RealCommandExecutor {
                 "Refusing to execute systemctl from test/test-like runtime context; use restart_processes_with_executor() with a mock executor instead".into(),
             ));
         }
-        let output = Command::new("systemctl").args(args).output()?;
+        let output = Command::new("/run/current-system/sw/bin/systemctl")
+            .args(args)
+            .output()?;
 
         let success = output.status.success();
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();

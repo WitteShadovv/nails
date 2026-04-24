@@ -7,6 +7,7 @@ mod cleanup;
 mod unmount;
 
 use super::report::{DeactivationReport, PostUnmountCleanupReport};
+use super::test_gate::maybe_block_after_deactivating_state_transition;
 use crate::cleanup::history::truncate_all_history_files;
 use crate::manager::{ensure_run_current_system_symlink, select_system_profile};
 use crate::{
@@ -213,6 +214,7 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
             started_at: chrono::Utc::now(),
         };
         manager.update_state(deactivating_state)?;
+        maybe_block_after_deactivating_state_transition()?;
 
         // Step 2: Cleanup artifacts - AC2, AC4
         // Normal mode: Thorough cleanup, fatal on errors

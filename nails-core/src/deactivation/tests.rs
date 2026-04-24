@@ -7,6 +7,9 @@
 //! environment variable. This prevents tests from accidentally operating on real
 //! user history files.
 
+use super::test_gate::{
+    DeactivationGateTestGuard, maybe_block_after_deactivating_state_transition,
+};
 use super::{DeactivationOrchestrator, DeactivationReport, PostUnmountCleanupReport};
 use crate::cleanup::test_utils::{TEST_HOME, assert_path_is_safe, set_safe_test_home};
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
@@ -33,6 +36,83 @@ fn clear_system_profile_env() {
     unsafe {
         std::env::remove_var("NAILS_SYSTEM_PROFILE_PATH");
     }
+}
+
+struct DeactivationGateEnvGuard {
+    gate: Option<std::ffi::OsString>,
+    entered: Option<std::ffi::OsString>,
+}
+
+impl DeactivationGateEnvGuard {
+    fn capture() -> Self {
+        Self {
+            gate: std::env::var_os("NAILS_TEST_DEACTIVATING_GATE_PATH"),
+            entered: std::env::var_os("NAILS_TEST_DEACTIVATING_ENTERED_PATH"),
+        }
+    }
+
+    fn clear() {
+        unsafe {
+            std::env::remove_var("NAILS_TEST_DEACTIVATING_GATE_PATH");
+            std::env::remove_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH");
+        }
+    }
+
+    fn set(gate_path: &Path, entered_path: Option<&Path>) {
+        unsafe {
+            std::env::set_var("NAILS_TEST_DEACTIVATING_GATE_PATH", gate_path);
+        }
+
+        match entered_path {
+            Some(path) => unsafe {
+                std::env::set_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH", path);
+            },
+            None => unsafe {
+                std::env::remove_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH");
+            },
+        }
+    }
+}
+
+impl Drop for DeactivationGateEnvGuard {
+    fn drop(&mut self) {
+        match &self.gate {
+            Some(value) => unsafe {
+                std::env::set_var("NAILS_TEST_DEACTIVATING_GATE_PATH", value);
+            },
+            None => unsafe {
+                std::env::remove_var("NAILS_TEST_DEACTIVATING_GATE_PATH");
+            },
+        }
+
+        match &self.entered {
+            Some(value) => unsafe {
+                std::env::set_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH", value);
+            },
+            None => unsafe {
+                std::env::remove_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH");
+            },
+        }
+    }
+}
+
+fn spawn_deactivation_gate_releaser(
+    gate_path: PathBuf,
+    entered_path: PathBuf,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        for _ in 0..100 {
+            if entered_path.exists() {
+                break;
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        if gate_path.exists() {
+            std::fs::remove_file(&gate_path).expect("gate file should be removable");
+        }
+    })
 }
 
 /// Helper function to configure a stub system profile for decoy switching.
@@ -170,6 +250,38 @@ fn test_deactivation_report_new() {
     assert!(report.is_successful());
     assert_eq!(report.unmounted_overlays.len(), 2);
     assert!(!report.was_already_inactive);
+}
+
+#[test]
+#[serial]
+fn test_deactivation_gate_returns_immediately_when_disabled() {
+    let _gate_guard = DeactivationGateTestGuard::enable();
+    let _env_guard = DeactivationGateEnvGuard::capture();
+    DeactivationGateEnvGuard::clear();
+
+    assert!(maybe_block_after_deactivating_state_transition().is_ok());
+}
+
+#[test]
+#[serial]
+fn test_deactivation_gate_writes_default_entered_marker() {
+    let _gate_guard = DeactivationGateTestGuard::enable();
+    let _env_guard = DeactivationGateEnvGuard::capture();
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let gate_path = temp_dir.path().join("deactivation.gate");
+    let entered_path = PathBuf::from(format!("{}.entered", gate_path.display()));
+    std::fs::write(&gate_path, []).expect("gate file");
+    DeactivationGateEnvGuard::set(&gate_path, None);
+
+    let releaser = spawn_deactivation_gate_releaser(gate_path.clone(), entered_path.clone());
+    maybe_block_after_deactivating_state_transition().expect("gate should be released");
+    releaser.join().expect("releaser thread should finish");
+
+    assert!(
+        entered_path.exists(),
+        "default entered marker should be created"
+    );
+    assert!(!gate_path.exists(), "gate should be removed by releaser");
 }
 
 #[test]

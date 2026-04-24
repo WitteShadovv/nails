@@ -191,6 +191,13 @@ fn write_executable_script(path: &Path, body: &str) {
     let mut perms = fs::metadata(path).unwrap().permissions();
     perms.set_mode(0o755);
     fs::set_permissions(path, perms).unwrap();
+
+    #[cfg(unix)]
+    assert!(
+        fs::metadata(path).unwrap().permissions().mode() & 0o111 != 0,
+        "script should be executable: {}",
+        path.display()
+    );
 }
 
 #[test]
@@ -1001,7 +1008,7 @@ fn test_real_command_executor_execute_nixos_rebuild_uses_path_and_captures_outpu
     let script = temp_dir.path().join("nixos-rebuild");
     write_executable_script(
         &script,
-        "#!/usr/bin/env sh\nprintf 'rebuilt ok\\n'\nprintf 'warn\\n' 1>&2\nexit 0\n",
+        "#!/usr/bin/env bash\nprintf 'rebuilt ok\\n'\nprintf 'warn\\n' 1>&2\nexit 0\n",
     );
 
     let old_path = std::env::var_os("PATH");
@@ -1034,7 +1041,7 @@ fn test_real_command_executor_execute_nixos_rebuild_returns_false_on_nonzero_exi
     let script = temp_dir.path().join("nixos-rebuild");
     write_executable_script(
         &script,
-        "#!/usr/bin/env sh\nprintf 'partial out\\n'\nprintf 'build failed\\n' 1>&2\nexit 17\n",
+        "#!/usr/bin/env bash\nprintf 'partial out\\n'\nprintf 'build failed\\n' 1>&2\nexit 17\n",
     );
 
     let old_path = std::env::var_os("PATH");
@@ -1096,7 +1103,7 @@ fn test_real_command_executor_execute_switch_to_configuration_runs_exact_script_
     let script = temp_dir.path().join("switch-to-configuration");
     write_executable_script(
         &script,
-        "#!/usr/bin/env sh\nprintf 'mode=%s\\n' \"$1\"\nprintf 'note\\n' 1>&2\nexit 0\n",
+        "#!/usr/bin/env bash\nprintf 'mode=%s\\n' \"$1\"\nprintf 'note\\n' 1>&2\nexit 0\n",
     );
 
     let result = RealCommandExecutor

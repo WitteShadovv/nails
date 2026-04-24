@@ -133,6 +133,21 @@ impl MockFilesystem {
     }
 
     pub(super) fn set_permissions_impl(&self, path: &Path, mode: u32) -> Result<()> {
+        if self
+            .permissions_should_fail
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .contains(path)
+        {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "Mock: set_permissions configured to fail for {}",
+                    path.display()
+                ),
+            )));
+        }
+
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         if !paths.get(path).map(|info| info.exists).unwrap_or(false) {
             return Err(NailsError::IoError(std::io::Error::new(
