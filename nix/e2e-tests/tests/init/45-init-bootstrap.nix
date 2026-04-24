@@ -23,20 +23,20 @@ in
     machine.wait_for_unit("multi-user.target")
 
     expected_dirs = [
-        "/mnt/hidden-volume/state"
-        "/mnt/hidden-volume/overlays"
-        "/mnt/hidden-volume/logs"
-        "/mnt/hidden-volume/config"
-        "/mnt/hidden-volume/config/nixos"
-        "/mnt/hidden-volume/etc"
-        "/mnt/hidden-volume/etc/nixos"
-        "/mnt/hidden-volume/etc/nixos/nails"
-        "/mnt/hidden-volume/home"
-        "/mnt/hidden-volume/nix"
-        "/mnt/hidden-volume/.work"
-        "/mnt/hidden-volume/.work/etc"
-        "/mnt/hidden-volume/.work/home"
-        "/mnt/hidden-volume/.work/nix"
+        "/mnt/hidden-volume/state",
+        "/mnt/hidden-volume/overlays",
+        "/mnt/hidden-volume/logs",
+        "/mnt/hidden-volume/config",
+        "/mnt/hidden-volume/config/nixos",
+        "/mnt/hidden-volume/etc",
+        "/mnt/hidden-volume/etc/nixos",
+        "/mnt/hidden-volume/etc/nixos/nails",
+        "/mnt/hidden-volume/home",
+        "/mnt/hidden-volume/nix",
+        "/mnt/hidden-volume/.work",
+        "/mnt/hidden-volume/.work/etc",
+        "/mnt/hidden-volume/.work/home",
+        "/mnt/hidden-volume/.work/nix",
     ]
 
     expected_files = {

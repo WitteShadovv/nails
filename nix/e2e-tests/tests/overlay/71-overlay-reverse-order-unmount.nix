@@ -19,6 +19,7 @@ in
     };
 
   testScript = _: ''
+    import re
     import shlex
 
     ${overlayHelpers.writeOrderedOverlayConfigFn}

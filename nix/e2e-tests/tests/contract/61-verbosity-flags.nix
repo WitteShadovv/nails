@@ -48,8 +48,6 @@ in
         with subtest(f"capture activation output for {label}"):
             if index == 0:
                 machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-            else:
-                machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
             result = run_command_capture(
                 f"verbosity-{label}",
                 " ".join([
