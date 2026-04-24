@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -9,6 +10,62 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "forensics_live_scope_guard.py"
+PLANNER_METADATA_JSON = json.dumps(
+    {
+        "availableTargets": [
+            "ci",
+            "all",
+            "live",
+            "scenario:direct-baseline",
+            "profile:direct-headless",
+            "profile:graphical",
+            "profile:vfat-boot",
+            "direct-baseline/direct-headless",
+            "direct-baseline/graphical",
+            "direct-baseline/vfat-boot",
+        ],
+        "leafTests": [
+            "direct-baseline/direct-headless",
+            "direct-baseline/graphical",
+            "direct-baseline/vfat-boot",
+        ],
+        "groups": {
+            "ci": ["direct-baseline/direct-headless"],
+            "all": [
+                "direct-baseline/direct-headless",
+                "direct-baseline/graphical",
+                "direct-baseline/vfat-boot",
+            ],
+            "live": ["direct-baseline/direct-headless"],
+            "scenario:direct-baseline": [
+                "direct-baseline/direct-headless",
+                "direct-baseline/graphical",
+                "direct-baseline/vfat-boot",
+            ],
+            "profile:direct-headless": ["direct-baseline/direct-headless"],
+            "profile:graphical": ["direct-baseline/graphical"],
+            "profile:vfat-boot": ["direct-baseline/vfat-boot"],
+        },
+        "leaves": {
+            "direct-baseline/direct-headless": {
+                "scenarioId": "direct-baseline",
+                "profileId": "direct-headless",
+                "recommendedMode": "builtin-live",
+            },
+            "direct-baseline/graphical": {
+                "scenarioId": "direct-baseline",
+                "profileId": "graphical",
+                "recommendedMode": "fixture-or-custom-exporter",
+            },
+            "direct-baseline/vfat-boot": {
+                "scenarioId": "direct-baseline",
+                "profileId": "vfat-boot",
+                "recommendedMode": "fixture-or-custom-exporter",
+            },
+        },
+        "builtinLiveLeafTests": ["direct-baseline/direct-headless"],
+    }
+)
 
 
 def _load_module():
@@ -155,6 +212,10 @@ class ForensicsLiveScopeGuardTest(unittest.TestCase):
             capture_output=True,
             text=True,
             cwd=ROOT,
+            env={
+                **os.environ,
+                "NAILS_FORENSICS_EVAL_METADATA_JSON": PLANNER_METADATA_JSON,
+            },
         )
         stdout_payload = json.loads(completed.stdout)
         self.assertEqual(stdout_payload["requestedTarget"], "live")

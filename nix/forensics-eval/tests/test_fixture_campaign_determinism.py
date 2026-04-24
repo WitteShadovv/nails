@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -8,6 +9,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "run-forensics-eval.sh"
 FIXTURE_RUN = ROOT / "nix" / "forensics-eval" / "fixtures" / "samples" / "sample-run"
+DEFINITIONS_JSON = json.dumps(
+    {
+        "profileIds": ["direct-headless", "graphical", "vfat-boot"],
+        "scenarioIds": ["direct-baseline"],
+        "defaults": {
+            "profileId": "direct-headless",
+            "scenarioId": "direct-baseline",
+        },
+        "scenarioProfiles": {
+            "direct-baseline": ["direct-headless", "graphical", "vfat-boot"]
+        },
+    }
+)
 
 
 class FixtureCampaignDeterminismTest(unittest.TestCase):
@@ -26,6 +40,10 @@ class FixtureCampaignDeterminismTest(unittest.TestCase):
                 ],
                 check=True,
                 cwd=ROOT,
+                env={
+                    **os.environ,
+                    "NAILS_FORENSICS_EVAL_DEFINITIONS_JSON": DEFINITIONS_JSON,
+                },
             )
             campaign_summary = json.loads(
                 (out_dir / "campaign-summary.json").read_text(encoding="utf-8")
