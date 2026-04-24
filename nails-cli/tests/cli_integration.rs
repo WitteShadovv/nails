@@ -556,6 +556,220 @@ fn test_status_command_plain_output() {
 }
 
 #[test]
+fn test_status_command_no_color_output_has_unicode_without_ansi() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["status", "--no-color"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("NAILS Status Report"))
+        .stdout(predicates::str::contains("State:"))
+        .stdout(predicates::str::contains("🟢").or(predicates::str::contains("🔴")))
+        .stdout(predicates::str::contains("\u{001b}").not());
+}
+
+#[test]
+fn test_status_command_verbose_inactive_reports_paths_and_load_outcome() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let log_path = hidden_root.join("custom-logs");
+    let state_path = hidden_root.join("custom-state.json");
+    let config_path = temp_dir.path().join("nails.yaml");
+
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nstate_file_path: {}\nlog_path: {}\noverlays: []",
+        hidden_root.display(),
+        state_path.display(),
+        log_path.display(),
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "status",
+            "--verbose",
+        ])
+        .output()
+        .expect("failed to run verbose inactive status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout={stdout}");
+    assert!(stdout.contains("Verbose Details:"));
+    assert!(stdout.contains(&format!("Config file:        {}", config_path.display())));
+    assert!(stdout.contains(&format!("Hidden volume root: {}", hidden_root.display())));
+    assert!(stdout.contains(&format!("State file:         {}", state_path.display())));
+    assert!(stdout.contains(&format!("Log path:           {}", log_path.display())));
+    assert!(stdout.contains("State loaded:       fresh default (no file)"));
+}
+
+#[test]
+fn test_status_command_verbose_active_shows_overlay_details() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let log_dir = hidden_root.join("logs");
+    let state_path = hidden_root.join("state.json");
+    let config_path = temp_dir.path().join("nails.yaml");
+    std::fs::create_dir_all(&log_dir).unwrap();
+
+    let activated_at = "2026-01-02T03:04:05Z";
+    let mounted_at = "2026-01-02T03:04:30Z";
+    let state_json = format!(
+        r#"{{
+  "version": "0.1.0",
+  "state": {{
+    "Active": {{
+      "activated_at": "{activated_at}",
+      "overlays": ["/home"]
+    }}
+  }},
+  "nixos_generation": "nails-gen-99",
+  "config_fingerprint": null,
+  "overlay_status": {{
+    "/home": {{
+      "mount_path": "/home",
+      "lower_dir": "/home",
+      "upper_dir": "{hidden}/overlays/home/upper",
+      "work_dir": "{hidden}/overlays/home/work",
+      "mounted_at": "{mounted_at}"
+    }}
+  }},
+  "failed_overlays": [],
+  "last_modified": "2026-01-02T03:05:00Z"
+}}"#,
+        hidden = hidden_root.display(),
+    );
+    std::fs::write(&state_path, state_json).unwrap();
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nstate_file_path: {}\nlog_path: {}\noverlays:\n  - name: home\n    lower: /home\n    upper: {}/overlays/home/upper\n    work: {}/overlays/home/work\n    target: /home",
+        hidden_root.display(),
+        state_path.display(),
+        log_dir.display(),
+        hidden_root.display(),
+        hidden_root.display(),
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "status",
+            "--verbose",
+        ])
+        .output()
+        .expect("failed to run verbose active status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout={stdout}");
+    assert!(stdout.contains("NixOS Generation:   nails-gen-99"));
+    assert!(stdout.contains("Overlay Mount Details:"));
+    assert!(stdout.contains("Mount:     /home"));
+    assert!(stdout.contains(&format!(
+        "Upper:     {}/overlays/home/upper",
+        hidden_root.display()
+    )));
+    assert!(stdout.contains(&format!(
+        "Work:      {}/overlays/home/work",
+        hidden_root.display()
+    )));
+}
+
+#[test]
+fn test_status_command_no_color_verbose_reports_recovered_state_load() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let state_path = hidden_root.join("state.json");
+    let config_path = temp_dir.path().join("nails.yaml");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+    std::fs::write(&state_path, "{ invalid-json").unwrap();
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        hidden_root.display(),
+        state_path.display(),
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "status",
+            "--verbose",
+            "--no-color",
+        ])
+        .output()
+        .expect("failed to run recovered status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout={stdout}");
+    assert!(stdout.contains("State loaded:       recovered from corruption (using defaults)"));
+    assert!(stdout.contains("Verbose Details:"));
+    assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
+}
+
+#[test]
+fn test_status_command_no_color_verbose_reports_migrated_state_load() {
+    use nails_core::{StateFile, SystemState};
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let state_path = hidden_root.join("state.json");
+    let config_path = temp_dir.path().join("nails.yaml");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let state = StateFile {
+        version: "0.0.5".to_string(),
+        state: SystemState::Inactive,
+        ..StateFile::default()
+    };
+    std::fs::write(&state_path, serde_json::to_string(&state).unwrap()).unwrap();
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        hidden_root.display(),
+        state_path.display(),
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "status",
+            "--verbose",
+            "--no-color",
+        ])
+        .output()
+        .expect("failed to run migrated status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout={stdout}");
+    assert!(stdout.contains("State loaded:       migrated from v0.0.5"));
+    assert!(stdout.contains("Verbose Details:"));
+    assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
+}
+
+#[test]
 fn test_status_fails_closed_on_invalid_config() {
     let config_file = create_invalid_config_file();
 

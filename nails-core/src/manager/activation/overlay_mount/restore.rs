@@ -356,3 +356,7 @@ impl<F: Filesystem> NailsManager<F> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "tests_restore.rs"]
+mod tests_restore;

@@ -426,6 +426,183 @@ fn test_cleanup_manager_config_accessor() {
 }
 
 #[test]
+fn test_cleanup_manager_reports_temp_cleanup_errors() {
+    let fs = MockFilesystem::new();
+    let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+    let config = CleanupConfig {
+        clear_history: false,
+        clear_temp_files: true,
+        clear_logs: false,
+        history_patterns: vec![],
+        temp_dirs: vec![PathBuf::from("/etc")],
+        log_path: hidden_volume.join("logs"),
+        hidden_volume_path: hidden_volume,
+        config_file_path: None,
+        sanitize_memory: false,
+        secure_delete: false,
+        post_unmount_cleanup: true,
+    };
+
+    let manager = CleanupManager::new(fs, config, CleanupMode::Fast);
+    let report = manager.cleanup().unwrap();
+
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.contains("Temp files cleanup failed"))
+    );
+}
+
+#[test]
+fn test_cleanup_manager_reports_log_cleanup_errors() {
+    let fs = MockFilesystem::new();
+    let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+
+    let config = CleanupConfig {
+        clear_history: false,
+        clear_temp_files: false,
+        clear_logs: true,
+        history_patterns: vec![],
+        temp_dirs: vec![PathBuf::from("/tmp")],
+        log_path: PathBuf::from("/var/log/nails"),
+        hidden_volume_path: hidden_volume,
+        config_file_path: None,
+        sanitize_memory: false,
+        secure_delete: false,
+        post_unmount_cleanup: true,
+    };
+
+    let manager = CleanupManager::new(fs, config, CleanupMode::Fast);
+    let report = manager.cleanup().unwrap();
+
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.contains("Log cleanup failed"))
+    );
+}
+
+#[test]
+fn test_cleanup_manager_verification_flags_remaining_log_files() {
+    let fs = MockFilesystem::new();
+    let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+    let log_path = hidden_volume.join("logs");
+
+    fs.mock_set_directory_contents(&log_path, vec![log_path.join("nails.log.1")]);
+
+    let config = CleanupConfig {
+        clear_history: false,
+        clear_temp_files: false,
+        clear_logs: true,
+        history_patterns: vec![],
+        temp_dirs: vec![PathBuf::from("/tmp")],
+        log_path,
+        hidden_volume_path: hidden_volume,
+        config_file_path: None,
+        sanitize_memory: false,
+        secure_delete: false,
+        post_unmount_cleanup: true,
+    };
+
+    let manager = CleanupManager::new(
+        fs,
+        config,
+        CleanupMode::Thorough {
+            verify_cleanup: true,
+        },
+    );
+    let report = manager.cleanup().unwrap();
+
+    assert_eq!(report.verification_passed, Some(false));
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.contains("NAILS log files may remain"))
+    );
+}
+
+#[test]
+fn test_cleanup_manager_verification_ignores_missing_log_directory() {
+    let fs = MockFilesystem::new();
+    let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+
+    let config = CleanupConfig {
+        clear_history: false,
+        clear_temp_files: false,
+        clear_logs: true,
+        history_patterns: vec![],
+        temp_dirs: vec![PathBuf::from("/tmp")],
+        log_path: hidden_volume.join("logs"),
+        hidden_volume_path: hidden_volume,
+        config_file_path: None,
+        sanitize_memory: false,
+        secure_delete: false,
+        post_unmount_cleanup: true,
+    };
+
+    let manager = CleanupManager::new(
+        fs,
+        config,
+        CleanupMode::Thorough {
+            verify_cleanup: true,
+        },
+    );
+    let report = manager.cleanup().unwrap();
+
+    assert_eq!(report.verification_passed, Some(true));
+}
+
+#[test]
+fn test_cleanup_manager_verification_flags_large_history_file() {
+    set_safe_test_home();
+
+    let fs = MockFilesystem::new();
+    let bash_history = format!("{}/.bash_history", TEST_HOME);
+    let log_path = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs");
+    assert_path_is_safe(&bash_history);
+
+    fs.mock_set_path_exists(&bash_history, true);
+    fs.mock_set_path_type(&bash_history, "file");
+    fs.mock_set_file_size(&bash_history, 20 * 1024);
+    fs.mock_set_directory_contents(&log_path, vec![]);
+
+    let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+    let config = CleanupConfig {
+        clear_history: true,
+        clear_temp_files: false,
+        clear_logs: false,
+        history_patterns: vec!["nails".to_string()],
+        temp_dirs: vec![PathBuf::from("/tmp")],
+        log_path,
+        hidden_volume_path: hidden_volume,
+        config_file_path: None,
+        sanitize_memory: false,
+        secure_delete: false,
+        post_unmount_cleanup: true,
+    };
+
+    let manager = CleanupManager::new(
+        fs,
+        config,
+        CleanupMode::Thorough {
+            verify_cleanup: true,
+        },
+    );
+    let report = manager.cleanup().unwrap();
+
+    assert_eq!(report.verification_passed, Some(false));
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.contains("history file is large"))
+    );
+}
+
+#[test]
 fn test_cleanup_manager_mode_accessor() {
     let fs = MockFilesystem::new();
     let config = CleanupConfig::default();

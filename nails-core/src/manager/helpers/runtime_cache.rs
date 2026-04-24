@@ -106,3 +106,32 @@ pub(crate) fn cached_current_system_profile() -> Option<PathBuf> {
 pub(crate) fn cached_original_nix_store_bind_source() -> Option<PathBuf> {
     super::ORIGINAL_NIX_STORE_BIND_SOURCE.get().cloned()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    fn test_original_nix_store_bind_source_path_is_stable() {
+        assert_eq!(
+            original_nix_store_bind_source_path(),
+            PathBuf::from("/run/nails/original-nix-store")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_current_system_profile_returns_absolute_fallback() {
+        let resolved = resolve_current_system_profile();
+
+        assert!(resolved.is_absolute(), "resolved={}", resolved.display());
+        assert!(
+            resolved == std::path::Path::new("/run/current-system")
+                || resolved == std::path::Path::new("/nix/var/nix/profiles/system")
+                || resolved.starts_with("/nix/store/"),
+            "resolved={} should point at a current-system candidate",
+            resolved.display()
+        );
+    }
+}

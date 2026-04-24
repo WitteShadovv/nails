@@ -400,6 +400,19 @@ impl MockFilesystem {
         }
     }
 
+    /// Set whether set_permissions should fail for a specific path.
+    pub fn mock_set_permissions_should_fail(&self, path: &str, should_fail: bool) {
+        let mut fails = self
+            .permissions_should_fail
+            .lock()
+            .expect("MockFilesystem mutex poisoned");
+        if should_fail {
+            fails.insert(PathBuf::from(path));
+        } else {
+            fails.remove(&PathBuf::from(path));
+        }
+    }
+
     /// Set the modification time for a file (Story 9.2)
     ///
     /// Allows tests to control file ages for timestamp-based log retention.
