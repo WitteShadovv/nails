@@ -226,6 +226,33 @@ fn subprocess_logging_entrypoint() {
                 "json line from subprocess"
             );
         }
+        "stdout-json-with-file-layer" => {
+            super::init_stdout_subscriber_with_mode(
+                0,
+                false,
+                false,
+                false,
+                false,
+                config_override.as_deref(),
+                StdoutFormat::ActivateJsonStream,
+            );
+            tracing::info!(
+                event = "progress",
+                phase = "logging",
+                current = 1,
+                total = 1,
+                "json line with file layer"
+            );
+        }
+        "stdout-quiet" => {
+            super::init_stdout_subscriber(0, true, true, config_override.as_deref());
+            tracing::info!(phase = "logging", "quiet info line");
+            tracing::warn!(phase = "logging", "quiet warn line");
+        }
+        "stdout-trace" => {
+            super::init_stdout_subscriber(2, false, true, config_override.as_deref());
+            tracing::trace!(phase = "logging", "trace line from subprocess");
+        }
         "emit-plain-warning" => {
             super::emit_logging_init_message(RenderMode::Plain, false, "plain warning");
         }
@@ -235,6 +262,22 @@ fn subprocess_logging_entrypoint() {
         "invalid-file-layer-config" => {
             super::init_stdout_subscriber(0, false, false, config_override.as_deref());
             tracing::info!(phase = "logging", "fallback stdout line");
+        }
+        "directory-log-target-human" => {
+            super::init_stdout_subscriber(0, false, false, config_override.as_deref());
+            tracing::info!(phase = "logging", "directory fallback line");
+        }
+        "directory-log-target-plain" => {
+            super::init_stdout_subscriber_with_mode(
+                0,
+                false,
+                false,
+                false,
+                true,
+                config_override.as_deref(),
+                StdoutFormat::Human,
+            );
+            tracing::info!(phase = "logging", "plain directory fallback line");
         }
         other => panic!("unknown logging subprocess case: {other}"),
     }
@@ -264,6 +307,65 @@ fn init_stdout_subscriber_json_mode_emits_structured_stdout_in_subprocess() {
     assert!(
         stdout.contains("\"message\":\"json line from subprocess\""),
         "stdout={stdout}"
+    );
+}
+
+#[test]
+fn init_stdout_subscriber_json_mode_with_file_layer_emits_stdout_and_writes_log() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let log_dir = hidden_root.join("logs");
+    let config_path = temp_dir.path().join("nails.yaml");
+
+    std::fs::create_dir_all(&log_dir).unwrap();
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nlog_path: {}\noverlays: []",
+        hidden_root.display(),
+        log_dir.display(),
+    )
+    .unwrap();
+
+    let output = run_subprocess("stdout-json-with-file-layer", Some(&config_path));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let log_contents = std::fs::read_to_string(log_dir.join("nails.log")).unwrap();
+
+    assert!(output.status.success(), "stdout={stdout}");
+    assert!(
+        stdout.contains("\"message\":\"json line with file layer\""),
+        "stdout={stdout}"
+    );
+    assert!(
+        log_contents.contains("json line with file layer"),
+        "log_contents={log_contents}"
+    );
+}
+
+#[test]
+fn init_stdout_subscriber_quiet_mode_filters_info_but_keeps_warn() {
+    let output = run_subprocess("stdout-quiet", None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "stderr={stderr}");
+    assert!(stderr.contains("WARN"), "stderr={stderr}");
+    assert!(stderr.contains("quiet warn line"), "stderr={stderr}");
+    assert!(!stderr.contains("quiet info line"), "stderr={stderr}");
+}
+
+#[test]
+fn init_stdout_subscriber_trace_verbosity_emits_trace_lines() {
+    let output = run_subprocess("stdout-trace", None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "stderr={stderr}");
+    assert!(stderr.contains("TRACE"), "stderr={stderr}");
+    assert!(
+        stderr.contains("trace line from subprocess"),
+        "stderr={stderr}"
     );
 }
 
@@ -396,4 +498,73 @@ fn init_stdout_subscriber_falls_back_when_log_path_is_invalid() {
     assert!(output.status.success(), "stderr={stderr}");
     assert!(stderr.contains("Logging init failed"), "stderr={stderr}");
     assert!(stderr.contains("fallback stdout line"), "stderr={stderr}");
+}
+
+#[test]
+fn init_stdout_subscriber_warns_when_log_file_target_is_a_directory() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let log_dir = hidden_root.join("logs");
+    let config_path = temp_dir.path().join("nails.yaml");
+
+    std::fs::create_dir_all(log_dir.join("nails.log")).unwrap();
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nlog_path: {}\noverlays: []",
+        hidden_root.display(),
+        log_dir.display(),
+    )
+    .unwrap();
+
+    let output = run_subprocess("directory-log-target-human", Some(&config_path));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "stderr={stderr}");
+    assert!(
+        stderr.contains("Failed to open log file"),
+        "stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("directory fallback line"),
+        "stderr={stderr}"
+    );
+}
+
+#[test]
+fn init_stdout_subscriber_plain_mode_suppresses_log_file_open_warning_noise() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let log_dir = hidden_root.join("logs");
+    let config_path = temp_dir.path().join("nails.yaml");
+
+    std::fs::create_dir_all(log_dir.join("nails.log")).unwrap();
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nlog_path: {}\noverlays: []",
+        hidden_root.display(),
+        log_dir.display(),
+    )
+    .unwrap();
+
+    let output = run_subprocess("directory-log-target-plain", Some(&config_path));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "stderr={stderr}");
+    assert!(
+        stderr.contains("plain directory fallback line"),
+        "stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("Failed to open log file"),
+        "stderr={stderr}"
+    );
+    assert!(!stderr.contains('\u{001b}'), "stderr={stderr}");
 }
