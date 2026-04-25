@@ -3,6 +3,8 @@
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
+  testHelpers = import ./../../lib/test-helpers.nix;
+  assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
 in
 {
@@ -20,6 +22,9 @@ in
     };
 
   testScript = _: ''
+    ${testHelpers.readStatusJsonFn}
+    ${assertions.assertStatusStateFn}
+    ${assertions.assertNoOverlaysFn}
     ${preflightHelpers.writeTextFileFn}
     ${preflightHelpers.runCommandCaptureFn}
     ${preflightHelpers.commandAssertionsFn}
@@ -50,9 +55,13 @@ in
         assert_command_failed(result)
         assert_result_contains(
             result,
-            ["nixos-build-target", "relative", "absolute path"],
+            ["nixos-build-target", "relative/flake", "absolute path"],
             stream="stderr",
         )
+        assert_status_state("Inactive", config_path="/tmp/preflight-build-target.yaml")
+        assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
+        machine.fail("test -e /mnt/hidden-volume/home/testuser/.config/autostart/nails-notify.desktop")
+        machine.fail("test -e /mnt/hidden-volume/state.json")
 
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';

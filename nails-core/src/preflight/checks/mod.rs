@@ -10,6 +10,7 @@ pub mod overlay_compatibility;
 pub mod space;
 pub mod state;
 pub mod storage_readiness;
+pub mod suspicious_nails_reference;
 pub mod swap;
 pub mod symlink_support;
 
@@ -21,5 +22,6 @@ pub use overlay_compatibility::OverlayCompatibilityCheck;
 pub use space::{OverlayDirs, SpaceCheck};
 pub use state::StateCheck;
 pub use storage_readiness::StorageReadinessCheck;
+pub use suspicious_nails_reference::SuspiciousNailsReferenceCheck;
 pub use swap::SwapCheck;
 pub use symlink_support::SymlinkSupportCheck;

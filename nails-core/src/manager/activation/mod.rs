@@ -24,7 +24,7 @@ use super::{
 #[allow(unused_imports)]
 use super::{MountTracker, NailsManager};
 use crate::notification::{Notification, write_notification};
-use crate::{Filesystem, NailsError, Result, Verbosity, obfuscate};
+use crate::{Filesystem, NailsError, Result, Verbosity};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -43,6 +43,30 @@ mod tests;
 use gate::maybe_block_after_activating_state_transition;
 use guards::SessionRestartGuard;
 use rollback::rollback_overlay_mounts_after_activation_failure;
+
+#[cfg(not(test))]
+fn restart_session_after_success(plan: &crate::process::SessionRestartPlan) -> Result<()> {
+    // Starting the display manager is the authoritative restart path for a
+    // killed graphical session. On real systems it will recreate the user
+    // manager as part of the login/session lifecycle, so explicitly starting
+    // user@UID.service first causes an observable double bounce in e2e.
+    if plan.display_manager.is_none()
+        && let Some(uid) = plan.target_uid
+    {
+        crate::process::restart_user_manager(uid)?;
+    }
+
+    if let Some(dm_name) = plan.display_manager.as_deref() {
+        crate::process::restart_display_manager(dm_name)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+fn restart_session_after_success(_plan: &crate::process::SessionRestartPlan) -> Result<()> {
+    Ok(())
+}
 
 impl<F: Filesystem> NailsManager<F> {
     pub fn activate(manager_arc: Arc<Mutex<Self>>, no_preflight: bool) -> Result<()> {
@@ -117,45 +141,18 @@ impl<F: Filesystem> NailsManager<F> {
         // Story 9.3 AC#1: Log activation started with structured state field
         tracing::info!(event = "activation_started", state_from = ?previous_state, "Activation started");
 
-        // Progress: Step 1 — Session management
+        // Progress: Step 1 — Preflight checks
         if verbosity >= Verbosity::Normal {
             tracing::info!(
                 event = "progress",
-                phase = "session_management",
+                phase = "preflight",
                 current = 1,
                 total = 6,
-                "[1/6] Preparing session management..."
+                "[1/6] Running preflight checks..."
             );
         }
 
-        // Step 2.5: Handle --kill-session flag (Story 4.15, AC8)
-        let restart_plan = Self::handle_session_kill(verbosity, &options)?;
-
-        // Auto-restart session if we exit early with an error after killing it.
-        let mut session_restart_guard = SessionRestartGuard::new(restart_plan.clone());
-
-        // Progress: Step 2 — Preflight checks
-        if verbosity >= Verbosity::Normal {
-            if no_preflight {
-                tracing::info!(
-                    event = "progress",
-                    phase = "preflight",
-                    current = 2,
-                    total = 6,
-                    "[2/6] Skipping preflight checks (--no-preflight)"
-                );
-            } else {
-                tracing::info!(
-                    event = "progress",
-                    phase = "preflight",
-                    current = 2,
-                    total = 6,
-                    "[2/6] Running preflight checks..."
-                );
-            }
-        }
-
-        // Step 2.75 & 3: Stage config and run preflight checks
+        // Step 2.75 & 3: Stage config and run preflight checks before any session disruption
         {
             let manager = manager_arc
                 .lock()
@@ -167,6 +164,33 @@ impl<F: Filesystem> NailsManager<F> {
                 options.pre_activation_cleanup,
             )?;
         }
+
+        // Progress: Step 2 — Session management
+        if verbosity >= Verbosity::Normal {
+            if no_preflight {
+                tracing::info!(
+                    event = "progress",
+                    phase = "session_management",
+                    current = 2,
+                    total = 6,
+                    "[2/6] Preparing session management (--no-preflight)"
+                );
+            } else {
+                tracing::info!(
+                    event = "progress",
+                    phase = "session_management",
+                    current = 2,
+                    total = 6,
+                    "[2/6] Preparing session management..."
+                );
+            }
+        }
+
+        // Step 3.5: Handle --kill-session flag (Story 4.15, AC8)
+        let restart_plan = Self::handle_session_kill(verbosity, &options)?;
+
+        // Auto-restart session if we exit early with an error after killing it.
+        let mut session_restart_guard = SessionRestartGuard::new(restart_plan.clone());
 
         // Step 4: Create StateGuard for automatic rollback on failure/panic
         let guard = StateGuard::new(Arc::clone(&manager_arc), previous_state.clone());
@@ -283,78 +307,6 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
-        // Write XDG autostart entry BEFORE display manager restart so the
-        // .desktop file exists when the user logs back in (best-effort).
-        // NOTE: This uses raw std::fs instead of the Filesystem trait because
-        // shell_setup() (which uses the trait) runs after the DM restart —
-        // too late for the autostart entry to be picked up by GNOME.
-        // shell_setup() also writes this file as a backup for non-graphical paths.
-        {
-            let username = std::env::var("SUDO_USER")
-                .or_else(|_| std::env::var(obfuscate::env_target_user()))
-                .or_else(|_| std::env::var("USER"))
-                .ok();
-
-            if let Some(user) = username {
-                let autostart_dir =
-                    std::path::PathBuf::from(format!("/home/{}/.config/autostart", user));
-                let desktop_path = autostart_dir.join("nails-notify.desktop");
-
-                let desktop_entry = "[Desktop Entry]\n\
-                    Type=Application\n\
-                    Name=NAILS Notification Dispatch\n\
-                    Comment=Dispatches pending NAILS notifications on login\n\
-                    Exec=nails notify-dispatch\n\
-                    Terminal=false\n\
-                    NoDisplay=true\n\
-                    X-GNOME-Autostart-enabled=true\n";
-
-                if let Err(e) = std::fs::create_dir_all(&autostart_dir) {
-                    tracing::warn!(
-                        "Failed to create autostart directory {}: {} (best-effort, continuing)",
-                        autostart_dir.display(),
-                        e
-                    );
-                } else if let Err(e) = std::fs::write(&desktop_path, desktop_entry) {
-                    tracing::warn!(
-                        "Failed to write XDG autostart entry {}: {} (best-effort, continuing)",
-                        desktop_path.display(),
-                        e
-                    );
-                } else {
-                    tracing::info!(
-                        "Wrote XDG autostart entry before display manager restart: {}",
-                        desktop_path.display()
-                    );
-                }
-            } else {
-                tracing::warn!(
-                    "Could not determine username for XDG autostart entry (best-effort, continuing)"
-                );
-            }
-        }
-
-        // Step 8.5: Restart display manager BEFORE NixOS switch for better UX
-        if restart_plan.display_manager.is_some() {
-            use crate::process::restart_display_manager;
-
-            if let Some(ref dm_name) = restart_plan.display_manager {
-                if verbosity >= Verbosity::Normal {
-                    tracing::info!("Restarting display manager ({})...", dm_name);
-                }
-
-                restart_display_manager(dm_name)?;
-
-                if verbosity >= Verbosity::Normal {
-                    tracing::info!("  ✓ Display manager restarted - login screen should appear");
-                    tracing::info!("  ℹ NixOS rebuild will continue in background...");
-                    tracing::info!("  ℹ User manager will start automatically when you log in");
-                }
-            }
-
-            session_restart_guard.disarm();
-        }
-
         // Progress: Step 5 — Switch NixOS profile
         if verbosity >= Verbosity::Normal {
             tracing::info!(
@@ -464,6 +416,22 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Step 11: Success - commit guard to prevent rollback
         guard.commit();
+
+        // In the normal NixOS path, the switch/test step owns the restart.
+        // In overlay-only mode there is no switch owner, so activation must
+        // restart the user/display session exactly once after success.
+        if options.overlay_only {
+            restart_session_after_success(&restart_plan).map_err(|e| {
+                NailsError::OverlayError(format!(
+                    "Activation succeeded but session restart failed: {}",
+                    e
+                ))
+            })?;
+        }
+
+        // Once the success-path restart owner has completed, suppress the
+        // error-path restart guard to avoid a second visible bounce.
+        session_restart_guard.disarm();
 
         // Story 9.3 AC#1: Log activation complete with state transition and duration
         let final_state = {

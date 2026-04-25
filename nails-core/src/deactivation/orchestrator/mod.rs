@@ -18,6 +18,29 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+fn overlay_unmount_targets<F: Filesystem>(
+    manager: &NailsManager<F>,
+    current_state: &SystemState,
+) -> Result<Vec<PathBuf>> {
+    let active_overlays = match current_state {
+        SystemState::Active { overlays, .. } => overlays.clone(),
+        _ => {
+            return Err(NailsError::InvalidState(
+                "Cannot extract overlays: not in ACTIVE state".to_string(),
+            ));
+        }
+    };
+
+    let mut merged = manager.tracked_overlay_paths_by_mount_order()?;
+    for path in active_overlays {
+        if !merged.iter().any(|existing| existing == &path) {
+            merged.push(path);
+        }
+    }
+
+    Ok(merged)
+}
+
 /// Controls deactivation behavior.
 ///
 /// - `Normal`: Full cleanup with verification, rollback on cleanup errors.
@@ -196,14 +219,7 @@ impl<F: Filesystem + 'static> DeactivationOrchestrator<F> {
 
         // Extract overlays BEFORE transitioning to DEACTIVATING state
         // This fixes the bug where get_mounted_overlay_paths() returns empty vec for Deactivating state
-        let overlays_to_unmount = match &current_state {
-            SystemState::Active { overlays, .. } => overlays.clone(),
-            _ => {
-                return Err(NailsError::InvalidState(
-                    "Cannot extract overlays: not in ACTIVE state".to_string(),
-                ));
-            }
-        };
+        let overlays_to_unmount = overlay_unmount_targets(&manager, &current_state)?;
 
         // Step 1: Create StateGuard for ACTIVE -> DEACTIVATING transition
         // StateGuard will automatically rollback to ACTIVE if we don't call commit()

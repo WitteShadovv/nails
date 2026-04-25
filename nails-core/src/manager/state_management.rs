@@ -10,6 +10,7 @@
 use super::NailsManager;
 use crate::{Filesystem, NailsError, Result, StateFile, SystemState};
 use chrono::Utc;
+use std::path::PathBuf;
 
 impl<F: Filesystem> NailsManager<F> {
     /// Get current system state with lazy loading
@@ -324,6 +325,29 @@ impl<F: Filesystem> NailsManager<F> {
             state_file.failed_overlays.clear();
         }
         Ok(())
+    }
+
+    /// Return tracked overlay paths ordered by original mount time.
+    pub(crate) fn tracked_overlay_paths_by_mount_order(&self) -> Result<Vec<PathBuf>> {
+        let cached = self
+            .cached_state
+            .lock()
+            .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+
+        let mut ordered: Vec<_> = cached
+            .as_ref()
+            .map(|state_file| {
+                state_file
+                    .overlay_status
+                    .values()
+                    .map(|info| (info.mounted_at, info.mount_path.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        ordered.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+        Ok(ordered.into_iter().map(|(_, path)| path).collect())
     }
 
     /// Verify state file matches actual system state

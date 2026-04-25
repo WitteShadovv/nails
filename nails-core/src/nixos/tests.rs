@@ -12,6 +12,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+type NixCallLog = Arc<Mutex<Vec<Vec<String>>>>;
+type ClearNixPathLog = Arc<Mutex<Vec<bool>>>;
+
 /// Mock command executor for testing
 struct MockCommandExecutor {
     /// Whether command should succeed
@@ -42,7 +45,19 @@ impl MockCommandExecutor {
 }
 
 impl CommandExecutorTrait for MockCommandExecutor {
-    fn execute_nixos_rebuild(&self, _args: &[&str]) -> Result<(bool, String, String)> {
+    fn execute_nixos_rebuild(
+        &self,
+        _args: &[&str],
+        _clear_nix_path: bool,
+    ) -> Result<(bool, String, String)> {
+        Ok((
+            self.should_succeed,
+            self.stdout.clone(),
+            self.stderr.clone(),
+        ))
+    }
+
+    fn execute_nix(&self, _args: &[&str], _clear_nix_path: bool) -> Result<(bool, String, String)> {
         Ok((
             self.should_succeed,
             self.stdout.clone(),
@@ -107,7 +122,11 @@ impl RecordingCommandExecutor {
 }
 
 impl CommandExecutorTrait for RecordingCommandExecutor {
-    fn execute_nixos_rebuild(&self, args: &[&str]) -> Result<(bool, String, String)> {
+    fn execute_nixos_rebuild(
+        &self,
+        args: &[&str],
+        _clear_nix_path: bool,
+    ) -> Result<(bool, String, String)> {
         self.calls.lock().unwrap().push(RecordedCall::NixosRebuild {
             args: args.iter().map(|arg| arg.to_string()).collect(),
         });
@@ -116,6 +135,17 @@ impl CommandExecutorTrait for RecordingCommandExecutor {
             .unwrap()
             .pop_front()
             .expect("missing mocked nixos-rebuild result")
+    }
+
+    fn execute_nix(&self, args: &[&str], _clear_nix_path: bool) -> Result<(bool, String, String)> {
+        self.calls.lock().unwrap().push(RecordedCall::NixosRebuild {
+            args: args.iter().map(|arg| arg.to_string()).collect(),
+        });
+        self.rebuild_results
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("missing mocked nix result")
     }
 
     fn execute_switch_to_configuration(
@@ -135,6 +165,61 @@ impl CommandExecutorTrait for RecordingCommandExecutor {
             .unwrap()
             .pop_front()
             .expect("missing mocked switch-to-configuration result")
+    }
+}
+
+struct PreflightExecutor {
+    nix_results: Mutex<VecDeque<Result<(bool, String, String)>>>,
+    nix_calls: Arc<Mutex<Vec<Vec<String>>>>,
+    nix_clear_flags: Arc<Mutex<Vec<bool>>>,
+}
+
+impl PreflightExecutor {
+    fn new(
+        nix_results: Vec<Result<(bool, String, String)>>,
+    ) -> (Self, NixCallLog, ClearNixPathLog) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let clear_flags = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                nix_results: Mutex::new(nix_results.into()),
+                nix_calls: Arc::clone(&calls),
+                nix_clear_flags: Arc::clone(&clear_flags),
+            },
+            calls,
+            clear_flags,
+        )
+    }
+}
+
+impl CommandExecutorTrait for PreflightExecutor {
+    fn execute_nixos_rebuild(
+        &self,
+        _args: &[&str],
+        _clear_nix_path: bool,
+    ) -> Result<(bool, String, String)> {
+        panic!("execute_nixos_rebuild should not be called in flake preflight tests")
+    }
+
+    fn execute_nix(&self, args: &[&str], clear_nix_path: bool) -> Result<(bool, String, String)> {
+        self.nix_calls
+            .lock()
+            .unwrap()
+            .push(args.iter().map(|arg| arg.to_string()).collect());
+        self.nix_clear_flags.lock().unwrap().push(clear_nix_path);
+        self.nix_results
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("missing mocked nix result")
+    }
+
+    fn execute_switch_to_configuration(
+        &self,
+        _script_path: &Path,
+        _args: &[&str],
+    ) -> Result<(bool, String, String)> {
+        panic!("execute_switch_to_configuration should not be called in flake preflight tests")
     }
 }
 
@@ -312,28 +397,28 @@ fn test_build_profile_uses_cached_generation() {
 #[test]
 fn test_nixos_builder_new_with_flake_ref() {
     let builder = NixOSBuilder::new_with_flake_ref(
-        "/etc/nixos#amnesia-virtualbox".to_string(),
+        "/srv/example-flake#cfg-alpha".to_string(),
         PathBuf::from("/nix/var/nix/profiles/nails-system"),
     );
 
     // config_path should be the directory part (before #)
-    assert_eq!(builder.config_path, PathBuf::from("/etc/nixos"));
+    assert_eq!(builder.config_path, PathBuf::from("/srv/example-flake"));
     // flake_ref should hold the full ref
     assert_eq!(
         builder.flake_ref,
-        Some("/etc/nixos#amnesia-virtualbox".to_string())
+        Some("/srv/example-flake#cfg-alpha".to_string())
     );
 }
 
 #[test]
 fn test_nixos_builder_new_with_flake_ref_no_fragment() {
     let builder = NixOSBuilder::new_with_flake_ref(
-        "/etc/nixos".to_string(),
+        "/srv/example-flake".to_string(),
         PathBuf::from("/nix/var/nix/profiles/nails-system"),
     );
 
     // config_path should be the full path (no # to split on)
-    assert_eq!(builder.config_path, PathBuf::from("/etc/nixos"));
+    assert_eq!(builder.config_path, PathBuf::from("/srv/example-flake"));
     // flake_ref should be None when there's no fragment (no need to override)
     assert_eq!(builder.flake_ref, None);
 }
@@ -341,13 +426,13 @@ fn test_nixos_builder_new_with_flake_ref_no_fragment() {
 #[test]
 fn test_nixos_builder_flake_arg_with_fragment() {
     let builder = NixOSBuilder::new_with_flake_ref(
-        "/etc/nixos#amnesia-virtualbox".to_string(),
+        "/srv/example-flake#cfg-alpha".to_string(),
         PathBuf::from("/nix/var/nix/profiles/nails-system"),
     );
 
     assert_eq!(
         builder.effective_flake_arg(),
-        "/etc/nixos#amnesia-virtualbox"
+        "/srv/example-flake#cfg-alpha"
     );
 }
 
@@ -448,6 +533,425 @@ fn test_nixos_builder_effective_flake_arg_for_legacy_uses_config_dir() {
 
     // effective_flake_arg returns config_path (parent dir) for legacy
     assert_eq!(builder.effective_flake_arg(), "/etc/nixos");
+}
+
+#[test]
+fn flake_preflight_runs_read_only_metadata_and_eval_checks() {
+    let explicit_name = "cfg-alpha";
+    let (executor, calls, clear_flags) = PreflightExecutor::new(vec![
+        Ok((true, String::new(), String::new())),
+        Ok((
+            true,
+            "/nix/store/abcd-system.drv".to_string(),
+            String::new(),
+        )),
+    ]);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+
+    let builder = NixOSBuilder {
+        config_path: temp_dir.path().to_path_buf(),
+        profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        executor: Box::new(executor),
+        build_mode: NixOSBuildMode::Flake,
+        flake_ref: Some(format!("{}#{}", temp_dir.path().display(), explicit_name)),
+    };
+
+    let summary = builder.preflight_flake().unwrap();
+    assert_eq!(summary, FlakePreflightSummary { eval_checked: true });
+
+    let calls = calls.lock().unwrap().clone();
+    let clear_flags = clear_flags.lock().unwrap().clone();
+
+    assert_eq!(clear_flags, vec![true]);
+    assert_eq!(
+        calls,
+        vec![vec![
+            "eval".to_string(),
+            "--raw".to_string(),
+            format!(
+                "{}#nixosConfigurations.{}.config.system.build.toplevel.drvPath",
+                temp_dir.path().display(),
+                explicit_name
+            ),
+            "--no-write-lock-file".to_string(),
+            "--impure".to_string(),
+        ],]
+    );
+}
+
+#[test]
+fn flake_preflight_infers_same_configuration_attr_for_plain_flake_refs() {
+    let inferred_hostname = nix::sys::utsname::uname()
+        .unwrap()
+        .nodename()
+        .to_string_lossy()
+        .trim()
+        .to_string();
+    let expected_attr = format!(
+        "nixosConfigurations.{}.config.system.build.toplevel.drvPath",
+        inferred_hostname
+    );
+
+    let (executor, calls, clear_flags) = PreflightExecutor::new(vec![
+        Ok((true, String::new(), String::new())),
+        Ok((
+            true,
+            "/nix/store/abcd-system.drv".to_string(),
+            String::new(),
+        )),
+    ]);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    let builder = NixOSBuilder {
+        config_path: temp_dir.path().to_path_buf(),
+        profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        executor: Box::new(executor),
+        build_mode: NixOSBuildMode::Flake,
+        flake_ref: None,
+    };
+
+    let summary = builder.preflight_flake().unwrap();
+    assert_eq!(summary, FlakePreflightSummary { eval_checked: true });
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true]);
+    assert_eq!(
+        calls.lock().unwrap().clone(),
+        vec![vec![
+            "eval".to_string(),
+            "--raw".to_string(),
+            format!("{}#{}", temp_dir.path().display(), expected_attr),
+            "--no-write-lock-file".to_string(),
+            "--impure".to_string(),
+        ],]
+    );
+}
+
+#[test]
+fn flake_preflight_uses_base_ref_for_metadata_when_fragment_is_explicit() {
+    let explicit_name = "cfg-beta";
+    let (executor, calls, clear_flags) = PreflightExecutor::new(vec![
+        Ok((true, String::new(), String::new())),
+        Ok((
+            true,
+            "/nix/store/abcd-system.drv".to_string(),
+            String::new(),
+        )),
+    ]);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+
+    let builder = NixOSBuilder {
+        config_path: temp_dir.path().to_path_buf(),
+        profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        executor: Box::new(executor),
+        build_mode: NixOSBuildMode::Flake,
+        flake_ref: Some(format!("{}#{}", temp_dir.path().display(), explicit_name)),
+    };
+
+    let summary = builder.preflight_flake().unwrap();
+    assert_eq!(summary, FlakePreflightSummary { eval_checked: true });
+
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true]);
+    assert_eq!(
+        calls.lock().unwrap().clone(),
+        vec![vec![
+            "eval".to_string(),
+            "--raw".to_string(),
+            format!(
+                "{}#nixosConfigurations.{}.config.system.build.toplevel.drvPath",
+                temp_dir.path().display(),
+                explicit_name
+            ),
+            "--no-write-lock-file".to_string(),
+            "--impure".to_string(),
+        ],]
+    );
+}
+
+#[test]
+fn flake_preflight_accepts_explicit_flake_ref_with_slash_before_fragment() {
+    let explicit_name = "cfg-gamma";
+    let (executor, calls, clear_flags) = PreflightExecutor::new(vec![
+        Ok((true, String::new(), String::new())),
+        Ok((
+            true,
+            "/nix/store/abcd-system.drv".to_string(),
+            String::new(),
+        )),
+    ]);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+
+    let builder = NixOSBuilder {
+        config_path: temp_dir.path().to_path_buf(),
+        profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        executor: Box::new(executor),
+        build_mode: NixOSBuildMode::Flake,
+        flake_ref: Some(format!("{}/#{}", temp_dir.path().display(), explicit_name)),
+    };
+
+    let summary = builder.preflight_flake().unwrap();
+    assert_eq!(summary, FlakePreflightSummary { eval_checked: true });
+
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true]);
+    assert_eq!(
+        calls.lock().unwrap().clone(),
+        vec![vec![
+            "eval".to_string(),
+            "--raw".to_string(),
+            format!(
+                "{}/#nixosConfigurations.{}.config.system.build.toplevel.drvPath",
+                temp_dir.path().display(),
+                explicit_name
+            ),
+            "--no-write-lock-file".to_string(),
+            "--impure".to_string(),
+        ],]
+    );
+}
+
+#[test]
+fn flake_preflight_reports_lock_file_failures_without_auto_update() {
+    let explicit_name = "cfg-lock";
+    let (executor, _, _) = PreflightExecutor::new(vec![Ok((
+        false,
+        String::new(),
+        "flake 'path:/etc/nixos' requires lock file changes".to_string(),
+    ))]);
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    let builder = NixOSBuilder {
+        config_path: temp_dir.path().to_path_buf(),
+        profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        executor: Box::new(executor),
+        build_mode: NixOSBuildMode::Flake,
+        flake_ref: Some(format!("{}#{}", temp_dir.path().display(), explicit_name)),
+    };
+
+    let err = builder.preflight_flake().unwrap_err();
+    let text = err.to_string();
+    assert!(text.contains("flake lock"), "{text}");
+    assert!(
+        text.contains("does not run 'nix flake update' automatically"),
+        "{text}"
+    );
+}
+
+#[test]
+fn flake_preflight_reports_environment_filesystem_failures() {
+    let explicit_name = "cfg-fs";
+    let (executor, _, _) = PreflightExecutor::new(vec![Ok((
+        false,
+        String::new(),
+        "error: getting status of '/nix/store/foo': Structure needs cleaning".to_string(),
+    ))]);
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    let builder = NixOSBuilder {
+        config_path: temp_dir.path().to_path_buf(),
+        profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        executor: Box::new(executor),
+        build_mode: NixOSBuildMode::Flake,
+        flake_ref: Some(format!("{}#{}", temp_dir.path().display(), explicit_name)),
+    };
+
+    let err = builder.preflight_flake().unwrap_err();
+    let text = err.to_string();
+    assert!(text.contains("environment/filesystem"), "{text}");
+    assert!(
+        text.contains("did not attempt an automatic repair"),
+        "{text}"
+    );
+}
+
+#[test]
+fn flake_preflight_reports_missing_inferred_attr_before_side_effects() {
+    let inferred_hostname = nix::sys::utsname::uname()
+        .unwrap()
+        .nodename()
+        .to_string_lossy()
+        .trim()
+        .to_string();
+    let (executor, calls, clear_flags) = PreflightExecutor::new(vec![Ok((
+        false,
+        String::new(),
+        format!(
+            "error: flake does not provide attribute 'nixosConfigurations.{}.config.system.build.toplevel.drvPath'",
+            inferred_hostname
+        ),
+    ))]);
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    let builder = NixOSBuilder {
+        config_path: temp_dir.path().to_path_buf(),
+        profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        executor: Box::new(executor),
+        build_mode: NixOSBuildMode::Flake,
+        flake_ref: None,
+    };
+
+    let err = builder.preflight_flake().unwrap_err();
+    let text = err.to_string();
+    assert!(
+        text.contains("does not provide the inferred nixosConfiguration"),
+        "{text}"
+    );
+    assert!(text.contains(&inferred_hostname), "{text}");
+    assert!(text.contains("Use '--flake"), "{text}");
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true]);
+    assert_eq!(calls.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn flake_preflight_rejects_relative_plain_flake_ref_before_nix_commands() {
+    let (executor, calls, clear_flags) =
+        PreflightExecutor::new(vec![Ok((true, String::new(), String::new()))]);
+    let builder = NixOSBuilder {
+        config_path: PathBuf::from("relative/flake"),
+        profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        executor: Box::new(executor),
+        build_mode: NixOSBuildMode::Flake,
+        flake_ref: Some("relative/flake#machine".to_string()),
+    };
+
+    let err = builder.preflight_flake().unwrap_err();
+    let text = err.to_string();
+    assert!(text.contains("relative"), "{text}");
+    assert!(text.contains("absolute path"), "{text}");
+    assert!(calls.lock().unwrap().is_empty());
+    assert!(clear_flags.lock().unwrap().is_empty());
+}
+
+#[test]
+#[serial]
+fn flake_preflight_accepts_dot_relative_flake_ref() {
+    let (executor, calls, clear_flags) = PreflightExecutor::new(vec![
+        Ok((true, String::new(), String::new())),
+        Ok((
+            true,
+            "/nix/store/abcd-system.drv".to_string(),
+            String::new(),
+        )),
+    ]);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let old_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(temp_dir.path()).unwrap();
+    std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+
+    let builder = NixOSBuilder {
+        config_path: PathBuf::from("."),
+        profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        executor: Box::new(executor),
+        build_mode: NixOSBuildMode::Flake,
+        flake_ref: Some(".#machine".to_string()),
+    };
+
+    let summary = builder.preflight_flake().unwrap();
+    std::env::set_current_dir(old_cwd).unwrap();
+
+    assert_eq!(summary, FlakePreflightSummary { eval_checked: true });
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true]);
+    assert_eq!(
+        calls.lock().unwrap().clone(),
+        vec![vec![
+            "eval".to_string(),
+            "--raw".to_string(),
+            ".#nixosConfigurations.machine.config.system.build.toplevel.drvPath".to_string(),
+            "--no-write-lock-file".to_string(),
+            "--impure".to_string(),
+        ],]
+    );
+}
+
+#[test]
+#[serial]
+fn flake_preflight_accepts_dot_slash_relative_flake_ref() {
+    let (executor, calls, clear_flags) = PreflightExecutor::new(vec![
+        Ok((true, String::new(), String::new())),
+        Ok((
+            true,
+            "/nix/store/abcd-system.drv".to_string(),
+            String::new(),
+        )),
+    ]);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let old_cwd = std::env::current_dir().unwrap();
+    let rel_dir = temp_dir.path().join("relative-flake");
+    std::fs::create_dir_all(&rel_dir).unwrap();
+    std::fs::write(rel_dir.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    std::env::set_current_dir(temp_dir.path()).unwrap();
+
+    let builder = NixOSBuilder {
+        config_path: PathBuf::from("./relative-flake"),
+        profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        executor: Box::new(executor),
+        build_mode: NixOSBuildMode::Flake,
+        flake_ref: Some("./relative-flake#machine".to_string()),
+    };
+
+    let summary = builder.preflight_flake().unwrap();
+    std::env::set_current_dir(old_cwd).unwrap();
+
+    assert_eq!(summary, FlakePreflightSummary { eval_checked: true });
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true]);
+    assert_eq!(
+        calls.lock().unwrap().clone(),
+        vec![vec![
+            "eval".to_string(),
+            "--raw".to_string(),
+            "./relative-flake#nixosConfigurations.machine.config.system.build.toplevel.drvPath"
+                .to_string(),
+            "--no-write-lock-file".to_string(),
+            "--impure".to_string(),
+        ],]
+    );
+}
+
+#[test]
+fn split_flake_ref_separates_base_and_fragment() {
+    assert_eq!(
+        split_flake_ref("/any/path#cfg-alpha"),
+        ("/any/path", Some("cfg-alpha"))
+    );
+    assert_eq!(
+        split_flake_ref("/any/path/#cfg-beta"),
+        ("/any/path/", Some("cfg-beta"))
+    );
+    assert_eq!(split_flake_ref("/any/path"), ("/any/path", None));
+    assert_eq!(split_flake_ref("/any/path#"), ("/any/path", None));
+    assert_eq!(
+        split_flake_ref("path:/some/dir?foo=bar#cfg"),
+        ("path:/some/dir?foo=bar", Some("cfg"))
+    );
+    assert_eq!(
+        split_flake_ref("github:owner/repo#cfg"),
+        ("github:owner/repo", Some("cfg"))
+    );
+}
+
+#[test]
+fn local_flake_dir_only_returns_paths_for_local_refs() {
+    assert_eq!(
+        local_flake_dir("/some/dir"),
+        Some(PathBuf::from("/some/dir"))
+    );
+    assert_eq!(
+        local_flake_dir("path:/some/dir?foo=bar"),
+        Some(PathBuf::from("/some/dir"))
+    );
+    assert_eq!(
+        local_flake_dir("."),
+        Some(std::env::current_dir().unwrap().join("."))
+    );
+    assert_eq!(
+        local_flake_dir("./relative-flake"),
+        Some(std::env::current_dir().unwrap().join("./relative-flake"))
+    );
+    assert_eq!(local_flake_dir("github:owner/repo"), None);
 }
 
 #[test]
@@ -678,7 +1182,7 @@ fn test_build_and_switch_uses_flake_args_and_succeeds() {
         vec![],
     );
     let builder = NixOSBuilder::new_with_executor(
-        PathBuf::from("/etc/nixos"),
+        PathBuf::from("/srv/example-flake"),
         PathBuf::from("/nix/var/nix/profiles/nails-system"),
         Box::new(executor),
     );
@@ -691,7 +1195,7 @@ fn test_build_and_switch_uses_flake_args_and_succeeds() {
             args: vec![
                 "test".to_string(),
                 "--flake".to_string(),
-                "/etc/nixos".to_string(),
+                "/srv/example-flake".to_string(),
                 "--no-update-lock-file".to_string(),
                 "--impure".to_string(),
             ],
@@ -702,7 +1206,7 @@ fn test_build_and_switch_uses_flake_args_and_succeeds() {
 #[test]
 fn test_build_and_switch_returns_error_when_flake_test_fails() {
     let builder = NixOSBuilder::new_with_executor(
-        PathBuf::from("/etc/nixos"),
+        PathBuf::from("/srv/example-flake"),
         PathBuf::from("/nix/var/nix/profiles/nails-system"),
         Box::new(RecordingCommandExecutor::new(
             vec![Ok((false, String::new(), "flake boom".to_string()))],
@@ -715,6 +1219,25 @@ fn test_build_and_switch_returns_error_when_flake_test_fails() {
         err.to_string()
             .contains("nixos-rebuild test failed: flake boom")
     );
+}
+
+#[test]
+fn test_build_and_switch_prefers_stdout_when_stderr_is_empty() {
+    let builder = NixOSBuilder::new_with_executor(
+        PathBuf::from("/srv/example-flake"),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        Box::new(RecordingCommandExecutor::new(
+            vec![Ok((
+                false,
+                "stdout-only failure".to_string(),
+                String::new(),
+            ))],
+            vec![],
+        )),
+    );
+
+    let err = builder.build_and_switch().unwrap_err();
+    assert!(err.to_string().contains("stdout-only failure"));
 }
 
 #[test]
@@ -1015,7 +1538,7 @@ fn test_real_command_executor_execute_nixos_rebuild_uses_path_and_captures_outpu
     prepend_path(temp_dir.path(), &old_path);
 
     let result = RealCommandExecutor
-        .execute_nixos_rebuild(&["test"])
+        .execute_nixos_rebuild(&["test"], false)
         .unwrap();
 
     if let Some(old_path) = old_path {
@@ -1047,7 +1570,9 @@ fn test_real_command_executor_execute_nixos_rebuild_returns_false_on_nonzero_exi
     let old_path = std::env::var_os("PATH");
     prepend_path(temp_dir.path(), &old_path);
 
-    let result = RealCommandExecutor.execute_nixos_rebuild(&[]).unwrap();
+    let result = RealCommandExecutor
+        .execute_nixos_rebuild(&[], false)
+        .unwrap();
 
     if let Some(old_path) = old_path {
         unsafe {
@@ -1078,7 +1603,9 @@ fn test_real_command_executor_execute_nixos_rebuild_returns_not_found_when_missi
         std::env::set_var("PATH", temp_dir.path());
     }
 
-    let err = RealCommandExecutor.execute_nixos_rebuild(&[]).unwrap_err();
+    let err = RealCommandExecutor
+        .execute_nixos_rebuild(&[], false)
+        .unwrap_err();
 
     if let Some(old_path) = old_path {
         unsafe {

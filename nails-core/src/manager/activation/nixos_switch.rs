@@ -10,7 +10,10 @@
 //! 3. Persist the resulting generation and fingerprint.
 
 use super::{ensure_run_current_system_symlink, select_system_profile};
-use crate::{Filesystem, NailsError, NailsManager, Result, Stopwatch, Verbosity};
+use crate::{
+    Filesystem, NailsError, NailsManager, Result, Stopwatch, Verbosity,
+    classify_nixos_failure_category, format_classified_nixos_failure,
+};
 
 impl<F: Filesystem> NailsManager<F> {
     /// Switch NixOS profile — unified for flake and legacy (Step 9).
@@ -80,7 +83,21 @@ impl<F: Filesystem> NailsManager<F> {
         // --- Slow path: nixos-rebuild test (build + switch) ---------------
         if !switched {
             builder.build_and_switch().map_err(|e| {
-                let error_msg = format!("NixOS build+switch failed: {}", e);
+                let error_msg = match &e {
+                    NailsError::NixOSError(message) => {
+                        let category = classify_nixos_failure_category(message, "");
+                        format!(
+                            "NixOS build+switch failed: [{}] {}",
+                            category,
+                            format_classified_nixos_failure(
+                                "nixos-rebuild test failed",
+                                message,
+                                ""
+                            )
+                        )
+                    }
+                    other => format!("NixOS build+switch failed: {}", other),
+                };
 
                 tracing::error!(
                     error = %e,

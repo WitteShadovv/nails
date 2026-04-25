@@ -9,12 +9,150 @@ use crate::cleanup::history::truncate_all_history_files;
 use crate::deactivation::test_gate::should_skip_shell_cleanup_before_deactivation_gate;
 #[cfg(not(test))]
 use crate::process::kill_user_shells;
-use crate::{
-    CleanupConfig, DeactivationMode, Filesystem, NailsError, Result, SystemState,
-    verify_base_config_clean,
-};
+use crate::{CleanupConfig, DeactivationMode, Filesystem, NailsError, Result, SystemState};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+const SYSTEMCTL_REBOOT_OVERRIDE_ENV: &str = "NAILS_SYSTEMCTL_PATH";
+const REBOOT_BINARY_OVERRIDE_ENV: &str = "NAILS_REBOOT_PATH";
+
+#[derive(Debug, Clone)]
+struct RebootCommand {
+    program: std::ffi::OsString,
+    args: Vec<std::ffi::OsString>,
+}
+
+impl RebootCommand {
+    fn systemctl<P: Into<std::ffi::OsString>>(program: P) -> Self {
+        Self {
+            program: program.into(),
+            args: vec![std::ffi::OsString::from("reboot")],
+        }
+    }
+
+    fn reboot<P: Into<std::ffi::OsString>>(program: P) -> Self {
+        Self {
+            program: program.into(),
+            args: Vec::new(),
+        }
+    }
+
+    fn display(&self) -> String {
+        let program = std::path::Path::new(&self.program).display().to_string();
+        if self.args.is_empty() {
+            program
+        } else {
+            format!(
+                "{} {}",
+                program,
+                self.args
+                    .iter()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        }
+    }
+}
+
+fn reboot_candidates() -> Vec<RebootCommand> {
+    let systemctl_override = std::env::var_os(SYSTEMCTL_REBOOT_OVERRIDE_ENV);
+    let reboot_override = std::env::var_os(REBOOT_BINARY_OVERRIDE_ENV);
+
+    if systemctl_override.is_some() || reboot_override.is_some() {
+        let mut candidates = Vec::new();
+
+        if let Some(path) = systemctl_override {
+            candidates.push(RebootCommand::systemctl(path));
+        }
+
+        if let Some(path) = reboot_override {
+            candidates.push(RebootCommand::reboot(path));
+        }
+
+        return candidates;
+    }
+
+    vec![
+        RebootCommand::systemctl("/run/current-system/sw/bin/systemctl"),
+        RebootCommand::systemctl("systemctl"),
+        RebootCommand::reboot("/run/current-system/sw/bin/reboot"),
+        RebootCommand::reboot("reboot"),
+    ]
+}
+
+fn format_command_failure(command: &RebootCommand, output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    let mut details = vec![format!(
+        "{} exited with status {}",
+        command.display(),
+        output.status
+    )];
+
+    if !stdout.is_empty() {
+        details.push(format!("stdout: {}", stdout));
+    }
+
+    if !stderr.is_empty() {
+        details.push(format!("stderr: {}", stderr));
+    }
+
+    details.join("; ")
+}
+
+fn dispatch_reboot_candidates(candidates: Vec<RebootCommand>) -> Result<()> {
+    let mut failures = Vec::new();
+
+    for candidate in candidates {
+        let command_display = candidate.display();
+
+        match std::process::Command::new(&candidate.program)
+            .args(&candidate.args)
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                tracing::info!(command = %command_display, "Reboot command dispatched");
+                return Ok(());
+            }
+            Ok(output) => {
+                let failure = format_command_failure(&candidate, &output);
+                tracing::warn!(command = %command_display, error = %failure, "Reboot command failed");
+                failures.push(failure);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!(command = %command_display, "Reboot command not available");
+            }
+            Err(error) => {
+                let failure = format!("{} failed to execute: {}", command_display, error);
+                tracing::warn!(command = %command_display, error = %error, "Reboot command execution failed");
+                failures.push(failure);
+            }
+        }
+    }
+
+    if failures.is_empty() {
+        Err(NailsError::NixOSError(
+            "Failed to trigger reboot: no usable reboot command was found".to_string(),
+        ))
+    } else {
+        Err(NailsError::NixOSError(format!(
+            "Failed to trigger reboot: {}",
+            failures.join(" | ")
+        )))
+    }
+}
+
+fn request_reboot() -> Result<()> {
+    if crate::runtime_safety::should_skip_host_interaction() {
+        return Err(NailsError::NixOSError(
+            "Refusing to trigger reboot in test or runtime-safety mode".to_string(),
+        ));
+    }
+
+    dispatch_reboot_candidates(reboot_candidates())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ManagerDeactivationKind {
@@ -42,7 +180,6 @@ impl ManagerDeactivationKind {
 #[derive(Debug, Default)]
 struct OverlayContext {
     nix_was_overlaid: bool,
-    etc_was_overlaid: bool,
 }
 
 fn requires_decoy_restore<F: Filesystem>(manager: &NailsManager<F>) -> Result<bool> {
@@ -100,7 +237,6 @@ fn inspect_overlay_context<F: Filesystem>(manager: &NailsManager<F>) -> Result<O
 
     Ok(OverlayContext {
         nix_was_overlaid: overlay_paths.iter().any(|p| p == Path::new("/nix")),
-        etc_was_overlaid: overlay_paths.iter().any(|p| p == Path::new("/etc")),
     })
 }
 
@@ -244,7 +380,16 @@ impl<F: Filesystem + 'static> NailsManager<F> {
             let manager = manager_arc
                 .lock()
                 .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            let _ = manager.filesystem.unmount(Path::new("/nix/store"), false);
+            manager
+                .filesystem
+                .unmount(Path::new("/nix/store"), false)
+                .or_else(|graceful_error| {
+                    tracing::warn!(
+                        error = %graceful_error,
+                        "Graceful /nix/store unmount failed, trying force unmount"
+                    );
+                    manager.filesystem.unmount(Path::new("/nix/store"), true)
+                })?;
         }
 
         let cleanup_config = {
@@ -256,7 +401,7 @@ impl<F: Filesystem + 'static> NailsManager<F> {
 
         let orchestrator = DeactivationOrchestrator::new(Arc::clone(&manager_arc), cleanup_config)
             .with_mode(kind.orchestrator_mode())
-            .with_switch_script_execution(kind == ManagerDeactivationKind::Emergency)
+            .with_switch_script_execution(kind == ManagerDeactivationKind::Normal)
             .with_decoy_profile_restore({
                 let manager = manager_arc
                     .lock()
@@ -286,18 +431,6 @@ impl<F: Filesystem + 'static> NailsManager<F> {
             );
 
             verify_history_truncation(&manager);
-
-            if overlay_context.etc_was_overlaid {
-                match verify_base_config_clean(&manager.filesystem) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        return Err(NailsError::NixOSError(
-                            "Base hardware-configuration.nix is not forensically clean".into(),
-                        ));
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
         }
 
         if kind.reboots_on_success() {
@@ -311,12 +444,7 @@ impl<F: Filesystem + 'static> NailsManager<F> {
             }
 
             if !crate::runtime_safety::should_skip_host_interaction() {
-                std::process::Command::new("/run/current-system/sw/bin/systemctl")
-                    .arg("reboot")
-                    .output()
-                    .map_err(|e| {
-                        NailsError::NixOSError(format!("Failed to execute reboot: {}", e))
-                    })?;
+                request_reboot()?;
             }
         }
 
@@ -333,3 +461,7 @@ impl<F: Filesystem + 'static> NailsManager<F> {
         Self::run_deactivation(manager_arc, ManagerDeactivationKind::Emergency)
     }
 }
+
+#[cfg(test)]
+#[path = "deactivation_tests.rs"]
+mod tests;

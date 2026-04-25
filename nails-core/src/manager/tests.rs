@@ -50,6 +50,11 @@ fn setup_nixos_config_check(fs: &MockFilesystem, hidden_root: &Path) {
     fs.mock_set_path_exists(hidden_config.to_str().unwrap(), true);
     fs.mock_set_path_type(hidden_config.to_str().unwrap(), "file");
     fs.mock_set_file_content(hidden_config.to_str().unwrap(), "{ }");
+
+    let nails_dir = hidden_root.join("etc/nixos/nails");
+    fs.mock_set_path_exists(nails_dir.to_str().unwrap(), true);
+    fs.mock_set_path_type(nails_dir.to_str().unwrap(), "directory");
+    fs.mock_set_writable(nails_dir.to_str().unwrap(), true);
 }
 
 fn create_test_manager() -> NailsManager<MockFilesystem> {
@@ -1646,6 +1651,65 @@ fn test_preflight_no_filesystem_changes_on_failure() {
     // 3. State file was not modified (or still shows Inactive)
     let loaded_state = StateFile::load(&state_path).unwrap();
     assert_eq!(loaded_state.state, SystemState::Inactive);
+}
+
+#[test]
+fn test_suspicious_reference_preflight_fails_before_activation_state_or_mounts() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let hidden_root = temp_dir.path();
+    std::fs::create_dir_all(hidden_root).unwrap();
+    let state_path = hidden_root.join("state.json");
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
+    fs.mock_set_mounted(hidden_root, true);
+    setup_nixos_config_check(&fs, hidden_root);
+    fs.mock_set_file_content(
+        "/etc/nixos/hardware-configuration.nix",
+        "{ imports = [ ./nails/configuration.nix ]; }",
+    );
+
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path.clone(),
+    )));
+
+    let result = NailsManager::activate(Arc::clone(&manager), false);
+    assert!(result.is_err(), "activation should fail in preflight");
+
+    match result.unwrap_err() {
+        NailsError::PreFlightCheckFailed(failures) => {
+            let (_, message) = failures
+                .iter()
+                .find(|(name, _)| name == "suspicious-nails-reference")
+                .expect("suspicious-nails-reference failure should be reported");
+            assert!(message.contains("before any side effects"));
+        }
+        other => panic!("Expected PreFlightCheckFailed error, got {:?}", other),
+    }
+
+    assert_eq!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive
+    );
+    assert_eq!(
+        fs.get_mounted_paths(),
+        vec![hidden_root.to_path_buf()],
+        "preflight failure must not mount any activation overlays"
+    );
+    assert!(
+        fs.mock_get_symlink_target(&hidden_root.join("etc/nixos/nails/configuration.nix"))
+            .is_none(),
+        "preflight failure must happen before config symlink staging"
+    );
 }
 
 #[test]
@@ -5552,6 +5616,8 @@ fn test_activation_aborts_when_base_hardware_config_is_dirty() {
     let mock_hidden_vol = temp_dir.path();
     let state_path = mock_hidden_vol.join("state.json");
     let fs = MockFilesystem::new();
+    let home = std::env::var("HOME").expect("HOME must be set for cleanup test");
+    let bash_history = PathBuf::from(home).join(".bash_history");
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
     fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
@@ -5567,6 +5633,9 @@ fn test_activation_aborts_when_base_hardware_config_is_dirty() {
     std::fs::create_dir_all(&work_home).unwrap();
     fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
     fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+    fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
+    fs.mock_set_path_type(bash_history.to_str().unwrap(), "file");
+    fs.mock_set_file_content(bash_history.to_str().unwrap(), "nails activate\nls\n");
 
     let manager = Arc::new(Mutex::new(NailsManager::new(
         fs.clone(),
@@ -5586,11 +5655,21 @@ fn test_activation_aborts_when_base_hardware_config_is_dirty() {
         state_path,
     )));
 
-    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
-    assert!(err.to_string().contains("forensically clean"));
+    let err = NailsManager::activate(Arc::clone(&manager), false).unwrap_err();
+    assert!(err.to_string().contains("suspicious-nails-reference"));
+    assert!(err.to_string().contains("before any side effects"));
     assert!(
         fs.mock_ops().is_empty(),
-        "no overlay mounts should be attempted"
+        "no side-effecting writes or overlay mounts should be attempted"
+    );
+    assert!(
+        fs.get_written_content(&bash_history).is_none(),
+        "pre-activation cleanup must not run before suspicious-reference failure"
+    );
+    assert!(
+        fs.mock_get_symlink_target(&mock_hidden_vol.join("etc/nixos/nails/configuration.nix"))
+            .is_none(),
+        "config symlink staging must not run before suspicious-reference failure"
     );
     assert_eq!(
         manager.lock().unwrap().current_state().unwrap(),
@@ -5604,6 +5683,8 @@ fn test_activation_aborts_when_base_hardware_config_cannot_be_read() {
     let mock_hidden_vol = temp_dir.path();
     let state_path = mock_hidden_vol.join("state.json");
     let fs = MockFilesystem::new();
+    let home = std::env::var("HOME").expect("HOME must be set for cleanup test");
+    let bash_history = PathBuf::from(home).join(".bash_history");
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
     fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
@@ -5614,6 +5695,9 @@ fn test_activation_aborts_when_base_hardware_config_cannot_be_read() {
     std::fs::create_dir_all(&work_home).unwrap();
     fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
     fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+    fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
+    fs.mock_set_path_type(bash_history.to_str().unwrap(), "file");
+    fs.mock_set_file_content(bash_history.to_str().unwrap(), "nails activate\nls\n");
 
     let manager = Arc::new(Mutex::new(NailsManager::new(
         fs.clone(),
@@ -5633,11 +5717,20 @@ fn test_activation_aborts_when_base_hardware_config_cannot_be_read() {
         state_path,
     )));
 
-    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
+    let err = NailsManager::activate(Arc::clone(&manager), false).unwrap_err();
     assert!(err.to_string().contains("File not found in mock"));
     assert!(
         fs.mock_ops().is_empty(),
-        "no overlay mounts should be attempted"
+        "no side-effecting writes or overlay mounts should be attempted"
+    );
+    assert!(
+        fs.get_written_content(&bash_history).is_none(),
+        "pre-activation cleanup must not run before suspicious-reference read failure"
+    );
+    assert!(
+        fs.mock_get_symlink_target(&mock_hidden_vol.join("etc/nixos/nails/configuration.nix"))
+            .is_none(),
+        "config symlink staging must not run before suspicious-reference read failure"
     );
 }
 
@@ -6036,6 +6129,86 @@ fn test_overlay_mount_failure_error_format() {
         logs_contain("⚠ Could not overlay"),
         "Error message should follow format '⚠ Could not overlay <path>: <reason>'"
     );
+}
+
+#[test]
+fn test_run_read_only_nixos_preflight_reports_lock_file_problem_before_activation() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let explicit_flake_dir = hidden_root.join("explicit-flake");
+
+    let fs = MockFilesystem::new();
+    std::fs::create_dir_all(&explicit_flake_dir).unwrap();
+    std::fs::write(
+        explicit_flake_dir.join("flake.nix"),
+        "{ outputs = _: {}; }\n",
+    )
+    .unwrap();
+
+    let bin_dir = hidden_root.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let nix_script = bin_dir.join("nix");
+    std::fs::write(
+        &nix_script,
+        format!(
+            "#!/usr/bin/env sh\nprintf \"flake 'path:{}' requires lock file changes\\n\" 1>&2\nexit 1\n",
+            explicit_flake_dir.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&nix_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&nix_script, perms).unwrap();
+    }
+
+    let old_path = std::env::var_os("PATH");
+    let mut paths = vec![bin_dir.clone()];
+    if let Some(existing) = &old_path {
+        paths.extend(std::env::split_paths(existing));
+    }
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            std::env::join_paths(paths).expect("failed to compose PATH for test"),
+        );
+    }
+
+    let builder = crate::nixos::NixOSBuilder::new_with_flake_ref(
+        format!("{}#host-alpha", explicit_flake_dir.display()),
+        hidden_root.join("nails-system"),
+    );
+
+    let manager = NailsManager::with_nixos(
+        fs,
+        Config {
+            hidden_volume_root: hidden_root.to_path_buf(),
+            state_file_path: state_path.clone(),
+            nixos_flake: Some(format!("{}#host-alpha", explicit_flake_dir.display())),
+            ..Config::test_default()
+        },
+        state_path,
+        builder,
+    );
+
+    let err = manager.run_read_only_nixos_preflight(false).unwrap_err();
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("flake lock"),
+        "unexpected error: {err_text}"
+    );
+    assert!(
+        err_text.contains("does not run 'nix flake update' automatically"),
+        "unexpected error: {err_text}"
+    );
+
+    match old_path {
+        Some(path) => unsafe { std::env::set_var("PATH", path) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
 }
 
 #[test]
@@ -6463,13 +6636,13 @@ fn test_deactivation_succeeds_when_base_config_clean_after_unmount() {
     );
 }
 
-/// AC3, Subtask 2.2:
-/// If verify_base_config_clean() returns false after deactivation (base config is dirty),
-/// deactivation returns an error. This enforces that the base underlay was never polluted.
+/// Suspicious base-config references are now an activation-time preflight failure, not a
+/// late deactivation failure. Emergency deactivation should still finish cleanly even if the
+/// revealed base config is dirty, because the main safety gate already moved earlier.
 #[test]
 #[serial]
-fn test_deactivation_fails_when_base_config_dirty_after_unmount() {
-    let (manager, fs_clone, _state_path, _temp_dir) = setup_active_with_etc_overlay();
+fn test_deactivation_succeeds_when_base_config_dirty_after_unmount() {
+    let (manager, fs_clone, state_path, _temp_dir) = setup_active_with_etc_overlay();
 
     // Simulate a dirty base config (contains a hidden path reference — should never happen
     // in production on the base underlay, but if it does, deactivation must catch it).
@@ -6482,29 +6655,21 @@ fn test_deactivation_fails_when_base_config_dirty_after_unmount() {
 
     let result = NailsManager::emergency_deactivate(Arc::clone(&manager));
     assert!(
-        result.is_err(),
-        "Deactivation should fail when base config is dirty after unmount (AC3)"
+        result.is_ok(),
+        "Deactivation should not fail late on suspicious base config references"
     );
 
-    let err = result.unwrap_err();
-    match err {
-        NailsError::NixOSError(msg) => {
-            assert!(
-                msg.contains("forensically clean")
-                    || msg.contains("dirty")
-                    || msg.contains("clean"),
-                "Error message should reference config cleanliness: {}",
-                msg
-            );
-        }
-        other => panic!("Expected NixOSError, got: {:?}", other),
-    }
-
-    // Overlays were already unmounted; state should reflect Inactive even on error.
+    // Overlays were unmounted and deactivation completed.
     assert_eq!(
         manager.lock().unwrap().current_state().unwrap(),
         SystemState::Inactive,
-        "State should be Inactive after deactivation cleanliness failure"
+        "State should be Inactive after deactivation"
+    );
+    let loaded = StateFile::load(&state_path).unwrap();
+    assert_eq!(loaded.state, SystemState::Inactive);
+    assert!(
+        !fs_clone.is_mounted(Path::new("/etc")).unwrap(),
+        "/etc overlay should be unmounted after deactivation"
     );
 }
 

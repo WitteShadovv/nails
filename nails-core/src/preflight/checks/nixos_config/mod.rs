@@ -139,17 +139,6 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
             )));
         }
 
-        // Check 7: Symlink staged into hidden /etc/nixos/nails/configuration.nix
-        let symlink_path = hidden_etc_nixos.join("nails/configuration.nix");
-        if !fs.is_symlink(&symlink_path)? {
-            return Ok(CheckResult::Fail(format!(
-                "Hidden config symlink not staged at {}. Create it with: ln -s {}/config/nixos/configuration.nix {} (or call stage_hidden_config_symlink()).",
-                symlink_path.display(),
-                self.hidden_storage_path.display(),
-                symlink_path.display()
-            )));
-        }
-
         Ok(CheckResult::Pass(
             "NixOS configuration overlay structure is valid".into(),
         ))

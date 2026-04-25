@@ -1049,7 +1049,16 @@ fn test_activate_kill_session_detaches_via_systemd_run() {
             "--kill-session",
             "--no-preflight",
         ])
-        .env("PATH", &fake_bin)
+        .env(
+            "PATH",
+            std::env::join_paths([
+                fake_bin.as_path(),
+                std::path::Path::new("/run/current-system/sw/bin"),
+                std::path::Path::new("/usr/bin"),
+                std::path::Path::new("/bin"),
+            ])
+            .unwrap(),
+        )
         .env("DISPLAY", ":0")
         .env("NAILS_SESSION_ID", "c42")
         .env("NAILS_DISPLAY_MANAGER", "gdm")
@@ -1286,6 +1295,100 @@ fn test_activate_dry_run_reports_explicit_flake_reference() {
         "[INFO] NixOS flake: /etc/nixos#test-host",
     ))
     .stdout(predicates::str::contains("would build and switch profile"));
+}
+
+#[test]
+fn test_activate_kill_session_fails_before_detach_on_flake_lock_preflight_error() {
+    use std::fs;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fake_bin = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+
+    let nix_script = fake_bin.join("nix");
+    let systemd_run_script = fake_bin.join("systemd-run");
+    let systemd_run_log = temp_dir.path().join("systemd-run.log");
+
+    let shell_path = locate_shell_path();
+    fs::write(
+        &nix_script,
+        format!(
+            "#!{}\nprintf \"flake 'path:/etc/nixos' requires lock file changes\\n\" 1>&2\nexit 1\n",
+            shell_path.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&nix_script).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&nix_script, perms).unwrap();
+
+    fs::write(
+        &systemd_run_script,
+        format!(
+            "#!{}\nprintf '%s\\n' \"$*\" >> {}\nexit 0\n",
+            shell_path.display(),
+            systemd_run_log.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&systemd_run_script).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&systemd_run_script, perms).unwrap();
+
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let explicit_flake_dir = temp_dir.path().join("explicit-flake");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+    std::fs::create_dir_all(&explicit_flake_dir).unwrap();
+    std::fs::write(
+        explicit_flake_dir.join("flake.nix"),
+        "{ outputs = _: {}; }\n",
+    )
+    .unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root: {}\nnixos_flake: {}#host-alpha",
+        hidden_root.display(),
+        explicit_flake_dir.display()
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_file.path().to_str().unwrap(),
+            "activate",
+            "--kill-session",
+            "--plain",
+        ])
+        .env("PATH", &fake_bin)
+        .env("DISPLAY", ":0")
+        .env("NAILS_SESSION_ID", "c42")
+        .env("NAILS_DISPLAY_MANAGER", "gdm")
+        .env("NAILS_TARGET_UID", "1000")
+        .env("NAILS_TARGET_USER", "amnesia")
+        .env("NAILS_LOGIND_AVAILABLE", "1")
+        .output()
+        .expect("failed to run activate kill-session preflight test");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert!(stderr.contains("flake lock"), "stderr={stderr}");
+    assert!(
+        stderr.contains("does not run 'nix flake update' automatically"),
+        "stderr={stderr}"
+    );
+    assert!(
+        !systemd_run_log.exists()
+            || std::fs::read_to_string(&systemd_run_log)
+                .unwrap()
+                .trim()
+                .is_empty(),
+        "systemd-run should not have been called before preflight failure"
+    );
 }
 
 #[test]

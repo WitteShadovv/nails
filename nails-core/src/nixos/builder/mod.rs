@@ -134,13 +134,16 @@ impl NixOSBuilder {
         // Execute nixos-rebuild build command
         // AC1 (Story 15.5): --no-update-lock-file prevents any package version updates.
         let flake_arg = self.effective_flake_arg();
-        let (success, stdout, stderr) = self.executor.execute_nixos_rebuild(&[
-            "build",
-            "--flake",
-            &flake_arg,
-            "--no-update-lock-file",
-            "--impure",
-        ])?;
+        let (success, stdout, stderr) = self.executor.execute_nixos_rebuild(
+            &[
+                "build",
+                "--flake",
+                &flake_arg,
+                "--no-update-lock-file",
+                "--impure",
+            ],
+            self.should_clear_nix_path(),
+        )?;
 
         // Check if build succeeded
         if !success {
@@ -303,13 +306,16 @@ impl NixOSBuilder {
         let start = std::time::Instant::now();
 
         let flake_arg = self.effective_flake_arg();
-        let (success, stdout, stderr) = self.executor.execute_nixos_rebuild(&[
-            "build",
-            "--flake",
-            &flake_arg,
-            "--no-update-lock-file",
-            "--impure",
-        ])?;
+        let (success, stdout, stderr) = self.executor.execute_nixos_rebuild(
+            &[
+                "build",
+                "--flake",
+                &flake_arg,
+                "--no-update-lock-file",
+                "--impure",
+            ],
+            self.should_clear_nix_path(),
+        )?;
 
         if !success {
             return Err(NailsError::NixOSError(format!("Build failed: {}", stderr)));

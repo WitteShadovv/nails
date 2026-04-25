@@ -5,9 +5,36 @@
 //! all pre-flight validation checks before activation.
 
 use super::NailsManager;
-use crate::{Filesystem, Result, build_overlay_targets};
+use crate::{Filesystem, NailsError, Result, build_overlay_targets};
 
 impl<F: Filesystem> NailsManager<F> {
+    /// Run read-only NixOS preflight checks that are safe before detach/session kill.
+    pub fn run_read_only_nixos_preflight(&self, overlay_only: bool) -> Result<()> {
+        if overlay_only {
+            return Ok(());
+        }
+
+        if let Some(builder) = self.nixos_builder.as_ref()
+            && builder.is_flake()
+        {
+            let summary = builder.preflight_flake().map_err(|err| match err {
+                NailsError::NixOSPreflightError { message, .. } => {
+                    NailsError::PreFlightCheckFailed(vec![(
+                        "nixos-build-target".to_string(),
+                        message,
+                    )])
+                }
+                other => other,
+            })?;
+            tracing::info!(
+                eval_checked = summary.eval_checked,
+                "Read-only flake preflight completed"
+            );
+        }
+
+        Ok(())
+    }
+
     /// Run all pre-flight checks before activation
     ///
     /// Creates a PreFlightRegistry, registers all validation checks, and executes them.

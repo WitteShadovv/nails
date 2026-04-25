@@ -4,6 +4,7 @@
 //! will resolve before any destructive operations begin.
 
 use super::super::{CheckResult, PreFlightCheck};
+use crate::nixos::{resolve_local_flake_dir, split_flake_ref};
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
 
@@ -64,28 +65,19 @@ impl NixOSBuildTargetCheck {
 
     /// Validate an explicit flake reference
     fn check_explicit_flake<F: Filesystem>(&self, fs: &F, flake_ref: &str) -> Result<CheckResult> {
-        // Parse flake reference: "dir_path#attr" or just "dir_path"
-        let dir_path = if let Some(hash_pos) = flake_ref.find('#') {
-            &flake_ref[..hash_pos]
-        } else {
-            flake_ref
-        };
-
-        // Check 1: Path must be absolute
-        if !dir_path.starts_with('/') {
-            return Ok(CheckResult::Fail(format!(
-                "Flake path '{}' is relative. Use an absolute path (e.g., '/etc/nixos#attr').",
-                dir_path
+        let (base_ref, _) = split_flake_ref(flake_ref);
+        let Some(dir) = resolve_local_flake_dir(base_ref)? else {
+            return Ok(CheckResult::Pass(format!(
+                "Flake build target '{}' validated as a generic flake reference",
+                flake_ref
             )));
-        }
-
-        let dir = PathBuf::from(dir_path);
+        };
 
         // Check 2: Directory must exist
         if !fs.path_exists(&dir)? {
             return Ok(CheckResult::Fail(format!(
                 "Flake directory '{}' not found.",
-                dir_path
+                dir.display()
             )));
         }
 
@@ -94,7 +86,7 @@ impl NixOSBuildTargetCheck {
         if !fs.path_exists(&flake_nix)? {
             return Ok(CheckResult::Fail(format!(
                 "flake.nix not found in '{}'.",
-                dir_path
+                dir.display()
             )));
         }
 
@@ -249,19 +241,73 @@ mod tests {
     }
 
     #[test]
-    fn test_explicit_flake_relative_path() {
+    fn test_explicit_generic_github_flake_ref_passes_without_local_path_checks() {
         let fs = MockFilesystem::new();
 
         let check = NixOSBuildTargetCheck::new(
-            Some("etc/nixos#amnesia-virtualbox".to_string()),
+            Some("github:owner/repo#machine".to_string()),
             PathBuf::from("/mnt/hidden"),
         );
         let result = check.run(&fs).unwrap();
 
-        assert!(result.is_fail());
-        assert!(result.message().contains("relative"));
-        assert!(result.message().contains("etc/nixos"));
-        assert!(result.message().contains("absolute path"));
+        assert!(result.is_pass());
+        assert!(result.message().contains("generic flake reference"));
+        assert!(result.message().contains("github:owner/repo#machine"));
+    }
+
+    #[test]
+    fn test_explicit_path_scheme_flake_ref_with_query_uses_local_directory() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/some/dir", true);
+        fs.mock_set_path_exists("/some/dir/flake.nix", true);
+
+        let check = NixOSBuildTargetCheck::new(
+            Some("path:/some/dir?foo=bar#machine".to_string()),
+            PathBuf::from("/mnt/hidden"),
+        );
+        let result = check.run(&fs).unwrap();
+
+        assert!(result.is_pass());
+        assert!(result.message().contains("path:/some/dir?foo=bar#machine"));
+    }
+
+    #[test]
+    fn test_explicit_relative_flake_ref_with_dot_slash_passes() {
+        let fs = MockFilesystem::new();
+        let current_dir = std::env::current_dir().unwrap();
+        let flake_dir = current_dir.join("relative-flake");
+        let flake_nix = flake_dir.join("flake.nix");
+
+        fs.mock_set_path_exists(&flake_dir.to_string_lossy(), true);
+        fs.mock_set_path_exists(&flake_nix.to_string_lossy(), true);
+
+        let check = NixOSBuildTargetCheck::new(
+            Some("./relative-flake#host-alpha".to_string()),
+            PathBuf::from("/mnt/hidden"),
+        );
+        let result = check.run(&fs).unwrap();
+
+        assert!(result.is_pass());
+        assert!(result.message().contains("./relative-flake#host-alpha"));
+    }
+
+    #[test]
+    fn test_explicit_relative_current_directory_flake_ref_passes() {
+        let fs = MockFilesystem::new();
+        let current_dir = std::env::current_dir().unwrap();
+        let flake_nix = current_dir.join("flake.nix");
+
+        fs.mock_set_path_exists(&current_dir.to_string_lossy(), true);
+        fs.mock_set_path_exists(&flake_nix.to_string_lossy(), true);
+
+        let check = NixOSBuildTargetCheck::new(
+            Some(".#host-alpha".to_string()),
+            PathBuf::from("/mnt/hidden"),
+        );
+        let result = check.run(&fs).unwrap();
+
+        assert!(result.is_pass());
+        assert!(result.message().contains(".#host-alpha"));
     }
 
     #[test]

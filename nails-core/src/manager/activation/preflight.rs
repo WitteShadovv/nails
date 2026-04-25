@@ -4,10 +4,18 @@
 
 use crate::cleanup::history::HistoryCleaner;
 use crate::obfuscate;
-use crate::{Filesystem, NailsManager, Result, Stopwatch, Verbosity};
+use crate::{
+    Filesystem, NailsError, NailsManager, PreFlightCheck, Result, Stopwatch,
+    SuspiciousNailsReferenceCheck, Verbosity,
+};
+
+fn suspicious_check_name<F: Filesystem>() -> String {
+    <SuspiciousNailsReferenceCheck as PreFlightCheck<F>>::name(&SuspiciousNailsReferenceCheck)
+        .to_string()
+}
 
 impl<F: Filesystem> NailsManager<F> {
-    /// Stage hidden config symlink and run preflight checks
+    /// Run preflight checks and then stage hidden config symlink
     pub(super) fn run_preflight_phase(
         &self,
         no_preflight: bool,
@@ -40,38 +48,72 @@ impl<F: Filesystem> NailsManager<F> {
             Ok(true) => {}
         }
 
-        // Step 2.75: Stage hidden config symlink before pre-flight checks (Story 15.2).
-        // This ensures NixOSConfigCheck can validate the staged link.
-        if let Err(e) =
-            crate::stage_hidden_config_symlink(&self.filesystem, &self.config.hidden_volume_root)
-        {
-            if no_preflight {
+        // Step 3: Run pre-flight checks (unless skipped)
+        if no_preflight {
+            // Step 2.8: Pre-activation history cleanup (runs even with --no-preflight)
+            // Security feature: Clean shell history BEFORE overlays are mounted to remove
+            // evidence of cryptsetup, nails activate, etc. from the REAL disk.
+            if pre_activation_cleanup {
+                self.run_pre_activation_cleanup(verbosity);
+            }
+
+            if let Err(e) = crate::stage_hidden_config_symlink(
+                &self.filesystem,
+                &self.config.hidden_volume_root,
+            ) {
                 tracing::warn!(
                     error = %e,
                     "Skipping staged config failure due to --no-preflight (activation may not use hidden config)"
                 );
-            } else {
-                tracing::error!(
-                    error = %e,
-                    "Failed to stage hidden config symlink before pre-flight checks"
+            }
+
+            if verbosity >= Verbosity::Normal {
+                tracing::warn!("DANGER: Skipping pre-flight checks. Activation may fail.");
+            }
+            return Ok(());
+        }
+
+        if !overlay_only {
+            if verbosity >= Verbosity::Normal {
+                tracing::info!(
+                    "Running read-only flake preflight before any detach or session kill..."
                 );
-                return Err(e);
+            }
+
+            self.run_read_only_nixos_preflight(overlay_only)?;
+        }
+
+        // Suspicious-reference validation must happen before ANY activation side effects,
+        // including pre-activation cleanup and config symlink staging.
+        let suspicious_check = SuspiciousNailsReferenceCheck;
+        match suspicious_check.run(&self.filesystem)? {
+            crate::CheckResult::Pass(_) | crate::CheckResult::Warn(_) => {}
+            crate::CheckResult::Fail(message) => {
+                return Err(NailsError::PreFlightCheckFailed(vec![(
+                    suspicious_check_name::<F>(),
+                    message,
+                )]));
             }
         }
 
-        // Step 2.8: Pre-activation history cleanup (runs even with --no-preflight)
+        // Step 2.8: Pre-activation history cleanup (runs after early safety gates)
         // Security feature: Clean shell history BEFORE overlays are mounted to remove
         // evidence of cryptsetup, nails activate, etc. from the REAL disk.
         if pre_activation_cleanup {
             self.run_pre_activation_cleanup(verbosity);
         }
 
-        // Step 3: Run pre-flight checks (unless skipped)
-        if no_preflight {
-            if verbosity >= Verbosity::Normal {
-                tracing::warn!("DANGER: Skipping pre-flight checks. Activation may fail.");
-            }
-            return Ok(());
+        if let Err(e) =
+            crate::stage_hidden_config_symlink(&self.filesystem, &self.config.hidden_volume_root)
+        {
+            tracing::error!(
+                error = %e,
+                "Failed to stage hidden config symlink after early pre-flight checks"
+            );
+            return Err(NailsError::PreFlightCheckFailed(vec![(
+                "nixos-config-staging".to_string(),
+                e.to_string(),
+            )]));
         }
 
         if verbosity >= Verbosity::Normal {

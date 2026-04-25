@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{
     FailedOverlayInfo, Filesystem, NailsError, NailsManager, OverlayInfo, Result, Verbosity,
-    inject_import_block, verify_base_config_clean,
+    inject_import_block,
 };
 use chrono::Utc;
 use std::path::{Path, PathBuf};
@@ -33,34 +33,6 @@ impl<F: Filesystem> NailsManager<F> {
         options: &crate::ActivateOptions,
         verbosity: Verbosity,
     ) -> Result<(usize, usize, Vec<PathBuf>, Vec<PathBuf>)> {
-        // Story 15.1, AC1: Verify base hardware-configuration.nix is forensically clean before
-        // any overlays are mounted. Fail activation if the base config already contains
-        // NAILS or hidden references that would betray the overlay approach.
-        match verify_base_config_clean(&self.filesystem) {
-            Ok(true) => {
-                tracing::debug!("Base hardware-configuration.nix is clean — proceeding");
-            }
-            Ok(false) => {
-                tracing::error!(
-                    "Base /etc/nixos/hardware-configuration.nix contains suspicious references \
-                     (NAILS or hidden paths). Activation aborted to preserve forensic integrity."
-                );
-                return Err(NailsError::NixOSError(
-                    "Base hardware-configuration.nix is not forensically clean — \
-                     contains NAILS or hidden references before overlay mount"
-                        .into(),
-                ));
-            }
-            Err(e) => {
-                // Treat unreadable base config as a hard failure to avoid unsafe activation.
-                tracing::error!(
-                    error = %e,
-                    "Could not verify base hardware-configuration.nix; activation aborted"
-                );
-                return Err(e);
-            }
-        }
-
         if verbosity >= Verbosity::Normal {
             tracing::info!("Mounting overlays...");
         }

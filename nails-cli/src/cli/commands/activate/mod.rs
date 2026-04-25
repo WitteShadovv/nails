@@ -16,11 +16,18 @@ use crate::cli::detach::maybe_detach_for_session_kill;
 use crate::cli::output;
 
 use nails_core::{
-    ActivateOptions, CliOverrides, Config, Filesystem, NailsManager, NixOSBuilder, RealFilesystem,
-    Verbosity,
+    ActivateOptions, CliOverrides, Config, Filesystem, NailsManager, NixOSBuilder, PreFlightCheck,
+    RealFilesystem, Verbosity,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+fn suspicious_check_name() -> String {
+    <nails_core::SuspiciousNailsReferenceCheck as nails_core::PreFlightCheck<
+        nails_core::RealFilesystem,
+    >>::name(&nails_core::SuspiciousNailsReferenceCheck)
+    .to_string()
+}
 
 /// Execute the activate command
 ///
@@ -244,6 +251,36 @@ pub fn execute(
             tracing::info!("Running pre-flight checks before session kill...");
         }
 
+        {
+            let mgr = super::lock_manager_or_exit(
+                &manager,
+                "running read-only NixOS preflight before detach",
+            );
+            if let Err(e) = mgr.run_read_only_nixos_preflight(overlay_only) {
+                eprintln!("Error: {}", e);
+                std::process::exit(2);
+            }
+
+            let suspicious_check = nails_core::SuspiciousNailsReferenceCheck;
+            match suspicious_check.run(mgr.filesystem()) {
+                Ok(nails_core::CheckResult::Pass(_)) | Ok(nails_core::CheckResult::Warn(_)) => {}
+                Ok(nails_core::CheckResult::Fail(message)) => {
+                    eprintln!(
+                        "Error: {}",
+                        nails_core::NailsError::PreFlightCheckFailed(vec![(
+                            suspicious_check_name(),
+                            message,
+                        )])
+                    );
+                    std::process::exit(2);
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(2);
+                }
+            }
+        }
+
         // Probe symlink support before staging (catches FAT32/exFAT early)
         {
             let mgr =
@@ -272,7 +309,7 @@ pub fn execute(
         {
             let mgr = super::lock_manager_or_exit(
                 &manager,
-                "staging hidden config symlink before pre-flight checks",
+                "staging hidden config symlink before detach-safe pre-flight checks",
             );
             if let Err(e) = nails_core::stage_hidden_config_symlink(
                 mgr.filesystem(),
@@ -280,7 +317,7 @@ pub fn execute(
             ) {
                 tracing::error!(
                     error = %e,
-                    "Failed to stage hidden config symlink before pre-flight checks"
+                    "Failed to stage hidden config symlink before detach-safe pre-flight checks"
                 );
                 eprintln!("Error: {}", e);
                 std::process::exit(2);
