@@ -20,8 +20,10 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
     // Pass 1: Build a map from dev_id -> mount_point for entries where
     // fs_root == "/". These represent the root mounts of each device/partition.
     let mut device_root_mounts: HashMap<String, PathBuf> = HashMap::new();
-    // Track the target's own dev_id so we can skip same-device submounts in Pass 2.
+    // Track the target's own dev_id/fs_root so we can detect target-equivalent
+    // same-device submounts in Pass 2.
     let mut target_dev_id: Option<String> = None;
+    let mut target_fs_root: Option<String> = None;
 
     for line in mountinfo.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -49,8 +51,20 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
         // Track the target's device ID (last-wins for overmounts)
         if Path::new(parts[4]) == target {
             target_dev_id = Some(dev_id.to_string());
+            target_fs_root = Some(fs_root.to_string());
         }
     }
+
+    let target_backing_root = target_dev_id.as_ref().and_then(|target_dev| {
+        device_root_mounts
+            .get(target_dev)
+            .map(|root_mount_point| match target_fs_root.as_deref() {
+                Some("/") | None => root_mount_point.clone(),
+                Some(fs_root) => {
+                    root_mount_point.join(fs_root.strip_prefix('/').unwrap_or(fs_root))
+                }
+            })
+    });
 
     // Pass 2: Find all mounts strictly under the target directory and resolve
     // their source paths.
@@ -104,12 +118,33 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
                 if let Some(ref target_dev) = target_dev_id
                     && dev_id == target_dev
                 {
+                    let relative = mount_point
+                        .strip_prefix(target)
+                        .unwrap_or_else(|_| Path::new(""));
+                    let extra_lower = source_path
+                        .strip_suffix_path(relative)
+                        .unwrap_or_else(|| source_path.clone());
+
+                    if target_backing_root.as_ref() == Some(&extra_lower) {
+                        tracing::debug!(
+                            mount_point = %mount_point.display(),
+                            source = %source_path.display(),
+                            extra_lower = %extra_lower.display(),
+                            target_backing_root = %extra_lower.display(),
+                            dev_id = %dev_id,
+                            fs_root = %fs_root,
+                            "Skipping target-equivalent same-device submount to avoid ELOOP"
+                        );
+                        continue;
+                    }
+
                     tracing::debug!(
                         mount_point = %mount_point.display(),
                         source = %source_path.display(),
+                        extra_lower = %extra_lower.display(),
                         dev_id = %dev_id,
                         fs_root = %fs_root,
-                        "Preserving same-device bind submount under target"
+                        "Preserving non-equivalent same-device bind submount under target"
                     );
                 }
 
@@ -144,4 +179,46 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
     // Sort for consistent ordering
     results.sort_by(|a, b| a.0.cmp(&b.0));
     results
+}
+
+trait StripSuffixPath {
+    fn strip_suffix_path(&self, suffix: &Path) -> Option<PathBuf>;
+}
+
+impl StripSuffixPath for PathBuf {
+    fn strip_suffix_path(&self, suffix: &Path) -> Option<PathBuf> {
+        self.as_path().strip_suffix_path(suffix)
+    }
+}
+
+impl StripSuffixPath for Path {
+    fn strip_suffix_path(&self, suffix: &Path) -> Option<PathBuf> {
+        let self_components: Vec<_> = self.components().collect();
+        let suffix_components: Vec<_> = suffix.components().collect();
+
+        if suffix_components.is_empty() {
+            return Some(self.to_path_buf());
+        }
+
+        if suffix_components.len() > self_components.len() {
+            return None;
+        }
+
+        let start = self_components.len() - suffix_components.len();
+        for (a, b) in self_components[start..]
+            .iter()
+            .zip(suffix_components.iter())
+        {
+            if a != b {
+                return None;
+            }
+        }
+
+        let prefix: PathBuf = self_components[..start].iter().collect();
+        if prefix.as_os_str().is_empty() {
+            Some(PathBuf::from("/"))
+        } else {
+            Some(prefix)
+        }
+    }
 }

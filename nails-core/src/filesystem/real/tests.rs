@@ -1224,21 +1224,18 @@ fn test_same_device_submount_skipped_persist() {
 #[test]
 fn test_same_device_submount_skipped_nix() {
     use super::parse_submount_sources;
-    // Target /nix is bind-mounted from persist (device 254:1).
-    // Submount /nix/store is also on 254:1, but backed by a different fs_root.
-    // The source must be preserved so overlayfs can still see /nix/store.
+    // Target /nix is itself bind-mounted from /persist/nix (device 254:1).
+    // Preserving /nix/store would derive an extra lower of /persist/nix, which
+    // is target-equivalent to /nix and causes overlayfs ELOOP on nails-os.
     let mountinfo = "\
 42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
 50 1 254:1 /nix /nix rw,relatime - ext4 /dev/mapper/persist rw
 73 50 254:1 /nix/store /nix/store rw,relatime - ext4 /dev/mapper/persist rw";
     let result = parse_submount_sources(mountinfo, Path::new("/nix"));
-    assert_eq!(
-        result,
-        vec![(
-            PathBuf::from("/nix/store"),
-            PathBuf::from("/persist/nix/store")
-        )],
-        "Distinct same-device bind submount should be preserved"
+    assert!(
+        result.is_empty(),
+        "Target-equivalent same-device submount should be skipped, got: {:?}",
+        result
     );
 }
 
