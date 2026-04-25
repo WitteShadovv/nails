@@ -229,6 +229,37 @@ fn test_status_command_inactive() {
     assert!(report.nixos_generation.is_none());
 }
 
+#[test]
+fn test_status_command_propagates_permission_denied_for_unreadable_state() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+    std::fs::write(
+        &state_path,
+        serde_json::to_string(&StateFile::default()).unwrap(),
+    )
+    .unwrap();
+
+    let mut perms = std::fs::metadata(&state_path).unwrap().permissions();
+    perms.set_mode(0o000);
+    std::fs::set_permissions(&state_path, perms).unwrap();
+
+    let cmd = StatusCommand::new(MockFilesystem::new(), Config::default(), state_path.clone());
+    let result = cmd.run_truthful();
+
+    let mut restore = std::fs::metadata(&state_path).unwrap().permissions();
+    restore.set_mode(0o600);
+    std::fs::set_permissions(&state_path, restore).unwrap();
+
+    match result.unwrap_err() {
+        crate::NailsError::PermissionDenied(msg) => {
+            assert!(msg.contains("Cannot read state file"), "msg={msg}");
+        }
+        other => panic!("expected PermissionDenied, got {other:?}"),
+    }
+}
+
 // Task 7: Unit tests for ACTIVE state
 #[test]
 fn test_status_command_active_verified() {

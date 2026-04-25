@@ -17,17 +17,20 @@ impl<F: Filesystem> NailsManager<F> {
         if let Some(builder) = self.nixos_builder.as_ref()
             && builder.is_flake()
         {
-            let summary = builder.preflight_flake().map_err(|err| match err {
-                NailsError::NixOSPreflightError { message, .. } => {
-                    NailsError::PreFlightCheckFailed(vec![(
-                        "nixos-build-target".to_string(),
-                        message,
-                    )])
-                }
-                other => other,
-            })?;
+            let summary = builder
+                .preflight_flake_reference_fast()
+                .map_err(|err| match err {
+                    NailsError::NixOSPreflightError { message, .. } => {
+                        NailsError::PreFlightCheckFailed(vec![(
+                            "nixos-build-target".to_string(),
+                            message,
+                        )])
+                    }
+                    other => other,
+                })?;
             tracing::info!(
-                eval_checked = summary.eval_checked,
+                metadata_checked = summary.metadata_checked,
+                attr_checked = summary.attr_checked,
                 "Read-only flake preflight completed"
             );
         }
@@ -166,21 +169,28 @@ impl<F: Filesystem> NailsManager<F> {
             self.config.hidden_volume_root.clone(),
         )));
 
+        let flake_target_already_validated = self
+            .nixos_builder
+            .as_ref()
+            .is_some_and(|builder| builder.is_flake());
+
         if !overlay_only {
             registry.add_check(Box::new(NixOSConfigCheck::new(
                 self.config.hidden_volume_root.clone(),
             )));
 
-            let selected_flake_dir = self
-                .nixos_builder
-                .as_ref()
-                .and_then(|builder| builder.flake_dir().map(|path| path.to_path_buf()));
+            if !flake_target_already_validated {
+                let selected_flake_dir = self
+                    .nixos_builder
+                    .as_ref()
+                    .and_then(|builder| builder.flake_dir().map(|path| path.to_path_buf()));
 
-            registry.add_check(Box::new(NixOSBuildTargetCheck::with_selected_flake_dir(
-                self.config.nixos_flake.clone(),
-                selected_flake_dir,
-                self.config.hidden_volume_root.clone(),
-            )));
+                registry.add_check(Box::new(NixOSBuildTargetCheck::with_selected_flake_dir(
+                    self.config.nixos_flake.clone(),
+                    selected_flake_dir,
+                    self.config.hidden_volume_root.clone(),
+                )));
+            }
         }
 
         registry.add_check(Box::new(SwapCheck));

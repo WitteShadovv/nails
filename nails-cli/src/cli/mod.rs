@@ -70,6 +70,7 @@ pub fn execute_command(cli: Cli) -> std::result::Result<(), Box<dyn std::error::
             json,
             no_color,
             plain,
+            check_real_operations_allowed,
         ),
         Commands::Emergency {
             no_countdown,

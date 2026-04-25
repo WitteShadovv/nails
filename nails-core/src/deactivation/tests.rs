@@ -1738,6 +1738,83 @@ fn test_emergency_deactivate_unmounts_nix_store_when_nix_overlay_present() {
     clear_system_profile_env();
 }
 
+#[test]
+#[serial]
+fn test_deactivate_unmounts_ephemeral_overlays_before_completing_deactivation() {
+    clear_system_profile_env();
+
+    let fs = MockFilesystem::new();
+    setup_system_profile_stub(&fs);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let ephemeral_target = PathBuf::from("/var/lib/docker");
+    let ephemeral_staging = PathBuf::from(format!("{}/docker", crate::overlay::PIVOT_STAGING_BASE));
+    let ephemeral_backing = PathBuf::from("/run/nails/docker-ephemeral");
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
+        overlays: vec![],
+        extended_overlays: crate::ExtendedOverlayConfig {
+            enabled: true,
+            directories: vec![crate::EphemeralOverlayDir {
+                path: ephemeral_target.clone(),
+                tmpfs_upper_size: "64M".to_string(),
+                tmpfs_work_size: "16M".to_string(),
+            }],
+        },
+        ..Config::test_default()
+    };
+
+    let upper_dir = hidden_root.join("overlays/home/upper");
+    let work_dir = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    write_state_with_overlay(
+        &state_path,
+        &hidden_root,
+        Path::new("/home"),
+        &upper_dir,
+        &work_dir,
+    );
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        config,
+        state_path.clone(),
+    )));
+
+    {
+        let guard = manager.lock().unwrap();
+        let fs = guard.filesystem();
+        fs.mock_set_mounted(Path::new("/home"), true);
+        fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+        fs.mock_set_path_exists(ephemeral_staging.to_str().unwrap(), true);
+        fs.mock_set_path_exists(ephemeral_backing.to_str().unwrap(), true);
+        fs.mock_set_path_exists(ephemeral_backing.join("upper").to_str().unwrap(), true);
+        fs.mock_set_path_exists(ephemeral_backing.join("work").to_str().unwrap(), true);
+        fs.mount_tmpfs(&ephemeral_backing, "64M")
+            .expect("ephemeral backing tmpfs should mount in mock fs");
+        fs.mock_set_mounted(&ephemeral_staging, true);
+        fs.bind_mount(&ephemeral_staging, &ephemeral_target)
+            .expect("ephemeral target should be bind-mounted in mock fs");
+    }
+
+    NailsManager::deactivate(Arc::clone(&manager))
+        .expect("deactivation should succeed with ephemeral overlays enabled");
+
+    let guard = manager.lock().unwrap();
+    assert_eq!(guard.current_state().unwrap(), SystemState::Inactive);
+    assert!(
+        !guard.filesystem().is_mounted(&ephemeral_target).unwrap(),
+        "ephemeral overlay should be unmounted before deactivation completes"
+    );
+
+    clear_system_profile_env();
+}
+
 // ============================================================================
 // Story 9.3: Structured Logging Tests for Deactivation
 // ============================================================================

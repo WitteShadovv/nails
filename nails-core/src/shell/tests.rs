@@ -11,6 +11,11 @@ fn create_test_shell() -> ShellInstrumentation<MockFilesystem> {
     ShellInstrumentation::new(fs, config)
 }
 
+fn set_mock_home(fs: &MockFilesystem, home: &str) {
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_path_exists(home, true);
+}
+
 #[test]
 #[serial]
 fn test_detect_bash_shell() {
@@ -65,6 +70,34 @@ fn test_detect_unsupported_shell() {
         std::env::remove_var("SHELL");
     }
     assert_eq!(result, None);
+}
+
+#[test]
+#[serial]
+fn test_detect_shell_falls_back_to_home_dir_without_hardcoded_home_prefix() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+    let home = "/srv/users/amnesia";
+    set_mock_home(&fs, home);
+    fs.mock_set_path_exists(&format!("{home}/.zshrc"), true);
+
+    unsafe {
+        std::env::remove_var("SHELL");
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::set_var("USER", "amnesia");
+        std::env::set_var("HOME", home);
+    }
+
+    let shell = ShellInstrumentation::new(fs, config);
+    let result = shell.detect_current_shell();
+
+    unsafe {
+        std::env::remove_var("USER");
+        std::env::remove_var("HOME");
+    }
+
+    assert_eq!(result, Some(ShellType::Zsh));
 }
 
 #[test]
@@ -664,6 +697,39 @@ fn test_shell_setup_no_shell_detected() {
     // Should succeed but return None
     assert!(result.is_ok());
     assert!(matches!(result.as_ref(), Ok(None)));
+}
+
+#[test]
+#[serial]
+fn test_shell_setup_without_shell_env_still_sets_up_persistent_integration_for_target_user() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+
+    fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_path_exists("/home/amnesia", true);
+
+    unsafe {
+        std::env::remove_var("SHELL");
+        std::env::set_var("NAILS_TARGET_USER", "amnesia");
+    }
+
+    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let result = shell.shell_setup();
+
+    unsafe {
+        std::env::remove_var("NAILS_TARGET_USER");
+    }
+
+    assert!(result.is_ok());
+    let setup = result
+        .unwrap()
+        .expect("shell fallback should select a shell");
+    assert_eq!(setup.shell_type, ShellType::Bash);
+
+    let bashrc_path = PathBuf::from("/home/amnesia/.bashrc");
+    let content = fs.read_file_content(&bashrc_path).unwrap();
+    assert!(content.contains("# >>> NAILS shell integration"));
 }
 
 #[test]
@@ -1473,7 +1539,8 @@ fn test_write_xdg_autostart_entry_creates_desktop_file() {
     assert!(content.contains("[Desktop Entry]"));
     assert!(content.contains("Type=Application"));
     assert!(content.contains("Name=NAILS Notification Dispatch"));
-    assert!(content.contains("Exec=nails notify-dispatch"));
+    assert!(content.contains("notify-dispatch"));
+    assert!(!content.contains("Exec=nails notify-dispatch"));
     assert!(content.contains("Terminal=false"));
     assert!(content.contains("NoDisplay=true"));
     assert!(content.contains("X-GNOME-Autostart-enabled=true"));
@@ -1541,6 +1608,70 @@ fn test_write_xdg_autostart_entry_uses_user_env_fallback() {
     // Should use USER env var to find home directory
     let desktop_path = PathBuf::from("/home/fallbackuser/.config/autostart/nails-notify.desktop");
     assert!(fs.read_file_content(&desktop_path).is_ok());
+}
+
+#[test]
+#[serial]
+fn test_write_xdg_autostart_entry_uses_home_env_without_hardcoded_home_prefix() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+    let home = "/srv/users/fallbackuser";
+
+    fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+    fs.mock_set_path_exists("/srv", true);
+    fs.mock_set_path_exists("/srv/users", true);
+    fs.mock_set_path_exists(home, true);
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::set_var("USER", "fallbackuser");
+        std::env::set_var("HOME", home);
+    }
+
+    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let result = shell.write_xdg_autostart_entry();
+
+    unsafe {
+        std::env::remove_var("USER");
+        std::env::remove_var("HOME");
+    }
+
+    assert!(result.is_ok());
+    assert!(result.unwrap());
+
+    let desktop_path = PathBuf::from(format!("{home}/.config/autostart/nails-notify.desktop"));
+    assert!(fs.read_file_content(&desktop_path).is_ok());
+}
+
+#[test]
+#[serial]
+fn test_inject_rc_integration_uses_home_env_without_hardcoded_home_prefix() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+    let home = "/srv/users/fallbackuser";
+
+    fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+    fs.mock_set_path_exists("/srv", true);
+    fs.mock_set_path_exists("/srv/users", true);
+    fs.mock_set_path_exists(home, true);
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::set_var("USER", "fallbackuser");
+        std::env::set_var("HOME", home);
+    }
+
+    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let result = shell.inject_rc_integration(ShellType::Bash);
+
+    unsafe {
+        std::env::remove_var("USER");
+        std::env::remove_var("HOME");
+    }
+
+    assert!(result.is_ok());
+    let bashrc_path = PathBuf::from(format!("{home}/.bashrc"));
+    assert!(fs.read_file_content(&bashrc_path).is_ok());
 }
 
 #[test]
@@ -1637,6 +1768,10 @@ fn test_write_xdg_autostart_desktop_file_content_format() {
     // Verify exact desktop entry format (each field on its own line)
     assert!(content.starts_with("[Desktop Entry]\n"));
     assert!(content.contains("Comment=Dispatches pending NAILS notifications on login\n"));
+    assert!(content.contains(&format!(
+        "Exec={} notify-dispatch\n",
+        std::env::current_exe().unwrap().display()
+    )));
     assert!(content.ends_with('\n'));
 }
 
@@ -1669,5 +1804,6 @@ fn test_shell_setup_writes_xdg_autostart_entry() {
     // Verify that shell_setup also created the autostart entry
     let desktop_path = PathBuf::from("/home/testuser/.config/autostart/nails-notify.desktop");
     let content = fs.read_file_content(&desktop_path).unwrap();
-    assert!(content.contains("Exec=nails notify-dispatch"));
+    assert!(content.contains("notify-dispatch"));
+    assert!(!content.contains("Exec=nails notify-dispatch"));
 }

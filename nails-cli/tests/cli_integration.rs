@@ -1059,6 +1059,7 @@ fn test_activate_kill_session_detaches_via_systemd_run() {
             ])
             .unwrap(),
         )
+        .env("NAILS_SYSTEMD_RUN_PATH", &systemd_run_path)
         .env("DISPLAY", ":0")
         .env("NAILS_SESSION_ID", "c42")
         .env("NAILS_DISPLAY_MANAGER", "gdm")
@@ -1132,6 +1133,7 @@ fn test_activate_kill_session_surfaces_systemd_run_failures() {
             "--no-preflight",
         ])
         .env("PATH", &fake_bin)
+        .env("NAILS_SYSTEMD_RUN_PATH", &systemd_run_path)
         .env("DISPLAY", ":0")
         .env("NAILS_SESSION_ID", "c42")
         .env("NAILS_DISPLAY_MANAGER", "gdm")
@@ -1145,6 +1147,54 @@ fn test_activate_kill_session_surfaces_systemd_run_failures() {
     assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
     assert!(stderr.contains("systemd-run failed"), "stderr={stderr}");
     assert!(stderr.contains("mock detach failure"), "stderr={stderr}");
+}
+
+#[test]
+fn test_activate_kill_session_refuses_real_transient_units_in_test_runtime() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_file.path().to_str().unwrap(),
+            "activate",
+            "--kill-session",
+            "--no-preflight",
+        ])
+        .env("DISPLAY", ":0")
+        .env("NAILS_SESSION_ID", "c42")
+        .env("NAILS_DISPLAY_MANAGER", "gdm")
+        .env("NAILS_TARGET_UID", "1000")
+        .env("NAILS_TARGET_USER", "amnesia")
+        .output()
+        .expect("failed to run activate detach safety test");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert!(stderr.contains("Refusing to start transient systemd units"));
+}
+
+#[test]
+fn test_deactivate_with_build_dir_config_hits_safety_guard() {
+    let config_file = create_test_config_file("/tmp/fake/target/debug/fake-hidden");
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args([
+        "--config",
+        config_file.path().to_str().unwrap(),
+        "deactivate",
+    ])
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains("TEST SAFETY GUARD"));
 }
 
 #[test]

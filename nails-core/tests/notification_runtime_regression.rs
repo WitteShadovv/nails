@@ -3,6 +3,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use nails_core::obfuscate;
+
 const SUBPROCESS_TEST_NAME: &str = "subprocess_notification_runtime_entrypoint";
 
 fn copy_current_exe_outside_deps(temp_dir: &Path) -> PathBuf {
@@ -164,6 +166,22 @@ fn subprocess_notification_runtime_entrypoint() {
             .unwrap();
             assert_eq!(notification::dispatch_all(&hidden_root).unwrap(), 1);
             assert!(notification::read_pending(&hidden_root).unwrap().is_empty());
+        }
+        "env-propagation" => {
+            let env = notification::notification_runtime_environment();
+            assert!(
+                env.iter()
+                    .any(|(k, v)| *k == "XDG_RUNTIME_DIR" && v == "/run/user/1000")
+            );
+            assert!(
+                env.iter().any(|(k, v)| *k == "DBUS_SESSION_BUS_ADDRESS"
+                    && v == "unix:path=/run/user/1000/bus")
+            );
+            assert!(env.iter().any(|(k, v)| *k == "DISPLAY" && v == ":0"));
+            assert!(
+                env.iter()
+                    .any(|(k, v)| *k == "WAYLAND_DISPLAY" && v == "wayland-1")
+            );
         }
         "failed-dispatch" => {
             notification::write_notification(&hidden_root, &make_notification("Queued", "Body"))
@@ -400,6 +418,31 @@ fn notify_send_execution_error_keeps_pending_notification_for_retry() {
     std::fs::write(&notify_send_path, "not executable").unwrap();
 
     let output = run_subprocess("notify-send-exec-error", &hidden_root, Some(&fake_bin));
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn notification_dispatch_builds_runtime_environment_from_target_session_vars() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let output = run_subprocess_with_env(
+        "env-propagation",
+        &hidden_root,
+        None,
+        &[
+            (&obfuscate::env_target_uid(), "1000"),
+            ("DISPLAY", ":0"),
+            ("WAYLAND_DISPLAY", "wayland-1"),
+        ],
+    );
+
     assert!(
         output.status.success(),
         "stdout={}\nstderr={}",

@@ -7,39 +7,16 @@ let
   inherit (pkgs) lib;
   sharedHelpers = import ./lib/shared-helpers.nix { inherit pkgs self; };
   canaries = import ./lib/canaries.nix { inherit pkgs; };
-  contracts = import ./lib/contracts.nix {
-    inherit pkgs canaries;
-  };
-  profileLib = import ./lib/profiles.nix {
-    inherit
-      pkgs
-      sharedHelpers
-      contracts
-      ;
-  };
-  scenarioLib = import ./lib/scenarios.nix {
-    inherit pkgs contracts canaries;
-  };
+  contracts = import ./lib/contracts.nix { inherit pkgs canaries; };
+  profileLib = import ./lib/profiles.nix { inherit pkgs sharedHelpers contracts; };
+  scenarioLib = import ./lib/scenarios.nix { inherit pkgs contracts canaries; };
 
   profileList = [
     (import ./profiles/direct-headless.nix {
-      inherit
-        sharedHelpers
-        profileLib
-        ;
+      inherit sharedHelpers profileLib;
     })
-    (import ./profiles/graphical.nix {
-      inherit
-        sharedHelpers
-        profileLib
-        ;
-    })
-    (import ./profiles/vfat-boot.nix {
-      inherit
-        sharedHelpers
-        profileLib
-        ;
-    })
+    (import ./profiles/graphical.nix { inherit sharedHelpers profileLib; })
+    (import ./profiles/vfat-boot.nix { inherit sharedHelpers profileLib; })
   ];
 
   profiles = profileLib.byId profileList;

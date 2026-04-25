@@ -205,6 +205,10 @@ fn test_init_creates_log_directory_when_missing() {
 
     let result = manager.init(&fs);
     assert!(result.is_ok());
+    assert!(
+        fs.path_exists(&PathBuf::from("/mnt/hidden-volume/logs"))
+            .unwrap()
+    );
 }
 
 #[test]
@@ -266,19 +270,19 @@ fn test_init_with_traversal_path_fails() {
 #[test]
 fn test_init_fails_when_log_path_is_symlink() {
     let manager = LoggingManager::new(
-        PathBuf::from("/var/log"),
+        PathBuf::from("/mnt/hidden-volume/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-    fs.mock_set_path_exists("/var/log", true);
-    fs.mock_set_is_symlink("/var/log", true);
+    fs.mock_set_path_exists("/mnt/hidden-volume/logs", true);
+    fs.mock_set_is_symlink("/mnt/hidden-volume/logs", true);
 
     let err = manager.init(&fs).unwrap_err();
     match &err {
         NailsError::InvalidState(msg) => {
             assert!(
-                msg.contains("Log path must be on hidden volume"),
+                msg.contains("must not be a symlink"),
                 "Expected error about log path, got: {}",
                 msg
             );

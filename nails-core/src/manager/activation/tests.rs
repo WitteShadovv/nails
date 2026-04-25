@@ -1,6 +1,7 @@
 use super::gate::ActivationGateTestGuard;
 use super::maybe_block_after_activating_state_transition;
 use super::rollback::rollback_overlay_mounts_after_activation_failure;
+use super::{SessionRestartPhase, determine_session_restart_phase};
 use crate::{
     Config, EphemeralOverlayDir, ExtendedOverlayConfig, Filesystem, MockFilesystem, NailsManager,
     OverlayConfig, SystemState,
@@ -322,5 +323,75 @@ fn test_explicit_nix_overlay_restores_nix_store_bind_mount() {
     assert!(
         fs.is_mounted(Path::new("/nix/store"))
             .expect("/nix/store bind mount restored")
+    );
+}
+
+#[test]
+fn session_restart_phase_uses_pre_switch_restart_for_nixos_activation() {
+    let plan = crate::process::SessionRestartPlan {
+        display_manager: Some("display-manager.service".to_string()),
+        target_uid: Some(1000),
+    };
+
+    assert_eq!(
+        determine_session_restart_phase(&plan, false, true),
+        SessionRestartPhase::AfterOverlayMounts
+    );
+}
+
+#[test]
+fn activation_progress_describes_requested_ordering() {
+    let source = include_str!("mod.rs");
+    let overlay_idx = source
+        .find("[4/7] Mounting overlays...")
+        .expect("overlay progress marker");
+    let restart_idx = source
+        .find("[5/7] Restarting session/display manager...")
+        .expect("session restart progress marker");
+    let switch_idx = source
+        .find("[6/7] Running NixOS switch/rebuild...")
+        .expect("switch progress marker");
+
+    assert!(
+        overlay_idx < restart_idx && restart_idx < switch_idx,
+        "activation progress markers should reflect overlays -> restart -> switch ordering"
+    );
+}
+
+#[test]
+fn session_restart_phase_uses_restart_after_overlay_mounts_for_overlay_only_activation() {
+    let plan = crate::process::SessionRestartPlan {
+        display_manager: Some("display-manager.service".to_string()),
+        target_uid: Some(1000),
+    };
+
+    assert_eq!(
+        determine_session_restart_phase(&plan, true, true),
+        SessionRestartPhase::AfterOverlayMounts
+    );
+}
+
+#[test]
+fn session_restart_phase_uses_restart_after_overlay_mounts_when_nixos_switch_unavailable() {
+    let plan = crate::process::SessionRestartPlan {
+        display_manager: Some("display-manager.service".to_string()),
+        target_uid: Some(1000),
+    };
+
+    assert_eq!(
+        determine_session_restart_phase(&plan, false, false),
+        SessionRestartPhase::AfterOverlayMounts
+    );
+}
+
+#[test]
+fn session_restart_phase_is_none_without_restart_plan() {
+    assert_eq!(
+        determine_session_restart_phase(
+            &crate::process::SessionRestartPlan::default(),
+            false,
+            true
+        ),
+        SessionRestartPhase::None
     );
 }

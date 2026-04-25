@@ -56,13 +56,25 @@ impl LoggingConfig {
     /// ```
     pub fn build_and_install_subscriber(&self, max_level: tracing::Level) -> Result<()> {
         use std::fs::OpenOptions;
+        #[cfg(unix)]
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_file_path)?;
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+
+        #[cfg(unix)]
+        options.mode(0o600);
+
+        let file = options.open(&self.log_file_path)?;
+
+        #[cfg(unix)]
+        {
+            let mut permissions = file.metadata()?.permissions();
+            permissions.set_mode(0o600);
+            std::fs::set_permissions(&self.log_file_path, permissions)?;
+        }
 
         let writer = std::sync::Mutex::new(file);
 
@@ -209,6 +221,25 @@ mod tests {
             NailsError::IoError(io) => assert_eq!(io.kind(), ErrorKind::NotFound),
             other => panic!("expected IoError(NotFound), got {other:?}"),
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_build_and_install_subscriber_creates_log_file_with_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let log_path = temp_dir.path().join("nails.log");
+        let output = run_subprocess("install-info", &log_path);
+        assert!(
+            output.status.success(),
+            "stdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let mode = std::fs::metadata(&log_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "log file mode should be 0o600");
     }
 
     #[test]

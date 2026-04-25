@@ -51,7 +51,7 @@ describe_target() {
         permissions-security) printf '%s' 'Permission and path security test' ;;
         reactivation) printf '%s' 'Re-activation workflow test' ;;
         status-verify) printf '%s' 'Status and verify command coverage test' ;;
-        ci) printf '%s' 'CI smoke suite' ;;
+        ci) printf '%s' 'CI critical regression suite' ;;
         all) printf '%s' 'All tests' ;;
         smoke|config|forensic|lifecycle|init|security|performance|preflight|nixos|session|shell|notification|overlay|state|contract)
             printf '%s' "Tag suite: $1"

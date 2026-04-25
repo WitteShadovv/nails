@@ -63,6 +63,33 @@ in
         machine.fail("test -e /mnt/hidden-volume/home/testuser/.config/autostart/nails-notify.desktop")
         machine.fail("test -e /mnt/hidden-volume/state.json")
 
+    with subtest("missing explicit flake attrs are rejected before any activation side effects"):
+        machine.succeed("mkdir -p /tmp/flake-target")
+        machine.succeed("cat > /tmp/flake-target/flake.nix <<'EOF'\n{\n  outputs = _: {\n    nixosConfigurations.other-host = { };\n  };\n}\nEOF")
+        write_text_file("/tmp/preflight-build-target.yaml", "\n".join([
+            "hidden_volume_root: /mnt/hidden-volume",
+            "nixos_flake: /tmp/flake-target#test-host",
+            "overlay_mode: explicit",
+            "overlays:",
+            "  - name: home",
+            "    lower: /home",
+            "    upper: /mnt/hidden-volume/home",
+            "    work: /mnt/hidden-volume/.work/home",
+            "    target: /home",
+        ]) + "\n")
+        result = run_command_capture(
+            "preflight-build-target-explicit-attr-missing",
+            "nails --config /tmp/preflight-build-target.yaml activate --no-kill-session -y",
+        )
+        assert_command_failed(result)
+        assert_result_contains(
+            result,
+            ["nixos-build-target", "test-host", "does not provide nixosConfiguration"],
+            stream="stderr",
+        )
+        assert_status_state("Inactive", config_path="/tmp/preflight-build-target.yaml")
+        assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
+
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';
 }

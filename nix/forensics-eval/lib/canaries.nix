@@ -32,12 +32,7 @@ rec {
     in
     "nails-feval-${digest}";
 
-  mkToken =
-    {
-      namespace,
-      label,
-    }:
-    "${namespace}-${normalize label}";
+  mkToken = { namespace, label }: "${namespace}-${normalize label}";
 
   mkSet =
     {
@@ -53,9 +48,7 @@ rec {
       ],
     }:
     let
-      namespace = mkNamespace {
-        inherit scenarioId profileId lane;
-      };
+      namespace = mkNamespace { inherit scenarioId profileId lane; };
     in
     {
       inherit

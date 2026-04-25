@@ -2,6 +2,7 @@
 
 use super::{system_profile_path, system_profiles_dir};
 use crate::error::{NailsError, Result};
+use crate::nixos::is_non_fatal_switch_failure;
 use crate::nixos::{NixOSBuildMode, NixOSBuilder};
 use std::path::PathBuf;
 
@@ -208,6 +209,15 @@ impl NixOSBuilder {
         };
 
         if !success {
+            if is_non_fatal_switch_failure(&stderr, &stdout) {
+                tracing::warn!(
+                    stderr = %stderr.trim(),
+                    stdout = %stdout.trim(),
+                    "nixos-rebuild test reported non-fatal unit restart failures; continuing activation"
+                );
+                return Ok(());
+            }
+
             return Err(NailsError::NixOSError(format!(
                 "nixos-rebuild test failed: {}",
                 prefer_stderr(&stderr, &stdout)

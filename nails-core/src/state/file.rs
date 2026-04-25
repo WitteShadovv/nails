@@ -358,6 +358,14 @@ impl StateFile {
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    return Err(NailsError::PermissionDenied(format!(
+                        "Cannot read state file {}: {}",
+                        path.display(),
+                        e
+                    )));
+                }
+
                 tracing::warn!(
                     "State file unreadable at {}: {}, assuming INACTIVE",
                     path.display(),

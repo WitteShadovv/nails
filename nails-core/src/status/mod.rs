@@ -245,6 +245,14 @@ impl<F: Filesystem> StatusCommand<F> {
         Ok(report)
     }
 
+    /// Execute the status command, converting unreadable state into a truthful report.
+    ///
+    /// Permission errors are surfaced to callers while preserving FR63 for other
+    /// recoverable state-file problems inside `run()`.
+    pub fn run_truthful(&self) -> Result<StatusReport> {
+        self.run()
+    }
+
     /// Calculate uptime for active state
     ///
     /// Returns the duration since activation if the system is active,

@@ -1,7 +1,7 @@
 //! Desktop notification signal files for post-activation user feedback
 //!
-//! The activation process runs as root and restarts the display manager before
-//! the NixOS rebuild completes. This module provides a file-based signaling
+//! The activation process runs as root and may restart the display manager
+//! after the NixOS switch/rebuild step completes. This module provides a file-based signaling
 //! mechanism so the logged-in user receives desktop notifications about:
 //!
 //! - Overlay mount status (OPTIMAL / DEGRADED / failed)
@@ -17,6 +17,32 @@ use crate::{Result, obfuscate};
 use serde::{Deserialize, Serialize};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+
+#[cfg(not(test))]
+pub fn notification_runtime_environment() -> Vec<(&'static str, String)> {
+    let mut env = Vec::new();
+
+    if let Ok(uid) =
+        std::env::var(obfuscate::env_target_uid()).or_else(|_| std::env::var("SUDO_UID"))
+    {
+        let runtime_dir = format!("/run/user/{}", uid);
+        env.push(("XDG_RUNTIME_DIR", runtime_dir.clone()));
+        env.push((
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}/bus", runtime_dir),
+        ));
+    }
+
+    if let Ok(display) = std::env::var("DISPLAY") {
+        env.push(("DISPLAY", display));
+    }
+
+    if let Ok(wayland_display) = std::env::var("WAYLAND_DISPLAY") {
+        env.push(("WAYLAND_DISPLAY", wayland_display));
+    }
+
+    env
+}
 
 /// A desktop notification payload stored as a JSON signal file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -349,6 +375,10 @@ fn send_notification(notify_send: &Path, notification: &Notification) -> Result<
     let mut cmd = std::process::Command::new(notify_send);
     cmd.arg("--urgency").arg(&notification.urgency);
     cmd.arg("--app-name").arg("NAILS");
+
+    for (key, value) in notification_runtime_environment() {
+        cmd.env(key, value);
+    }
 
     if let Some(ref icon) = notification.icon {
         cmd.arg("--icon").arg(icon);

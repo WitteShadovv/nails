@@ -78,7 +78,8 @@ pub trait CommandExecutor {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FlakePreflightSummary {
-    pub eval_checked: bool,
+    pub metadata_checked: bool,
+    pub attr_checked: bool,
 }
 
 /// Real command executor for production use
@@ -113,87 +114,143 @@ impl CommandExecutor for RealCommandExecutor {
 }
 
 impl NixOSBuilder {
-    pub(crate) fn preflight_flake(&self) -> crate::Result<FlakePreflightSummary> {
+    pub(crate) fn preflight_flake_reference_fast(&self) -> crate::Result<FlakePreflightSummary> {
+        self.preflight_flake_reference_read_only()
+    }
+
+    fn preflight_flake_reference_read_only(&self) -> crate::Result<FlakePreflightSummary> {
         if !self.is_flake() {
             return Ok(FlakePreflightSummary {
-                eval_checked: false,
+                metadata_checked: false,
+                attr_checked: false,
             });
         }
 
         let (metadata_flake_ref, selected_fragment) = self.preflight_flake_refs();
+        validate_local_flake_reference(&metadata_flake_ref)?;
 
-        if let Some(local_flake_dir) = resolve_local_flake_dir(&metadata_flake_ref)? {
-            if !local_flake_dir.exists() {
-                return Err(crate::NailsError::NixOSPreflightError {
-                    category: "configuration",
-                    message: format!(
-                        "flake directory '{}' not found. Fix the flake/configuration problem and retry activation.",
-                        local_flake_dir.display()
-                    ),
-                });
-            }
+        let (metadata_ok, metadata_stdout, metadata_stderr) = self.executor.execute_nix(
+            &[
+                "flake",
+                "metadata",
+                "--json",
+                &metadata_flake_ref,
+                "--no-write-lock-file",
+                "--impure",
+            ],
+            self.should_clear_nix_path(),
+        )?;
 
-            let flake_file = local_flake_dir.join("flake.nix");
-            if !flake_file.exists() {
-                return Err(crate::NailsError::NixOSPreflightError {
-                    category: "configuration",
-                    message: format!(
-                        "flake.nix not found in '{}'. Fix the flake/configuration problem and retry activation.",
-                        local_flake_dir.display()
-                    ),
-                });
-            }
+        if !metadata_ok {
+            return Err(crate::NailsError::NixOSPreflightError {
+                category: classify_nixos_failure_category(&metadata_stderr, &metadata_stdout),
+                message: format_classified_nixos_failure(
+                    "flake metadata validation failed",
+                    &metadata_stderr,
+                    &metadata_stdout,
+                ),
+            });
         }
 
         let (selected_fragment, fragment_is_explicit) =
             selected_nixos_configuration_fragment(selected_fragment.as_deref())?;
-        let attr = flake_toplevel_attr(&selected_fragment);
+        let attr_check_expr =
+            flake_nixos_configuration_attr_check_expr(&metadata_flake_ref, &selected_fragment)?;
         let clear_nix_path = self.should_clear_nix_path();
 
-        let (eval_ok, eval_stdout, eval_stderr) = self.executor.execute_nix(
+        let (attr_ok, attr_stdout, attr_stderr) = self.executor.execute_nix(
             &[
                 "eval",
                 "--raw",
-                &format!("{}#{}", metadata_flake_ref, attr),
+                "--expr",
+                &attr_check_expr,
                 "--no-write-lock-file",
                 "--impure",
             ],
             clear_nix_path,
         )?;
 
-        if !eval_ok {
-            let message = if !fragment_is_explicit
-                && is_missing_nixos_configuration_attr(&eval_stderr, &eval_stdout, &attr)
-            {
-                format_missing_inferred_configuration_error(
-                    &metadata_flake_ref,
-                    &selected_fragment,
-                    &eval_stderr,
-                    &eval_stdout,
-                )
+        if !attr_ok {
+            let message = if is_missing_nixos_configuration_attr(&attr_stderr, &attr_stdout) {
+                if fragment_is_explicit {
+                    format_missing_explicit_configuration_error(
+                        &metadata_flake_ref,
+                        &selected_fragment,
+                        &attr_stderr,
+                        &attr_stdout,
+                    )
+                } else {
+                    format_missing_inferred_configuration_error(
+                        &metadata_flake_ref,
+                        &selected_fragment,
+                        &attr_stderr,
+                        &attr_stdout,
+                    )
+                }
             } else {
                 format_classified_nixos_failure(
-                    "flake evaluation failed",
-                    &eval_stderr,
-                    &eval_stdout,
+                    "flake nixosConfiguration validation failed",
+                    &attr_stderr,
+                    &attr_stdout,
                 )
             };
 
             return Err(crate::NailsError::NixOSPreflightError {
-                category: classify_nixos_failure_category(&eval_stderr, &eval_stdout),
+                category: classify_nixos_failure_category(&attr_stderr, &attr_stdout),
                 message,
             });
         }
 
-        Ok(FlakePreflightSummary { eval_checked: true })
+        Ok(FlakePreflightSummary {
+            metadata_checked: true,
+            attr_checked: true,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn preflight_flake(&self) -> crate::Result<FlakePreflightSummary> {
+        self.preflight_flake_reference_read_only()
     }
 }
 
-fn flake_toplevel_attr(fragment: &str) -> String {
-    format!(
-        "nixosConfigurations.{}.config.system.build.toplevel.drvPath",
-        fragment
-    )
+fn validate_local_flake_reference(base_ref: &str) -> crate::Result<()> {
+    if let Some(local_flake_dir) = resolve_local_flake_dir(base_ref)? {
+        if !local_flake_dir.exists() {
+            return Err(crate::NailsError::NixOSPreflightError {
+                category: "configuration",
+                message: format!(
+                    "flake directory '{}' not found. Fix the flake/configuration problem and retry activation.",
+                    local_flake_dir.display()
+                ),
+            });
+        }
+
+        let flake_file = local_flake_dir.join("flake.nix");
+        if !flake_file.exists() {
+            return Err(crate::NailsError::NixOSPreflightError {
+                category: "configuration",
+                message: format!(
+                    "flake.nix not found in '{}'. Fix the flake/configuration problem and retry activation.",
+                    local_flake_dir.display()
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn flake_nixos_configuration_attr_check_expr(
+    base_ref: &str,
+    selected_fragment: &str,
+) -> crate::Result<String> {
+    let quoted_ref = nix_string_literal(base_ref)?;
+    let quoted_fragment = nix_string_literal(selected_fragment)?;
+    let missing_marker = nix_string_literal(&missing_nixos_configuration_attr_marker())?;
+
+    Ok(format!(
+        "let flake = builtins.getFlake {quoted_ref}; configs = flake.nixosConfigurations or {{}}; in if builtins.hasAttr {quoted_fragment} configs then \"1\" else builtins.throw ({missing_marker} + {quoted_fragment})"
+    ))
 }
 
 pub(crate) fn split_flake_ref(flake_ref: &str) -> (&str, Option<&str>) {
@@ -290,11 +347,11 @@ fn selected_nixos_configuration_fragment(
     Ok((hostname, false))
 }
 
-fn is_missing_nixos_configuration_attr(stderr: &str, stdout: &str, attr: &str) -> bool {
+fn is_missing_nixos_configuration_attr(stderr: &str, stdout: &str) -> bool {
     let combined = combine_output(stderr, stdout);
     let lower = combined.to_lowercase();
 
-    combined.contains(attr)
+    combined.contains(&missing_nixos_configuration_attr_marker())
         || lower.contains("does not provide attribute")
         || (lower.contains("attribute") && lower.contains("nixosconfigurations"))
 }
@@ -310,6 +367,30 @@ fn format_missing_inferred_configuration_error(
         "flake '{}' does not provide the inferred nixosConfiguration '{}'. Nails would later pass '--flake {}', which resolves to 'nixosConfigurations.{}'. Use '--flake {}#<name>' or add that configuration. Nix said: {}",
         base_ref, inferred_fragment, base_ref, inferred_fragment, base_ref, combined
     )
+}
+
+fn format_missing_explicit_configuration_error(
+    base_ref: &str,
+    explicit_fragment: &str,
+    stderr: &str,
+    stdout: &str,
+) -> String {
+    let combined = combine_output(stderr, stdout);
+    format!(
+        "flake '{}' does not provide nixosConfiguration '{}'. Nails would later pass '--flake {}#{}'. Use '--flake {}#<name>' with an existing configuration or add that attribute. Nix said: {}",
+        base_ref, explicit_fragment, base_ref, explicit_fragment, base_ref, combined
+    )
+}
+
+fn missing_nixos_configuration_attr_marker() -> String {
+    "__NAILS_MISSING_NIXOS_CONFIGURATION__:".to_string()
+}
+
+fn nix_string_literal(value: &str) -> crate::Result<String> {
+    serde_json::to_string(value).map_err(|err| crate::NailsError::NixOSPreflightError {
+        category: "configuration",
+        message: format!("failed to quote flake preflight expression input: {}", err),
+    })
 }
 
 pub(crate) fn classify_nixos_failure_category(stderr: &str, stdout: &str) -> &'static str {
@@ -377,6 +458,17 @@ pub(crate) fn format_classified_nixos_failure(context: &str, stderr: &str, stdou
     };
 
     format!("{} [{}]: {}. {}", context, category, combined, guidance)
+}
+
+pub(crate) fn is_non_fatal_switch_failure(stderr: &str, stdout: &str) -> bool {
+    let combined = combine_output(stderr, stdout);
+    let lower = combined.to_lowercase();
+
+    lower.contains("error(s) occurred while switching to the new configuration")
+        || lower.contains("the following units failed")
+        || lower.contains("failed units:")
+        || (lower.contains("job for ")
+            && lower.contains("failed because the control process exited with error code"))
 }
 
 fn combine_output(stderr: &str, stdout: &str) -> String {

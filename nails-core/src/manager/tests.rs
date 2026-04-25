@@ -1040,6 +1040,185 @@ fn test_deactivate_successful_unmounts_all_overlays() {
 }
 
 #[test]
+fn test_deactivate_requests_reboot_only_after_successful_teardown() {
+    use crate::OverlayConfig;
+
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let hidden_root = temp_dir.path();
+    std::fs::create_dir_all(hidden_root).unwrap();
+    let state_path = hidden_root.join("state.json");
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+    fs.mock_set_path_exists(
+        "/nix/var/nix/profiles/system/bin/switch-to-configuration",
+        true,
+    );
+    fs.mock_set_path_exists("/", true);
+
+    let upper_dir = hidden_root.join("overlays/home/upper");
+    let work_dir = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+    fs.mock_set_mounted(Path::new("/home"), true);
+
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
+        overlay_mode: crate::OverlayMode::Explicit,
+        overlays: vec![OverlayConfig {
+            name: "home".to_string(),
+            lower: PathBuf::from("/"),
+            upper: upper_dir.clone(),
+            work: work_dir.clone(),
+            target: PathBuf::from("/home"),
+        }],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path.clone(),
+    )));
+
+    let mut overlay_status = HashMap::new();
+    overlay_status.insert(
+        PathBuf::from("/home"),
+        OverlayInfo {
+            mount_path: PathBuf::from("/home"),
+            lower_dir: PathBuf::from("/"),
+            upper_dir: upper_dir.clone(),
+            work_dir: work_dir.clone(),
+            mounted_at: Utc::now(),
+        },
+    );
+    manager
+        .lock()
+        .unwrap()
+        .force_state(SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+        })
+        .unwrap();
+    {
+        let mgr = manager.lock().unwrap();
+        let mut cached = mgr.cached_state.lock().unwrap();
+        if let Some(ref mut state_file) = *cached {
+            state_file.overlay_status = overlay_status;
+        }
+    }
+
+    unsafe {
+        std::env::set_var("NAILS_TEST_RUNTIME", "1");
+    }
+    let result = NailsManager::deactivate(Arc::clone(&manager));
+    unsafe {
+        std::env::remove_var("NAILS_TEST_RUNTIME");
+    }
+
+    assert!(
+        result.is_ok(),
+        "deactivation should succeed without reboot in test runtime"
+    );
+    assert_eq!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive
+    );
+    assert!(!fs.is_mounted(Path::new("/home")).unwrap());
+}
+
+#[test]
+fn test_deactivate_does_not_request_reboot_after_failed_teardown() {
+    use crate::OverlayConfig;
+
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let hidden_root = temp_dir.path();
+    std::fs::create_dir_all(hidden_root).unwrap();
+    let state_path = hidden_root.join("state.json");
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+    fs.mock_set_path_exists(
+        "/nix/var/nix/profiles/system/bin/switch-to-configuration",
+        true,
+    );
+    fs.mock_set_path_exists("/", true);
+
+    let upper_dir = hidden_root.join("overlays/home/upper");
+    let work_dir = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+    fs.mock_set_mounted(Path::new("/home"), true);
+    fs.mock_set_unmount_should_fail("/home", true);
+
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
+        overlay_mode: crate::OverlayMode::Explicit,
+        overlays: vec![OverlayConfig {
+            name: "home".to_string(),
+            lower: PathBuf::from("/"),
+            upper: upper_dir.clone(),
+            work: work_dir.clone(),
+            target: PathBuf::from("/home"),
+        }],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path.clone(),
+    )));
+
+    let mut overlay_status = HashMap::new();
+    overlay_status.insert(
+        PathBuf::from("/home"),
+        OverlayInfo {
+            mount_path: PathBuf::from("/home"),
+            lower_dir: PathBuf::from("/"),
+            upper_dir: upper_dir.clone(),
+            work_dir: work_dir.clone(),
+            mounted_at: Utc::now(),
+        },
+    );
+    manager
+        .lock()
+        .unwrap()
+        .force_state(SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+        })
+        .unwrap();
+    {
+        let mgr = manager.lock().unwrap();
+        let mut cached = mgr.cached_state.lock().unwrap();
+        if let Some(ref mut state_file) = *cached {
+            state_file.overlay_status = overlay_status;
+        }
+    }
+
+    let result = NailsManager::deactivate(Arc::clone(&manager));
+
+    assert!(
+        result.is_err(),
+        "deactivation should fail when teardown fails"
+    );
+    assert!(matches!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Active { .. }
+    ));
+    assert!(fs.is_mounted(Path::new("/home")).unwrap());
+}
+
+#[test]
 fn test_deactivate_from_non_active_returns_error() {
     // Create mock hidden volume structure in temp dir
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
@@ -5958,7 +6137,8 @@ fn test_activation_ephemeral_mount_failure_rolls_back_persistent_mounts() {
 }
 
 #[test]
-fn test_activation_rebuild_failure_rolls_back_all_mounted_state() {
+#[serial]
+fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
     let state_path = hidden_root.join("state.json");
@@ -6045,24 +6225,41 @@ fn test_activation_rebuild_failure_rolls_back_all_mounted_state() {
         builder,
     )));
 
-    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
-    let err_text = err.to_string();
+    let result = NailsManager::activate(Arc::clone(&manager), true);
     assert!(
-        err_text.contains("NixOS build+switch failed:"),
-        "unexpected activation error: {err_text}"
+        result.is_ok(),
+        "post-overlay rebuild failure should preserve activation: {result:?}"
     );
 
     let manager_guard = manager.lock().unwrap();
-    assert_eq!(
+    assert!(matches!(
         manager_guard.current_state().unwrap(),
-        SystemState::Inactive
-    );
+        SystemState::Active { .. }
+    ));
     drop(manager_guard);
 
     let loaded = StateFile::load(&state_path).unwrap();
-    assert_eq!(loaded.state, SystemState::Inactive);
-    assert!(loaded.overlay_status.is_empty());
+    assert!(matches!(loaded.state, SystemState::Active { .. }));
+    assert!(loaded.overlay_status.contains_key(&PathBuf::from("/etc")));
+    assert!(loaded.overlay_status.contains_key(&PathBuf::from("/home")));
     assert!(loaded.failed_overlays.is_empty());
+    assert!(fs.is_mounted(Path::new("/etc")).unwrap());
+    assert!(fs.is_mounted(Path::new("/home")).unwrap());
+
+    let notifications_dir = hidden_root.join("notifications");
+    let notifications: Vec<_> = std::fs::read_dir(&notifications_dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .collect();
+    assert!(
+        notifications.iter().any(|entry| {
+            std::fs::read_to_string(entry.path())
+                .map(|payload| payload.contains("NixOS Rebuild Failed") && payload.contains("boom"))
+                .unwrap_or(false)
+        }),
+        "expected rebuild failure notification in {}",
+        notifications_dir.display()
+    );
 
     match old_path {
         Some(path) => unsafe { std::env::set_var("PATH", path) },
@@ -6132,6 +6329,7 @@ fn test_overlay_mount_failure_error_format() {
 }
 
 #[test]
+#[serial]
 fn test_run_read_only_nixos_preflight_reports_lock_file_problem_before_activation() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
@@ -6152,7 +6350,7 @@ fn test_run_read_only_nixos_preflight_reports_lock_file_problem_before_activatio
     std::fs::write(
         &nix_script,
         format!(
-            "#!/usr/bin/env sh\nprintf \"flake 'path:{}' requires lock file changes\\n\" 1>&2\nexit 1\n",
+            "#!/usr/bin/env sh\nif [ \"$1 $2\" = \"flake metadata\" ]; then\n  printf \"flake 'path:{}' requires lock file changes\\n\" 1>&2\n  exit 1\nfi\nprintf 'unexpected command: %s %s %s\\n' \"$1\" \"$2\" \"$3\" 1>&2\nexit 9\n",
             explicit_flake_dir.display()
         ),
     )
@@ -6203,6 +6401,218 @@ fn test_run_read_only_nixos_preflight_reports_lock_file_problem_before_activatio
     assert!(
         err_text.contains("does not run 'nix flake update' automatically"),
         "unexpected error: {err_text}"
+    );
+
+    match old_path {
+        Some(path) => unsafe { std::env::set_var("PATH", path) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
+}
+
+#[test]
+#[serial]
+fn test_run_read_only_nixos_preflight_uses_metadata_and_attr_existence_checks_without_drv_eval() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let explicit_flake_dir = hidden_root.join("explicit-flake");
+
+    let fs = MockFilesystem::new();
+    std::fs::create_dir_all(&explicit_flake_dir).unwrap();
+    std::fs::write(
+        explicit_flake_dir.join("flake.nix"),
+        "{ outputs = _: {}; }\n",
+    )
+    .unwrap();
+
+    let bin_dir = hidden_root.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let nix_script = bin_dir.join("nix");
+    let log_path = hidden_root.join("nix-commands.log");
+    std::fs::write(
+        &nix_script,
+        format!(
+            "#!/usr/bin/env sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1 $2 $3\" in\n  'flake metadata --json') printf '{{\"url\":\"path:{}\"}}\\n' ; exit 0 ;;\n  'eval --raw --expr') printf '1\\n' ; exit 0 ;;\n  *) printf 'unexpected command: %s %s %s\\n' \"$1\" \"$2\" \"$3\" 1>&2 ; exit 8 ;;\nesac\n",
+            log_path.display(),
+            explicit_flake_dir.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&nix_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&nix_script, perms).unwrap();
+    }
+
+    let old_path = std::env::var_os("PATH");
+    let mut paths = vec![bin_dir.clone()];
+    if let Some(existing) = &old_path {
+        paths.extend(std::env::split_paths(existing));
+    }
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            std::env::join_paths(paths).expect("failed to compose PATH for test"),
+        );
+    }
+
+    let builder = crate::nixos::NixOSBuilder::new_with_flake_ref(
+        format!("{}#host-alpha", explicit_flake_dir.display()),
+        hidden_root.join("nails-system"),
+    );
+
+    let manager = NailsManager::with_nixos(
+        fs,
+        Config {
+            hidden_volume_root: hidden_root.to_path_buf(),
+            state_file_path: state_path.clone(),
+            nixos_flake: Some(format!("{}#host-alpha", explicit_flake_dir.display())),
+            ..Config::test_default()
+        },
+        state_path,
+        builder,
+    );
+
+    manager
+        .run_read_only_nixos_preflight(false)
+        .expect("fast metadata preflight should succeed");
+
+    let command_log = std::fs::read_to_string(log_path).unwrap();
+    assert!(
+        command_log.contains("flake metadata --json"),
+        "{command_log}"
+    );
+    assert!(command_log.contains("eval --raw --expr"), "{command_log}");
+    assert!(
+        !command_log.contains("config.system.build.toplevel.drvPath"),
+        "preflight should not force toplevel drv evaluation: {command_log}"
+    );
+
+    match old_path {
+        Some(path) => unsafe { std::env::set_var("PATH", path) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
+}
+
+#[test]
+#[serial]
+fn test_activation_non_fatal_switch_failures_do_not_roll_back() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_file_content("/etc/nixos/hardware-configuration.nix", "{ ... }: { }");
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists("/etc", true);
+    fs.mock_set_path_exists("/home", true);
+
+    let upper_etc = hidden_root.join("overlays/etc/upper");
+    let work_etc = hidden_root.join("overlays/etc/work");
+    let upper_home = hidden_root.join("overlays/home/upper");
+    let work_home = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_etc).unwrap();
+    std::fs::create_dir_all(&work_etc).unwrap();
+    std::fs::create_dir_all(&upper_home).unwrap();
+    std::fs::create_dir_all(&work_home).unwrap();
+    fs.mock_set_path_exists(upper_etc.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
+    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+
+    let bin_dir = hidden_root.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let rebuild_script = bin_dir.join("nixos-rebuild");
+    std::fs::write(
+        &rebuild_script,
+        "#!/usr/bin/env sh\nprintf 'warning: error(s) occurred while switching to the new configuration\\nThe following units failed: home-manager-amnesia.service\\n' 1>&2\nexit 4\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&rebuild_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&rebuild_script, perms).unwrap();
+    }
+
+    let old_path = std::env::var_os("PATH");
+    let mut paths = vec![bin_dir.clone()];
+    if let Some(existing) = &old_path {
+        paths.extend(std::env::split_paths(existing));
+    }
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            std::env::join_paths(paths).expect("failed to compose PATH for test"),
+        );
+    }
+
+    let builder = crate::nixos::NixOSBuilder::new(
+        hidden_root.join("config"),
+        hidden_root.join("nails-system"),
+    );
+
+    let manager = Arc::new(Mutex::new(NailsManager::with_nixos(
+        fs.clone(),
+        Config {
+            hidden_volume_root: hidden_root.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![
+                OverlayConfig {
+                    name: "etc".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: upper_etc.clone(),
+                    work: work_etc.clone(),
+                    target: PathBuf::from("/etc"),
+                },
+                OverlayConfig {
+                    name: "home".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: upper_home.clone(),
+                    work: work_home.clone(),
+                    target: PathBuf::from("/home"),
+                },
+            ],
+            ..Config::test_default()
+        },
+        state_path.clone(),
+        builder,
+    )));
+
+    let result = NailsManager::activate(Arc::clone(&manager), true);
+    assert!(
+        result.is_ok(),
+        "activation should tolerate non-fatal switch failures: {result:?}"
+    );
+
+    let manager_guard = manager.lock().unwrap();
+    assert!(matches!(
+        manager_guard.current_state().unwrap(),
+        SystemState::Active { .. }
+    ));
+    drop(manager_guard);
+
+    let loaded = StateFile::load(&state_path).unwrap();
+    assert!(matches!(loaded.state, SystemState::Active { .. }));
+    assert!(!loaded.overlay_status.is_empty());
+    let notifications_dir = hidden_root.join("notifications");
+    let notifications: Vec<_> = std::fs::read_dir(&notifications_dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .collect();
+    assert!(
+        notifications.iter().all(|entry| {
+            std::fs::read_to_string(entry.path())
+                .map(|payload| !payload.contains("NixOS Rebuild Failed"))
+                .unwrap_or(true)
+        }),
+        "non-fatal service restart failures should not emit fatal rebuild notifications"
     );
 
     match old_path {

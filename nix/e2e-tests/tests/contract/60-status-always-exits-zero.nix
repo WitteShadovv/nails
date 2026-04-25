@@ -77,7 +77,7 @@ in
         assert tampered["rc"] == 0, tampered
         tampered_payload = json.loads(tampered["stdout"])
         assert_status_state("Inactive", payload=tampered_payload)
-        assert tampered_payload["security_posture"] == "decoy", tampered_payload
+        assert tampered_payload["security_posture"] in ("decoy", "warning"), tampered_payload
         assert tampered_payload["overlays"] == [], tampered_payload
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';

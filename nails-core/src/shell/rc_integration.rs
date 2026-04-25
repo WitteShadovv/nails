@@ -1,7 +1,6 @@
 //! RC file integration and XDG autostart entry management
 
-use crate::{Filesystem, Result, obfuscate};
-use std::path::PathBuf;
+use crate::{Filesystem, Result};
 
 use super::{ShellInstrumentation, ShellType, color_scheme};
 
@@ -35,19 +34,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     ///
     /// # Task 1: Auto-source shell integration via overlay rc file
     pub fn inject_rc_integration(&self, shell_type: ShellType) -> Result<bool> {
-        // Determine real user (SUDO_USER → NAILS_TARGET_USER → USER)
-        // NAILS_TARGET_USER is set by the detached systemd-run process where
-        // SUDO_USER and USER are not available.
-        let username = std::env::var("SUDO_USER")
-            .or_else(|_| std::env::var(obfuscate::env_target_user()))
-            .or_else(|_| std::env::var("USER"))
-            .map_err(|_| {
-                std::io::Error::other(
-                    "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)",
-                )
-            })?;
-
-        let home_dir = PathBuf::from(format!("/home/{}", username));
+        let home_dir = self.resolve_target_home_dir()?;
 
         // Determine rc file path based on shell type
         let rc_file_path = match shell_type {
@@ -143,19 +130,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     /// - Writes a `.desktop` file that runs `nails notify-dispatch`
     /// - Idempotent: overwrites the file if it already exists
     pub fn write_xdg_autostart_entry(&self) -> Result<bool> {
-        // Determine real user (SUDO_USER → NAILS_TARGET_USER → USER)
-        // NAILS_TARGET_USER is set by the detached systemd-run process where
-        // SUDO_USER and USER are not available.
-        let username = std::env::var("SUDO_USER")
-            .or_else(|_| std::env::var(obfuscate::env_target_user()))
-            .or_else(|_| std::env::var("USER"))
-            .map_err(|_| {
-                std::io::Error::other(
-                    "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)",
-                )
-            })?;
-
-        let home_dir = PathBuf::from(format!("/home/{}", username));
+        let home_dir = self.resolve_target_home_dir()?;
         let autostart_dir = home_dir.join(".config/autostart");
         let desktop_file_path = autostart_dir.join("nails-notify.desktop");
 
@@ -171,11 +146,15 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             return Ok(false);
         }
 
+        let binary_path = self.resolve_binary_path();
         let desktop_entry = "[Desktop Entry]\n\
             Type=Application\n\
             Name=NAILS Notification Dispatch\n\
             Comment=Dispatches pending NAILS notifications on login\n\
-            Exec=nails notify-dispatch\n\
+            Exec="
+            .to_string()
+            + &binary_path.display().to_string()
+            + " notify-dispatch\n\
             Terminal=false\n\
             NoDisplay=true\n\
             X-GNOME-Autostart-enabled=true\n";
@@ -183,7 +162,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         // Write desktop file (best-effort)
         match self
             .filesystem
-            .write_file_content(&desktop_file_path, desktop_entry)
+            .write_file_content(&desktop_file_path, &desktop_entry)
         {
             Ok(_) => {
                 tracing::info!("Wrote XDG autostart entry: {}", desktop_file_path.display());

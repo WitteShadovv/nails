@@ -62,8 +62,8 @@ use command::RealCommandExecutor as RealCommandExecutorImpl;
 #[cfg(test)]
 pub(crate) use command::{FlakePreflightSummary, local_flake_dir};
 pub(crate) use command::{
-    classify_nixos_failure_category, format_classified_nixos_failure, resolve_local_flake_dir,
-    split_flake_ref,
+    classify_nixos_failure_category, format_classified_nixos_failure, is_non_fatal_switch_failure,
+    resolve_local_flake_dir, split_flake_ref,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

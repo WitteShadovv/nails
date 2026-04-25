@@ -33,12 +33,13 @@ in
         stub_dir = "/tmp/notify-stub/bin"
         stub_log = "/tmp/notify-send.log"
         signal_path = "/mnt/hidden-volume/notifications/20260101T000000000_flow.json"
+        testuser_group = machine.succeed("id -gn testuser").strip()
 
         with subtest("prepare notification runtime with safe stub"):
             machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
             write_notification_config(config_path)
             install_notify_send_stub(stub_dir, stub_log)
-            machine.succeed(f"chown -R testuser:testuser {stub_dir.rsplit('/', 1)[0]} {stub_log}")
+            machine.succeed(f"chown -R testuser:{testuser_group} {stub_dir.rsplit('/', 1)[0]} {stub_log}")
 
         with subtest("stage one valid notification signal"):
             write_notification_signal(
@@ -48,8 +49,8 @@ in
                 urgency="critical",
                 icon="security-high",
             )
-            machine.succeed("chown testuser:testuser /mnt/hidden-volume/notifications")
-            machine.succeed(f"chown testuser:testuser {signal_path}")
+            machine.succeed(f"chown testuser:{testuser_group} /mnt/hidden-volume/notifications")
+            machine.succeed(f"chown testuser:{testuser_group} {signal_path}")
             machine.succeed(f"test -f {signal_path}")
 
         with subtest("dispatch signal through notify-send stub and clear queue"):

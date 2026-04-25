@@ -48,6 +48,23 @@ in
             ).strip()
         )
 
+    def install_nixos_rebuild_wrapper(log_path, marker_path):
+        machine.succeed(
+            f"""mkdir -p /tmp/nails-wrapper/bin
+    rm -f {log_path}
+    cat > /tmp/nails-wrapper/bin/nixos-rebuild <<'EOF'
+    #!/bin/sh
+    printf '%s\\n' "$*" >> {log_path}
+    if [ "$1" = test ]; then
+      mkdir -p "$(dirname {marker_path})"
+      printf '%s\\n' 'graphical-rebuild-active' > {marker_path}
+    fi
+    exit 0
+    EOF
+    chmod 755 /tmp/nails-wrapper/bin/nixos-rebuild"""
+        )
+        return "PATH=/tmp/nails-wrapper/bin:$PATH"
+
     machine.start()
     machine.wait_for_unit("display-manager.service")
     machine.wait_until_succeeds("systemctl is-active user@1000.service")
@@ -64,27 +81,36 @@ in
 
     with subtest("prepare hidden volume and capture baseline service timestamps"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+        machine.succeed("""cat > /mnt/hidden-volume/config/nixos/configuration.nix <<'EOF'
+    { ... }: {
+      documentation.nixos.enable = false;
+      environment.etc."nails-graphical-marker".text = "graphical-rebuild-active";
+    }
+        EOF""")
         machine.succeed("cat > /home/testuser/.bashrc <<'EOF'\nexport PS1=\"decoy$ \"\nEOF")
         machine.succeed("chown testuser:users /home/testuser/.bashrc")
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
         display_manager_before = read_systemd_active_enter_monotonic("display-manager.service")
         user_manager_before = read_systemd_active_enter_monotonic("user@1000.service")
         display_started_before = count_started_messages("display-manager.service")
-        user_started_before = count_started_messages("user@1000.service")
+        wrapper_env = install_nixos_rebuild_wrapper(
+            "/tmp/nixos-rebuild-graphical.log",
+            "/etc/nails-graphical-marker",
+        )
         before_shell = run_command_capture("session-graphical-shell-before", shell_command)
         assert before_shell["rc"] == 0, before_shell
         assert osc_sequence not in before_shell["stdout"], before_shell
 
     with subtest("activate from graphical context via transient systemd unit"):
         machine.succeed(
-            "env DISPLAY=:0 XDG_SESSION_TYPE=x11 SUDO_UID=1000 SUDO_USER=testuser "
+            f"{wrapper_env} env DISPLAY=:0 XDG_SESSION_TYPE=x11 SUDO_UID=1000 SUDO_USER=testuser "
             + "SHELL=/run/current-system/sw/bin/bash "
-            + f"nails --config {headless_config} activate --overlay-only -y"
+            + f"nails --config {headless_config} activate -y"
         )
         activation_unit = wait_for_activation_transient_unit()
         assert_unit_in_system_slice(activation_unit)
 
-    with subtest("display manager and user manager are restarted and overlays stay active"):
+    with subtest("display manager and user manager are restarted after overlays mount but before nixos switch"):
         machine.wait_until_succeeds("systemctl is-active display-manager.service")
         machine.wait_until_succeeds("systemctl is-active user@1000.service")
         machine.wait_until_succeeds(
@@ -100,15 +126,33 @@ in
             f"user@1000.service did not restart: before={user_manager_before} after={user_manager_after}"
         )
         display_started_after = count_started_messages("display-manager.service")
-        user_started_after = count_started_messages("user@1000.service")
         assert display_started_after == display_started_before + 1, (
             f"display manager restarted more than once: before={display_started_before} after={display_started_after}"
         )
-        assert user_started_after == user_started_before + 1, (
-            f"user manager restarted more than once: before={user_started_before} after={user_started_after}"
+        switch_completion = machine.succeed(
+            "journalctl -u "
+            + activation_unit
+            + " -b --no-pager -o cat | grep -n 'NixOS profile switch complete' | cut -d: -f1 | tail -n1"
+        ).strip()
+        display_restart = machine.succeed(
+            "journalctl -u "
+            + activation_unit
+            + " -b --no-pager -o cat | grep -n 'Restarting display manager' | cut -d: -f1 | tail -n1"
+        ).strip()
+        assert switch_completion and display_restart, "expected switch/restart journal markers"
+        assert int(display_restart) < int(switch_completion), (
+            f"session restart should happen before NixOS switch begins: switch={switch_completion} restart={display_restart}"
         )
+        # ActiveEnterTimestampMonotonic is the stable signal for the user
+        # manager restart. Recent systemd/NixOS combinations can emit more than
+        # one "Started" journal line during a single graphical restart cycle,
+        # so counting those log records is too brittle here.
         assert_overlay_mounted("/home")
+        assert_overlay_mounted("/etc")
         assert_status_state("active", config_path=headless_config)
+        machine.succeed("grep -Fx 'graphical-rebuild-active' /etc/nails-graphical-marker")
+        rebuild_log = machine.succeed("cat /tmp/nixos-rebuild-graphical.log")
+        assert "test" in rebuild_log, rebuild_log
         active_shell = run_command_capture("session-graphical-shell-active", shell_command)
         assert active_shell["rc"] == 0, active_shell
         assert osc_sequence in active_shell["stdout"], repr(active_shell["stdout"])
@@ -117,6 +161,7 @@ in
         canonical_deactivate(headless_config, unit_name="nails-deactivate-session-kill-graphical")
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
         assert_status_state("inactive", config_path=headless_config)
+        machine.fail("test -e /etc/nails-graphical-marker")
         after_shell = run_command_capture("session-graphical-shell-after", shell_command)
         assert after_shell["rc"] == 0, after_shell
         assert osc_sequence not in after_shell["stdout"], repr(after_shell["stdout"])

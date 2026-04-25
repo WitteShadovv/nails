@@ -536,7 +536,7 @@ fn test_nixos_builder_effective_flake_arg_for_legacy_uses_config_dir() {
 }
 
 #[test]
-fn flake_preflight_runs_read_only_metadata_and_eval_checks() {
+fn flake_preflight_runs_read_only_metadata_and_attr_checks() {
     let explicit_name = "cfg-alpha";
     let (executor, calls, clear_flags) = PreflightExecutor::new(vec![
         Ok((true, String::new(), String::new())),
@@ -559,25 +559,44 @@ fn flake_preflight_runs_read_only_metadata_and_eval_checks() {
     };
 
     let summary = builder.preflight_flake().unwrap();
-    assert_eq!(summary, FlakePreflightSummary { eval_checked: true });
+    assert_eq!(
+        summary,
+        FlakePreflightSummary {
+            metadata_checked: true,
+            attr_checked: true,
+        }
+    );
 
     let calls = calls.lock().unwrap().clone();
     let clear_flags = clear_flags.lock().unwrap().clone();
 
-    assert_eq!(clear_flags, vec![true]);
+    assert_eq!(clear_flags, vec![true, true]);
     assert_eq!(
         calls,
-        vec![vec![
-            "eval".to_string(),
-            "--raw".to_string(),
-            format!(
-                "{}#nixosConfigurations.{}.config.system.build.toplevel.drvPath",
-                temp_dir.path().display(),
-                explicit_name
-            ),
-            "--no-write-lock-file".to_string(),
-            "--impure".to_string(),
-        ],]
+        vec![
+            vec![
+                "flake".to_string(),
+                "metadata".to_string(),
+                "--json".to_string(),
+                temp_dir.path().display().to_string(),
+                "--no-write-lock-file".to_string(),
+                "--impure".to_string(),
+            ],
+            vec![
+                "eval".to_string(),
+                "--raw".to_string(),
+                "--expr".to_string(),
+                format!(
+                    "let flake = builtins.getFlake {}; configs = flake.nixosConfigurations or {{}}; in if builtins.hasAttr {} configs then \"1\" else builtins.throw ({} + {})",
+                    serde_json::to_string(&temp_dir.path().display().to_string()).unwrap(),
+                    serde_json::to_string(explicit_name).unwrap(),
+                    serde_json::to_string("__NAILS_MISSING_NIXOS_CONFIGURATION__:").unwrap(),
+                    serde_json::to_string(explicit_name).unwrap(),
+                ),
+                "--no-write-lock-file".to_string(),
+                "--impure".to_string(),
+            ],
+        ]
     );
 }
 
@@ -589,11 +608,6 @@ fn flake_preflight_infers_same_configuration_attr_for_plain_flake_refs() {
         .to_string_lossy()
         .trim()
         .to_string();
-    let expected_attr = format!(
-        "nixosConfigurations.{}.config.system.build.toplevel.drvPath",
-        inferred_hostname
-    );
-
     let (executor, calls, clear_flags) = PreflightExecutor::new(vec![
         Ok((true, String::new(), String::new())),
         Ok((
@@ -614,18 +628,31 @@ fn flake_preflight_infers_same_configuration_attr_for_plain_flake_refs() {
     };
 
     let summary = builder.preflight_flake().unwrap();
-    assert_eq!(summary, FlakePreflightSummary { eval_checked: true });
-    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true]);
     assert_eq!(
-        calls.lock().unwrap().clone(),
-        vec![vec![
+        summary,
+        FlakePreflightSummary {
+            metadata_checked: true,
+            attr_checked: true,
+        }
+    );
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true, true]);
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0][0..2],
+        ["flake".to_string(), "metadata".to_string()]
+    );
+    assert_eq!(
+        calls[1][0..3],
+        [
             "eval".to_string(),
             "--raw".to_string(),
-            format!("{}#{}", temp_dir.path().display(), expected_attr),
-            "--no-write-lock-file".to_string(),
-            "--impure".to_string(),
-        ],]
+            "--expr".to_string()
+        ]
     );
+    assert!(calls[1][3].contains(&serde_json::to_string(&inferred_hostname).unwrap()));
+    assert!(calls[1][3].contains("nixosConfigurations"));
+    assert!(calls[1][3].contains("builtins.hasAttr"));
 }
 
 #[test]
@@ -652,23 +679,22 @@ fn flake_preflight_uses_base_ref_for_metadata_when_fragment_is_explicit() {
     };
 
     let summary = builder.preflight_flake().unwrap();
-    assert_eq!(summary, FlakePreflightSummary { eval_checked: true });
-
-    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true]);
     assert_eq!(
-        calls.lock().unwrap().clone(),
-        vec![vec![
-            "eval".to_string(),
-            "--raw".to_string(),
-            format!(
-                "{}#nixosConfigurations.{}.config.system.build.toplevel.drvPath",
-                temp_dir.path().display(),
-                explicit_name
-            ),
-            "--no-write-lock-file".to_string(),
-            "--impure".to_string(),
-        ],]
+        summary,
+        FlakePreflightSummary {
+            metadata_checked: true,
+            attr_checked: true,
+        }
     );
+
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true, true]);
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0][0..2],
+        ["flake".to_string(), "metadata".to_string()]
+    );
+    assert!(calls[1][3].contains(&serde_json::to_string(explicit_name).unwrap()));
 }
 
 #[test]
@@ -695,23 +721,22 @@ fn flake_preflight_accepts_explicit_flake_ref_with_slash_before_fragment() {
     };
 
     let summary = builder.preflight_flake().unwrap();
-    assert_eq!(summary, FlakePreflightSummary { eval_checked: true });
-
-    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true]);
     assert_eq!(
-        calls.lock().unwrap().clone(),
-        vec![vec![
-            "eval".to_string(),
-            "--raw".to_string(),
-            format!(
-                "{}/#nixosConfigurations.{}.config.system.build.toplevel.drvPath",
-                temp_dir.path().display(),
-                explicit_name
-            ),
-            "--no-write-lock-file".to_string(),
-            "--impure".to_string(),
-        ],]
+        summary,
+        FlakePreflightSummary {
+            metadata_checked: true,
+            attr_checked: true,
+        }
     );
+
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true, true]);
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0][0..2],
+        ["flake".to_string(), "metadata".to_string()]
+    );
+    assert!(calls[1][3].contains(&serde_json::to_string(explicit_name).unwrap()));
 }
 
 #[test]
@@ -802,8 +827,60 @@ fn flake_preflight_reports_missing_inferred_attr_before_side_effects() {
     );
     assert!(text.contains(&inferred_hostname), "{text}");
     assert!(text.contains("Use '--flake"), "{text}");
-    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true]);
-    assert_eq!(calls.lock().unwrap().len(), 1);
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true, true]);
+    assert_eq!(calls.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn flake_preflight_reference_fast_uses_metadata_and_attr_check_without_toplevel_eval() {
+    let explicit_name = "cfg-metadata";
+    let (executor, calls, clear_flags) = PreflightExecutor::new(vec![Ok((
+        true,
+        r#"{"url":"path:/tmp/example"}"#.to_string(),
+        String::new(),
+    ))]);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+
+    let builder = NixOSBuilder {
+        config_path: temp_dir.path().to_path_buf(),
+        profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        executor: Box::new(executor),
+        build_mode: NixOSBuildMode::Flake,
+        flake_ref: Some(format!("{}#{}", temp_dir.path().display(), explicit_name)),
+    };
+
+    let summary = builder.preflight_flake_reference_fast().unwrap();
+    assert_eq!(
+        summary,
+        FlakePreflightSummary {
+            metadata_checked: true,
+            attr_checked: true,
+        }
+    );
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true, true]);
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0],
+        vec![
+            "flake".to_string(),
+            "metadata".to_string(),
+            "--json".to_string(),
+            temp_dir.path().display().to_string(),
+            "--no-write-lock-file".to_string(),
+            "--impure".to_string(),
+        ]
+    );
+    assert_eq!(
+        calls[1][0..3],
+        [
+            "eval".to_string(),
+            "--raw".to_string(),
+            "--expr".to_string()
+        ]
+    );
 }
 
 #[test]
@@ -853,18 +930,15 @@ fn flake_preflight_accepts_dot_relative_flake_ref() {
     let summary = builder.preflight_flake().unwrap();
     std::env::set_current_dir(old_cwd).unwrap();
 
-    assert_eq!(summary, FlakePreflightSummary { eval_checked: true });
-    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true]);
     assert_eq!(
-        calls.lock().unwrap().clone(),
-        vec![vec![
-            "eval".to_string(),
-            "--raw".to_string(),
-            ".#nixosConfigurations.machine.config.system.build.toplevel.drvPath".to_string(),
-            "--no-write-lock-file".to_string(),
-            "--impure".to_string(),
-        ],]
+        summary,
+        FlakePreflightSummary {
+            metadata_checked: true,
+            attr_checked: true,
+        }
     );
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true, true]);
+    assert_eq!(calls.lock().unwrap().len(), 2);
 }
 
 #[test]
@@ -896,19 +970,15 @@ fn flake_preflight_accepts_dot_slash_relative_flake_ref() {
     let summary = builder.preflight_flake().unwrap();
     std::env::set_current_dir(old_cwd).unwrap();
 
-    assert_eq!(summary, FlakePreflightSummary { eval_checked: true });
-    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true]);
     assert_eq!(
-        calls.lock().unwrap().clone(),
-        vec![vec![
-            "eval".to_string(),
-            "--raw".to_string(),
-            "./relative-flake#nixosConfigurations.machine.config.system.build.toplevel.drvPath"
-                .to_string(),
-            "--no-write-lock-file".to_string(),
-            "--impure".to_string(),
-        ],]
+        summary,
+        FlakePreflightSummary {
+            metadata_checked: true,
+            attr_checked: true,
+        }
     );
+    assert_eq!(clear_flags.lock().unwrap().clone(), vec![true, true]);
+    assert_eq!(calls.lock().unwrap().len(), 2);
 }
 
 #[test]
@@ -1238,6 +1308,43 @@ fn test_build_and_switch_prefers_stdout_when_stderr_is_empty() {
 
     let err = builder.build_and_switch().unwrap_err();
     assert!(err.to_string().contains("stdout-only failure"));
+}
+
+#[test]
+fn test_build_and_switch_treats_unit_restart_failures_as_non_fatal() {
+    let builder = NixOSBuilder::new_with_executor(
+        PathBuf::from("/srv/example-flake"),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        Box::new(RecordingCommandExecutor::new(
+            vec![Ok((
+                false,
+                String::new(),
+                "warning: error(s) occurred while switching to the new configuration\nThe following units failed: home-manager-amnesia.service".to_string(),
+            ))],
+            vec![],
+        )),
+    );
+
+    assert!(builder.build_and_switch().is_ok());
+}
+
+#[test]
+fn test_build_and_switch_keeps_real_build_failures_fatal() {
+    let builder = NixOSBuilder::new_with_executor(
+        PathBuf::from("/srv/example-flake"),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        Box::new(RecordingCommandExecutor::new(
+            vec![Ok((
+                false,
+                String::new(),
+                "syntax error, unexpected ';'".to_string(),
+            ))],
+            vec![],
+        )),
+    );
+
+    let err = builder.build_and_switch().unwrap_err();
+    assert!(err.to_string().contains("syntax error"));
 }
 
 #[test]

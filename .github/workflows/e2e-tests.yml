@@ -1,5 +1,5 @@
 # E2E Tests for NAILS
-# Runs the fast smoke E2E subset using NixOS VM testing
+# Runs the default CI critical-regression E2E subset using NixOS VM testing
 
 name: E2E Tests
 
@@ -62,7 +62,7 @@ jobs:
           name: nix-community
           skipPush: true
 
-      - name: Run CI smoke E2E suite
+      - name: Run CI critical E2E suite
         env:
           NAILS_E2E_DEFAULT_TARGET: ci
         run: ./scripts/run-e2e-tests.sh --verbose

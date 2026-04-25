@@ -137,7 +137,19 @@ impl LoggingManager {
             return Ok(None);
         }
 
-        // No need to create directory - log file goes directly in hidden volume root
+        if fs.path_exists(&self.log_path)? {
+            if fs.is_symlink(&self.log_path)? {
+                return Err(NailsError::InvalidState(format!(
+                    "Log path must not be a symlink: {}",
+                    self.log_path.display()
+                )));
+            }
+        } else {
+            fs.create_directory(&self.log_path)?;
+        }
+
+        fs.set_permissions(&self.log_path, 0o700)?;
+
         let log_file_path = self.log_path.join(LOG_FILE_NAME);
 
         Ok(Some(LoggingConfig { log_file_path }))
