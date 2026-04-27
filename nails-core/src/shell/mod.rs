@@ -124,7 +124,8 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     }
 
     fn has_explicit_target_user_context() -> bool {
-        std::env::var("SUDO_USER").is_ok() || std::env::var(crate::obfuscate::env_target_user()).is_ok()
+        std::env::var("SUDO_USER").is_ok()
+            || std::env::var(crate::obfuscate::env_target_user()).is_ok()
     }
 
     fn home_matches_username(home: &std::path::Path, username: &str) -> bool {
