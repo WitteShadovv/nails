@@ -206,9 +206,17 @@ mod tests {
             command.env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", path);
         }
 
-        command
-            .output()
-            .expect("failed to run deactivate runtime subprocess test")
+        for attempt in 0..5 {
+            match command.output() {
+                Ok(output) => return output,
+                Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 4 => {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(err) => panic!("failed to run deactivate runtime subprocess test: {err}"),
+            }
+        }
+
+        unreachable!("exhausted executable-file-busy retry loop")
     }
 
     #[test]
