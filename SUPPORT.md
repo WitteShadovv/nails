@@ -4,7 +4,7 @@ NAILS is maintained through this repository. Use GitHub issues for actionable bu
 
 If your issue is about NAILS OS, the installable distribution, open it in the separate [nails-os](https://github.com/WitteShadovv/nails-os) repository instead.
 
-NAILS is currently alpha-stage software and support is best-effort. The latest published GitHub prerelease bundle from `main` is the primary supported public release line.
+NAILS is currently alpha-stage software and support is best-effort. The latest published stable release, when present, is the primary supported public release line; otherwise use the latest relevant prerelease.
 
 ## Where to Get Help
 
@@ -21,7 +21,7 @@ Please:
 
 1. Search existing issues for duplicates.
 2. Confirm that the behavior is in scope for this repository.
-3. Check the latest published prerelease bundle, or note the exact commit if you are testing unreleased code.
+3. Check the latest published release or prerelease bundle, or note the exact commit if you are testing unreleased code.
 4. Gather useful diagnostics such as:
    - `nails --version`
    - `nails status -v`
@@ -40,7 +40,7 @@ Use the private reporting path in [SECURITY.md](SECURITY.md). If you are unsure 
 
 - Reports are triaged based on reproducibility, user impact, and the information provided.
 - We may ask for clarification or sanitized diagnostics before triage is complete.
-- The latest published GitHub prerelease bundle from `main` is the primary target for fixes and documentation updates.
+- The latest published stable release, when present, is the primary target for fixes and documentation updates; otherwise use the latest relevant prerelease.
 - We do not provide private consulting or troubleshooting for custom deployments, forks, unsupported environments, or third-party integrations.
 
 Do **not** use the security contact for general troubleshooting or feature requests.

@@ -9,7 +9,7 @@ This policy applies to security issues in the NAILS repository and its officiall
 - the `nails` CLI and workspace crates
 - NAILS-specific state handling, cleanup, and isolation logic
 - NixOS integration that is implemented in this repository
-- official GitHub prerelease bundles published from this repository
+- official GitHub release bundles published from this repository
 
 This policy does **not** cover:
 
@@ -26,10 +26,11 @@ NAILS is currently released as **alpha** software. Security fixes are applied to
 
 | Version | Status | Security support |
 | --- | --- | --- |
-| Latest GitHub prerelease from `main` | Current alpha verification bundle | Security fixes are applied here first |
-| Earlier GitHub prereleases in the current alpha series | Superseded | Not supported |
+| Latest published stable release, when present | Current deliberate stable release line | Security fixes are applied here first |
+| Latest published prerelease in the current alpha series | Current prerelease validation line | Security fixes may land here before the next stable release |
+| Earlier releases and prereleases in the current alpha series | Superseded | Not supported |
 
-There is no separate stable release line yet. Because the project is pre-1.0, we recommend upgrading to the latest published prerelease bundle instead of relying on backported fixes.
+Because the project is pre-1.0, we recommend upgrading to the latest published stable release when available, or the latest relevant prerelease if you are tracking prerelease builds, instead of relying on backported fixes.
 
 ## Reporting a Vulnerability
 
@@ -107,7 +108,7 @@ When we publish a security fix, we communicate it through the repository's publi
 - GitHub Releases
 - `CHANGELOG.md`
 
-Publication format and timing depend on severity, remediation, and disclosure coordination. During the current alpha phase, some fixes may appear first in GitHub prerelease notes before a formal advisory is published.
+Publication format and timing depend on severity, remediation, and disclosure coordination. During the current alpha phase, some fixes may appear first in GitHub release or prerelease notes before a formal advisory is published.
 
 ## Non-sensitive Security Questions
 

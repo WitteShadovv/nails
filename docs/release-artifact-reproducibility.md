@@ -8,7 +8,7 @@ NAILS currently verifies deterministic release artifacts for one canonical targe
 
 ## What is guaranteed
 
-For each `dev` and `main` build, CI:
+For each release workflow run that builds the canonical bundle, CI:
 
 - builds the canonical release bundle with Nix
 - runs `nix-store --realise --check` against the release derivation

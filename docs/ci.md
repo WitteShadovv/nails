@@ -16,8 +16,10 @@ This repository is public. The CI and release workflows are written for a public
 | `.github/workflows/forensics-eval-full.yml` | Full Hetzner-backed forensics-eval suite, executed as a single live-target job on trusted manual runs | Manual dispatch |
 | `.github/workflows/forensics-eval-full-pr-metadata.yml` | Metadata-only `pull_request_target` companion for full forensics eval PR visibility without calling the privileged reusable shard | `pull_request_target` to `main` with path filters |
 | `.github/workflows/nix-pr-verify.yml` | Verifies the canonical `.#nails-release` derivation on pushes and PRs | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
-| `.github/workflows/release.yml` | Builds the canonical release bundle, verifies determinism, generates SBOMs, creates attestations, and publishes GitHub prereleases from matching version tags | Push of `v*` tags, manual dispatch |
-| `.github/workflows/reproducibility.yml` | Reusable workflow that performs two independent rebuilds and compares the resulting release bundles | Called from `release.yml`, manual dispatch |
+| `.github/workflows/release.yml` | Tag-driven release entrypoint: exact stable tags are verification-only, while suffixed prerelease tags publish immutable GitHub prereleases | Push of `v*` tags |
+| `.github/workflows/publish-release.yml` | Deliberate manual stable-release publisher that requires an exact stable tag input and creates the GitHub release once in final form | Manual dispatch |
+| `.github/workflows/release-core.yml` | Reusable release implementation that builds the canonical bundle, verifies determinism, generates SBOMs, creates attestations, and optionally creates a GitHub release | Called from `release.yml` and `publish-release.yml` |
+| `.github/workflows/reproducibility.yml` | Reusable workflow that performs two independent rebuilds and compares the resulting release bundles | Called from `release-core.yml`, manual dispatch |
 
 ## CI policy
 
@@ -129,12 +131,13 @@ The environment job is approval-only; it does not need environment secrets. Repo
 
 ### Release trigger behavior
 
-- **Version tags (`v*`)**: automatic runs build the canonical release bundle and publish a **GitHub prerelease** when the tag matches `Cargo.toml` (`v<version>`).
-- **`workflow_dispatch`**: allows maintainers to run the release workflow manually on a selected branch or tag for verification; manual runs never publish a GitHub release, and a selected tag ref must still match `Cargo.toml`.
+- **Exact stable tags (`v<version>`)**: automatic runs are **verification-only**. They build the canonical bundle, run determinism checks, generate SBOMs/attestations, and do **not** publish a GitHub release.
+- **Suffixed prerelease tags (`v<version>-...`)**: automatic runs build the same canonical bundle and publish an immutable **GitHub prerelease** directly from that prerelease tag.
+- **`publish-release.yml` manual dispatch**: maintainers provide an exact stable tag such as `v0.1.0`; the workflow validates it against `Cargo.toml`, rejects suffixed tags, and creates the stable GitHub release directly without promoting or editing an existing release.
 
-This is the conservative public-facing policy: ordinary branch pushes no longer trigger the heavy release workflow, and publication only happens from explicit release tags.
+This is the immutable-release policy: ordinary branch pushes do not trigger the heavy release workflow, exact stable tags are validated automatically, and stable publication only happens through a deliberate manual workflow.
 
-### What `release.yml` does
+### What the release workflows do
 
 On every run, the workflow:
 
@@ -146,14 +149,14 @@ On every run, the workflow:
 6. Calls `reproducibility.yml` to perform two independent rebuild comparisons.
 7. Generates a GitHub artifact attestation when repository visibility supports it.
 
-On automatic matching version-tag runs, it also:
+On release-creation runs (`v<version>-...` prerelease tag pushes or manual `publish-release.yml` stable publication), they also:
 
 8. Generates **SLSA Level 3 provenance** (`nails.intoto.jsonl`).
-9. Publishes a **GitHub prerelease** containing the canonical artifacts.
+9. Creates a GitHub release exactly once with `gh release create --verify-tag`.
 
 ### Release assets
 
-Public prereleases from version tags contain:
+Published stable releases and prereleases contain:
 
 - `nails-*.tar.gz`
 - `nails`
@@ -175,7 +178,7 @@ nix build -L .#nails-release -o result --option accept-flake-config false
 sha256sum --check checksums.txt
 ```
 
-### Verify SLSA provenance for a tagged prerelease
+### Verify SLSA provenance for a published release
 
 ```bash
 go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
@@ -216,8 +219,10 @@ nix build -L .#nails-release -o result --option accept-flake-config false
 
 ## Operational caveats
 
-- Workflow artifacts are useful for maintainers and contributors, but the **public distribution channel is the GitHub prerelease published from version tags**.
-- Manual `release.yml` runs are always validation-only; if a tag ref is selected, it must match `Cargo.toml`.
+- Workflow artifacts are useful for maintainers and contributors, but the **public distribution channel is the immutable GitHub release created from a validated tag**.
+- Exact stable tag pushes are always validation-only.
+- Stable publication requires `publish-release.yml` and an exact stable tag that matches `Cargo.toml`.
+- Automatic prerelease publication is reserved for validated suffixed tags that match the current `Cargo.toml` version.
 - E2E validation and Nix release-path verification are separate workflows and should be treated as part of the overall release posture even though they are not aggregated into `ci-success`.
 - Ordinary forensics CI is fixture-backed; the privileged live workflow is fail-closed to `direct-baseline/direct-headless` until built-in live support expands.
 - The pinned `Cyclenerd/hcloud-github-runner` action still embeds the GitHub runner registration token into Hetzner cloud-init/user-data during runner creation. This patch prevents PR-context provisioning and narrows data handling, but the upstream bootstrap-token exposure remains a caveat until the action design changes.

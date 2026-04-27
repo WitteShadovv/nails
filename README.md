@@ -73,10 +73,10 @@ NAILS is designed for a narrow threat model and operational style.
 
 ## Installation
 
-### Option 1: Use the latest GitHub prerelease bundle
+### Option 1: Use the latest published GitHub release bundle
 
 Download the latest published bundle from the canonical [GitHub Releases page](https://github.com/WitteShadovv/nails/releases).
-Current GitHub Releases are automated **prerelease** verification bundles built from `main`, so use the newest prerelease unless you are reproducing a specific revision. Mount the hidden storage first, then place the published `nails` executable directly on that hidden root. Do not leave the binary on the decoy filesystem:
+GitHub Releases may contain either a manually published stable release for an exact version tag or a tagged prerelease for an immutable prerelease tag. Use the newest release line appropriate for your testing or deployment. Mount the hidden storage first, then place the published `nails` executable directly on that hidden root. Do not leave the binary on the decoy filesystem:
 
 ```bash
 # Mount hidden storage first
@@ -228,7 +228,7 @@ They are related projects, but they are not interchangeable products and do not 
 
 ### User and operator references
 
-- [GitHub Releases](https://github.com/WitteShadovv/nails/releases) *(current prerelease verification bundles)*
+- [GitHub Releases](https://github.com/WitteShadovv/nails/releases) *(published stable releases and prereleases)*
 - [Change history](CHANGELOG.md)
 - [Roadmap](ROADMAP.md)
 - [Release artifact reproducibility](docs/release-artifact-reproducibility.md)
@@ -245,7 +245,8 @@ They are related projects, but they are not interchangeable products and do not 
 
 NAILS is actively maintained and currently released as **alpha** software.
 
-- GitHub Releases currently publish prerelease verification bundles from `main` rather than a stable release channel.
+- Stable GitHub releases are created manually from exact stable tags; exact stable tag pushes are verification-only.
+- Suffixed prerelease tags may publish immutable GitHub prereleases directly.
 - Interfaces and operator workflows are still subject to change between alpha releases.
 - Use it only after testing your exact hardware, storage backend, activation path, and recovery procedure.
 - Security claims are bounded by the documented threat model and by the checks you perform on your own setup.
