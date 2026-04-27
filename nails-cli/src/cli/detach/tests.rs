@@ -455,6 +455,8 @@ fn deactivation_detach_uses_explicit_systemd_run_override() {
     assert!(logged_args.contains("--working-directory=/"));
     assert!(logged_args.contains("--setenv=NAILS_TARGET_UID=1000"));
     assert!(logged_args.contains("--setenv=NAILS_TARGET_USER=alice"));
+    assert!(logged_args.contains("--setenv=PATH="));
+    assert!(logged_args.contains("/run/current-system/sw/bin"));
 }
 
 #[test]
@@ -498,4 +500,5 @@ fn deactivation_detach_propagates_protected_shell_cleanup_pids() {
         logged_args.contains("--setenv=NAILS_SHELL_CLEANUP_PROTECTED_PIDS=101,202"),
         "logged args were: {logged_args}"
     );
+    assert!(logged_args.contains("--setenv=PATH="), "logged args were: {logged_args}");
 }

@@ -2,6 +2,7 @@ use std::env;
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
+use std::{collections::HashSet, path::PathBuf};
 
 use nails_core::obfuscate::{
     env_detached, env_display_manager, env_force_detach, env_logind_available, env_session_id,
@@ -97,6 +98,36 @@ fn is_already_detached() -> bool {
     env::var_os(env_detached()).is_some()
 }
 
+fn detached_path_env() -> OsString {
+    let mut merged_paths: Vec<PathBuf> = Vec::new();
+    let mut seen = HashSet::new();
+
+    let push_unique = |path: PathBuf, merged_paths: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>| {
+        if seen.insert(path.clone()) {
+            merged_paths.push(path);
+        }
+    };
+
+    if let Some(current_path) = env::var_os("PATH") {
+        for path in env::split_paths(&current_path) {
+            push_unique(path, &mut merged_paths, &mut seen);
+        }
+    }
+
+    for path in [
+        PathBuf::from("/run/current-system/sw/bin"),
+        PathBuf::from("/run/wrappers/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+    ] {
+        push_unique(path, &mut merged_paths, &mut seen);
+    }
+
+    env::join_paths(merged_paths).unwrap_or_else(|_| {
+        OsString::from("/run/current-system/sw/bin:/run/wrappers/bin:/usr/bin:/bin")
+    })
+}
+
 /// Detach using systemd-run to create a transient service in system.slice.
 ///
 /// Creates a proper one-shot service that runs independently of any user session.
@@ -165,7 +196,7 @@ pub fn maybe_detach_for_session_kill(
     cmd.arg("--setenv=XDG_SESSION_ID="); // Clear session tracking
 
     // Set PATH to include NixOS binaries (nixos-rebuild, etc.)
-    cmd.arg("--setenv=PATH=/run/current-system/sw/bin:/run/wrappers/bin:/usr/bin:/bin");
+    cmd.arg(format!("--setenv=PATH={}", detached_path_env().to_string_lossy()));
 
     // Capture and pass through all NIX_* environment variables from current environment
     // This ensures nixos-rebuild has all the Nix configuration it needs
@@ -248,7 +279,7 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
         .arg("--working-directory=/")
         .arg(format!("--setenv={}=1", env_detached()))
         .arg("--setenv=XDG_SESSION_ID=")
-        .arg("--setenv=PATH=/run/current-system/sw/bin:/run/wrappers/bin:/usr/bin:/bin")
+        .arg(format!("--setenv=PATH={}", detached_path_env().to_string_lossy()))
         .arg("--property=StandardOutput=journal")
         .arg("--property=StandardError=journal")
         .arg("--")

@@ -32,6 +32,19 @@ in
     ${sessionHelpers.waitForActivationTransientUnitFn}
     ${sessionHelpers.assertUnitInSystemSliceFn}
 
+    def install_nixos_rebuild_wrapper(log_path):
+        machine.succeed(
+            f"""mkdir -p /tmp/nails-wrapper/bin
+    rm -f {log_path}
+    cat > /tmp/nails-wrapper/bin/nixos-rebuild <<'EOF'
+    #!/bin/sh
+    printf '%s\\n' "$*" >> {log_path}
+    exit 0
+    EOF
+    chmod 755 /tmp/nails-wrapper/bin/nixos-rebuild"""
+        )
+        return "PATH=/tmp/nails-wrapper/bin:$PATH"
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.wait_for_unit("display-manager.service")
@@ -42,6 +55,7 @@ in
     hidden_desktop_path = "/mnt/hidden-volume/home/testuser/.config/autostart/nails-notify.desktop"
     staged_signal_path = "/mnt/hidden-volume/notifications/20260101T000000000_autostart.json"
     testuser_group = machine.succeed("id -gn testuser").strip()
+    wrapper_env = install_nixos_rebuild_wrapper("/tmp/nixos-rebuild-notify-autostart.log")
 
     with subtest("prepare hidden volume and stage a login-time notification"):
         write_headless_config(headless_config)
@@ -61,7 +75,7 @@ in
 
     with subtest("real graphical activation writes autostart entry and dispatches queued login notification"):
         machine.succeed(
-            "env DISPLAY=:0 XDG_SESSION_TYPE=x11 SUDO_UID=1000 SUDO_USER=testuser "
+            f"{wrapper_env} env DISPLAY=:0 XDG_SESSION_TYPE=x11 SUDO_UID=1000 SUDO_USER=testuser "
             + "SHELL=/run/current-system/sw/bin/bash "
             + f"nails --config {headless_config} activate -y"
         )
