@@ -123,33 +123,61 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             })
     }
 
-    fn resolve_home_from_current_environment() -> Option<PathBuf> {
-        if std::env::var("SUDO_USER").is_ok()
-            || std::env::var(crate::obfuscate::env_target_user()).is_ok()
+    fn has_explicit_target_user_context() -> bool {
+        std::env::var("SUDO_USER").is_ok() || std::env::var(crate::obfuscate::env_target_user()).is_ok()
+    }
+
+    fn home_matches_username(home: &std::path::Path, username: &str) -> bool {
+        home.file_name().and_then(|component| component.to_str()) == Some(username)
+    }
+
+    fn resolve_home_from_current_environment(target_username: Option<&str>) -> Option<PathBuf> {
+        if Self::has_explicit_target_user_context() {
+            return None;
+        }
+
+        let home = PathBuf::from(std::env::var_os("HOME")?);
+
+        if let Some(username) = target_username
+            && !Self::home_matches_username(&home, username)
         {
             return None;
         }
 
-        std::env::var_os("HOME").map(PathBuf::from)
+        Some(home)
     }
 
     #[cfg(test)]
     pub(crate) fn resolve_target_home_dir(&self) -> Result<PathBuf> {
-        if let Some(home) = Self::resolve_home_from_current_environment() {
+        let username = self.resolve_target_username().ok();
+
+        if let Some(home) = Self::resolve_home_from_current_environment(username.as_deref()) {
             return Ok(home);
         }
 
-        let username = self.resolve_target_username()?;
+        let username = username.ok_or_else(|| {
+            std::io::Error::other(
+                "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)",
+            )
+        })?;
+
         Ok(PathBuf::from(format!("/home/{}", username)))
     }
 
     #[cfg(not(test))]
     pub(crate) fn resolve_target_home_dir(&self) -> Result<PathBuf> {
-        if let Some(home) = Self::resolve_home_from_current_environment() {
+        let username = self.resolve_target_username().ok();
+
+        if let Some(home) = Self::resolve_home_from_current_environment(username.as_deref()) {
             return Ok(home);
         }
 
-        let username = self.resolve_target_username()?;
+        let username = username.ok_or_else(|| {
+            std::io::Error::other(
+                "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)",
+            )
+        })?;
+
         match nix::unistd::User::from_name(&username).map_err(|e| {
             std::io::Error::other(format!(
                 "Failed to resolve home directory for user {}: {}",
@@ -204,8 +232,10 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             .unwrap_or(false)
         {
             Some(ShellType::Fish)
-        } else {
+        } else if Self::has_explicit_target_user_context() {
             Some(ShellType::Bash)
+        } else {
+            None
         }
     }
 
