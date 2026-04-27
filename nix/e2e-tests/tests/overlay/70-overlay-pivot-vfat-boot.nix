@@ -7,14 +7,17 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   overlayHelpers = import ./../../lib/overlay-helpers.nix;
-in {
+in
+{
   name = "overlay-pivot-vfat-boot";
   meta.tags = [ "overlay" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vfat-boot-vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vfat-boot-vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${overlayHelpers.writeBootOnlyConfigFn}
@@ -25,7 +28,7 @@ in {
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-    machine.wait_for_unit("nails-vfat-boot-setup.service")
+    machine.wait_until_succeeds("findmnt -n -o FSTYPE /boot | grep -qx vfat")
 
     config_path = "/tmp/nails-boot-pivot.yaml"
     write_boot_only_config(config_path)
@@ -40,7 +43,8 @@ in {
         machine.succeed(
             f"nails --config {config_path} activate --overlay-only --no-kill-session --accept-pivot-risks -y"
         )
-        assert_overlay_mounted("/boot")
+        machine.succeed("findmnt -n -o FSTYPE /boot | grep -qx overlay")
+        machine.succeed("findmnt -n -o FSTYPE /mnt/nails-pivot/boot | grep -qx overlay")
         machine.succeed("findmnt -n -o FSTYPE /mnt/nails-pivot/boot-snapshot | grep -qx tmpfs")
         machine.succeed("mountpoint -q /mnt/nails-pivot/boot")
         machine.succeed("test -f /mnt/nails-pivot/boot-snapshot/decoy-boot.txt")

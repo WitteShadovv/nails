@@ -110,7 +110,8 @@ pub use state::{FailedOverlayInfo, LoadOutcome, LoadResult, OverlayInfo, StateFi
 // Pre-flight validation exports
 pub use preflight::{
     CheckResult, HiddenVolumeCheck, NixOSConfigCheck, OverlayDirs, PreFlightCheck,
-    PreFlightRegistry, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
+    PreFlightRegistry, SpaceCheck, StateCheck, StorageReadinessCheck,
+    SuspiciousNailsReferenceCheck, SwapCheck,
 };
 
 // Forensic validation exports
@@ -124,6 +125,7 @@ pub use nixos::{
     ensure_hidden_hardware_configuration, inject_import_block, prepare_nixos_config_overlay,
     stage_hidden_config_symlink, verify_base_config_clean,
 };
+pub(crate) use nixos::{classify_nixos_failure_category, format_classified_nixos_failure};
 
 // Timing utilities exports
 pub use timing::Stopwatch;
@@ -199,7 +201,10 @@ pub use shell::{ShellCleanupResult, ShellInstrumentation, ShellSetupResult};
 pub use logging::{LoggingConfig, LoggingManager};
 
 // Structured CLI output exports (Story 14.7: Standardize CLI Output)
-pub use output::{error, format_error, format_info, format_warn, info, set_plain_mode, warn};
+pub use output::{
+    error, format_error, format_info, format_warn, info, is_color_disabled, is_plain_mode_enabled,
+    set_color_enabled, set_plain_mode, warn,
+};
 
 // Desktop notification exports
 pub use notification::{Notification, dispatch_all as dispatch_notifications};

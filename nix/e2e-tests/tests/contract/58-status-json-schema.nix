@@ -7,15 +7,20 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   contractHelpers = import ./../../lib/contract-helpers.nix;
   pythonWithJsonschema = pkgs.python3.withPackages (ps: [ ps.jsonschema ]);
-in {
+in
+{
   name = "status-json-schema";
   meta.tags = [ "contract" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages =
-      [ self.packages.x86_64-linux.nails pythonWithJsonschema ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pythonWithJsonschema
+      ];
+    };
 
   testScript = _: ''
     import json

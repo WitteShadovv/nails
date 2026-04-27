@@ -59,6 +59,12 @@ pub use fingerprint::compute_config_fingerprint;
 // Internal imports
 use command::CommandExecutor as CommandExecutorTrait;
 use command::RealCommandExecutor as RealCommandExecutorImpl;
+#[cfg(test)]
+pub(crate) use command::{FlakePreflightSummary, local_flake_dir};
+pub(crate) use command::{
+    classify_nixos_failure_category, format_classified_nixos_failure, is_non_fatal_switch_failure,
+    resolve_local_flake_dir, split_flake_ref,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NixOSBuildMode {
@@ -103,6 +109,10 @@ pub struct NixOSBuilder {
 }
 
 impl NixOSBuilder {
+    pub(crate) fn should_clear_nix_path(&self) -> bool {
+        self.is_flake()
+    }
+
     /// Create a new NixOSBuilder with real command execution
     ///
     /// # Arguments
@@ -244,6 +254,12 @@ impl NixOSBuilder {
         } else {
             self.config_path.to_string_lossy().into_owned()
         }
+    }
+
+    fn preflight_flake_refs(&self) -> (String, Option<String>) {
+        let flake_arg = self.effective_flake_arg();
+        let (base_ref, fragment) = split_flake_ref(&flake_arg);
+        (base_ref.to_string(), fragment.map(str::to_string))
     }
 
     pub(crate) fn flake_dir(&self) -> Option<&Path> {

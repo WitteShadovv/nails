@@ -7,14 +7,17 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   shellHelpers = import ./../../lib/shell-helpers.nix;
-in {
+in
+{
   name = "shell-alias-setup";
   meta.tags = [ "shell" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

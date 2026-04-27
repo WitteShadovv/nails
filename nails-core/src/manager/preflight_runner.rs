@@ -5,9 +5,39 @@
 //! all pre-flight validation checks before activation.
 
 use super::NailsManager;
-use crate::{Filesystem, Result, build_overlay_targets};
+use crate::{Filesystem, NailsError, Result, build_overlay_targets};
 
 impl<F: Filesystem> NailsManager<F> {
+    /// Run read-only NixOS preflight checks that are safe before detach/session kill.
+    pub fn run_read_only_nixos_preflight(&self, overlay_only: bool) -> Result<()> {
+        if overlay_only {
+            return Ok(());
+        }
+
+        if let Some(builder) = self.nixos_builder.as_ref()
+            && builder.is_flake()
+        {
+            let summary = builder
+                .preflight_flake_reference_fast()
+                .map_err(|err| match err {
+                    NailsError::NixOSPreflightError { message, .. } => {
+                        NailsError::PreFlightCheckFailed(vec![(
+                            "nixos-build-target".to_string(),
+                            message,
+                        )])
+                    }
+                    other => other,
+                })?;
+            tracing::info!(
+                metadata_checked = summary.metadata_checked,
+                attr_checked = summary.attr_checked,
+                "Read-only flake preflight completed"
+            );
+        }
+
+        Ok(())
+    }
+
     /// Run all pre-flight checks before activation
     ///
     /// Creates a PreFlightRegistry, registers all validation checks, and executes them.
@@ -108,38 +138,59 @@ impl<F: Filesystem> NailsManager<F> {
         )));
 
         // Compute overlay targets for compatibility check
-        let overlay_target_paths: Vec<std::path::PathBuf> = match self.config.overlay_mode {
-            crate::config::OverlayMode::Auto => {
-                build_overlay_targets(&self.filesystem, &self.config)?
-            }
-            crate::config::OverlayMode::Explicit => self
-                .config
-                .overlays
-                .iter()
-                .map(|o| o.lower.clone())
-                .collect(),
-        };
+        let persistent_overlay_target_paths: Vec<std::path::PathBuf> =
+            match self.config.overlay_mode {
+                crate::config::OverlayMode::Auto => {
+                    build_overlay_targets(&self.filesystem, &self.config)?
+                }
+                crate::config::OverlayMode::Explicit => self
+                    .config
+                    .overlays
+                    .iter()
+                    .map(|o| o.lower.clone())
+                    .collect(),
+            };
+
+        let ephemeral_overlay_target_paths: Vec<std::path::PathBuf> =
+            if self.config.extended_overlays.enabled {
+                self.config
+                    .extended_overlays
+                    .directories
+                    .iter()
+                    .map(|dir| dir.path.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         registry.add_check(Box::new(OverlayCompatibilityCheck::new(
-            overlay_target_paths,
+            persistent_overlay_target_paths,
+            ephemeral_overlay_target_paths,
             self.config.hidden_volume_root.clone(),
         )));
+
+        let flake_target_already_validated = self
+            .nixos_builder
+            .as_ref()
+            .is_some_and(|builder| builder.is_flake());
 
         if !overlay_only {
             registry.add_check(Box::new(NixOSConfigCheck::new(
                 self.config.hidden_volume_root.clone(),
             )));
 
-            let selected_flake_dir = self
-                .nixos_builder
-                .as_ref()
-                .and_then(|builder| builder.flake_dir().map(|path| path.to_path_buf()));
+            if !flake_target_already_validated {
+                let selected_flake_dir = self
+                    .nixos_builder
+                    .as_ref()
+                    .and_then(|builder| builder.flake_dir().map(|path| path.to_path_buf()));
 
-            registry.add_check(Box::new(NixOSBuildTargetCheck::with_selected_flake_dir(
-                self.config.nixos_flake.clone(),
-                selected_flake_dir,
-                self.config.hidden_volume_root.clone(),
-            )));
+                registry.add_check(Box::new(NixOSBuildTargetCheck::with_selected_flake_dir(
+                    self.config.nixos_flake.clone(),
+                    selected_flake_dir,
+                    self.config.hidden_volume_root.clone(),
+                )));
+            }
         }
 
         registry.add_check(Box::new(SwapCheck));

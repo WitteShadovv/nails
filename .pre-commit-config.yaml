@@ -157,7 +157,7 @@ repos:
         stages: [pre-commit]
 
       - id: rust-coverage
-        name: Enforce 85% Test Coverage (TDD)
+        name: Enforce 85.5% Test Coverage (TDD)
         entry: bash
         language: system
         types: [rust]
@@ -166,7 +166,7 @@ repos:
         args:
           - -c
           - |
-            echo "🔍 Checking test coverage (85% required)..."
+            echo "🔍 Checking test coverage (85.5% required)..."
 
             # Function to run coverage and produce cobertura XML
             run_coverage() {
@@ -199,9 +199,9 @@ repos:
             fi
             line_coverage=$(echo "$COVERAGE * 100" | bc)
 
-            # Check if coverage meets threshold (85%)
-            if (( $(echo "$line_coverage < 85" | bc -l) )); then
-              echo "❌ Test coverage below 85% (current: ${line_coverage}%) - commit blocked"
+            # Check if coverage meets threshold (85.5%)
+            if (( $(echo "$line_coverage < 85.5" | bc -l) )); then
+              echo "❌ Test coverage below 85.5% (current: ${line_coverage}%) - commit blocked"
               echo "💡 Run 'nix develop --command cargo llvm-cov --html' to see detailed coverage report"
               exit 1
             fi

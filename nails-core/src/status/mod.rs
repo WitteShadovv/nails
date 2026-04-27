@@ -23,7 +23,7 @@
 //!
 //! let filesystem = RealFilesystem;
 //! let config = Config::default();
-//! let state_file_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+//! let state_file_path = PathBuf::from("/mnt/hidden-volume/state.json");
 //!
 //! let cmd = StatusCommand::new(filesystem, config, state_file_path);
 //! let report = cmd.run()?;
@@ -144,7 +144,7 @@ impl<F: Filesystem> StatusCommand<F> {
     /// let cmd = StatusCommand::new(
     ///     RealFilesystem,
     ///     Config::default(),
-    ///     PathBuf::from("/mnt/hidden-volume/.nails/state.json"),
+    ///     PathBuf::from("/mnt/hidden-volume/state.json"),
     /// );
     ///
     /// let report = cmd.run()?;
@@ -243,6 +243,14 @@ impl<F: Filesystem> StatusCommand<F> {
         };
 
         Ok(report)
+    }
+
+    /// Execute the status command, converting unreadable state into a truthful report.
+    ///
+    /// Permission errors are surfaced to callers while preserving FR63 for other
+    /// recoverable state-file problems inside `run()`.
+    pub fn run_truthful(&self) -> Result<StatusReport> {
+        self.run()
     }
 
     /// Calculate uptime for active state

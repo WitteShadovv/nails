@@ -79,6 +79,34 @@
         return json.loads(machine.succeed("cat /tmp/nails-status.stdout"))
   '';
 
+  waitForStatusStateFn = ''
+    def wait_for_status_state(expected, config_path=None, timeout=180):
+        import time
+
+        expected_prefix = expected.lower()
+        deadline = time.monotonic() + timeout
+        last_payload = None
+        last_error = None
+
+        while time.monotonic() < deadline:
+            try:
+                payload = read_status_json(config_path=config_path)
+                last_payload = payload
+                actual = str(payload.get("state", "")).lower()
+                if actual.startswith(expected_prefix):
+                    return payload
+            except Exception as exc:
+                last_error = exc
+            time.sleep(1)
+
+        details = f"last_payload={last_payload!r}"
+        if last_error is not None:
+            details += f", last_error={last_error!r}"
+        raise AssertionError(
+            f"Timed out waiting for state {expected!r} within {timeout}s; {details}"
+        )
+  '';
+
   runVerifyFn = ''
     def run_verify(args="", config_path=None):
         import json
@@ -203,8 +231,8 @@
     def write_ephemeral_config(path):
         machine.succeed(
             """cat > %s <<'EOF'
-    # Current harness equivalent of the plan's proposed overlay_mode: ephemeral.
-    # The application currently models ephemeral overlays via extended_overlays.
+    # Harness fixture for unsupported extended_overlays coverage.
+    # This is not a supported ephemeral mode; activation is expected to fail in preflight.
     hidden_volume_root: /mnt/hidden-volume
     overlay_mode: explicit
     overlays:

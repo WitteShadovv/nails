@@ -13,14 +13,17 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
-in {
+in
+{
   name = "state-missing-file";
   meta.tags = [ "state" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     import json
@@ -36,7 +39,7 @@ in {
     machine.wait_for_unit("multi-user.target")
 
     headless_config = "/tmp/nails-headless.yaml"
-    state_path = "/mnt/hidden-volume/.nails/state.json"
+    state_path = "/mnt/hidden-volume/state.json"
     write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 

@@ -61,10 +61,7 @@
 //! {"timestamp":"2026-02-12T10:30:46.456Z","level":"ERROR","message":"Mount failed","fields":{"path":"/home","error":"busy"}}
 //! ```
 
-use crate::obfuscate;
 use colored::Colorize;
-use std::env;
-
 // Module declarations
 mod config;
 mod manager;
@@ -76,14 +73,6 @@ pub use config::LoggingConfig;
 pub use manager::LoggingManager;
 pub use rotation::{DEFAULT_MAX_LOG_SIZE_MB, DEFAULT_RETENTION_DAYS, LOG_FILE_NAME};
 
-/// Check if color output should be disabled
-///
-/// Returns true if `NO_COLOR` or `NAILS_NO_COLOR` environment variables are set.
-/// Follows the NO_COLOR convention (<https://no-color.org/>).
-fn should_disable_color() -> bool {
-    env::var("NO_COLOR").is_ok() || env::var(obfuscate::env_no_color()).is_ok()
-}
-
 /// Format an early error message for pre-logging output
 ///
 /// Used for critical errors that occur before the tracing subscriber is initialized
@@ -92,8 +81,10 @@ fn should_disable_color() -> bool {
 /// - With color: `✗ {msg}` (red)
 /// - Without color (NO_COLOR set): `[FAIL] {msg}`
 pub fn format_early_error(msg: &str) -> String {
-    if should_disable_color() {
+    if crate::output::is_plain_mode_enabled() {
         format!("[FAIL] {}", msg)
+    } else if crate::output::is_color_disabled() {
+        format!("✗ {}", msg)
     } else {
         format!("{} {}", "✗".red().bold(), msg.red())
     }
@@ -108,8 +99,10 @@ pub fn format_early_error(msg: &str) -> String {
 /// - With color: `⚠ {msg}` (yellow)
 /// - Without color (NO_COLOR set): `[WARN] {msg}`
 pub fn format_early_warning(msg: &str) -> String {
-    if should_disable_color() {
+    if crate::output::is_plain_mode_enabled() {
         format!("[WARN] {}", msg)
+    } else if crate::output::is_color_disabled() {
+        format!("⚠ {}", msg)
     } else {
         format!("{} {}", "⚠".yellow().bold(), msg.yellow())
     }
@@ -125,8 +118,9 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_early_error_with_color() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         unsafe {
             std::env::remove_var("NO_COLOR");
             std::env::remove_var("NAILS_NO_COLOR");
@@ -137,21 +131,23 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_early_error_without_color() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         unsafe {
             std::env::set_var("NO_COLOR", "1");
         }
         let result = format_early_error("Something went wrong");
-        assert_eq!(result, "[FAIL] Something went wrong");
+        assert_eq!(result, "✗ Something went wrong");
         unsafe {
             std::env::remove_var("NO_COLOR");
         }
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_early_warning_with_color() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         unsafe {
             std::env::remove_var("NO_COLOR");
             std::env::remove_var("NAILS_NO_COLOR");
@@ -162,43 +158,57 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_early_warning_without_color() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         unsafe {
             std::env::set_var("NO_COLOR", "1");
         }
         let result = format_early_warning("Volume not available");
-        assert_eq!(result, "[WARN] Volume not available");
+        assert_eq!(result, "⚠ Volume not available");
         unsafe {
             std::env::remove_var("NO_COLOR");
         }
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_early_error_respects_nails_no_color() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         unsafe {
             std::env::remove_var("NO_COLOR");
             std::env::set_var("NAILS_NO_COLOR", "1");
         }
         let result = format_early_error("Test error");
-        assert_eq!(result, "[FAIL] Test error");
+        assert_eq!(result, "✗ Test error");
         unsafe {
             std::env::remove_var("NAILS_NO_COLOR");
         }
     }
 
     #[test]
-    #[serial]
+    #[serial(render_state)]
     fn test_format_early_warning_respects_nails_no_color() {
+        let _guard = crate::output::RenderStateTestGuard::new();
         unsafe {
             std::env::remove_var("NO_COLOR");
             std::env::set_var("NAILS_NO_COLOR", "1");
         }
         let result = format_early_warning("Test warning");
-        assert_eq!(result, "[WARN] Test warning");
+        assert_eq!(result, "⚠ Test warning");
         unsafe {
             std::env::remove_var("NAILS_NO_COLOR");
         }
+    }
+
+    #[test]
+    #[serial(render_state)]
+    fn test_format_early_warning_plain_mode_uses_ascii() {
+        let _guard = crate::output::RenderStateTestGuard::new();
+        crate::output::set_plain_mode(true);
+
+        let result = format_early_warning("Test warning");
+
+        assert_eq!(result, "[WARN] Test warning");
     }
 }

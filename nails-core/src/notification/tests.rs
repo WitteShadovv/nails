@@ -35,6 +35,43 @@ fn test_write_creates_notifications_dir() {
 }
 
 #[test]
+fn test_write_notification_sets_default_permissions_without_icon() {
+    let dir = TempDir::new().unwrap();
+    let notification = Notification {
+        title: "Permission Check".to_string(),
+        body: "Body".to_string(),
+        urgency: "normal".to_string(),
+        icon: None,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+    };
+
+    write_notification(dir.path(), &notification).unwrap();
+
+    let notif_dir = notifications_dir(dir.path());
+    let mode = notif_dir.metadata().unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+
+    let pending = read_pending(dir.path()).unwrap();
+    assert_eq!(pending.len(), 1);
+    let file_mode = pending[0].0.metadata().unwrap().permissions().mode() & 0o777;
+    assert_eq!(file_mode, 0o600);
+    assert_eq!(pending[0].1.icon, None);
+}
+
+#[test]
+fn test_write_notification_returns_error_when_notifications_path_cannot_be_created() {
+    let dir = TempDir::new().unwrap();
+    let blocking_path = dir.path().join("notifications");
+    std::fs::write(&blocking_path, "not a directory").unwrap();
+
+    let err = write_notification(dir.path(), &make_notification("Blocked", "body")).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Failed to create notifications dir")
+    );
+}
+
+#[test]
 fn test_read_empty_dir_returns_empty() {
     let dir = TempDir::new().unwrap();
     let pending = read_pending(dir.path()).unwrap();
@@ -47,6 +84,34 @@ fn test_read_nonexistent_dir_returns_empty() {
     let nonexistent = dir.path().join("does-not-exist");
     let pending = read_pending(&nonexistent).unwrap();
     assert!(pending.is_empty());
+}
+
+#[test]
+fn test_read_pending_returns_error_when_notifications_path_is_not_a_directory() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(notifications_dir(dir.path()), "not a directory").unwrap();
+
+    let err = read_pending(dir.path()).unwrap_err();
+    assert!(err.to_string().contains("Failed to read notifications dir"));
+}
+
+#[test]
+fn test_read_pending_skips_unreadable_directory_entries() {
+    let dir = TempDir::new().unwrap();
+    let notif_dir = notifications_dir(dir.path());
+    std::fs::create_dir_all(&notif_dir).unwrap();
+
+    let nested_dir = notif_dir.join("subdir.json");
+    std::fs::create_dir(&nested_dir).unwrap();
+    std::fs::write(
+        notif_dir.join("valid.json"),
+        serde_json::to_string(&make_notification("Valid", "body")).unwrap(),
+    )
+    .unwrap();
+
+    let pending = read_pending(dir.path()).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].1.title, "Valid");
 }
 
 #[test]
@@ -91,6 +156,15 @@ fn test_clear_all_on_nonexistent_dir_is_ok() {
 }
 
 #[test]
+fn test_clear_all_returns_error_when_notifications_path_is_not_a_directory() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(notifications_dir(dir.path()), "not a directory").unwrap();
+
+    let err = clear_all(dir.path()).unwrap_err();
+    assert!(err.to_string().contains("Failed to read notifications dir"));
+}
+
+#[test]
 fn test_multiple_notifications_sorted_chronologically() {
     let dir = TempDir::new().unwrap();
 
@@ -121,6 +195,28 @@ fn test_malformed_json_file_skipped() {
 
     let pending = read_pending(dir.path()).unwrap();
     // Should contain only the valid notification
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].1.title, "Valid");
+}
+
+#[test]
+fn test_read_pending_skips_json_missing_required_fields() {
+    let dir = TempDir::new().unwrap();
+    let notif_dir = notifications_dir(dir.path());
+    std::fs::create_dir_all(&notif_dir).unwrap();
+
+    std::fs::write(
+        notif_dir.join("missing-fields.json"),
+        r#"{"title":"Incomplete"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        notif_dir.join("valid.json"),
+        serde_json::to_string(&make_notification("Valid", "body")).unwrap(),
+    )
+    .unwrap();
+
+    let pending = read_pending(dir.path()).unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].1.title, "Valid");
 }
@@ -199,6 +295,39 @@ fn test_notification_title_sanitization() {
 }
 
 #[test]
+fn test_notification_title_filename_is_sanitized_and_truncated() {
+    let dir = TempDir::new().unwrap();
+    let title = "Very long title with spaces/slashes and punctuation!!! 1234567890 extra";
+    let notification = Notification {
+        title: title.to_string(),
+        body: "Body".to_string(),
+        urgency: "normal".to_string(),
+        icon: None,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+    };
+
+    write_notification(dir.path(), &notification).unwrap();
+
+    let pending = read_pending(dir.path()).unwrap();
+    assert_eq!(pending.len(), 1);
+    let filename = pending[0].0.file_name().unwrap().to_string_lossy();
+    assert!(filename.ends_with(".json"));
+    let title_part = filename
+        .strip_suffix(".json")
+        .unwrap()
+        .split_once('_')
+        .unwrap()
+        .1;
+    assert!(title_part.len() <= 40, "filename={filename}");
+    assert!(
+        title_part.starts_with("Very_long_title"),
+        "filename={filename}"
+    );
+    assert!(!title_part.contains(' '));
+    assert!(!title_part.contains('/'));
+}
+
+#[test]
 fn test_notification_urgency_variants() {
     let dir = TempDir::new().unwrap();
 
@@ -255,6 +384,18 @@ fn test_clear_notification_on_nonexistent_file() {
     let result = clear_notification(&fake_path);
     // clear_notification returns Result<()>, errors are ignored in actual usage
     assert!(result.is_ok() || result.is_err());
+}
+
+#[test]
+fn test_clear_notification_returns_error_for_missing_file() {
+    let dir = TempDir::new().unwrap();
+    let fake_path = dir.path().join("missing.json");
+
+    let err = clear_notification(&fake_path).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Failed to remove notification file")
+    );
 }
 
 #[test]

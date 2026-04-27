@@ -1,20 +1,6 @@
 name: Full E2E Tests
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'nails-core/**'
-      - 'nails-cli/**'
-      - 'nix/**'
-      - 'scripts/run-e2e-tests.sh'
-      - '.github/workflows/e2e-tests.yml'
-      - '.github/workflows/e2e-tests-full.yml'
-      - '.github/workflows/e2e-tests-full-shard.yml'
-      - 'flake.nix'
-      - 'flake.lock'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
   workflow_dispatch:
   pull_request_target:
     branches: [main]
@@ -131,10 +117,7 @@ jobs:
               with urllib.request.urlopen(request) as response:
                   return json.loads(response.read().decode("utf-8"))
 
-          if event_name == "push":
-              run_mode = "push"
-              reason = "Trusted push to main; provisioning Hetzner-backed full E2E runners is allowed."
-          elif event_name == "workflow_dispatch":
+          if event_name == "workflow_dispatch":
               run_mode = "manual"
               reason = "Trusted manual workflow_dispatch run; provisioning Hetzner-backed full E2E runners is allowed."
           elif event_name == "pull_request_target":

@@ -14,14 +14,17 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   stateHelpers = import ./../../lib/state-helpers.nix;
-in {
+in
+{
   name = "state-guard-rollback";
   meta.tags = [ "state" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     import json
@@ -56,7 +59,7 @@ in {
     machine.wait_for_unit("multi-user.target")
 
     config_path = "/tmp/state-guard-rollback.yaml"
-    state_path = "/mnt/hidden-volume/.nails/state.json"
+    state_path = "/mnt/hidden-volume/state.json"
 
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     write_partial_failure_config(config_path)

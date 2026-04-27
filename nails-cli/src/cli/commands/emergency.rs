@@ -34,9 +34,13 @@ pub fn execute(
     use std::sync::{Arc, Mutex};
 
     // Configure color output
-    if no_color || plain || std::env::var("NO_COLOR").is_ok() {
-        nails_core::set_plain_mode(true);
-    }
+    nails_core::set_plain_mode(plain);
+    nails_core::set_color_enabled(
+        !(plain
+            || no_color
+            || std::env::var("NO_COLOR").is_ok()
+            || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()),
+    );
 
     // Convert CLI flags to Verbosity enum
     let verbosity = if quiet {
@@ -51,7 +55,10 @@ pub fn execute(
 
     // Load config
     let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-    let config = super::load_config_or_exit(&config_path, config_override.as_deref());
+    let mut config = super::load_config_or_exit(&config_path, config_override.as_deref());
+    config.loaded_config_path = config_override
+        .clone()
+        .or_else(|| Some(config_path.clone()));
 
     // TEST SAFETY GUARD
     if let Err(msg) = check_real_ops(&config.hidden_volume_root) {
@@ -85,10 +92,11 @@ pub fn execute(
     match emergency_deactivate(Arc::clone(&manager)) {
         Ok(()) => {
             if !json {
-                println!("✓ Emergency deactivation complete");
+                let success_prefix = if plain { "[PASS]" } else { "✓" };
+                println!("{success_prefix} Emergency deactivation complete");
                 println!("  System returned to decoy configuration");
                 eprintln!();
-                for line in EMERGENCY_RECOVERY_GUIDANCE {
+                for line in emergency_recovery_guidance(plain) {
                     eprintln!("{line}");
                 }
             } else {
@@ -98,7 +106,8 @@ pub fn execute(
         }
         Err(e) => {
             if !json {
-                eprintln!("✗ Emergency deactivation failed: {}", e);
+                let error_prefix = if plain { "[FAIL]" } else { "✗" };
+                eprintln!("{error_prefix} Emergency deactivation failed: {}", e);
             } else {
                 eprintln!("{{\"status\":\"error\",\"message\":\"{}\"}}", e);
             }
@@ -119,9 +128,25 @@ const EMERGENCY_RECOVERY_GUIDANCE: &[&str] = &[
     "  2. If you are unsure cleanup was complete, reboot immediately",
 ];
 
+const EMERGENCY_RECOVERY_GUIDANCE_PLAIN: &[&str] = &[
+    "[WARN] Critical: For maximum safety:",
+    "  1. Dismount the hidden volume when it is safe to do so",
+    "  2. If you are unsure cleanup was complete, reboot immediately",
+];
+
+fn emergency_recovery_guidance(plain: bool) -> &'static [&'static str] {
+    if plain {
+        EMERGENCY_RECOVERY_GUIDANCE_PLAIN
+    } else {
+        EMERGENCY_RECOVERY_GUIDANCE
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{EMERGENCY_RECOVERY_GUIDANCE, emergency_success_json, execute};
+    use super::{
+        EMERGENCY_RECOVERY_GUIDANCE, emergency_recovery_guidance, emergency_success_json, execute,
+    };
     use std::path::PathBuf;
 
     const SUBPROCESS_TEST_NAME: &str =
@@ -195,6 +220,14 @@ mod tests {
 
         assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
         assert!(stderr.contains("emergency guard blocked"));
+    }
+
+    #[test]
+    fn emergency_plain_recovery_guidance_is_ascii_only() {
+        let combined = emergency_recovery_guidance(true).join("\n");
+
+        assert!(combined.is_ascii(), "guidance={combined}");
+        assert!(combined.contains("[WARN]"));
     }
 
     #[test]

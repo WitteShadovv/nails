@@ -10,7 +10,10 @@
 //! 3. Persist the resulting generation and fingerprint.
 
 use super::{ensure_run_current_system_symlink, select_system_profile};
-use crate::{Filesystem, NailsError, NailsManager, Result, Stopwatch, Verbosity};
+use crate::{
+    Filesystem, NailsError, NailsManager, Result, Stopwatch, Verbosity,
+    classify_nixos_failure_category, format_classified_nixos_failure,
+};
 
 impl<F: Filesystem> NailsManager<F> {
     /// Switch NixOS profile — unified for flake and legacy (Step 9).
@@ -80,7 +83,21 @@ impl<F: Filesystem> NailsManager<F> {
         // --- Slow path: nixos-rebuild test (build + switch) ---------------
         if !switched {
             builder.build_and_switch().map_err(|e| {
-                let error_msg = format!("NixOS build+switch failed: {}", e);
+                let error_msg = match &e {
+                    NailsError::NixOSError(message) => {
+                        let category = classify_nixos_failure_category(message, "");
+                        format!(
+                            "NixOS build+switch failed: [{}] {}",
+                            category,
+                            format_classified_nixos_failure(
+                                "nixos-rebuild test failed",
+                                message,
+                                ""
+                            )
+                        )
+                    }
+                    other => format!("NixOS build+switch failed: {}", other),
+                };
 
                 tracing::error!(
                     error = %e,
@@ -157,11 +174,31 @@ mod tests {
         }
     }
 
+    fn prepend_path(dir: &std::path::Path, old_path: &Option<std::ffi::OsString>) {
+        let mut paths = vec![dir.to_path_buf()];
+        if let Some(existing) = old_path {
+            paths.extend(std::env::split_paths(existing));
+        }
+
+        unsafe {
+            std::env::set_var(
+                "PATH",
+                std::env::join_paths(paths).expect("failed to compose PATH for test"),
+            );
+        }
+    }
+
     fn write_executable_script(path: &std::path::Path, body: &str) {
         fs::write(path, body).unwrap();
         let mut perms = fs::metadata(path).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(path, perms).unwrap();
+
+        assert!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o111 != 0,
+            "script should be executable: {}",
+            path.display()
+        );
     }
 
     fn make_manager(
@@ -252,7 +289,7 @@ mod tests {
         fs::create_dir_all(system_generation.join("bin")).unwrap();
         write_executable_script(
             &system_generation.join("bin/switch-to-configuration"),
-            "#!/bin/sh\nexit 1\n",
+            "#!/usr/bin/env bash\nexit 1\n",
         );
         symlink(&system_generation, &system_profile).unwrap();
         unsafe {
@@ -264,13 +301,11 @@ mod tests {
         let marker = hidden_root.join("rebuild-called");
         write_executable_script(
             &bin_dir.join("nixos-rebuild"),
-            &format!("#!/bin/sh\n: > '{}'\nexit 0\n", marker.display()),
+            &format!("#!/usr/bin/env bash\n: > '{}'\nexit 0\n", marker.display()),
         );
 
         let old_path = std::env::var_os("PATH");
-        unsafe {
-            std::env::set_var("PATH", &bin_dir);
-        }
+        prepend_path(&bin_dir, &old_path);
 
         let fs = MockFilesystem::new();
         fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
@@ -315,13 +350,11 @@ mod tests {
         fs::create_dir_all(&bin_dir).unwrap();
         write_executable_script(
             &bin_dir.join("nixos-rebuild"),
-            "#!/bin/sh\nprintf 'boom\\n' 1>&2\nexit 2\n",
+            "#!/usr/bin/env bash\nprintf 'boom\\n' 1>&2\nexit 2\n",
         );
 
         let old_path = std::env::var_os("PATH");
-        unsafe {
-            std::env::set_var("PATH", &bin_dir);
-        }
+        prepend_path(&bin_dir, &old_path);
 
         let builder =
             NixOSBuilder::new(hidden_root.join("config"), hidden_root.join("nails-system"));

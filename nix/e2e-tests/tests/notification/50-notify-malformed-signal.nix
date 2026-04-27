@@ -4,14 +4,17 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   notificationHelpers = import ./../../lib/notification-helpers.nix;
-in {
+in
+{
   name = "notify-malformed-signal";
   meta.tags = [ "notification" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     import json
@@ -31,6 +34,7 @@ in {
         stub_log = "/tmp/notify-send.log"
         bad_path = "/mnt/hidden-volume/notifications/20260101T000000000_bad.json"
         good_path = "/mnt/hidden-volume/notifications/20260101T000000001_good.json"
+        testuser_group = machine.succeed("id -gn testuser").strip()
 
         with subtest("prepare signals and safe notify-send stub"):
             machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
@@ -43,7 +47,10 @@ in {
                 body="Processed after malformed peer",
                 urgency="low",
             )
-            machine.succeed(f"chown -R testuser:testuser {stub_dir.rsplit('/', 1)[0]} {stub_log} /mnt/hidden-volume/notifications")
+            machine.succeed(f"chown -R testuser:{testuser_group} {stub_dir.rsplit('/', 1)[0]} {stub_log} /mnt/hidden-volume/notifications")
+            machine.succeed(f"test -f {bad_path}")
+            machine.succeed(f"test -f {good_path}")
+            assert read_stub_calls(stub_log) == [], "notify-send stub should be untouched before dispatch"
 
         with subtest("dispatcher skips malformed file and processes valid one"):
             result = run_command_capture(

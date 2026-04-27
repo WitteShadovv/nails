@@ -6,14 +6,17 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   assertions = import ./../../lib/assertions.nix;
   overlayHelpers = import ./../../lib/overlay-helpers.nix;
-in {
+in
+{
   name = "overlay-reverse-order-unmount";
   meta.tags = [ "overlay" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     import re
@@ -45,15 +48,17 @@ in {
             + shlex.quote(f"nails --config {config_path} emergency")
         )
         log_text = machine.succeed("journalctl -u nails-overlay-order-test -o cat")
+        clean_log_text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", log_text)
         unmounted = []
-        for line in log_text.splitlines():
+        for line in clean_log_text.splitlines():
             if "Overlay unmounted" not in line:
                 continue
-            match = re.search(r"path=([^ ]+)", line)
-            if match:
-                unmounted.append(match.group(1))
+            for field in line.split():
+                if field.startswith("path="):
+                    unmounted.append(field.split("=", 1)[1])
+                    break
         assert unmounted[:3] == ["/srv", "/etc", "/home"], \
-            f"Expected reverse unmount order ['/srv', '/etc', '/home'], got: {unmounted}\nLogs:\n{log_text}"
+            f"Expected reverse unmount order ['/srv', '/etc', '/home'], got: {unmounted}\nLogs:\n{clean_log_text}"
         assert_no_overlays(["/home", "/etc", "/srv"])
   '';
 }

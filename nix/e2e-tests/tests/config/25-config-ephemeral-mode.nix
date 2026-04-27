@@ -7,14 +7,17 @@ let
   assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
   ephemeralFixture = ./../../fixtures/configs/ephemeral.yaml;
-in {
+in
+{
   name = "config-ephemeral-mode";
   meta.tags = [ "config" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.canonicalDeactivateFn}
@@ -25,53 +28,52 @@ in {
     ${preflightHelpers.runCommandCaptureFn}
     ${preflightHelpers.commandAssertionsFn}
 
+    configured_targets = ["/etc", "/home", "/root", "/var", "/tmp", "/srv", "/opt"]
+    ephemeral_targets = ["/var", "/tmp", "/srv", "/opt"]
+    tmpfs_roots = [
+        "/run/nails/var-ephemeral",
+        "/run/nails/tmp-ephemeral",
+        "/run/nails/srv-ephemeral",
+        "/run/nails/opt-ephemeral",
+    ]
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.succeed("mkdir -p /srv /opt /var/lib")
     machine.succeed("cp ${ephemeralFixture} /tmp/ephemeral.yaml")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    with subtest("ephemeral overlay config currently fails with overlayfs same-mount constraint"):
-        console_start = len(machine.get_console_log())
-        activation = run_command_capture(
-            "config-ephemeral-mode-activate",
+    with subtest("ephemeral overlay config is cleanly rejected during preflight"):
+        result = run_command_capture(
+            "config-ephemeral-mode",
             "nails --config /tmp/ephemeral.yaml activate --overlay-only --no-kill-session -y",
         )
-        assert_command_failed(activation)
-        combined_output = activation["stdout"] + activation["stderr"]
+        assert_command_failed(result)
+        combined = result["stdout"] + "\n" + result["stderr"]
         assert_text_contains(
-            combined_output,
+            combined,
             [
-                "Ephemeral overlay mount failed",
-                "Failed to mount /mnt/nails-pivot/var: EINVAL: Invalid argument",
-                "Automatic rollback completed.",
-                "Current state: Inactive",
+                "overlay-compatibility",
+                "Extended ephemeral overlays are currently unsupported",
+                "/var, /tmp, /srv, /opt",
+                "upperdir and workdir",
+                "same mount",
+                "Disable extended_overlays.enabled",
             ],
         )
-        assert_text_contains(
-            machine.get_console_log()[console_start:],
-            ["overlayfs: workdir and upperdir must reside under the same mount"],
-        )
-
-    with subtest("failed ephemeral activation rolls back all overlays and tmpfs uppers"):
         assert_status_state("inactive", config_path="/tmp/ephemeral.yaml")
-        assert_no_overlays(["/etc", "/home", "/root", "/var", "/tmp", "/srv", "/opt"])
-        for tmpfs_path in [
-            "/run/nails/var-upper",
-            "/run/nails/var-work",
-            "/run/nails/tmp-upper",
-            "/run/nails/tmp-work",
-            "/run/nails/srv-upper",
-            "/run/nails/srv-work",
-            "/run/nails/opt-upper",
-            "/run/nails/opt-work",
-        ]:
-            machine.fail(f"mountpoint -q {tmpfs_path}")
+        assert_no_overlays(configured_targets)
+        for tmpfs_root in tmpfs_roots:
+            machine.fail(f"mountpoint -q {tmpfs_root}")
+            machine.fail(f"test -e {tmpfs_root}")
 
-    with subtest("failed ephemeral activation leaves hidden storage untouched"):
+    with subtest("preflight rejection leaves hidden storage untouched"):
         machine.fail("test -e /mnt/hidden-volume/var/lib/ephemeral-proof")
         machine.fail("test -e /mnt/hidden-volume/tmp/ephemeral-proof")
         machine.fail("test -e /mnt/hidden-volume/srv/ephemeral/proof")
         machine.fail("test -e /mnt/hidden-volume/opt/ephemeral/proof")
+        machine.fail("test -d /mnt/hidden-volume/tmp")
+        machine.fail("test -d /mnt/hidden-volume/srv")
+        machine.fail("test -d /mnt/hidden-volume/opt")
   '';
 }

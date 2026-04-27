@@ -2,8 +2,23 @@
 
 use super::{system_profile_path, system_profiles_dir};
 use crate::error::{NailsError, Result};
+use crate::nixos::is_non_fatal_switch_failure;
 use crate::nixos::{NixOSBuildMode, NixOSBuilder};
 use std::path::PathBuf;
+
+fn prefer_stderr(stderr: &str, stdout: &str) -> String {
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        return stderr.to_string();
+    }
+
+    let stdout = stdout.trim();
+    if !stdout.is_empty() {
+        return stdout.to_string();
+    }
+
+    "command returned a non-zero exit status without diagnostic output".to_string()
+}
 
 impl NixOSBuilder {
     /// Switch to the specified NixOS profile generation
@@ -54,7 +69,10 @@ impl NixOSBuilder {
                 }
             }
 
-            return Err(NailsError::NixOSError(format!("Switch failed: {}", stderr)));
+            return Err(NailsError::NixOSError(format!(
+                "Switch failed: {}",
+                prefer_stderr(&stderr, "")
+            )));
         }
 
         tracing::info!("Switched to NixOS profile: generation {}", generation);
@@ -169,27 +187,40 @@ impl NixOSBuilder {
     /// - **Flake**:  `nixos-rebuild test --flake <ref> --no-update-lock-file`
     /// - **Legacy**: `nixos-rebuild test -I nixos-config=<path>`
     pub fn build_and_switch(&self) -> Result<()> {
-        let (success, _stdout, stderr) = match &self.build_mode {
+        let (success, stdout, stderr) = match &self.build_mode {
             NixOSBuildMode::Flake => {
                 let flake_arg = self.effective_flake_arg();
-                self.executor.execute_nixos_rebuild(&[
-                    "test",
-                    "--flake",
-                    &flake_arg,
-                    "--no-update-lock-file",
-                    "--impure",
-                ])?
+                self.executor.execute_nixos_rebuild(
+                    &[
+                        "test",
+                        "--flake",
+                        &flake_arg,
+                        "--no-update-lock-file",
+                        "--impure",
+                    ],
+                    self.should_clear_nix_path(),
+                )?
             }
             NixOSBuildMode::Legacy { config_path } => {
                 let arg = format!("nixos-config={}", config_path.display());
-                self.executor.execute_nixos_rebuild(&["test", "-I", &arg])?
+                self.executor
+                    .execute_nixos_rebuild(&["test", "-I", &arg], self.should_clear_nix_path())?
             }
         };
 
         if !success {
+            if is_non_fatal_switch_failure(&stderr, &stdout) {
+                tracing::warn!(
+                    stderr = %stderr.trim(),
+                    stdout = %stdout.trim(),
+                    "nixos-rebuild test reported non-fatal unit restart failures; continuing activation"
+                );
+                return Ok(());
+            }
+
             return Err(NailsError::NixOSError(format!(
                 "nixos-rebuild test failed: {}",
-                stderr
+                prefer_stderr(&stderr, &stdout)
             )));
         }
 

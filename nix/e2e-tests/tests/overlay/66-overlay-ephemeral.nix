@@ -1,4 +1,4 @@
-# Test 66: Overlay Ephemeral Semantics
+# Test 66: Overlay Ephemeral Semantics (unsupported layout)
 # Uses subtests, deterministic waits, hard assertions, and overlay tags only.
 
 { self, ... }:
@@ -6,21 +6,34 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
-in {
+  preflightHelpers = import ./../../lib/preflight-helpers.nix;
+in
+{
   name = "overlay-ephemeral";
   meta.tags = [ "overlay" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeEphemeralConfigFn}
-    ${testHelpers.runDetachedCommandFn}
-    ${testHelpers.canonicalDeactivateFn}
-    ${assertions.assertOverlayMountedFn}
+    ${testHelpers.readStatusJsonFn}
+    ${assertions.assertStatusStateFn}
     ${assertions.assertNoOverlaysFn}
+    ${preflightHelpers.runCommandCaptureFn}
+    ${preflightHelpers.commandAssertionsFn}
+
+    configured_targets = ["/etc", "/home", "/root", "/var", "/tmp", "/srv", "/opt"]
+    tmpfs_roots = [
+        "/run/nails/var-ephemeral",
+        "/run/nails/tmp-ephemeral",
+        "/run/nails/srv-ephemeral",
+        "/run/nails/opt-ephemeral",
+    ]
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -28,27 +41,35 @@ in {
     config_path = "/tmp/nails-ephemeral.yaml"
     write_ephemeral_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    machine.succeed("mkdir -p /opt")
 
-    with subtest("phase 1: activate RAM-backed extended overlays"):
-        machine.succeed(
-            f"nails --config {config_path} activate --overlay-only --no-kill-session -y"
+    with subtest("ephemeral overlay activation is rejected by overlay-compatibility preflight"):
+        result = run_command_capture(
+            "overlay-ephemeral",
+            f"nails --config {config_path} activate --overlay-only --no-kill-session -y",
         )
-        for path in ["/var", "/tmp", "/srv", "/opt"]:
-            assert_overlay_mounted(path)
-        machine.succeed("findmnt -n -o FSTYPE /run/nails/srv-upper | grep -qx tmpfs")
-        machine.succeed("findmnt -n -o FSTYPE /run/nails/srv-work | grep -qx tmpfs")
+        assert_command_failed(result)
+        combined = result["stdout"] + "\n" + result["stderr"]
+        assert_text_contains(
+            combined,
+            [
+                "overlay-compatibility",
+                "Extended ephemeral overlays are currently unsupported",
+                "/var, /tmp, /srv, /opt",
+                "upperdir and workdir",
+                "same mount",
+                "Disable extended_overlays.enabled",
+            ],
+        )
+        assert_status_state("inactive", config_path=config_path)
+        assert_no_overlays(configured_targets)
+        for path in tmpfs_roots:
+            machine.fail(f"mountpoint -q {path}")
+            machine.fail(f"test -e {path}")
 
-    with subtest("phase 2: writes land in tmpfs and not hidden storage"):
-        machine.succeed("touch /srv/ephemeral-marker")
-        machine.succeed("test -f /run/nails/srv-upper/ephemeral-marker")
+    with subtest("preflight rejection leaves hidden and runtime storage untouched"):
         machine.fail("test -e /mnt/hidden-volume/srv/ephemeral-marker")
-
-    with subtest("phase 3: deactivation drops ephemeral writes"):
-        canonical_deactivate(config_path, unit_name="nails-deactivate-overlay-ephemeral")
-        assert_no_overlays(["/var", "/tmp", "/srv", "/opt"])
-        machine.fail("test -e /srv/ephemeral-marker")
-        machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
-        machine.fail("test -e /mnt/hidden-volume/srv/ephemeral-marker")
-        machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
+        machine.fail("test -d /mnt/hidden-volume/srv")
+        machine.fail("test -d /mnt/hidden-volume/.work/srv")
   '';
 }

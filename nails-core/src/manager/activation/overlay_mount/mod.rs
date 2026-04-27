@@ -9,19 +9,19 @@
 
 mod auto_mount;
 mod explicit_mount;
+mod restore;
 
+#[allow(unused_imports)]
 use super::{
     MountInfo, MountTracker, MountType, build_overlay_targets, clean_stale_network_config,
     create_overlay_config, start_service_and_socket,
 };
 use crate::{
     FailedOverlayInfo, Filesystem, NailsError, NailsManager, OverlayInfo, Result, Verbosity,
-    inject_import_block, verify_base_config_clean,
+    inject_import_block,
 };
 use chrono::Utc;
 use std::path::{Path, PathBuf};
-
-use super::guards::NixDaemonGuard;
 
 impl<F: Filesystem> NailsManager<F> {
     /// Mount persistent and ephemeral overlays
@@ -33,34 +33,6 @@ impl<F: Filesystem> NailsManager<F> {
         options: &crate::ActivateOptions,
         verbosity: Verbosity,
     ) -> Result<(usize, usize, Vec<PathBuf>, Vec<PathBuf>)> {
-        // Story 15.1, AC1: Verify base hardware-configuration.nix is forensically clean before
-        // any overlays are mounted. Fail activation if the base config already contains
-        // NAILS or hidden references that would betray the overlay approach.
-        match verify_base_config_clean(&self.filesystem) {
-            Ok(true) => {
-                tracing::debug!("Base hardware-configuration.nix is clean — proceeding");
-            }
-            Ok(false) => {
-                tracing::error!(
-                    "Base /etc/nixos/hardware-configuration.nix contains suspicious references \
-                     (NAILS or hidden paths). Activation aborted to preserve forensic integrity."
-                );
-                return Err(NailsError::NixOSError(
-                    "Base hardware-configuration.nix is not forensically clean — \
-                     contains NAILS or hidden references before overlay mount"
-                        .into(),
-                ));
-            }
-            Err(e) => {
-                // Treat unreadable base config as a hard failure to avoid unsafe activation.
-                tracing::error!(
-                    error = %e,
-                    "Could not verify base hardware-configuration.nix; activation aborted"
-                );
-                return Err(e);
-            }
-        }
-
         if verbosity >= Verbosity::Normal {
             tracing::info!("Mounting overlays...");
         }
@@ -178,6 +150,16 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Post-mount: restart stopped services so they write to overlay
         for service in &mount_result.stopped_services {
+            if overlay.target == Path::new("/nix") && service == "nix-daemon" {
+                tracing::info!(
+                    service = %service,
+                    target = %overlay.target.display(),
+                    "Deferring {} restart to post-/nix restore path",
+                    service
+                );
+                continue;
+            }
+
             start_service_and_socket(service);
             tracing::info!(
                 service = %service,
@@ -290,8 +272,11 @@ impl<F: Filesystem> NailsManager<F> {
                         mount_info.target.clone(),
                         vec![
                             mount_info.staging.clone(), // staging (overlay mount point)
-                            mount_info.upper.clone(),   // tmpfs upper
-                            mount_info.work.clone(),    // tmpfs work
+                            mount_info
+                                .upper
+                                .parent()
+                                .expect("ephemeral upper should have shared tmpfs parent")
+                                .to_path_buf(), // shared tmpfs backing
                         ],
                     ));
 
@@ -363,54 +348,6 @@ impl<F: Filesystem> NailsManager<F> {
                 tracing::warn!("Failed to save failed_overlays to state: {}", e);
             }
         }
-
-        Ok(())
-    }
-
-    /// Restore NixOS security model after /nix overlay
-    pub(super) fn restore_nix_security_model(&self, nix_guard: &mut NixDaemonGuard) -> Result<()> {
-        // Step 1: Recreate read-only bind mount on /nix/store
-        // The overlay on /nix hides the boot-time bind mount; we recreate it
-        // so regular processes see /nix/store as read-only (defense-in-depth)
-        tracing::info!("Restoring read-only bind mount on /nix/store...");
-        let nix_store = Path::new("/nix/store");
-        if let Err(e) = self.filesystem.bind_mount(nix_store, nix_store) {
-            tracing::warn!(
-                error = %e,
-                "Could not recreate /nix/store bind mount (non-fatal)"
-            );
-        } else if crate::runtime_safety::should_skip_host_interaction() {
-            tracing::debug!(
-                "Skipping /nix/store remount command in test/test-like context to avoid host interaction"
-            );
-        } else {
-            // Remount as read-only (uses Command since Filesystem trait lacks remount_readonly)
-            let remount_result = std::process::Command::new("mount")
-                .args(["-o", "remount,ro,bind", "/nix/store"])
-                .output();
-            match remount_result {
-                Ok(output) if output.status.success() => {
-                    tracing::info!("Read-only bind mount on /nix/store restored");
-                }
-                Ok(output) => {
-                    tracing::warn!(
-                        stderr = %String::from_utf8_lossy(&output.stderr),
-                        "Remount /nix/store as read-only failed (non-fatal)"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Remount /nix/store command failed (non-fatal)"
-                    );
-                }
-            }
-        }
-
-        // Step 2: Restart nix-daemon (inherits overlay, creates own rw namespace)
-        tracing::info!("Restarting nix-daemon (now writing to overlay)...");
-        start_service_and_socket("nix-daemon");
-        nix_guard.disarm();
 
         Ok(())
     }

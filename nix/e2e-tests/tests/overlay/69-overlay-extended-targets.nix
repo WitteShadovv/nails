@@ -1,19 +1,23 @@
 # Test 69: Overlay Extended Targets
-# Uses subtests, deterministic waits, hard assertions, and overlay tags only.
+# Historical name only: exercises explicit persistent overlays for additional
+# targets, and requires those lower directories to exist before activation.
 
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
-in {
+in
+{
   name = "overlay-extended-targets";
   meta.tags = [ "overlay" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeExtendedConfigFn}
@@ -23,10 +27,12 @@ in {
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
+    machine.succeed("mkdir -p /srv /opt /var/lib")
 
     config_path = "/tmp/nails-extended.yaml"
     write_extended_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    machine.succeed("mkdir -p /opt")
     machine.succeed(
         "mkdir -p /mnt/hidden-volume/{root,tmp,srv,opt} /mnt/hidden-volume/.work/{root,tmp,srv,opt}"
     )

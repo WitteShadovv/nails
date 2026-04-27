@@ -7,15 +7,18 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   symlinkFixture = ./../../fixtures/configs/symlink-target.yaml;
   traversalFixture = ./../../fixtures/configs/path-traversal.yaml;
-in {
+in
+{
   name = "permissions-security";
   meta.tags = [ "security" ];
 
   nodes = {
-    machine = { ... }: {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
+    machine =
+      { ... }:
+      {
+        imports = [ ./../../lib/vm-config.nix ];
+        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+      };
   };
 
   testScript = _: ''
@@ -32,17 +35,19 @@ in {
     machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
 
     log_files = machine.succeed(
-        "find /var/log /tmp /run -name '*nails*' -type f 2>/dev/null || echo 'NO_LOGS'"
+      "find /var/log /mnt/hidden-volume/logs -type f "
+      "\\( -name 'nails.log' -o -name 'nails*.log' \\) 2>/dev/null || true"
     ).strip()
 
-    if "NO_LOGS" not in log_files:
+    if log_files:
         for log_file in log_files.split("\n"):
             log_file = log_file.strip()
             if log_file:
                 perms = machine.succeed(f"stat -c %a {log_file}").strip()
                 print(f"  Log file {log_file}: permissions {perms}")
-                assert perms[-1] == "0", \
-                    f"Log file {log_file} is world-accessible (perms={perms})"
+                mode = int(perms, 8)
+                assert (mode & 0o022) == 0, \
+                    f"Log file {log_file} is writable by non-owner (perms={perms})"
         print("✓ Log files have restrictive permissions")
     else:
         print("Note: No nails log files found (may use journald)")

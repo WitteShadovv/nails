@@ -3,5 +3,48 @@
   "profileId": "direct-headless",
   "scenarioId": "sample",
   "runId": "sample-run-001",
-  "iteration": 1
+  "iteration": 1,
+  "oracles": {
+    "flsOracle": {
+      "exactStageExpectations": {
+        "active": [
+          {
+            "label": "document-artifact",
+            "path": "/home/testuser/Documents/forensics-document.txt"
+          },
+          {
+            "label": "financial-artifact",
+            "path": "/home/testuser/financial-data.csv"
+          },
+          {
+            "label": "hidden-dotfile",
+            "path": "/home/testuser/.hidden-secrets"
+          },
+          {
+            "label": "nested-sensitive-artifact",
+            "path": "/home/testuser/forensics-eval/projects/confidential/keys.txt"
+          },
+          {
+            "label": "temp-artifact",
+            "path": "/tmp/forensics-eval/temp-token.txt"
+          },
+          {
+            "label": "history-canary",
+            "pathTemplate": "/history/{canary:history}"
+          }
+        ],
+        "post-standard": [
+          {
+            "label": "financial-artifact",
+            "path": "/home/testuser/financial-data.csv"
+          },
+          {
+            "label": "temp-artifact",
+            "path": "/tmp/forensics-eval/temp-token.txt"
+          }
+        ],
+        "post-emergency": []
+      }
+    }
+  }
 }

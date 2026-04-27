@@ -7,19 +7,20 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   emergency = import ./../../lib/emergency.nix;
   perf = import ./../../lib/perf.nix;
-in {
+in
+{
   name = "performance";
   meta.tags = [ "performance" ];
 
   nodes = {
-    machine = { ... }: {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-      services.getty.autologinUser = "root";
-      systemd.services.nails-emergency-test =
-        emergency.makeEmergencyUnit self.packages.x86_64-linux.nails
-        "/tmp/nails-headless.yaml";
-    };
+    machine =
+      { ... }:
+      {
+        imports = [ ./../../lib/vm-config.nix ];
+        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+        services.getty.autologinUser = "root";
+        systemd.services.nails-emergency-test = emergency.makeEmergencyUnit self.packages.x86_64-linux.nails "/tmp/nails-headless.yaml";
+      };
   };
 
   testScript = _: ''

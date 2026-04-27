@@ -42,9 +42,7 @@ let
         "graphical"
         "vfat-boot"
       ] profileId) profiles.${profileId};
-      canarySet = canaries.mkSet {
-        inherit lane profileId scenarioId;
-      };
+      canarySet = canaries.mkSet { inherit lane profileId scenarioId; };
       metadata = contracts.mkScenarioMetadata {
         inherit
           allowlist

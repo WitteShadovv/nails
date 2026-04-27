@@ -23,12 +23,25 @@ declare -A LEAF_SCENARIOS=()
 declare -A LEAF_PROFILES=()
 declare -A LEAF_MODES=()
 FLAKE_REF="${NAILS_FORENSICS_EVAL_FLAKE_REF:-path:$PROJECT_ROOT}"
-SYSTEM="${NAILS_FORENSICS_EVAL_SYSTEM:-$(nix eval --impure --raw --expr builtins.currentSystem)}"
+SYSTEM="${NAILS_FORENSICS_EVAL_SYSTEM:-}"
 DRY_RUN=false
+PLAN_JSON=false
 SHARD_INDEX=""
 SHARD_COUNT=""
 FORENSICS_METADATA_JSON=""
+FORENSICS_METADATA_OVERRIDE_JSON="${NAILS_FORENSICS_EVAL_METADATA_JSON:-}"
 FORWARD_ARGS=()
+
+resolve_system() {
+    if [[ -n "$SYSTEM" ]]; then
+        printf '%s' "$SYSTEM"
+    else
+        (
+            cd "$PROJECT_ROOT"
+            nix eval --impure --raw --expr builtins.currentSystem
+        )
+    fi
+}
 
 leaf_test_exists() {
     local candidate="$1"
@@ -64,10 +77,15 @@ load_forensics_metadata() {
     local metadata_json
     local leaf_id scenario_id profile_id recommended_mode
 
-    metadata_json="$({
-        cd "$PROJECT_ROOT"
-        nix eval --json "${FLAKE_REF}#forensics-eval-metadata.$SYSTEM"
-    })"
+    if [[ -n "$FORENSICS_METADATA_OVERRIDE_JSON" ]]; then
+        # Test seam: allow deterministic resolution/sharding without nix eval.
+        metadata_json="$FORENSICS_METADATA_OVERRIDE_JSON"
+    else
+        metadata_json="$({
+            cd "$PROJECT_ROOT"
+            nix eval --json "${FLAKE_REF}#forensics-eval-metadata.$(resolve_system)"
+        })"
+    fi
 
     mapfile -t AVAILABLE_TARGETS < <(
         python3 - <<'PY' "$metadata_json"
@@ -121,6 +139,12 @@ PY
     )
 
     FORENSICS_METADATA_JSON="$metadata_json"
+}
+
+ensure_forensics_metadata_loaded() {
+    if [[ -z "$FORENSICS_METADATA_JSON" ]]; then
+        load_forensics_metadata
+    fi
 }
 
 resolve_targets() {
@@ -186,6 +210,7 @@ print_usage() {
     echo "  -h, --help              Show this help message and exit"
     echo "  -l, --list              List available targets"
     echo "      --dry-run           Print final resolved leaf tests without running"
+    echo "      --plan-json         Print resolved workflow plan JSON and exit"
     echo "      --resolve-only      Alias for --dry-run"
     echo "      --shard-index N     Run only shard N (1-based) of the resolved leaves"
     echo "      --shard-count N     Total number of deterministic shards"
@@ -246,6 +271,8 @@ validate_shard_configuration() {
 list_tests() {
     local name
 
+    ensure_forensics_metadata_loaded
+
     echo -e "${BOLD}Available Forensics Eval Targets:${NC}"
     echo ""
 
@@ -263,6 +290,90 @@ print_resolved_tests() {
     for leaf_id in "${tests[@]}"; do
         printf '%s\n' "$leaf_id"
     done
+}
+
+print_plan_json() {
+    local requested_targets_json resolved_tests_json builtin_live_json modes_json
+
+    requested_targets_json="$(python3 - <<'PY' "${TEST_NAMES[@]}"
+import json
+import sys
+
+print(json.dumps(sys.argv[1:]))
+PY
+    )"
+
+    resolved_tests_json="$(python3 - <<'PY' "${RESOLVED_TESTS[@]}"
+import json
+import sys
+
+print(json.dumps(sys.argv[1:]))
+PY
+    )"
+
+    builtin_live_json="$(python3 - <<'PY' "$FORENSICS_METADATA_JSON"
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+print(json.dumps(payload.get("builtinLiveLeafTests", [])))
+PY
+    )"
+
+    modes_json="$(python3 - <<'PY' "${FORWARD_ARGS[@]}"
+import json
+import sys
+
+args = sys.argv[1:]
+modes = None
+iterations = None
+i = 0
+while i < len(args):
+    arg = args[i]
+    if arg == "--modes" and i + 1 < len(args):
+        modes = [chunk.strip() for chunk in args[i + 1].split(",") if chunk.strip()]
+        i += 2
+        continue
+    if arg.startswith("--modes="):
+        modes = [chunk.strip() for chunk in arg.split("=", 1)[1].split(",") if chunk.strip()]
+        i += 1
+        continue
+    if arg == "--iterations" and i + 1 < len(args):
+        iterations = args[i + 1]
+        i += 2
+        continue
+    if arg.startswith("--iterations="):
+        iterations = arg.split("=", 1)[1]
+        i += 1
+        continue
+    i += 1
+
+payload = {
+    "modes": modes or ["standard", "emergency"],
+    "iterations": iterations or "1",
+}
+print(json.dumps(payload))
+PY
+    )"
+
+    python3 - <<'PY' "$requested_targets_json" "$resolved_tests_json" "$builtin_live_json" "$modes_json"
+import json
+import sys
+
+requested = json.loads(sys.argv[1])
+resolved = json.loads(sys.argv[2])
+builtin_live = json.loads(sys.argv[3])
+runner = json.loads(sys.argv[4])
+
+print(json.dumps({
+    "requestedTargets": requested,
+    "resolvedLeaves": resolved,
+    "builtinLiveSupportedLeaves": builtin_live,
+    "modes": runner["modes"],
+    "iterations": runner["iterations"],
+    "liveSupportNote": "Built-in live support is limited to builtinLiveSupportedLeaves; other leaves require fixture input or a custom stage exporter.",
+}, indent=2, sort_keys=True))
+PY
 }
 
 select_shard_tests() {
@@ -383,8 +494,6 @@ run_tests() {
 
 TEST_NAMES=()
 
-load_forensics_metadata
-
 while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--help)
@@ -397,6 +506,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dry-run|--resolve-only)
             DRY_RUN=true
+            shift
+            ;;
+        --plan-json)
+            PLAN_JSON=true
             shift
             ;;
         --shard-index)
@@ -433,6 +546,8 @@ if [ "${#TEST_NAMES[@]}" -eq 0 ]; then
     TEST_NAMES=("$(default_target)")
 fi
 
+ensure_forensics_metadata_loaded
+
 mapfile -t RESOLVED_TESTS < <(resolve_targets "${TEST_NAMES[@]}")
 
 if [ "${#RESOLVED_TESTS[@]}" -eq 0 ]; then
@@ -452,7 +567,9 @@ if [ "${#RESOLVED_TESTS[@]}" -eq 0 ]; then
     exit 1
 fi
 
-if [ "$DRY_RUN" = true ]; then
+if [ "$PLAN_JSON" = true ]; then
+    print_plan_json
+elif [ "$DRY_RUN" = true ]; then
     print_resolved_tests "${RESOLVED_TESTS[@]}"
 else
     run_tests "${RESOLVED_TESTS[@]}"

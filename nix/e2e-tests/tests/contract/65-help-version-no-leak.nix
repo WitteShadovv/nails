@@ -2,16 +2,22 @@
 # Self-check: uses subtests, hard assertions, shared lib helpers, tags contract, no sleep.
 
 { self, pkgs, ... }:
-let contractHelpers = import ./../../lib/contract-helpers.nix;
-in {
+let
+  contractHelpers = import ./../../lib/contract-helpers.nix;
+in
+{
   name = "help-version-no-leak";
   meta.tags = [ "contract" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages =
-      [ self.packages.x86_64-linux.nails pkgs.python3 ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.python3
+      ];
+    };
 
   testScript = _: ''
     ${contractHelpers.runCommandCaptureFn}

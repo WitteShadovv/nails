@@ -14,14 +14,17 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   stateHelpers = import ./../../lib/state-helpers.nix;
-in {
+in
+{
   name = "state-checksum-tamper";
   meta.tags = [ "state" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     import json
@@ -38,7 +41,7 @@ in {
     machine.wait_for_unit("multi-user.target")
 
     headless_config = "/tmp/nails-headless.yaml"
-    state_path = "/mnt/hidden-volume/.nails/state.json"
+    state_path = "/mnt/hidden-volume/state.json"
     backup_path = "/tmp/state-backup.json"
 
     write_headless_config(headless_config)
@@ -69,7 +72,7 @@ in {
         )
 
         tampered_payload = read_status_json(config_path=headless_config)
-        assert_status_state("Inactive", payload=tampered_payload)
+        assert_status_state("Unknown", payload=tampered_payload)
         error_text = tampered_payload.get("error", "")
         assert (
             "checksum" in error_text.lower() or "corrupt" in error_text.lower()

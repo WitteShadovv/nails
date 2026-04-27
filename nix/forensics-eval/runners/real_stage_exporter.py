@@ -265,6 +265,7 @@ machine.succeed("mkdir -p /tmp/forensics-stage/artifacts /tmp/forensics-stage/co
 _write_stage_metadata("baseline")
 _capture_common("baseline")
 _capture_command("baseline-nails-help", "nails --help")
+_capture_command("baseline-fls-vdb", "timeout 20s fls -r /dev/vdb 2>/dev/null || true")
 _finalize()
 """
     if stage_name == "active":
@@ -282,6 +283,7 @@ machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
 _plant_canaries()
 _capture_common("active")
 _capture_command("active-grep-canaries", "grep -R -n 'nails.forensics.' /home /tmp 2>/dev/null || true")
+_capture_command("active-fls-vdb", "timeout 20s fls -r /dev/vdb 2>/dev/null || true")
 _copy_path("/home/testuser/forensics-eval", "artifacts/home-forensics-eval")
 _copy_path("/home/testuser/Documents/forensics-document.txt", "artifacts/forensics-document.txt")
 _copy_path("/home/testuser/financial-data.csv", "artifacts/financial-data.csv")

@@ -70,6 +70,13 @@ pub struct CleanupConfig {
     /// Default: HIDDEN_VOLUME_ROOT
     pub hidden_volume_path: PathBuf,
 
+    /// Config file path currently in use, if any.
+    ///
+    /// When set, temp-file cleanup preserves this exact path so follow-up
+    /// commands can continue using the same explicit config after deactivation.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub config_file_path: Option<PathBuf>,
+
     /// Whether to sanitize memory after cleanup (default: false)
     ///
     /// When enabled, attempts to clear page cache by writing "3" to
@@ -116,6 +123,7 @@ impl Default for CleanupConfig {
             temp_dirs: vec![PathBuf::from("/tmp")],
             log_path: hidden_volume.join("logs"),
             hidden_volume_path: hidden_volume,
+            config_file_path: None,
             sanitize_memory: false,
             secure_delete: false,
             post_unmount_cleanup: true,

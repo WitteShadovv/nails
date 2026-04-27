@@ -7,15 +7,21 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   shellHelpers = import ./../../lib/shell-helpers.nix;
-in {
+in
+{
   name = "shell-rc-integration-fish";
   meta.tags = [ "shell" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    programs.fish.enable = true;
-    environment.systemPackages = [ self.packages.x86_64-linux.nails pkgs.fish ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      programs.fish.enable = true;
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.fish
+      ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

@@ -1206,6 +1206,47 @@ short line
 }
 
 #[test]
+fn test_same_device_submount_uses_shortest_root_mount_for_source_resolution() {
+    use super::parse_submount_sources;
+    let mountinfo = "\
+42 1 254:1 / /persist/longer rw,relatime - ext4 /dev/mapper/persist rw
+43 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+50 1 0:50 / /etc rw - tmpfs tmpfs rw
+73 43 254:1 /etc/nixos /etc/nixos rw,relatime - ext4 /dev/mapper/persist rw";
+
+    let result = parse_submount_sources(mountinfo, Path::new("/etc"));
+
+    assert_eq!(
+        result,
+        vec![(
+            PathBuf::from("/etc/nixos"),
+            PathBuf::from("/persist/etc/nixos")
+        )],
+        "device-backed submounts should resolve against the shortest root mount"
+    );
+}
+
+#[test]
+fn test_non_equivalent_same_device_bind_submount_is_preserved() {
+    use super::parse_submount_sources;
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+50 1 254:1 /nix /nix rw,relatime - ext4 /dev/mapper/persist rw
+73 50 254:1 /special/cache /nix/cache rw,relatime - ext4 /dev/mapper/persist rw";
+
+    let result = parse_submount_sources(mountinfo, Path::new("/nix"));
+
+    assert_eq!(
+        result,
+        vec![(
+            PathBuf::from("/nix/cache"),
+            PathBuf::from("/persist/special/cache")
+        )],
+        "same-device bind mounts should be preserved when their backing root differs from the target"
+    );
+}
+
+#[test]
 fn test_same_device_submount_skipped_persist() {
     use super::parse_submount_sources;
     // Target /persist is on device 254:1, submount /persist/nix/store is also 254:1.
@@ -1224,9 +1265,9 @@ fn test_same_device_submount_skipped_persist() {
 #[test]
 fn test_same_device_submount_skipped_nix() {
     use super::parse_submount_sources;
-    // Target /nix is bind-mounted from persist (device 254:1).
-    // Submount /nix/store is also on 254:1.
-    // Same device → should be skipped.
+    // Target /nix is itself bind-mounted from /persist/nix (device 254:1).
+    // Preserving /nix/store would derive an extra lower of /persist/nix, which
+    // is target-equivalent to /nix and causes overlayfs ELOOP on nails-os.
     let mountinfo = "\
 42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
 50 1 254:1 /nix /nix rw,relatime - ext4 /dev/mapper/persist rw
@@ -1234,7 +1275,39 @@ fn test_same_device_submount_skipped_nix() {
     let result = parse_submount_sources(mountinfo, Path::new("/nix"));
     assert!(
         result.is_empty(),
-        "Same-device submount should be skipped, got: {:?}",
+        "Target-equivalent same-device submount should be skipped, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_same_device_target_equivalent_path_source_skipped_nix() {
+    use super::parse_submount_sources;
+    // Some kernels/reporting paths expose bind source as a direct path after
+    // '-' in mountinfo. This must still be treated as target-equivalent and skipped.
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+50 1 254:1 /nix /nix rw,relatime - ext4 /dev/mapper/persist rw
+73 50 254:1 /nix/store /nix/store rw,relatime - ext4 /persist/nix/store rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/nix"));
+    assert!(
+        result.is_empty(),
+        "Target-equivalent same-device path source should be skipped, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_same_device_self_backed_submount_still_skipped() {
+    use super::parse_submount_sources;
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+50 1 254:1 /persist /persist rw,relatime - ext4 /dev/mapper/persist rw
+73 50 254:1 /nix/store /persist/nix/store rw,relatime - ext4 /dev/mapper/persist rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/persist"));
+    assert!(
+        result.is_empty(),
+        "Self-backed submount should still be skipped, got: {:?}",
         result
     );
 }

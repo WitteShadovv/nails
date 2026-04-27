@@ -4,14 +4,20 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   notificationHelpers = import ./../../lib/notification-helpers.nix;
-in {
+in
+{
   name = "notify-no-notify-send";
-  meta.tags = [ "notification" "smoke" ];
+  meta.tags = [
+    "notification"
+    "smoke"
+  ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     import json
@@ -26,6 +32,7 @@ in {
         config_path = "/tmp/nails-notify.yaml"
         signal_path = "/mnt/hidden-volume/notifications/20260101T000000000_missing-notify-send.json"
         nails_path = machine.succeed("command -v nails").strip()
+        testuser_group = machine.succeed("id -gn testuser").strip()
 
         with subtest("prepare one pending notification without notify-send in PATH"):
             machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
@@ -35,7 +42,7 @@ in {
                 title="No notify-send",
                 body="Dispatcher should degrade cleanly",
             )
-            machine.succeed("chown -R testuser:testuser /mnt/hidden-volume/notifications")
+            machine.succeed(f"chown -R testuser:{testuser_group} /mnt/hidden-volume/notifications")
 
         with subtest("dispatcher exits cleanly and preserves pending file"):
             result = run_command_capture(

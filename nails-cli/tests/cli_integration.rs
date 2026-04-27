@@ -264,16 +264,12 @@ fn test_activate_help_includes_quiet_flag() {
 /// Test that activate command with --no-color doesn't produce ANSI codes
 #[test]
 fn test_activate_no_color_output() {
-    if !check_unsafe_ops_allowed("test_activate_no_color_output") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     // Verify: command fails (expected without setup) AND has no ANSI codes
-    cmd.args(["activate", "--no-color"])
+    cmd.args(["activate", "--no-color", "--help"])
         .assert()
-        .failure()
-        .stderr(predicates::str::is_match(r"\x1b\[").unwrap().not()); // No ANSI escape sequences
+        .success()
+        .stdout(predicates::str::is_match(r"\x1b\[").unwrap().not()); // No ANSI escape sequences
 }
 
 /// Test that activate command with verbosity flags are accepted
@@ -560,6 +556,220 @@ fn test_status_command_plain_output() {
 }
 
 #[test]
+fn test_status_command_no_color_output_has_unicode_without_ansi() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["status", "--no-color"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("NAILS Status Report"))
+        .stdout(predicates::str::contains("State:"))
+        .stdout(predicates::str::contains("🟢").or(predicates::str::contains("🔴")))
+        .stdout(predicates::str::contains("\u{001b}").not());
+}
+
+#[test]
+fn test_status_command_verbose_inactive_reports_paths_and_load_outcome() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let log_path = hidden_root.join("custom-logs");
+    let state_path = hidden_root.join("custom-state.json");
+    let config_path = temp_dir.path().join("nails.yaml");
+
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nstate_file_path: {}\nlog_path: {}\noverlays: []",
+        hidden_root.display(),
+        state_path.display(),
+        log_path.display(),
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "status",
+            "--verbose",
+        ])
+        .output()
+        .expect("failed to run verbose inactive status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout={stdout}");
+    assert!(stdout.contains("Verbose Details:"));
+    assert!(stdout.contains(&format!("Config file:        {}", config_path.display())));
+    assert!(stdout.contains(&format!("Hidden volume root: {}", hidden_root.display())));
+    assert!(stdout.contains(&format!("State file:         {}", state_path.display())));
+    assert!(stdout.contains(&format!("Log path:           {}", log_path.display())));
+    assert!(stdout.contains("State loaded:       fresh default (no file)"));
+}
+
+#[test]
+fn test_status_command_verbose_active_shows_overlay_details() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let log_dir = hidden_root.join("logs");
+    let state_path = hidden_root.join("state.json");
+    let config_path = temp_dir.path().join("nails.yaml");
+    std::fs::create_dir_all(&log_dir).unwrap();
+
+    let activated_at = "2026-01-02T03:04:05Z";
+    let mounted_at = "2026-01-02T03:04:30Z";
+    let state_json = format!(
+        r#"{{
+  "version": "0.1.0",
+  "state": {{
+    "Active": {{
+      "activated_at": "{activated_at}",
+      "overlays": ["/home"]
+    }}
+  }},
+  "nixos_generation": "nails-gen-99",
+  "config_fingerprint": null,
+  "overlay_status": {{
+    "/home": {{
+      "mount_path": "/home",
+      "lower_dir": "/home",
+      "upper_dir": "{hidden}/overlays/home/upper",
+      "work_dir": "{hidden}/overlays/home/work",
+      "mounted_at": "{mounted_at}"
+    }}
+  }},
+  "failed_overlays": [],
+  "last_modified": "2026-01-02T03:05:00Z"
+}}"#,
+        hidden = hidden_root.display(),
+    );
+    std::fs::write(&state_path, state_json).unwrap();
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nstate_file_path: {}\nlog_path: {}\noverlays:\n  - name: home\n    lower: /home\n    upper: {}/overlays/home/upper\n    work: {}/overlays/home/work\n    target: /home",
+        hidden_root.display(),
+        state_path.display(),
+        log_dir.display(),
+        hidden_root.display(),
+        hidden_root.display(),
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "status",
+            "--verbose",
+        ])
+        .output()
+        .expect("failed to run verbose active status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout={stdout}");
+    assert!(stdout.contains("NixOS Generation:   nails-gen-99"));
+    assert!(stdout.contains("Overlay Mount Details:"));
+    assert!(stdout.contains("Mount:     /home"));
+    assert!(stdout.contains(&format!(
+        "Upper:     {}/overlays/home/upper",
+        hidden_root.display()
+    )));
+    assert!(stdout.contains(&format!(
+        "Work:      {}/overlays/home/work",
+        hidden_root.display()
+    )));
+}
+
+#[test]
+fn test_status_command_no_color_verbose_reports_recovered_state_load() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let state_path = hidden_root.join("state.json");
+    let config_path = temp_dir.path().join("nails.yaml");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+    std::fs::write(&state_path, "{ invalid-json").unwrap();
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        hidden_root.display(),
+        state_path.display(),
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "status",
+            "--verbose",
+            "--no-color",
+        ])
+        .output()
+        .expect("failed to run recovered status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout={stdout}");
+    assert!(stdout.contains("State loaded:       recovered from corruption (using defaults)"));
+    assert!(stdout.contains("Verbose Details:"));
+    assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
+}
+
+#[test]
+fn test_status_command_no_color_verbose_reports_migrated_state_load() {
+    use nails_core::{StateFile, SystemState};
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let state_path = hidden_root.join("state.json");
+    let config_path = temp_dir.path().join("nails.yaml");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let state = StateFile {
+        version: "0.0.5".to_string(),
+        state: SystemState::Inactive,
+        ..StateFile::default()
+    };
+    std::fs::write(&state_path, serde_json::to_string(&state).unwrap()).unwrap();
+
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        hidden_root.display(),
+        state_path.display(),
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "status",
+            "--verbose",
+            "--no-color",
+        ])
+        .output()
+        .expect("failed to run migrated status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout={stdout}");
+    assert!(stdout.contains("State loaded:       migrated from v0.0.5"));
+    assert!(stdout.contains("Verbose Details:"));
+    assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
+}
+
+#[test]
 fn test_status_fails_closed_on_invalid_config() {
     let config_file = create_invalid_config_file();
 
@@ -839,7 +1049,17 @@ fn test_activate_kill_session_detaches_via_systemd_run() {
             "--kill-session",
             "--no-preflight",
         ])
-        .env("PATH", &fake_bin)
+        .env(
+            "PATH",
+            std::env::join_paths([
+                fake_bin.as_path(),
+                std::path::Path::new("/run/current-system/sw/bin"),
+                std::path::Path::new("/usr/bin"),
+                std::path::Path::new("/bin"),
+            ])
+            .unwrap(),
+        )
+        .env("NAILS_SYSTEMD_RUN_PATH", &systemd_run_path)
         .env("DISPLAY", ":0")
         .env("NAILS_SESSION_ID", "c42")
         .env("NAILS_DISPLAY_MANAGER", "gdm")
@@ -913,6 +1133,7 @@ fn test_activate_kill_session_surfaces_systemd_run_failures() {
             "--no-preflight",
         ])
         .env("PATH", &fake_bin)
+        .env("NAILS_SYSTEMD_RUN_PATH", &systemd_run_path)
         .env("DISPLAY", ":0")
         .env("NAILS_SESSION_ID", "c42")
         .env("NAILS_DISPLAY_MANAGER", "gdm")
@@ -926,6 +1147,54 @@ fn test_activate_kill_session_surfaces_systemd_run_failures() {
     assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
     assert!(stderr.contains("systemd-run failed"), "stderr={stderr}");
     assert!(stderr.contains("mock detach failure"), "stderr={stderr}");
+}
+
+#[test]
+fn test_activate_kill_session_refuses_real_transient_units_in_test_runtime() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_file.path().to_str().unwrap(),
+            "activate",
+            "--kill-session",
+            "--no-preflight",
+        ])
+        .env("DISPLAY", ":0")
+        .env("NAILS_SESSION_ID", "c42")
+        .env("NAILS_DISPLAY_MANAGER", "gdm")
+        .env("NAILS_TARGET_UID", "1000")
+        .env("NAILS_TARGET_USER", "amnesia")
+        .output()
+        .expect("failed to run activate detach safety test");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert!(stderr.contains("Refusing to start transient systemd units"));
+}
+
+#[test]
+fn test_deactivate_with_build_dir_config_hits_safety_guard() {
+    let config_file = create_test_config_file("/tmp/fake/target/debug/fake-hidden");
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args([
+        "--config",
+        config_file.path().to_str().unwrap(),
+        "deactivate",
+    ])
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains("TEST SAFETY GUARD"));
 }
 
 #[test]
@@ -1076,6 +1345,100 @@ fn test_activate_dry_run_reports_explicit_flake_reference() {
         "[INFO] NixOS flake: /etc/nixos#test-host",
     ))
     .stdout(predicates::str::contains("would build and switch profile"));
+}
+
+#[test]
+fn test_activate_kill_session_fails_before_detach_on_flake_lock_preflight_error() {
+    use std::fs;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fake_bin = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+
+    let nix_script = fake_bin.join("nix");
+    let systemd_run_script = fake_bin.join("systemd-run");
+    let systemd_run_log = temp_dir.path().join("systemd-run.log");
+
+    let shell_path = locate_shell_path();
+    fs::write(
+        &nix_script,
+        format!(
+            "#!{}\nprintf \"flake 'path:/etc/nixos' requires lock file changes\\n\" 1>&2\nexit 1\n",
+            shell_path.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&nix_script).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&nix_script, perms).unwrap();
+
+    fs::write(
+        &systemd_run_script,
+        format!(
+            "#!{}\nprintf '%s\\n' \"$*\" >> {}\nexit 0\n",
+            shell_path.display(),
+            systemd_run_log.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&systemd_run_script).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&systemd_run_script, perms).unwrap();
+
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    let explicit_flake_dir = temp_dir.path().join("explicit-flake");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+    std::fs::create_dir_all(&explicit_flake_dir).unwrap();
+    std::fs::write(
+        explicit_flake_dir.join("flake.nix"),
+        "{ outputs = _: {}; }\n",
+    )
+    .unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root: {}\nnixos_flake: {}#host-alpha",
+        hidden_root.display(),
+        explicit_flake_dir.display()
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_file.path().to_str().unwrap(),
+            "activate",
+            "--kill-session",
+            "--plain",
+        ])
+        .env("PATH", &fake_bin)
+        .env("DISPLAY", ":0")
+        .env("NAILS_SESSION_ID", "c42")
+        .env("NAILS_DISPLAY_MANAGER", "gdm")
+        .env("NAILS_TARGET_UID", "1000")
+        .env("NAILS_TARGET_USER", "amnesia")
+        .env("NAILS_LOGIND_AVAILABLE", "1")
+        .output()
+        .expect("failed to run activate kill-session preflight test");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert!(stderr.contains("flake lock"), "stderr={stderr}");
+    assert!(
+        stderr.contains("does not run 'nix flake update' automatically"),
+        "stderr={stderr}"
+    );
+    assert!(
+        !systemd_run_log.exists()
+            || std::fs::read_to_string(&systemd_run_log)
+                .unwrap()
+                .trim()
+                .is_empty(),
+        "systemd-run should not have been called before preflight failure"
+    );
 }
 
 #[test]

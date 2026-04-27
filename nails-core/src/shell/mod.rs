@@ -111,18 +111,130 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         Self { filesystem, config }
     }
 
+    pub(crate) fn resolve_target_username(&self) -> Result<String> {
+        std::env::var("SUDO_USER")
+            .or_else(|_| std::env::var(crate::obfuscate::env_target_user()))
+            .or_else(|_| std::env::var("USER"))
+            .map_err(|_| {
+                std::io::Error::other(
+                    "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)",
+                )
+                .into()
+            })
+    }
+
+    fn has_explicit_target_user_context() -> bool {
+        std::env::var("SUDO_USER").is_ok()
+            || std::env::var(crate::obfuscate::env_target_user()).is_ok()
+    }
+
+    fn home_matches_username(home: &std::path::Path, username: &str) -> bool {
+        home.file_name().and_then(|component| component.to_str()) == Some(username)
+    }
+
+    fn resolve_home_from_current_environment(target_username: Option<&str>) -> Option<PathBuf> {
+        if Self::has_explicit_target_user_context() {
+            return None;
+        }
+
+        let home = PathBuf::from(std::env::var_os("HOME")?);
+
+        if let Some(username) = target_username
+            && !Self::home_matches_username(&home, username)
+        {
+            return None;
+        }
+
+        Some(home)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resolve_target_home_dir(&self) -> Result<PathBuf> {
+        let username = self.resolve_target_username().ok();
+
+        if let Some(home) = Self::resolve_home_from_current_environment(username.as_deref()) {
+            return Ok(home);
+        }
+
+        let username = username.ok_or_else(|| {
+            std::io::Error::other(
+                "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)",
+            )
+        })?;
+
+        Ok(PathBuf::from(format!("/home/{}", username)))
+    }
+
+    #[cfg(not(test))]
+    pub(crate) fn resolve_target_home_dir(&self) -> Result<PathBuf> {
+        let username = self.resolve_target_username().ok();
+
+        if let Some(home) = Self::resolve_home_from_current_environment(username.as_deref()) {
+            return Ok(home);
+        }
+
+        let username = username.ok_or_else(|| {
+            std::io::Error::other(
+                "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)",
+            )
+        })?;
+
+        match nix::unistd::User::from_name(&username).map_err(|e| {
+            std::io::Error::other(format!(
+                "Failed to resolve home directory for user {}: {}",
+                username, e
+            ))
+        })? {
+            Some(user) => Ok(user.dir),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Could not determine home directory for user {}", username),
+            )
+            .into()),
+        }
+    }
+
+    pub(crate) fn resolve_binary_path(&self) -> PathBuf {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| path.canonicalize().ok().or(Some(path)))
+            .unwrap_or_else(|| self.config.hidden_volume_root.join("bin/nails"))
+    }
+
     /// Detect the current shell type from the SHELL environment variable
     ///
     /// Returns None if SHELL is not set or if the shell is not supported.
     pub fn detect_current_shell(&self) -> Option<ShellType> {
-        let shell_path = std::env::var("SHELL").ok()?;
+        if let Ok(shell_path) = std::env::var("SHELL") {
+            return if shell_path.ends_with("/bash") {
+                Some(ShellType::Bash)
+            } else if shell_path.ends_with("/zsh") {
+                Some(ShellType::Zsh)
+            } else if shell_path.ends_with("/fish") {
+                Some(ShellType::Fish)
+            } else {
+                None
+            };
+        }
 
-        if shell_path.ends_with("/bash") {
-            Some(ShellType::Bash)
-        } else if shell_path.ends_with("/zsh") {
+        let home_dir = self.resolve_target_home_dir().ok()?;
+
+        if self
+            .filesystem
+            .path_exists(&home_dir.join(".zshrc"))
+            .ok()
+            .unwrap_or(false)
+        {
             Some(ShellType::Zsh)
-        } else if shell_path.ends_with("/fish") {
+        } else if self
+            .filesystem
+            .path_exists(&home_dir.join(".config/fish/config.fish"))
+            .ok()
+            .unwrap_or(false)
+        {
             Some(ShellType::Fish)
+        } else if Self::has_explicit_target_user_context() {
+            Some(ShellType::Bash)
         } else {
             None
         }
@@ -211,11 +323,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         }
 
         // Resolve binary path for alias (Task 5)
-        let binary_path = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.canonicalize().ok())
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| format!("{}/bin/nails", self.config.hidden_volume_root.display()));
+        let binary_path = self.resolve_binary_path().display().to_string();
 
         // Write bash/zsh alias scripts
         let bash_zsh_alias = alias::generate_bash_zsh_alias_script(&binary_path);

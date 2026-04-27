@@ -4,14 +4,20 @@
 let
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
   badYamlFixture = ./../../fixtures/configs/bad-yaml.yaml;
-in {
+in
+{
   name = "config-malformed-yaml";
-  meta.tags = [ "config" "smoke" ];
+  meta.tags = [
+    "config"
+    "smoke"
+  ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${preflightHelpers.runCommandCaptureFn}

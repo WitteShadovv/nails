@@ -1,0 +1,59 @@
+name: Fast Forensics Eval Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths:
+      - 'nix/forensics-eval/tests/**'
+      - 'nix/forensics-eval/analyzers/**'
+      - 'nix/forensics-eval/runners/**'
+      - 'nix/forensics-eval/fixtures/**'
+      - 'scripts/run-forensics-eval-tests.sh'
+      - '.github/workflows/forensics-eval-fast.yml'
+      - 'nix/forensics-eval/README.md'
+      - 'docs/ci.md'
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - 'nix/forensics-eval/tests/**'
+      - 'nix/forensics-eval/analyzers/**'
+      - 'nix/forensics-eval/runners/**'
+      - 'nix/forensics-eval/fixtures/**'
+      - 'scripts/run-forensics-eval-tests.sh'
+      - '.github/workflows/forensics-eval-fast.yml'
+      - 'nix/forensics-eval/README.md'
+      - 'docs/ci.md'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: forensics-eval-fast-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast-tests:
+    name: Fast forensics-eval unittest lane
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: '3.12'
+
+      - name: Run fast forensics-eval tests
+        run: python -m unittest discover -s nix/forensics-eval/tests -p 'test*.py' -v

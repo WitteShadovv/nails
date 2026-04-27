@@ -290,6 +290,12 @@ pub struct Config {
     #[serde(default = "super::defaults::default_log_path")]
     pub log_path: PathBuf,
 
+    /// Resolved config file path currently backing this config, if any.
+    ///
+    /// Runtime-only metadata: this is never read from or written to user config.
+    #[serde(skip, default)]
+    pub loaded_config_path: Option<PathBuf>,
+
     /// Maximum log file size in megabytes before rotation
     #[serde(default = "super::defaults::default_max_log_size_mb")]
     pub max_log_size_mb: u64,

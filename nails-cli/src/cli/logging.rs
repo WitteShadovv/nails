@@ -13,6 +13,16 @@ use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+#[cfg(test)]
+mod tests;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderMode {
+    Human,
+    NoColor,
+    Plain,
+}
+
 /// Stdout formatting mode for CLI command output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StdoutFormat {
@@ -71,6 +81,8 @@ pub fn init_stdout_subscriber(
         verbose_count,
         quiet,
         no_logs,
+        false,
+        false,
         config_override,
         StdoutFormat::Human,
     );
@@ -81,9 +93,13 @@ pub fn init_stdout_subscriber_with_mode(
     verbose_count: u8,
     quiet: bool,
     no_logs: bool,
+    no_color: bool,
+    plain: bool,
     config_override: Option<&std::path::Path>,
     stdout_format: StdoutFormat,
 ) {
+    let render_mode = render_mode(no_color, plain);
+
     // Map CLI flags to tracing level (AC #5)
     let stdout_level = if quiet {
         LevelFilter::WARN // Quiet mode: only WARN and ERROR
@@ -97,12 +113,12 @@ pub fn init_stdout_subscriber_with_mode(
 
     // Skip file layer if --no-logs flag is set (AC: Story 9.3, Task 2.5)
     if no_logs {
-        init_stdout_only_subscriber(stdout_level, stdout_format);
+        init_stdout_only_subscriber(stdout_level, stdout_format, render_mode);
         return;
     }
 
     // Try to initialize LoggingManager for file logging (Task 2.1)
-    let file_layer_result = init_file_layer(config_override);
+    let file_layer_result = init_file_layer(config_override, render_mode);
 
     match file_layer_result {
         Ok(Some(file_layer)) => {
@@ -117,6 +133,7 @@ pub fn init_stdout_subscriber_with_mode(
                         .with_file(false)
                         .with_line_number(false)
                         .with_level(true)
+                        .with_ansi(matches!(render_mode, RenderMode::Human))
                         .with_writer(std::io::stderr)
                         .with_filter(stdout_level);
 
@@ -130,6 +147,7 @@ pub fn init_stdout_subscriber_with_mode(
                         .with_span_list(false)
                         .with_target(false)
                         .with_level(true)
+                        .with_ansi(false)
                         .with_writer(std::io::stdout)
                         .with_filter(stdout_level);
 
@@ -139,12 +157,42 @@ pub fn init_stdout_subscriber_with_mode(
         }
         Ok(None) | Err(_) => {
             // Graceful fallback: stdout-only logging (Task 2.4)
-            init_stdout_only_subscriber(stdout_level, stdout_format);
+            init_stdout_only_subscriber(stdout_level, stdout_format, render_mode);
         }
     }
 }
 
-fn init_stdout_only_subscriber(stdout_level: LevelFilter, stdout_format: StdoutFormat) {
+fn render_mode(no_color: bool, plain: bool) -> RenderMode {
+    if plain {
+        RenderMode::Plain
+    } else if no_color
+        || std::env::var("NO_COLOR").is_ok()
+        || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()
+    {
+        RenderMode::NoColor
+    } else {
+        RenderMode::Human
+    }
+}
+
+fn emit_logging_init_message(render_mode: RenderMode, is_error: bool, message: &str) {
+    let formatted = match (render_mode, is_error) {
+        (RenderMode::Plain, true) => format!("[FAIL] {message}"),
+        (RenderMode::Plain, false) => format!("[WARN] {message}"),
+        (RenderMode::NoColor, true) => format!("X {message}"),
+        (RenderMode::NoColor, false) => format!("! {message}"),
+        (RenderMode::Human, true) => nails_core::logging::format_early_error(message),
+        (RenderMode::Human, false) => nails_core::logging::format_early_warning(message),
+    };
+
+    eprintln!("{formatted}");
+}
+
+fn init_stdout_only_subscriber(
+    stdout_level: LevelFilter,
+    stdout_format: StdoutFormat,
+    render_mode: RenderMode,
+) {
     match stdout_format {
         StdoutFormat::Human => {
             tracing_subscriber::fmt()
@@ -154,6 +202,7 @@ fn init_stdout_only_subscriber(stdout_level: LevelFilter, stdout_format: StdoutF
                 .with_file(false)
                 .with_line_number(false)
                 .with_level(true)
+                .with_ansi(matches!(render_mode, RenderMode::Human))
                 .with_writer(std::io::stderr)
                 .with_max_level(stdout_level)
                 .init();
@@ -166,6 +215,7 @@ fn init_stdout_only_subscriber(stdout_level: LevelFilter, stdout_format: StdoutF
                 .with_span_list(false)
                 .with_target(false)
                 .with_level(true)
+                .with_ansi(false)
                 .with_writer(std::io::stdout)
                 .with_max_level(stdout_level)
                 .init();
@@ -193,6 +243,7 @@ fn init_stdout_only_subscriber(stdout_level: LevelFilter, stdout_format: StdoutF
 #[allow(clippy::type_complexity)]
 fn init_file_layer(
     config_override: Option<&std::path::Path>,
+    render_mode: RenderMode,
 ) -> Result<
     Option<
         tracing_subscriber::filter::Filtered<
@@ -232,12 +283,13 @@ fn init_file_layer(
             return Ok(None);
         }
         Err(e) => {
-            eprintln!(
-                "{}",
-                nails_core::logging::format_early_error(&format!(
+            emit_logging_init_message(
+                render_mode,
+                true,
+                &format!(
                     "Logging init failed: {}, continuing with stdout-only logging",
                     e
-                ))
+                ),
             );
             return Ok(None);
         }
@@ -262,13 +314,19 @@ fn init_file_layer(
     let log_file = match log_file_result {
         Ok(file) => file,
         Err(e) => {
-            eprintln!(
-                "{}",
-                nails_core::logging::format_early_warning(&format!(
-                    "Failed to open log file: {}, continuing without file logging",
-                    e
-                ))
-            );
+            if matches!(render_mode, RenderMode::Human) {
+                emit_logging_init_message(
+                    render_mode,
+                    false,
+                    &format!(
+                        "Failed to open log file: {}, continuing without file logging",
+                        e
+                    ),
+                );
+            } else {
+                // Plain/no-color command output should stay focused on the command payload.
+                tracing::debug!(error = %e, "Failed to open log file; continuing without file logging");
+            }
             return Ok(None);
         }
     };
@@ -285,137 +343,4 @@ fn init_file_layer(
         .with_filter(LevelFilter::TRACE); // Capture ALL events to file
 
     Ok(Some(file_layer))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io;
-    use std::sync::{Arc, Mutex};
-
-    #[derive(Clone, Default)]
-    struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
-
-    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedBuffer {
-        type Writer = SharedWriter;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            SharedWriter(Arc::clone(&self.0))
-        }
-    }
-
-    impl io::Write for SharedWriter {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn activate_json_stream_formats_progress_events_as_structured_json() {
-        let output = SharedBuffer::default();
-        let captured = Arc::clone(&output.0);
-
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .flatten_event(true)
-            .with_current_span(false)
-            .with_span_list(false)
-            .with_target(false)
-            .with_level(true)
-            .with_writer(output)
-            .finish();
-
-        tracing::subscriber::with_default(subscriber, || {
-            tracing::info!(
-                event = "progress",
-                phase = "session_management",
-                current = 1,
-                total = 6,
-                "[1/6] Preparing session management..."
-            );
-        });
-
-        let payload = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
-        let line = payload
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .expect("expected one JSON log line");
-        let json: serde_json::Value = serde_json::from_str(line).unwrap();
-
-        assert_eq!(
-            json.get("event").and_then(|value| value.as_str()),
-            Some("progress")
-        );
-        assert_eq!(
-            json.get("phase").and_then(|value| value.as_str()),
-            Some("session_management")
-        );
-        assert_eq!(
-            json.get("current").and_then(|value| value.as_u64()),
-            Some(1)
-        );
-        assert_eq!(json.get("total").and_then(|value| value.as_u64()), Some(6));
-        assert_eq!(
-            json.get("level").and_then(|value| value.as_str()),
-            Some("INFO")
-        );
-        assert_eq!(
-            json.get("message").and_then(|value| value.as_str()),
-            Some("[1/6] Preparing session management...")
-        );
-    }
-
-    #[test]
-    fn test_log_file_created_with_mode_0o600() {
-        use std::os::unix::fs::OpenOptionsExt;
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::TempDir::new().unwrap();
-        let log_path = dir.path().join("test.log");
-
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(&log_path)
-            .unwrap();
-        drop(file);
-
-        let mode = log_path.metadata().unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "Log file should be 0o600, got {:#o}", mode);
-    }
-
-    #[test]
-    fn test_existing_log_file_normalized_to_0o600() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::TempDir::new().unwrap();
-        let log_path = dir.path().join("test.log");
-
-        // Create file with old permissive mode
-        std::fs::write(&log_path, "old log data\n").unwrap();
-        std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o644)).unwrap();
-
-        // Simulate what init_file_layer does: open for append, then normalize
-        let file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&log_path)
-            .unwrap();
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .unwrap();
-        drop(file);
-
-        let mode = log_path.metadata().unwrap().permissions().mode() & 0o777;
-        assert_eq!(
-            mode, 0o600,
-            "Reopened log file should be normalized to 0o600, got {:#o}",
-            mode
-        );
-    }
 }

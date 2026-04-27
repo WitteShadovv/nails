@@ -7,6 +7,9 @@
 //! environment variable. This prevents tests from accidentally operating on real
 //! user history files.
 
+use super::test_gate::{
+    DeactivationGateTestGuard, maybe_block_after_deactivating_state_transition,
+};
 use super::{DeactivationOrchestrator, DeactivationReport, PostUnmountCleanupReport};
 use crate::cleanup::test_utils::{TEST_HOME, assert_path_is_safe, set_safe_test_home};
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
@@ -33,6 +36,83 @@ fn clear_system_profile_env() {
     unsafe {
         std::env::remove_var("NAILS_SYSTEM_PROFILE_PATH");
     }
+}
+
+struct DeactivationGateEnvGuard {
+    gate: Option<std::ffi::OsString>,
+    entered: Option<std::ffi::OsString>,
+}
+
+impl DeactivationGateEnvGuard {
+    fn capture() -> Self {
+        Self {
+            gate: std::env::var_os("NAILS_TEST_DEACTIVATING_GATE_PATH"),
+            entered: std::env::var_os("NAILS_TEST_DEACTIVATING_ENTERED_PATH"),
+        }
+    }
+
+    fn clear() {
+        unsafe {
+            std::env::remove_var("NAILS_TEST_DEACTIVATING_GATE_PATH");
+            std::env::remove_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH");
+        }
+    }
+
+    fn set(gate_path: &Path, entered_path: Option<&Path>) {
+        unsafe {
+            std::env::set_var("NAILS_TEST_DEACTIVATING_GATE_PATH", gate_path);
+        }
+
+        match entered_path {
+            Some(path) => unsafe {
+                std::env::set_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH", path);
+            },
+            None => unsafe {
+                std::env::remove_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH");
+            },
+        }
+    }
+}
+
+impl Drop for DeactivationGateEnvGuard {
+    fn drop(&mut self) {
+        match &self.gate {
+            Some(value) => unsafe {
+                std::env::set_var("NAILS_TEST_DEACTIVATING_GATE_PATH", value);
+            },
+            None => unsafe {
+                std::env::remove_var("NAILS_TEST_DEACTIVATING_GATE_PATH");
+            },
+        }
+
+        match &self.entered {
+            Some(value) => unsafe {
+                std::env::set_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH", value);
+            },
+            None => unsafe {
+                std::env::remove_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH");
+            },
+        }
+    }
+}
+
+fn spawn_deactivation_gate_releaser(
+    gate_path: PathBuf,
+    entered_path: PathBuf,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        for _ in 0..100 {
+            if entered_path.exists() {
+                break;
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        if gate_path.exists() {
+            std::fs::remove_file(&gate_path).expect("gate file should be removable");
+        }
+    })
 }
 
 /// Helper function to configure a stub system profile for decoy switching.
@@ -155,6 +235,14 @@ fn write_state_with_overlay(
     .unwrap();
 }
 
+fn set_state_nixos_generation(state_path: &Path, hidden_root: &Path, generation: &str) {
+    let mut loaded = StateFile::load(state_path).unwrap();
+    loaded.nixos_generation = Some(generation.to_string());
+    loaded
+        .save_with_custom_root(state_path, hidden_root)
+        .unwrap();
+}
+
 #[test]
 #[serial]
 fn test_deactivation_report_new() {
@@ -170,6 +258,38 @@ fn test_deactivation_report_new() {
     assert!(report.is_successful());
     assert_eq!(report.unmounted_overlays.len(), 2);
     assert!(!report.was_already_inactive);
+}
+
+#[test]
+#[serial]
+fn test_deactivation_gate_returns_immediately_when_disabled() {
+    let _gate_guard = DeactivationGateTestGuard::enable();
+    let _env_guard = DeactivationGateEnvGuard::capture();
+    DeactivationGateEnvGuard::clear();
+
+    assert!(maybe_block_after_deactivating_state_transition().is_ok());
+}
+
+#[test]
+#[serial]
+fn test_deactivation_gate_writes_default_entered_marker() {
+    let _gate_guard = DeactivationGateTestGuard::enable();
+    let _env_guard = DeactivationGateEnvGuard::capture();
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let gate_path = temp_dir.path().join("deactivation.gate");
+    let entered_path = PathBuf::from(format!("{}.entered", gate_path.display()));
+    std::fs::write(&gate_path, []).expect("gate file");
+    DeactivationGateEnvGuard::set(&gate_path, None);
+
+    let releaser = spawn_deactivation_gate_releaser(gate_path.clone(), entered_path.clone());
+    maybe_block_after_deactivating_state_transition().expect("gate should be released");
+    releaser.join().expect("releaser thread should finish");
+
+    assert!(
+        entered_path.exists(),
+        "default entered marker should be created"
+    );
+    assert!(!gate_path.exists(), "gate should be removed by releaser");
 }
 
 #[test]
@@ -334,6 +454,97 @@ fn test_successful_deactivation() {
 
 #[test]
 #[serial]
+fn test_successful_deactivation_unmounts_all_tracked_overlays_in_lifo_order() {
+    clear_system_profile_env();
+
+    let fs = MockFilesystem::new();
+    setup_system_profile_stub(&fs);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let overlays = [
+        PathBuf::from("/home"),
+        PathBuf::from("/etc"),
+        PathBuf::from("/tmp"),
+    ];
+    let mut overlay_status = std::collections::HashMap::new();
+    for target in &overlays {
+        let name = target
+            .strip_prefix("/")
+            .expect("overlay target should be absolute");
+        let upper_dir = hidden_root.join("overlays").join(name).join("upper");
+        let work_dir = hidden_root.join("overlays").join(name).join("work");
+        std::fs::create_dir_all(&upper_dir).unwrap();
+        std::fs::create_dir_all(&work_dir).unwrap();
+        fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+        fs.mock_set_mounted(target, true);
+        overlay_status.insert(
+            target.clone(),
+            crate::OverlayInfo {
+                mount_path: target.clone(),
+                lower_dir: PathBuf::from("/"),
+                upper_dir,
+                work_dir,
+                mounted_at: chrono::Utc::now(),
+            },
+        );
+    }
+
+    StateFile {
+        state: SystemState::Active {
+            activated_at: chrono::Utc::now(),
+            overlays: overlays.to_vec(),
+        },
+        overlay_status,
+        ..StateFile::default()
+    }
+    .save_with_custom_root(&state_path, &hidden_root)
+    .unwrap();
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        config,
+        state_path.clone(),
+    )));
+    let orchestrator =
+        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+
+    let report = orchestrator.run().expect("deactivation should succeed");
+
+    assert_eq!(
+        report.unmounted_overlays,
+        vec!["/tmp".to_string(), "/etc".to_string(), "/home".to_string()],
+        "deactivation should unmount tracked overlays in reverse mount order"
+    );
+
+    let guard = manager.lock().unwrap();
+    assert_eq!(guard.current_state().unwrap(), SystemState::Inactive);
+    for target in &overlays {
+        assert!(
+            !guard.filesystem().is_mounted(target).unwrap(),
+            "expected {} to be unmounted after deactivation",
+            target.display()
+        );
+    }
+
+    let loaded = StateFile::load(&state_path).unwrap();
+    assert_eq!(loaded.state, SystemState::Inactive);
+    assert!(loaded.overlay_status.is_empty());
+
+    clear_system_profile_env();
+}
+
+#[test]
+#[serial]
 fn test_deactivation_skips_decoy_restore_when_disabled() {
     clear_system_profile_env();
 
@@ -366,6 +577,11 @@ fn test_deactivation_skips_decoy_restore_when_disabled() {
         &upper_dir,
         &work_dir,
     );
+    let mut loaded = StateFile::load(&state_path).unwrap();
+    loaded.nixos_generation = Some("1".to_string());
+    loaded
+        .save_with_custom_root(&state_path, &hidden_root)
+        .unwrap();
 
     let manager = Arc::new(Mutex::new(NailsManager::new(
         fs,
@@ -560,6 +776,129 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
     assert_eq!(
         loaded.config_fingerprint,
         Some("deadbeefcafebabe".to_string())
+    );
+}
+
+#[test]
+#[serial]
+fn test_deactivation_clears_failed_overlays_tracker_state() {
+    let fs = MockFilesystem::new();
+    setup_system_profile_stub(&fs);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let state_file = StateFile {
+        state: SystemState::Active {
+            activated_at: chrono::Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+        },
+        failed_overlays: vec![crate::FailedOverlayInfo {
+            target: PathBuf::from("/etc"),
+            error_message: "previous failure".to_string(),
+            failed_at: chrono::Utc::now(),
+        }],
+        ..StateFile::default()
+    };
+    state_file
+        .save_with_custom_root(&state_path, &hidden_root)
+        .unwrap();
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        config,
+        state_path.clone(),
+    )));
+    {
+        let m = manager.lock().unwrap();
+        m.filesystem().mock_set_mounted(Path::new("/home"), true);
+    }
+
+    let orchestrator =
+        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
+            .with_decoy_profile_restore(false);
+
+    let report = orchestrator.run().expect("deactivation should succeed");
+    assert_eq!(report.final_state, SystemState::Inactive);
+
+    let loaded = StateFile::load(&state_path).unwrap();
+    assert!(loaded.failed_overlays.is_empty());
+    assert!(loaded.overlay_status.is_empty());
+}
+
+#[test]
+#[serial]
+fn test_emergency_cleanup_preserves_explicit_config_path() {
+    let fs = MockFilesystem::new();
+    setup_system_profile_stub(&fs);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let config_path = PathBuf::from("/tmp/nails-tracker-integrity.yaml");
+
+    fs.mock_set_path_exists("/tmp", true);
+    fs.mock_set_files_with_pattern(
+        "/tmp",
+        "nails",
+        &[config_path.as_path(), Path::new("/tmp/nails-status.stdout")],
+    );
+    fs.mock_set_path_exists(config_path.to_str().unwrap(), true);
+    fs.mock_set_path_type(config_path.to_str().unwrap(), "file");
+    fs.mock_set_path_exists("/tmp/nails-status.stdout", true);
+    fs.mock_set_path_type("/tmp/nails-status.stdout", "file");
+
+    let state_file = StateFile {
+        state: SystemState::Active {
+            activated_at: chrono::Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+        },
+        ..StateFile::default()
+    };
+    state_file
+        .save_with_custom_root(&state_path, &hidden_root)
+        .unwrap();
+
+    let mut config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+    config.loaded_config_path = Some(config_path.clone());
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        config,
+        state_path.clone(),
+    )));
+    {
+        let m = manager.lock().unwrap();
+        m.filesystem().mock_set_mounted(Path::new("/home"), true);
+    }
+
+    NailsManager::emergency_deactivate(Arc::clone(&manager))
+        .expect("emergency deactivation should succeed");
+
+    let m = manager.lock().unwrap();
+    assert!(
+        m.filesystem()
+            .path_exists(&config_path)
+            .expect("config path query should succeed"),
+        "explicit config path should survive emergency cleanup"
+    );
+    assert!(
+        !m.filesystem()
+            .path_exists(Path::new("/tmp/nails-status.stdout"))
+            .expect("temp status file query should succeed"),
+        "other temp files should still be cleaned"
     );
 }
 
@@ -904,7 +1243,6 @@ fn test_deactivate_overlay_only_session_succeeds_without_system_profile() {
         &upper_dir,
         &work_dir,
     );
-
     let manager = Arc::new(Mutex::new(NailsManager::new(
         fs,
         config,
@@ -936,6 +1274,340 @@ fn test_deactivate_overlay_only_session_succeeds_without_system_profile() {
     let loaded = StateFile::load(&state_path).unwrap();
     assert_eq!(loaded.state, SystemState::Inactive);
     assert!(loaded.overlay_status.is_empty());
+
+    clear_system_profile_env();
+}
+
+#[test]
+#[serial]
+fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
+    clear_system_profile_env();
+
+    let fs = MockFilesystem::new();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let system_profile = hidden_root.join("profiles/system");
+    let reboot_script = hidden_root.join("bin/reboot");
+    let reboot_marker = hidden_root.join("reboot-called.txt");
+
+    std::fs::create_dir_all(reboot_script.parent().unwrap()).unwrap();
+    std::fs::write(
+        &reboot_script,
+        format!(
+            "#!/usr/bin/env bash\n: > '{}'\nexit 0\n",
+            reboot_marker.display()
+        ),
+    )
+    .unwrap();
+    let mut reboot_perms = std::fs::metadata(&reboot_script).unwrap().permissions();
+    reboot_perms.set_mode(0o755);
+    std::fs::set_permissions(&reboot_script, reboot_perms).unwrap();
+
+    unsafe {
+        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
+        std::env::set_var("NAILS_REBOOT_PATH", &reboot_script);
+    }
+
+    fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
+    fs.mock_set_path_exists(system_profile.parent().unwrap().to_str().unwrap(), true);
+    fs.mock_set_path_type(
+        system_profile.parent().unwrap().to_str().unwrap(),
+        "directory",
+    );
+    fs.mock_set_directory_contents(system_profile.parent().unwrap(), vec![]);
+
+    let upper_dir = hidden_root.join("overlays/home/upper");
+    let work_dir = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    write_state_with_overlay(
+        &state_path,
+        &hidden_root,
+        Path::new("/home"),
+        &upper_dir,
+        &work_dir,
+    );
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        Config {
+            hidden_volume_root: hidden_root.clone(),
+            state_file_path: state_path.clone(),
+            log_path: hidden_root.join("logs"),
+            overlays: vec![],
+            ..Config::test_default()
+        },
+        state_path.clone(),
+    )));
+
+    {
+        let guard = manager.lock().unwrap();
+        guard
+            .filesystem()
+            .mock_set_mounted(Path::new("/home"), true);
+        guard
+            .filesystem()
+            .mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+        guard
+            .filesystem()
+            .mock_set_path_exists(work_dir.to_str().unwrap(), true);
+    }
+    set_state_nixos_generation(&state_path, &hidden_root, "1");
+
+    let err = NailsManager::deactivate(Arc::clone(&manager))
+        .expect_err("normal deactivation should fail when no decoy profile is available");
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("No system profile available for decoy switch")
+            || err_text.contains("No system profile found. Cannot restore decoy configuration."),
+        "unexpected error: {err_text}"
+    );
+    assert!(
+        !reboot_marker.exists(),
+        "reboot must not be requested on failure"
+    );
+    assert!(manager.lock().unwrap().current_state().unwrap().is_active());
+
+    unsafe {
+        std::env::remove_var("NAILS_REBOOT_PATH");
+    }
+    clear_system_profile_env();
+}
+
+#[test]
+#[serial]
+fn test_deactivate_prepares_decoy_symlink_when_restore_is_required() {
+    clear_system_profile_env();
+
+    let fs = MockFilesystem::new();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let profile_root = hidden_root.join("profiles/system-1-link");
+    let system_profile = hidden_root.join("profiles/system");
+    let switch_script = profile_root.join("bin/switch-to-configuration");
+
+    std::fs::create_dir_all(switch_script.parent().unwrap()).unwrap();
+    std::fs::write(&switch_script, "#!/usr/bin/env bash\nexit 0\n").unwrap();
+    let mut perms = std::fs::metadata(&switch_script).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&switch_script, perms).unwrap();
+
+    unsafe {
+        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
+    }
+
+    fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
+    fs.mock_set_path_exists(system_profile.parent().unwrap().to_str().unwrap(), true);
+    fs.mock_set_path_type(
+        system_profile.parent().unwrap().to_str().unwrap(),
+        "directory",
+    );
+    fs.mock_set_directory_contents(system_profile.parent().unwrap(), vec![profile_root.clone()]);
+    fs.mock_set_path_exists(profile_root.to_str().unwrap(), true);
+    fs.mock_set_path_type(profile_root.to_str().unwrap(), "directory");
+    fs.mock_set_path_exists(switch_script.to_str().unwrap(), true);
+    fs.mock_set_path_type(switch_script.to_str().unwrap(), "file");
+
+    let upper_dir = hidden_root.join("overlays/home/upper");
+    let work_dir = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    write_state_with_overlay(
+        &state_path,
+        &hidden_root,
+        Path::new("/home"),
+        &upper_dir,
+        &work_dir,
+    );
+    set_state_nixos_generation(&state_path, &hidden_root, "1");
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        Config {
+            hidden_volume_root: hidden_root.clone(),
+            state_file_path: state_path.clone(),
+            log_path: hidden_root.join("logs"),
+            overlays: vec![],
+            ..Config::test_default()
+        },
+        state_path.clone(),
+    )));
+
+    {
+        let guard = manager.lock().unwrap();
+        guard
+            .filesystem()
+            .mock_set_mounted(Path::new("/home"), true);
+        guard
+            .filesystem()
+            .mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+        guard
+            .filesystem()
+            .mock_set_path_exists(work_dir.to_str().unwrap(), true);
+    }
+
+    NailsManager::deactivate(Arc::clone(&manager)).expect("normal deactivation should succeed");
+
+    assert_eq!(
+        manager
+            .lock()
+            .unwrap()
+            .filesystem()
+            .mock_get_symlink_target(Path::new("/run/current-system"))
+            .as_deref(),
+        Some(profile_root.as_path())
+    );
+
+    clear_system_profile_env();
+}
+
+#[test]
+#[serial]
+fn test_deactivate_uses_overlay_metadata_when_active_overlay_list_is_incomplete() {
+    clear_system_profile_env();
+
+    let fs = MockFilesystem::new();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+
+    let upper_home = hidden_root.join("overlays/home/upper");
+    let work_home = hidden_root.join("overlays/home/work");
+    let upper_etc = hidden_root.join("overlays/etc/upper");
+    let work_etc = hidden_root.join("overlays/etc/work");
+    std::fs::create_dir_all(&upper_home).unwrap();
+    std::fs::create_dir_all(&work_home).unwrap();
+    std::fs::create_dir_all(&upper_etc).unwrap();
+    std::fs::create_dir_all(&work_etc).unwrap();
+
+    let mut overlay_status = std::collections::HashMap::new();
+    overlay_status.insert(
+        PathBuf::from("/home"),
+        crate::OverlayInfo {
+            mount_path: PathBuf::from("/home"),
+            lower_dir: PathBuf::from("/"),
+            upper_dir: upper_home.clone(),
+            work_dir: work_home.clone(),
+            mounted_at: chrono::Utc::now(),
+        },
+    );
+    overlay_status.insert(
+        PathBuf::from("/etc"),
+        crate::OverlayInfo {
+            mount_path: PathBuf::from("/etc"),
+            lower_dir: PathBuf::from("/"),
+            upper_dir: upper_etc.clone(),
+            work_dir: work_etc.clone(),
+            mounted_at: chrono::Utc::now() + chrono::TimeDelta::milliseconds(1),
+        },
+    );
+
+    StateFile {
+        state: SystemState::Active {
+            activated_at: chrono::Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+        },
+        overlay_status,
+        ..StateFile::default()
+    }
+    .save_with_custom_root(&state_path, &hidden_root)
+    .unwrap();
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        Config {
+            hidden_volume_root: hidden_root.clone(),
+            state_file_path: state_path.clone(),
+            log_path: hidden_root.join("logs"),
+            overlays: vec![],
+            ..Config::test_default()
+        },
+        state_path.clone(),
+    )));
+
+    {
+        let guard = manager.lock().unwrap();
+        guard
+            .filesystem()
+            .mock_set_mounted(Path::new("/home"), true);
+        guard.filesystem().mock_set_mounted(Path::new("/etc"), true);
+        guard
+            .filesystem()
+            .mock_set_path_exists(upper_home.to_str().unwrap(), true);
+        guard
+            .filesystem()
+            .mock_set_path_exists(work_home.to_str().unwrap(), true);
+        guard
+            .filesystem()
+            .mock_set_path_exists(upper_etc.to_str().unwrap(), true);
+        guard
+            .filesystem()
+            .mock_set_path_exists(work_etc.to_str().unwrap(), true);
+    }
+
+    let report = DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
+        .with_decoy_profile_restore(false)
+        .with_switch_script_execution(false)
+        .run()
+        .expect("deactivation should use tracked overlay metadata");
+
+    assert_eq!(
+        report.unmounted_overlays,
+        vec!["/etc".to_string(), "/home".to_string()]
+    );
+    let guard = manager.lock().unwrap();
+    assert!(!guard.filesystem().is_mounted(Path::new("/home")).unwrap());
+    assert!(!guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
+
+    clear_system_profile_env();
+}
+
+#[test]
+#[serial]
+fn test_emergency_deactivate_fails_when_nix_store_unmount_fails() {
+    clear_system_profile_env();
+
+    let fs = MockFilesystem::new();
+    setup_system_profile_stub(&fs);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+    let upper_dir = hidden_root.join("overlays/nix/upper");
+    let work_dir = hidden_root.join("overlays/nix/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    write_state_with_overlay(
+        &state_path,
+        &hidden_root,
+        Path::new("/nix"),
+        &upper_dir,
+        &work_dir,
+    );
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+
+    {
+        let manager_guard = manager.lock().unwrap();
+        let fs = manager_guard.filesystem();
+        fs.mock_set_mounted(Path::new("/nix"), true);
+        fs.mock_set_mounted(Path::new("/nix/store"), true);
+        fs.mock_set_unmount_should_fail("/nix/store", true);
+        fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+    }
+
+    let err = NailsManager::emergency_deactivate(Arc::clone(&manager))
+        .expect_err("deactivation should fail when /nix/store cannot be unmounted");
+    assert!(err.to_string().contains("/nix/store"));
+    assert!(manager.lock().unwrap().current_state().unwrap().is_active());
 
     clear_system_profile_env();
 }
@@ -1061,6 +1733,83 @@ fn test_emergency_deactivate_unmounts_nix_store_when_nix_overlay_present() {
             .filesystem()
             .is_mounted(Path::new("/nix/store"))
             .unwrap()
+    );
+
+    clear_system_profile_env();
+}
+
+#[test]
+#[serial]
+fn test_deactivate_unmounts_ephemeral_overlays_before_completing_deactivation() {
+    clear_system_profile_env();
+
+    let fs = MockFilesystem::new();
+    setup_system_profile_stub(&fs);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let ephemeral_target = PathBuf::from("/var/lib/docker");
+    let ephemeral_staging = PathBuf::from(format!("{}/docker", crate::overlay::PIVOT_STAGING_BASE));
+    let ephemeral_backing = PathBuf::from("/run/nails/docker-ephemeral");
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
+        overlays: vec![],
+        extended_overlays: crate::ExtendedOverlayConfig {
+            enabled: true,
+            directories: vec![crate::EphemeralOverlayDir {
+                path: ephemeral_target.clone(),
+                tmpfs_upper_size: "64M".to_string(),
+                tmpfs_work_size: "16M".to_string(),
+            }],
+        },
+        ..Config::test_default()
+    };
+
+    let upper_dir = hidden_root.join("overlays/home/upper");
+    let work_dir = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    write_state_with_overlay(
+        &state_path,
+        &hidden_root,
+        Path::new("/home"),
+        &upper_dir,
+        &work_dir,
+    );
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        config,
+        state_path.clone(),
+    )));
+
+    {
+        let guard = manager.lock().unwrap();
+        let fs = guard.filesystem();
+        fs.mock_set_mounted(Path::new("/home"), true);
+        fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+        fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+        fs.mock_set_path_exists(ephemeral_staging.to_str().unwrap(), true);
+        fs.mock_set_path_exists(ephemeral_backing.to_str().unwrap(), true);
+        fs.mock_set_path_exists(ephemeral_backing.join("upper").to_str().unwrap(), true);
+        fs.mock_set_path_exists(ephemeral_backing.join("work").to_str().unwrap(), true);
+        fs.mount_tmpfs(&ephemeral_backing, "64M")
+            .expect("ephemeral backing tmpfs should mount in mock fs");
+        fs.mock_set_mounted(&ephemeral_staging, true);
+        fs.bind_mount(&ephemeral_staging, &ephemeral_target)
+            .expect("ephemeral target should be bind-mounted in mock fs");
+    }
+
+    NailsManager::deactivate(Arc::clone(&manager))
+        .expect("deactivation should succeed with ephemeral overlays enabled");
+
+    let guard = manager.lock().unwrap();
+    assert_eq!(guard.current_state().unwrap(), SystemState::Inactive);
+    assert!(
+        !guard.filesystem().is_mounted(&ephemeral_target).unwrap(),
+        "ephemeral overlay should be unmounted before deactivation completes"
     );
 
     clear_system_profile_env();

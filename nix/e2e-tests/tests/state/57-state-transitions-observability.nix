@@ -14,19 +14,23 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   stateHelpers = import ./../../lib/state-helpers.nix;
-in {
+in
+{
   name = "state-transitions-observability";
   meta.tags = [ "state" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.runDetachedCommandFn}
     ${testHelpers.readStatusJsonFn}
+    ${testHelpers.waitForStatusStateFn}
     ${testHelpers.canonicalDeactivateFn}
     ${assertions.assertStatusStateFn}
     ${stateHelpers.captureCommandFns}
@@ -69,20 +73,14 @@ in {
                 f"systemctl_status={primary_status!r}, journalctl={primary_journal!r}"
             )
         machine.succeed(f"test -f {entered_path}")
-        machine.wait_until_succeeds(
-            f"nails --config {headless_config} status --json | grep -F 'Activating'",
-            timeout=180,
-        )
+        wait_for_status_state("Activating", config_path=headless_config, timeout=180)
         assert_status_state("Activating", config_path=headless_config)
 
     with subtest("activation completes and status converges to active"):
         machine.succeed(f"rm -f {gate_path}")
         rc, stdout, stderr = wait_for_captured_command("state-observability-primary", timeout=240)
         assert rc == 0, f"Expected activation success, got rc={rc}, stdout={stdout!r}, stderr={stderr!r}"
-        machine.wait_until_succeeds(
-            f"nails --config {headless_config} status --json | grep -F 'Active'",
-            timeout=180,
-        )
+        wait_for_status_state("Active", config_path=headless_config, timeout=180)
         assert_status_state("Active", config_path=headless_config)
 
     with subtest("deactivation returns status to inactive"):

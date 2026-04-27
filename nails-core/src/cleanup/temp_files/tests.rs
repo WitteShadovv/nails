@@ -156,6 +156,7 @@ fn test_pattern_matching_case_insensitive() {
     assert!(cleaner.matches_pattern("NAILS-build-cache"));
     assert!(cleaner.matches_pattern("some-NaIlS-temp.txt"));
     assert!(cleaner.matches_pattern("prefix-nails-suffix"));
+    assert!(!cleaner.matches_pattern("nails-headless.yaml"));
     assert!(!cleaner.matches_pattern("unrelated-file.txt"));
 }
 
@@ -194,6 +195,41 @@ fn test_cleanup_removes_matching_files() {
     assert_eq!(result.len(), 2);
     assert!(result.iter().any(|s| s.contains("nails-12345.lock")));
     assert!(result.iter().any(|s| s.contains("nails_cache")));
+}
+
+#[test]
+fn test_cleanup_preserves_nails_config_files() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/tmp", true);
+    fs.mock_set_files_with_pattern(
+        "/tmp",
+        "nails",
+        &[
+            Path::new("/tmp/nails-headless.yaml"),
+            Path::new("/tmp/nails-overlay.toml"),
+            Path::new("/tmp/nails-12345.lock"),
+        ],
+    );
+    fs.mock_set_path_exists("/tmp/nails-headless.yaml", true);
+    fs.mock_set_path_exists("/tmp/nails-overlay.toml", true);
+    fs.mock_set_path_exists("/tmp/nails-12345.lock", true);
+    fs.mock_set_path_type("/tmp/nails-headless.yaml", "file");
+    fs.mock_set_path_type("/tmp/nails-overlay.toml", "file");
+    fs.mock_set_path_type("/tmp/nails-12345.lock", "file");
+
+    let cleaner = TempFilesCleaner::new(fs.clone());
+    let result = cleaner.clean().unwrap();
+
+    assert_eq!(result.len(), 1);
+    assert!(result.iter().any(|s| s.contains("nails-12345.lock")));
+    assert!(
+        fs.path_exists(Path::new("/tmp/nails-headless.yaml"))
+            .unwrap()
+    );
+    assert!(
+        fs.path_exists(Path::new("/tmp/nails-overlay.toml"))
+            .unwrap()
+    );
 }
 
 #[test]
@@ -236,6 +272,39 @@ fn test_cleanup_continues_on_permission_error() {
     let cleaned = result.unwrap();
     // Should have cleaned the second file
     assert!(cleaned.iter().any(|s| s.contains("nails-normal.txt")));
+}
+
+#[test]
+fn test_cleanup_preserves_explicit_config_path() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/tmp", true);
+    fs.mock_set_files_with_pattern(
+        "/tmp",
+        "nails",
+        &[
+            Path::new("/tmp/nails-tracker-integrity.yaml"),
+            Path::new("/tmp/nails-status.stdout"),
+        ],
+    );
+    fs.mock_set_path_exists("/tmp/nails-tracker-integrity.yaml", true);
+    fs.mock_set_path_exists("/tmp/nails-status.stdout", true);
+    fs.mock_set_path_type("/tmp/nails-tracker-integrity.yaml", "file");
+    fs.mock_set_path_type("/tmp/nails-status.stdout", "file");
+
+    let cleaner = TempFilesCleaner::new(fs.clone())
+        .with_preserved_paths(vec![PathBuf::from("/tmp/nails-tracker-integrity.yaml")]);
+
+    let cleaned = cleaner.clean().unwrap();
+
+    assert!(
+        cleaned.iter().any(|s| s.contains("nails-status.stdout")),
+        "expected non-preserved temp file to be cleaned"
+    );
+    assert!(
+        fs.path_exists(Path::new("/tmp/nails-tracker-integrity.yaml"))
+            .expect("preserved config path should still be queryable"),
+        "explicit config path should be preserved"
+    );
 }
 
 #[test]

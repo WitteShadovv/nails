@@ -8,6 +8,161 @@ use std::io::Write;
 use std::path::Path;
 use tempfile::NamedTempFile;
 
+#[derive(Clone, Default)]
+struct FailingMountCheckFilesystem {
+    inner: MockFilesystem,
+}
+
+impl crate::Filesystem for FailingMountCheckFilesystem {
+    fn is_mounted(&self, target: &Path) -> crate::Result<bool> {
+        if target == Path::new("/etc") {
+            return Err(crate::NailsError::IoError(std::io::Error::other(
+                "mount table unreadable",
+            )));
+        }
+        self.inner.is_mounted(target)
+    }
+
+    fn mount_overlay(
+        &self,
+        lower: &[&Path],
+        upper: &Path,
+        work: &Path,
+        target: &Path,
+    ) -> crate::Result<()> {
+        self.inner.mount_overlay(lower, upper, work, target)
+    }
+    fn unmount(&self, target: &Path, force: bool) -> crate::Result<()> {
+        self.inner.unmount(target, force)
+    }
+    fn get_filesystem_type(&self, target: &Path) -> crate::Result<Option<String>> {
+        self.inner.get_filesystem_type(target)
+    }
+    fn is_overlay_mounted(&self, target: &Path) -> crate::Result<bool> {
+        self.inner.is_overlay_mounted(target)
+    }
+    fn get_mount_info(&self, target: &Path) -> Option<crate::filesystem::MountInfo> {
+        self.inner.get_mount_info(target)
+    }
+    fn swap_is_enabled(&self) -> crate::Result<bool> {
+        self.inner.swap_is_enabled()
+    }
+    fn swap_disable(&self) -> crate::Result<()> {
+        self.inner.swap_disable()
+    }
+    fn bind_mount(&self, source: &Path, target: &Path) -> crate::Result<()> {
+        self.inner.bind_mount(source, target)
+    }
+    fn unmount_bind(&self, target: &Path) -> crate::Result<()> {
+        self.inner.unmount_bind(target)
+    }
+    fn mount_tmpfs(&self, target: &Path, size: &str) -> crate::Result<()> {
+        self.inner.mount_tmpfs(target, size)
+    }
+    fn unmount_tmpfs(&self, target: &Path) -> crate::Result<()> {
+        self.inner.unmount_tmpfs(target)
+    }
+    fn path_exists(&self, path: &Path) -> crate::Result<bool> {
+        self.inner.path_exists(path)
+    }
+    fn is_directory(&self, path: &Path) -> crate::Result<bool> {
+        self.inner.is_directory(path)
+    }
+    fn is_symlink(&self, path: &Path) -> crate::Result<bool> {
+        self.inner.is_symlink(path)
+    }
+    fn create_symlink(&self, target: &Path, link: &Path) -> crate::Result<()> {
+        self.inner.create_symlink(target, link)
+    }
+    fn get_free_space(&self, path: &Path) -> crate::Result<u64> {
+        self.inner.get_free_space(path)
+    }
+    fn create_directory(&self, path: &Path) -> crate::Result<()> {
+        self.inner.create_directory(path)
+    }
+    fn set_permissions(&self, path: &Path, mode: u32) -> crate::Result<()> {
+        self.inner.set_permissions(path, mode)
+    }
+    fn get_permissions(&self, path: &Path) -> crate::Result<u32> {
+        self.inner.get_permissions(path)
+    }
+    fn is_readable(&self, path: &Path) -> crate::Result<bool> {
+        self.inner.is_readable(path)
+    }
+    fn is_writable(&self, path: &Path) -> crate::Result<bool> {
+        self.inner.is_writable(path)
+    }
+    fn nixos_profile_exists(&self, profile: &str) -> crate::Result<bool> {
+        self.inner.nixos_profile_exists(profile)
+    }
+    fn nixos_build_profile(&self, profile: &str) -> crate::Result<()> {
+        self.inner.nixos_build_profile(profile)
+    }
+    fn nixos_switch_profile(&self, profile: &str) -> crate::Result<()> {
+        self.inner.nixos_switch_profile(profile)
+    }
+    fn nixos_get_current_profile(&self) -> crate::Result<String> {
+        self.inner.nixos_get_current_profile()
+    }
+    fn nails_process_running(&self) -> crate::Result<bool> {
+        self.inner.nails_process_running()
+    }
+    fn read_file_content(&self, path: &Path) -> crate::Result<String> {
+        self.inner.read_file_content(path)
+    }
+    fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> crate::Result<Vec<PathBuf>> {
+        self.inner.find_files_with_pattern(dir, pattern)
+    }
+    fn write_file_content(&self, path: &Path, content: &str) -> crate::Result<()> {
+        self.inner.write_file_content(path, content)
+    }
+    fn list_directory(&self, dir: &Path) -> crate::Result<Vec<PathBuf>> {
+        self.inner.list_directory(dir)
+    }
+    fn enumerate_root_directories(&self) -> crate::Result<Vec<PathBuf>> {
+        self.inner.enumerate_root_directories()
+    }
+    fn file_size(&self, path: &Path) -> crate::Result<u64> {
+        self.inner.file_size(path)
+    }
+    fn rename_file(&self, from: &Path, to: &Path) -> crate::Result<()> {
+        self.inner.rename_file(from, to)
+    }
+    fn remove_file(&self, path: &Path) -> crate::Result<()> {
+        self.inner.remove_file(path)
+    }
+    fn remove_directory(&self, path: &Path) -> crate::Result<()> {
+        self.inner.remove_directory(path)
+    }
+    fn remove_dir_all(&self, path: &Path) -> crate::Result<()> {
+        self.inner.remove_dir_all(path)
+    }
+    fn secure_delete(&self, path: &Path) -> crate::Result<()> {
+        self.inner.secure_delete(path)
+    }
+    fn secure_delete_dir_all(&self, path: &Path) -> crate::Result<()> {
+        self.inner.secure_delete_dir_all(path)
+    }
+    fn read_directory(&self, path: &Path) -> crate::Result<Vec<std::fs::DirEntry>> {
+        self.inner.read_directory(path)
+    }
+    fn supports_symlinks(&self, dir: &Path) -> crate::Result<bool> {
+        self.inner.supports_symlinks(dir)
+    }
+    fn modified_time(&self, path: &Path) -> crate::Result<chrono::DateTime<chrono::Utc>> {
+        self.inner.modified_time(path)
+    }
+    fn copy_tree(&self, src: &Path, dst: &Path) -> crate::Result<()> {
+        self.inner.copy_tree(src, dst)
+    }
+    fn get_directory_size(&self, path: &Path) -> crate::Result<u64> {
+        self.inner.get_directory_size(path)
+    }
+    fn find_submount_sources(&self, target: &Path) -> crate::Result<Vec<(PathBuf, PathBuf)>> {
+        self.inner.find_submount_sources(target)
+    }
+}
+
 /// Helper function to check if logs contain a specific string
 /// This works with tracing-test's captured output
 #[allow(dead_code)]
@@ -72,6 +227,37 @@ fn test_status_command_inactive() {
     assert!(report.uptime.is_none());
     assert!(report.activated_at.is_none());
     assert!(report.nixos_generation.is_none());
+}
+
+#[test]
+fn test_status_command_propagates_permission_denied_for_unreadable_state() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+    std::fs::write(
+        &state_path,
+        serde_json::to_string(&StateFile::default()).unwrap(),
+    )
+    .unwrap();
+
+    let mut perms = std::fs::metadata(&state_path).unwrap().permissions();
+    perms.set_mode(0o000);
+    std::fs::set_permissions(&state_path, perms).unwrap();
+
+    let cmd = StatusCommand::new(MockFilesystem::new(), Config::default(), state_path.clone());
+    let result = cmd.run_truthful();
+
+    let mut restore = std::fs::metadata(&state_path).unwrap().permissions();
+    restore.set_mode(0o600);
+    std::fs::set_permissions(&state_path, restore).unwrap();
+
+    match result.unwrap_err() {
+        crate::NailsError::PermissionDenied(msg) => {
+            assert!(msg.contains("Cannot read state file"), "msg={msg}");
+        }
+        other => panic!("expected PermissionDenied, got {other:?}"),
+    }
 }
 
 // Task 7: Unit tests for ACTIVE state
@@ -1086,6 +1272,146 @@ fn test_verification_detects_overlay_status_not_in_active_overlays() {
         }
         _ => panic!("Expected Mismatch verification status"),
     }
+}
+
+#[test]
+fn test_status_command_surfaces_load_outcome_for_missing_and_migrated_files() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let missing_path = temp_dir.path().join("missing-state.json");
+
+    let missing_report = StatusCommand::new(
+        MockFilesystem::new(),
+        Config::default(),
+        missing_path.clone(),
+    )
+    .run()
+    .unwrap();
+    assert_eq!(
+        missing_report.load_outcome,
+        crate::LoadOutcome::FreshDefault
+    );
+
+    let state_file = StateFile {
+        version: "0.0.5".to_string(),
+        state: SystemState::Inactive,
+        ..StateFile::default()
+    };
+    let temp_file = create_temp_state_file(&state_file);
+    let migrated_report = StatusCommand::new(
+        MockFilesystem::new(),
+        Config::default(),
+        temp_file.path().to_path_buf(),
+    )
+    .run()
+    .unwrap();
+
+    assert_eq!(
+        migrated_report.load_outcome,
+        crate::LoadOutcome::Migrated {
+            from_version: "0.0.5".to_string()
+        }
+    );
+}
+
+#[test]
+fn test_status_command_recovers_from_corrupt_state_file() {
+    let temp_file = NamedTempFile::new().unwrap();
+    std::fs::write(temp_file.path(), "{ definitely-not-json").unwrap();
+
+    let report = StatusCommand::new(
+        MockFilesystem::new(),
+        Config::default(),
+        temp_file.path().to_path_buf(),
+    )
+    .run()
+    .unwrap();
+
+    assert_eq!(report.state, SystemState::Inactive);
+    assert_eq!(
+        report.load_outcome,
+        crate::LoadOutcome::RecoveredFromCorruption
+    );
+    assert_eq!(
+        report.overlay_verification,
+        VerificationStatus::NotApplicable
+    );
+}
+
+#[test]
+fn test_status_command_populates_overlay_details_only_for_active_state_with_tracked_overlays() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_mounted(Path::new("/home"), true);
+
+    let mut overlay_status = std::collections::HashMap::new();
+    overlay_status.insert(PathBuf::from("/home"), create_overlay_info("/home"));
+
+    let state_file = StateFile {
+        state: SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+        },
+        overlay_status: overlay_status.clone(),
+        ..StateFile::default()
+    };
+    let temp_file = create_temp_state_file(&state_file);
+
+    let report = StatusCommand::new(fs, Config::default(), temp_file.path().to_path_buf())
+        .run()
+        .unwrap();
+
+    assert_eq!(report.overlay_details, Some(overlay_status));
+
+    let inactive_state_file = create_temp_state_file(&StateFile::default());
+    let inactive_report = StatusCommand::new(
+        MockFilesystem::new(),
+        Config::default(),
+        inactive_state_file.path().to_path_buf(),
+    )
+    .run()
+    .unwrap();
+    assert_eq!(inactive_report.overlay_details, None);
+}
+
+#[test]
+fn test_status_command_reports_mount_check_errors_as_mismatch_and_status_false() {
+    let fs = FailingMountCheckFilesystem::default();
+    fs.inner.mock_set_mounted(Path::new("/home"), true);
+
+    let overlays = vec![PathBuf::from("/home"), PathBuf::from("/etc")];
+    let mut overlay_status = std::collections::HashMap::new();
+    overlay_status.insert(PathBuf::from("/home"), create_overlay_info("/home"));
+    overlay_status.insert(PathBuf::from("/etc"), create_overlay_info("/etc"));
+
+    let state_file = StateFile {
+        state: SystemState::Active {
+            activated_at: Utc::now(),
+            overlays,
+        },
+        overlay_status,
+        ..StateFile::default()
+    };
+    let temp_file = create_temp_state_file(&state_file);
+
+    let report = StatusCommand::new(fs, Config::default(), temp_file.path().to_path_buf())
+        .run()
+        .unwrap();
+
+    match report.overlay_verification {
+        VerificationStatus::Mismatch { errors } => {
+            assert!(errors.iter().any(|error| {
+                error.contains("Failed to check mount status for /etc")
+                    && error.contains("mount table unreadable")
+            }));
+        }
+        other => panic!("expected mismatch, got {other:?}"),
+    }
+
+    let etc_status = report
+        .overlay_mount_statuses
+        .iter()
+        .find(|status| status.path == Path::new("/etc"))
+        .unwrap();
+    assert!(!etc_status.actually_mounted);
 }
 
 // ============================================================================

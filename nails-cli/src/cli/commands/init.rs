@@ -195,7 +195,7 @@ mod tests {
         fs.mock_set_path_exists("/", true);
         fs.mock_set_path_type("/", "directory");
 
-        for dir in ["/etc", "/etc/nixos", "/home", "/nix"] {
+        for dir in ["/etc", "/etc/nixos", "/home", "/nix", "/nix/store"] {
             fs.mock_set_path_exists(dir, true);
             fs.mock_set_path_type(dir, "directory");
             fs.mock_set_readable(dir, true);

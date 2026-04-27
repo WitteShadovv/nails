@@ -18,6 +18,12 @@ fn format_preflight_errors(errors: &[(String, String)]) -> String {
 /// This enum covers all error conditions across the system with rich context.
 #[derive(Error, Debug)]
 pub enum NailsError {
+    #[error("NixOS preflight failed: {category}: {message}")]
+    NixOSPreflightError {
+        category: &'static str,
+        message: String,
+    },
+
     /// Permission denied - operation requires root privileges or filesystem access
     ///
     /// # Example
@@ -209,6 +215,15 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "NixOS operation failed: Profile switch failed"
+        );
+
+        let err = NailsError::NixOSPreflightError {
+            category: "flake lock",
+            message: "manual update required".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "NixOS preflight failed: flake lock: manual update required"
         );
 
         let err = NailsError::PreFlightCheckFailed(vec![(

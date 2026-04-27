@@ -943,6 +943,58 @@ fn test_verify_detects_state_file_exists() {
 }
 
 #[test]
+fn test_verify_detects_config_overlay_mounts_and_log_files() {
+    use crate::config::{Config, OverlayConfig};
+    use std::path::PathBuf;
+
+    let fs = MockFilesystem::new();
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/hidden"),
+        log_path: PathBuf::from("/var/custom-log"),
+        overlays: vec![OverlayConfig {
+            name: "srv".to_string(),
+            lower: PathBuf::from("/srv"),
+            upper: PathBuf::from("/mnt/hidden/overlays/srv/upper"),
+            work: PathBuf::from("/mnt/hidden/overlays/srv/work"),
+            target: PathBuf::from("/srv"),
+        }],
+        ..Config::default()
+    };
+
+    fs.mock_set_overlay_mounted(std::path::Path::new("/srv"), true);
+    fs.mock_set_path_exists("/var/custom-log", true);
+    fs.mock_set_path_type("/var/custom-log", "directory");
+    fs.mock_set_files_with_pattern(
+        "/var/custom-log",
+        "nails",
+        &[std::path::Path::new("/var/custom-log/nails-debug.log")],
+    );
+
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+
+    let overlay_findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "config" && f.message.contains("still mounted: /srv"))
+        .collect();
+    assert_eq!(overlay_findings.len(), 1);
+    assert_eq!(overlay_findings[0].severity, Severity::Critical);
+
+    let log_findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| {
+            f.category == "config"
+                && f.message.contains("Log file found in config log directory")
+                && f.message.contains("nails-debug.log")
+        })
+        .collect();
+    assert_eq!(log_findings.len(), 1);
+    assert_eq!(log_findings[0].severity, Severity::Warn);
+}
+
+#[test]
 fn test_verify_state_active_is_critical() {
     use crate::SystemState;
     use crate::state::StateFile;
@@ -968,6 +1020,56 @@ fn test_verify_state_active_is_critical() {
         .collect();
     assert!(!state_findings.is_empty());
     assert!(state_findings[0].message.contains("ACTIVE"));
+}
+
+#[test]
+fn test_verify_state_transition_states_are_critical() {
+    use crate::SystemState;
+    use crate::state::StateFile;
+    use chrono::Utc;
+
+    let fs = MockFilesystem::new();
+    let config = crate::config::Config::default();
+
+    let activating = StateFile {
+        state: SystemState::Activating {
+            started_at: Utc::now(),
+        },
+        ..StateFile::default()
+    };
+    let activating_result = Verifier::with_config(
+        fs.clone(),
+        config.clone(),
+        Some(activating),
+        StateFileStatus::NotChecked,
+    )
+    .run(false)
+    .unwrap();
+    let activating_findings: Vec<_> = activating_result
+        .findings
+        .iter()
+        .filter(|f| f.category == "state" && f.message.contains("ACTIVATING"))
+        .collect();
+    assert_eq!(activating_findings.len(), 1);
+    assert_eq!(activating_findings[0].severity, Severity::Critical);
+
+    let deactivating = StateFile {
+        state: SystemState::Deactivating {
+            started_at: Utc::now(),
+        },
+        ..StateFile::default()
+    };
+    let deactivating_result =
+        Verifier::with_config(fs, config, Some(deactivating), StateFileStatus::NotChecked)
+            .run(false)
+            .unwrap();
+    let deactivating_findings: Vec<_> = deactivating_result
+        .findings
+        .iter()
+        .filter(|f| f.category == "state" && f.message.contains("DEACTIVATING"))
+        .collect();
+    assert_eq!(deactivating_findings.len(), 1);
+    assert_eq!(deactivating_findings[0].severity, Severity::Critical);
 }
 
 #[test]

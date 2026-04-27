@@ -7,15 +7,20 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   contractHelpers = import ./../../lib/contract-helpers.nix;
-in {
+in
+{
   name = "status-always-exits-zero";
   meta.tags = [ "contract" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages =
-      [ self.packages.x86_64-linux.nails pkgs.python3 ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.python3
+      ];
+    };
 
   testScript = _: ''
     import json
@@ -23,6 +28,7 @@ in {
 
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.runDetachedCommandFn}
+    ${testHelpers.readStatusJsonFn}
     ${testHelpers.canonicalDeactivateFn}
     ${assertions.assertStatusStateFn}
     ${contractHelpers.runCommandCaptureFn}
@@ -70,8 +76,9 @@ in {
         )
         assert tampered["rc"] == 0, tampered
         tampered_payload = json.loads(tampered["stdout"])
-        assert tampered_payload["state"] == "INACTIVE", tampered_payload
-        assert "error" in tampered_payload, tampered_payload
+        assert_status_state("Inactive", payload=tampered_payload)
+        assert tampered_payload["security_posture"] in ("decoy", "warning"), tampered_payload
+        assert tampered_payload["overlays"] == [], tampered_payload
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';
 }

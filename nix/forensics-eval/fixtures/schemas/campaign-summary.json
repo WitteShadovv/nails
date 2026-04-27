@@ -4,7 +4,7 @@
   "title": "Forensics analyzer campaign summary",
   "type": "object",
   "additionalProperties": false,
-  "required": ["contractVersion", "campaignDir", "runCount", "status", "totals", "runs"],
+  "required": ["contractVersion", "campaignDir", "runCount", "status", "totals", "stageTotals", "analyzerTotals", "runs"],
   "properties": {
     "contractVersion": { "type": "string" },
     "campaignDir": { "type": "string", "minLength": 1 },
@@ -14,6 +14,8 @@
       "enum": ["clean", "finding", "error"]
     },
     "totals": { "type": "object" },
+    "stageTotals": { "type": "array", "items": { "type": "object" } },
+    "analyzerTotals": { "type": "array", "items": { "type": "object" } },
     "runs": { "type": "array", "items": { "type": "object" } }
   }
 }

@@ -70,7 +70,9 @@ pub(crate) fn prompt_session_kill_confirmation_with_io<R: std::io::BufRead, W: s
         "    2. Terminate your logind session and user processes"
     )?;
     writeln!(writer, "    3. Mount hidden environment overlays")?;
-    writeln!(writer, "    4. Restart display manager and user manager")?;
+    writeln!(writer, "    4. Mount hidden environment overlays")?;
+    writeln!(writer, "    5. Restart display manager and user manager")?;
+    writeln!(writer, "    6. Run the NixOS switch/rebuild test path")?;
     writeln!(writer)?;
     writeln!(
         writer,
@@ -363,6 +365,7 @@ fn restart_display_manager_with_executor<E: SessionCommandExecutor>(
     service: &str,
     executor: &E,
 ) -> Result<()> {
+    tracing::info!(service = %service, "Restarting display manager");
     let (success, _stdout, stderr) = executor.execute_systemctl(&["start", service])?;
 
     if !success {
@@ -415,6 +418,7 @@ fn restart_user_manager_with_executor<E: SessionCommandExecutor>(
     let runtime_service = format!("user-runtime-dir@{}.service", uid);
     let user_service = format!("user@{}.service", uid);
 
+    tracing::info!(uid = uid, service = %user_service, "Restarting user manager");
     let _ = executor.execute_systemctl(&["start", &runtime_service]);
     let (success, _stdout, stderr) = executor.execute_systemctl(&["start", &user_service])?;
 

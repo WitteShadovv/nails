@@ -94,16 +94,6 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     /// This method **never returns Err** - all failures are handled gracefully
     /// and converted to warnings in the result.
     pub fn shell_setup(&self) -> Result<Option<ShellSetupResult>> {
-        // Detect current shell
-        let shell_type = match self.detect_current_shell() {
-            Some(shell) => shell,
-            None => {
-                // No shell detected or unsupported - not an error
-                // Shell instrumentation skipped: SHELL env var not set or unsupported shell
-                return Ok(None);
-            }
-        };
-
         // Generate and write scripts (best-effort, log failures)
         let mut warnings = Vec::new();
 
@@ -121,15 +111,6 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             warnings.push(msg);
         }
 
-        // Apply hidden color scheme (Story 14-8, Task 3)
-        // OSC sequences are written to stdout so the terminal processes them
-        // This is best-effort and non-blocking - failures are logged but don't prevent activation
-        let color_sequences = color_scheme::apply_hidden_color_scheme(&self.config.color_scheme);
-        Self::apply_color_scheme_to_terminal(&color_sequences, "hidden mode");
-
-        // Task 1: Inject rc integration (best-effort)
-        let rc_modified = self.inject_rc_integration(shell_type).unwrap_or(false);
-
         // Write XDG autostart entry for notify-dispatch (best-effort)
         match self.write_xdg_autostart_entry() {
             Ok(true) => {
@@ -144,6 +125,24 @@ impl<F: Filesystem> ShellInstrumentation<F> {
                 tracing::warn!("Failed to write XDG autostart entry: {} (continuing)", e);
             }
         }
+
+        let shell_type = self.detect_current_shell();
+
+        // Task 1: Inject rc integration (best-effort)
+        let rc_modified = match shell_type {
+            Some(shell) => self.inject_rc_integration(shell).unwrap_or(false),
+            None => false,
+        };
+
+        // Apply hidden color scheme (Story 14-8, Task 3)
+        // OSC sequences are written to stdout so the terminal processes them
+        // This is best-effort and non-blocking - failures are logged but don't prevent activation
+        let color_sequences = color_scheme::apply_hidden_color_scheme(&self.config.color_scheme);
+        Self::apply_color_scheme_to_terminal(&color_sequences, "hidden mode");
+
+        let Some(shell_type) = shell_type else {
+            return Ok(None);
+        };
 
         // Build result with source instructions
         let prompt_script = self.prompt_script_path(shell_type);

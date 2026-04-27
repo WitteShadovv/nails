@@ -6,15 +6,20 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   contractHelpers = import ./../../lib/contract-helpers.nix;
-in {
+in
+{
   name = "verbosity-flags";
   meta.tags = [ "contract" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages =
-      [ self.packages.x86_64-linux.nails pkgs.python3 ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.python3
+      ];
+    };
 
   testScript = _: ''
     import shlex
@@ -25,12 +30,11 @@ in {
     ${contractHelpers.runCommandCaptureFn}
     ${contractHelpers.countNonEmptyLinesFn}
 
-    with subtest("boot and prepare hidden volume"):
+    with subtest("boot and prepare harness state"):
         machine.start()
         machine.wait_for_unit("multi-user.target")
         headless_config = "/tmp/nails-headless.yaml"
         write_headless_config(headless_config)
-        machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
     counts = {}
     invocations = [
@@ -40,8 +44,10 @@ in {
         ("trace", "-vvv"),
     ]
 
-    for label, flag in invocations:
+    for index, (label, flag) in enumerate(invocations):
         with subtest(f"capture activation output for {label}"):
+            if index == 0:
+                machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
             result = run_command_capture(
                 f"verbosity-{label}",
                 " ".join([
@@ -61,6 +67,7 @@ in {
             counts[label] = count_nonempty_lines(result["combined"])
             assert counts[label] > 0, (label, result)
             canonical_deactivate(headless_config, unit_name=f"nails-deactivate-verbosity-{label}")
+            machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
 
     with subtest("verbosity increases output monotonically"):
         assert counts["quiet"] < counts["verbose"], counts

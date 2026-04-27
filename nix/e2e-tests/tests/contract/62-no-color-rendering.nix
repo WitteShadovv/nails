@@ -6,15 +6,20 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   contractHelpers = import ./../../lib/contract-helpers.nix;
-in {
+in
+{
   name = "no-color-rendering";
   meta.tags = [ "contract" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages =
-      [ self.packages.x86_64-linux.nails pkgs.python3 ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        pkgs.python3
+      ];
+    };
 
   testScript = _: ''
     import shlex
@@ -24,6 +29,10 @@ in {
     ${testHelpers.canonicalDeactivateFn}
     ${contractHelpers.runPtyCommandCaptureFn}
     ${contractHelpers.assertNoAnsiFn}
+
+    def remount_hidden_volume_and_rewrite_config():
+        write_headless_config(headless_config)
+        machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
 
     def activate_via_tty(name, command_prefix=""):
         prefix = (command_prefix + " ").strip()
@@ -38,7 +47,7 @@ in {
     with subtest("boot and prepare hidden volume"):
         machine.start()
         machine.wait_for_unit("multi-user.target")
-        headless_config = "/tmp/nails-headless.yaml"
+        headless_config = "/run/nails-tests/no-color-headless.yaml"
         write_headless_config(headless_config)
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
@@ -47,6 +56,7 @@ in {
         assert baseline["rc"] == 0, baseline
         assert_has_ansi(baseline["combined"], "baseline activation output")
         canonical_deactivate(headless_config, unit_name="nails-deactivate-no-color-baseline")
+        remount_hidden_volume_and_rewrite_config()
 
     with subtest("--no-color suppresses ANSI escapes"):
         disabled = run_pty_command_capture(
@@ -60,6 +70,7 @@ in {
         assert disabled["rc"] == 0, disabled
         assert_no_ansi(disabled["combined"], "--no-color activation output")
         canonical_deactivate(headless_config, unit_name="nails-deactivate-no-color-flag")
+        remount_hidden_volume_and_rewrite_config()
 
     with subtest("NO_COLOR environment variable suppresses ANSI escapes"):
         env_disabled = activate_via_tty("no-color-env", command_prefix="NO_COLOR=1")

@@ -1,5 +1,5 @@
 # E2E Tests for NAILS
-# Runs comprehensive end-to-end tests using NixOS VM testing
+# Runs the default CI critical-regression E2E subset using NixOS VM testing
 
 name: E2E Tests
 
@@ -10,6 +10,8 @@ on:
       - 'nails-core/**'
       - 'nails-cli/**'
       - 'nix/**'
+      - 'scripts/run-e2e-tests.sh'
+      - '.github/workflows/e2e-tests.yml'
       - 'flake.nix'
       - 'flake.lock'
       - 'Cargo.toml'
@@ -20,6 +22,8 @@ on:
       - 'nails-core/**'
       - 'nails-cli/**'
       - 'nix/**'
+      - 'scripts/run-e2e-tests.sh'
+      - '.github/workflows/e2e-tests.yml'
       - 'flake.nix'
       - 'flake.lock'
       - 'Cargo.toml'
@@ -31,6 +35,10 @@ on:
         required: false
         default: 'false'
 
+concurrency:
+  group: e2e-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   e2e-tests:
     runs-on: ubuntu-24.04
@@ -41,7 +49,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Nix
-        uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b
+        uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f
         with:
           extra_nix_config: |
             system-features = nixos-test benchmark big-parallel kvm
@@ -54,9 +62,11 @@ jobs:
           name: nix-community
           skipPush: true
 
-      - name: Run CI E2E suite
+      - name: Run CI critical E2E suite
         env:
           NAILS_E2E_DEFAULT_TARGET: ci
+          NAILS_E2E_VM_CPU_TARGET_PERCENT: '100'
+          NAILS_E2E_VM_HOST_RESERVED_CORES: '0'
         run: ./scripts/run-e2e-tests.sh --verbose
 
       - name: Upload test results as artifacts

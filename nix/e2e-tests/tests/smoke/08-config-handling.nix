@@ -6,15 +6,18 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   badYamlFixture = ./../../fixtures/configs/bad-yaml.yaml;
-in {
+in
+{
   name = "config-handling";
   meta.tags = [ "smoke" ];
 
   nodes = {
-    machine = { ... }: {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
+    machine =
+      { ... }:
+      {
+        imports = [ ./../../lib/vm-config.nix ];
+        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+      };
   };
 
   testScript = _: ''

@@ -1,3 +1,6 @@
+## Historical name only: this fixture uses explicit persistent overlays for
+## additional targets (/var, /tmp, /srv, /opt). It does not use
+## `extended_overlays`, and the lower directories must already exist.
 hidden_volume_root: /mnt/hidden-volume
 overlay_mode: explicit
 overlays:

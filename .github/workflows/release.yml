@@ -2,9 +2,8 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
-      - dev
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions: {}
@@ -49,18 +48,24 @@ jobs:
           release_name=""
           release_notes=""
 
-          case "${GITHUB_REF_NAME}" in
-            main)
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            expected_tag="v${version}"
+            if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+              echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version} (expected ${expected_tag})" >&2
+              exit 1
+            fi
+            if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
               publish_release="true"
-              release_tag="v${version}-git.${short_rev}"
-              release_name="nails ${version}-git.${short_rev}"
+              release_tag="${GITHUB_REF_NAME}"
+              release_name="nails ${GITHUB_REF_NAME}"
               release_notes=$(cat <<EOF
-          Automated prerelease verification bundle for \`main\`.
+          Tagged release bundle for \`${GITHUB_REF_NAME}\`.
 
+          - Tag: ${GITHUB_REF_NAME}
           - Commit: ${GITHUB_SHA}
+          - Cargo version: ${version}
           - Canonical bundle attr: .#nails-release
           - Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
-          - Publication policy: pushes to \`main\` publish a GitHub prerelease; \`dev\` builds stay attached to the workflow run only
 
           ## Supply Chain Security
 
@@ -84,23 +89,58 @@ jobs:
           \`\`\`
           EOF
           )
-              ;;
-            dev)
-              release_name="Dev deterministic verification build"
+            else
+              release_name="Tagged release verification build"
               release_notes=$(cat <<EOF
+          Deterministic verification build for tag \`${GITHUB_REF_NAME}\`.
+
+          - Commit: ${GITHUB_SHA}
+          - Cargo version: ${version}
+          - Canonical bundle attr: .#nails-release
+          - Manual runs never publish GitHub releases; push the matching version tag to publish
+          EOF
+          )
+            fi
+          else
+            case "${GITHUB_REF_NAME}" in
+              main)
+                release_name="Main branch release verification build"
+                release_notes=$(cat <<EOF
+          Deterministic verification build for \`main\`.
+
+          - Commit: ${GITHUB_SHA}
+          - Cargo version: ${version}
+          - Canonical bundle attr: .#nails-release
+          - GitHub releases are not published from branch pushes or manual branch runs; create or select a version tag to publish
+          EOF
+          )
+                ;;
+              dev)
+                release_name="Dev deterministic verification build"
+                release_notes=$(cat <<EOF
           Deterministic verification build for \`dev\`.
 
           - Commit: ${GITHUB_SHA}
+          - Cargo version: ${version}
           - Canonical bundle attr: .#nails-release
-          - GitHub prereleases are not published from \`dev\`; download artifacts from this workflow run instead
+          - GitHub releases are not published from branch pushes or manual branch runs; create or select a version tag to publish
           EOF
           )
-              ;;
-            *)
-              echo "Unsupported ref ${GITHUB_REF_NAME}" >&2
-              exit 1
-              ;;
-          esac
+                ;;
+              *)
+                release_name="Manual release verification build"
+                release_notes=$(cat <<EOF
+          Deterministic verification build for \`${GITHUB_REF_NAME}\`.
+
+          - Commit: ${GITHUB_SHA}
+          - Cargo version: ${version}
+          - Canonical bundle attr: .#nails-release
+          - GitHub releases are not published from branch pushes or manual branch runs; create or select a version tag to publish
+          EOF
+          )
+                ;;
+            esac
+          fi
 
           {
             echo "archive-name="
@@ -115,7 +155,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Install Nix
-        uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b
+        uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes

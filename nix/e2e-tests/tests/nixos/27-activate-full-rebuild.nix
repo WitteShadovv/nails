@@ -104,6 +104,8 @@ in
         assert "test" in rebuild_log, f"Expected nixos-rebuild test invocation, got: {rebuild_log!r}"
         assert "-I nixos-config=/etc/nixos/configuration.nix" in rebuild_log, \
             f"Expected legacy nixos-rebuild invocation, got: {rebuild_log!r}"
+        # Journal tagging can vary across systemd/NixOS combinations.
+        # Rebuild-path coverage here is validated by wrapped nixos-rebuild invocation and active-state checks below.
 
     with subtest("active system exposes rebuilt runtime state"):
         active_status = assert_status_state_local("Active", headless_config)

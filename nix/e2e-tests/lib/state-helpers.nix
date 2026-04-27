@@ -93,4 +93,27 @@
 
         return env_prefix, gate_path, entered_path
   '';
+
+  installDeactivationGateFn = ''
+    def install_deactivation_gate(
+        gate_path="/run/nails-tests/nails-deactivation.gate",
+        entered_path="/run/nails-tests/nails-deactivation-entered",
+    ):
+        import shlex
+
+        gate_dir = "/".join(gate_path.split("/")[:-1]) or "."
+        machine.succeed(f"mkdir -p {shlex.quote(gate_dir)}")
+        machine.succeed(f"rm -f {shlex.quote(entered_path)}")
+        machine.succeed(f"touch {shlex.quote(gate_path)}")
+
+        env_prefix = (
+            "NAILS_TEST_DEACTIVATING_GATE_PATH="
+            + shlex.quote(gate_path)
+            + " "
+            + "NAILS_TEST_DEACTIVATING_ENTERED_PATH="
+            + shlex.quote(entered_path)
+        )
+
+        return env_prefix, gate_path, entered_path
+  '';
 }

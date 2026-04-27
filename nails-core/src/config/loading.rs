@@ -167,6 +167,8 @@ impl Config {
             config.log_path = config.hidden_volume_root.join("logs");
         }
 
+        config.loaded_config_path = Some(path.to_path_buf());
+
         Ok(config)
     }
 
@@ -246,6 +248,8 @@ color_scheme:
 #     target: /home
 
 # Extended overlay configuration (ephemeral tmpfs-backed overlays):
+# WARNING: currently unsupported. overlayfs requires upperdir and workdir to
+# live on the same mount; NAILS rejects extended_overlays during preflight.
 # extended_overlays:
 #   enabled: false
 #   directories:

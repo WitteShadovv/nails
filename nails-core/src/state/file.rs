@@ -44,7 +44,7 @@ pub struct LoadResult {
 ///
 /// # Security Critical
 ///
-/// **INVARIANT**: State file MUST only exist at {hidden_volume}/.nails/state.json
+/// **INVARIANT**: State file MUST only exist at {hidden_volume}/state.json
 /// **NEVER** at: /home/user/state.json, /etc/nails/state.json, or ANY path
 /// outside the hidden volume.
 ///
@@ -53,7 +53,7 @@ pub struct LoadResult {
 ///
 /// # Requirements
 ///
-/// - FR24: Persist state to {hidden_volume}/.nails/state.json
+/// - FR24: Persist state to {hidden_volume}/state.json
 /// - FR25: Never write state file to decoy system
 /// - FR27: Track timestamp for state changes
 /// - FR28: Track overlay status
@@ -358,6 +358,14 @@ impl StateFile {
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    return Err(NailsError::PermissionDenied(format!(
+                        "Cannot read state file {}: {}",
+                        path.display(),
+                        e
+                    )));
+                }
+
                 tracing::warn!(
                     "State file unreadable at {}: {}, assuming INACTIVE",
                     path.display(),

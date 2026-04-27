@@ -2,11 +2,13 @@ let
   flakeLock = builtins.fromJSON (builtins.readFile ./flake.lock);
   rustOverlayLocked = flakeLock.nodes.rust-overlay.locked;
   rustOverlayTarball = builtins.fetchTarball {
-    url =
-      "https://github.com/${rustOverlayLocked.owner}/${rustOverlayLocked.repo}/archive/${rustOverlayLocked.rev}.tar.gz";
+    url = "https://github.com/${rustOverlayLocked.owner}/${rustOverlayLocked.repo}/archive/${rustOverlayLocked.rev}.tar.gz";
     sha256 = rustOverlayLocked.narHash;
   };
-in { pkgs ? import <nixpkgs> { overlays = [ (import rustOverlayTarball) ]; } }:
+in
+{
+  pkgs ? import <nixpkgs> { overlays = [ (import rustOverlayTarball) ]; },
+}:
 
 let
   targetTriple = "x86_64-unknown-linux-musl";
@@ -15,10 +17,15 @@ let
   # Keep this broadly aligned with flake.nix devShells.default while
   # reusing the flake-locked rust-overlay revision instead of master.
   rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
-    extensions = [ "rust-src" "rust-analyzer" "llvm-tools-preview" ];
+    extensions = [
+      "rust-src"
+      "rust-analyzer"
+      "llvm-tools-preview"
+    ];
     targets = [ targetTriple ];
   };
-in pkgs.mkShell {
+in
+pkgs.mkShell {
   packages = with pkgs; [
     rustToolchain
     git

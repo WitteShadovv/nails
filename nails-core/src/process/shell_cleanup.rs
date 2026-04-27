@@ -5,8 +5,10 @@
 //! write their in-memory history to disk — defeating cleanup. SIGKILL
 //! terminates them immediately without triggering any signal handlers.
 
+use crate::obfuscate;
 #[cfg(not(test))]
 use nix::libc;
+use std::collections::HashSet;
 #[cfg(not(test))]
 use std::fs;
 #[cfg(not(test))]
@@ -22,6 +24,7 @@ const SHELL_NAMES: &[&str] = &["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh
 /// but it does not exist in production deployments.
 #[cfg(not(test))]
 const SKIPPED_SERVICE_NAMES: &[&str] = &["backdoor"];
+const PROTECTED_PIDS_ENV: &str = "NAILS_SHELL_CLEANUP_PROTECTED_PIDS";
 
 #[cfg(not(test))]
 fn read_service_name(pid: u32) -> Option<String> {
@@ -54,6 +57,50 @@ impl ShellKillReport {
     pub fn total_found(&self) -> usize {
         self.killed.len() + self.failed.len() + self.skipped.len()
     }
+}
+
+fn shell_cleanup_target_uid() -> Option<u32> {
+    std::env::var(obfuscate::env_target_uid())
+        .ok()
+        .or_else(|| std::env::var("SUDO_UID").ok())
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|uid| *uid != 0)
+        .or_else(|| {
+            let uid = nix::unistd::geteuid().as_raw();
+            if uid == 0 { None } else { Some(uid) }
+        })
+}
+
+fn should_kill_shell_process(shell_uid: u32, target_uid: Option<u32>) -> bool {
+    target_uid.is_some_and(|target_uid| shell_uid == target_uid)
+}
+
+fn protected_shell_cleanup_pids() -> HashSet<u32> {
+    std::env::var(PROTECTED_PIDS_ENV)
+        .ok()
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .filter_map(|pid| pid.trim().parse::<u32>().ok())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[cfg(not(test))]
+fn read_uid_from_status(pid: u32) -> Option<u32> {
+    let status_path = Path::new("/proc").join(pid.to_string()).join("status");
+    let content = fs::read_to_string(status_path).ok()?;
+
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("Uid:\t") {
+            let first = rest.split_whitespace().next()?;
+            return first.parse::<u32>().ok();
+        }
+    }
+
+    None
 }
 
 /// Kills all user shell processes (bash, zsh, fish, etc.) using SIGKILL.
@@ -90,6 +137,15 @@ pub fn kill_user_shells() -> ShellKillReport {
     {
         let mut report = ShellKillReport::default();
         let own_pid = std::process::id();
+        let target_uid = shell_cleanup_target_uid();
+        let protected_pids = protected_shell_cleanup_pids();
+
+        if target_uid.is_none() {
+            tracing::warn!(
+                "Skipping shell cleanup because no non-root target user could be determined"
+            );
+            return report;
+        }
 
         // Scan /proc for shell processes
         let proc_dir = match std::fs::read_dir("/proc") {
@@ -116,6 +172,12 @@ pub fn kill_user_shells() -> ShellKillReport {
                 continue;
             }
 
+            if protected_pids.contains(&pid) {
+                tracing::debug!(pid = pid, "Skipping protected shell process by pid");
+                report.skipped.push(pid);
+                continue;
+            }
+
             // Read /proc/<pid>/comm to get process name
             let comm_path = Path::new("/proc").join(&*name_str).join("comm");
             let comm = match std::fs::read_to_string(&comm_path) {
@@ -125,6 +187,22 @@ pub fn kill_user_shells() -> ShellKillReport {
 
             // Check if this is a shell process
             if !SHELL_NAMES.contains(&comm.as_str()) {
+                continue;
+            }
+
+            let Some(shell_uid) = read_uid_from_status(pid) else {
+                tracing::debug!(pid = pid, comm = %comm, "Skipping shell with unknown uid");
+                continue;
+            };
+
+            if !should_kill_shell_process(shell_uid, target_uid) {
+                tracing::debug!(
+                    pid = pid,
+                    comm = %comm,
+                    shell_uid = shell_uid,
+                    target_uid = target_uid,
+                    "Skipping shell outside target user scope"
+                );
                 continue;
             }
 
@@ -157,6 +235,7 @@ pub fn kill_user_shells() -> ShellKillReport {
         }
 
         tracing::info!(
+            target_uid = target_uid,
             killed = report.killed.len(),
             failed = report.failed.len(),
             skipped = report.skipped.len(),
@@ -170,6 +249,11 @@ pub fn kill_user_shells() -> ShellKillReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_shell_names_contains_common_shells() {
@@ -199,6 +283,64 @@ mod tests {
             skipped: vec![4],
         };
         assert_eq!(report.total_found(), 4);
+    }
+
+    #[test]
+    fn should_kill_only_target_uid_shells() {
+        assert!(should_kill_shell_process(1000, Some(1000)));
+        assert!(!should_kill_shell_process(0, Some(1000)));
+        assert!(!should_kill_shell_process(1001, Some(1000)));
+        assert!(!should_kill_shell_process(1000, None));
+    }
+
+    #[test]
+    #[serial]
+    fn shell_cleanup_target_uid_prefers_explicit_target_uid() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        unsafe {
+            std::env::set_var(obfuscate::env_target_uid(), "1001");
+            std::env::set_var("SUDO_UID", "1000");
+        }
+
+        assert_eq!(shell_cleanup_target_uid(), Some(1001));
+
+        unsafe {
+            std::env::remove_var(obfuscate::env_target_uid());
+            std::env::remove_var("SUDO_UID");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn shell_cleanup_target_uid_uses_sudo_uid_when_present() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        unsafe {
+            std::env::remove_var(obfuscate::env_target_uid());
+            std::env::set_var("SUDO_UID", "1000");
+        }
+
+        assert_eq!(shell_cleanup_target_uid(), Some(1000));
+
+        unsafe {
+            std::env::remove_var("SUDO_UID");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn protected_shell_cleanup_pids_parses_valid_pid_list() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        unsafe {
+            std::env::set_var(PROTECTED_PIDS_ENV, "123, 456, nope, 789");
+        }
+
+        let parsed = protected_shell_cleanup_pids();
+        let expected: HashSet<u32> = [123, 456, 789].into_iter().collect();
+        assert_eq!(parsed, expected);
+
+        unsafe {
+            std::env::remove_var(PROTECTED_PIDS_ENV);
+        }
     }
 
     #[test]

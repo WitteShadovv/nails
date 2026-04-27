@@ -202,7 +202,7 @@ fn build_preflight_registry(
         overlay_dirs,
     )));
 
-    let overlay_target_paths: Vec<std::path::PathBuf> = match config.overlay_mode {
+    let persistent_overlay_target_paths: Vec<std::path::PathBuf> = match config.overlay_mode {
         nails_core::config::OverlayMode::Auto => {
             build_overlay_targets(fs, config).unwrap_or_default()
         }
@@ -211,8 +211,21 @@ fn build_preflight_registry(
         }
     };
 
+    let ephemeral_overlay_target_paths: Vec<std::path::PathBuf> =
+        if config.extended_overlays.enabled {
+            config
+                .extended_overlays
+                .directories
+                .iter()
+                .map(|dir| dir.path.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
     registry.add_check(Box::new(OverlayCompatibilityCheck::new(
-        overlay_target_paths,
+        persistent_overlay_target_paths,
+        ephemeral_overlay_target_paths,
         config.hidden_volume_root.clone(),
     )));
 

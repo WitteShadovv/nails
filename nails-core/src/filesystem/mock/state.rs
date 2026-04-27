@@ -89,6 +89,7 @@ pub struct MockFilesystem {
     pub(super) explicit_file_sizes: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) modified_times: Arc<Mutex<HashMap<PathBuf, DateTime<Utc>>>>,
     pub(super) permissions: Arc<Mutex<HashMap<PathBuf, u32>>>,
+    pub(super) permissions_should_fail: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) root_directories: Arc<Mutex<Vec<PathBuf>>>,
     pub(super) root_symlinks: Arc<Mutex<Vec<PathBuf>>>,
     pub(super) symlink_targets: Arc<Mutex<HashMap<PathBuf, PathBuf>>>,
@@ -146,6 +147,7 @@ impl MockFilesystem {
             explicit_file_sizes: Arc::new(Mutex::new(HashSet::new())),
             modified_times: Arc::new(Mutex::new(HashMap::new())),
             permissions: Arc::new(Mutex::new(HashMap::new())),
+            permissions_should_fail: Arc::new(Mutex::new(HashSet::new())),
             root_directories: Arc::new(Mutex::new(Vec::new())),
             root_symlinks: Arc::new(Mutex::new(Vec::new())),
             symlink_targets: Arc::new(Mutex::new(HashMap::new())),
@@ -247,6 +249,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.permissions
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.permissions_should_fail
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();

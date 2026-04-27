@@ -105,6 +105,10 @@ Use only:
 
 The runner expands suites/groups such as `ci`, `all`, or tag names into concrete leaf tests using Nix metadata (`_testNames` and `_groups`) and then executes those leaf tests sequentially. Duplicate tests are removed in stable first-seen order, so mixed inputs such as `ci verify smoke` still run each resolved leaf test only once.
 
+When `--shard-index/--shard-count` are used, the runner keeps sharding deterministic but prefers a checked-in runtime-aware assignment from `nix/e2e-tests/shard-durations.json`. If that file is absent, the runner falls back to the older stable round-robin behavior.
+
+VM CPU auto-sizing defaults to the full visible runner CPU budget (`NAILS_E2E_VM_CPU_TARGET_PERCENT=100`, `NAILS_E2E_VM_HOST_RESERVED_CORES=0`) unless the caller overrides those environment variables.
+
 Default target selection is environment-aware:
 
 - local shells default to `all`

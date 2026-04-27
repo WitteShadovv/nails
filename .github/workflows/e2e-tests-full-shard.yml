@@ -78,7 +78,7 @@ jobs:
       - name: "Try combo 1: ccx33 @ nbg1"
         id: combo-1
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
         with:
           mode: create
           server_type: ccx33
@@ -95,7 +95,7 @@ jobs:
         id: combo-2
         if: steps.combo-1.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
         with:
           mode: create
           server_type: ccx33
@@ -112,7 +112,7 @@ jobs:
         id: combo-3
         if: steps.combo-1.outcome == 'failure' && steps.combo-2.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
         with:
           mode: create
           server_type: ccx33
@@ -132,7 +132,7 @@ jobs:
           steps.combo-2.outcome == 'failure' &&
           steps.combo-3.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
         with:
           mode: create
           server_type: ccx23
@@ -153,7 +153,7 @@ jobs:
           steps.combo-3.outcome == 'failure' &&
           steps.combo-4.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
         with:
           mode: create
           server_type: ccx23
@@ -175,7 +175,7 @@ jobs:
           steps.combo-4.outcome == 'failure' &&
           steps.combo-5.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
         with:
           mode: create
           server_type: ccx23
@@ -198,7 +198,7 @@ jobs:
           steps.combo-5.outcome == 'failure' &&
           steps.combo-6.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
         with:
           mode: create
           server_type: cpx41
@@ -222,7 +222,7 @@ jobs:
           steps.combo-6.outcome == 'failure' &&
           steps.combo-7.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
         with:
           mode: create
           server_type: cpx41
@@ -247,7 +247,7 @@ jobs:
           steps.combo-7.outcome == 'failure' &&
           steps.combo-8.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
         with:
           mode: create
           server_type: cpx41
@@ -623,7 +623,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Install Nix
-        uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b
+        uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f
         with:
           enable_kvm: true
           extra_nix_config: |
@@ -734,12 +734,53 @@ jobs:
           name: nix-community
           skipPush: true
 
+      - name: Record shard test selection
+        run: |
+          set -euo pipefail
+
+          mapfile -t shard_tests < <(./scripts/run-e2e-tests.sh --dry-run --shard-index "${{ inputs.shard-index }}" --shard-count "${{ inputs.shard-count }}" all)
+
+          {
+            printf 'Resolved %s leaf test(s) for shard %s/%s.\n' "${#shard_tests[@]}" '${{ inputs.shard-index }}' '${{ inputs.shard-count }}'
+            printf '\n'
+            printf 'Assigned tests:\n'
+            for test_name in "${shard_tests[@]}"; do
+              printf ' - %s\n' "$test_name"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run full E2E shard
+        timeout-minutes: 330
         env:
           E2E_TIMEOUT_SECONDS: ${{ steps.workflow-budget.outputs.e2e_timeout_seconds }}
+          NAILS_E2E_VM_CPU_TARGET_PERCENT: '100'
+          NAILS_E2E_VM_HOST_RESERVED_CORES: '0'
           WORKFLOW_DEADLINE_UTC: ${{ steps.workflow-budget.outputs.deadline_utc }}
         run: |
           set -euo pipefail
+
+          LOG_DIR="${RUNNER_TEMP}/full-e2e-shard-logs"
+          RUN_LOG="${LOG_DIR}/full-e2e-shard-${{ inputs.shard-index }}-of-${{ inputs.shard-count }}.log"
+          HEARTBEAT_INTERVAL_SECONDS=300
+
+          mkdir -p "$LOG_DIR"
+
+          heartbeat() {
+            while true; do
+              sleep "$HEARTBEAT_INTERVAL_SECONDS"
+              printf '[%s] shard %s/%s still running; waiting for ./scripts/run-e2e-tests.sh (workflow deadline %s)\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '${{ inputs.shard-index }}' '${{ inputs.shard-count }}' "$WORKFLOW_DEADLINE_UTC"
+            done
+          }
+
+          heartbeat_pid=''
+          cleanup_heartbeat() {
+            if [[ -n "$heartbeat_pid" ]]; then
+              kill "$heartbeat_pid" >/dev/null 2>&1 || true
+              wait "$heartbeat_pid" 2>/dev/null || true
+            fi
+          }
+
+          trap cleanup_heartbeat EXIT
 
           if ! command -v nix >/dev/null 2>&1 || ! command -v nix-store >/dev/null 2>&1; then
             echo "::error::nix and nix-store must be available before starting the full E2E suite"
@@ -755,11 +796,17 @@ jobs:
           echo "::group::Run full E2E shard"
           echo "Running ./scripts/run-e2e-tests.sh --verbose --shard-index ${{ inputs.shard-index }} --shard-count ${{ inputs.shard-count }} all with an internal timeout of ${E2E_TIMEOUT_SECONDS}s."
           echo "The timeout preserves a cleanup window for timeout termination, artifact upload, and Hetzner runner deletion before the 6-hour workflow budget expires at ${WORKFLOW_DEADLINE_UTC}."
+          echo "Streaming full shard output to ${RUN_LOG} and emitting a heartbeat every ${HEARTBEAT_INTERVAL_SECONDS}s while the shard is active."
+
+          heartbeat &
+          heartbeat_pid=$!
 
           set +e
-          timeout --signal=TERM --kill-after=5m "${E2E_TIMEOUT_SECONDS}s" ./scripts/run-e2e-tests.sh --verbose --shard-index "${{ inputs.shard-index }}" --shard-count "${{ inputs.shard-count }}" all
+          timeout --signal=TERM --kill-after=5m "${E2E_TIMEOUT_SECONDS}s" ./scripts/run-e2e-tests.sh --verbose --shard-index "${{ inputs.shard-index }}" --shard-count "${{ inputs.shard-count }}" all 2>&1 | tee "$RUN_LOG"
           status=$?
           set -e
+
+          cleanup_heartbeat
 
           echo "::endgroup::"
 
@@ -772,6 +819,19 @@ jobs:
             exit "$status"
           fi
 
+      - name: Upload full E2E shard artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: full-e2e-shard-${{ inputs.shard-index }}-results
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/full-e2e-shard-logs/**
+            **/*.log
+            **/performance.txt
+            **/metrics.json
+
   delete-runner:
     name: Delete Hetzner runner (shard ${{ inputs.shard-index }}/${{ inputs.shard-count }})
     needs: [create-runner, run-full-e2e]
@@ -781,7 +841,7 @@ jobs:
     steps:
       - name: Delete Hetzner Cloud runner
         if: needs.create-runner.outputs.server_id != ''
-        uses: Cyclenerd/hcloud-github-runner@1d464319145d45966cd0344f3e2038cf2152dc1d
+        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
         with:
           mode: delete
           delete_wait: '90'

@@ -15,8 +15,7 @@ use crate::process::{SessionCommandExecutor, detect_session_context_with_executo
 
 impl<F: Filesystem> NailsManager<F> {
     /// Handle --kill-session flag (Story 4.15, AC8)
-    /// Kill graphical session BEFORE pre-flight checks to ensure optimal activation
-    /// This enables all direct overlay mounts without pivot mount fallback
+    /// Kill graphical session only after pre-flight checks succeed.
     pub(super) fn handle_session_kill(
         verbosity: Verbosity,
         options: &crate::ActivateOptions,

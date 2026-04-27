@@ -5,12 +5,13 @@
 // state persistence, manager construction, and status queries.
 
 use chrono::Utc;
-use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use nails_core::{
     CleanupConfig, Config, ConfigBuilder, DeactivationMode, DeactivationOrchestrator,
     MockFilesystem, NailsManager, OverlayInfo, StateFile, StatusCommand, SystemState,
 };
 use std::collections::HashMap;
+use std::hint::black_box;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -234,7 +235,7 @@ fn benchmark_manager_construction(c: &mut Criterion) {
         b.iter(|| {
             let fs = MockFilesystem::new();
             let config = Config::default();
-            let state_path = PathBuf::from("/mnt/hidden-volume/.nails/state.json");
+            let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
             let manager = NailsManager::new(fs, config, state_path);
             black_box(manager);
         });
