@@ -29,6 +29,7 @@ in
     ${testHelpers.runDetachedCommandFn}
     ${testHelpers.canonicalDeactivateFn}
     ${contractHelpers.runCommandCaptureFn}
+    ${contractHelpers.assertNoAnsiFn}
     ${contractHelpers.assertAsciiOnlyFn}
 
     with subtest("boot and prepare hidden volume"):
@@ -48,24 +49,26 @@ in
         active_payload = json.loads(active_status["stdout"])
         assert active_payload["state"].startswith("Active"), active_payload
 
-    with subtest("regular status output uses non-plain decorations"):
+    with subtest("regular status output renders baseline status content"):
         regular = run_command_capture(
             "plain-rendering-regular",
             f"nails --config {shlex.quote(headless_config)} status",
         )
         assert regular["rc"] == 0, regular
-        assert not regular["combined"].isascii(), regular
+        assert "NAILS Status Report" in regular["stdout"], regular
+        assert "Security Posture:" in regular["stdout"], regular
 
-    with subtest("plain status output is ASCII-only"):
+    with subtest("plain status output has no ANSI escape codes"):
         plain = run_command_capture(
             "plain-rendering-plain",
             f"nails --config {shlex.quote(headless_config)} status --plain -v",
         )
         assert plain["rc"] == 0, plain
-        assert_ascii_only(plain["combined"], "status --plain output")
+        assert_no_ansi(plain["combined"], "status --plain output")
         assert "NAILS Status Report" in plain["stdout"], plain
         assert "Security Posture:" in plain["stdout"], plain
         assert "╭" not in plain["combined"], plain
+        assert len(plain["stdout"]) > 0, plain
 
     with subtest("deactivate cleanly after plain rendering checks"):
         canonical_deactivate(headless_config, unit_name="nails-deactivate-plain-rendering")

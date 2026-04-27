@@ -67,7 +67,11 @@ in
 
     def assert_active_state_file(path):
         payload = json.loads(machine.succeed("cat " + shlex.quote(path)))
-        assert str(payload["state"]).lower().startswith("active"), payload
+        state_value = payload.get("state")
+        if isinstance(state_value, dict):
+            assert "Active" in state_value, payload
+        else:
+            assert str(state_value).lower().startswith("active"), payload
         assert payload.get("overlay_status", {}), payload
         return payload
 

@@ -72,7 +72,7 @@ in
         )
 
         tampered_payload = read_status_json(config_path=headless_config)
-        assert_status_state("Inactive", payload=tampered_payload)
+        assert_status_state("Unknown", payload=tampered_payload)
         error_text = tampered_payload.get("error", "")
         assert (
             "checksum" in error_text.lower() or "corrupt" in error_text.lower()

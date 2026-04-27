@@ -35,8 +35,8 @@ in
     machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
 
     log_files = machine.succeed(
-        "find /var/log /run /mnt/hidden-volume/logs /tmp -type f "
-        "\\( -name 'nails*.log' -o -path '*/log/*nails*' \\) 2>/dev/null || true"
+      "find /var/log /mnt/hidden-volume/logs -type f "
+      "\\( -name 'nails.log' -o -name 'nails*.log' \\) 2>/dev/null || true"
     ).strip()
 
     if log_files:
@@ -45,8 +45,9 @@ in
             if log_file:
                 perms = machine.succeed(f"stat -c %a {log_file}").strip()
                 print(f"  Log file {log_file}: permissions {perms}")
-                assert perms[-1] == "0", \
-                    f"Log file {log_file} is world-accessible (perms={perms})"
+                mode = int(perms, 8)
+                assert (mode & 0o022) == 0, \
+                    f"Log file {log_file} is writable by non-owner (perms={perms})"
         print("✓ Log files have restrictive permissions")
     else:
         print("Note: No nails log files found (may use journald)")

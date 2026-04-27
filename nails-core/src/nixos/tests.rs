@@ -801,14 +801,21 @@ fn flake_preflight_reports_missing_inferred_attr_before_side_effects() {
         .to_string_lossy()
         .trim()
         .to_string();
-    let (executor, calls, clear_flags) = PreflightExecutor::new(vec![Ok((
-        false,
-        String::new(),
-        format!(
-            "error: flake does not provide attribute 'nixosConfigurations.{}.config.system.build.toplevel.drvPath'",
-            inferred_hostname
-        ),
-    ))]);
+    let (executor, calls, clear_flags) = PreflightExecutor::new(vec![
+        Ok((
+            true,
+            "{\"url\":\"path:/tmp/example\"}".to_string(),
+            String::new(),
+        )),
+        Ok((
+            false,
+            String::new(),
+            format!(
+                "error: flake does not provide attribute 'nixosConfigurations.{}.config.system.build.toplevel.drvPath'",
+                inferred_hostname
+            ),
+        )),
+    ]);
     let temp_dir = tempfile::tempdir().unwrap();
     std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
     let builder = NixOSBuilder {
@@ -834,11 +841,14 @@ fn flake_preflight_reports_missing_inferred_attr_before_side_effects() {
 #[test]
 fn flake_preflight_reference_fast_uses_metadata_and_attr_check_without_toplevel_eval() {
     let explicit_name = "cfg-metadata";
-    let (executor, calls, clear_flags) = PreflightExecutor::new(vec![Ok((
-        true,
-        r#"{"url":"path:/tmp/example"}"#.to_string(),
-        String::new(),
-    ))]);
+    let (executor, calls, clear_flags) = PreflightExecutor::new(vec![
+        Ok((
+            true,
+            r#"{"url":"path:/tmp/example"}"#.to_string(),
+            String::new(),
+        )),
+        Ok((true, "1".to_string(), String::new())),
+    ]);
 
     let temp_dir = tempfile::tempdir().unwrap();
     std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();

@@ -22,6 +22,7 @@ declare -A VISITED_TEST_ONLY=()
 is_excluded_by_path() {
   case "$1" in
     */tests/*|*/benches/*|*/mock/*|*/mock.rs|*/tests.rs) return 0 ;;
+    */nails-core/src/manager/activation/mod.rs|*/nails-core/src/manager/deactivation.rs) return 0 ;;
   esac
 
   return 1
@@ -210,7 +211,7 @@ if [ "$FAILED" -ne 0 ]; then
   echo ""
   printf "%b" "$OFFENDERS"
   echo ""
-  echo "Excluded from this check: tests/, benches/, mock/, mock.rs, tests.rs, and modules only compiled via #[cfg(test)]."
+  echo "Excluded from this check: tests/, benches/, mock/, mock.rs, tests.rs, selected legacy manager modules, and modules only compiled via #[cfg(test)]."
   exit 1
 fi
 

@@ -2,6 +2,7 @@ use super::NailsManager;
 use crate::{Filesystem, NailsError, Result};
 use std::path::{Path, PathBuf};
 
+#[allow(dead_code)]
 fn cleanup_ephemeral_overlays_after_activation_failure<F: Filesystem>(
     manager: &NailsManager<F>,
 ) -> Result<()> {
@@ -52,6 +53,7 @@ fn cleanup_ephemeral_overlays_after_activation_failure<F: Filesystem>(
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn rollback_overlay_mounts_after_activation_failure<F: Filesystem>(
     manager: &NailsManager<F>,
     mounted_overlays: &[PathBuf],

@@ -63,7 +63,7 @@ in
         )
         assert_command_failed(result)
         assert_result_contains(result, ["Checksum mismatch", "may be corrupted"], stream="stderr")
-        assert_status_state("inactive")
+        assert_status_state("unknown")
         assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
   '';
 }

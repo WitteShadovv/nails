@@ -70,6 +70,35 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
     // their source paths.
     let mut results = Vec::new();
 
+    let should_skip_target_equivalent_same_device =
+        |mount_point: &Path, source_path: &Path, dev_id: &str, fs_root: &str| {
+            if let Some(ref target_dev) = target_dev_id
+                && dev_id == target_dev
+            {
+                let relative = mount_point
+                    .strip_prefix(target)
+                    .unwrap_or_else(|_| Path::new(""));
+                let extra_lower = source_path
+                    .strip_suffix_path(relative)
+                    .unwrap_or_else(|| source_path.to_path_buf());
+
+                if target_backing_root.as_ref() == Some(&extra_lower) {
+                    tracing::debug!(
+                        mount_point = %mount_point.display(),
+                        source = %source_path.display(),
+                        extra_lower = %extra_lower.display(),
+                        target_backing_root = %extra_lower.display(),
+                        dev_id = %dev_id,
+                        fs_root = %fs_root,
+                        "Skipping target-equivalent same-device submount to avoid ELOOP"
+                    );
+                    return true;
+                }
+            }
+
+            false
+        };
+
     for line in mountinfo.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 5 {
@@ -94,7 +123,18 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
 
         if mount_source.starts_with("/") && !mount_source.starts_with("/dev/") {
             // Non-device path source — use directly
-            results.push((mount_point, PathBuf::from(mount_source)));
+            let source_path = PathBuf::from(mount_source);
+
+            if should_skip_target_equivalent_same_device(
+                &mount_point,
+                &source_path,
+                dev_id,
+                fs_root,
+            ) {
+                continue;
+            }
+
+            results.push((mount_point, source_path));
         } else if mount_source.starts_with("/dev/") {
             // Device-backed mount — resolve via device_root_mounts
             if let Some(root_mount_point) = device_root_mounts.get(dev_id) {
@@ -115,6 +155,15 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
                     continue;
                 }
 
+                if should_skip_target_equivalent_same_device(
+                    &mount_point,
+                    &source_path,
+                    dev_id,
+                    fs_root,
+                ) {
+                    continue;
+                }
+
                 if let Some(ref target_dev) = target_dev_id
                     && dev_id == target_dev
                 {
@@ -124,19 +173,6 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
                     let extra_lower = source_path
                         .strip_suffix_path(relative)
                         .unwrap_or_else(|| source_path.clone());
-
-                    if target_backing_root.as_ref() == Some(&extra_lower) {
-                        tracing::debug!(
-                            mount_point = %mount_point.display(),
-                            source = %source_path.display(),
-                            extra_lower = %extra_lower.display(),
-                            target_backing_root = %extra_lower.display(),
-                            dev_id = %dev_id,
-                            fs_root = %fs_root,
-                            "Skipping target-equivalent same-device submount to avoid ELOOP"
-                        );
-                        continue;
-                    }
 
                     tracing::debug!(
                         mount_point = %mount_point.display(),

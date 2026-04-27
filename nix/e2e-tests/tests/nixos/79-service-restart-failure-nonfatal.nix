@@ -87,7 +87,7 @@ in
         assert "Activation complete" in combined, combined
         assert "NixOS build+switch failed" not in combined, combined
         payload = read_status_json_local(headless_config)
-        assert str(payload["state"]).lower() == "active", payload
+        assert str(payload["state"]).lower().startswith("active"), payload
         assert_overlay_mounted_local("/etc")
         assert_overlay_mounted_local("/home")
         machine.succeed("grep -Fx 'service-restart-warning' /etc/nails-nonfatal-marker")

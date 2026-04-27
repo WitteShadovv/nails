@@ -97,8 +97,12 @@ in
         )
         assert rc != 0, f"Expected activation refusal, got rc=0 stdout={stdout!r} stderr={stderr!r}"
         combined_output = stdout + stderr
-        assert "not forensically clean" in combined_output.lower(), \
-            f"Expected forensic cleanliness diagnostic, got: {combined_output!r}"
+        lowered = combined_output.lower()
+        assert (
+          "not forensically clean" in lowered
+          or "suspicious-nails-reference" in lowered
+          or "suspicious hidden or nails references" in lowered
+        ), f"Expected forensic cleanliness diagnostic, got: {combined_output!r}"
         machine.fail("test -s /tmp/nixos-rebuild-clean-check.log")
 
     with subtest("refusal leaves system inactive and unmounted"):

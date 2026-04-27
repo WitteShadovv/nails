@@ -21,6 +21,7 @@ use crate::cli::detach::maybe_detach_for_deactivation;
 /// # Returns
 ///
 /// Never returns - exits with code 0 on success, 1 on deactivation failure, 2 on config failure
+#[allow(clippy::too_many_arguments)]
 pub fn execute(
     config_override: Option<PathBuf>,
     no_clear_history: bool,

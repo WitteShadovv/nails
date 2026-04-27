@@ -176,8 +176,8 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     ///
     /// Returns None if SHELL is not set or if the shell is not supported.
     pub fn detect_current_shell(&self) -> Option<ShellType> {
-        let from_env = std::env::var("SHELL").ok().and_then(|shell_path| {
-            if shell_path.ends_with("/bash") {
+        if let Ok(shell_path) = std::env::var("SHELL") {
+            return if shell_path.ends_with("/bash") {
                 Some(ShellType::Bash)
             } else if shell_path.ends_with("/zsh") {
                 Some(ShellType::Zsh)
@@ -185,11 +185,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
                 Some(ShellType::Fish)
             } else {
                 None
-            }
-        });
-
-        if from_env.is_some() {
-            return from_env;
+            };
         }
 
         let home_dir = self.resolve_target_home_dir().ok()?;

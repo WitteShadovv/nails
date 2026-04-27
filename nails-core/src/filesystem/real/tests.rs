@@ -1240,6 +1240,23 @@ fn test_same_device_submount_skipped_nix() {
 }
 
 #[test]
+fn test_same_device_target_equivalent_path_source_skipped_nix() {
+    use super::parse_submount_sources;
+    // Some kernels/reporting paths expose bind source as a direct path after
+    // '-' in mountinfo. This must still be treated as target-equivalent and skipped.
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+50 1 254:1 /nix /nix rw,relatime - ext4 /dev/mapper/persist rw
+73 50 254:1 /nix/store /nix/store rw,relatime - ext4 /persist/nix/store rw";
+    let result = parse_submount_sources(mountinfo, Path::new("/nix"));
+    assert!(
+        result.is_empty(),
+        "Target-equivalent same-device path source should be skipped, got: {:?}",
+        result
+    );
+}
+
+#[test]
 fn test_same_device_self_backed_submount_still_skipped() {
     use super::parse_submount_sources;
     let mountinfo = "\

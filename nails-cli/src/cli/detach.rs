@@ -224,6 +224,13 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
         return Ok(());
     }
 
+    // Deactivation should run synchronously in the invoking context by default.
+    // Detached transient services are opt-in only.
+    let force_detach = env::var_os(env_force_detach()).is_some();
+    if !force_detach {
+        return Ok(());
+    }
+
     let exe_path = std::env::current_exe().map_err(|e| {
         NailsError::InvalidState(format!("Failed to get current executable path: {}", e))
     })?;
@@ -364,11 +371,7 @@ mod tests {
                     std::env::remove_var(env_skip_detach());
                     std::env::remove_var(env_detached());
                 }
-                let err = maybe_detach_for_deactivation().expect_err("must fail closed");
-                assert!(
-                    err.to_string()
-                        .contains("Refusing to start transient systemd units")
-                );
+                maybe_detach_for_deactivation().expect("deactivation should run in-process");
             }
             "block-session" => {
                 unsafe {
@@ -390,6 +393,7 @@ mod tests {
                 unsafe {
                     std::env::remove_var(env_skip_detach());
                     std::env::remove_var(env_detached());
+                    std::env::set_var(env_force_detach(), "1");
                 }
                 maybe_detach_for_deactivation().expect("override fake systemd-run should succeed");
             }
@@ -398,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn deactivation_detach_refuses_transient_units_in_test_like_runtime() {
+    fn deactivation_detach_defaults_to_in_process_execution() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
             .env("NAILS_DETACH_SUBPROCESS_CASE", "block-deactivate")
@@ -454,6 +458,7 @@ mod tests {
             .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
             .env("NAILS_DETACH_SUBPROCESS_CASE", "allow-override")
             .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+            .env(env_force_detach(), "1")
             .env(
                 DEACTIVATE_UNIT_NAME_OVERRIDE_ENV,
                 "nails-deactivate-test.service",
