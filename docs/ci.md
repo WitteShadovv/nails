@@ -81,6 +81,8 @@ This keeps suite membership in one source of truth under `nix/e2e-tests/default.
 - Workflow concurrency is PR-aware and uses `cancel-in-progress: true`, so a newer push to the same PR cancels older waiting/running privileged runs.
 - The shard workflow checks out the exact approved SHA with `persist-credentials: false` and verifies that `HEAD` matches before executing PR code.
 - The workflow provisions the runner on a GitHub-hosted job, runs the suite on the returned self-hosted label, and always attempts teardown afterward.
+- Full-E2E shard selection is deterministic but runtime-aware: `./scripts/run-e2e-tests.sh` uses checked-in historical leaf durations from `nix/e2e-tests/shard-durations.json` to greedily balance shard load instead of plain round-robin.
+- Full-E2E VM CPU planning now defaults to `NAILS_E2E_VM_CPU_TARGET_PERCENT=100` and `NAILS_E2E_VM_HOST_RESERVED_CORES=0`, so shard runs use the full visible host CPU budget unless a workflow overrides it.
 - The reusable shard workflow now uses an explicit minimal secret contract instead of `secrets: inherit`: `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID`.
 - Required repository configuration: `PERSONAL_ACCESS_TOKEN` for self-hosted runner registration, `HCLOUD_TOKEN` for Hetzner API create/delete, and `HCLOUD_SSH_KEY_ID` as a repository secret or repository variable for SSH bootstrap.
 - Broad log and metrics artifact uploads were removed from this workflow to avoid collecting blanket runner output from privileged Hetzner runs.

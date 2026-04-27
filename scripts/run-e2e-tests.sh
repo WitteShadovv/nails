@@ -8,6 +8,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+E2E_SHARD_DURATION_WEIGHTS_FILE="$PROJECT_ROOT/nix/e2e-tests/shard-durations.json"
 
 # Colors
 BLUE='\033[0;34m'
@@ -204,14 +205,14 @@ compute_vm_cpu_plan() {
     local host_cores target_percent reserved_cores min_cores max_cores
     local percent_budget reserved_budget total_budget per_vm_cores
 
-    # Auto-sizing defaults are intentionally conservative: target ~90% of the
-    # CPUs visible to the runner, always leave some host headroom when possible,
+    # Auto-sizing defaults intentionally use the full visible runner CPU budget
+    # unless an explicit reservation override is configured,
     # then divide that budget across all VMs declared by the selected test.
     # Optional overrides:
     #   NAILS_E2E_VM_CORES                Force a fixed per-VM core count
     #   NAILS_E2E_HOST_CPU_COUNT_OVERRIDE Override detected runner CPU count
-    #   NAILS_E2E_VM_CPU_TARGET_PERCENT   Default 90
-    #   NAILS_E2E_VM_HOST_RESERVED_CORES  Default 2
+    #   NAILS_E2E_VM_CPU_TARGET_PERCENT   Default 100
+    #   NAILS_E2E_VM_HOST_RESERVED_CORES  Default 0
     #   NAILS_E2E_VM_MIN_CORES            Default 1
     #   NAILS_E2E_VM_MAX_CORES            Default 16
 
@@ -239,8 +240,8 @@ compute_vm_cpu_plan() {
         return 0
     fi
 
-    target_percent="$(percentage_from_env_or_default "NAILS_E2E_VM_CPU_TARGET_PERCENT" "90")"
-    reserved_cores="$(positive_integer_from_env_or_default "NAILS_E2E_VM_HOST_RESERVED_CORES" "2")"
+    target_percent="$(percentage_from_env_or_default "NAILS_E2E_VM_CPU_TARGET_PERCENT" "100")"
+    reserved_cores="$(positive_integer_from_env_or_default "NAILS_E2E_VM_HOST_RESERVED_CORES" "0")"
     min_cores="$(positive_integer_from_env_or_default "NAILS_E2E_VM_MIN_CORES" "1")"
     max_cores="$(positive_integer_from_env_or_default "NAILS_E2E_VM_MAX_CORES" "16")"
 
@@ -451,23 +452,53 @@ print_resolved_tests() {
 
 select_shard_tests() {
     local tests=("$@")
-    local selected_tests=()
-    local test_name
-    local index
 
     if [[ -z "$SHARD_INDEX" || -z "$SHARD_COUNT" ]]; then
         print_resolved_tests "${tests[@]}"
         return 0
     fi
 
-    for index in "${!tests[@]}"; do
-        test_name="${tests[$index]}"
-        if (( (index % SHARD_COUNT) + 1 == SHARD_INDEX )); then
-            selected_tests+=("$test_name")
-        fi
-    done
+    python3 - <<'PY' "$SHARD_INDEX" "$SHARD_COUNT" "$E2E_SHARD_DURATION_WEIGHTS_FILE" "${tests[@]}"
+import json
+import sys
+from pathlib import Path
 
-    print_resolved_tests "${selected_tests[@]}"
+shard_index = int(sys.argv[1])
+shard_count = int(sys.argv[2])
+weights_path = Path(sys.argv[3])
+tests = sys.argv[4:]
+
+weights = None
+if weights_path.is_file():
+    weights = json.loads(weights_path.read_text(encoding="utf-8"))
+
+if not weights:
+    for index, name in enumerate(tests):
+        if (index % shard_count) + 1 == shard_index:
+            print(name)
+    raise SystemExit(0)
+
+default_weight = 120
+shard_loads = [0] * shard_count
+shard_members = [[] for _ in range(shard_count)]
+
+weighted_tests = [
+    (-int(weights.get(name, default_weight)), original_index, name)
+    for original_index, name in enumerate(tests)
+]
+
+for negative_weight, original_index, name in sorted(weighted_tests):
+    weight = -negative_weight
+    target_shard = min(
+        range(shard_count),
+        key=lambda shard: (shard_loads[shard], len(shard_members[shard]), shard),
+    )
+    shard_members[target_shard].append((original_index, name))
+    shard_loads[target_shard] += weight
+
+for _, name in sorted(shard_members[shard_index - 1]):
+    print(name)
+PY
 }
 
 run_single_test() {

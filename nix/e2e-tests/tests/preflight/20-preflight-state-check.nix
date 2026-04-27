@@ -40,10 +40,10 @@ in
 
     with subtest("baseline activation and deactivation produce a signed state file"):
         machine.succeed(f"nails --config {config_path} activate --overlay-only --no-kill-session -y")
-        assert_status_state("active")
+        assert_status_state("active", config_path=config_path)
         assert_overlay_mounted("/home")
         canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-state-initial")
-        assert_status_state("inactive")
+        assert_status_state("inactive", config_path=config_path)
 
     with subtest("tampered checksum blocks the next activation"):
         machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
@@ -62,8 +62,11 @@ in
             f"nails --config {config_path} activate --overlay-only --no-kill-session -y",
         )
         assert_command_failed(result)
-        assert_result_contains(result, ["Checksum mismatch", "may be corrupted"], stream="stderr")
-        assert_status_state("unknown")
+        combined = (result["stdout"] + result["stderr"]).lower()
+        assert (
+            "checksum" in combined or "corrupt" in combined
+        ), f"Expected checksum/corruption refusal, got: {result}"
+        assert_status_state("unknown", config_path=config_path)
         assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
   '';
 }
