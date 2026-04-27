@@ -1,5 +1,5 @@
 use super::*;
-use nails_core::obfuscate::{env_detached, env_skip_detach};
+use nails_core::obfuscate::{env_detached, env_force_detach, env_skip_detach};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -98,6 +98,7 @@ fn maybe_detach_for_session_kill_skips_when_kill_session_is_false_without_skip_e
 
 #[test]
 fn maybe_detach_for_session_kill_skips_non_graphical_context_without_skip_env() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let ctx = SessionContext {
         kind: SessionKind::Tty,
         session_id: None,
@@ -106,6 +107,12 @@ fn maybe_detach_for_session_kill_skips_non_graphical_context_without_skip_env() 
         target_user: None,
         logind_available: false,
     };
+
+    unsafe {
+        env::remove_var(env_skip_detach());
+        env::remove_var(env_detached());
+        env::remove_var(env_force_detach());
+    }
 
     let result = maybe_detach_for_session_kill(true, &[OsString::from("nails")], Some(&ctx));
     assert!(result.is_ok());
@@ -500,5 +507,8 @@ fn deactivation_detach_propagates_protected_shell_cleanup_pids() {
         logged_args.contains("--setenv=NAILS_SHELL_CLEANUP_PROTECTED_PIDS=101,202"),
         "logged args were: {logged_args}"
     );
-    assert!(logged_args.contains("--setenv=PATH="), "logged args were: {logged_args}");
+    assert!(
+        logged_args.contains("--setenv=PATH="),
+        "logged args were: {logged_args}"
+    );
 }
