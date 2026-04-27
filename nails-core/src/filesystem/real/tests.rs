@@ -1206,6 +1206,47 @@ short line
 }
 
 #[test]
+fn test_same_device_submount_uses_shortest_root_mount_for_source_resolution() {
+    use super::parse_submount_sources;
+    let mountinfo = "\
+42 1 254:1 / /persist/longer rw,relatime - ext4 /dev/mapper/persist rw
+43 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+50 1 0:50 / /etc rw - tmpfs tmpfs rw
+73 43 254:1 /etc/nixos /etc/nixos rw,relatime - ext4 /dev/mapper/persist rw";
+
+    let result = parse_submount_sources(mountinfo, Path::new("/etc"));
+
+    assert_eq!(
+        result,
+        vec![(
+            PathBuf::from("/etc/nixos"),
+            PathBuf::from("/persist/etc/nixos")
+        )],
+        "device-backed submounts should resolve against the shortest root mount"
+    );
+}
+
+#[test]
+fn test_non_equivalent_same_device_bind_submount_is_preserved() {
+    use super::parse_submount_sources;
+    let mountinfo = "\
+42 1 254:1 / /persist rw,relatime - ext4 /dev/mapper/persist rw
+50 1 254:1 /nix /nix rw,relatime - ext4 /dev/mapper/persist rw
+73 50 254:1 /special/cache /nix/cache rw,relatime - ext4 /dev/mapper/persist rw";
+
+    let result = parse_submount_sources(mountinfo, Path::new("/nix"));
+
+    assert_eq!(
+        result,
+        vec![(
+            PathBuf::from("/nix/cache"),
+            PathBuf::from("/persist/special/cache")
+        )],
+        "same-device bind mounts should be preserved when their backing root differs from the target"
+    );
+}
+
+#[test]
 fn test_same_device_submount_skipped_persist() {
     use super::parse_submount_sources;
     // Target /persist is on device 254:1, submount /persist/nix/store is also 254:1.

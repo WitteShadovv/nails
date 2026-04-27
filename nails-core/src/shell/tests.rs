@@ -102,6 +102,354 @@ fn test_detect_shell_falls_back_to_home_dir_without_hardcoded_home_prefix() {
 
 #[test]
 #[serial]
+fn test_detect_shell_falls_back_to_fish_config_when_shell_env_is_unset() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+    let home = "/home/amnesia";
+    set_mock_home(&fs, home);
+    fs.mock_set_path_exists(&format!("{home}/.config/fish/config.fish"), true);
+
+    unsafe {
+        std::env::remove_var("SHELL");
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::set_var("USER", "amnesia");
+        std::env::set_var("HOME", home);
+    }
+
+    let shell = ShellInstrumentation::new(fs, config);
+    let result = shell.detect_current_shell();
+
+    unsafe {
+        std::env::remove_var("USER");
+        std::env::remove_var("HOME");
+    }
+
+    assert_eq!(result, Some(ShellType::Fish));
+}
+
+#[test]
+#[serial]
+fn test_detect_shell_returns_none_when_no_shell_env_or_rc_files_exist() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+    let home = "/home/amnesia";
+    set_mock_home(&fs, home);
+
+    unsafe {
+        std::env::remove_var("SHELL");
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::set_var("USER", "amnesia");
+        std::env::set_var("HOME", home);
+    }
+
+    let shell = ShellInstrumentation::new(fs, config);
+    let result = shell.detect_current_shell();
+
+    unsafe {
+        std::env::remove_var("USER");
+        std::env::remove_var("HOME");
+    }
+
+    assert_eq!(result, None);
+}
+
+#[test]
+#[serial]
+fn test_resolve_target_username_prefers_sudo_user() {
+    let shell = create_test_shell();
+
+    unsafe {
+        std::env::set_var("SUDO_USER", "sudo-user");
+        std::env::set_var("NAILS_TARGET_USER", "target-user");
+        std::env::set_var("USER", "plain-user");
+    }
+
+    let result = shell.resolve_target_username().unwrap();
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::remove_var("USER");
+    }
+
+    assert_eq!(result, "sudo-user");
+}
+
+#[test]
+#[serial]
+fn test_resolve_target_username_uses_target_user_fallback() {
+    let shell = create_test_shell();
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::set_var("NAILS_TARGET_USER", "target-user");
+        std::env::set_var("USER", "plain-user");
+    }
+
+    let result = shell.resolve_target_username().unwrap();
+
+    unsafe {
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::remove_var("USER");
+    }
+
+    assert_eq!(result, "target-user");
+}
+
+#[test]
+#[serial]
+fn test_resolve_target_username_uses_user_fallback() {
+    let shell = create_test_shell();
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::set_var("USER", "plain-user");
+    }
+
+    let result = shell.resolve_target_username().unwrap();
+
+    unsafe {
+        std::env::remove_var("USER");
+    }
+
+    assert_eq!(result, "plain-user");
+}
+
+#[test]
+#[serial]
+fn test_resolve_target_username_errors_without_any_user_env() {
+    let shell = create_test_shell();
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::remove_var("USER");
+    }
+
+    let err = shell.resolve_target_username().unwrap_err();
+
+    assert!(err.to_string().contains("Could not determine username"));
+}
+
+#[test]
+#[serial]
+fn test_has_explicit_target_user_context_detects_target_user_env() {
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+    }
+    assert!(!ShellInstrumentation::<MockFilesystem>::has_explicit_target_user_context());
+
+    unsafe {
+        std::env::set_var("NAILS_TARGET_USER", "amnesia");
+    }
+    assert!(ShellInstrumentation::<MockFilesystem>::has_explicit_target_user_context());
+
+    unsafe {
+        std::env::remove_var("NAILS_TARGET_USER");
+    }
+}
+
+#[test]
+#[serial]
+fn test_resolve_home_from_current_environment_uses_matching_home() {
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::set_var("HOME", "/srv/users/amnesia");
+    }
+
+    let result = ShellInstrumentation::<MockFilesystem>::resolve_home_from_current_environment(
+        Some("amnesia"),
+    );
+
+    unsafe {
+        std::env::remove_var("HOME");
+    }
+
+    assert_eq!(result, Some(PathBuf::from("/srv/users/amnesia")));
+}
+
+#[test]
+#[serial]
+fn test_resolve_home_from_current_environment_rejects_mismatched_home() {
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::set_var("HOME", "/srv/users/other");
+    }
+
+    let result = ShellInstrumentation::<MockFilesystem>::resolve_home_from_current_environment(
+        Some("amnesia"),
+    );
+
+    unsafe {
+        std::env::remove_var("HOME");
+    }
+
+    assert_eq!(result, None);
+}
+
+#[test]
+#[serial]
+fn test_resolve_home_from_current_environment_ignores_home_for_explicit_target_context() {
+    unsafe {
+        std::env::set_var("NAILS_TARGET_USER", "amnesia");
+        std::env::set_var("HOME", "/srv/users/amnesia");
+    }
+
+    let result = ShellInstrumentation::<MockFilesystem>::resolve_home_from_current_environment(
+        Some("amnesia"),
+    );
+
+    unsafe {
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::remove_var("HOME");
+    }
+
+    assert_eq!(result, None);
+}
+
+#[test]
+#[serial]
+fn test_resolve_target_home_dir_prefers_matching_home_env() {
+    let shell = create_test_shell();
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::set_var("USER", "amnesia");
+        std::env::set_var("HOME", "/srv/users/amnesia");
+    }
+
+    let result = shell.resolve_target_home_dir().unwrap();
+
+    unsafe {
+        std::env::remove_var("USER");
+        std::env::remove_var("HOME");
+    }
+
+    assert_eq!(result, PathBuf::from("/srv/users/amnesia"));
+}
+
+#[test]
+#[serial]
+fn test_resolve_target_home_dir_falls_back_to_home_username_path_when_home_mismatched() {
+    let shell = create_test_shell();
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::set_var("USER", "amnesia");
+        std::env::set_var("HOME", "/tmp/not-amnesia");
+    }
+
+    let result = shell.resolve_target_home_dir().unwrap();
+
+    unsafe {
+        std::env::remove_var("USER");
+        std::env::remove_var("HOME");
+    }
+
+    assert_eq!(result, PathBuf::from("/home/amnesia"));
+}
+
+#[test]
+#[serial]
+fn test_resolve_target_home_dir_ignores_home_env_when_explicit_target_user_is_set() {
+    let shell = create_test_shell();
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::set_var("NAILS_TARGET_USER", "amnesia");
+        std::env::remove_var("USER");
+        std::env::set_var("HOME", "/srv/users/amnesia");
+    }
+
+    let result = shell.resolve_target_home_dir().unwrap();
+
+    unsafe {
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::remove_var("HOME");
+    }
+
+    assert_eq!(result, PathBuf::from("/home/amnesia"));
+}
+
+#[test]
+#[serial]
+fn test_resolve_target_home_dir_errors_without_any_user_context() {
+    let shell = create_test_shell();
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::remove_var("USER");
+        std::env::remove_var("HOME");
+    }
+
+    let err = shell.resolve_target_home_dir().unwrap_err();
+
+    assert!(err.to_string().contains("Could not determine username"));
+}
+
+#[test]
+#[serial]
+fn test_detect_shell_ignores_mismatched_home_and_falls_back_to_user_home_rc_files() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+    set_mock_home(&fs, "/home/amnesia");
+    fs.mock_set_path_exists("/home/amnesia/.zshrc", true);
+    fs.mock_set_path_exists("/tmp/not-amnesia", true);
+
+    unsafe {
+        std::env::remove_var("SHELL");
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::set_var("USER", "amnesia");
+        std::env::set_var("HOME", "/tmp/not-amnesia");
+    }
+
+    let shell = ShellInstrumentation::new(fs, config);
+    let result = shell.detect_current_shell();
+
+    unsafe {
+        std::env::remove_var("USER");
+        std::env::remove_var("HOME");
+    }
+
+    assert_eq!(result, Some(ShellType::Zsh));
+}
+
+#[test]
+#[serial]
+fn test_detect_shell_defaults_to_bash_for_explicit_target_user_without_rc_files() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+    set_mock_home(&fs, "/home/amnesia");
+
+    unsafe {
+        std::env::remove_var("SHELL");
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("USER");
+        std::env::set_var("NAILS_TARGET_USER", "amnesia");
+    }
+
+    let shell = ShellInstrumentation::new(fs, config);
+    let result = shell.detect_current_shell();
+
+    unsafe {
+        std::env::remove_var("NAILS_TARGET_USER");
+    }
+
+    assert_eq!(result, Some(ShellType::Bash));
+}
+
+#[test]
+#[serial]
 fn test_scripts_dir_path() {
     let shell = create_test_shell();
     let scripts_dir = shell.scripts_dir();
@@ -730,6 +1078,111 @@ fn test_shell_setup_without_shell_env_still_sets_up_persistent_integration_for_t
     let bashrc_path = PathBuf::from("/home/amnesia/.bashrc");
     let content = fs.read_file_content(&bashrc_path).unwrap();
     assert!(content.contains("# >>> NAILS shell integration"));
+}
+
+#[test]
+#[serial]
+fn test_shell_setup_returns_warning_without_source_commands_when_script_writes_fail() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+
+    fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_path_exists("/home/testuser", true);
+    fs.mock_set_write_should_fail("/mnt/hidden-volume/scripts/nails_prompt.bash", true);
+    fs.mock_set_write_should_fail("/mnt/hidden-volume/scripts/nails_alias.sh", true);
+
+    unsafe {
+        std::env::set_var("SHELL", "/bin/bash");
+        std::env::set_var("USER", "testuser");
+        std::env::set_var("HOME", "/home/testuser");
+    }
+
+    let shell = ShellInstrumentation::new(fs, config);
+    let result = shell
+        .shell_setup()
+        .unwrap()
+        .expect("shell should still be detected");
+
+    unsafe {
+        std::env::remove_var("SHELL");
+        std::env::remove_var("USER");
+        std::env::remove_var("HOME");
+    }
+
+    assert_eq!(result.shell_type, ShellType::Bash);
+    assert!(result.instructions.is_empty());
+    let warning = result.warning.expect("warning should be reported");
+    assert!(warning.contains("prompt scripts could not be generated"));
+    assert!(warning.contains("alias scripts could not be generated"));
+}
+
+#[test]
+#[serial]
+fn test_shell_setup_continues_when_xdg_autostart_write_returns_false() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+
+    fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_path_exists("/home/testuser", true);
+    fs.mock_set_write_should_fail(
+        "/home/testuser/.config/autostart/nails-notify.desktop",
+        true,
+    );
+
+    unsafe {
+        std::env::set_var("SHELL", "/bin/bash");
+        std::env::set_var("SUDO_USER", "testuser");
+    }
+
+    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let result = shell
+        .shell_setup()
+        .unwrap()
+        .expect("setup should continue on best-effort autostart failure");
+
+    unsafe {
+        std::env::remove_var("SHELL");
+        std::env::remove_var("SUDO_USER");
+    }
+
+    assert_eq!(result.shell_type, ShellType::Bash);
+    assert_eq!(result.instructions.len(), 2);
+    assert!(result.warning.is_none());
+    assert!(result.rc_modified);
+}
+
+#[test]
+#[serial]
+fn test_shell_setup_continues_when_xdg_autostart_resolution_errors() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+
+    fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+
+    unsafe {
+        std::env::set_var("SHELL", "/bin/bash");
+        std::env::remove_var("SUDO_USER");
+        std::env::remove_var("NAILS_TARGET_USER");
+        std::env::remove_var("USER");
+        std::env::remove_var("HOME");
+    }
+
+    let shell = ShellInstrumentation::new(fs, config);
+    let result = shell
+        .shell_setup()
+        .unwrap()
+        .expect("setup should continue even when autostart setup errors");
+
+    unsafe {
+        std::env::remove_var("SHELL");
+    }
+
+    assert_eq!(result.shell_type, ShellType::Bash);
+    assert_eq!(result.instructions.len(), 2);
+    assert!(!result.rc_modified);
+    assert!(result.warning.is_none());
 }
 
 #[test]
