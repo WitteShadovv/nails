@@ -5,12 +5,13 @@
 // state persistence, manager construction, and status queries.
 
 use chrono::Utc;
-use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use nails_core::{
     CleanupConfig, Config, ConfigBuilder, DeactivationMode, DeactivationOrchestrator,
     MockFilesystem, NailsManager, OverlayInfo, StateFile, StatusCommand, SystemState,
 };
 use std::collections::HashMap;
+use std::hint::black_box;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

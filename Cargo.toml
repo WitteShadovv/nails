@@ -13,7 +13,7 @@ repository = "https://github.com/WitteShadovv/nails"
 
 [workspace.dependencies]
 # CLI and argument parsing
-clap = { version = "4.6.0", features = ["derive", "cargo"] }
+clap = { version = "4.6.1", features = ["derive", "cargo"] }
 
 # Error handling (AR6, AR7)
 thiserror = "2.0"
@@ -40,7 +40,7 @@ tempfile = "3.10"
 colored = "3.1.1"
 
 # Cryptographic hashing (state file checksum)
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 
 # Testing (for workspace-level consistency)

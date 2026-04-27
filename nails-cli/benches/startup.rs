@@ -1,6 +1,7 @@
 use clap::Parser;
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use nails::cli::Cli;
+use std::hint::black_box;
 
 /// Benchmark CLI argument parsing via `Cli::try_parse_from`.
 ///
