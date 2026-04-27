@@ -34,7 +34,7 @@ What happened instead? Include the exact error text if available.
 - NAILS version:
 - NixOS version:
 - Installation method:
-- Checked against latest published prerelease or current `main`: yes / no
+- Checked against latest published release/prerelease or current `main`: yes / no
 - Running with elevated privileges: yes / no
 - Storage or hidden-volume backend involved:
 - Relevant filesystem or overlay details:

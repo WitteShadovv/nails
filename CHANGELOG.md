@@ -6,9 +6,10 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and the project
 uses [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) for commit history.
 
-GitHub Releases currently publish automated **prerelease** verification bundles from `main` with
-tags such as `v0.1.0-git.<shortrev>`. This changelog remains the source of truth for ongoing
-project changes during the current alpha phase.
+GitHub Releases use immutable tag-based publication. Exact stable tags are verified automatically
+and published later by a deliberate manual workflow; suffixed prerelease tags may publish immutable
+GitHub prereleases directly. This changelog remains the source of truth for ongoing project changes
+during the current alpha phase.
 
 ## [Unreleased]
 
@@ -27,8 +28,8 @@ project changes during the current alpha phase.
   and contributor guidance that matches the current repository state more closely.
 - Clarified that NAILS is alpha software and that its security claims are bounded by the documented
   threat model and operator procedure.
-- Clarified release, install, and versioning language so public docs consistently describe current
-  GitHub Releases as prerelease verification bundles from `main`.
+- Clarified release, install, and versioning language so public docs consistently describe the
+  immutable stable/prerelease publication model.
 
 ### Fixed
 

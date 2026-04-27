@@ -1,0 +1,19 @@
+name: Publish Stable Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact stable tag to publish (for example v0.1.0)
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  release:
+    name: Publish immutable stable release
+    uses: ./.github/workflows/release-core.yml
+    with:
+      release-tag: ${{ inputs.tag }}
+      publication-mode: stable

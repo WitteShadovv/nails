@@ -1,0 +1,403 @@
+name: Release Core
+
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: Git tag to verify or publish
+        required: true
+        type: string
+      publication-mode:
+        description: Release behavior (verify, stable, prerelease)
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.release-tag }}
+  cancel-in-progress: true
+
+jobs:
+  build-release:
+    name: Build canonical release bundle
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      archive-name: ${{ steps.canonical.outputs.archive-name }}
+      artifact-prefix: ${{ steps.metadata.outputs.artifact-prefix }}
+      canonical-artifact-name: ${{ steps.metadata.outputs.canonical-artifact-name }}
+      create-release: ${{ steps.metadata.outputs.create-release }}
+      release-name: ${{ steps.metadata.outputs.release-name }}
+      release-notes: ${{ steps.metadata.outputs.release-notes }}
+      release-prerelease: ${{ steps.metadata.outputs.release-prerelease }}
+      release-tag: ${{ steps.metadata.outputs.release-tag }}
+      slsa-subjects: ${{ steps.slsa-hash.outputs.subjects }}
+
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: refs/tags/${{ inputs.release-tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate tag and derive release metadata
+        id: metadata
+        env:
+          PUBLICATION_MODE: ${{ inputs.publication-mode }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import subprocess
+          import tomllib
+
+          mode = os.environ["PUBLICATION_MODE"].strip()
+          tag = os.environ["RELEASE_TAG"].strip()
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+
+          cargo = tomllib.loads(Path("Cargo.toml").read_text())
+          version = cargo["workspace"]["package"]["version"]
+          stable_tag = f"v{version}"
+          is_stable = tag == stable_tag
+
+          is_prerelease = False
+          if tag.startswith(f"{stable_tag}-"):
+              suffix = tag[len(stable_tag) + 1 :]
+              identifiers = suffix.split(".")
+              if identifiers and all(identifiers):
+                  is_prerelease = True
+                  for identifier in identifiers:
+                      if not all(ch.isalnum() or ch == "-" for ch in identifier):
+                          is_prerelease = False
+                          break
+                      if identifier.isdigit() and len(identifier) > 1 and identifier.startswith("0"):
+                          is_prerelease = False
+                          break
+
+          if mode not in {"verify", "stable", "prerelease"}:
+              raise SystemExit(f"Unsupported publication mode: {mode}")
+          if mode == "verify" and not is_stable:
+              raise SystemExit(
+                  f"Verification-only runs require the exact stable tag {stable_tag}; got {tag}"
+              )
+          if mode == "stable" and not is_stable:
+              raise SystemExit(
+                  f"Stable publication requires the exact stable tag {stable_tag}; prerelease or mismatched tags are rejected"
+              )
+          if mode == "prerelease" and not is_prerelease:
+              raise SystemExit(
+                  f"Prerelease publication requires a suffixed prerelease tag matching Cargo.toml version {version}; got {tag}"
+              )
+
+          sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          short_sha = subprocess.check_output(
+              ["git", "rev-parse", "--short=12", "HEAD"], text=True
+          ).strip()
+
+          artifact_prefix = f"release-verification-{short_sha}"
+          canonical_artifact_name = f"canonical-release-{short_sha}"
+          create_release = "true" if mode in {"stable", "prerelease"} else "false"
+          release_prerelease = "true" if mode == "prerelease" else "false"
+
+          if mode == "verify":
+              release_name = "Stable tag verification build"
+              release_notes = f"""Deterministic verification build for stable tag `{tag}`.
+
+- Tag: {tag}
+- Commit: {sha}
+- Cargo version: {version}
+- Canonical bundle attr: .#nails-release
+- Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
+- Stable GitHub releases are created only by the manual `publish-release.yml` workflow
+"""
+          elif mode == "stable":
+              release_name = f"nails {tag}"
+              release_notes = f"""Stable release bundle for `{tag}`.
+
+- Tag: {tag}
+- Commit: {sha}
+- Cargo version: {version}
+- Canonical bundle attr: .#nails-release
+- Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
+
+## Supply Chain Security
+
+This release includes SLSA Level 3 provenance attestation (`nails.intoto.jsonl`).
+
+### Verify SLSA Provenance
+
+```bash
+# Install slsa-verifier
+go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
+
+# Verify the release archive
+slsa-verifier verify-artifact nails-*.tar.gz \
+  --provenance-path nails.intoto.jsonl \
+  --source-uri github.com/WitteShadovv/nails
+
+# Verify the binary
+slsa-verifier verify-artifact nails \
+  --provenance-path nails.intoto.jsonl \
+  --source-uri github.com/WitteShadovv/nails
+```
+"""
+          else:
+              release_name = f"nails {tag}"
+              release_notes = f"""Prerelease bundle for `{tag}`.
+
+- Tag: {tag}
+- Commit: {sha}
+- Cargo version: {version}
+- Canonical bundle attr: .#nails-release
+- Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
+
+## Supply Chain Security
+
+This prerelease includes SLSA Level 3 provenance attestation (`nails.intoto.jsonl`).
+
+### Verify SLSA Provenance
+
+```bash
+# Install slsa-verifier
+go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
+
+# Verify the release archive
+slsa-verifier verify-artifact nails-*.tar.gz \
+  --provenance-path nails.intoto.jsonl \
+  --source-uri github.com/WitteShadovv/nails
+
+# Verify the binary
+slsa-verifier verify-artifact nails \
+  --provenance-path nails.intoto.jsonl \
+  --source-uri github.com/WitteShadovv/nails
+```
+"""
+
+          with output_path.open("a", encoding="utf-8") as fh:
+              def emit(key: str, value: str) -> None:
+                  if "\n" in value:
+                      fh.write(f"{key}<<EOF\n{value}\nEOF\n")
+                  else:
+                      fh.write(f"{key}={value}\n")
+
+              emit("artifact-prefix", artifact_prefix)
+              emit("canonical-artifact-name", canonical_artifact_name)
+              emit("create-release", create_release)
+              emit("release-name", release_name)
+              emit("release-notes", release_notes)
+              emit("release-prerelease", release_prerelease)
+              emit("release-tag", tag)
+          PY
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = false
+
+      - name: Build canonical release bundle
+        run: nix build -L .#nails-release -o result --option accept-flake-config false
+
+      - name: Read canonical archive name
+        id: canonical
+        run: |
+          archive_name=$(python - <<'PY'
+          from pathlib import Path
+          archives = sorted(Path('result').glob('*.tar.gz'))
+          if len(archives) != 1:
+              raise SystemExit(f"expected exactly one archive, found {len(archives)}")
+          print(archives[0].name)
+          PY
+          )
+          echo "archive-name=${archive_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify same-runner determinism
+        run: |
+          drv=$(nix path-info --derivation .#nails-release)
+          nix-store --realise "$drv" --check -K
+
+      - name: Smoke test canonical archive
+        run: |
+          archive_name="${{ steps.canonical.outputs.archive-name }}"
+          smoke_dir=$(mktemp -d)
+          tar -xzf "result/${archive_name}" -C "$smoke_dir"
+          extracted_dir="$smoke_dir/${archive_name%.tar.gz}"
+          test -f "$extracted_dir/LICENSE"
+          test -f "$extracted_dir/README.md"
+          test -x "$extracted_dir/nails"
+          file "$extracted_dir/nails"
+          "$extracted_dir/nails" --version
+
+      - name: Install Rust toolchain for SBOM
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: 1.93.0
+
+      - name: Install cargo-sbom
+        run: cargo install cargo-sbom@0.10.0 --locked
+
+      - name: Generate CycloneDX SBOM
+        run: cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cdx.json
+
+      - name: Install CycloneDX CLI for validation
+        run: |
+          curl -sSfL https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.27.1/cyclonedx-linux-x64 -o /tmp/cyclonedx-cli
+          chmod +x /tmp/cyclonedx-cli
+
+      - name: Validate SBOM format
+        run: /tmp/cyclonedx-cli validate --input-file sbom.cdx.json --input-format json
+
+      - name: Collect canonical release files
+        run: |
+          mkdir -p dist
+          cp -R result/* dist/
+          cp sbom.cdx.json dist/
+          printf '%s\n' "${{ steps.canonical.outputs.archive-name }}" > dist/archive-name.txt
+          test -f "dist/${{ steps.canonical.outputs.archive-name }}"
+          test -f dist/sbom.cdx.json
+
+      - name: Generate SLSA provenance subjects
+        id: slsa-hash
+        run: |
+          archive_name="${{ steps.canonical.outputs.archive-name }}"
+
+          cd dist
+
+          {
+            sha256sum "${archive_name}"
+            sha256sum nails
+            sha256sum checksums.txt
+          } > subjects.txt
+
+          encoded_subjects=$(base64 -w0 < subjects.txt)
+          echo "subjects=${encoded_subjects}" >> "$GITHUB_OUTPUT"
+
+          printf 'SLSA subjects (decoded):\n'
+          cat subjects.txt
+
+      - name: Upload canonical release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.metadata.outputs.canonical-artifact-name }}
+          path: dist/
+          retention-days: 14
+
+  determinism:
+    name: Deterministic release verification
+    needs: build-release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reproducibility.yml
+    with:
+      git-ref: refs/tags/${{ needs.build-release.outputs.release-tag }}
+      flake-attr: .#nails-release
+      canonical-artifact-name: ${{ needs.build-release.outputs.canonical-artifact-name }}
+      artifact-prefix: ${{ needs.build-release.outputs.artifact-prefix }}
+      archive-name: ${{ needs.build-release.outputs.archive-name }}
+
+  attest-release:
+    name: Attest canonical release bundle
+    runs-on: ubuntu-24.04
+    needs: [build-release, determinism]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
+    steps:
+      - name: Download canonical release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${{ needs.build-release.outputs.canonical-artifact-name }}
+          path: dist
+
+      - name: Check repository visibility
+        id: repo-visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          visibility=$(gh api repos/${{ github.repository }} --jq '.visibility')
+          echo "visibility=${visibility}" >> "$GITHUB_OUTPUT"
+          printf 'Repository visibility: %s\n' "$visibility"
+
+      - name: Create GitHub artifact attestation
+        if: steps.repo-visibility.outputs.visibility == 'public'
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
+        with:
+          subject-checksums: dist/checksums.txt
+
+  provenance:
+    name: Generate SLSA provenance
+    needs: [build-release, determinism]
+    if: needs.build-release.outputs.create-release == 'true'
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build-release.outputs.slsa-subjects }}
+      upload-assets: false
+      provenance-name: nails.intoto.jsonl
+
+  publish-release:
+    name: Publish GitHub release
+    runs-on: ubuntu-24.04
+    if: needs.build-release.outputs.create-release == 'true'
+    needs: [build-release, attest-release, provenance]
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download canonical release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${{ needs.build-release.outputs.canonical-artifact-name }}
+          path: dist
+
+      - name: Download SLSA provenance
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: nails.intoto.jsonl
+          path: dist
+
+      - name: Create immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_NAME: ${{ needs.build-release.outputs.release-name }}
+          RELEASE_NOTES: ${{ needs.build-release.outputs.release-notes }}
+          RELEASE_PRERELEASE: ${{ needs.build-release.outputs.release-prerelease }}
+          RELEASE_TAG: ${{ needs.build-release.outputs.release-tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            printf 'GitHub release %s already exists; immutable release workflows do not modify existing releases.\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          notes_file=$(mktemp)
+          printf '%s\n' "$RELEASE_NOTES" > "$notes_file"
+
+          cmd=(
+            gh release create "$RELEASE_TAG"
+            dist/*.tar.gz
+            dist/nails
+            dist/checksums.txt
+            dist/sbom.cdx.json
+            dist/nails.intoto.jsonl
+            --verify-tag
+            --title "$RELEASE_NAME"
+            --notes-file "$notes_file"
+          )
+
+          if [[ "$RELEASE_PRERELEASE" == 'true' ]]; then
+            cmd+=(--prerelease)
+          fi
+
+          "${cmd[@]}"
