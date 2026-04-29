@@ -312,7 +312,6 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-      artifact-metadata: write
 
     steps:
       - name: Download canonical release artifact
