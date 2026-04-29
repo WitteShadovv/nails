@@ -31,6 +31,11 @@ jobs:
   release:
     name: Verify or publish tagged release
     needs: classify-tag
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
     uses: ./.github/workflows/release-core.yml
     with:
       release-tag: ${{ github.ref_name }}

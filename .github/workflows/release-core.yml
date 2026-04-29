@@ -53,6 +53,7 @@ jobs:
           from pathlib import Path
           import os
           import subprocess
+          from textwrap import dedent
           import tomllib
 
           mode = os.environ["PUBLICATION_MODE"].strip()
@@ -105,77 +106,80 @@ jobs:
 
           if mode == "verify":
               release_name = "Stable tag verification build"
-              release_notes = f"""Deterministic verification build for stable tag `{tag}`.
+              release_notes = dedent(f"""
+                  Deterministic verification build for stable tag `{tag}`.
 
-- Tag: {tag}
-- Commit: {sha}
-- Cargo version: {version}
-- Canonical bundle attr: .#nails-release
-- Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
-- Stable GitHub releases are created only by the manual `publish-release.yml` workflow
-"""
+                  - Tag: {tag}
+                  - Commit: {sha}
+                  - Cargo version: {version}
+                  - Canonical bundle attr: .#nails-release
+                  - Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
+                  - Stable GitHub releases are created only by the manual `publish-release.yml` workflow
+                  """).strip()
           elif mode == "stable":
               release_name = f"nails {tag}"
-              release_notes = f"""Stable release bundle for `{tag}`.
+              release_notes = dedent(f"""
+                  Stable release bundle for `{tag}`.
 
-- Tag: {tag}
-- Commit: {sha}
-- Cargo version: {version}
-- Canonical bundle attr: .#nails-release
-- Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
+                  - Tag: {tag}
+                  - Commit: {sha}
+                  - Cargo version: {version}
+                  - Canonical bundle attr: .#nails-release
+                  - Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
 
-## Supply Chain Security
+                  ## Supply Chain Security
 
-This release includes SLSA Level 3 provenance attestation (`nails.intoto.jsonl`).
+                  This release includes SLSA Level 3 provenance attestation (`nails.intoto.jsonl`).
 
-### Verify SLSA Provenance
+                  ### Verify SLSA Provenance
 
-```bash
-# Install slsa-verifier
-go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
+                  ```bash
+                  # Install slsa-verifier
+                  go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
 
-# Verify the release archive
-slsa-verifier verify-artifact nails-*.tar.gz \
-  --provenance-path nails.intoto.jsonl \
-  --source-uri github.com/WitteShadovv/nails
+                  # Verify the release archive
+                  slsa-verifier verify-artifact nails-*.tar.gz \
+                    --provenance-path nails.intoto.jsonl \
+                    --source-uri github.com/WitteShadovv/nails
 
-# Verify the binary
-slsa-verifier verify-artifact nails \
-  --provenance-path nails.intoto.jsonl \
-  --source-uri github.com/WitteShadovv/nails
-```
-"""
+                  # Verify the binary
+                  slsa-verifier verify-artifact nails \
+                    --provenance-path nails.intoto.jsonl \
+                    --source-uri github.com/WitteShadovv/nails
+                  ```
+                  """).strip()
           else:
               release_name = f"nails {tag}"
-              release_notes = f"""Prerelease bundle for `{tag}`.
+              release_notes = dedent(f"""
+                  Prerelease bundle for `{tag}`.
 
-- Tag: {tag}
-- Commit: {sha}
-- Cargo version: {version}
-- Canonical bundle attr: .#nails-release
-- Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
+                  - Tag: {tag}
+                  - Commit: {sha}
+                  - Cargo version: {version}
+                  - Canonical bundle attr: .#nails-release
+                  - Artifact verification: same-runner nix-store --realise --check plus two independent rebuild comparisons
 
-## Supply Chain Security
+                  ## Supply Chain Security
 
-This prerelease includes SLSA Level 3 provenance attestation (`nails.intoto.jsonl`).
+                  This prerelease includes SLSA Level 3 provenance attestation (`nails.intoto.jsonl`).
 
-### Verify SLSA Provenance
+                  ### Verify SLSA Provenance
 
-```bash
-# Install slsa-verifier
-go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
+                  ```bash
+                  # Install slsa-verifier
+                  go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
 
-# Verify the release archive
-slsa-verifier verify-artifact nails-*.tar.gz \
-  --provenance-path nails.intoto.jsonl \
-  --source-uri github.com/WitteShadovv/nails
+                  # Verify the release archive
+                  slsa-verifier verify-artifact nails-*.tar.gz \
+                    --provenance-path nails.intoto.jsonl \
+                    --source-uri github.com/WitteShadovv/nails
 
-# Verify the binary
-slsa-verifier verify-artifact nails \
-  --provenance-path nails.intoto.jsonl \
-  --source-uri github.com/WitteShadovv/nails
-```
-"""
+                  # Verify the binary
+                  slsa-verifier verify-artifact nails \
+                    --provenance-path nails.intoto.jsonl \
+                    --source-uri github.com/WitteShadovv/nails
+                  ```
+                  """).strip()
 
           with output_path.open("a", encoding="utf-8") as fh:
               def emit(key: str, value: str) -> None:
@@ -308,7 +312,6 @@ slsa-verifier verify-artifact nails \
       contents: read
       id-token: write
       attestations: write
-      artifact-metadata: write
 
     steps:
       - name: Download canonical release artifact
