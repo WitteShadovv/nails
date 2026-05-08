@@ -64,7 +64,7 @@ pub struct LoadResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateFile {
     /// Schema version for backward compatibility (uses semver from Cargo.toml)
-    /// Format: "major.minor.patch" (e.g., "0.1.0")
+    /// Format: "major.minor.patch" (e.g., "0.2.0")
     pub version: String,
 
     /// Current system state (Inactive, Activating, Active, Deactivating, Emergency)

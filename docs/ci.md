@@ -133,7 +133,7 @@ The environment job is approval-only; it does not need environment secrets. Repo
 
 - **Exact stable tags (`v<version>`)**: automatic runs are **verification-only**. They build the canonical bundle, run determinism checks, generate SBOMs/attestations, and do **not** publish a GitHub release.
 - **Suffixed prerelease tags (`v<version>-...`)**: automatic runs build the same canonical bundle and publish an immutable **GitHub prerelease** directly from that prerelease tag.
-- **`publish-release.yml` manual dispatch**: maintainers provide an exact stable tag such as `v0.1.0`; the workflow validates it against `Cargo.toml`, rejects suffixed tags, and creates the stable GitHub release directly without promoting or editing an existing release.
+- **`publish-release.yml` manual dispatch**: maintainers provide an exact stable tag such as `v0.2.0`; the workflow validates it against `Cargo.toml`, rejects suffixed tags, and creates the stable GitHub release directly without promoting or editing an existing release.
 
 This is the immutable-release policy: ordinary branch pushes do not trigger the heavy release workflow, exact stable tags are validated automatically, and stable publication only happens through a deliberate manual workflow.
 
