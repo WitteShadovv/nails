@@ -63,7 +63,7 @@ fn test_version_from_cargo_toml() {
     cmd.arg("--version")
         .assert()
         .success()
-        .stdout(predicates::str::contains("nails 0.1.0"));
+        .stdout(predicates::str::contains("nails 0.2.0"));
 }
 
 /// Test that --help flag works
@@ -624,7 +624,7 @@ fn test_status_command_verbose_active_shows_overlay_details() {
     let mounted_at = "2026-01-02T03:04:30Z";
     let state_json = format!(
         r#"{{
-  "version": "0.1.0",
+  "version": "0.2.0",
   "state": {{
     "Active": {{
       "activated_at": "{activated_at}",
@@ -933,7 +933,7 @@ fn test_verify_command_json_output_reports_present_state_file_status() {
     let config_path = temp_dir.path().join("nails.yaml");
 
     let state_json = r#"{
-  \"version\": \"0.1.0\",
+  \"version\": \"0.2.0\",
   \"state\": \"Inactive\",
   \"nixos_generation\": null,
   \"config_fingerprint\": null,
