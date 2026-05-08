@@ -23,7 +23,6 @@ in
     machine.wait_for_unit("multi-user.target")
 
     expected_dirs = [
-        "/mnt/hidden-volume/state",
         "/mnt/hidden-volume/overlays",
         "/mnt/hidden-volume/logs",
         "/mnt/hidden-volume/config",
@@ -41,6 +40,7 @@ in
 
     expected_files = {
         "/mnt/hidden-volume/config/nails.yaml": "600",
+        "/mnt/hidden-volume/state.json": "600",
         "/mnt/hidden-volume/config/nixos/configuration.nix": "600",
         "/mnt/hidden-volume/etc/nixos/hardware-configuration.nix": "600",
     }
@@ -68,6 +68,7 @@ in
             machine.succeed(f"test -d {path}")
             perms = machine.succeed(f"stat -c %a {path}").strip()
             assert perms == "700", f"Expected 0700 on {path}, got {perms}"
+        machine.fail("test -e /mnt/hidden-volume/state")
 
     with subtest("assert generated files and symlink staging"):
         for path, expected_perm in expected_files.items():
@@ -89,5 +90,8 @@ in
 
         hidden_config = machine.succeed("cat /mnt/hidden-volume/config/nixos/configuration.nix")
         assert "pkgs.ripgrep" in hidden_config, hidden_config
+
+        state_json = machine.succeed("cat /mnt/hidden-volume/state.json")
+        assert '"state": "Inactive"' in state_json, state_json
   '';
 }

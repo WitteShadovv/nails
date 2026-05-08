@@ -5,7 +5,7 @@
 //! all pre-flight validation checks before activation.
 
 use super::NailsManager;
-use crate::{Filesystem, NailsError, Result, build_overlay_targets};
+use crate::{Filesystem, NailsError, Result, StateFile, build_overlay_targets};
 
 impl<F: Filesystem> NailsManager<F> {
     /// Run read-only NixOS preflight checks that are safe before detach/session kill.
@@ -227,10 +227,27 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         if all_passed {
+            self.ensure_state_file_exists()?;
             tracing::info!("All pre-flight checks passed");
             Ok(())
         } else {
             Err(crate::NailsError::PreFlightCheckFailed(failed_checks))
         }
+    }
+
+    fn ensure_state_file_exists(&self) -> Result<()> {
+        if self.state_file_path.exists() {
+            if !self.state_file_path.is_file() {
+                return Err(NailsError::InvalidState(format!(
+                    "State path must be a file, not a directory: {}",
+                    self.state_file_path.display()
+                )));
+            }
+
+            return Ok(());
+        }
+
+        StateFile::default()
+            .save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root)
     }
 }
