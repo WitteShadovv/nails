@@ -16,7 +16,6 @@ const CONFIG_FILE_NAME: &str = "nails.yaml";
 
 /// Required subdirectories to create
 const SUBDIRS: &[&str] = &[
-    "state",
     "overlays",
     "logs",
     "config",
@@ -107,6 +106,8 @@ fn execute_with_base_hardware_config(
         println!("  Created {}", config_path.display());
     }
 
+    create_initial_state_file(base)?;
+
     bootstrap_hidden_nixos_layout(base, base_hardware_config)?;
 
     println!();
@@ -147,6 +148,27 @@ fn create_dir_0700(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
     let perms = fs::Permissions::from_mode(0o700);
     fs::set_permissions(path, perms)?;
+    Ok(())
+}
+
+fn create_initial_state_file(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let state_path = base.join("state.json");
+
+    if state_path.exists() {
+        if !state_path.is_file() {
+            return Err(format!(
+                "State path exists but is not a file: {}",
+                state_path.display()
+            )
+            .into());
+        }
+        println!("  Skipped {} (already exists)", state_path.display());
+        return Ok(());
+    }
+
+    nails_core::StateFile::default().save_with_custom_root(&state_path, base)?;
+    println!("  Created {}", state_path.display());
+
     Ok(())
 }
 
@@ -233,6 +255,14 @@ mod tests {
             let meta = fs::metadata(&dir).unwrap();
             assert_eq!(meta.permissions().mode() & 0o777, 0o700);
         }
+        assert!(!tmp.path().join("state").exists());
+
+        let state_file = tmp.path().join("state.json");
+        assert!(state_file.is_file());
+        let state_meta = fs::metadata(&state_file).unwrap();
+        assert_eq!(state_meta.permissions().mode() & 0o777, 0o600);
+        let state = nails_core::StateFile::load(&state_file).unwrap();
+        assert!(matches!(state.state, SystemState::Inactive));
 
         let config_file = tmp.path().join("config").join(CONFIG_FILE_NAME);
         assert!(config_file.is_file());

@@ -475,7 +475,7 @@ fn test_activate_successful_activation_transitions_through_states() {
     let manager = Arc::new(Mutex::new(NailsManager::new(
         fs.clone(),
         config,
-        state_path,
+        state_path.clone(),
     )));
 
     // Activate should succeed
@@ -578,7 +578,7 @@ fn test_activate_calls_mount_overlay_for_each_configured_overlay() {
     let manager = Arc::new(Mutex::new(NailsManager::new(
         fs.clone(),
         config,
-        state_path,
+        state_path.clone(),
     )));
 
     // Activate
@@ -1501,7 +1501,7 @@ fn test_preflight_all_checks_pass_activation_proceeds() {
     let manager = Arc::new(Mutex::new(NailsManager::new(
         fs.clone(),
         config,
-        state_path,
+        state_path.clone(),
     )));
 
     // Activate with pre-flight checks (no_preflight = false)
@@ -1559,7 +1559,7 @@ fn test_preflight_check_fails_activation_aborted() {
     let manager = Arc::new(Mutex::new(NailsManager::new(
         fs.clone(),
         config,
-        state_path,
+        state_path.clone(),
     )));
 
     // Verify initial state is Inactive
@@ -1593,6 +1593,114 @@ fn test_preflight_check_fails_activation_aborted() {
     assert!(
         fs.get_mounted_paths().is_empty(),
         "No mounts should exist after failed preflight"
+    );
+    assert!(
+        !state_path.exists(),
+        "failed preflight should not create state.json"
+    );
+}
+
+#[test]
+fn test_preflight_success_creates_missing_state_json_not_state_directory() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
+    fs.mock_set_path_type(hidden_root.to_str().unwrap(), "directory");
+    fs.mock_set_mounted(hidden_root, true);
+    fs.mock_set_writable(hidden_root.to_str().unwrap(), true);
+    fs.mock_set_supports_symlinks(hidden_root, true);
+    fs.mock_set_swap_enabled(false);
+    setup_nixos_config_check(&fs, hidden_root);
+
+    for rel in [
+        "etc",
+        "home",
+        "config",
+        "nix",
+        ".work/etc",
+        ".work/home",
+        ".work/nix",
+    ] {
+        let path = hidden_root.join(rel);
+        fs.mock_set_path_exists(path.to_str().unwrap(), true);
+        fs.mock_set_path_type(path.to_str().unwrap(), "directory");
+        fs.mock_set_writable(path.to_str().unwrap(), true);
+        fs.mock_set_readable(path.to_str().unwrap(), true);
+    }
+
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlay_mode: OverlayMode::Explicit,
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let manager = NailsManager::new(fs, config, state_path.clone());
+
+    manager
+        .run_preflight_checks(false)
+        .expect("preflight should create initial state.json");
+
+    assert!(state_path.is_file(), "preflight should create state.json");
+    assert!(
+        !hidden_root.join("state").exists(),
+        "preflight must not create state/"
+    );
+
+    let state = StateFile::load(&state_path).unwrap();
+    assert_eq!(state.state, SystemState::Inactive);
+}
+
+#[test]
+fn test_preflight_rejects_state_path_directory() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    std::fs::create_dir(&state_path).unwrap();
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
+    fs.mock_set_path_type(hidden_root.to_str().unwrap(), "directory");
+    fs.mock_set_mounted(hidden_root, true);
+    fs.mock_set_writable(hidden_root.to_str().unwrap(), true);
+    fs.mock_set_supports_symlinks(hidden_root, true);
+    fs.mock_set_swap_enabled(false);
+    setup_nixos_config_check(&fs, hidden_root);
+
+    for rel in [
+        "etc",
+        "home",
+        "config",
+        "nix",
+        ".work/etc",
+        ".work/home",
+        ".work/nix",
+    ] {
+        let path = hidden_root.join(rel);
+        fs.mock_set_path_exists(path.to_str().unwrap(), true);
+        fs.mock_set_path_type(path.to_str().unwrap(), "directory");
+        fs.mock_set_writable(path.to_str().unwrap(), true);
+        fs.mock_set_readable(path.to_str().unwrap(), true);
+    }
+
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlay_mode: OverlayMode::Explicit,
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let manager = NailsManager::new(fs, config, state_path.clone());
+    let err = manager.run_preflight_checks(false).unwrap_err();
+
+    assert!(
+        err.to_string().contains("State path must be a file"),
+        "unexpected error: {err}"
     );
 }
 

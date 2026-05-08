@@ -62,6 +62,7 @@ in
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
         machine.fail("test -e /mnt/hidden-volume/home/testuser/.config/autostart/nails-notify.desktop")
         machine.fail("test -e /mnt/hidden-volume/state.json")
+        machine.fail("test -e /mnt/hidden-volume/state")
 
     with subtest("missing explicit flake attrs are rejected before any activation side effects"):
         machine.succeed("mkdir -p /tmp/flake-target")
@@ -88,6 +89,7 @@ in
             f"Expected flake attr rejection or nix-command error in stderr, got: {stderr!r}"
         assert_status_state("Inactive", config_path="/tmp/preflight-build-target.yaml")
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
+        machine.fail("test -e /mnt/hidden-volume/state")
 
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';
