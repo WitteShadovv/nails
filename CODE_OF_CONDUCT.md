@@ -59,13 +59,14 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported privately to the maintainer at **security@nails.run** or via GitHub:
+reported privately to the maintainer at **contact@nails.run** or via GitHub:
 
 - <https://github.com/WitteShadovv>
 
 Please use a clear subject line such as `Code of Conduct report` so the report
-can be triaged appropriately. This mailbox is also used for security reports,
-and conduct reports are handled separately from vulnerability disclosures.
+can be triaged appropriately. Conduct reports are handled separately from
+vulnerability disclosures. For suspected vulnerabilities, use the reporting
+process in [SECURITY.md](SECURITY.md).
 
 If the report involves the maintainer, or private contact through the project is
 not workable, use GitHub's own reporting and safety tools as an additional
