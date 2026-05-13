@@ -28,7 +28,7 @@ NAILS is built around two environments on the same machine:
 - a hidden **real** environment stored on a mounted backend you control
 
 When activated, NAILS overlays parts of the decoy system with hidden state and configuration. When
-deactivated correctly and the hidden backend is dismounted, the host returns to its normal decoy
+deactivation finishes and the backend is no longer mounted, the host returns to its normal decoy
 state within the documented threat model.
 
 NAILS does **not** provide encryption itself. It relies on an external storage backend such as
@@ -79,8 +79,10 @@ Download the latest published bundle from the canonical [GitHub Releases page](h
 GitHub Releases may contain either a manually published stable release for an exact version tag or a tagged prerelease for an immutable prerelease tag. Use the newest release line appropriate for your testing or deployment. Mount the hidden storage first, then place the published `nails` executable directly on that hidden root. Do not leave the binary on the decoy filesystem:
 
 ```bash
-# Mount hidden storage first
-veracrypt --mount /path/to/container /mnt/hidden
+# Open and mount hidden storage first
+sudo cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden \
+  "$HOME/Downloads/family_photos" veracrypt-hidden
+sudo mount /dev/mapper/veracrypt-hidden /mnt/hidden
 
 # Install the release binary onto hidden storage
 install -m0755 /path/to/downloaded/nails /mnt/hidden/nails
@@ -114,7 +116,9 @@ install -m0755 ./result/bin/nails /mnt/hidden/nails
 1. **Mount your hidden storage**.
 
    ```bash
-   veracrypt --mount /path/to/container /mnt/hidden-volume
+   sudo cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden \
+     "$HOME/Downloads/family_photos" veracrypt-hidden
+   sudo mount /dev/mapper/veracrypt-hidden /mnt/hidden-volume
    ```
 
 2. **Bootstrap the hidden layout** on the mounted backend.
@@ -162,10 +166,9 @@ install -m0755 ./result/bin/nails /mnt/hidden/nails
    sudo nails deactivate
    ```
 
-7. **After reboot, dismount the hidden backend** and verify from the decoy side.
+7. **After reboot, verify from the decoy side.**
 
    ```bash
-   veracrypt --dismount /mnt/hidden-volume
    nails verify
    ```
 

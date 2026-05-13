@@ -56,7 +56,7 @@ NAILS (NixOS Anti-forensics Isolation & Layering System) is intended to support 
 | **Configuration fingerprinting** | Decoy system appears as a normal encrypted NixOS installation |
 | **Hidden package detection** | All hidden packages and services exist only inside the mounted hidden volume |
 
-**The fundamental goal:** After proper deactivation and dismounting, the offline host should present as an ordinary decoy NixOS system within the documented threat model. This is a design objective, not a guarantee that no trace remains.
+**The fundamental goal:** After standard deactivation reboot, or after emergency cleanup followed by closing the backend, the offline host should present as an ordinary decoy NixOS system within the documented threat model. This is a design objective, not a guarantee that no trace remains.
 
 ### Threat Model Overview
 
@@ -111,7 +111,7 @@ The NAILS binary contains identifiable strings that reveal its purpose:
 - Backup or snapshot systems
 
 **Correct workflow:**
-1. Mount the hidden VeraCrypt volume first
+1. Open and mount the hidden VeraCrypt volume with `cryptsetup` first
 2. Run the binary directly from the hidden volume: `sudo /mnt/hidden/nails activate`
 3. Never copy the binary to the decoy filesystem
 
@@ -171,7 +171,7 @@ Advantages:
 Disadvantages:
 - More cleanup happens in-process instead of being delegated to a reboot
 - Relies on in-process cleanup rather than reboot guarantees
-- Hidden volume must still be manually dismounted
+- Hidden volume may still need to be manually unmounted and closed
 - Higher risk of incomplete cleanup if interrupted
 
 ---
@@ -231,9 +231,9 @@ cat /root/.bash_history
 # 3. Check for NAILS processes
 pgrep -f nails
 
-# 4. Check hidden volume is dismounted
-ls /mnt/hidden  # Should fail or be empty
-mount | grep -i veracrypt
+# 4. Check hidden volume is not mounted or open
+findmnt /mnt/hidden  # Should fail or print nothing
+test ! -e /dev/mapper/veracrypt-hidden
 
 # 5. Check recently-used files (GNOME)
 cat ~/.local/share/recently-used.xbel | grep -i hidden
@@ -252,7 +252,7 @@ Take immediate action if you observe:
 | Overlay mounts still visible in `findmnt` | Critical | Run `emergency` or reboot |
 | Shell history contains hidden commands | Critical | Truncate files, investigate |
 | NAILS process still running | High | Kill process, re-run deactivation |
-| Hidden volume still mounted | High | Dismount immediately |
+| Hidden volume still mounted | High | Unmount and close immediately if not already rebooting |
 | Recently-used.xbel shows hidden files | Medium | Clear file, check GNOME settings |
 | Journal contains NAILS entries | Medium | Clear journal, configure volatile logging |
 
@@ -457,8 +457,9 @@ After deactivation completes:
 [ ] Run: nails verify --deep
 [ ] Manually check: cat ~/.bash_history
 [ ] Manually check: findmnt | grep overlay
-[ ] Dismount hidden volume: veracrypt --dismount /mnt/hidden
-[ ] Verify dismount: ls /mnt/hidden (should fail)
+[ ] If using emergency/no-reboot cleanup and the backend is still mounted:
+    sudo umount /mnt/hidden && sudo cryptsetup close veracrypt-hidden
+[ ] Verify hidden backend is not mounted or open
 [ ] Check recently-used.xbel if using GNOME
 [ ] Review last hour of journal: journalctl --since "1 hour ago"
 [ ] Create some decoy activity (browsing, document editing)
@@ -527,12 +528,9 @@ If you suspect incomplete cleanup occurred:
 **1. Immediate Actions**
 
 ```bash
-# Dismount hidden volume immediately
-sudo veracrypt --dismount /mnt/hidden
-
-# OR for cryptsetup
+# Unmount and close hidden volume immediately
 sudo umount /mnt/hidden
-sudo cryptsetup close veracrypt
+sudo cryptsetup close veracrypt-hidden
 ```
 
 **2. Clean Residual Artifacts**
@@ -563,7 +561,7 @@ sudo systemctl reboot
 # After reboot, verify
 nails verify --deep
 cat ~/.bash_history  # Should be empty
-ls /mnt/hidden       # Should fail (not mounted)
+findmnt /mnt/hidden  # Should fail or print nothing
 ```
 
 **4. Consider Reboot Cycle**
