@@ -72,7 +72,7 @@ jobs:
           shared-key: "audit"
 
       - name: Install audit tools
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        uses: taiki-e/install-action@d9be7d8cda89035c9c843f78bd44d4f72d8403d4
         with:
           tool: cargo-audit@0.22.0,cargo-deny@0.18.9
           fallback: none
@@ -213,7 +213,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
+        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354
         with:
           files: ./coverage/cobertura.xml
           fail_ci_if_error: false
