@@ -38,7 +38,7 @@ assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = "0.2.5"
-serial_test = "3.1"
+serial_test = "3.5"
 criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
