@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Checkout code at tag
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           ref: refs/tags/${{ inputs.release-tag }}
           fetch-depth: 0
@@ -198,7 +198,7 @@ jobs:
           PY
 
       - name: Install Nix
-        uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -238,7 +238,7 @@ jobs:
           "$extracted_dir/nails" --version
 
       - name: Install Rust toolchain for SBOM
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537
         with:
           toolchain: 1.93.0
 
