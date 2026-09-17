@@ -81,6 +81,14 @@
 
           cargoLock = {
             lockFile = ./Cargo.lock;
+            # crates.io returns HTTP 403 for the legacy /api/v1/.../download endpoint
+            # that this pinned nixpkgs' importCargoLock uses by default (it rejects the
+            # fetcher's curl User-Agent). Point the crates.io registry at the static CDN
+            # instead - it serves the same content-addressed tarballs without the block.
+            # This mirrors the switch upstream nixpkgs later made (rust-lang/crates.io#13482).
+            extraRegistries = {
+              "https://github.com/rust-lang/crates.io-index" = "https://static.crates.io/crates";
+            };
           };
           cargoDepsName = pname;
 
