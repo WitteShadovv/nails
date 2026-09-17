@@ -34,7 +34,18 @@ yanked = "deny"
 
 # Specific advisories to ignore (use sparingly and document why)
 # Example: ignore = ["RUSTSEC-2020-0001"]
-ignore = []
+ignore = [
+    # RUSTSEC-2026-0205: `scc` `Array::insert` exception-safety unsoundness.
+    # `scc` is a test-only, transitive dependency (scc -> serial_test -> nails-core),
+    # never linked into the shipped binary. The advisory is an unsoundness (not a
+    # remotely exploitable vulnerability) that can only trigger a double-free if a
+    # user-provided key comparison function panics; NAILS' test suite never supplies
+    # such a comparator. The fix lands only in scc >= 3.8.4, but every serial_test 3.x
+    # release pins `scc = "^2"`, and serial_test 4.x raises its MSRV to 1.93.1 while the
+    # project is pinned to Rust 1.93.0. Re-evaluate when the toolchain moves to >= 1.93.1
+    # (then bump serial_test to 4.x, which drops scc entirely).
+    "RUSTSEC-2026-0205",
+]
 
 # =============================================================================
 # LICENSES

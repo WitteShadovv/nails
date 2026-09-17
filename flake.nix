@@ -72,6 +72,36 @@
         releaseVersion = "${workspaceVersion}-git.${shortRev}";
         releaseArchiveName = "nails-${releaseVersion}-${targetTriple}.tar.gz";
 
+        # Vendored crate dependencies. crates.io now returns HTTP 403 for the legacy
+        # /api/v1/<name>/<version>/download endpoint that this pinned nixpkgs'
+        # importCargoLock uses by default (it rejects the fetcher's default curl
+        # User-Agent), which breaks vendoring whenever Cargo.lock changes. We rewrite
+        # only the download URL to the static CDN, which serves the same
+        # content-addressed tarballs. This is scoped to importCargoLock's fetchurl, so
+        # the global package set (and cross-compilation splicing) is untouched, and it
+        # leaves the generated cargo config's crates-io source alone (unlike
+        # extraRegistries, which would define a duplicate crates-io source).
+        cratesVendor =
+          (pkgs.rustPlatform.importCargoLock.override {
+            fetchurl =
+              args:
+              pkgs.fetchurl (
+                args
+                // {
+                  url =
+                    builtins.replaceStrings
+                      [ "https://crates.io/api/v1/crates" ]
+                      [
+                        "https://static.crates.io/crates"
+                      ]
+                      args.url;
+                }
+              );
+          })
+            {
+              lockFile = ./Cargo.lock;
+            };
+
         # Canonical release binary: static x86_64-unknown-linux-musl.
         nails = rustPlatformMusl.buildRustPackage rec {
           pname = "nails";
@@ -79,9 +109,7 @@
 
           src = sourceFiles;
 
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-          };
+          cargoDeps = cratesVendor;
           cargoDepsName = pname;
 
           inherit (pkgsMusl) stdenv;
