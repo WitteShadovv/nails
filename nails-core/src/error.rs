@@ -13,6 +13,12 @@ fn format_preflight_errors(errors: &[(String, String)]) -> String {
         .join("\n")
 }
 
+/// ` <file>` when a configuration file is known, otherwise nothing.
+fn in_file(file: Option<&std::path::Path>) -> String {
+    file.map(|f| format!(" {}", f.display()))
+        .unwrap_or_default()
+}
+
 /// Comprehensive error types for NAILS operations
 ///
 /// All NAILS operations return Result<T, NailsError> for explicit error handling.
@@ -100,6 +106,21 @@ pub enum NailsError {
     /// than the error text.
     #[error("Config file not found: {path}")]
     ConfigNotFound { path: std::path::PathBuf },
+
+    /// A configured path breaks one of the path rules.
+    ///
+    /// Raised while a configuration is loaded or built, before anything is
+    /// mounted. `problem` says which rule was broken, so callers and tests
+    /// can match it without parsing the message.
+    #[error("invalid config{}: {key} = {path:?}: {problem}", in_file(.file.as_deref()))]
+    UnsafeConfigPath {
+        /// The configuration file the path came from, if any.
+        file: Option<std::path::PathBuf>,
+        /// The setting that holds the path, such as `overlays[0].upper`.
+        key: String,
+        path: std::path::PathBuf,
+        problem: crate::config::PathProblem,
+    },
 
     /// Invalid command-line argument or option
     ///
@@ -418,6 +439,34 @@ mod tests {
             path: PathBuf::from("/test"),
         };
         let _err21 = NailsError::OperationInProgress { pid: 1234 };
+    }
+
+    #[test]
+    fn unsafe_config_path_names_the_file_key_and_rule() {
+        use crate::config::PathProblem;
+        use std::path::PathBuf;
+
+        let err = NailsError::UnsafeConfigPath {
+            file: Some(PathBuf::from("/mnt/hv/config/nails.toml")),
+            key: "overlays[0].upper".into(),
+            path: PathBuf::from("/mnt/hv/a,b"),
+            problem: PathProblem::ForbiddenCharacter(','),
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid config /mnt/hv/config/nails.toml: overlays[0].upper = \"/mnt/hv/a,b\": must not contain ','"
+        );
+
+        let err = NailsError::UnsafeConfigPath {
+            file: None,
+            key: "log_path".into(),
+            path: PathBuf::from("/var/log\nx"),
+            problem: PathProblem::ForbiddenCharacter('\n'),
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid config: log_path = \"/var/log\\nx\": must not contain a newline"
+        );
     }
 
     #[test]

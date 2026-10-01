@@ -37,6 +37,24 @@ location.
 
 `path`, `show` and `validate` also accept `--json`.
 
+### Path rules
+
+Every path is checked when the file is loaded, before anything is mounted.
+A path that breaks a rule is rejected with one line that names the file, the
+key and the rule, for example
+`invalid config /mnt/hidden-volume/config/nails.toml: overlays[0].upper = "/mnt/hidden-volume/a,b": must not contain ','`.
+
+- Every path is absolute, with no `.` or `..` segment and no newline.
+- `hidden_volume_root` and the `overlays[]` paths contain no `,` or `:`:
+  overlay mount options use them as separators. Spaces are fine.
+- `hidden_volume_root` is not `/` and does not lie inside an
+  `overlays[].target`.
+- `state_file_path`, `log_path`, `overlays[].upper` and `overlays[].work` lie
+  inside `hidden_volume_root`.
+- No existing directory on the way to `hidden_volume_root`, or to a path
+  inside it, is a symlink: a symlink could send hidden data to the decoy disk.
+  Configure the resolved path instead.
+
 ## Keys
 
 Nested keys are written with dots: `color_scheme.hidden.background` is the
@@ -46,9 +64,9 @@ is the `name` key of each `[[overlays]]` table.
 <!-- BEGIN config-keys -->
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `hidden_volume_root` | path | derived from the binary location | Root of the hidden volume; overlay layers, the state file and logs live under it. Unset, it is the directory holding the `nails` binary (symlinks resolved), or `/mnt/hidden-volume` when the binary runs from a build directory or the Nix store. Leave it unset so the file keeps working when the volume is mounted somewhere else. |
-| `state_file_path` | path | `<hidden_volume_root>/state.json` | Activation state file. nails refuses to write it outside `hidden_volume_root`. |
-| `log_path` | path | `<hidden_volume_root>/logs` | Directory of `nails.log`. File logging is refused, leaving terminal output only, when the path lies outside `hidden_volume_root` or is a symlink. `--no-logs` turns file logging off for one run. |
+| `hidden_volume_root` | path | derived from the binary location | Root of the hidden volume; overlay layers, the state file and logs live under it. Unset, it is the directory holding the `nails` binary (symlinks resolved), or `/mnt/hidden-volume` when the binary runs from a build directory or the Nix store. Leave it unset so the file keeps working when the volume is mounted somewhere else. See [Path rules](#path-rules). |
+| `state_file_path` | path | `<hidden_volume_root>/state.json` | Activation state file. Must lie inside `hidden_volume_root`. |
+| `log_path` | path | `<hidden_volume_root>/logs` | Directory of `nails.log`. Must lie inside `hidden_volume_root`. `--no-logs` turns file logging off for one run. |
 | `overlay_mode` | `"auto"` or `"explicit"` | `"auto"` | How overlay targets are chosen; see [Overlay semantics](#overlay-semantics). |
 | `overlay_exclusions` | array of paths | `[]` | Auto mode: top-level directories to leave out in addition to the [default exclusions](#default-exclusions). Writes under them reach the decoy disk. |
 | `overlay_exclusions_remove` | array of paths | `[]` | Auto mode: default exclusions to overlay anyway. It cannot lift the [safety floor](#safety-floor). |
@@ -56,8 +74,8 @@ is the `name` key of each `[[overlays]]` table.
 | `overlays[].lower` | path | required | Read-only lower layer, normally the same directory as `target`. |
 | `overlays[].name` | string | required | Human-readable label for the overlay. |
 | `overlays[].target` | path | required | Mount point. `/bin` and `/usr` are refused. |
-| `overlays[].upper` | path | required | Writable upper layer, where everything the hidden session writes under `target` ends up. Put it on the hidden volume. |
-| `overlays[].work` | path | required | overlayfs work directory. Put it on the hidden volume, on the same filesystem as `upper`. |
+| `overlays[].upper` | path | required | Writable upper layer, where everything the hidden session writes under `target` ends up. Must lie inside `hidden_volume_root`. |
+| `overlays[].work` | path | required | overlayfs work directory, on the same filesystem as `upper`. Must lie inside `hidden_volume_root`. |
 | `minimum_space_mb` | integer (MB) | `500` | Free space the hidden volume needs. The pre-flight check warns below this value and blocks activation below half of it; `activate --no-preflight` skips the check. |
 | `clear_history` | boolean | `true` | Clear shell history files during deactivation. `--no-clear-history` on `activate` or `deactivate` turns it off for that run; emergency teardown always clears them. |
 | `show_opsec_reminders` | boolean | `true` | Show reminders in `nails status` once the hidden environment has been active for 6, 12 and 24 hours. |
@@ -139,6 +157,6 @@ Some limits hold whatever the configuration says:
   nails logs a warning when they are. They are kernel-managed or in-memory
   filesystems: overlaying them fails or breaks running services, and they hold
   nothing that reaches a disk.
-- Keep the hidden volume outside every overlay target, for example under the
-  excluded `/mnt`. An overlay whose target contains the hidden volume would
-  cover the very layers it writes to.
+- An explicit overlay whose target contains the hidden volume is rejected: it
+  would cover the very layers it writes to. In auto mode, keep the hidden
+  volume under an excluded directory such as `/mnt`.

@@ -4,7 +4,8 @@
 //! the binary (see [`discover_config_path`]). Every key is optional; unknown
 //! keys at any level are rejected so a typo can never silently fall back to a
 //! default. [`LoadedConfig`] records where each effective value came from, and
-//! [`ConfigBuilder`] constructs a [`Config`] programmatically.
+//! [`ConfigBuilder`] constructs a [`Config`] programmatically. Both reject an
+//! unsafe path (see [`Config::validate_paths`] and [`PathProblem`]).
 //!
 //! # Example
 //!
@@ -33,6 +34,7 @@ mod loading;
 mod overrides;
 mod suggest;
 mod types;
+mod validation;
 
 // Test-only utilities module
 #[cfg(test)]
@@ -58,6 +60,9 @@ pub use loading::{CONFIG_DIR_NAME, CONFIG_FILE_NAME, discover_config_path};
 
 // Re-exports for public API - defaults
 pub use defaults::derive_hidden_volume_root;
+
+// Re-exports for public API - path validation
+pub use validation::PathProblem;
 
 // Tests module
 #[cfg(test)]

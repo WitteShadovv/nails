@@ -4,4 +4,5 @@ mod colors_tests;
 mod config_tests;
 mod ephemeral_tests;
 mod overlay_tests;
+mod path_rules_tests;
 mod strict_tests;

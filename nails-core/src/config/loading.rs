@@ -87,7 +87,8 @@ pub(super) struct ParsedFile {
 /// Unknown keys at any level, wrong types and TOML syntax errors are all
 /// rejected with a one-line message that names the file, the line and column,
 /// and for a misspelt key the closest valid key. Paths the file leaves unset
-/// (`state_file_path`, `log_path`) are derived from `hidden_volume_root`.
+/// (`state_file_path`, `log_path`) are derived from `hidden_volume_root`, and
+/// then every path is checked by [`Config::validate_paths`].
 pub(super) fn parse_config_file(path: &Path, contents: &str) -> Result<ParsedFile> {
     let mut config: Config =
         toml::from_str(contents).map_err(|e| invalid_config(path, contents, &e))?;
@@ -109,6 +110,7 @@ pub(super) fn parse_config_file(path: &Path, contents: &str) -> Result<ParsedFil
         config.log_path = config.hidden_volume_root.join("logs");
     }
     config.loaded_config_path = Some(path.to_path_buf());
+    config.validate_paths()?;
 
     Ok(ParsedFile { config, keys })
 }
@@ -155,6 +157,8 @@ impl Config {
     ///   TOML, contains an unknown key at any level, or has a value of the
     ///   wrong type. The message is one line and names the line and column;
     ///   for a misspelt key it suggests the closest valid key.
+    /// - `NailsError::UnsafeConfigPath` if a path breaks a rule of
+    ///   [`Config::validate_paths`].
     ///
     /// # Example
     ///
@@ -218,15 +222,17 @@ fn render_template(root: &Path, title: &str) -> String {
     format!(
         r##"{title}
 #
-# Every key is optional and unknown keys are rejected. Check this file with
-# `nails config validate`; show the effective values with `nails config show`.
-# docs/configuration.md in the nails source describes every key.
+# Every key is optional and unknown keys are rejected. Paths must be absolute,
+# without `.`, `..` or symlinks. Check this file with `nails config validate`;
+# show the effective values with `nails config show`. docs/configuration.md in
+# the nails source describes every key and every path rule.
 
 # Root of the hidden volume. Unset: derived from the location of the nails
 # binary, which keeps working when the volume is mounted somewhere else.
 # hidden_volume_root = {root_value}
 
-# State file and log directory. Unset: placed under hidden_volume_root.
+# State file and log directory, inside hidden_volume_root. Unset: placed
+# directly under it.
 # state_file_path = {state_value}
 # log_path = {log_value}
 
@@ -255,7 +261,8 @@ fn render_template(root: &Path, title: &str) -> String {
 # overlay_exclusions = ["/srv"]
 # overlay_exclusions_remove = ["/mnt"]
 
-# Explicit mode: one table per overlay.
+# Explicit mode: one table per overlay. upper and work must lie inside
+# hidden_volume_root, and no target may contain it.
 # [[overlays]]
 # name = "home"
 # lower = "/home"

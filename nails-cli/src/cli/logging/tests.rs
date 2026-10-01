@@ -483,12 +483,17 @@ fn init_stdout_subscriber_falls_back_when_log_path_is_invalid() {
     let hidden_root = temp_dir.path().join("hidden-volume");
     let config_path = temp_dir.path().join("nails.toml");
     std::fs::create_dir_all(&hidden_root).unwrap();
+    // A log path outside the hidden volume no longer loads at all, so make
+    // the log directory impossible to create instead: its parent is a file.
+    let blocker = hidden_root.join("blocker");
+    std::fs::write(&blocker, "").unwrap();
 
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"/var/log\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
         hidden_root.display(),
+        blocker.join("logs").display(),
     )
     .unwrap();
 

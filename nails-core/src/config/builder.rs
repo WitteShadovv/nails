@@ -12,8 +12,8 @@ use super::types::Config;
 
 /// Builder for Config with validation and smart defaults
 ///
-/// Provides fluent API for constructing Config instances with validation.
-/// Required fields must be set before calling `build()`.
+/// Provides a fluent API for constructing Config instances. Every field is
+/// optional; `build()` fills in defaults and then validates every path.
 ///
 /// # Example
 ///
@@ -141,7 +141,10 @@ impl ConfigBuilder {
     ///
     /// # Errors
     ///
-    /// Currently infallible; the `Result` leaves room for validation.
+    /// [`NailsError::UnsafeConfigPath`](crate::NailsError::UnsafeConfigPath)
+    /// when a path breaks a rule of [`Config::validate_paths`]: for example a
+    /// relative or symlinked hidden volume root, a `..` segment, a `,` or `:`
+    /// in an overlay path, or a state file outside the hidden volume root.
     pub fn build(self) -> crate::error::Result<Config> {
         // Priority order: explicit value > binary-derived > DEFAULT_HIDDEN_VOLUME_ROOT
         let hidden_volume_root = self
@@ -178,7 +181,7 @@ impl ConfigBuilder {
 
         let color_scheme = self.color_scheme.unwrap_or_default();
 
-        Ok(Config {
+        let config = Config {
             hidden_volume_root,
             state_file_path,
             overlays,
@@ -193,6 +196,8 @@ impl ConfigBuilder {
             color_scheme,
             prompt_label: String::new(),
             nixos_flake: None,
-        })
+        };
+        config.validate_paths()?;
+        Ok(config)
     }
 }

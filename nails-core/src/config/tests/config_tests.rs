@@ -5,7 +5,7 @@ use crate::config::{
     derive_hidden_volume_root,
 };
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 /// Write `contents` to a temporary TOML file that is removed on drop.
@@ -167,7 +167,7 @@ fn test_builder_with_all_fields_specified() {
         .minimum_space_mb(1000)
         .clear_history(false)
         .show_opsec_reminders(false)
-        .log_path(PathBuf::from("/custom/logs"))
+        .log_path(PathBuf::from("/mnt/hidden/custom-logs"))
         .build()
         .expect("Build should succeed");
 
@@ -186,7 +186,7 @@ fn test_builder_with_all_fields_specified() {
     assert_eq!(config.minimum_space_mb, 1000);
     assert!(!config.clear_history);
     assert!(!config.show_opsec_reminders);
-    assert_eq!(config.log_path, PathBuf::from("/custom/logs"));
+    assert_eq!(config.log_path, PathBuf::from("/mnt/hidden/custom-logs"));
 }
 
 #[test]
@@ -230,11 +230,11 @@ fn test_builder_log_path_derived_from_hidden_volume() {
 fn test_builder_log_path_can_be_overridden() {
     let config = ConfigBuilder::new()
         .hidden_volume_root(PathBuf::from("/mnt/hidden"))
-        .log_path(PathBuf::from("/var/log/nails"))
+        .log_path(PathBuf::from("/mnt/hidden/var/log"))
         .build()
         .expect("Build should succeed");
 
-    assert_eq!(config.log_path, PathBuf::from("/var/log/nails"));
+    assert_eq!(config.log_path, PathBuf::from("/mnt/hidden/var/log"));
 }
 
 #[test]
@@ -391,15 +391,18 @@ fn test_load_derives_dependent_paths_from_configured_root() {
 #[test]
 fn test_load_keeps_explicit_state_path_equal_to_the_builtin_default() {
     // An explicit value must win even when it happens to equal the constant
-    // fallback path.
+    // fallback path. The state file must lie inside the root, so the root is
+    // the parent of the default root.
     let state = format!("{DEFAULT_HIDDEN_VOLUME_ROOT}/state.json");
+    let root = Path::new(DEFAULT_HIDDEN_VOLUME_ROOT).parent().unwrap();
     let file = write_config(&format!(
-        "hidden_volume_root = \"/other/root\"\nstate_file_path = \"{state}\"\n"
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{state}\"\n",
+        root.display()
     ));
 
     let config = Config::load(file.path()).unwrap();
     assert_eq!(config.state_file_path, PathBuf::from(state));
-    assert_eq!(config.log_path, PathBuf::from("/other/root/logs"));
+    assert_eq!(config.log_path, root.join("logs"));
 }
 
 #[test]
