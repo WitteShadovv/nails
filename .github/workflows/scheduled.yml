@@ -14,6 +14,9 @@ on:
     # after 7 days without access, so a weekly touch alone can come too late.
     # The tasks job below repeats this expression.
     - cron: "0 3 * * 4"
+    # First of the month at 04:00 UTC: the transitive lockfile refresh alone.
+    # The tasks job below repeats this expression.
+    - cron: "0 4 1 * *"
   workflow_dispatch:
     inputs:
       task:
@@ -28,6 +31,7 @@ on:
           - stress
           - benchmarks
           - geiger
+          - lockfile
 
 permissions:
   contents: read
@@ -59,8 +63,11 @@ jobs:
         run: |
           if [ "$SCHEDULE" = "0 3 * * 4" ]; then
             run='["cache-warm"]'
+          elif [ "$SCHEDULE" = "0 4 1 * *" ]; then
+            run='["lockfile"]'
           elif [ "${TASK:-all}" = all ]; then
-            # geiger is opt-in: it runs only when dispatched by name
+            # geiger and lockfile are opt-in: each runs only on its own
+            # schedule or when dispatched by name
             run='["advisories","fetcher-canary","cache-warm","stress","benchmarks"]'
           else
             run=$(jq -cn --arg task "$TASK" '[$task]')
@@ -302,6 +309,98 @@ jobs:
           name: geiger-report
           path: geiger-report.txt
           retention-days: 30
+
+  # Monthly transitive refresh: #54's fixes were lockfile-only bumps that
+  # Dependabot's direct-dependency updates never proposed. `cargo update` moves
+  # every dependency to the newest version its requirement allows, then the
+  # shipped graph is re-checked and the result is offered as a pull request.
+  #
+  # A pull request opened with the default GITHUB_TOKEN does not start CI, so
+  # the refresh opens one only when the maintainer has set the dedicated
+  # DEPENDENCY_UPDATE_TOKEN secret (a fine-grained PAT with contents:write and
+  # pull-requests:write). Without it the job just prints the pending diff to the
+  # run summary, so nothing is lost.
+  transitive-refresh:
+    name: Refresh Cargo.lock
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'lockfile')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install policy tools
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: cargo-deny@0.19.1
+          fallback: none
+
+      - name: Move every dependency to its newest allowed version
+        run: cargo update
+
+      # Informational: a freshly surfaced advisory should still produce the
+      # pull request so a human can see it, so this never fails the job.
+      - name: Re-check the shipped graph
+        continue-on-error: true
+        run: cargo deny --exclude-dev check
+
+      - name: Detect the dedicated token
+        id: token
+        env:
+          TOKEN: ${{ secrets.DEPENDENCY_UPDATE_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open a pull request
+        if: steps.token.outputs.present == 'true'
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        with:
+          token: ${{ secrets.DEPENDENCY_UPDATE_TOKEN }}
+          add-paths: Cargo.lock
+          branch: update/cargo-lock
+          delete-branch: true
+          commit-message: |
+            build(deps): refresh Cargo.lock
+
+            Move every transitive dependency to its newest allowed version.
+          title: "build(deps): refresh Cargo.lock"
+          body: |
+            Monthly `cargo update` of the transitive dependency graph.
+
+            `cargo deny --exclude-dev check` ran against the refreshed graph;
+            see this run's log for its result. Let the full gate run before
+            merging.
+          labels: |
+            dependencies
+            rust
+
+      - name: Write the diff to the run summary
+        if: steps.token.outputs.present != 'true'
+        run: |
+          {
+            echo "## Cargo.lock refresh"
+            echo
+            echo "No \`DEPENDENCY_UPDATE_TOKEN\` secret is set, so no pull"
+            echo "request was opened. The pending \`Cargo.lock\` changes are:"
+            echo
+            echo '```diff'
+            git diff -- Cargo.lock
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Advisories and expired ignores are triaged on their own, under the
   # advisory label, apart from broken infrastructure.

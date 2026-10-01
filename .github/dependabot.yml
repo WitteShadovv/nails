@@ -1,182 +1,100 @@
-# Dependabot Configuration for NAILS Project
-# ===========================================
-# Automated dependency updates with security-first approach
+# Dependency automation for the NAILS workspace.
 #
-# Design principles:
-# - Security updates are prioritized and handled separately
-# - Version updates are grouped to reduce PR noise
-# - Weekly schedule balances freshness with stability
-# - Commit message format follows conventional commits
+# Dependabot only covers the two ecosystems it understands natively: the Cargo
+# workspace and the GitHub Actions used by the workflows. The three remaining
+# sources of pinned versions are updated elsewhere, because Dependabot has no
+# ecosystem for them:
+#   - flake.lock (Nix inputs)    -> .github/workflows/update-flake-lock.yml
+#   - .pre-commit-config.yaml    -> the pre-commit-autoupdate job in that file
+#   - rust-toolchain.toml        -> bumped by hand; the deny.toml RUSTSEC ignores
+#                                   are tied to the exact pin, so a bump is a
+#                                   reviewed change, not an automated one.
 #
-# Note: Nix flakes are not natively supported by Dependabot.
-# For Nix updates, consider using nix-update or nvfetcher.
+# Both ecosystems run monthly, group their updates into a single pull request
+# and wait a 7-day cooldown after a release before proposing it, so a freshly
+# published version has time to be yanked before it reaches a branch.
+#
+# Merge policy: Dependabot opens the pull requests; merging is manual. Only a
+# dev-dependency patch or minor update with a green gate is a candidate for
+# auto-merge (configured as a branch rule, not here). Security updates are
+# surfaced in their own groups so they are never lost in the monthly batch.
 
 version: 2
 
 updates:
-  # ============================================================================
-  # Cargo (Rust) Dependencies
-  # ============================================================================
-  # Primary ecosystem for the NAILS Rust workspace project
-  #
+  # Rust workspace (Cargo.toml / Cargo.lock at the repository root).
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "06:00"
-      timezone: "UTC"
+      interval: "monthly"
     open-pull-requests-limit: 10
-
-    # Commit message configuration for conventional commits
+    cooldown:
+      default-days: 7
+    # `build` + scope yields "build(deps): ..." for runtime dependencies and
+    # "build(deps-dev): ..." for dev-dependencies, which the commit-msg hook
+    # and pr-title.yml both accept.
     commit-message:
-      prefix: "build(deps)"
-      prefix-development: "build(deps-dev)"
+      prefix: "build"
+      prefix-development: "build"
       include: "scope"
-
-    # Labels for easier PR triage and filtering
     labels:
       - "dependencies"
       - "rust"
-
-    # Group production dependencies together (minor/patch only for stability)
-    # Group dev dependencies separately (more permissive updates)
     groups:
-      # Production dependencies - conservative updates
-      rust-production:
+      # One pull request for every non-security version bump.
+      cargo:
         applies-to: version-updates
-        dependency-type: "production"
-        update-types:
-          - "minor"
-          - "patch"
         patterns:
           - "*"
-        exclude-patterns:
-          # Exclude stability-critical dependencies from grouping
-          # These get individual PRs for careful review
-          - "nix"  # System-level operations, breaking changes are critical
-
-      # Development dependencies - more permissive
-      rust-dev:
-        applies-to: version-updates
-        dependency-type: "development"
-        patterns:
-          - "*"
-
-      # Security updates for production deps - separate group for visibility
+      # Security fixes stay visible on their own rather than hiding in the
+      # monthly batch.
       rust-security:
         applies-to: security-updates
-        dependency-type: "production"
         patterns:
           - "*"
-
-    # Ignore rules for stability-critical dependencies
-    # Major version updates require manual review and testing
+    # Major bumps of the crates that define data formats or the system
+    # interface are migrations, not routine updates, so they are proposed by
+    # hand instead of by the monthly group.
     ignore:
-      # Core system interaction - major versions need careful migration
       - dependency-name: "nix"
         update-types: ["version-update:semver-major"]
-
-      # Serialization stack - major versions can break data formats
       - dependency-name: "serde"
         update-types: ["version-update:semver-major"]
       - dependency-name: "serde_json"
         update-types: ["version-update:semver-major"]
       - dependency-name: "toml"
         update-types: ["version-update:semver-major"]
-
-      # CLI framework - major versions can break user-facing interfaces
       - dependency-name: "clap"
         update-types: ["version-update:semver-major"]
-
-      # Date/time handling - critical for state timestamps
       - dependency-name: "chrono"
         update-types: ["version-update:semver-major"]
 
-  # ============================================================================
-  # GitHub Actions Dependencies
-  # ============================================================================
-  # Maintains workflow action versions using commit SHA pinning
-  #
-  # Current actions in use (from workflow analysis):
-  # - actions/checkout (multiple SHAs - will be unified)
-  # - actions/upload-artifact
-  # - actions/download-artifact
-  # - actions/attest
-  # - dtolnay/rust-toolchain
-  # - Swatinem/rust-cache
-  # - codecov/codecov-action
-  # - marocchino/sticky-pull-request-comment
-  # - cachix/install-nix-action
-  # - cachix/cachix-action
-  #
+  # GitHub Actions pinned in the workflows and in the composite actions.
   - package-ecosystem: "github-actions"
-    # "/" covers only .github/workflows; the composite actions that pin
-    # third-party actions live in their own directories.
+    # "/" covers .github/workflows; the composite actions pin their own
+    # third-party actions in separate directories.
     directories:
       - "/"
       - "/.github/actions/*"
     schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "06:00"
-      timezone: "UTC"
+      interval: "monthly"
     open-pull-requests-limit: 5
-
-    # Commit message configuration
+    cooldown:
+      default-days: 7
+    # "ci(deps): ..." / "ci(deps-dev): ..." — the same scoped form as Cargo.
     commit-message:
-      prefix: "ci(deps)"
+      prefix: "ci"
       include: "scope"
-
-    # Labels for GitHub Actions updates
     labels:
       - "dependencies"
       - "github-actions"
       - "ci"
-
-    # Group all GitHub Actions updates together
-    # Since they use SHA pinning, updates are relatively safe
     groups:
       github-actions:
         applies-to: version-updates
         patterns:
           - "*"
-
-      # Security updates for actions - separate for visibility
       github-actions-security:
         applies-to: security-updates
         patterns:
           - "*"
-
-    # No ignore rules for actions - all should be kept up to date
-    # Add ignore entries here if specific actions cause issues
-
-# ============================================================================
-# Notes on ecosystems NOT configured:
-# ============================================================================
-#
-# Nix Flakes:
-#   Dependabot doesn't support Nix flakes natively. For Nix dependency updates,
-#   consider:
-#   - nix flake update (manual or scheduled via CI)
-#   - nix-update tool for nixpkgs package updates
-#   - nvfetcher for managing external sources
-#
-# Pre-commit hooks:
-#   The pip ecosystem could theoretically manage .pre-commit-config.yaml,
-#   but pre-commit has its own update mechanism:
-#   - pre-commit autoupdate
-#   Consider adding a scheduled workflow to run this command.
-#
-# ============================================================================
-# Security Update Behavior:
-# ============================================================================
-# Security updates are enabled by default and handled with higher priority:
-# - They are created immediately when vulnerabilities are detected
-# - They use separate groups (rust-security, github-actions-security)
-# - They bypass the open-pull-requests-limit
-# - They are labeled for easy identification
-#
-# To customize security update behavior further, you can add:
-# - security-updates: (at the updates level, but this is the default)
-#

@@ -1,0 +1,125 @@
+name: Update pinned inputs
+
+# Dependabot has no ecosystem for Nix flakes or for pre-commit, so the two
+# version sources it cannot see are refreshed here instead, on the same monthly
+# cadence as dependabot.yml:
+#   - flake.lock           -> nix flake update
+#   - .pre-commit-config   -> pre-commit autoupdate
+# rust-toolchain.toml is deliberately not touched: the deny.toml RUSTSEC ignores
+# are tied to the exact pin, so a toolchain bump is a reviewed change made by
+# hand, not an automated pull request.
+#
+# Each job opens its own pull request. PRs opened with the default GITHUB_TOKEN
+# do not start CI, so when the maintainer has configured a dedicated token
+# secret (DEPENDENCY_UPDATE_TOKEN, a fine-grained PAT with contents:write and
+# pull-requests:write) the PRs open under it and run the full gate. Without the
+# secret the PRs still open under GITHUB_TOKEN; a maintainer then re-triggers
+# their checks by closing and reopening, or by pushing an empty commit.
+
+on:
+  schedule:
+    # First day of the month at 04:00 UTC, after the monthly Dependabot batch.
+    - cron: "0 4 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-pinned-inputs
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  flake-lock:
+    name: Update flake.lock
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cache: 'false'
+
+      # Updates every input in flake.lock in place. It does not commit; the
+      # next step turns the working-tree change into a pull request.
+      - name: Update every flake input
+        run: nix flake update
+
+      - name: Open a pull request
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        with:
+          token: ${{ secrets.DEPENDENCY_UPDATE_TOKEN || secrets.GITHUB_TOKEN }}
+          add-paths: flake.lock
+          branch: update/flake-lock
+          delete-branch: true
+          commit-message: |
+            build(nix): update flake.lock
+
+            Refresh the pinned Nix inputs to their latest revisions.
+          title: "build(nix): update flake.lock"
+          body: |
+            Monthly refresh of the pinned Nix inputs (`nix flake update`).
+
+            Review the input revision changes, then let the gate run before
+            merging.
+          labels: |
+            dependencies
+            nix
+
+  pre-commit-autoupdate:
+    name: Update pre-commit hooks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v6.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install pre-commit
+        run: python -m pip install --disable-pip-version-check pre-commit
+
+      - name: Bump hook revisions
+        run: pre-commit autoupdate
+
+      - name: Open a pull request
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        with:
+          token: ${{ secrets.DEPENDENCY_UPDATE_TOKEN || secrets.GITHUB_TOKEN }}
+          add-paths: .pre-commit-config.yaml
+          branch: update/pre-commit
+          delete-branch: true
+          commit-message: |
+            ci(pre-commit): autoupdate hook revisions
+
+            Refresh the pinned pre-commit hook revisions.
+          title: "ci(pre-commit): autoupdate hook revisions"
+          body: |
+            Monthly `pre-commit autoupdate` of the hook revisions.
+
+            Review the revision changes, then let the gate run before merging.
+          labels: |
+            dependencies
+            ci
