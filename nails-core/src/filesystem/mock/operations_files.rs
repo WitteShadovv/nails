@@ -199,34 +199,16 @@ impl MockFilesystem {
         self.remove_dir_all_impl(path)
     }
 
-    pub(super) fn read_directory_impl(&self, path: &Path) -> Result<Vec<std::fs::DirEntry>> {
-        let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
-
-        let entries = Vec::new();
-        for (p, info) in paths.iter() {
-            if let Some(parent) = p.parent()
-                && parent == path
-                && info.exists
-            {
-                return Err(NailsError::IoError(std::io::Error::other(
-                    "Mock: read_directory not fully implemented for MockFilesystem",
-                )));
-            }
-        }
-
-        Ok(entries)
-    }
-
-    pub(super) fn modified_time_impl(&self, path: &Path) -> Result<chrono::DateTime<chrono::Utc>> {
+    pub(super) fn modified_time_impl(&self, path: &Path) -> Result<std::time::SystemTime> {
         let times = self
             .modified_times
             .lock()
             .expect("MockFilesystem mutex poisoned");
         if let Some(modified) = times.get(&path.to_path_buf()) {
-            return Ok(*modified);
+            return Ok(std::time::SystemTime::from(*modified));
         }
 
-        Ok(chrono::Utc::now())
+        Ok(std::time::SystemTime::now())
     }
 
     pub(super) fn copy_tree_impl(&self, src: &Path, dst: &Path) -> Result<()> {

@@ -28,7 +28,6 @@ use super::MountInfo;
 ///
 /// Operations should be **idempotent** where possible:
 /// - `unmount()` succeeds even if not mounted (no-op)
-/// - `swap_disable()` succeeds even if already disabled (no-op)
 pub trait Filesystem: Send + Sync + Clone {
     // ------------------------------------------------------------------------
     // Overlay Mount Operations (Core Functionality)
@@ -80,9 +79,6 @@ pub trait Filesystem: Send + Sync + Clone {
 
     /// Check if swap is enabled.
     fn swap_is_enabled(&self) -> Result<bool>;
-
-    /// Disable swap (idempotent).
-    fn swap_disable(&self) -> Result<()>;
 
     // ------------------------------------------------------------------------
     // Bind Mount Operations (Pivot Mount Strategy)
@@ -143,22 +139,6 @@ pub trait Filesystem: Send + Sync + Clone {
 
     /// Check if a path is writable.
     fn is_writable(&self, path: &Path) -> Result<bool>;
-
-    // ------------------------------------------------------------------------
-    // NixOS Profile Operations (Lazy Build Pattern)
-    // ------------------------------------------------------------------------
-
-    /// Check if a NixOS profile exists.
-    fn nixos_profile_exists(&self, profile: &str) -> Result<bool>;
-
-    /// Build a NixOS profile.
-    fn nixos_build_profile(&self, profile: &str) -> Result<()>;
-
-    /// Switch to a NixOS profile.
-    fn nixos_switch_profile(&self, profile: &str) -> Result<()>;
-
-    /// Get the current NixOS profile.
-    fn nixos_get_current_profile(&self) -> Result<String>;
 
     // ------------------------------------------------------------------------
     // Process and File Reading Operations (for verify command)
@@ -226,14 +206,11 @@ pub trait Filesystem: Send + Sync + Clone {
     // Directory Operations (Story 9.x: Log Rotation)
     // ------------------------------------------------------------------------
 
-    /// Read the contents of a directory as DirEntry items.
-    fn read_directory(&self, path: &Path) -> Result<Vec<std::fs::DirEntry>>;
-
     /// Check if a directory's filesystem supports symbolic links.
     fn supports_symlinks(&self, dir: &Path) -> Result<bool>;
 
     /// Get the modification time of a file.
-    fn modified_time(&self, path: &Path) -> Result<chrono::DateTime<chrono::Utc>>;
+    fn modified_time(&self, path: &Path) -> Result<std::time::SystemTime>;
 
     // ------------------------------------------------------------------------
     // Directory Copy and Size Operations (Snapshot Pivot Strategy)

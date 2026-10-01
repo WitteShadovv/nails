@@ -50,8 +50,6 @@ pub enum MockOp {
 /// - `swap_enabled`: Boolean flag for swap status
 /// - `paths`: HashMap storing path metadata
 /// - `busy`: HashSet of paths marked as busy (open files)
-/// - `nixos_profiles`: HashSet of built profile names
-/// - `current_profile`: Currently active profile
 /// - `tmpfs_mounts`: HashSet of paths with tmpfs mounted (Story 4.11)
 /// - `bind_mounts`: HashMap tracking bind mount source→target relationships
 ///
@@ -70,8 +68,10 @@ pub struct MockFilesystem {
     pub(super) swap_enabled: Arc<Mutex<bool>>,
     pub(super) paths: Arc<Mutex<HashMap<PathBuf, PathInfo>>>,
     pub(super) busy: Arc<Mutex<HashSet<PathBuf>>>,
-    pub(super) nixos_profiles: Arc<Mutex<HashSet<String>>>,
-    pub(super) current_profile: Arc<Mutex<Option<String>>>,
+    /// Paths whose `is_mounted` check fails, mapped to the error message to
+    /// return. Lets tests exercise the status command's handling of an
+    /// unreadable mount table without a bespoke fake filesystem.
+    pub(super) is_mounted_errors: Arc<Mutex<HashMap<PathBuf, String>>>,
     /// Paths whose mount operations fail, mapped to the errno they fail with.
     /// The errno lets tests exercise the strategy's EINVAL/EBUSY/EOPNOTSUPP
     /// pivot-fallback branch versus a fatal errno.
@@ -138,8 +138,7 @@ impl MockFilesystem {
             swap_enabled: Arc::new(Mutex::new(false)),
             paths: Arc::new(Mutex::new(HashMap::new())),
             busy: Arc::new(Mutex::new(HashSet::new())),
-            nixos_profiles: Arc::new(Mutex::new(HashSet::new())),
-            current_profile: Arc::new(Mutex::new(None)),
+            is_mounted_errors: Arc::new(Mutex::new(HashMap::new())),
             mount_should_fail: Arc::new(Mutex::new(HashMap::new())),
             unmount_should_fail: Arc::new(Mutex::new(HashSet::new())),
             unmount_graceful_fails: Arc::new(Mutex::new(HashSet::new())),
@@ -203,14 +202,10 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();
-        self.nixos_profiles
+        self.is_mounted_errors
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();
-        self.current_profile
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .take();
         self.mount_should_fail
             .lock()
             .expect("MockFilesystem mutex poisoned")

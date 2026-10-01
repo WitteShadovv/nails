@@ -3,50 +3,6 @@ use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
 
 impl MockFilesystem {
-    pub(super) fn nixos_profile_exists_impl(&self, profile: &str) -> Result<bool> {
-        Ok(self
-            .nixos_profiles
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .contains(&profile.to_string()))
-    }
-
-    pub(super) fn nixos_build_profile_impl(&self, profile: &str) -> Result<()> {
-        self.nixos_profiles
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .insert(profile.to_string());
-        Ok(())
-    }
-
-    pub(super) fn nixos_switch_profile_impl(&self, profile: &str) -> Result<()> {
-        let exists = self
-            .nixos_profiles
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .contains(&profile.to_string());
-        if !exists {
-            return Err(NailsError::NixOSProfileNotFound {
-                profile: profile.to_string(),
-            });
-        }
-
-        *self
-            .current_profile
-            .lock()
-            .expect("MockFilesystem mutex poisoned") = Some(profile.to_string());
-        Ok(())
-    }
-
-    pub(super) fn nixos_get_current_profile_impl(&self) -> Result<String> {
-        self.current_profile
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| NailsError::InvalidState("No NixOS profile is currently active".into()))
-    }
-
     pub(super) fn nails_process_running_impl(&self) -> Result<bool> {
         Ok(*self
             .nails_process_running

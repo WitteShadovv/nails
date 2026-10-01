@@ -32,15 +32,6 @@ fn test_mock_filesystem_clone_shares_state() {
 }
 
 #[test]
-fn test_mock_filesystem_nixos_build_profile_adds_profile() {
-    let fs = MockFilesystem::new();
-
-    assert!(fs.nixos_build_profile("test-profile").is_ok());
-    assert!(fs.nixos_profile_exists("test-profile").unwrap());
-    assert!(fs.nixos_build_profile("test-profile").is_ok());
-}
-
-#[test]
 fn test_mock_set_mounted_can_unmount() {
     let fs = MockFilesystem::new();
     let path = Path::new("/test/mount");

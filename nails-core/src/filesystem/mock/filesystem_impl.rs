@@ -38,10 +38,6 @@ impl Filesystem for MockFilesystem {
         self.swap_is_enabled_impl()
     }
 
-    fn swap_disable(&self) -> Result<()> {
-        self.swap_disable_impl()
-    }
-
     fn bind_mount(&self, source: &Path, target: &Path) -> Result<()> {
         self.bind_mount_impl(source, target)
     }
@@ -98,22 +94,6 @@ impl Filesystem for MockFilesystem {
         self.is_writable_impl(path)
     }
 
-    fn nixos_profile_exists(&self, profile: &str) -> Result<bool> {
-        self.nixos_profile_exists_impl(profile)
-    }
-
-    fn nixos_build_profile(&self, profile: &str) -> Result<()> {
-        self.nixos_build_profile_impl(profile)
-    }
-
-    fn nixos_switch_profile(&self, profile: &str) -> Result<()> {
-        self.nixos_switch_profile_impl(profile)
-    }
-
-    fn nixos_get_current_profile(&self) -> Result<String> {
-        self.nixos_get_current_profile_impl()
-    }
-
     fn nails_process_running(&self) -> Result<bool> {
         self.nails_process_running_impl()
     }
@@ -166,15 +146,11 @@ impl Filesystem for MockFilesystem {
         self.secure_delete_dir_all_impl(path)
     }
 
-    fn read_directory(&self, path: &Path) -> Result<Vec<std::fs::DirEntry>> {
-        self.read_directory_impl(path)
-    }
-
     fn supports_symlinks(&self, dir: &Path) -> Result<bool> {
         self.supports_symlinks_impl(dir)
     }
 
-    fn modified_time(&self, path: &Path) -> Result<chrono::DateTime<chrono::Utc>> {
+    fn modified_time(&self, path: &Path) -> Result<std::time::SystemTime> {
         self.modified_time_impl(path)
     }
 

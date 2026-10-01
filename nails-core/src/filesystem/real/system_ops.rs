@@ -1,90 +1,12 @@
-//! System operations: swap, NixOS profiles, and process detection.
+//! System operations: swap detection and NAILS process detection.
 
-use super::RealFilesystem;
-use crate::filesystem::Filesystem;
-use crate::{NailsError, Result};
+use crate::Result;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub(super) fn swap_is_enabled() -> Result<bool> {
     let swaps = std::fs::read_to_string("/proc/swaps")?;
     Ok(swaps.lines().count() > 1)
-}
-
-pub(super) fn swap_disable(fs: &RealFilesystem) -> Result<()> {
-    if !fs.swap_is_enabled()? {
-        return Ok(());
-    }
-
-    std::process::Command::new("swapoff")
-        .arg("-a")
-        .output()
-        .map_err(|_| NailsError::SwapDisableFailed)?;
-
-    Ok(())
-}
-
-pub(super) fn nixos_profile_exists(profile: &str) -> Result<bool> {
-    let profile_path = PathBuf::from("/nix/var/nix/profiles").join(profile);
-    Ok(profile_path.exists())
-}
-
-pub(super) fn nixos_build_profile(profile: &str) -> Result<()> {
-    let output = std::process::Command::new("nixos-rebuild")
-        .arg("build")
-        .arg("--profile")
-        .arg(profile)
-        .output()
-        .map_err(|_e| NailsError::NixOSBuildFailed {
-            profile: profile.to_string(),
-        })?;
-
-    if !output.status.success() {
-        return Err(NailsError::NixOSBuildFailed {
-            profile: profile.to_string(),
-        });
-    }
-
-    Ok(())
-}
-
-pub(super) fn nixos_switch_profile(fs: &RealFilesystem, profile: &str) -> Result<()> {
-    if !fs.nixos_profile_exists(profile)? {
-        return Err(NailsError::NixOSProfileNotFound {
-            profile: profile.to_string(),
-        });
-    }
-
-    let output = std::process::Command::new("nixos-rebuild")
-        .arg("switch")
-        .arg("--profile")
-        .arg(profile)
-        .output()
-        .map_err(|_e| NailsError::NixOSSwitchFailed {
-            profile: profile.to_string(),
-        })?;
-
-    if !output.status.success() {
-        return Err(NailsError::NixOSSwitchFailed {
-            profile: profile.to_string(),
-        });
-    }
-
-    Ok(())
-}
-
-pub(super) fn nixos_get_current_profile() -> Result<String> {
-    let system_path = PathBuf::from("/nix/var/nix/profiles/system");
-    if !system_path.exists() {
-        return Err(NailsError::InvalidState(
-            "No NixOS profile is currently active".into(),
-        ));
-    }
-
-    system_path
-        .read_link()
-        .map(|target| target.to_string_lossy().to_string())
-        .map_err(|_| NailsError::InvalidState("Could not determine current profile".into()))
 }
 
 pub(super) fn nails_process_running() -> Result<bool> {

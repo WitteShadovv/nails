@@ -232,7 +232,7 @@ pub fn enforce_retention<F: Filesystem>(
     // List all files in log directory
     let entries = fs.list_directory(log_path)?;
 
-    let now = chrono::Utc::now();
+    let now = std::time::SystemTime::now();
 
     for entry in entries {
         // Check if filename matches pattern: nails.log.N
@@ -242,9 +242,13 @@ pub fn enforce_retention<F: Filesystem>(
             // Get file modification time
             match fs.modified_time(&entry) {
                 Ok(modified) => {
-                    // Calculate age in days
-                    let duration = now.signed_duration_since(modified);
-                    let age_days = duration.num_days();
+                    // Calculate age in days. A future-dated file (clock skew)
+                    // yields an error from `duration_since`; treat it as brand
+                    // new so it is never deleted prematurely.
+                    let age_days = now
+                        .duration_since(modified)
+                        .map(|d| (d.as_secs() / 86_400) as i64)
+                        .unwrap_or(0);
 
                     // Delete if older than retention window
                     if age_days > retention_days as i64 {

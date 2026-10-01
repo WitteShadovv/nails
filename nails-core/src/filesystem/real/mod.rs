@@ -85,10 +85,6 @@ impl Filesystem for RealFilesystem {
         system_ops::swap_is_enabled()
     }
 
-    fn swap_disable(&self) -> Result<()> {
-        system_ops::swap_disable(self)
-    }
-
     fn path_exists(&self, path: &Path) -> Result<bool> {
         file_ops::path_exists(path)
     }
@@ -131,22 +127,6 @@ impl Filesystem for RealFilesystem {
 
     fn is_writable(&self, path: &Path) -> Result<bool> {
         file_ops::is_writable(path)
-    }
-
-    fn nixos_profile_exists(&self, profile: &str) -> Result<bool> {
-        system_ops::nixos_profile_exists(profile)
-    }
-
-    fn nixos_build_profile(&self, profile: &str) -> Result<()> {
-        system_ops::nixos_build_profile(profile)
-    }
-
-    fn nixos_switch_profile(&self, profile: &str) -> Result<()> {
-        system_ops::nixos_switch_profile(self, profile)
-    }
-
-    fn nixos_get_current_profile(&self) -> Result<String> {
-        system_ops::nixos_get_current_profile()
     }
 
     fn nails_process_running(&self) -> Result<bool> {
@@ -217,12 +197,11 @@ impl Filesystem for RealFilesystem {
         dir_ops::enumerate_root_directories()
     }
 
-    fn read_directory(&self, path: &Path) -> Result<Vec<std::fs::DirEntry>> {
-        dir_ops::read_directory(path)
-    }
-
-    fn modified_time(&self, path: &Path) -> Result<chrono::DateTime<chrono::Utc>> {
-        dir_ops::modified_time(path)
+    fn modified_time(&self, path: &Path) -> Result<std::time::SystemTime> {
+        // `dir_ops::modified_time` (owned by another chunk) still yields a
+        // `chrono` timestamp; convert at this boundary so the trait never
+        // exposes `chrono`.
+        Ok(std::time::SystemTime::from(dir_ops::modified_time(path)?))
     }
 
     fn copy_tree(&self, src: &Path, dst: &Path) -> Result<()> {

@@ -170,17 +170,27 @@ impl MockFilesystem {
         entry.free_space = bytes;
     }
 
-    /// Set whether a NixOS profile exists
-    pub fn mock_set_nixos_profile_exists(&self, profile: &str, exists: bool) {
-        let mut profiles = self
-            .nixos_profiles
+    /// Configure [`is_mounted`](crate::Filesystem::is_mounted) to fail for a path.
+    ///
+    /// The supplied message is returned as the inner [`std::io::Error`], letting
+    /// tests reproduce an unreadable mount table (for example when the status
+    /// command must downgrade verification to a mismatch).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
+    /// use std::path::Path;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_is_mounted_error(Path::new("/etc"), "mount table unreadable");
+    /// assert!(fs.is_mounted(Path::new("/etc")).is_err());
+    /// ```
+    pub fn mock_set_is_mounted_error(&self, path: &Path, message: &str) {
+        self.is_mounted_errors
             .lock()
-            .expect("MockFilesystem mutex poisoned");
-        if exists {
-            profiles.insert(profile.to_string());
-        } else {
-            profiles.remove(profile);
-        }
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf(), message.to_string());
     }
 
     /// Set whether a mount operation should fail for a specific path

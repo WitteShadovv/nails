@@ -130,6 +130,15 @@ impl MockFilesystem {
     }
 
     pub(super) fn is_mounted_impl(&self, target: &Path) -> Result<bool> {
+        if let Some(message) = self
+            .is_mounted_errors
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(target)
+        {
+            return Err(NailsError::IoError(std::io::Error::other(message.clone())));
+        }
+
         Ok(self
             .mounted
             .lock()
@@ -167,14 +176,6 @@ impl MockFilesystem {
             .swap_enabled
             .lock()
             .expect("MockFilesystem mutex poisoned"))
-    }
-
-    pub(super) fn swap_disable_impl(&self) -> Result<()> {
-        *self
-            .swap_enabled
-            .lock()
-            .expect("MockFilesystem mutex poisoned") = false;
-        Ok(())
     }
 
     pub(super) fn mount_tmpfs_impl(&self, target: &Path, size: &str) -> Result<()> {

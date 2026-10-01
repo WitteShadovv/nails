@@ -199,21 +199,6 @@ fn test_real_filesystem_swap_is_enabled_checks_proc_swaps() {
     assert!(result.is_ok());
 }
 
-#[test]
-fn test_real_filesystem_swap_disable_without_root() {
-    // GIVEN: RealFilesystem (no root privileges)
-    let fs = RealFilesystem;
-
-    // WHEN: Attempting to disable swap
-    let result = fs.swap_disable();
-
-    // THEN: May succeed if swap already disabled (idempotent)
-    // OR may fail with SwapDisableFailed if swap is enabled
-    // Either way, this covers the code path
-    let _ = result;
-    // No assertion - just ensuring code coverage
-}
-
 // ============================================================================
 // Directory Creation (May fail without permissions)
 // ============================================================================
@@ -242,65 +227,6 @@ fn test_real_filesystem_create_directory_fails_in_readonly() {
 
     // THEN: Should fail with IO error
     assert!(result.is_err());
-}
-
-// ============================================================================
-// NixOS Profile Operations (Expected to fail without nixos-rebuild)
-// ============================================================================
-
-#[test]
-fn test_real_filesystem_nixos_profile_exists_checks_path() {
-    // GIVEN: RealFilesystem
-    let fs = RealFilesystem;
-
-    // WHEN: Checking if a profile exists
-    let result = fs.nixos_profile_exists("nonexistent_test_profile");
-
-    // THEN: Should return Ok(false)
-    assert!(result.is_ok());
-    assert!(!result.unwrap());
-}
-
-#[test]
-fn test_real_filesystem_nixos_build_profile_without_nixos_rebuild() {
-    // GIVEN: RealFilesystem (nixos-rebuild may not be in PATH)
-    let fs = RealFilesystem;
-
-    // WHEN: Attempting to build a profile
-    let result = fs.nixos_build_profile("test_profile");
-
-    // THEN: Will fail if nixos-rebuild not available or build fails
-    // This covers the error handling code path
-    let _ = result;
-    // No assertion - just ensuring code coverage
-}
-
-#[test]
-fn test_real_filesystem_nixos_switch_profile_fails_when_not_exists() {
-    // GIVEN: RealFilesystem
-    let fs = RealFilesystem;
-
-    // WHEN: Attempting to switch to nonexistent profile
-    let result = fs.nixos_switch_profile("definitely_nonexistent_nails_test_profile");
-
-    // THEN: Should fail with NixOSProfileNotFound error
-    assert!(result.is_err());
-    let error_msg = format!("{:?}", result.unwrap_err());
-    assert!(error_msg.contains("not found") || error_msg.contains("Profile"));
-}
-
-#[test]
-fn test_real_filesystem_nixos_get_current_profile() {
-    // GIVEN: RealFilesystem
-    let fs = RealFilesystem;
-
-    // WHEN: Getting current NixOS profile
-    let result = fs.nixos_get_current_profile();
-
-    // THEN: May succeed on NixOS systems, or fail with InvalidState
-    // Either way, this covers the code path
-    let _ = result;
-    // No assertion - just ensuring code coverage
 }
 
 // ============================================================================
@@ -480,69 +406,6 @@ fn test_real_filesystem_is_readable_for_nonexistent() {
     // THEN: Should return Ok(false)
     assert!(result.is_ok());
     assert!(!result.unwrap());
-}
-
-#[test]
-fn test_real_filesystem_nixos_switch_profile_command_execution_path() {
-    // GIVEN: RealFilesystem
-    let fs = RealFilesystem;
-    let temp_dir = tempfile::tempdir().unwrap();
-    let fake_profile_dir = temp_dir.path().join("nails_fake_nix_profiles");
-    let fake_profile = fake_profile_dir.join("test_profile");
-
-    // Create fake profile to satisfy the exists check
-    let _ = std::fs::create_dir_all(&fake_profile);
-
-    // WHEN: Attempting to switch (will fail at nixos-rebuild execution)
-    // This test covers the error handling in nixos_switch_profile
-    let result = fs.nixos_switch_profile("test_profile");
-
-    // THEN: Should fail (profile not actually in /nix/var/nix/profiles)
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_real_filesystem_nixos_build_profile_command_execution() {
-    // GIVEN: RealFilesystem
-    let fs = RealFilesystem;
-
-    // WHEN: Attempting to build profile (will fail - no nixos-rebuild or wrong system)
-    let result = fs.nixos_build_profile("nonexistent_test_profile");
-
-    // THEN: Should fail with NixOSBuildFailed error
-    // This covers the error handling code paths in nixos_build_profile
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_real_filesystem_nixos_get_current_profile_when_no_profile() {
-    // GIVEN: RealFilesystem (not on NixOS or no active profile)
-    let fs = RealFilesystem;
-
-    // WHEN: Getting current profile when system path doesn't exist or can't be read
-    let result = fs.nixos_get_current_profile();
-
-    // THEN: Either succeeds (on NixOS) or fails with InvalidState
-    // This covers both code paths in nixos_get_current_profile
-    let _ = result;
-    // No assertion - just ensuring code coverage
-}
-
-#[test]
-fn test_real_filesystem_swap_disable_when_already_disabled() {
-    // GIVEN: RealFilesystem
-    let fs = RealFilesystem;
-
-    // Check current swap state
-    let is_enabled = fs.swap_is_enabled().unwrap_or(false);
-
-    if !is_enabled {
-        // WHEN: Swap is already disabled
-        let result = fs.swap_disable();
-
-        // THEN: Should succeed (idempotent)
-        assert!(result.is_ok());
-    }
 }
 
 #[test]

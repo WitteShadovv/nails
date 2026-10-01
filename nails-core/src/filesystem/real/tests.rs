@@ -827,26 +827,6 @@ fn test_real_list_directory_returns_created_entries() {
 }
 
 #[test]
-fn test_real_read_directory_returns_created_entries() {
-    let fs = RealFilesystem;
-    let temp_dir = tempfile::tempdir().unwrap();
-    let file = temp_dir.path().join("entry.txt");
-    let subdir = temp_dir.path().join("subdir");
-    fs::write(&file, "data").unwrap();
-    fs::create_dir_all(&subdir).unwrap();
-
-    let mut entries: Vec<_> = fs
-        .read_directory(temp_dir.path())
-        .unwrap()
-        .into_iter()
-        .map(|entry| entry.path())
-        .collect();
-    entries.sort();
-
-    assert_eq!(entries, vec![file, subdir]);
-}
-
-#[test]
 fn test_real_create_directory_and_path_queries_work() {
     let fs = RealFilesystem;
     let temp_dir = tempfile::tempdir().unwrap();
@@ -970,7 +950,7 @@ fn test_real_modified_time_returns_timestamp_for_existing_file() {
 
     let modified = fs.modified_time(&file).unwrap();
 
-    assert!(modified <= chrono::Utc::now());
+    assert!(modified <= std::time::SystemTime::now());
 }
 
 // ========================================================================

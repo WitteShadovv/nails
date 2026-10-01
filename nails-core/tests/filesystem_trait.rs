@@ -309,35 +309,6 @@ fn test_swap_is_enabled_detects_disabled_swap() {
     assert!(!result.unwrap());
 }
 
-#[test]
-fn test_swap_disable_succeeds_when_enabled() {
-    // GIVEN: MockFilesystem with swap enabled
-    let fs = MockFilesystem::new();
-    fs.mock_set_swap_enabled(true);
-
-    // WHEN: Disabling swap
-    let result = fs.swap_disable();
-
-    // THEN: Swap disable succeeds
-    assert!(result.is_ok());
-
-    // AND: Swap is now disabled
-    assert!(!fs.swap_is_enabled().unwrap());
-}
-
-#[test]
-fn test_swap_disable_idempotent_when_already_disabled() {
-    // GIVEN: MockFilesystem with swap already disabled
-    let fs = MockFilesystem::new();
-    fs.mock_set_swap_enabled(false);
-
-    // WHEN: Disabling swap
-    let result = fs.swap_disable();
-
-    // THEN: Operation succeeds as no-op (idempotent)
-    assert!(result.is_ok());
-}
-
 // ============================================================================
 // P0: File System Operations (Supporting Functions)
 // ============================================================================
@@ -450,87 +421,6 @@ fn test_create_directory_fails_without_write_permission() {
 }
 
 // ============================================================================
-// P0: NixOS Profile Operations (Lazy Build Pattern)
-// ============================================================================
-
-#[test]
-fn test_nixos_profile_exists_returns_true_when_built() {
-    // GIVEN: MockFilesystem with built NixOS profile
-    let fs = MockFilesystem::new();
-    let profile_name = "nails-active";
-
-    fs.mock_set_nixos_profile_exists(profile_name, true);
-
-    // WHEN: Checking if profile exists
-    let result = fs.nixos_profile_exists(profile_name);
-
-    // THEN: Returns true
-    assert!(result.unwrap());
-}
-
-#[test]
-fn test_nixos_profile_exists_returns_false_when_not_built() {
-    // GIVEN: MockFilesystem without built profile
-    let fs = MockFilesystem::new();
-    let profile_name = "nails-active";
-
-    // WHEN: Checking if profile exists
-    let result = fs.nixos_profile_exists(profile_name);
-
-    // THEN: Returns false (needs build)
-    assert!(!result.unwrap());
-}
-
-#[test]
-fn test_nixos_build_profile_succeeds() {
-    // GIVEN: MockFilesystem
-    let fs = MockFilesystem::new();
-    let profile_name = "nails-active";
-
-    // WHEN: Building NixOS profile
-    let result = fs.nixos_build_profile(profile_name);
-
-    // THEN: Build succeeds
-    assert!(result.is_ok());
-
-    // AND: Profile now exists
-    assert!(fs.nixos_profile_exists(profile_name).unwrap());
-}
-
-#[test]
-fn test_nixos_switch_profile_succeeds_when_profile_exists() {
-    // GIVEN: MockFilesystem with built profile
-    let fs = MockFilesystem::new();
-    let profile_name = "nails-active";
-
-    fs.mock_set_nixos_profile_exists(profile_name, true);
-
-    // WHEN: Switching to profile
-    let result = fs.nixos_switch_profile(profile_name);
-
-    // THEN: Switch succeeds
-    assert!(result.is_ok());
-
-    // AND: Current profile is now the switched profile
-    assert_eq!(fs.nixos_get_current_profile().unwrap(), profile_name);
-}
-
-#[test]
-fn test_nixos_switch_profile_fails_when_profile_not_exists() {
-    // GIVEN: MockFilesystem without built profile
-    let fs = MockFilesystem::new();
-    let profile_name = "nails-active";
-
-    // WHEN: Attempting to switch to non-existent profile
-    let result = fs.nixos_switch_profile(profile_name);
-
-    // THEN: Switch fails
-    assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
-    assert!(err_msg.contains("profile not found") || err_msg.contains("does not exist"));
-}
-
-// ============================================================================
 // P0: MockFilesystem State Management (Test Helpers)
 // ============================================================================
 
@@ -627,24 +517,6 @@ fn test_is_writable_returns_false_for_readonly_path() {
 
     // THEN: Returns false
     assert!(!result.unwrap());
-}
-
-// ============================================================================
-// P1: NixOS Profile Current State (For Status Command)
-// ============================================================================
-
-#[test]
-fn test_nixos_get_current_profile_returns_error_when_none_active() {
-    // GIVEN: MockFilesystem with no active profile
-    let fs = MockFilesystem::new();
-
-    // WHEN: Getting current profile
-    let result = fs.nixos_get_current_profile();
-
-    // THEN: Returns error (no profile active)
-    assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
-    assert!(err_msg.contains("No NixOS profile") || err_msg.contains("not active"));
 }
 
 // ============================================================================
@@ -747,34 +619,6 @@ fn test_mock_set_busy_can_remove_busy_state() {
     fs.mock_set_mounted(path, true);
     let result = fs.unmount(path, false);
     assert!(result.is_ok());
-}
-
-#[test]
-fn test_mock_set_nixos_profile_can_remove_profile() {
-    // GIVEN: MockFilesystem with a profile
-    let fs = MockFilesystem::new();
-
-    fs.mock_set_nixos_profile_exists("test-profile", true);
-    assert!(fs.nixos_profile_exists("test-profile").unwrap());
-
-    // WHEN: Removing profile
-    fs.mock_set_nixos_profile_exists("test-profile", false);
-
-    // THEN: Profile no longer exists
-    assert!(!fs.nixos_profile_exists("test-profile").unwrap());
-}
-
-#[test]
-fn test_mock_nixos_build_profile_adds_to_set() {
-    // GIVEN: MockFilesystem
-    let fs = MockFilesystem::new();
-
-    // WHEN: Building a profile
-    let result = fs.nixos_build_profile("new-profile");
-
-    // THEN: Profile is added and exists
-    assert!(result.is_ok());
-    assert!(fs.nixos_profile_exists("new-profile").unwrap());
 }
 
 #[test]
