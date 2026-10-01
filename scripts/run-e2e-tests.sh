@@ -24,7 +24,6 @@ NC='\033[0m'
 
 AVAILABLE_TARGETS=()
 LEAF_TESTS=()
-declare -A LEAF_TEST_NODE_COUNTS=()
 INTERACTIVE=false
 VERBOSE=false
 DRY_RUN=false
@@ -32,16 +31,6 @@ SHARD_INDEX=""
 SHARD_COUNT=""
 DURATIONS_OUT=""
 E2E_METADATA_JSON=""
-HOST_CPU_COUNT=""
-VM_CPU_PLAN_MODE=""
-VM_CPU_PLAN_HOST_CORES=""
-VM_CPU_PLAN_TARGET_PERCENT=""
-VM_CPU_PLAN_RESERVED_CORES=""
-VM_CPU_PLAN_MIN_CORES=""
-VM_CPU_PLAN_MAX_CORES=""
-VM_CPU_PLAN_NODE_COUNT=""
-VM_CPU_PLAN_TOTAL_BUDGET=""
-VM_CPU_PLAN_PER_VM_CORES=""
 
 describe_target() {
     case "$1" in
@@ -67,7 +56,6 @@ describe_target() {
 
 load_e2e_metadata() {
     local metadata_json
-    local metadata_entry_name metadata_entry_count
 
     metadata_json="$({
         cd "$PROJECT_ROOT"
@@ -96,205 +84,7 @@ for name in payload["leafTests"]:
 PY
     )
 
-    LEAF_TEST_NODE_COUNTS=()
-    while IFS=$'\t' read -r metadata_entry_name metadata_entry_count; do
-        [[ -n "$metadata_entry_name" ]] || continue
-        LEAF_TEST_NODE_COUNTS["$metadata_entry_name"]="$metadata_entry_count"
-    done < <(
-        python3 - <<'PY' "$metadata_json"
-import json
-import sys
-
-payload = json.loads(sys.argv[1])
-for name in payload["leafTests"]:
-    print(f"{name}\t{payload['nodeCounts'].get(name, 1)}")
-PY
-    )
-
     E2E_METADATA_JSON="$metadata_json"
-}
-
-leaf_test_node_count() {
-    local candidate="$1"
-
-    if [[ -n "${LEAF_TEST_NODE_COUNTS[$candidate]+x}" ]]; then
-        printf '%s\n' "${LEAF_TEST_NODE_COUNTS[$candidate]}"
-    else
-        printf '%s\n' "1"
-    fi
-}
-
-warn_invalid_env_default() {
-    local env_name="$1"
-    local env_value="$2"
-    local default_value="$3"
-
-    printf '%s\n' "Warning: ignoring invalid ${env_name}=${env_value@Q}; using ${default_value}." >&2
-}
-
-positive_integer_from_env_or_default() {
-    local env_name="$1"
-    local default_value="$2"
-    local env_value="${!env_name:-}"
-
-    if [[ -z "$env_value" ]]; then
-        printf '%s\n' "$default_value"
-        return 0
-    fi
-
-    if [[ "$env_value" =~ ^[1-9][0-9]*$ ]]; then
-        printf '%s\n' "$env_value"
-        return 0
-    fi
-
-    warn_invalid_env_default "$env_name" "$env_value" "$default_value"
-    printf '%s\n' "$default_value"
-}
-
-percentage_from_env_or_default() {
-    local env_name="$1"
-    local default_value="$2"
-    local env_value="${!env_name:-}"
-
-    if [[ -z "$env_value" ]]; then
-        printf '%s\n' "$default_value"
-        return 0
-    fi
-
-    if [[ "$env_value" =~ ^([1-9][0-9]?|100)$ ]]; then
-        printf '%s\n' "$env_value"
-        return 0
-    fi
-
-    warn_invalid_env_default "$env_name" "$env_value" "$default_value"
-    printf '%s\n' "$default_value"
-}
-
-detect_host_cpu_count() {
-    local detected=""
-
-    if [[ -n "$HOST_CPU_COUNT" ]]; then
-        printf '%s\n' "$HOST_CPU_COUNT"
-        return 0
-    fi
-
-    if [[ -n "${NAILS_E2E_HOST_CPU_COUNT_OVERRIDE:-}" ]]; then
-        if [[ "${NAILS_E2E_HOST_CPU_COUNT_OVERRIDE}" =~ ^[1-9][0-9]*$ ]]; then
-            HOST_CPU_COUNT="$NAILS_E2E_HOST_CPU_COUNT_OVERRIDE"
-            printf '%s\n' "$HOST_CPU_COUNT"
-            return 0
-        fi
-
-        echo -e "${RED}Error: NAILS_E2E_HOST_CPU_COUNT_OVERRIDE must be a positive integer${NC}" >&2
-        exit 1
-    fi
-
-    if command -v nproc >/dev/null 2>&1; then
-        detected="$(nproc)"
-    elif command -v getconf >/dev/null 2>&1; then
-        detected="$(getconf _NPROCESSORS_ONLN)"
-    fi
-
-    if ! [[ "$detected" =~ ^[1-9][0-9]*$ ]]; then
-        detected="4"
-    fi
-
-    HOST_CPU_COUNT="$detected"
-    printf '%s\n' "$HOST_CPU_COUNT"
-}
-
-compute_vm_cpu_plan() {
-    local node_count="${1:-1}"
-    local explicit_vm_cores="${NAILS_E2E_VM_CORES:-}"
-    local host_cores target_percent reserved_cores min_cores max_cores
-    local percent_budget reserved_budget total_budget per_vm_cores
-
-    # Auto-sizing defaults intentionally use the full visible runner CPU budget
-    # unless an explicit reservation override is configured,
-    # then divide that budget across all VMs declared by the selected test.
-    # Optional overrides:
-    #   NAILS_E2E_VM_CORES                Force a fixed per-VM core count
-    #   NAILS_E2E_HOST_CPU_COUNT_OVERRIDE Override detected runner CPU count
-    #   NAILS_E2E_VM_CPU_TARGET_PERCENT   Default 100
-    #   NAILS_E2E_VM_HOST_RESERVED_CORES  Default 0
-    #   NAILS_E2E_VM_MIN_CORES            Default 1
-    #   NAILS_E2E_VM_MAX_CORES            Default 16
-
-    if ! [[ "$node_count" =~ ^[1-9][0-9]*$ ]]; then
-        node_count="1"
-    fi
-
-    host_cores="$(detect_host_cpu_count)"
-
-    if [[ -n "$explicit_vm_cores" ]]; then
-        if ! [[ "$explicit_vm_cores" =~ ^[1-9][0-9]*$ ]]; then
-            echo -e "${RED}Error: NAILS_E2E_VM_CORES must be a positive integer when set${NC}" >&2
-            exit 1
-        fi
-
-        VM_CPU_PLAN_MODE="override"
-        VM_CPU_PLAN_HOST_CORES="$host_cores"
-        VM_CPU_PLAN_TARGET_PERCENT="n/a"
-        VM_CPU_PLAN_RESERVED_CORES="n/a"
-        VM_CPU_PLAN_MIN_CORES="n/a"
-        VM_CPU_PLAN_MAX_CORES="n/a"
-        VM_CPU_PLAN_NODE_COUNT="$node_count"
-        VM_CPU_PLAN_TOTAL_BUDGET="$((explicit_vm_cores * node_count))"
-        VM_CPU_PLAN_PER_VM_CORES="$explicit_vm_cores"
-        return 0
-    fi
-
-    target_percent="$(percentage_from_env_or_default "NAILS_E2E_VM_CPU_TARGET_PERCENT" "100")"
-    reserved_cores="$(positive_integer_from_env_or_default "NAILS_E2E_VM_HOST_RESERVED_CORES" "0")"
-    min_cores="$(positive_integer_from_env_or_default "NAILS_E2E_VM_MIN_CORES" "1")"
-    max_cores="$(positive_integer_from_env_or_default "NAILS_E2E_VM_MAX_CORES" "16")"
-
-    if (( min_cores > max_cores )); then
-        warn_invalid_env_default "NAILS_E2E_VM_MIN_CORES/NAILS_E2E_VM_MAX_CORES" "${min_cores}/${max_cores}" "1/${max_cores}"
-        min_cores="1"
-    fi
-
-    percent_budget=$(( host_cores * target_percent / 100 ))
-    if (( percent_budget < 1 )); then
-        percent_budget=1
-    fi
-
-    reserved_budget=$(( host_cores - reserved_cores ))
-    if (( reserved_budget < 1 )); then
-        reserved_budget=1
-    fi
-
-    total_budget="$percent_budget"
-    if (( reserved_budget < total_budget )); then
-        total_budget="$reserved_budget"
-    fi
-
-    per_vm_cores=$(( total_budget / node_count ))
-    if (( per_vm_cores < 1 )); then
-        per_vm_cores=1
-    fi
-
-    if (( per_vm_cores < min_cores )); then
-        per_vm_cores="$min_cores"
-    fi
-
-    if (( per_vm_cores > max_cores )); then
-        per_vm_cores="$max_cores"
-    fi
-
-    if (( per_vm_cores > host_cores )); then
-        per_vm_cores="$host_cores"
-    fi
-
-    VM_CPU_PLAN_MODE="auto"
-    VM_CPU_PLAN_HOST_CORES="$host_cores"
-    VM_CPU_PLAN_TARGET_PERCENT="$target_percent"
-    VM_CPU_PLAN_RESERVED_CORES="$reserved_cores"
-    VM_CPU_PLAN_MIN_CORES="$min_cores"
-    VM_CPU_PLAN_MAX_CORES="$max_cores"
-    VM_CPU_PLAN_NODE_COUNT="$node_count"
-    VM_CPU_PLAN_TOTAL_BUDGET="$total_budget"
-    VM_CPU_PLAN_PER_VM_CORES="$per_vm_cores"
 }
 
 leaf_test_exists() {
@@ -503,7 +293,6 @@ record_duration() {
 run_single_test() {
     local test_name="$1"
     local start_time end_time duration target
-    local node_count
 
     if ! leaf_test_exists "$test_name"; then
         echo -e "${RED}Unknown leaf E2E test: $test_name${NC}" >&2
@@ -511,27 +300,16 @@ run_single_test() {
     fi
 
     target="$E2E_FLAKE_PREFIX.e2e.$test_name"
-    node_count="$(leaf_test_node_count "$test_name")"
-    compute_vm_cpu_plan "$node_count"
 
     echo -e "${YELLOW}Running: $test_name${NC}"
-    if [[ "$VM_CPU_PLAN_MODE" == "override" ]]; then
-        echo -e "${YELLOW}  VM CPU plan:${NC} override=${VM_CPU_PLAN_PER_VM_CORES} core(s)/VM across ${VM_CPU_PLAN_NODE_COUNT} node(s) on a ${VM_CPU_PLAN_HOST_CORES}-CPU host."
-    else
-        echo -e "${YELLOW}  VM CPU plan:${NC} host=${VM_CPU_PLAN_HOST_CORES}, target=${VM_CPU_PLAN_TARGET_PERCENT}%, reserve=${VM_CPU_PLAN_RESERVED_CORES}, nodes=${VM_CPU_PLAN_NODE_COUNT}, guest-budget=${VM_CPU_PLAN_TOTAL_BUDGET}, per-vm=${VM_CPU_PLAN_PER_VM_CORES} (bounds ${VM_CPU_PLAN_MIN_CORES}-${VM_CPU_PLAN_MAX_CORES})."
-    fi
     start_time=$(date +%s)
 
-    # nix/e2e-tests/lib/vm-config.nix intentionally reads NAILS_E2E_VM_CORES
-    # via builtins.getEnv, so the evaluation for the actual test build must be
-    # explicitly impure for the computed per-VM core plan to take
-    # effect. Scope that impurity to the per-test build only.
-    local nix_args=(build "$target" --no-link --impure)
+    local nix_args=(build "$target" --no-link)
     if [ "$VERBOSE" = true ]; then
         nix_args+=(-L)
     fi
 
-    if NAILS_E2E_VM_CORES="$VM_CPU_PLAN_PER_VM_CORES" nix "${nix_args[@]}"; then
+    if nix "${nix_args[@]}"; then
         end_time=$(date +%s)
         duration=$((end_time - start_time))
         echo -e "${GREEN}  PASS${NC} $test_name (${duration}s)"

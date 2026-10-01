@@ -55,7 +55,6 @@ def scan_nix_metadata() -> dict[str, Any]:
         "availableTargets": leaf_tests + ["all"],
         "leafTests": leaf_tests,
         "groups": {"all": leaf_tests},
-        "nodeCounts": {name: 1 for name in leaf_tests},
         "timeouts": timeouts,
     }
 
@@ -720,6 +719,16 @@ class RunnerTest(TempDirTestCase):
         self.assertEqual(
             [call.split()[1] for call in self.nix_calls("build")],
             [".#legacyPackages.x86_64-linux.e2e.basic-workflow"],
+        )
+
+    def test_builds_are_pure(self) -> None:
+        # VM sizes are fixed in vm-config.nix, so a test evaluates to the same
+        # derivation on every host and no build needs --impure.
+        result = self.run_runner("basic-workflow")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.nix_calls("build"),
+            ["build .#legacyPackages.x86_64-linux.e2e.basic-workflow --no-link"],
         )
 
     def test_interactive_runs_the_driver_of_one_test(self) -> None:

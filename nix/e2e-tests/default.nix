@@ -81,11 +81,6 @@ let
       lib.nameValuePair spec.name {
         tags = if spec ? meta && spec.meta ? tags then spec.meta.tags else [ ];
         timeout = effectiveTimeout spec;
-        nodeCount =
-          let
-            declaredNodes = if spec ? nodes then builtins.attrNames spec.nodes else [ ];
-          in
-          lib.max 1 (builtins.length declaredNodes);
       }
     ) rawSpecs
   );

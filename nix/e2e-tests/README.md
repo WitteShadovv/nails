@@ -111,7 +111,7 @@ When `--shard-index/--shard-count` are used, `scripts/e2e_shard_weights.py plan`
 
 `--durations-out FILE` writes one JSON line per test (`test`, `result`, `seconds`) as soon as each test finishes, so the record survives a shard that is later killed.
 
-VM CPU auto-sizing defaults to the full visible runner CPU budget (`NAILS_E2E_VM_CPU_TARGET_PERCENT=100`, `NAILS_E2E_VM_HOST_RESERVED_CORES=0`) unless the caller overrides those environment variables.
+Every VM gets 2 cores and 4 GB of memory (`lib/vm-config.nix`). The size is fixed rather than derived from the host, so a test evaluates to the same derivation everywhere: the runner builds without `--impure`, the evaluation cache works, and a test that passed once can be fetched from a binary cache instead of being run again.
 
 Default target selection is environment-aware:
 

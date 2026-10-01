@@ -3,21 +3,15 @@
 # Secondary disk (/dev/vdb) is available for LUKS hidden volume testing
 
 { lib, pkgs, ... }:
-let
-  # CI computes a safe per-VM core count automatically and exports it through
-  # NAILS_E2E_VM_CORES before each NixOS test build. Because this value is read
-  # with builtins.getEnv, the corresponding flake build must opt into impure
-  # evaluation at that call site. Keep the local fallback at 4 cores so ad-hoc
-  # runs behave as they did previously.
-  vmCoresEnv = builtins.getEnv "NAILS_E2E_VM_CORES";
-  vmCores =
-    if builtins.match "[1-9][0-9]*" vmCoresEnv != null then builtins.fromJSON vmCoresEnv else 4;
-in
 {
   # Virtual hardware configuration
   virtualisation = {
     memorySize = 4096; # 4GB RAM
-    cores = vmCores;
+    # Fixed rather than sized to the host, so that a test's derivation, and
+    # the cached result of a passed test, is the same on every machine and
+    # no build needs --impure. Two cores also let the two-node test fit a
+    # four-vCPU hosted runner.
+    cores = 2;
     diskSize = 20480; # 20GB primary disk
 
     # Secondary disk for hidden volume simulation (2GB)

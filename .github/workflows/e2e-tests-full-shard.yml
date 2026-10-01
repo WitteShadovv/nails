@@ -765,8 +765,6 @@ jobs:
         timeout-minutes: 330
         env:
           E2E_TIMEOUT_SECONDS: ${{ steps.workflow-budget.outputs.e2e_timeout_seconds }}
-          NAILS_E2E_VM_CPU_TARGET_PERCENT: '100'
-          NAILS_E2E_VM_HOST_RESERVED_CORES: '0'
           SHARD_INDEX: ${{ inputs.shard-index }}
           WORKFLOW_DEADLINE_UTC: ${{ steps.workflow-budget.outputs.deadline_utc }}
         run: |
