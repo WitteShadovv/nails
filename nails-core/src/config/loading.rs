@@ -220,6 +220,7 @@ fn render_template(root: &Path, title: &str) -> String {
 #
 # Every key is optional and unknown keys are rejected. Check this file with
 # `nails config validate`; show the effective values with `nails config show`.
+# docs/configuration.md in the nails source describes every key.
 
 # Root of the hidden volume. Unset: derived from the location of the nails
 # binary, which keeps working when the volume is mounted somewhere else.
@@ -249,7 +250,8 @@ fn render_template(root: &Path, title: &str) -> String {
 # the exclusions; "explicit" overlays only the [[overlays]] tables below.
 # overlay_mode = "auto"
 
-# Auto mode: extra exclusions, and default exclusions to overlay anyway.
+# Auto mode: extra exclusions, and default exclusions to overlay anyway. The
+# default list and the reason for each entry are in docs/configuration.md.
 # overlay_exclusions = ["/srv"]
 # overlay_exclusions_remove = ["/mnt"]
 

@@ -143,7 +143,8 @@ install -m0755 ./result/bin/nails /mnt/hidden/nails
    ```
 
    `nails config show` prints the effective configuration and where each value comes from;
-   `nails config show --example` prints every key.
+   `nails config show --example` prints every key. [docs/configuration.md](docs/configuration.md)
+   lists every key with its default and effect, and explains which directories are overlaid.
 
 4. **Add or replace the hidden NixOS configuration** if you do not want the generated starter
    module.
