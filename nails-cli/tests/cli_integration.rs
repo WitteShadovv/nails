@@ -74,7 +74,7 @@ fn test_help_flag() {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "NixOS Anti-forensics Isolation & Layering System",
+            "Overlay environment manager for NixOS",
         ));
 }
 

@@ -5,12 +5,12 @@
 mod switch;
 
 use super::NixOSBuilder;
+use crate::constants::ENV_SYSTEM_PROFILE_PATH;
 use crate::error::{NailsError, Result};
-use crate::obfuscate;
 use std::path::PathBuf;
 
 pub(super) fn system_profile_path() -> PathBuf {
-    std::env::var_os(obfuscate::env_system_profile_path())
+    std::env::var_os(ENV_SYSTEM_PROFILE_PATH)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/nix/var/nix/profiles/system"))
 }

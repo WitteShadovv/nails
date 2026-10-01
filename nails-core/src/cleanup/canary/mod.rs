@@ -32,7 +32,7 @@
 mod tests;
 
 use crate::Filesystem;
-use crate::obfuscate;
+use crate::cleanup::patterns;
 use std::path::{Path, PathBuf};
 
 /// Configuration for canary pattern scanning
@@ -63,8 +63,7 @@ pub struct CanaryConfig {
 impl Default for CanaryConfig {
     fn default() -> Self {
         Self {
-            // Use obfuscated patterns for forensic resistance
-            forbidden_patterns: obfuscate::default_canary_patterns(),
+            forbidden_patterns: patterns::default_canary_patterns(),
             scan_paths: Vec::new(), // Empty means use default shell history paths
             max_file_size: 10 * 1024 * 1024, // 10MB
         }

@@ -5,46 +5,24 @@ use std::path::PathBuf;
 
 use super::colors::ColorSchemeConfig;
 use super::overlay::{ExtendedOverlayConfig, OverlayConfig, OverlayMode};
-use crate::obfuscate;
 
-/// Default hidden volume root path (single source of truth)
+/// Default hidden volume root path (single source of truth).
 ///
-/// # Note
-///
-/// This constant is public for use in documentation examples and tests.
-/// Production code should use `Config::hidden_volume_root` field instead of
-/// hardcoding this value.
-///
-/// # Security Note
-///
-/// The actual path value is obfuscated in the binary. This function
-/// deobfuscates it at runtime to prevent the path from appearing in
-/// plaintext during disk scans.
+/// Production code should use the `Config::hidden_volume_root` field, which is
+/// auto-derived from the binary location; this constant is the final fallback
+/// used when no path can be derived or configured.
+pub const DEFAULT_HIDDEN_VOLUME_ROOT: &str = "/mnt/hidden-volume";
+
+/// Default hidden volume root path as an owned `String`.
 #[allow(dead_code)]
 pub fn default_hidden_volume_root() -> String {
-    obfuscate::hidden_volume_root()
+    DEFAULT_HIDDEN_VOLUME_ROOT.to_string()
 }
 
-/// Get the default hidden volume root path (runtime deobfuscation)
-///
-/// # Security Note
-///
-/// This function returns the default path by deobfuscating it at runtime,
-/// preventing the path from appearing in plaintext in the binary.
-/// Use this instead of hardcoding paths in production code.
-#[allow(dead_code)]
+/// Get the default hidden volume root path.
 pub fn get_default_hidden_volume_root() -> String {
-    obfuscate::hidden_volume_root()
+    DEFAULT_HIDDEN_VOLUME_ROOT.to_string()
 }
-
-/// Test-only constant for backwards compatibility
-///
-/// # Warning
-///
-/// This constant is ONLY available in test builds (`#[cfg(test)]`).
-/// Production code must use `get_default_hidden_volume_root()` instead.
-#[cfg(test)]
-pub const DEFAULT_HIDDEN_VOLUME_ROOT: &str = "/mnt/hidden-volume";
 
 /// Default exclusion list for dynamic overlay enumeration (Story 14.10)
 ///

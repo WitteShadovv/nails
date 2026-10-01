@@ -188,12 +188,11 @@ impl StateFile {
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
     pub fn save_with_custom_root(&self, path: &Path, hidden_volume_root: &Path) -> Result<()> {
-        use crate::obfuscate;
         self.save_with_root(
             path,
             hidden_volume_root
                 .to_str()
-                .unwrap_or(&obfuscate::hidden_volume_root()),
+                .unwrap_or(crate::config::DEFAULT_HIDDEN_VOLUME_ROOT),
         )
     }
 

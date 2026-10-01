@@ -1,6 +1,9 @@
 //! Session detection — detecting active sessions, display servers, and session context
 
-use crate::{Result, obfuscate};
+use crate::Result;
+use crate::constants::{
+    ENV_DISPLAY_MANAGER, ENV_LOGIND_AVAILABLE, ENV_SESSION_ID, ENV_TARGET_UID, ENV_TARGET_USER,
+};
 use nix::unistd::{Uid, User, getuid};
 use std::env;
 
@@ -33,17 +36,17 @@ pub fn detect_session_context() -> Result<SessionContext> {
 pub fn detect_session_context_with_executor<E: SessionCommandExecutor>(
     executor: &E,
 ) -> Result<SessionContext> {
-    let logind_available = match env::var(obfuscate::env_logind_available()) {
+    let logind_available = match env::var(ENV_LOGIND_AVAILABLE) {
         Ok(val) => val != "0",
         Err(_) => executor.loginctl_available(),
     };
     let session_id = env::var("XDG_SESSION_ID").ok();
-    let override_session_id = env::var(obfuscate::env_session_id()).ok();
-    let override_dm = env::var(obfuscate::env_display_manager()).ok();
-    let override_uid = env::var(obfuscate::env_target_uid())
+    let override_session_id = env::var(ENV_SESSION_ID).ok();
+    let override_dm = env::var(ENV_DISPLAY_MANAGER).ok();
+    let override_uid = env::var(ENV_TARGET_UID)
         .ok()
         .and_then(|v| v.parse::<u32>().ok());
-    let override_user = env::var(obfuscate::env_target_user()).ok();
+    let override_user = env::var(ENV_TARGET_USER).ok();
 
     // Check for SSH first
     if env::var("SSH_TTY").is_ok() || env::var("SSH_CONNECTION").is_ok() {

@@ -4,8 +4,7 @@ use std::path::PathBuf;
 
 use super::colors::ColorSchemeConfig;
 use super::overlay::{ExtendedOverlayConfig, OverlayConfig, OverlayMode};
-use super::types::{Config, get_default_hidden_volume_root};
-use crate::obfuscate;
+use super::types::{Config, DEFAULT_HIDDEN_VOLUME_ROOT, get_default_hidden_volume_root};
 
 /// Derive hidden volume root from binary location
 ///
@@ -130,7 +129,7 @@ pub(super) fn default_hidden_volume_root() -> PathBuf {
 
 pub(super) fn default_state_file_path() -> PathBuf {
     // This will be overridden in load() to use the actual hidden_volume_root
-    PathBuf::from(obfuscate::hidden_volume_root()).join("state.json")
+    PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json")
 }
 
 pub(super) fn default_minimum_space_mb() -> u64 {
@@ -167,7 +166,7 @@ pub(super) fn default_show_opsec_reminders() -> bool {
 
 pub(super) fn default_log_path() -> PathBuf {
     // Default will be derived from hidden_volume_root in builder
-    PathBuf::from(obfuscate::hidden_volume_root()).join("logs")
+    PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs")
 }
 
 pub(super) fn default_max_log_size_mb() -> u64 {

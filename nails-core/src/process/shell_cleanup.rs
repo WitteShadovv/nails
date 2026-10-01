@@ -5,7 +5,7 @@
 //! write their in-memory history to disk — defeating cleanup. SIGKILL
 //! terminates them immediately without triggering any signal handlers.
 
-use crate::obfuscate;
+use crate::constants::ENV_TARGET_UID;
 #[cfg(not(test))]
 use nix::libc;
 use std::collections::HashSet;
@@ -60,7 +60,7 @@ impl ShellKillReport {
 }
 
 fn shell_cleanup_target_uid() -> Option<u32> {
-    std::env::var(obfuscate::env_target_uid())
+    std::env::var(ENV_TARGET_UID)
         .ok()
         .or_else(|| std::env::var("SUDO_UID").ok())
         .and_then(|value| value.parse::<u32>().ok())
@@ -298,14 +298,14 @@ mod tests {
     fn shell_cleanup_target_uid_prefers_explicit_target_uid() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         unsafe {
-            std::env::set_var(obfuscate::env_target_uid(), "1001");
+            std::env::set_var(ENV_TARGET_UID, "1001");
             std::env::set_var("SUDO_UID", "1000");
         }
 
         assert_eq!(shell_cleanup_target_uid(), Some(1001));
 
         unsafe {
-            std::env::remove_var(obfuscate::env_target_uid());
+            std::env::remove_var(ENV_TARGET_UID);
             std::env::remove_var("SUDO_UID");
         }
     }
@@ -315,7 +315,7 @@ mod tests {
     fn shell_cleanup_target_uid_uses_sudo_uid_when_present() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         unsafe {
-            std::env::remove_var(obfuscate::env_target_uid());
+            std::env::remove_var(ENV_TARGET_UID);
             std::env::set_var("SUDO_UID", "1000");
         }
 

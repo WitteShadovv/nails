@@ -3,7 +3,6 @@
   "activate-flake-override": 408,
   "activate-full-rebuild": 186,
   "basic-workflow": 207,
-  "binary-obfuscation-scan": 92,
   "cleanup-fast-mode": 68,
   "config-ephemeral-mode": 71,
   "config-exclusions": 120,

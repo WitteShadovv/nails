@@ -1,6 +1,7 @@
 //! Shell setup and cleanup operations for activation/deactivation
 
-use crate::{Filesystem, Result, obfuscate};
+use crate::constants::ENV_NO_COLOR;
+use crate::{Filesystem, Result};
 
 use super::{ShellCleanupResult, ShellInstrumentation, ShellSetupResult, color_scheme};
 
@@ -55,7 +56,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         // This also ensures OSC sequences are suppressed when cargo test runs
         // with a PTY (where is_terminal() returns true but we still must not
         // mutate the developer's terminal colors).
-        if std::env::var("NO_COLOR").is_ok() || std::env::var(obfuscate::env_no_color()).is_ok() {
+        if std::env::var("NO_COLOR").is_ok() || std::env::var(ENV_NO_COLOR).is_ok() {
             tracing::debug!(
                 "Skipping terminal color scheme ({}): NO_COLOR / NAILS_NO_COLOR is set",
                 context

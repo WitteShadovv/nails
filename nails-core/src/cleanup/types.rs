@@ -2,8 +2,8 @@
 //!
 //! Provides the configuration, mode, and reporting types used by the cleanup system.
 
+use crate::cleanup::patterns;
 use crate::config::get_default_hidden_volume_root;
-use crate::obfuscate;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -118,8 +118,7 @@ impl Default for CleanupConfig {
             clear_history: true,
             clear_temp_files: true,
             clear_logs: true,
-            // Use obfuscated patterns for forensic resistance
-            history_patterns: obfuscate::default_cleanup_patterns(),
+            history_patterns: patterns::default_cleanup_patterns(),
             temp_dirs: vec![PathBuf::from("/tmp")],
             log_path: hidden_volume.join("logs"),
             hidden_volume_path: hidden_volume,

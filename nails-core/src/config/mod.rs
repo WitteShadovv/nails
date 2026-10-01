@@ -41,11 +41,10 @@ pub use ephemeral::EphemeralOverlayDir;
 pub use overlay::{ExtendedOverlayConfig, OverlayConfig, OverlayMode};
 
 // Re-exports for public API - core types
-pub use types::{CliOverrides, Config, DEFAULT_OVERLAY_EXCLUSIONS, get_default_hidden_volume_root};
-
-// Test-only re-export of the constant
-#[cfg(test)]
-pub use types::DEFAULT_HIDDEN_VOLUME_ROOT;
+pub use types::{
+    CliOverrides, Config, DEFAULT_HIDDEN_VOLUME_ROOT, DEFAULT_OVERLAY_EXCLUSIONS,
+    get_default_hidden_volume_root,
+};
 
 // Re-exports for public API - builder
 pub use builder::ConfigBuilder;

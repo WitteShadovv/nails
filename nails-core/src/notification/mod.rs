@@ -13,7 +13,7 @@
 //! 2. An XDG autostart entry runs `nails notify-dispatch` on user login
 //! 3. The dispatch command reads pending files, calls `notify-send`, and deletes them
 
-use crate::{Result, obfuscate};
+use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -25,7 +25,7 @@ pub fn notification_runtime_environment() -> Vec<(&'static str, String)> {
     let mut env = Vec::new();
 
     if let Ok(uid) =
-        std::env::var(obfuscate::env_target_uid()).or_else(|_| std::env::var("SUDO_UID"))
+        std::env::var(crate::constants::ENV_TARGET_UID).or_else(|_| std::env::var("SUDO_UID"))
     {
         let runtime_dir = format!("/run/user/{}", uid);
         env.push(("XDG_RUNTIME_DIR", runtime_dir.clone()));
@@ -111,7 +111,7 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
             "Skipping notifications directory chown in test/test-like context"
         );
     } else if let Ok(user) =
-        std::env::var(obfuscate::env_target_user()).or_else(|_| std::env::var("SUDO_USER"))
+        std::env::var(crate::constants::ENV_TARGET_USER).or_else(|_| std::env::var("SUDO_USER"))
     {
         let _ = std::process::Command::new("chown")
             .arg(format!("{}:{}", user, user))
@@ -204,7 +204,7 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
             "Skipping notification file chown in test/test-like context"
         );
     } else if let Ok(user) =
-        std::env::var(obfuscate::env_target_user()).or_else(|_| std::env::var("SUDO_USER"))
+        std::env::var(crate::constants::ENV_TARGET_USER).or_else(|_| std::env::var("SUDO_USER"))
     {
         let _ = std::process::Command::new("chown")
             .arg(format!("{}:{}", user, user))
@@ -383,7 +383,7 @@ pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
 /// and other environments where desktop notifications are not desired.
 #[cfg(not(test))]
 fn is_notifications_disabled() -> bool {
-    std::env::var(obfuscate::env_disable_notifications()).is_ok()
+    std::env::var(crate::constants::ENV_DISABLE_NOTIFICATIONS).is_ok()
 }
 
 /// Find `notify-send` in PATH.

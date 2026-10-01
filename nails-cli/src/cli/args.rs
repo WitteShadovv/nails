@@ -1,17 +1,17 @@
 //! CLI argument definitions
 //!
 //! This module contains the Clap-based CLI argument parser definitions
-//! for the NAILS CLI application.
+//! for the nails CLI application.
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// NixOS Anti-forensics Isolation & Layering System
+/// Overlay environment manager for NixOS
 #[derive(Parser)]
 #[command(name = "nails")]
 #[command(author = "NAILS Project")]
 #[command(version)]
-#[command(about = "NixOS Anti-forensics Isolation & Layering System", long_about = None)]
+#[command(about = "Overlay environment manager for NixOS", long_about = None)]
 pub struct Cli {
     /// Path to configuration file (overrides binary-relative discovery)
     #[arg(long, global = true, value_name = "PATH")]

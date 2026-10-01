@@ -29,7 +29,8 @@
 //! *Note: This example is marked with `ignore` because it uses MockFilesystem
 //! which is only available in test configuration. Real usage would use RealFilesystem.*
 
-use crate::{Filesystem, NailsError, Result, obfuscate, output};
+use crate::config::get_default_hidden_volume_root;
+use crate::{Filesystem, NailsError, Result, output};
 use std::path::PathBuf;
 
 /// Cleans NAILS log files from the hidden volume
@@ -60,10 +61,10 @@ impl<F: Filesystem> LogCleaner<F> {
     /// Create a new LogCleaner with default paths
     ///
     /// Default log_path: hidden_volume_root()/logs
-    /// Default hidden_volume_path: obfuscate::hidden_volume_root()
+    /// Default hidden_volume_path: `get_default_hidden_volume_root()`
     /// Default secure_delete: false
     pub fn new(filesystem: F) -> Self {
-        let hidden_volume = PathBuf::from(obfuscate::hidden_volume_root());
+        let hidden_volume = PathBuf::from(get_default_hidden_volume_root());
         Self {
             filesystem,
             log_path: hidden_volume.join("logs"),
@@ -239,11 +240,11 @@ mod tests {
 
         assert_eq!(
             cleaner.log_path,
-            PathBuf::from(obfuscate::hidden_volume_root()).join("logs")
+            PathBuf::from(get_default_hidden_volume_root()).join("logs")
         );
         assert_eq!(
             cleaner.hidden_volume_path,
-            PathBuf::from(obfuscate::hidden_volume_root())
+            PathBuf::from(get_default_hidden_volume_root())
         );
     }
 

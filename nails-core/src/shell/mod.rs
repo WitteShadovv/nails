@@ -43,6 +43,7 @@ pub mod prompt;
 mod rc_integration;
 mod setup;
 
+use crate::constants::ENV_TARGET_USER;
 use crate::{Config, Filesystem, Result};
 use std::path::PathBuf;
 
@@ -113,7 +114,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
 
     pub(crate) fn resolve_target_username(&self) -> Result<String> {
         std::env::var("SUDO_USER")
-            .or_else(|_| std::env::var(crate::obfuscate::env_target_user()))
+            .or_else(|_| std::env::var(ENV_TARGET_USER))
             .or_else(|_| std::env::var("USER"))
             .map_err(|_| {
                 std::io::Error::other(
@@ -124,8 +125,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     }
 
     fn has_explicit_target_user_context() -> bool {
-        std::env::var("SUDO_USER").is_ok()
-            || std::env::var(crate::obfuscate::env_target_user()).is_ok()
+        std::env::var("SUDO_USER").is_ok() || std::env::var(ENV_TARGET_USER).is_ok()
     }
 
     fn home_matches_username(home: &std::path::Path, username: &str) -> bool {

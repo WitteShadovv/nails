@@ -3,7 +3,7 @@
 //! Handles pre-activation validation and config preparation.
 
 use crate::cleanup::history::HistoryCleaner;
-use crate::obfuscate;
+use crate::cleanup::patterns;
 use crate::{
     Filesystem, NailsError, NailsManager, PreFlightCheck, Result, Stopwatch,
     SuspiciousNailsReferenceCheck, Verbosity,
@@ -156,10 +156,10 @@ impl<F: Filesystem> NailsManager<F> {
             tracing::info!("Running pre-activation history cleanup...");
         }
 
-        // Use obfuscated patterns for forensic resistance
-        let patterns = obfuscate::pre_activation_cleanup_patterns();
+        let history_patterns = patterns::pre_activation_cleanup_patterns();
 
-        let cleaner = HistoryCleaner::new(self.filesystem.clone()).with_patterns(patterns.clone());
+        let cleaner =
+            HistoryCleaner::new(self.filesystem.clone()).with_patterns(history_patterns.clone());
 
         match cleaner.clean() {
             Ok(cleaned_items) => {
@@ -175,7 +175,7 @@ impl<F: Filesystem> NailsManager<F> {
                     }
                     if verbosity >= Verbosity::Normal {
                         tracing::info!(
-                            patterns = ?patterns,
+                            patterns = ?history_patterns,
                             items_cleaned = cleaned_items.len(),
                             "Pre-activation history cleanup complete"
                         );

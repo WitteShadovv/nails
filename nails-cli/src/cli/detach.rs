@@ -4,12 +4,13 @@ use std::path::Path;
 use std::process::Command;
 use std::{collections::HashSet, path::PathBuf};
 
-use nails_core::obfuscate::{
-    env_detached, env_display_manager, env_force_detach, env_logind_available, env_session_id,
-    env_skip_detach, env_target_uid, env_target_user, systemd_unit_prefix,
+use nails_core::constants::{
+    ENV_DETACHED, ENV_DISPLAY_MANAGER, ENV_FORCE_DETACH, ENV_LOGIND_AVAILABLE, ENV_SESSION_ID,
+    ENV_SKIP_DETACH, ENV_TARGET_UID, ENV_TARGET_USER,
 };
 use nails_core::{NailsError, SessionContext, SessionKind, detect_session_context};
 
+const ACTIVATE_UNIT_PREFIX: &str = "nails-activate-";
 const DEACTIVATE_UNIT_PREFIX: &str = "nails-deactivate-";
 const TEST_RUNTIME_ENV: &str = "NAILS_TEST_RUNTIME";
 const SYSTEMD_RUN_OVERRIDE_ENV: &str = "NAILS_SYSTEMD_RUN_PATH";
@@ -36,7 +37,7 @@ fn maybe_exit_after_detach(mut cmd: Command, success_message: &[&str]) -> Result
 }
 
 fn should_skip_detach() -> bool {
-    env::var_os(env_skip_detach()).is_some()
+    env::var_os(ENV_SKIP_DETACH).is_some()
 }
 
 fn binary_looks_like_test_runtime() -> bool {
@@ -66,8 +67,7 @@ fn systemd_run_program() -> Result<OsString, NailsError> {
     if binary_looks_like_test_runtime() {
         return Err(NailsError::InvalidState(format!(
             "Refusing to start transient systemd units from a test/test-like runtime; set {} to a fake systemd-run, set {}=1 to bypass detach, or set NAILS_UNSAFE_REAL_OPS=1 to allow real host operations",
-            SYSTEMD_RUN_OVERRIDE_ENV,
-            env_skip_detach()
+            SYSTEMD_RUN_OVERRIDE_ENV, ENV_SKIP_DETACH
         )));
     }
 
@@ -75,12 +75,12 @@ fn systemd_run_program() -> Result<OsString, NailsError> {
 }
 
 fn set_target_identity_from_environment(cmd: &mut Command) {
-    if let Ok(uid) = env::var(env_target_uid()).or_else(|_| env::var("SUDO_UID")) {
-        cmd.arg(format!("--setenv={}={}", env_target_uid(), uid));
+    if let Ok(uid) = env::var(ENV_TARGET_UID).or_else(|_| env::var("SUDO_UID")) {
+        cmd.arg(format!("--setenv={}={}", ENV_TARGET_UID, uid));
     }
 
-    if let Ok(user) = env::var(env_target_user()).or_else(|_| env::var("SUDO_USER")) {
-        cmd.arg(format!("--setenv={}={}", env_target_user(), user));
+    if let Ok(user) = env::var(ENV_TARGET_USER).or_else(|_| env::var("SUDO_USER")) {
+        cmd.arg(format!("--setenv={}={}", ENV_TARGET_USER, user));
     }
 }
 
@@ -95,7 +95,7 @@ fn propagate_shell_cleanup_protection(cmd: &mut Command) {
 }
 
 fn is_already_detached() -> bool {
-    env::var_os(env_detached()).is_some()
+    env::var_os(ENV_DETACHED).is_some()
 }
 
 fn detached_path_env() -> OsString {
@@ -154,7 +154,7 @@ pub fn maybe_detach_for_session_kill(
     }
 
     // Allow integration tests or users to force detaching for safety.
-    let force_detach = env::var_os(env_force_detach()).is_some();
+    let force_detach = env::var_os(ENV_FORCE_DETACH).is_some();
 
     if !force_detach {
         // Prefer logind-aware detection to avoid detaching from TTY/SSH.
@@ -180,7 +180,7 @@ pub fn maybe_detach_for_session_kill(
     })?;
 
     // Generate unique unit name
-    let unit_name = format!("{}{}.service", systemd_unit_prefix(), std::process::id());
+    let unit_name = format!("{}{}.service", ACTIVATE_UNIT_PREFIX, std::process::id());
 
     // Build systemd-run command
     // Using no --scope flag creates a proper transient service
@@ -193,7 +193,7 @@ pub fn maybe_detach_for_session_kill(
         .arg("--quiet");
 
     // Set environment variables for the service
-    cmd.arg(format!("--setenv={}=1", env_detached()));
+    cmd.arg(format!("--setenv={}=1", ENV_DETACHED));
     cmd.arg("--setenv=XDG_SESSION_ID="); // Clear session tracking
 
     // Set PATH to include NixOS binaries (nixos-rebuild, etc.)
@@ -214,20 +214,20 @@ pub fn maybe_detach_for_session_kill(
         && ctx.kind == SessionKind::GraphicalUser
     {
         if let Some(ref session_id) = ctx.session_id {
-            cmd.arg(format!("--setenv={}={}", env_session_id(), session_id));
+            cmd.arg(format!("--setenv={}={}", ENV_SESSION_ID, session_id));
         }
         if let Some(ref dm) = ctx.display_manager {
-            cmd.arg(format!("--setenv={}={}", env_display_manager(), dm));
+            cmd.arg(format!("--setenv={}={}", ENV_DISPLAY_MANAGER, dm));
         }
         if let Some(uid) = ctx.target_uid {
-            cmd.arg(format!("--setenv={}={}", env_target_uid(), uid));
+            cmd.arg(format!("--setenv={}={}", ENV_TARGET_UID, uid));
         }
         if let Some(ref user) = ctx.target_user {
-            cmd.arg(format!("--setenv={}={}", env_target_user(), user));
+            cmd.arg(format!("--setenv={}={}", ENV_TARGET_USER, user));
         }
         cmd.arg(format!(
             "--setenv={}={}",
-            env_logind_available(),
+            ENV_LOGIND_AVAILABLE,
             if ctx.logind_available { "1" } else { "0" }
         ));
     }
@@ -261,7 +261,7 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
 
     // Deactivation should run synchronously in the invoking context by default.
     // Detached transient services are opt-in only.
-    let force_detach = env::var_os(env_force_detach()).is_some();
+    let force_detach = env::var_os(ENV_FORCE_DETACH).is_some();
     if !force_detach {
         return Ok(());
     }
@@ -281,7 +281,7 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
         .arg("--collect")
         .arg("--quiet")
         .arg("--working-directory=/")
-        .arg(format!("--setenv={}=1", env_detached()))
+        .arg(format!("--setenv={}=1", ENV_DETACHED))
         .arg("--setenv=XDG_SESSION_ID=")
         .arg(format!(
             "--setenv=PATH={}",

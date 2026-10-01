@@ -1,6 +1,6 @@
 //! # NAILS CLI Binary Entry Point
 //!
-//! Command-line interface binary for NixOS Anti-forensics Isolation & Layering System.
+//! Command-line interface binary for the nails overlay environment manager.
 //!
 //! The actual CLI logic is in lib.rs to allow for proper unit test coverage.
 
@@ -44,7 +44,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         !(plain
             || no_color
             || std::env::var("NO_COLOR").is_ok()
-            || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()),
+            || std::env::var(nails_core::constants::ENV_NO_COLOR).is_ok()),
     );
 
     let stdout_format = stdout_format_for_command(&cli.command);

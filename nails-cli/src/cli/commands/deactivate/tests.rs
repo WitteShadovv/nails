@@ -1,7 +1,7 @@
 use super::{
     DEACTIVATE_RECOVERY_GUIDANCE, deactivate_recovery_guidance, deactivate_success_json, execute,
 };
-use nails_core::obfuscate;
+use nails_core::constants::{ENV_FORCE_DETACH, ENV_SKIP_DETACH};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -24,7 +24,7 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
     command
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", case)
-        .env(obfuscate::env_skip_detach(), "1");
+        .env(ENV_SKIP_DETACH, "1");
 
     if let Some(path) = config_path {
         command.env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", path);
@@ -47,7 +47,7 @@ fn run_runtime_subprocess(
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", case)
         .env("NAILS_TEST_RUNTIME", "1")
-        .env(obfuscate::env_skip_detach(), "1")
+        .env(ENV_SKIP_DETACH, "1")
         .env_remove("NAILS_DETACHED");
 
     if let Some(path) = config_path {
@@ -251,9 +251,9 @@ fn execute_deactivate_reports_detach_error_as_json() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", "detach-error-json")
-        .env(obfuscate::env_force_detach(), "1")
+        .env(ENV_FORCE_DETACH, "1")
         .env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", config.path())
-        .env_remove(obfuscate::env_skip_detach())
+        .env_remove(ENV_SKIP_DETACH)
         .output()
         .expect("failed to run deactivate subprocess test");
 
@@ -283,9 +283,9 @@ fn execute_deactivate_reports_detach_error_in_human_output() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", "detach-error-human")
-        .env(obfuscate::env_force_detach(), "1")
+        .env(ENV_FORCE_DETACH, "1")
         .env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", config.path())
-        .env_remove(obfuscate::env_skip_detach())
+        .env_remove(ENV_SKIP_DETACH)
         .output()
         .expect("failed to run deactivate subprocess test");
 
@@ -315,7 +315,7 @@ fn execute_deactivate_blocks_disallowed_real_operations_before_manager_creation(
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", "real-ops-blocked")
         .env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", config.path())
-        .env(obfuscate::env_skip_detach(), "1")
+        .env(ENV_SKIP_DETACH, "1")
         .output()
         .expect("failed to run deactivate subprocess test");
 
@@ -345,7 +345,7 @@ fn execute_deactivate_blocks_disallowed_real_operations_in_quiet_mode() {
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", "real-ops-blocked-quiet")
         .env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", config.path())
-        .env(obfuscate::env_skip_detach(), "1")
+        .env(ENV_SKIP_DETACH, "1")
         .output()
         .expect("failed to run deactivate subprocess test");
 
@@ -375,7 +375,7 @@ fn execute_deactivate_blocks_disallowed_real_operations_with_verbose_mode() {
             "real-ops-blocked-verbose",
         )
         .env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", config.path())
-        .env(obfuscate::env_skip_detach(), "1")
+        .env(ENV_SKIP_DETACH, "1")
         .output()
         .expect("failed to run deactivate subprocess test");
 

@@ -1,5 +1,5 @@
 use super::*;
-use nails_core::obfuscate::{env_detached, env_force_detach, env_skip_detach};
+use nails_core::constants::{ENV_DETACHED, ENV_FORCE_DETACH, ENV_SKIP_DETACH};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -42,7 +42,7 @@ fn locate_shell_path() -> std::path::PathBuf {
 
 #[test]
 fn does_nothing_when_kill_session_false() {
-    with_env(env_skip_detach(), "1", || {
+    with_env(ENV_SKIP_DETACH, "1", || {
         unsafe { env::set_var("DISPLAY", ":0") };
         let res = maybe_detach_for_session_kill(false, &[OsString::from("nails")], None);
         unsafe { env::remove_var("DISPLAY") };
@@ -52,7 +52,7 @@ fn does_nothing_when_kill_session_false() {
 
 #[test]
 fn does_nothing_without_graphical_env() {
-    with_env(env_skip_detach(), "1", || {
+    with_env(ENV_SKIP_DETACH, "1", || {
         unsafe { env::remove_var("DISPLAY") };
         unsafe { env::remove_var("WAYLAND_DISPLAY") };
         let res = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None);
@@ -62,11 +62,11 @@ fn does_nothing_without_graphical_env() {
 
 #[test]
 fn skips_when_already_detached() {
-    with_env(env_skip_detach(), "1", || {
+    with_env(ENV_SKIP_DETACH, "1", || {
         unsafe { env::set_var("DISPLAY", ":1") };
-        unsafe { env::set_var(env_detached(), "1") };
+        unsafe { env::set_var(ENV_DETACHED, "1") };
         let res = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None);
-        unsafe { env::remove_var(env_detached()) };
+        unsafe { env::remove_var(ENV_DETACHED) };
         unsafe { env::remove_var("DISPLAY") };
         assert!(res.is_ok());
     });
@@ -74,7 +74,7 @@ fn skips_when_already_detached() {
 
 #[test]
 fn deactivation_detach_respects_skip_env() {
-    with_env(env_skip_detach(), "1", || {
+    with_env(ENV_SKIP_DETACH, "1", || {
         let res = maybe_detach_for_deactivation();
         assert!(res.is_ok());
     });
@@ -82,10 +82,10 @@ fn deactivation_detach_respects_skip_env() {
 
 #[test]
 fn deactivation_detach_skips_when_already_detached() {
-    with_env(env_skip_detach(), "1", || {
-        unsafe { env::set_var(env_detached(), "1") };
+    with_env(ENV_SKIP_DETACH, "1", || {
+        unsafe { env::set_var(ENV_DETACHED, "1") };
         let res = maybe_detach_for_deactivation();
-        unsafe { env::remove_var(env_detached()) };
+        unsafe { env::remove_var(ENV_DETACHED) };
         assert!(res.is_ok());
     });
 }
@@ -109,9 +109,9 @@ fn maybe_detach_for_session_kill_skips_non_graphical_context_without_skip_env() 
     };
 
     unsafe {
-        env::remove_var(env_skip_detach());
-        env::remove_var(env_detached());
-        env::remove_var(env_force_detach());
+        env::remove_var(ENV_SKIP_DETACH);
+        env::remove_var(ENV_DETACHED);
+        env::remove_var(ENV_FORCE_DETACH);
     }
 
     let result = maybe_detach_for_session_kill(true, &[OsString::from("nails")], Some(&ctx));
@@ -131,14 +131,14 @@ fn maybe_detach_for_session_kill_skips_when_already_detached_without_skip_env() 
     };
 
     unsafe {
-        env::set_var(env_detached(), "1");
-        env::remove_var(env_skip_detach());
+        env::set_var(ENV_DETACHED, "1");
+        env::remove_var(ENV_SKIP_DETACH);
     }
 
     let result = maybe_detach_for_session_kill(true, &[OsString::from("nails")], Some(&ctx));
 
     unsafe {
-        env::remove_var(env_detached());
+        env::remove_var(ENV_DETACHED);
     }
 
     assert!(result.is_ok());
@@ -150,18 +150,18 @@ fn set_target_identity_from_environment_prefers_explicit_target_values() {
     let mut command = Command::new("true");
 
     unsafe {
-        env::set_var(env_target_uid(), "1001");
+        env::set_var(ENV_TARGET_UID, "1001");
         env::set_var("SUDO_UID", "1000");
-        env::set_var(env_target_user(), "target-user");
+        env::set_var(ENV_TARGET_USER, "target-user");
         env::set_var("SUDO_USER", "sudo-user");
     }
 
     set_target_identity_from_environment(&mut command);
 
     unsafe {
-        env::remove_var(env_target_uid());
+        env::remove_var(ENV_TARGET_UID);
         env::remove_var("SUDO_UID");
-        env::remove_var(env_target_user());
+        env::remove_var(ENV_TARGET_USER);
         env::remove_var("SUDO_USER");
     }
 
@@ -169,8 +169,8 @@ fn set_target_identity_from_environment_prefers_explicit_target_values() {
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    assert!(args.contains(&format!("--setenv={}={}", env_target_uid(), "1001")));
-    assert!(args.contains(&format!("--setenv={}={}", env_target_user(), "target-user")));
+    assert!(args.contains(&format!("--setenv={}={}", ENV_TARGET_UID, "1001")));
+    assert!(args.contains(&format!("--setenv={}={}", ENV_TARGET_USER, "target-user")));
 }
 
 #[test]
@@ -179,9 +179,9 @@ fn set_target_identity_from_environment_falls_back_to_sudo_values() {
     let mut command = Command::new("true");
 
     unsafe {
-        env::remove_var(env_target_uid());
+        env::remove_var(ENV_TARGET_UID);
         env::set_var("SUDO_UID", "1000");
-        env::remove_var(env_target_user());
+        env::remove_var(ENV_TARGET_USER);
         env::set_var("SUDO_USER", "sudo-user");
     }
 
@@ -196,8 +196,8 @@ fn set_target_identity_from_environment_falls_back_to_sudo_values() {
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    assert!(args.contains(&format!("--setenv={}={}", env_target_uid(), "1000")));
-    assert!(args.contains(&format!("--setenv={}={}", env_target_user(), "sudo-user")));
+    assert!(args.contains(&format!("--setenv={}={}", ENV_TARGET_UID, "1000")));
+    assert!(args.contains(&format!("--setenv={}={}", ENV_TARGET_USER, "sudo-user")));
 }
 
 #[test]
@@ -267,12 +267,12 @@ fn should_skip_detach_reflects_env_presence() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     unsafe {
-        env::set_var(env_skip_detach(), "1");
+        env::set_var(ENV_SKIP_DETACH, "1");
     }
     assert!(should_skip_detach());
 
     unsafe {
-        env::remove_var(env_skip_detach());
+        env::remove_var(ENV_SKIP_DETACH);
     }
     assert!(!should_skip_detach());
 }
@@ -282,12 +282,12 @@ fn is_already_detached_reflects_env_presence() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     unsafe {
-        env::set_var(env_detached(), "1");
+        env::set_var(ENV_DETACHED, "1");
     }
     assert!(is_already_detached());
 
     unsafe {
-        env::remove_var(env_detached());
+        env::remove_var(ENV_DETACHED);
     }
     assert!(!is_already_detached());
 }
@@ -311,9 +311,9 @@ fn deactivation_detach_force_detach_fails_closed_in_test_runtime() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     unsafe {
-        env::set_var(env_force_detach(), "1");
-        env::remove_var(env_skip_detach());
-        env::remove_var(env_detached());
+        env::set_var(ENV_FORCE_DETACH, "1");
+        env::remove_var(ENV_SKIP_DETACH);
+        env::remove_var(ENV_DETACHED);
         env::remove_var(SYSTEMD_RUN_OVERRIDE_ENV);
         env::remove_var("NAILS_UNSAFE_REAL_OPS");
     }
@@ -321,7 +321,7 @@ fn deactivation_detach_force_detach_fails_closed_in_test_runtime() {
     let err = maybe_detach_for_deactivation().expect_err("test runtime must fail closed");
 
     unsafe {
-        env::remove_var(env_force_detach());
+        env::remove_var(ENV_FORCE_DETACH);
     }
 
     assert!(
@@ -339,9 +339,9 @@ fn subprocess_detach_entrypoint() {
     match case.as_str() {
         "block-deactivate" => {
             unsafe {
-                std::env::remove_var(env_skip_detach());
-                std::env::remove_var(env_detached());
-                std::env::remove_var(env_force_detach());
+                std::env::remove_var(ENV_SKIP_DETACH);
+                std::env::remove_var(ENV_DETACHED);
+                std::env::remove_var(ENV_FORCE_DETACH);
                 std::env::remove_var(SYSTEMD_RUN_OVERRIDE_ENV);
                 std::env::remove_var("NAILS_UNSAFE_REAL_OPS");
             }
@@ -349,9 +349,9 @@ fn subprocess_detach_entrypoint() {
         }
         "block-session" => {
             unsafe {
-                std::env::remove_var(env_skip_detach());
-                std::env::remove_var(env_detached());
-                std::env::remove_var(env_force_detach());
+                std::env::remove_var(ENV_SKIP_DETACH);
+                std::env::remove_var(ENV_DETACHED);
+                std::env::remove_var(ENV_FORCE_DETACH);
                 std::env::remove_var(SYSTEMD_RUN_OVERRIDE_ENV);
                 std::env::remove_var("NAILS_UNSAFE_REAL_OPS");
                 std::env::set_var("DISPLAY", ":0");
@@ -368,9 +368,9 @@ fn subprocess_detach_entrypoint() {
         }
         "allow-override" => {
             unsafe {
-                std::env::remove_var(env_skip_detach());
-                std::env::remove_var(env_detached());
-                std::env::set_var(env_force_detach(), "1");
+                std::env::remove_var(ENV_SKIP_DETACH);
+                std::env::remove_var(ENV_DETACHED);
+                std::env::set_var(ENV_FORCE_DETACH, "1");
             }
             maybe_detach_for_deactivation().expect("override fake systemd-run should succeed");
         }
@@ -383,9 +383,9 @@ fn deactivation_detach_defaults_to_in_process_execution() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DETACH_SUBPROCESS_CASE", "block-deactivate")
-        .env_remove(env_skip_detach())
-        .env_remove(env_detached())
-        .env_remove(env_force_detach())
+        .env_remove(ENV_SKIP_DETACH)
+        .env_remove(ENV_DETACHED)
+        .env_remove(ENV_FORCE_DETACH)
         .env_remove(SYSTEMD_RUN_OVERRIDE_ENV)
         .env_remove("NAILS_UNSAFE_REAL_OPS")
         .output()
@@ -404,9 +404,9 @@ fn session_detach_refuses_transient_units_in_test_like_runtime() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DETACH_SUBPROCESS_CASE", "block-session")
-        .env_remove(env_skip_detach())
-        .env_remove(env_detached())
-        .env_remove(env_force_detach())
+        .env_remove(ENV_SKIP_DETACH)
+        .env_remove(ENV_DETACHED)
+        .env_remove(ENV_FORCE_DETACH)
         .env_remove(SYSTEMD_RUN_OVERRIDE_ENV)
         .env_remove("NAILS_UNSAFE_REAL_OPS")
         .output()
@@ -441,15 +441,15 @@ fn deactivation_detach_uses_explicit_systemd_run_override() {
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DETACH_SUBPROCESS_CASE", "allow-override")
         .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
-        .env(env_force_detach(), "1")
+        .env(ENV_FORCE_DETACH, "1")
         .env(
             DEACTIVATE_UNIT_NAME_OVERRIDE_ENV,
             "nails-deactivate-test.service",
         )
         .env("SUDO_UID", "1000")
         .env("SUDO_USER", "alice")
-        .env_remove(env_skip_detach())
-        .env_remove(env_detached())
+        .env_remove(ENV_SKIP_DETACH)
+        .env_remove(ENV_DETACHED)
         .output()
         .expect("run subprocess");
 
@@ -486,7 +486,7 @@ fn deactivation_detach_propagates_protected_shell_cleanup_pids() {
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DETACH_SUBPROCESS_CASE", "allow-override")
         .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
-        .env(env_force_detach(), "1")
+        .env(ENV_FORCE_DETACH, "1")
         .env(
             DEACTIVATE_UNIT_NAME_OVERRIDE_ENV,
             "nails-deactivate-test.service",
@@ -494,8 +494,8 @@ fn deactivation_detach_propagates_protected_shell_cleanup_pids() {
         .env("SUDO_UID", "1000")
         .env("SUDO_USER", "alice")
         .env(SHELL_CLEANUP_PROTECTED_PIDS_ENV, "101,202")
-        .env_remove(env_skip_detach())
-        .env_remove(env_detached())
+        .env_remove(ENV_SKIP_DETACH)
+        .env_remove(ENV_DETACHED)
         .output()
         .expect("run subprocess");
 

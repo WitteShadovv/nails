@@ -1,6 +1,6 @@
 //! # NAILS Core Library
 //!
-//! Business logic for NixOS Anti-forensics Isolation & Layering System.
+//! Core library for the nails overlay environment manager.
 //!
 //! This crate contains all core functionality including:
 //! - State management and transitions
@@ -85,8 +85,8 @@ pub mod output;
 // Desktop notification signal files (post-activation user feedback)
 pub mod notification;
 
-// String obfuscation for forensic resistance (Finding C4)
-pub mod obfuscate;
+// Shared string constants (environment-variable names).
+pub mod constants;
 
 mod runtime_safety;
 

@@ -8,7 +8,8 @@ mod command_cache;
 mod runtime_cache;
 mod service_controller;
 
-use crate::{Config, Filesystem, NailsError, Result, obfuscate};
+use crate::constants::ENV_SYSTEM_PROFILE_PATH;
+use crate::{Config, Filesystem, NailsError, Result};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -26,7 +27,7 @@ pub(crate) use service_controller::{ServiceController, start_service_and_socket}
 
 /// Return the system profile path, honoring NAILS_SYSTEM_PROFILE_PATH if set.
 pub(crate) fn system_profile_path() -> PathBuf {
-    std::env::var_os(obfuscate::env_system_profile_path())
+    std::env::var_os(ENV_SYSTEM_PROFILE_PATH)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/nix/var/nix/profiles/system"))
 }

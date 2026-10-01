@@ -36,6 +36,7 @@ pub mod temp_files;
 
 // Internal modules
 mod manager;
+pub(crate) mod patterns;
 mod types;
 
 #[cfg(test)]

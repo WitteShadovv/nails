@@ -167,7 +167,7 @@ fn render_mode(no_color: bool, plain: bool) -> RenderMode {
         RenderMode::Plain
     } else if no_color
         || std::env::var("NO_COLOR").is_ok()
-        || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()
+        || std::env::var(nails_core::constants::ENV_NO_COLOR).is_ok()
     {
         RenderMode::NoColor
     } else {

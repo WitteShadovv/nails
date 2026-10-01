@@ -3,7 +3,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use nails_core::obfuscate;
+use nails_core::constants::ENV_TARGET_UID;
 
 const SUBPROCESS_TEST_NAME: &str = "subprocess_notification_runtime_entrypoint";
 
@@ -437,7 +437,7 @@ fn notification_dispatch_builds_runtime_environment_from_target_session_vars() {
         &hidden_root,
         None,
         &[
-            (&obfuscate::env_target_uid(), "1000"),
+            (ENV_TARGET_UID, "1000"),
             ("DISPLAY", ":0"),
             ("WAYLAND_DISPLAY", "wayland-1"),
         ],

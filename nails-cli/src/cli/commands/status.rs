@@ -36,7 +36,7 @@ pub fn execute(
         !(plain
             || no_color
             || std::env::var("NO_COLOR").is_ok()
-            || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()),
+            || std::env::var(nails_core::constants::ENV_NO_COLOR).is_ok()),
     );
 
     // Load configuration (Story 14.1)

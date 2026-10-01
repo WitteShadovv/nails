@@ -42,7 +42,7 @@ in
         machine.wait_for_unit("multi-user.target")
 
     with subtest("top-level help does not leak default paths"):
-        assert_help_or_version_is_clean("help-main", "nails --help", "NixOS Anti-forensics Isolation & Layering System")
+        assert_help_or_version_is_clean("help-main", "nails --help", "Overlay environment manager for NixOS")
 
     with subtest("activate help does not leak default paths"):
         assert_help_or_version_is_clean("help-activate", "nails activate --help", "--no-color")

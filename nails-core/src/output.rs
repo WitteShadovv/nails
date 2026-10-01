@@ -20,7 +20,7 @@
 //! let msg = output::format_error("Something went wrong");
 //! ```
 
-use crate::obfuscate;
+use crate::constants::ENV_NO_COLOR;
 use colored::{Color, Colorize, control};
 use std::io::{Write, stderr, stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,7 +31,7 @@ static PLAIN_MODE: AtomicBool = AtomicBool::new(false);
 static COLOR_DISABLED: AtomicBool = AtomicBool::new(false);
 
 fn env_disables_color() -> bool {
-    std::env::var("NO_COLOR").is_ok() || std::env::var(obfuscate::env_no_color()).is_ok()
+    std::env::var("NO_COLOR").is_ok() || std::env::var(ENV_NO_COLOR).is_ok()
 }
 
 fn sync_color_override() {

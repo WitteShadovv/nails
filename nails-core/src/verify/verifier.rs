@@ -2,9 +2,18 @@
 
 use super::types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
 use crate::config::Config;
-use crate::obfuscate;
 use crate::state::StateFile;
 use crate::{Filesystem, Result};
+
+/// Common locations where leftover artifact files would reveal prior activity.
+const ARTIFACT_PATHS: &[&str] = &[
+    "/tmp/nails.log",
+    "/tmp/nails.toml",
+    "/var/log/nails.log",
+    "/etc/nails",
+    "/home/.nails",
+    "/root/.nails",
+];
 
 /// Forensic validation verifier
 ///
@@ -144,11 +153,8 @@ impl<F: Filesystem> Verifier<F> {
     fn check_artifact_files(&self) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        // Use obfuscated artifact paths for forensic resistance
-        let artifact_paths = obfuscate::artifact_paths();
-
-        for path in artifact_paths {
-            let path_buf = std::path::PathBuf::from(&path);
+        for &path in ARTIFACT_PATHS {
+            let path_buf = std::path::PathBuf::from(path);
             if self.filesystem.path_exists(&path_buf)? {
                 findings.push(
                     Finding::new(
