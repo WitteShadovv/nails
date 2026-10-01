@@ -53,7 +53,7 @@ in
 
     with subtest("active status matches schema"):
         machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --no-kill-session -y"
+            f"nails --config {headless_config} activate --overlay-only --session keep -y"
         )
         active = run_command_capture(
             "status-schema-active",

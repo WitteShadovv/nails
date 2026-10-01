@@ -40,7 +40,7 @@ in
     write_exclusions_config("/tmp/exclusions.toml")
 
     with subtest("custom exclusions are honored while defaults still stay excluded"):
-        machine.succeed("nails --config /tmp/exclusions.toml activate --overlay-only --no-kill-session -y")
+        machine.succeed("nails --config /tmp/exclusions.toml activate --overlay-only --session keep -y")
         assert_status_state("active")
         assert_overlay_mounted("/etc")
         assert_overlay_mounted("/home")

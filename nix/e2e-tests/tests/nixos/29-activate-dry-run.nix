@@ -99,7 +99,7 @@ in
     with subtest("dry-run prints plan without mutations"):
         rc, stdout, stderr = run_command_capture(
             "activate-dry-run",
-            f"{wrapper_env} nails --config {headless_config} activate --dry-run --no-kill-session --flake {flake_ref}",
+            f"{wrapper_env} nails --config {headless_config} activate --dry-run --session keep --flake {flake_ref}",
         )
         assert rc == 0, f"Expected dry-run success, got rc={rc}, stdout={stdout!r}, stderr={stderr!r}"
         assert "NAILS Dry-Run: Activation Preview" in stdout, f"Unexpected dry-run output: {stdout!r}"

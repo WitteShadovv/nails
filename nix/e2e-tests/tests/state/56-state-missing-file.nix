@@ -50,7 +50,7 @@ in
 
     with subtest("activation recreates state file and succeeds"):
         machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --no-kill-session -y"
+            f"nails --config {headless_config} activate --overlay-only --session keep -y"
         )
         assert_status_state("Active", config_path=headless_config)
         assert_overlay_mounted("/home")

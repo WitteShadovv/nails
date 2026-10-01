@@ -50,7 +50,7 @@ in
 
     with subtest("active status exits zero"):
         machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --no-kill-session -y"
+            f"nails --config {headless_config} activate --overlay-only --session keep -y"
         )
         active = run_command_capture(
             "status-zero-active",

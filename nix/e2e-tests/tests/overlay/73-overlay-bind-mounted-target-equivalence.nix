@@ -38,7 +38,7 @@ in
 
     with subtest("phase 2: activation succeeds without deriving a target-equivalent lowerdir"):
         machine.succeed(
-            f"nails --config {config_path} activate --overlay-only --no-kill-session -y"
+            f"nails --config {config_path} activate --overlay-only --session keep -y"
         )
         machine.succeed("mount | grep -F 'on /srv type overlay ('")
         baseline = machine.succeed("cat /srv/store/baseline.txt").strip()

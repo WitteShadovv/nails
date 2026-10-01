@@ -14,7 +14,7 @@ pub(super) fn execute_dry_run(
     config: &Config,
     no_preflight: bool,
     overlay_only: bool,
-    no_kill_session: bool,
+    kill_session: bool,
     style: Style,
 ) -> ExitStatus {
     use nails_core::preflight::CheckResult;
@@ -77,7 +77,6 @@ pub(super) fn execute_dry_run(
 
     // 3. Session detection
     println!("--- Session Management ---");
-    let kill_session = !no_kill_session;
     if kill_session {
         match nails_core::detect_session_context() {
             Ok(ctx) => {
@@ -101,7 +100,7 @@ pub(super) fn execute_dry_run(
             }
         }
     } else {
-        println!("  {} Session kill disabled (--no-kill-session)", info);
+        println!("  {} Session kill disabled (--session keep)", info);
     }
     println!();
 
@@ -288,11 +287,11 @@ mod tests {
         };
 
         let status = match case.as_str() {
-            "skip-preflight-overlay-only" => execute_dry_run(&config, true, true, true, ASCII),
-            "run-preflight" => execute_dry_run(&config, false, false, true, ASCII),
+            "skip-preflight-overlay-only" => execute_dry_run(&config, true, true, false, ASCII),
+            "run-preflight" => execute_dry_run(&config, false, false, false, ASCII),
             "flake-session-check" => {
                 config.nixos_flake = Some("/etc/nixos#test-host".to_string());
-                execute_dry_run(&config, true, false, false, ASCII)
+                execute_dry_run(&config, true, false, true, ASCII)
             }
             other => panic!("unknown dry-run subprocess case: {other}"),
         };
@@ -306,7 +305,7 @@ mod tests {
 
         assert!(output.status.success(), "stdout={stdout}");
         assert!(stdout.contains("[WARN] Pre-flight checks skipped (--no-preflight)"));
-        assert!(stdout.contains("[INFO] Session kill disabled (--no-kill-session)"));
+        assert!(stdout.contains("[INFO] Session kill disabled (--session keep)"));
         assert!(stdout.contains("Overlay-only mode: NixOS profile switch would be skipped"));
     }
 

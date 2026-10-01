@@ -44,7 +44,7 @@ in
     with subtest("activate refuses an unknown top-level key with a hint"):
         result = run_command_capture(
             "config-unknown-key-activate",
-            "nails --config /tmp/unknown-key.toml activate --overlay-only --no-kill-session -y",
+            "nails --config /tmp/unknown-key.toml activate --overlay-only --session keep -y",
         )
         assert_exit_code(result, 3)
         assert_result_contains(
@@ -57,7 +57,7 @@ in
     with subtest("activate refuses an unknown nested key with a hint"):
         result = run_command_capture(
             "config-unknown-nested-key-activate",
-            "nails --config /tmp/unknown-nested-key.toml activate --dry-run --overlay-only --no-kill-session",
+            "nails --config /tmp/unknown-nested-key.toml activate --dry-run --overlay-only --session keep",
         )
         assert_exit_code(result, 3)
         assert_result_contains(result, ["did you mean `enabled`?"], stream="stderr")

@@ -28,7 +28,7 @@
     def activate_for_user(
         config_path,
         shell_path,
-        extra_args="--overlay-only --no-kill-session -y",
+        extra_args="--overlay-only --session keep -y",
         user="testuser",
         home="/home/testuser",
     ):
@@ -68,7 +68,7 @@
             + shlex.quote(shell_path)
             + " nails --config "
             + shlex.quote(config_path)
-            + " deactivate"
+            + " deactivate -y"
         )
         run_detached_command(unit_name, command)
         machine.wait_for_shutdown()

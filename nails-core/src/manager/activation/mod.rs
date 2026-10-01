@@ -142,8 +142,18 @@ fn restart_session_after_success(_plan: &crate::process::SessionRestartPlan) -> 
 
 impl<F: Filesystem> NailsManager<F> {
     /// Activate overlays with default options.
+    ///
+    /// This convenience entry point drives the mount/switch path without
+    /// touching the graphical session, so it keeps the session and allows
+    /// pivot fallback regardless of the secure CLI defaults carried by
+    /// [`ActivateOptions::default`].
     pub fn activate(&mut self, no_preflight: bool) -> Result<()> {
-        self.activate_with_options(crate::ActivateOptions::default(), no_preflight)
+        let options = crate::ActivateOptions {
+            kill_session: false,
+            no_pivot: false,
+            ..crate::ActivateOptions::default()
+        };
+        self.activate_with_options(options, no_preflight)
     }
 
     /// Activate overlays with custom activation options.

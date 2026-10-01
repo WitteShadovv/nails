@@ -37,7 +37,7 @@ in
 
     print("\n=== Setting up Hidden Volume and Creating Markers ===")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
     machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
     print("✓ NAILS activated")
 

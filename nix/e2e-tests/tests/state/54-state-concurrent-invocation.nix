@@ -53,7 +53,7 @@ in
         run_detached_captured_command(
             "nails-activate-concurrent-primary",
             "state-concurrent-primary",
-            f"{env_prefix} nails --config {headless_config} activate --overlay-only --no-kill-session -y",
+            f"{env_prefix} nails --config {headless_config} activate --overlay-only --session keep -y",
         )
         primary_rc_path = "/tmp/state-concurrent-primary.rc"
         machine.wait_until_succeeds(
@@ -80,7 +80,7 @@ in
     with subtest("second invocation fails fast on the inter-process lock"):
         rc, stdout, stderr = capture_command(
             "state-concurrent-secondary",
-            f"nails --config {headless_config} activate --overlay-only --no-kill-session -y",
+            f"nails --config {headless_config} activate --overlay-only --session keep -y",
         )
         assert rc != 0, f"Expected second activation to fail, got rc={rc}, stdout={stdout!r}, stderr={stderr!r}"
         combined = (stdout + stderr).lower()

@@ -39,7 +39,7 @@ in
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
     with subtest("plant representative cleanup targets"):
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
         machine.succeed("mkdir -p /mnt/hidden-volume/logs")
         machine.succeed("printf 'fast-mode-log\n' > /mnt/hidden-volume/logs/nails.log")
         machine.succeed("printf 'nails fast mode history\n' >> /home/testuser/.bash_history")

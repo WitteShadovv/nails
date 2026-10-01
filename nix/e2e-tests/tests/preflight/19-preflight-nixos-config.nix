@@ -52,7 +52,7 @@ in
         )
         result = run_command_capture(
             "preflight-nixos-config-fail",
-            f"nails --config {config_path} activate --no-kill-session -y",
+            f"nails --config {config_path} activate --session keep -y",
         )
         assert_command_failed(result)
         assert_status_state("inactive", config_path=config_path)

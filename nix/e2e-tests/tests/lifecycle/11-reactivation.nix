@@ -38,7 +38,7 @@ in
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
     print("\n=== Phase 1: First Activation ===")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
     machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
     wait_for_status_state("Active", config_path=headless_config)
     assert_overlay_mounted("/home")
@@ -70,7 +70,7 @@ in
     assert "REACTIVATION_DATA_1" in content, f"Expected data in hidden volume, got: {content}"
     print("✓ Data persists in hidden volume after deactivation")
 
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
     machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
     wait_for_status_state("Active", config_path=headless_config)
     assert_overlay_mounted("/home")

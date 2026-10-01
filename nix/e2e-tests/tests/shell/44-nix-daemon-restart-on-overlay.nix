@@ -181,7 +181,7 @@ let
 
       "$nails_bin" \
         --config "$config_path" \
-        activate --overlay-only --no-kill-session -y
+        activate --overlay-only --session keep -y
 
       has_nix_overlay
       echo MARKER:overlay-present

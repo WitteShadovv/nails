@@ -246,7 +246,7 @@ fn activate_json_streams_ndjson_ending_in_a_result_event() {
         .arg("--no-log-file")
         .arg("--config")
         .arg(&config_path)
-        .args(["activate", "--no-kill-session", "--no-preflight", "--json"])
+        .args(["activate", "--session", "keep", "--no-preflight", "--json"])
         .output()
         .unwrap();
 

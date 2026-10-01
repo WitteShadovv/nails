@@ -21,6 +21,7 @@ use nails_core::{
     ActivateOptions, CliOverrides, Filesystem, NailsManager, NixOSBuilder, PreFlightCheck,
     RealFilesystem, Verbosity,
 };
+use std::io::IsTerminal;
 use std::time::Instant;
 
 fn suspicious_check_name() -> String {
@@ -56,13 +57,9 @@ pub fn execute(
 ) -> ExitStatus {
     let ActivateArgs {
         no_preflight,
-        no_clear_history,
-        kill_session: _,
-        no_kill_session,
-        accept_pivot_risks,
-        no_pivot: _,
+        session: _,
+        pivot: _,
         yes: _,
-        interactive,
         ref nixos_flake,
         dry_run,
         overlay_only,
@@ -70,18 +67,9 @@ pub fn execute(
     let verbosity = settings.verbosity;
     let json = settings.is_json();
 
-    // Apply defaults: kill_session, yes, and no_pivot are enabled by default
-    // Users must explicitly disable them with --no-kill-session, --interactive, or --accept-pivot-risks
-    let kill_session = !no_kill_session; // Default true unless explicitly disabled
-    let yes = !interactive; // Default true unless explicitly disabled
-    let no_pivot = !accept_pivot_risks; // Default true unless explicitly disabled
-
-    // Build ActivateOptions from CLI flags
+    // Map the --session/--pivot/-y flags onto the core options, then layer the
+    // resolved output settings on top.
     let mut options = ActivateOptions {
-        kill_session,
-        accept_pivot_risks,
-        no_pivot,
-        yes,
         quiet: settings.is_quiet(),
         verbosity: match verbosity {
             Verbosity::Quiet | Verbosity::Normal => 0,
@@ -90,38 +78,10 @@ pub fn execute(
         },
         json,
         no_color: !settings.color_stdout,
-        overlay_only,
-        skip_process_detection_override: None, // Use default test behavior
-        session_kill_confirmed: false,
-        pre_activation_cleanup: true, // Default to running pre-activation cleanup
+        ..args.to_activate_options()
     };
 
-    if options.kill_session {
-        if !options.yes {
-            return report_error(
-                json,
-                "activate",
-                ExitStatus::Usage,
-                ErrorBody::new(
-                    "usage",
-                    "--kill-session is non-interactive after detach; use --yes",
-                ),
-            );
-        }
-        if !options.accept_pivot_risks && !options.no_pivot {
-            return report_error(
-                json,
-                "activate",
-                ExitStatus::Usage,
-                ErrorBody::new(
-                    "usage",
-                    "--kill-session requires --accept-pivot-risks or --no-pivot to avoid prompts",
-                ),
-            );
-        }
-    }
-
-    // Validate options (check for conflicting flags)
+    // Validate options (defensive: the typed CLI enums cannot produce a conflict).
     if let Err(e) = options.validate() {
         return report_error(
             json,
@@ -131,9 +91,9 @@ pub fn execute(
         );
     }
 
-    // CLI flags override config file values
+    // Activate no longer overrides clear_history; only deactivation clears it.
     let cli_overrides = CliOverrides {
-        clear_history: if no_clear_history { Some(false) } else { None },
+        clear_history: None,
         nixos_flake: nixos_flake.clone(),
     };
 
@@ -162,9 +122,31 @@ pub fn execute(
             &config,
             no_preflight,
             overlay_only,
-            no_kill_session,
+            options.kill_session,
             settings.stdout_style(),
         );
+    }
+
+    // Confirmation gate: -y proceeds unattended; otherwise a terminal confirms
+    // (the session-kill prompt below) and a non-terminal is refused here, before
+    // anything is staged, mounted or switched, so activation never ends a session
+    // with no one watching. A detached worker re-runs this command inside a
+    // transient service with no terminal; its parent already confirmed, so it
+    // must neither prompt nor refuse.
+    let already_detached = std::env::var_os(nails_core::constants::ENV_DETACHED).is_some();
+    if !options.yes && !already_detached && !std::io::stdin().is_terminal() {
+        return report_error(
+            json,
+            "activate",
+            ExitStatus::Usage,
+            ErrorBody::new(
+                "needs_confirmation",
+                "activate needs confirmation but stdin is not a terminal; pass -y/--yes to run non-interactively",
+            ),
+        );
+    }
+    if already_detached {
+        options.session_kill_confirmed = true;
     }
 
     let state_path = config.state_file_path.clone();
@@ -212,6 +194,37 @@ pub fn execute(
 
     // Set verbosity level
     manager.set_verbosity(verbosity);
+
+    // Detect a graphical session up front: it decides both whether we detach
+    // and whether we must confirm the session kill, and that confirmation has
+    // to come before any pre-flight staging writes to the hidden volume.
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let mut session_ctx = None;
+    if options.kill_session
+        && let Ok(ctx) = nails_core::detect_session_context()
+        && ctx.kind == nails_core::SessionKind::GraphicalUser
+    {
+        session_ctx = Some(ctx);
+    }
+
+    // Confirm the session kill before anything is staged, mounted or switched.
+    // With -y (or in the already-confirmed detached worker) this returns at
+    // once; otherwise it prompts on the terminal and a decline aborts with the
+    // state, mounts and session untouched.
+    if options.kill_session
+        && !options.session_kill_confirmed
+        && let Some(ref ctx) = session_ctx
+    {
+        if let Err(e) = nails_core::prompt_session_kill_confirmation(ctx, options.yes) {
+            return report_error(
+                json,
+                "activate",
+                ExitStatus::Failed,
+                ErrorBody::new("session", e.to_string()),
+            );
+        }
+        options.session_kill_confirmed = true;
+    }
 
     // If kill-session, run preflight before detaching so output stays visible.
     let mut skip_preflight = no_preflight;
@@ -324,32 +337,12 @@ pub fn execute(
         skip_preflight = true;
     }
 
-    // Detach if we're about to kill the GUI session so the worker survives it
-    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    let mut session_ctx = None;
-    if options.kill_session
-        && let Ok(ctx) = nails_core::detect_session_context()
-        && ctx.kind == nails_core::SessionKind::GraphicalUser
+    // Detach to a transient service before killing the GUI session so the
+    // worker survives it. The parent reports the handoff and exits inside this
+    // call; a non-graphical or keep-session run returns and continues here.
+    if let Err(e) =
+        maybe_detach_for_session_kill(options.kill_session, &argv, session_ctx.as_ref(), json)
     {
-        session_ctx = Some(ctx);
-    }
-
-    if options.kill_session
-        && !options.session_kill_confirmed
-        && let Some(ref ctx) = session_ctx
-    {
-        if let Err(e) = nails_core::prompt_session_kill_confirmation(ctx, options.yes) {
-            return report_error(
-                json,
-                "activate",
-                ExitStatus::Failed,
-                ErrorBody::new("session", e.to_string()),
-            );
-        }
-        options.session_kill_confirmed = true;
-    }
-
-    if let Err(e) = maybe_detach_for_session_kill(kill_session, &argv, session_ctx.as_ref()) {
         return report_error(
             json,
             "activate",

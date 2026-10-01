@@ -75,7 +75,7 @@ in
       documentation.nixos.enable = false;
     }
     EOF""")
-        machine.succeed(f"{wrapper_env} nails --config {headless_config} activate --no-kill-session -y")
+        machine.succeed(f"{wrapper_env} nails --config {headless_config} activate --session keep -y")
         assert_status_state_local("Active", headless_config)
         assert_overlay_mounted_local("/etc")
         first_rebuild_log = machine.succeed("cat /var/lib/nails-tests/nixos-rebuild-hardware-imports.log")
@@ -96,7 +96,7 @@ in
         before_second_activation = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
         assert before_second_activation.count("./nails/configuration.nix") == 1, \
             f"Expected one injected import before second activation, got: {before_second_activation!r}"
-        machine.succeed(f"{wrapper_env} nails --config {headless_config} activate --no-kill-session -y")
+        machine.succeed(f"{wrapper_env} nails --config {headless_config} activate --session keep -y")
         assert_status_state_local("Active", headless_config)
         rebuild_log = machine.succeed("cat /var/lib/nails-tests/nixos-rebuild-hardware-imports.log")
         assert rebuild_log.count("test -I nixos-config=/etc/nixos/configuration.nix") == 2, \

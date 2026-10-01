@@ -51,7 +51,7 @@ in
     with subtest("relative nixos flake references are rejected during preflight"):
         result = run_command_capture(
             "preflight-nixos-build-target",
-            "nails --config /tmp/preflight-build-target.toml activate --no-kill-session -y",
+            "nails --config /tmp/preflight-build-target.toml activate --session keep -y",
         )
         assert_command_failed(result)
         assert_result_contains(
@@ -81,7 +81,7 @@ in
         ]) + "\n")
         result = run_command_capture(
             "preflight-build-target-explicit-attr-missing",
-            "nails --config /tmp/preflight-build-target.toml activate --no-kill-session -y",
+            "nails --config /tmp/preflight-build-target.toml activate --session keep -y",
         )
         assert_command_failed(result)
         stderr = result["stderr"]

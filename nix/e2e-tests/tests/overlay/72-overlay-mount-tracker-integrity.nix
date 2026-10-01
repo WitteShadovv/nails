@@ -45,7 +45,7 @@ in
 
     with subtest("phase 2: active state matches status, state.json, and real mounts"):
         machine.succeed(
-            f"nails --config {config_path} activate --overlay-only --no-kill-session -y"
+            f"nails --config {config_path} activate --overlay-only --session keep -y"
         )
         for path in expected_paths:
             assert_overlay_mounted(path)

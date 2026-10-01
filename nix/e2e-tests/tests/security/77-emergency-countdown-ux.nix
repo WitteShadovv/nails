@@ -40,7 +40,7 @@ in
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
     with subtest("default emergency countdown is visible and ordered"):
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
         prefix = "/run/nails-tests/emergency-countdown-default"
         started_at = now()
@@ -73,7 +73,7 @@ in
         assert_status_state("inactive", payload=status)
 
     with subtest("--no-countdown removes countdown text and delay"):
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
         prefix = "/run/nails-tests/emergency-countdown-disabled"
         started_at = now()

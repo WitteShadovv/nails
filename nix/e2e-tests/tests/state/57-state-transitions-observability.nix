@@ -52,7 +52,7 @@ in
         run_detached_captured_command(
             "nails-activate-observability",
             "state-observability-primary",
-            f"{env_prefix} nails --config {headless_config} activate --overlay-only --no-kill-session -y",
+            f"{env_prefix} nails --config {headless_config} activate --overlay-only --session keep -y",
         )
         primary_rc_path = "/tmp/state-observability-primary.rc"
         machine.wait_until_succeeds(

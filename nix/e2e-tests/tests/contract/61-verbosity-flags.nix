@@ -59,7 +59,7 @@ in
                     shlex.quote(headless_config),
                     "activate",
                     "--overlay-only",
-                    "--no-kill-session",
+                    "--session keep",
                     "-y",
                     "--ascii",
                     flag,

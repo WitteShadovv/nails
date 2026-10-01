@@ -154,7 +154,8 @@ fn activate_exits_3_on_unknown_key_before_any_operation() {
             bad.path().to_str().unwrap(),
             "activate",
             "--dry-run",
-            "--no-kill-session",
+            "--session",
+            "keep",
         ])
         .assert()
         .code(3)

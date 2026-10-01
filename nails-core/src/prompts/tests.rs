@@ -399,8 +399,8 @@ fn test_display_abort_message_contains_suggestions() {
     let output_str = String::from_utf8(output).unwrap();
     assert!(output_str.contains("Suggestions:"));
     assert!(output_str.contains("nails activate"));
-    assert!(output_str.contains("--kill-session"));
-    assert!(output_str.contains("--accept-pivot-risks"));
+    assert!(output_str.contains("--session kill"));
+    assert!(output_str.contains("--pivot allow"));
 }
 
 #[test]

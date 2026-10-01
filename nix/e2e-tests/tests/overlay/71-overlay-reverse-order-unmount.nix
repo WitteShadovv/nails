@@ -36,7 +36,7 @@ in
 
     with subtest("phase 1: activate overlays in a known order"):
         machine.succeed(
-            f"nails --config {config_path} activate --overlay-only --no-kill-session -y"
+            f"nails --config {config_path} activate --overlay-only --session keep -y"
         )
         for path in ["/home", "/etc", "/srv"]:
             assert_overlay_mounted(path)

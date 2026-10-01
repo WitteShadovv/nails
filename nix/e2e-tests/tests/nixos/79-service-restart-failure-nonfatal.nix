@@ -80,7 +80,7 @@ in
     with subtest("activation stays successful when only service restarts fail"):
         rc, stdout, stderr = run_command_capture(
             "service-restart-nonfatal",
-            f"PATH=/tmp/nails-wrapper/bin:$PATH nails --config {headless_config} activate --no-kill-session -y",
+            f"PATH=/tmp/nails-wrapper/bin:$PATH nails --config {headless_config} activate --session keep -y",
         )
         assert rc == 0, f"Expected activation success, got rc={rc} stdout={stdout!r} stderr={stderr!r}"
         combined = stdout + stderr

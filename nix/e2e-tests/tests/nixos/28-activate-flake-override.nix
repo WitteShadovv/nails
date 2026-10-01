@@ -101,7 +101,7 @@ in
 
     with subtest("explicit flake override dispatches to nixos-rebuild --flake"):
         machine.succeed(
-            f"{wrapper_env} nails --config {headless_config} activate --no-kill-session -y --flake {flake_ref}"
+            f"{wrapper_env} nails --config {headless_config} activate --session keep -y --flake {flake_ref}"
         )
         rebuild_log = machine.succeed("cat /tmp/nixos-rebuild-flake.log")
         assert f"--flake {flake_ref}" in rebuild_log, \

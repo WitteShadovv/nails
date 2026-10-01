@@ -75,7 +75,7 @@ in
     with subtest("failed activation rolls state back to inactive"):
         rc, stdout, stderr = capture_command(
             "state-guard-rollback-activate",
-            f"nails --config {config_path} activate --overlay-only --no-kill-session -y",
+            f"nails --config {config_path} activate --overlay-only --session keep -y",
         )
         assert rc == 1, f"Expected activation failure, got rc={rc}, stdout={stdout!r}, stderr={stderr!r}"
 

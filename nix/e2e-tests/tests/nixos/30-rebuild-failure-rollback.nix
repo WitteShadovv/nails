@@ -116,7 +116,7 @@ in
     with subtest("failed rebuild preserves activation and surfaces diagnostics"):
         rc, stdout, stderr = run_command_capture(
             "rebuild-failure",
-            f"{wrapper_env} nails --config {headless_config} activate --no-kill-session -y",
+            f"{wrapper_env} nails --config {headless_config} activate --session keep -y",
         )
         assert rc == 0, f"Expected activation success-with-warning, got rc={rc} stdout={stdout!r} stderr={stderr!r}"
         combined_output = stdout + stderr

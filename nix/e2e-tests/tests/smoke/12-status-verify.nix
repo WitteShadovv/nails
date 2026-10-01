@@ -82,7 +82,7 @@ in
 
     print("\n=== Test 6: Status shows Active after activation ===")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
     status_json = json.loads(machine.succeed("nails status --json"))["data"]
     assert status_json["state"]["kind"] == "active", \

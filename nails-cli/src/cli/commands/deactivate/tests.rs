@@ -97,6 +97,11 @@ fn subprocess_deactivate_entrypoint() {
 
     let keep_history = DeactivateArgs {
         no_clear_history: true,
+        yes: true,
+    };
+    let confirmed = DeactivateArgs {
+        yes: true,
+        ..DeactivateArgs::default()
     };
     let json_debug = OutputSettings {
         verbosity: Verbosity::Debug,
@@ -121,6 +126,18 @@ fn subprocess_deactivate_entrypoint() {
             execute(&json_debug, &keep_history, config, allow_real_ops)
         }
         "detach-error-human" => execute(
+            &OutputSettings::default(),
+            &confirmed,
+            config,
+            allow_real_ops,
+        ),
+        "reboot-guidance-order" => execute(
+            &OutputSettings::default(),
+            &confirmed,
+            config,
+            allow_real_ops,
+        ),
+        "needs-confirmation-off-tty" => execute(
             &OutputSettings::default(),
             &DeactivateArgs::default(),
             config,
@@ -427,4 +444,72 @@ fn deactivate_recovery_guidance_default_mode_uses_unicode_warning_text() {
 
     assert!(combined.contains("⚠ Important"));
     assert!(combined.contains("hidden volume is dismounted"));
+}
+
+#[test]
+fn execute_deactivate_refuses_off_tty_without_yes_before_any_teardown() {
+    use std::io::Write;
+
+    // The safety guard passes (a non-build-dir hidden root), so the confirmation
+    // gate is what must stop the reboot: without -y and without a terminal it
+    // refuses before unmounting, restoring or rebooting anything.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config = tempfile::NamedTempFile::new().unwrap();
+    writeln!(
+        config,
+        "hidden_volume_root = \"{}\"\noverlays = []",
+        hidden_root.display()
+    )
+    .unwrap();
+
+    let output = run_subprocess("needs-confirmation-off-tty", Some(config.path()));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert!(
+        stderr.contains("stdin is not a terminal"),
+        "stderr={stderr}"
+    );
+}
+
+#[test]
+fn execute_deactivate_emits_recovery_guidance_before_the_reboot_handoff() {
+    use std::io::Write;
+
+    // The core deactivation reboots as its last step, so the CLI must print the
+    // recovery guidance before handing off to it. With an inactive hidden root
+    // the handoff fails instead of rebooting, which lets this test observe that
+    // the guidance was already on stderr before that outcome.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config = tempfile::NamedTempFile::new().unwrap();
+    writeln!(
+        config,
+        "hidden_volume_root = \"{}\"\noverlays = []",
+        hidden_root.display()
+    )
+    .unwrap();
+
+    let output = run_subprocess("reboot-guidance-order", Some(config.path()));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let guidance_at = stderr
+        .find("Important")
+        .unwrap_or_else(|| panic!("recovery guidance missing from stderr: {stderr}"));
+    let outcome_at = stderr
+        .find("error:")
+        .unwrap_or_else(|| panic!("deactivation outcome missing from stderr: {stderr}"));
+    assert!(
+        guidance_at < outcome_at,
+        "guidance must precede the deactivation handoff: {stderr}"
+    );
+    assert!(
+        stderr.contains("hidden volume is dismounted"),
+        "stderr={stderr}"
+    );
 }

@@ -28,7 +28,10 @@ pub(crate) fn exit_process(code: u8) -> ! {
     std::process::exit(i32::from(code));
 }
 
-fn maybe_exit_after_detach(mut cmd: Command, success_message: &[&str]) -> Result<(), NailsError> {
+fn maybe_exit_after_detach(
+    mut cmd: Command,
+    report_success: impl FnOnce(),
+) -> Result<(), NailsError> {
     let output = cmd
         .output()
         .map_err(|e| NailsError::InvalidState(format!("Failed to execute systemd-run: {}", e)))?;
@@ -40,11 +43,36 @@ fn maybe_exit_after_detach(mut cmd: Command, success_message: &[&str]) -> Result
         )));
     }
 
-    for line in success_message {
-        eprintln!("{line}");
-    }
+    report_success();
 
     exit_process(0);
+}
+
+/// Report a successful activation handoff to the detached worker.
+///
+/// Under `--json` the parent emits one final success envelope whose
+/// `data.status` is `"detached"`; otherwise it prints the follow-up command
+/// with the absolute binary path so the operator can check progress after the
+/// session restarts.
+fn report_session_detach(exe_path: &Path, json: bool) {
+    if json {
+        #[derive(serde::Serialize)]
+        struct DetachedData {
+            status: &'static str,
+        }
+        crate::cli::output::envelope::Envelope::success(
+            "activate",
+            DetachedData { status: "detached" },
+        )
+        .print();
+    } else {
+        eprintln!("Detached to background via systemd transient service.");
+        eprintln!("Activation continues in the background after your session restarts.");
+        eprintln!(
+            "Run 'sudo {} status' to check progress.",
+            exe_path.display()
+        );
+    }
 }
 
 fn should_skip_detach() -> bool {
@@ -147,13 +175,14 @@ pub fn maybe_detach_for_session_kill(
     kill_session: bool,
     args: &[OsString],
     session_ctx: Option<&SessionContext>,
+    json: bool,
 ) -> Result<(), NailsError> {
     // Testing override: allow tests to bypass actual detaching/spawn.
     if should_skip_detach() {
         return Ok(());
     }
 
-    // Only detach when --kill-session is requested and we look like a GUI session.
+    // Only detach when a session kill is requested and we look like a GUI session.
     if !kill_session {
         return Ok(());
     }
@@ -255,13 +284,7 @@ pub fn maybe_detach_for_session_kill(
     cmd.args(args.iter().skip(1));
 
     // Execute systemd-run
-    maybe_exit_after_detach(
-        cmd,
-        &[
-            "Detached to background via systemd transient service.",
-            "Handoff complete; activation continues in background.",
-        ],
-    )
+    maybe_exit_after_detach(cmd, || report_session_detach(&exe_path, json))
 }
 
 /// Detach deactivation to a transient service so shell cleanup cannot kill the caller.
@@ -307,13 +330,10 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
     set_target_identity_from_environment(&mut cmd);
     propagate_shell_cleanup_protection(&mut cmd);
 
-    maybe_exit_after_detach(
-        cmd,
-        &[
-            "Detached to background via systemd transient service.",
-            "Handoff complete; deactivation continues in background.",
-        ],
-    )
+    maybe_exit_after_detach(cmd, || {
+        eprintln!("Detached to background via systemd transient service.");
+        eprintln!("Handoff complete; deactivation continues in background.");
+    })
 }
 
 #[cfg(test)]

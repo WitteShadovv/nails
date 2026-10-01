@@ -36,7 +36,7 @@ in
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
     with subtest("explicit persistent overlay config mounts every configured target"):
-        machine.succeed("nails --config /tmp/explicit-overlays.toml activate --overlay-only --no-kill-session -y")
+        machine.succeed("nails --config /tmp/explicit-overlays.toml activate --overlay-only --session keep -y")
         for path in configured_targets:
             assert_overlay_mounted(path)
         status = assert_status_state("active", config_path="/tmp/explicit-overlays.toml")
@@ -68,7 +68,7 @@ in
         assert_hidden_volume_has("/srv/extended/proof")
         assert_hidden_volume_has("/opt/extended/proof")
 
-        machine.succeed("nails --config /tmp/explicit-overlays.toml activate --overlay-only --no-kill-session -y")
+        machine.succeed("nails --config /tmp/explicit-overlays.toml activate --overlay-only --session keep -y")
         for path in configured_targets:
             assert_overlay_mounted(path)
         machine.succeed("test -e /var/lib/extended-proof")

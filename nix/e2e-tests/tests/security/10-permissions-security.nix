@@ -32,7 +32,7 @@ in
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
     print("\n=== Test 1: Log file permissions ===")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
     log_files = machine.succeed(
       "find /var/log /mnt/hidden-volume/logs -type f "
@@ -57,7 +57,7 @@ in
     machine.succeed("ln -sfn /mnt/hidden-volume /tmp/symlink-to-hidden")
     machine.succeed("cp ${symlinkFixture} /tmp/symlink-config.toml")
 
-    result = machine.execute("nails --config /tmp/symlink-config.toml activate --overlay-only --no-kill-session -y 2>&1")
+    result = machine.execute("nails --config /tmp/symlink-config.toml activate --overlay-only --session keep -y 2>&1")
     print(f"  Symlink activation result: exit={result[0]}")
     if result[0] != 0:
         print("✓ Symlinked hidden-volume root is rejected")
@@ -70,7 +70,7 @@ in
     print("\n=== Test 3: Path traversal rejection ===")
     machine.succeed("cp ${traversalFixture} /tmp/traversal-config.toml")
 
-    result = machine.execute("nails --config /tmp/traversal-config.toml activate --overlay-only --no-kill-session -y 2>&1")
+    result = machine.execute("nails --config /tmp/traversal-config.toml activate --overlay-only --session keep -y 2>&1")
     print(f"  Path traversal activation result: exit={result[0]}")
     if result[0] != 0:
         print("✓ Path traversal in config is rejected")

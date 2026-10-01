@@ -39,7 +39,7 @@ in
 
     with subtest("phase 1: activate all extended targets"):
         machine.succeed(
-            f"nails --config {config_path} activate --overlay-only --no-kill-session -y"
+            f"nails --config {config_path} activate --overlay-only --session keep -y"
         )
         for path in ["/var", "/tmp", "/srv", "/opt"]:
             assert_overlay_mounted(path)

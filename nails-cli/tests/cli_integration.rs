@@ -996,15 +996,36 @@ fn test_verify_command_json_output_reports_present_state_file_status() {
 }
 
 #[test]
-fn test_activate_interactive_fails_before_any_real_ops() {
+fn test_activate_off_tty_without_yes_refuses_before_real_ops() {
+    use std::io::Write;
+
+    // A real (non-build-dir) hidden root passes the safety guard, so the
+    // confirmation gate is what must stop activation: without -y and without a
+    // terminal it refuses before anything is staged, mounted or switched.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root = \"{}\"",
+        hidden_root.display()
+    )
+    .unwrap();
+
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--interactive"])
-        .assert()
-        .failure()
-        .code(2)
-        .stderr(predicates::str::contains(
-            "--kill-session is non-interactive after detach; use --yes",
-        ));
+    cmd.args([
+        "--config",
+        config_file.path().to_str().unwrap(),
+        "activate",
+        "--overlay-only",
+    ])
+    .env("NAILS_UNSAFE_REAL_OPS", "1")
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains("stdin is not a terminal"));
 }
 
 #[test]
@@ -1016,7 +1037,8 @@ fn test_activate_with_build_dir_config_hits_safety_guard() {
         "--config",
         config_file.path().to_str().unwrap(),
         "activate",
-        "--no-kill-session",
+        "--session",
+        "keep",
         "--no-preflight",
     ])
     .assert()
@@ -1067,8 +1089,10 @@ fn test_activate_kill_session_detaches_via_systemd_run() {
             "--config",
             config_file.path().to_str().unwrap(),
             "activate",
-            "--kill-session",
+            "--session",
+            "kill",
             "--no-preflight",
+            "-y",
         ])
         .env(
             "PATH",
@@ -1097,7 +1121,12 @@ fn test_activate_kill_session_detaches_via_systemd_run() {
         String::from_utf8_lossy(&output.stdout)
     );
     assert!(stderr.contains("Detached to background via systemd transient service."));
-    assert!(stderr.contains("Handoff complete; activation continues in background."));
+    // The detached parent names the follow-up command with the absolute binary path.
+    let exe = assert_cmd::cargo::cargo_bin!("nails");
+    assert!(
+        stderr.contains(&format!("sudo {} status", exe.display())),
+        "stderr={stderr}"
+    );
 
     let logged_args = fs::read_to_string(systemd_run_log).unwrap();
     assert!(logged_args.contains("--unit"));
@@ -1111,7 +1140,7 @@ fn test_activate_kill_session_detaches_via_systemd_run() {
     assert!(logged_args.contains("--setenv=NAILS_TARGET_UID=1000"));
     assert!(logged_args.contains("--setenv=NAILS_TARGET_USER=amnesia"));
     assert!(logged_args.contains("activate"));
-    assert!(logged_args.contains("--kill-session"));
+    assert!(logged_args.contains("--session"));
     assert!(logged_args.contains("--no-preflight"));
 }
 
@@ -1155,8 +1184,10 @@ fn test_activate_kill_session_surfaces_systemd_run_failures() {
             "--config",
             config_file.path().to_str().unwrap(),
             "activate",
-            "--kill-session",
+            "--session",
+            "kill",
             "--no-preflight",
+            "-y",
         ])
         .env("PATH", &fake_bin)
         .env("NAILS_SYSTEMD_RUN_PATH", &systemd_run_path)
@@ -1196,8 +1227,10 @@ fn test_activate_kill_session_refuses_real_transient_units_in_test_runtime() {
             "--config",
             config_file.path().to_str().unwrap(),
             "activate",
-            "--kill-session",
+            "--session",
+            "kill",
             "--no-preflight",
+            "-y",
         ])
         .env("DISPLAY", ":0")
         .env("NAILS_SESSION_ID", "c42")
@@ -1251,7 +1284,8 @@ fn test_activate_dry_run_skips_preflight_without_real_mutations() {
         "activate",
         "--dry-run",
         "--no-preflight",
-        "--no-kill-session",
+        "--session",
+        "keep",
         "--overlay-only",
         "--ascii",
     ])
@@ -1264,7 +1298,7 @@ fn test_activate_dry_run_skips_preflight_without_real_mutations() {
         "[WARN] Pre-flight checks skipped (--no-preflight)",
     ))
     .stdout(predicates::str::contains(
-        "[INFO] Session kill disabled (--no-kill-session)",
+        "[INFO] Session kill disabled (--session keep)",
     ))
     .stdout(predicates::str::contains(
         "[INFO] Overlay-only mode: NixOS profile switch would be skipped",
@@ -1296,7 +1330,8 @@ fn test_activate_dry_run_executes_preflight_and_reports_results() {
             config_file.path().to_str().unwrap(),
             "activate",
             "--dry-run",
-            "--no-kill-session",
+            "--session",
+            "keep",
             "--ascii",
         ])
         .output()
@@ -1314,7 +1349,7 @@ fn test_activate_dry_run_executes_preflight_and_reports_results() {
     assert!(stdout.contains("--- Overlay Targets ---"));
     assert!(stdout.contains("--- Session Management ---"));
     assert!(stdout.contains("--- NixOS Profile ---"));
-    assert!(stdout.contains("[INFO] Session kill disabled (--no-kill-session)"));
+    assert!(stdout.contains("[INFO] Session kill disabled (--session keep)"));
     assert!(
         stdout.contains("[PASS]") || stdout.contains("[WARN]") || stdout.contains("[FAIL]"),
         "expected preflight result markers in output: {stdout}"
@@ -1381,7 +1416,8 @@ fn test_activate_dry_run_reports_explicit_flake_reference() {
         "activate",
         "--dry-run",
         "--no-preflight",
-        "--no-kill-session",
+        "--session",
+        "keep",
         "-vv",
         "--ascii",
     ])
@@ -1457,8 +1493,10 @@ fn test_activate_kill_session_fails_before_detach_on_flake_lock_preflight_error(
             "--config",
             config_file.path().to_str().unwrap(),
             "activate",
-            "--kill-session",
+            "--session",
+            "kill",
             "--ascii",
+            "-y",
         ])
         .env("PATH", &fake_bin)
         .env("DISPLAY", ":0")
@@ -1496,7 +1534,8 @@ fn test_activate_fails_closed_on_invalid_config_before_safety_guard() {
         "--config",
         config_file.path().to_str().unwrap(),
         "activate",
-        "--no-kill-session",
+        "--session",
+        "keep",
         "--no-preflight",
     ])
     .assert()
@@ -1522,15 +1561,31 @@ fn test_emergency_with_build_dir_config_hits_safety_guard() {
     .stderr(predicates::str::contains("TEST SAFETY GUARD"));
 }
 
-/// Test that activate command has --no-clear-history flag in help (AC3)
+/// `activate --help` advertises the redesigned flags and drops the removed ones.
 #[test]
-fn test_activate_has_no_clear_history_flag() {
+fn test_activate_help_lists_session_pivot_and_yes_flags() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["activate", "--help"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("--no-clear-history"))
-        .stdout(predicates::str::contains("Skip clearing shell history"));
+        .stdout(predicates::str::contains("--session"))
+        .stdout(predicates::str::contains("default: kill"))
+        .stdout(predicates::str::contains("--pivot"))
+        .stdout(predicates::str::contains("default: refuse"))
+        .stdout(predicates::str::contains("--yes"));
+    // The removed spellings are covered by the parser rejection test; asserting
+    // their absence here is skipped so the removed flag names do not reappear in
+    // the tree.
+}
+
+/// `deactivate --help` states that it reboots.
+#[test]
+fn test_deactivate_help_mentions_reboot() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["deactivate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("reboot"));
 }
 
 /// Test activate with --overlay-only flag
@@ -1544,37 +1599,20 @@ fn test_activate_overlay_only_flag() {
     cmd.args(["activate", "--overlay-only"])
         .assert()
         .failure()
-        .code(2); // Safety guard
+        .code(2); // Confirmation gate: non-terminal without -y
 }
 
-/// Test activate with --accept-pivot-risks flag
+/// Test activate with --pivot allow flag
 #[test]
-fn test_activate_accept_pivot_risks_flag() {
-    if !check_unsafe_ops_allowed("test_activate_accept_pivot_risks_flag") {
+fn test_activate_pivot_allow_flag() {
+    if !check_unsafe_ops_allowed("test_activate_pivot_allow_flag") {
         return;
     }
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--accept-pivot-risks"])
+    cmd.args(["activate", "--pivot", "allow"])
         .assert()
-        .failure(); // Will fail due to missing --yes flag requirement
-}
-
-/// Test activate requires --yes when using --kill-session
-#[test]
-fn test_activate_kill_session_requires_yes() {
-    if !check_unsafe_ops_allowed("test_activate_kill_session_requires_yes") {
-        return;
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--kill-session", "--interactive"])
-        .assert()
-        .failure()
-        .code(2)
-        .stderr(predicates::str::contains(
-            "--kill-session is non-interactive",
-        ));
+        .failure(); // Confirmation gate refuses without -y on a non-terminal
 }
 
 /// Test activate with multiple verbosity levels

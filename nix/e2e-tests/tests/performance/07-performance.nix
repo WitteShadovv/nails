@@ -80,7 +80,7 @@ in
     activation_times = []
     for _ in range(1, 6):
         start = now()
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
         activation_times.append(now() - start)
 
         machine.execute("sudo nails emergency")
@@ -108,7 +108,7 @@ in
         if i > 1:
             machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
         emergency_time = run_emergency_command()
         emergency_times.append(emergency_time)
 

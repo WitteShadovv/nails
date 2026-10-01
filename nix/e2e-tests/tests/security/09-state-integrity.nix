@@ -34,7 +34,7 @@ in
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
     print("\n=== Test 1: State file existence and permissions after activate ===")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
     state_file = machine.succeed(
         "find /run /tmp /var -name '*.state' -o -name 'nails.state' -o -name 'state.json' 2>/dev/null | head -1 || "
@@ -62,7 +62,7 @@ in
     print("\n=== Test 3: State persistence across cycles ===")
     for cycle in range(1, 4):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
         status = machine.succeed("nails status")
         assert "Active" in status or "ACTIVE" in status, \

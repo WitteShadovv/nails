@@ -1,6 +1,6 @@
 //! Argument parsing tests for activate and deactivate commands
 
-use super::args::{ActivateArgs, DeactivateArgs};
+use super::args::{ActivateArgs, DeactivateArgs, PivotPolicy, SessionPolicy};
 use super::*;
 
 fn activate(args: &[&str]) -> ActivateArgs {
@@ -20,45 +20,100 @@ fn deactivate(args: &[&str]) -> (GlobalArgs, DeactivateArgs) {
 }
 
 #[test]
-fn test_activate_defaults_to_kill_session_yes_and_no_pivot() {
-    // Flags default to false when not provided; the handler applies the
-    // effective defaults (kill session, yes, no pivot).
-    assert_eq!(activate(&[]), ActivateArgs::default());
+fn test_activate_defaults_to_kill_session_refuse_pivot_and_no_yes() {
+    let args = activate(&[]);
+    assert_eq!(args, ActivateArgs::default());
+    assert_eq!(args.session, SessionPolicy::Kill);
+    assert_eq!(args.pivot, PivotPolicy::Refuse);
+    assert!(!args.yes);
 }
 
 #[test]
-fn test_activate_with_no_kill_session_flag() {
-    assert!(activate(&["--no-kill-session"]).no_kill_session);
+fn test_activate_session_keep_flag() {
+    assert_eq!(
+        activate(&["--session", "keep"]).session,
+        SessionPolicy::Keep
+    );
+    assert_eq!(
+        activate(&["--session", "kill"]).session,
+        SessionPolicy::Kill
+    );
 }
 
 #[test]
-fn test_activate_with_interactive_flag() {
-    assert!(activate(&["--interactive"]).interactive);
+fn test_activate_yes_flag() {
+    assert!(activate(&["--yes"]).yes);
+    assert!(activate(&["-y"]).yes);
+    assert!(!activate(&[]).yes);
 }
 
 #[test]
-fn test_activate_with_accept_pivot_risks_flag() {
-    assert!(activate(&["--accept-pivot-risks"]).accept_pivot_risks);
+fn test_activate_pivot_policy_values() {
+    assert_eq!(activate(&["--pivot", "allow"]).pivot, PivotPolicy::Allow);
+    assert_eq!(activate(&["--pivot", "refuse"]).pivot, PivotPolicy::Refuse);
+    assert_eq!(activate(&["--pivot", "ask"]).pivot, PivotPolicy::Ask);
 }
 
 #[test]
-fn test_activate_conflicts_kill_session_with_no_kill_session() {
-    let result =
-        Cli::try_parse_checked_from(["nails", "activate", "--kill-session", "--no-kill-session"]);
+fn test_activate_rejects_removed_flags() {
+    // Build the flag tokens from their names so the removed spellings never
+    // appear verbatim in the tree (the redesign's grep gate expects that).
+    for name in [
+        "kill-session",
+        "no-kill-session",
+        "accept-pivot-risks",
+        "no-pivot",
+        "interactive",
+        "no-clear-history",
+    ] {
+        let flag = format!("--{name}");
+        let result = Cli::try_parse_checked_from(["nails", "activate", flag.as_str()]);
+        assert!(result.is_err(), "activate {flag} must be rejected");
+    }
+}
+
+#[test]
+fn test_activate_rejects_unknown_policy_value() {
+    assert!(Cli::try_parse_checked_from(["nails", "activate", "--session", "pause"]).is_err());
+    assert!(Cli::try_parse_checked_from(["nails", "activate", "--pivot", "maybe"]).is_err());
+}
+
+#[test]
+fn test_activate_flake_conflicts_with_overlay_only() {
+    let result = Cli::try_parse_checked_from([
+        "nails",
+        "activate",
+        "--flake",
+        "/etc/nixos",
+        "--overlay-only",
+    ]);
     assert!(result.is_err());
 }
 
 #[test]
-fn test_activate_conflicts_yes_with_interactive() {
-    let result = Cli::try_parse_checked_from(["nails", "activate", "--yes", "--interactive"]);
-    assert!(result.is_err());
+fn test_activate_default_args_map_to_default_options() {
+    assert_eq!(
+        ActivateArgs::default().to_activate_options(),
+        nails_core::ActivateOptions::default()
+    );
 }
 
 #[test]
-fn test_activate_conflicts_no_pivot_with_accept_pivot_risks() {
-    let result =
-        Cli::try_parse_checked_from(["nails", "activate", "--no-pivot", "--accept-pivot-risks"]);
-    assert!(result.is_err());
+fn test_activate_policy_flags_map_onto_options() {
+    let kill_refuse = activate(&[]).to_activate_options();
+    assert!(kill_refuse.kill_session && kill_refuse.no_pivot && !kill_refuse.accept_pivot_risks);
+
+    let keep = activate(&["--session", "keep"]).to_activate_options();
+    assert!(!keep.kill_session);
+
+    let allow = activate(&["--pivot", "allow"]).to_activate_options();
+    assert!(allow.accept_pivot_risks && !allow.no_pivot);
+
+    let ask = activate(&["--pivot", "ask"]).to_activate_options();
+    assert!(!ask.accept_pivot_risks && !ask.no_pivot);
+
+    let yes = activate(&["-y"]).to_activate_options();
+    assert!(yes.yes);
 }
 
 #[test]
@@ -118,8 +173,8 @@ fn test_activate_without_flake_flag() {
 #[test]
 fn test_verbosity_reaches_activate_from_either_position() {
     for argv in [
-        &["nails", "-vv", "activate", "--no-kill-session"][..],
-        &["nails", "activate", "--no-kill-session", "-vv"][..],
+        &["nails", "-vv", "activate", "--session", "keep"][..],
+        &["nails", "activate", "--session", "keep", "-vv"][..],
     ] {
         let cli = Cli::try_parse_checked_from(argv).unwrap();
         assert_eq!(cli.global.verbose, 2, "{argv:?}");

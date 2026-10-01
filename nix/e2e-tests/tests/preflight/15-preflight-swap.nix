@@ -47,7 +47,7 @@ in
 
         result = run_command_capture(
             "preflight-swap-fail",
-            f"nails --config {config_path} activate --overlay-only --no-kill-session -y",
+            f"nails --config {config_path} activate --overlay-only --session keep -y",
         )
         assert_command_failed(result)
         assert_result_contains(result, ["swap", "Swap is enabled", "swapoff -a"], stream="stderr")
@@ -56,7 +56,7 @@ in
     with subtest("disabling swap restores a successful activation"):
         machine.succeed("swapoff /swapfile")
         machine.succeed("rm -f /swapfile")
-        machine.succeed(f"nails --config {config_path} activate --overlay-only --no-kill-session -y")
+        machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
         assert_status_state("active")
         assert_overlay_mounted("/home")
         canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-swap")

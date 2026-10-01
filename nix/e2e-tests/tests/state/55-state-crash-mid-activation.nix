@@ -52,7 +52,7 @@ in
         run_detached_captured_command(
             "nails-activate-crash-mid-activation",
             "state-crash-primary",
-            f"PATH={bin_dir}:$PATH nails --config {headless_config} activate --no-kill-session -y",
+            f"PATH={bin_dir}:$PATH nails --config {headless_config} activate --session keep -y",
         )
         machine.wait_until_succeeds(f"test -f {entered_path}", timeout=180)
         wait_for_status_state("Activating", config_path=headless_config, timeout=180)

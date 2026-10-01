@@ -59,7 +59,7 @@ in
 
     print("\n=== Testing Activation ===")
     start_time = now()
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
     activation_time = now() - start_time
     print(f"Activation completed in {activation_time:.2f}s")
 

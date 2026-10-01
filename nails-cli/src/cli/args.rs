@@ -51,6 +51,31 @@ impl Cli {
     }
 }
 
+/// What to do with the graphical session during activation.
+#[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SessionPolicy {
+    /// Terminate the graphical session before mounting (the secure default).
+    ///
+    /// Activation detaches to a background service, closes the display manager
+    /// and user session, mounts the overlays and restarts the session.
+    #[default]
+    Kill,
+    /// Keep the current session running (mounts only what can be overlaid live).
+    Keep,
+}
+
+/// How to handle a volume that can only be mounted with a pivot overlay.
+#[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PivotPolicy {
+    /// Abort rather than fall back to a pivot mount (the secure default).
+    #[default]
+    Refuse,
+    /// Fall back to a pivot mount without asking (degraded security).
+    Allow,
+    /// Prompt on a terminal before falling back to a pivot mount; refuse without one.
+    Ask,
+}
+
 /// When to emit ANSI colour.
 #[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ColorChoice {
@@ -106,7 +131,7 @@ pub struct GlobalArgs {
 pub enum Commands {
     /// Activate the hidden NixOS environment (mount overlayfs + switch profiles)
     Activate(ActivateArgs),
-    /// Deactivate and return to decoy state (unmount + cleanup)
+    /// Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
     Deactivate(DeactivateArgs),
     /// Emergency mode: rapid deactivation with countdown
     Emergency(EmergencyArgs),
@@ -131,40 +156,31 @@ pub struct ActivateArgs {
     #[arg(long)]
     pub no_preflight: bool,
 
-    /// Skip clearing shell history on deactivation
-    #[arg(long)]
-    pub no_clear_history: bool,
+    /// What to do with the graphical session (default: kill)
+    #[arg(long, value_enum, value_name = "POLICY", default_value_t = SessionPolicy::Kill)]
+    pub session: SessionPolicy,
 
-    /// Kill graphical session before activation (enabled by default)
-    #[arg(long)]
-    pub kill_session: bool,
+    /// How to handle a volume that needs a pivot mount (default: refuse)
+    #[arg(long, value_enum, value_name = "POLICY", default_value_t = PivotPolicy::Refuse)]
+    pub pivot: PivotPolicy,
 
-    /// Do not kill session (interactive mode)
-    #[arg(long, conflicts_with = "kill_session")]
-    pub no_kill_session: bool,
-
-    /// Accept pivot mount fallback for any volume (degraded security)
-    #[arg(long, conflicts_with = "no_pivot")]
-    pub accept_pivot_risks: bool,
-
-    /// Abort if any volume requires pivot mount (strict security, enabled by default)
-    #[arg(long, conflicts_with = "accept_pivot_risks")]
-    pub no_pivot: bool,
-
-    /// Skip all confirmation prompts (enabled by default)
+    /// Proceed without confirmation prompts
+    ///
+    /// Without this flag activation prompts on a terminal and refuses to run
+    /// without one, so it never ends a graphical session unattended.
     #[arg(short = 'y', long)]
     pub yes: bool,
-
-    /// Prompt for confirmations (interactive mode)
-    #[arg(long, conflicts_with = "yes")]
-    pub interactive: bool,
 
     /// NixOS flake reference (e.g., /etc/nixos#hostname)
     ///
     /// When set, this value is passed directly to `nixos-rebuild --flake`
     /// instead of auto-detecting the flake path. Supports attribute
     /// selection (e.g., /etc/nixos#amnesia-virtualbox).
-    #[arg(long = "flake", value_name = "FLAKE_REF")]
+    #[arg(
+        long = "flake",
+        value_name = "FLAKE_REF",
+        conflicts_with = "overlay_only"
+    )]
     pub nixos_flake: Option<String>,
 
     /// Preview activation steps without making changes
@@ -176,6 +192,26 @@ pub struct ActivateArgs {
     pub overlay_only: bool,
 }
 
+impl ActivateArgs {
+    /// Map the parsed activation flags onto the core [`nails_core::ActivateOptions`].
+    ///
+    /// Only the policy and mode flags are set here; the output fields
+    /// (`quiet`, `verbosity`, `json`, `no_color`) and the confirmation state
+    /// are left at their defaults and filled in by the handler from the
+    /// resolved output settings and the terminal. Mapping the default
+    /// arguments therefore yields [`nails_core::ActivateOptions::default()`].
+    pub fn to_activate_options(&self) -> nails_core::ActivateOptions {
+        nails_core::ActivateOptions {
+            kill_session: self.session == SessionPolicy::Kill,
+            accept_pivot_risks: self.pivot == PivotPolicy::Allow,
+            no_pivot: self.pivot == PivotPolicy::Refuse,
+            yes: self.yes,
+            overlay_only: self.overlay_only,
+            ..nails_core::ActivateOptions::default()
+        }
+    }
+}
+
 /// `nails deactivate` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeactivateArgs {
@@ -185,6 +221,13 @@ pub struct DeactivateArgs {
     /// Use this flag to preserve history (not recommended for forensic safety).
     #[arg(long)]
     pub no_clear_history: bool,
+
+    /// Proceed without the confirmation prompt
+    ///
+    /// Deactivation restores the decoy configuration and reboots. Without this
+    /// flag it prompts on a terminal and refuses to run without one.
+    #[arg(short = 'y', long)]
+    pub yes: bool,
 }
 
 /// `nails emergency` arguments
@@ -230,7 +273,7 @@ pub enum ConfigCommand {
         #[arg(long = "flake", value_name = "FLAKE_REF", conflicts_with = "example")]
         nixos_flake: Option<String>,
 
-        /// Preview the effect of `activate --no-clear-history`
+        /// Preview the effect of `deactivate --no-clear-history`
         #[arg(long, conflicts_with = "example")]
         no_clear_history: bool,
     },

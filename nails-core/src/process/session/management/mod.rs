@@ -70,13 +70,24 @@ pub(crate) fn prompt_session_kill_confirmation_with_io<R: std::io::BufRead, W: s
         "    2. Terminate your logind session and user processes"
     )?;
     writeln!(writer, "    3. Mount hidden environment overlays")?;
-    writeln!(writer, "    4. Mount hidden environment overlays")?;
-    writeln!(writer, "    5. Restart display manager and user manager")?;
-    writeln!(writer, "    6. Run the NixOS switch/rebuild test path")?;
+    writeln!(writer, "    4. Restart display manager and user manager")?;
+    writeln!(writer, "    5. Run the NixOS switch/rebuild test path")?;
     writeln!(writer)?;
     writeln!(
         writer,
-        "    You will need to log in again after activation."
+        "    Activation then continues in the background and usually finishes"
+    )?;
+    writeln!(
+        writer,
+        "    within a minute. You will need to log in again afterwards; the"
+    )?;
+    writeln!(
+        writer,
+        "    result arrives as a desktop notification on your next login, and"
+    )?;
+    writeln!(
+        writer,
+        "    you can also check it with 'sudo nails status'."
     )?;
     writeln!(writer)?;
 

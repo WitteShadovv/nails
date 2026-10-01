@@ -213,7 +213,7 @@
             + shlex.quote(unit_name)
             + " --no-block --service-type=exec /bin/sh -lc "
             + shlex.quote(
-                "nails --config " + shlex.quote(config_path) + " deactivate"
+                "nails --config " + shlex.quote(config_path) + " deactivate -y"
             )
         )
 

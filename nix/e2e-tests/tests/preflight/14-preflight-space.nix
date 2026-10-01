@@ -65,7 +65,7 @@ in
             )
         result = run_command_capture(
             "preflight-space-fail",
-            f"nails --config {config_path} activate --overlay-only --no-kill-session -y",
+            f"nails --config {config_path} activate --overlay-only --session keep -y",
         )
         assert_command_failed(result)
         assert_result_contains(result, ["space", "Only", "Free up at least"], stream="stderr")
@@ -74,7 +74,7 @@ in
     with subtest("freeing space restores a clean activation path"):
         machine.succeed("rm -f /mnt/hidden-volume/filler.bin")
         machine.succeed("sync")
-        machine.succeed(f"nails --config {config_path} activate --overlay-only --no-kill-session -y")
+        machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
         assert_status_state("active")
         assert_overlay_mounted("/home")
         canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-space")

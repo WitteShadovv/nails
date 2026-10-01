@@ -39,7 +39,7 @@ in
         write_headless_config(headless_config)
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --no-kill-session -y"
+            f"nails --config {headless_config} activate --overlay-only --session keep -y"
         )
         active_status = run_command_capture(
             "plain-rendering-active-status",

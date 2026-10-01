@@ -44,7 +44,7 @@ fn locate_shell_path() -> std::path::PathBuf {
 fn does_nothing_when_kill_session_false() {
     with_env(ENV_SKIP_DETACH, "1", || {
         unsafe { env::set_var("DISPLAY", ":0") };
-        let res = maybe_detach_for_session_kill(false, &[OsString::from("nails")], None);
+        let res = maybe_detach_for_session_kill(false, &[OsString::from("nails")], None, false);
         unsafe { env::remove_var("DISPLAY") };
         assert!(res.is_ok());
     });
@@ -55,7 +55,7 @@ fn does_nothing_without_graphical_env() {
     with_env(ENV_SKIP_DETACH, "1", || {
         unsafe { env::remove_var("DISPLAY") };
         unsafe { env::remove_var("WAYLAND_DISPLAY") };
-        let res = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None);
+        let res = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None, false);
         assert!(res.is_ok());
     });
 }
@@ -65,7 +65,7 @@ fn skips_when_already_detached() {
     with_env(ENV_SKIP_DETACH, "1", || {
         unsafe { env::set_var("DISPLAY", ":1") };
         unsafe { env::set_var(ENV_DETACHED, "1") };
-        let res = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None);
+        let res = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None, false);
         unsafe { env::remove_var(ENV_DETACHED) };
         unsafe { env::remove_var("DISPLAY") };
         assert!(res.is_ok());
@@ -92,7 +92,7 @@ fn deactivation_detach_skips_when_already_detached() {
 
 #[test]
 fn maybe_detach_for_session_kill_skips_when_kill_session_is_false_without_skip_env() {
-    let result = maybe_detach_for_session_kill(false, &[OsString::from("nails")], None);
+    let result = maybe_detach_for_session_kill(false, &[OsString::from("nails")], None, false);
     assert!(result.is_ok());
 }
 
@@ -114,7 +114,7 @@ fn maybe_detach_for_session_kill_skips_non_graphical_context_without_skip_env() 
         env::remove_var(ENV_FORCE_DETACH);
     }
 
-    let result = maybe_detach_for_session_kill(true, &[OsString::from("nails")], Some(&ctx));
+    let result = maybe_detach_for_session_kill(true, &[OsString::from("nails")], Some(&ctx), false);
     assert!(result.is_ok());
 }
 
@@ -135,7 +135,7 @@ fn maybe_detach_for_session_kill_skips_when_already_detached_without_skip_env() 
         env::remove_var(ENV_SKIP_DETACH);
     }
 
-    let result = maybe_detach_for_session_kill(true, &[OsString::from("nails")], Some(&ctx));
+    let result = maybe_detach_for_session_kill(true, &[OsString::from("nails")], Some(&ctx), false);
 
     unsafe {
         env::remove_var(ENV_DETACHED);
@@ -356,7 +356,7 @@ fn subprocess_detach_entrypoint() {
                 std::env::remove_var("NAILS_UNSAFE_REAL_OPS");
                 std::env::set_var("DISPLAY", ":0");
             }
-            let err = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None)
+            let err = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None, false)
                 .expect_err("must fail closed");
             assert!(
                 err.to_string()
@@ -373,6 +373,18 @@ fn subprocess_detach_entrypoint() {
                 std::env::set_var(ENV_FORCE_DETACH, "1");
             }
             maybe_detach_for_deactivation().expect("override fake systemd-run should succeed");
+        }
+        "detach-session-success" | "detach-session-success-json" => {
+            unsafe {
+                std::env::remove_var(ENV_SKIP_DETACH);
+                std::env::remove_var(ENV_DETACHED);
+                std::env::set_var(ENV_FORCE_DETACH, "1");
+            }
+            let json = case == "detach-session-success-json";
+            let _ = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None, json);
+            // A successful handoff exits the process inside the call above, so
+            // reaching here means the detach did not succeed.
+            exit_process(7);
         }
         other => panic!("unknown detach subprocess case: {other}"),
     }
@@ -418,6 +430,77 @@ fn session_detach_refuses_transient_units_in_test_like_runtime() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn session_detach_reports_follow_up_command_on_success() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let fake_systemd_run = temp_dir.path().join("fake-systemd-run");
+    let shell_path = locate_shell_path();
+    write_executable_script(
+        &fake_systemd_run,
+        &format!("#!{}\nexit 0\n", shell_path.display()),
+    );
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
+        .env("NAILS_DETACH_SUBPROCESS_CASE", "detach-session-success")
+        .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+        .env(ENV_FORCE_DETACH, "1")
+        .env_remove(ENV_SKIP_DETACH)
+        .env_remove(ENV_DETACHED)
+        .output()
+        .expect("run subprocess");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "stderr={stderr}");
+    assert!(
+        stderr.contains("Detached to background via systemd transient service."),
+        "stderr={stderr}"
+    );
+    let exe = std::env::current_exe().unwrap();
+    assert!(
+        stderr.contains(&format!("sudo {} status", exe.display())),
+        "stderr={stderr}"
+    );
+}
+
+#[test]
+fn session_detach_emits_detached_envelope_under_json() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let fake_systemd_run = temp_dir.path().join("fake-systemd-run");
+    let shell_path = locate_shell_path();
+    write_executable_script(
+        &fake_systemd_run,
+        &format!("#!{}\nexit 0\n", shell_path.display()),
+    );
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
+        .env(
+            "NAILS_DETACH_SUBPROCESS_CASE",
+            "detach-session-success-json",
+        )
+        .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+        .env(ENV_FORCE_DETACH, "1")
+        .env_remove(ENV_SKIP_DETACH)
+        .env_remove(ENV_DETACHED)
+        .output()
+        .expect("run subprocess");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "stdout={stdout}");
+    // The nested test harness runs with --nocapture, so skip its banner lines
+    // and parse the envelope line.
+    let json_line = stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with('{'))
+        .unwrap_or_else(|| panic!("detached handoff must emit a JSON envelope: {stdout}"));
+    let value: serde_json::Value = serde_json::from_str(json_line.trim())
+        .unwrap_or_else(|e| panic!("detached handoff must be one JSON doc ({e}): {stdout}"));
+    assert_eq!(value["command"], "activate", "{value}");
+    assert_eq!(value["ok"], true, "{value}");
+    assert_eq!(value["data"]["status"], "detached", "{value}");
 }
 
 #[test]

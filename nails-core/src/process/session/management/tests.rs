@@ -34,6 +34,31 @@ fn prompt_session_kill_confirmation_requires_graphical_user_session() {
 }
 
 #[test]
+fn prompt_session_kill_confirmation_lists_each_step_once() {
+    let ctx = SessionContext {
+        kind: SessionKind::GraphicalUser,
+        session_id: Some("c1".to_string()),
+        display_manager: Some("gdm".to_string()),
+        target_uid: Some(1000),
+        target_user: Some("alice".to_string()),
+        logind_available: true,
+    };
+
+    let mut reader = std::io::Cursor::new("n\n");
+    let mut output: Vec<u8> = Vec::new();
+    let _ = prompt_session_kill_confirmation_with_io(&ctx, false, &mut reader, &mut output);
+    let text = String::from_utf8(output).unwrap();
+
+    assert_eq!(
+        text.matches("Mount hidden environment overlays").count(),
+        1,
+        "the overlay-mount step must appear exactly once: {text}"
+    );
+    // The confirmation tells the operator how the result is reported back.
+    assert!(text.contains("sudo nails status"), "{text}");
+}
+
+#[test]
 fn prompt_session_kill_confirmation_accepts_y_input() {
     let ctx = SessionContext {
         kind: SessionKind::GraphicalUser,

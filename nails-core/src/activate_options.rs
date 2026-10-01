@@ -2,18 +2,21 @@
 //!
 //! Provides configuration structures for controlling activation behavior, including
 //! user prompts, process restart strategies, and pivot mount policies.
-//!
-//! Part of Story 4.15: User Prompts and CLI Flags for Overlay Strategy
 
 use crate::{NailsError, Result};
 
 /// Options for controlling activation behavior
 ///
-/// These options map directly to CLI flags and control:
-/// - Session management (`--kill-session`)
-/// - Security trade-offs (`--accept-pivot-risks`, `--no-pivot`)
-/// - User interaction (`--yes`)
+/// These options map onto the CLI flags and control:
+/// - Session management (`--session kill|keep`)
+/// - Security trade-offs (`--pivot refuse|allow|ask`)
+/// - User interaction (`-y`/`--yes`)
 /// - Output formatting (`--quiet`, `--json`, `--color`)
+///
+/// The defaults match the secure CLI defaults: kill the graphical session and
+/// refuse pivot mounts. The CLI maps its `--session`/`--pivot` enums onto the
+/// boolean fields below, so options built from the default `activate` arguments
+/// equal [`ActivateOptions::default()`].
 ///
 /// # Validation
 ///
@@ -24,13 +27,15 @@ use crate::{NailsError, Result};
 /// ```rust
 /// use nails_core::ActivateOptions;
 ///
-/// // Interactive mode (default)
+/// // Secure defaults (kill the session, refuse pivot mounts)
 /// let opts = ActivateOptions::default();
 /// assert!(opts.validate().is_ok());
+/// assert!(opts.kill_session && opts.no_pivot);
 ///
-/// // Strict security mode
+/// // Allow pivot mounts (degraded security)
 /// let opts = ActivateOptions {
-///     no_pivot: true,
+///     no_pivot: false,
+///     accept_pivot_risks: true,
 ///     ..Default::default()
 /// };
 /// assert!(opts.validate().is_ok());
@@ -104,9 +109,9 @@ pub struct ActivateOptions {
 impl Default for ActivateOptions {
     fn default() -> Self {
         Self {
-            kill_session: false,
+            kill_session: true,
             accept_pivot_risks: false,
-            no_pivot: false,
+            no_pivot: true,
             yes: false,
             quiet: false,
             verbosity: 0,
@@ -173,6 +178,7 @@ mod tests {
     fn test_accept_pivot_risks_flag_alone() {
         let opts = ActivateOptions {
             accept_pivot_risks: true,
+            no_pivot: false,
             ..Default::default()
         };
         assert!(opts.validate().is_ok());
@@ -217,6 +223,7 @@ mod tests {
         let opts = ActivateOptions {
             kill_session: true,
             accept_pivot_risks: true,
+            no_pivot: false,
             ..Default::default()
         };
         assert!(opts.validate().is_ok());
@@ -239,6 +246,7 @@ mod tests {
         let opts = ActivateOptions {
             yes: true,
             accept_pivot_risks: true,
+            no_pivot: false,
             ..Default::default()
         };
         assert!(opts.validate().is_ok());

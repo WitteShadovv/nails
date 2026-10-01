@@ -49,7 +49,7 @@ in
         write_fat_hidden_config("/tmp/preflight-symlink-support.toml")
         result = run_command_capture(
             "preflight-symlink-support",
-            "nails --config /tmp/preflight-symlink-support.toml activate --overlay-only --no-kill-session -y",
+            "nails --config /tmp/preflight-symlink-support.toml activate --overlay-only --session keep -y",
         )
         assert_command_failed(result)
         assert_result_contains(

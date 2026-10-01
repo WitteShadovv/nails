@@ -41,7 +41,7 @@ in
 
     with subtest("phase 2: activation performs snapshot pivot for /boot"):
         machine.succeed(
-            f"nails --config {config_path} activate --overlay-only --no-kill-session --accept-pivot-risks -y"
+            f"nails --config {config_path} activate --overlay-only --session keep --pivot allow -y"
         )
         machine.succeed("findmnt -n -o FSTYPE /boot | grep -qx overlay")
         machine.succeed("findmnt -n -o FSTYPE /mnt/nails-pivot/boot | grep -qx overlay")

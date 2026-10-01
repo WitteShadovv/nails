@@ -49,7 +49,7 @@ in
 
     with subtest("activate and capture pristine state file"):
         machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --no-kill-session -y"
+            f"nails --config {headless_config} activate --overlay-only --session keep -y"
         )
         assert_status_state("Active", config_path=headless_config)
         assert_overlay_mounted("/home")
@@ -83,7 +83,7 @@ in
     with subtest("next activation refuses the corrupt state and leaves mounts unchanged"):
         rc, stdout, stderr = capture_command(
             "state-corruption-activate",
-            f"nails --config {headless_config} activate --overlay-only --no-kill-session -y",
+            f"nails --config {headless_config} activate --overlay-only --session keep -y",
         )
         assert rc != 0, (
             f"Expected activation failure on corrupt state, got rc={rc}, "

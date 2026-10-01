@@ -58,7 +58,7 @@ in
 
     with subtest("missing overlay directories are auto-created and activation succeeds"):
         machine.succeed("rm -rf /mnt/hidden-volume/srv /mnt/hidden-volume/.work/srv")
-        machine.succeed(f"nails --config {config_path} activate --overlay-only --no-kill-session -y")
+        machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
         machine.succeed("test -d /mnt/hidden-volume/srv")
         machine.succeed("test -d /mnt/hidden-volume/.work/srv")
         assert_overlay_mounted("/srv")
@@ -71,7 +71,7 @@ in
         machine.succeed("mount -o remount,ro /mnt/hidden-volume/.work/home")
         result = run_command_capture(
             "preflight-storage-readonly-work",
-            f"nails --config {config_path} activate --overlay-only --no-kill-session -y",
+            f"nails --config {config_path} activate --overlay-only --session keep -y",
         )
         assert_command_failed(result)
         assert_result_contains(result, ["storage-readiness", ".work/home"], stream="stderr")

@@ -93,7 +93,7 @@ in
     with subtest("activation refuses dirty base config before overlay mount"):
         rc, stdout, stderr = run_command_capture(
             "verify-base-config-clean",
-            f"{wrapper_env} nails --config {headless_config} activate --no-kill-session -y",
+            f"{wrapper_env} nails --config {headless_config} activate --session keep -y",
         )
         assert rc != 0, f"Expected activation refusal, got rc=0 stdout={stdout!r} stderr={stderr!r}"
         combined_output = stdout + stderr

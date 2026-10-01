@@ -41,7 +41,7 @@ in
             prefix,
             "nails --no-log-file --config",
             shlex.quote(headless_config),
-            "activate --overlay-only --no-kill-session -y",
+            "activate --overlay-only --session keep -y",
         ] if part)
         return run_pty_command_capture(name, command)
 
@@ -90,7 +90,7 @@ in
             " ".join([
                 "nails --no-log-file --config",
                 shlex.quote(headless_config),
-                "activate --overlay-only --no-kill-session -y --color never",
+                "activate --overlay-only --session keep -y --color never",
             ]),
         )
         assert disabled["rc"] == 0, disabled

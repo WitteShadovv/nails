@@ -98,7 +98,7 @@ in
 
     with subtest("activate performs full nixos rebuild path"):
         machine.succeed(
-            f"{wrapper_env} nails --config {headless_config} activate --no-kill-session -y"
+            f"{wrapper_env} nails --config {headless_config} activate --session keep -y"
         )
         rebuild_log = machine.succeed("cat /tmp/nixos-rebuild-full.log")
         assert "test" in rebuild_log, f"Expected nixos-rebuild test invocation, got: {rebuild_log!r}"

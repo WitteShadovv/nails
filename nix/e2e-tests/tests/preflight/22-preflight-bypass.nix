@@ -45,7 +45,7 @@ in
         machine.succeed("swapon /swapfile")
         blocked = run_command_capture(
             "preflight-bypass-blocked",
-            f"nails --config {config_path} activate --overlay-only --no-kill-session -y",
+            f"nails --config {config_path} activate --overlay-only --session keep -y",
         )
         assert_command_failed(blocked)
         assert_result_contains(blocked, ["swap", "Swap is enabled"], stream="stderr")
@@ -54,7 +54,7 @@ in
     with subtest("no-preflight bypasses the swap guard and emits a danger warning"):
         bypassed = run_command_capture(
             "preflight-bypass-active",
-            f"nails --config {config_path} activate --overlay-only --no-kill-session --no-preflight -y",
+            f"nails --config {config_path} activate --overlay-only --session keep --no-preflight -y",
         )
         assert_command_succeeded(bypassed)
         combined = bypassed["stdout"] + "\n" + bypassed["stderr"]

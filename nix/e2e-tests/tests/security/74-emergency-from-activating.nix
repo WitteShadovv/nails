@@ -61,7 +61,7 @@ in
         run_detached_captured_command(
             "nails-emergency-activating-primary",
             "emergency-activating-primary",
-            f"{env_prefix} nails --config {headless_config} activate --overlay-only --no-kill-session -y",
+            f"{env_prefix} nails --config {headless_config} activate --overlay-only --session keep -y",
         )
         primary_rc_path = "/tmp/emergency-activating-primary.rc"
         machine.wait_until_succeeds(

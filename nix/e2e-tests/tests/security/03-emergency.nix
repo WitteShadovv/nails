@@ -42,7 +42,7 @@ in
 
     print("\n=== Setting up active session with data ===")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
     print("✓ NAILS activated")
 
     machine.succeed("su - testuser -c 'for i in $(seq 1 100); do echo \"secret data $i\" > ~/secret_$i.txt; done'")

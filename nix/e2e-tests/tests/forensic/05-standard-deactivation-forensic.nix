@@ -56,7 +56,7 @@ in
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     print("✓ Hidden volume created and mounted")
 
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
     machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
     print("✓ NAILS activated with overlays")
 
@@ -263,7 +263,7 @@ in
     for cycle in range(1, 6):
         print(f"\n--- Cycle {cycle}/5 ---")
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
         cycle_canary = f"NAILS_CANARY_CYCLE{cycle}_2026"
         machine.succeed(f"su - testuser -c 'echo {cycle_canary} > ~/cycle-canary.txt'")

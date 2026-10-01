@@ -45,7 +45,7 @@ in
     with subtest("activation with --no-log-file succeeds without touching the log file"):
         size_before = hidden_log_size()
         machine.succeed(
-            f"nails --no-log-file --config {headless_config} activate --overlay-only --no-kill-session -y --ascii"
+            f"nails --no-log-file --config {headless_config} activate --overlay-only --session keep -y --ascii"
         )
         size_after = hidden_log_size()
         assert size_after == size_before, (size_before, size_after)
@@ -54,7 +54,7 @@ in
     with subtest("deactivation with --no-log-file succeeds"):
         run_detached_command(
             "nails-deactivate-no-logs-suppression",
-            f"nails --no-log-file --config {headless_config} deactivate --ascii",
+            f"nails --no-log-file --config {headless_config} deactivate -y --ascii",
         )
         machine.wait_for_shutdown()
         machine.start()

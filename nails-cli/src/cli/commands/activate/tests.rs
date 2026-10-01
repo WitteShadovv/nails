@@ -1,5 +1,5 @@
 use super::execute;
-use crate::cli::args::ActivateArgs;
+use crate::cli::args::{ActivateArgs, SessionPolicy};
 use crate::cli::output::OutputSettings;
 use std::path::PathBuf;
 
@@ -34,7 +34,7 @@ fn subprocess_activate_entrypoint() {
         ..OutputSettings::default()
     };
     let keep_session = ActivateArgs {
-        no_kill_session: true,
+        session: SessionPolicy::Keep,
         ..ActivateArgs::default()
     };
     let guarded = ActivateArgs {
@@ -48,13 +48,10 @@ fn subprocess_activate_entrypoint() {
     };
 
     let status = match case.as_str() {
-        "interactive-requires-yes" => execute(
+        "needs-confirmation-off-tty" => execute(
             &OutputSettings::default(),
-            &ActivateArgs {
-                interactive: true,
-                ..ActivateArgs::default()
-            },
-            None,
+            &ActivateArgs::default(),
+            config,
             |_| Ok(()),
         ),
         "invalid-config" => execute(
@@ -95,12 +92,24 @@ fn subprocess_activate_entrypoint() {
 }
 
 #[test]
-fn execute_rejects_interactive_kill_session_before_loading_config() {
-    let output = run_subprocess("interactive-requires-yes", None);
+fn execute_refuses_off_tty_without_yes_after_the_safety_guard_passes() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config = tempfile::NamedTempFile::new().unwrap();
+    writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
+
+    let output = run_subprocess("needs-confirmation-off-tty", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-    assert!(stderr.contains("--kill-session is non-interactive after detach; use --yes"));
+    assert!(
+        stderr.contains("stdin is not a terminal"),
+        "stderr={stderr}"
+    );
 }
 
 #[test]

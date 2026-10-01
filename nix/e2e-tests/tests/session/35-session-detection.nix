@@ -90,7 +90,7 @@ in
 
     with subtest("tty session path skips graphical detach"):
         tty.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        tty.succeed(f"nails --config {tty_config} activate --overlay-only --kill-session -y")
+        tty.succeed(f"nails --config {tty_config} activate --overlay-only --session kill -y")
         wait_for_status_state_for(tty, "active", tty_config)
         assert_overlay_mounted_for(tty, "/home")
         assert_status_state_for(tty, "active", tty_config)

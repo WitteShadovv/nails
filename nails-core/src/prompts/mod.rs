@@ -348,13 +348,13 @@ pub fn display_abort_message_with_io<W: Write>(
         writer,
         "  2. Kill your graphical session (will lose unsaved work):"
     )?;
-    writeln!(writer, "     $ nails activate --kill-session")?;
+    writeln!(writer, "     $ nails activate --session kill")?;
     writeln!(writer)?;
     writeln!(
         writer,
         "  3. Accept security trade-off and use pivot mount:"
     )?;
-    writeln!(writer, "     $ nails activate --accept-pivot-risks")?;
+    writeln!(writer, "     $ nails activate --pivot allow")?;
     writeln!(writer)?;
     writeln!(writer, "Current state: INACTIVE (unchanged)")?;
     Ok(())

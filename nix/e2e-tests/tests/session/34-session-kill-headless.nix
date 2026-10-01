@@ -38,7 +38,7 @@ in
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
 
     with subtest("kill-session on tty is a successful no-op"):
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --kill-session -y")
+        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session kill -y")
         assert_overlay_mounted("/home")
         assert_status_state("active", config_path=headless_config)
         transient_units = machine.succeed(
