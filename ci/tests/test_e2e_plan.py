@@ -443,5 +443,37 @@ class CheckAndDriftCliTest(TempDirTestCase):
         self.assertIn("| `a` | 100 | 300 | +200% |", text)
 
 
+class ShardCountTest(unittest.TestCase):
+    def test_total_weight_sets_the_count(self) -> None:
+        weights = {"a": 600, "b": 600, "c": 600}
+        self.assertEqual(plan.shard_count(["a", "b", "c"], weights, 10, 900), 2)
+
+    def test_count_is_capped_by_max_shards_and_tests(self) -> None:
+        weights = {"a": 5000, "b": 5000}
+        self.assertEqual(plan.shard_count(["a", "b"], weights, 10, 900), 2)
+        self.assertEqual(plan.shard_count(["a", "b"], weights, 1, 900), 1)
+
+    def test_unweighted_tests_count_as_the_median(self) -> None:
+        weights = {"a": 100, "b": 300, "c": 500}
+        self.assertEqual(plan.shard_count(["a", "new"], weights, 10, 300), 2)
+
+    def test_without_weights_every_test_gets_a_shard(self) -> None:
+        self.assertEqual(plan.shard_count(["a", "b", "c"], None, 2), 2)
+        self.assertEqual(plan.shard_count([], None, 4), 1)
+
+    def test_a_shard_timeout_is_one_and_a_half_loads_plus_setup(self) -> None:
+        self.assertEqual(plan.shard_timeout_minutes(0), 30)
+        self.assertEqual(plan.shard_timeout_minutes(1200), 45)
+        # One large self-hosted shard with the whole suite still gets a bound.
+        self.assertEqual(plan.shard_timeout_minutes(10676), 282)
+
+    def test_the_full_suite_fits_ten_shards(self) -> None:
+        weights = json.loads(WEIGHTS_FILE.read_text(encoding="utf-8"))
+        count = plan.shard_count(sorted(weights), weights, 10)
+        self.assertLessEqual(count, 10)
+        split = plan.allocate(sorted(weights), weights, count)
+        self.assertTrue(all(split.shards))
+
+
 if __name__ == "__main__":
     unittest.main()

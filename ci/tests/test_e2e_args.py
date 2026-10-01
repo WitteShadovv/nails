@@ -107,11 +107,111 @@ class PlanMatrixTest(unittest.TestCase):
             matrix,
             {
                 "include": [
-                    {"index": 1, "count": 2, "tests": ["a", "c"]},
-                    {"index": 2, "count": 2, "tests": ["b"]},
+                    {"index": 1, "count": 2, "tests": ["a", "c"], "timeout": 30},
+                    {"index": 2, "count": 2, "tests": ["b"], "timeout": 30},
                 ]
             },
         )
+
+
+class PlanShardCountTest(unittest.TestCase):
+    def plan_matrix(self, *args: str, weights: dict[str, int] | None = None) -> dict:
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / "weights.json"
+            if weights is not None:
+                path.write_text(json.dumps(weights), encoding="utf-8")
+            out = io.StringIO()
+            with mock.patch.object(cli, "load_metadata", return_value=METADATA):
+                with contextlib.redirect_stdout(out):
+                    code = cli.main(
+                        [
+                            "plan",
+                            *args,
+                            "--format",
+                            "github-matrix",
+                            "--weights",
+                            str(path),
+                        ]
+                    )
+        self.assertEqual(code, 0)
+        return json.loads(out.getvalue())
+
+    def test_max_shards_never_plans_an_empty_shard(self) -> None:
+        matrix = self.plan_matrix("b", "--max-shards", "10")
+        self.assertEqual(
+            matrix,
+            {"include": [{"index": 1, "count": 1, "tests": ["b"], "timeout": 30}]},
+        )
+
+    def test_max_shards_follows_the_shard_budget(self) -> None:
+        matrix = self.plan_matrix(
+            "all",
+            "--max-shards",
+            "10",
+            "--shard-seconds",
+            "400",
+            weights={"a": 300, "b": 300, "c": 200},
+        )
+        self.assertEqual([entry["count"] for entry in matrix["include"]], [2, 2])
+        tests = sorted(t for entry in matrix["include"] for t in entry["tests"])
+        self.assertEqual(tests, ["a", "b", "c"])
+
+    def test_a_fixed_count_drops_the_empty_shards_from_the_matrix(self) -> None:
+        matrix = self.plan_matrix("a", "--shards", "3")
+        self.assertEqual(
+            matrix,
+            {"include": [{"index": 1, "count": 1, "tests": ["a"], "timeout": 30}]},
+        )
+
+    def test_shards_and_max_shards_exclude_each_other(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                cli.main(["plan", "all", "--shards", "2", "--max-shards", "4"])
+        self.assertEqual(caught.exception.code, 2)
+
+
+class RunOptionsTest(unittest.TestCase):
+    def test_execute_runs_the_drivers_with_retries_and_a_summary(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_drivers(tests, timeouts, **kwargs):  # type: ignore[no-untyped-def]
+            captured.update(tests=list(tests), timeouts=dict(timeouts), **kwargs)
+            kwargs["report"](tests, {"a": cli.run.TestOutcome("pass", 31, flaky=True)})
+            return 0
+
+        with tempfile.TemporaryDirectory() as name:
+            summary = Path(name) / "summary.md"
+            out = io.StringIO()
+            with mock.patch.object(cli, "load_metadata", return_value=METADATA):
+                with mock.patch.object(
+                    cli.run, "run_drivers", side_effect=fake_drivers
+                ):
+                    with contextlib.redirect_stdout(out):
+                        code = cli.main(
+                            [
+                                "run",
+                                "a",
+                                "--execute",
+                                "--retries",
+                                "1",
+                                "--summary",
+                                str(summary),
+                                "--github",
+                            ]
+                        )
+            text = summary.read_text(encoding="utf-8")
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["tests"], ["a"])
+        self.assertEqual(captured["timeouts"], {"a": 900, "b": 900, "c": 900})
+        self.assertEqual(captured["retries"], 1)
+        self.assertIn("FLAKY", text)
+        self.assertIn("::warning title=FLAKY E2E test::a", out.getvalue())
+
+    def test_negative_retries_are_rejected(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                cli.main(["run", "a", "--retries", "-1"])
+        self.assertEqual(caught.exception.code, 2)
 
 
 class RegenCommandTest(unittest.TestCase):

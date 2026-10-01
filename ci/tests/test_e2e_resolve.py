@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import io
+import subprocess
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from ci.e2e import resolve
@@ -66,6 +68,90 @@ class ResolveAffectedTest(unittest.TestCase):
             self.assertEqual(resolve.resolve_affected(METADATA, "HEAD~1"), ["a"])
 
 
+class ChangedLeafTestsTest(unittest.TestCase):
+    def test_compares_one_evaluation_per_side(self) -> None:
+        sides = {
+            ".": {
+                "a": "/nix/store/a1.drv",
+                "b": "/nix/store/b1.drv",
+                "c": "/nix/store/c.drv",
+            },
+            "git+file:///repo?rev=abc": {
+                "a": "/nix/store/a1.drv",
+                "b": "/nix/store/b0.drv",
+            },
+        }
+        with (
+            mock.patch.object(
+                resolve, "base_flake_ref", return_value="git+file:///repo?rev=abc"
+            ),
+            mock.patch.object(
+                resolve, "drv_paths", side_effect=lambda ref, tests: sides[ref]
+            ) as evaluate,
+        ):
+            changed = resolve.changed_leaf_tests(METADATA, "main")
+        # b changed and c is new at this revision.
+        self.assertEqual(changed, ["b", "c"])
+        self.assertEqual(evaluate.call_count, 2)
+
+    def test_a_base_that_does_not_evaluate_changes_everything(self) -> None:
+        def evaluate(ref, tests):  # type: ignore[no-untyped-def]
+            if ref == ".":
+                return {test: f"/nix/store/{test}.drv" for test in tests}
+            raise subprocess.CalledProcessError(1, ["nix"], stderr="error: boom\n")
+
+        with (
+            mock.patch.object(resolve, "base_flake_ref", return_value="old"),
+            mock.patch.object(resolve, "drv_paths", side_effect=evaluate),
+            contextlib.redirect_stderr(io.StringIO()) as err,
+        ):
+            changed = resolve.changed_leaf_tests(METADATA, "main")
+        self.assertEqual(changed, ["a", "b", "c"])
+        self.assertIn("error: boom", err.getvalue())
+
+
+class FlakeRefTest(unittest.TestCase):
+    def test_a_git_revision_is_pinned_to_its_commit(self) -> None:
+        completed = subprocess.CompletedProcess([], 0, stdout="0123abcd\n")
+        with mock.patch.object(
+            resolve.subprocess, "run", return_value=completed
+        ) as git:
+            ref = resolve.base_flake_ref("origin/main", Path("/repo"))
+        self.assertEqual(ref, "git+file:///repo?rev=0123abcd")
+        self.assertEqual(
+            git.call_args.args[0],
+            ["git", "-C", "/repo", "rev-parse", "--verify", "origin/main^{commit}"],
+        )
+
+    def test_a_flake_reference_is_used_as_given(self) -> None:
+        self.assertEqual(resolve.base_flake_ref("github:o/r/abc"), "github:o/r/abc")
+
+    def test_an_unknown_revision_is_an_error(self) -> None:
+        completed = subprocess.CompletedProcess([], 128, stdout="", stderr="bad")
+        with mock.patch.object(resolve.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(resolve.ResolveError, "not a commit"):
+                resolve.base_flake_ref("nope", Path("/repo"))
+
+    def test_drv_paths_evaluates_every_test_in_one_call(self) -> None:
+        completed = subprocess.CompletedProcess(
+            [], 0, stdout='{"a": "/nix/store/a.drv"}'
+        )
+        with mock.patch.object(
+            resolve.subprocess, "run", return_value=completed
+        ) as nix:
+            paths = resolve.drv_paths(".", ["a", "gone"])
+        self.assertEqual(paths, {"a": "/nix/store/a.drv"})
+        command = nix.call_args.args[0]
+        self.assertEqual(
+            command[:4], ["nix", "eval", "--json", f".#{resolve.E2E_ATTR}"]
+        )
+        self.assertIn("''[\"a\", \"gone\"]''", command[5])
+
+    def test_drv_paths_refuses_names_that_are_not_plain(self) -> None:
+        with self.assertRaisesRegex(resolve.ResolveError, "odd test name"):
+            resolve.drv_paths(".", ["a''; x"])
+
+
 class ResolveCommandTest(unittest.TestCase):
     """The `resolve` subcommand with metadata injected in place of `nix eval`."""
 
@@ -81,6 +167,18 @@ class ResolveCommandTest(unittest.TestCase):
 
     def test_resolves_a_group_to_its_leaf_tests(self) -> None:
         self.assertEqual(self.resolve_cli("smoke").split(), ["a", "b"])
+
+    def test_exclude_leaves_out_a_group(self) -> None:
+        self.assertEqual(self.resolve_cli("all", "--exclude", "smoke").split(), ["c"])
+
+    def test_an_unknown_exclude_is_an_error(self) -> None:
+        from ci.e2e import __main__ as cli
+
+        with mock.patch.object(cli, "load_metadata", return_value=METADATA):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                code = cli.main(["resolve", "all", "--exclude", "nope"])
+        self.assertEqual(code, cli.EXIT_BAD_INPUT)
+        self.assertIn("unknown E2E target: nope", err.getvalue())
 
     def test_affected_is_the_ci_group_plus_changed(self) -> None:
         with mock.patch.object(resolve, "changed_leaf_tests", return_value=["c"]):

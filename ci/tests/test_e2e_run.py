@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -137,6 +138,237 @@ class RunBuildTest(unittest.TestCase):
         records = [json.loads(line) for line in durations.read_text().splitlines()]
         self.assertEqual([r["test"] for r in records], ["basic-workflow", "verify"])
         self.assertTrue(all(r["result"] == "pass" for r in records))
+
+
+class RetryTest(unittest.TestCase):
+    """run_build's failure detection, retry and flaky marking, nix mocked out."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.tmp = Path(temporary.name)
+        patches = [
+            mock.patch.object(run, "_eval_drv", side_effect=self._drv),
+            mock.patch.object(run, "_write_nix_log", side_effect=self._log),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.logged: list[str] = []
+
+    @staticmethod
+    def _drv(attr: str) -> str:
+        return f"/nix/store/{attr.rsplit('.', 1)[-1]}.drv"
+
+    def _log(self, drv: str, path: Path) -> None:
+        self.logged.append(path.name)
+
+    def run_with(
+        self,
+        builds: list[tuple[int, dict[str, run.TestOutcome]]],
+        missing: list[list[str]],
+        retries: int,
+    ) -> tuple[int, list[dict[str, object]], list[list[str]]]:
+        built: list[list[str]] = []
+
+        def fake_build(tests, *_args):  # type: ignore[no-untyped-def]
+            built.append(list(tests))
+            return builds.pop(0)
+
+        durations = self.tmp / "d.jsonl"
+        with (
+            mock.patch.object(run, "_build_once", side_effect=fake_build),
+            mock.patch.object(run, "missing_outputs", side_effect=missing),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            status = run.run_build(
+                ["a", "b", "c"],
+                durations_out=durations,
+                retries=retries,
+                log_dir=self.tmp / "logs",
+            )
+        records = [json.loads(line) for line in durations.read_text().splitlines()]
+        return status, records, built
+
+    def test_a_pass_on_retry_is_flaky_and_the_run_passes(self) -> None:
+        status, records, built = self.run_with(
+            builds=[
+                (
+                    1,
+                    {
+                        "a": run.TestOutcome("pass", 50),
+                        "b": run.TestOutcome("pass", 70),
+                    },
+                ),
+                (0, {"b": run.TestOutcome("pass", 65)}),
+            ],
+            missing=[["b"], []],
+            retries=1,
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(built, [["a", "b", "c"], ["b"]])
+        self.assertEqual(
+            records,
+            [
+                {"test": "a", "result": "pass", "seconds": 50},
+                {"test": "b", "result": "pass", "seconds": 65, "flaky": True},
+                {"test": "c", "result": "pass", "seconds": 0},
+            ],
+        )
+        self.assertEqual(self.logged, [])
+
+    def test_a_test_failing_every_attempt_fails_the_run_and_keeps_its_log(
+        self,
+    ) -> None:
+        status, records, built = self.run_with(
+            builds=[(1, {"b": run.TestOutcome("pass", 70)}), (1, {})],
+            missing=[["b"], ["b"]],
+            retries=1,
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(len(built), 2)
+        self.assertEqual(records[1], {"test": "b", "result": "fail", "seconds": 70})
+        self.assertEqual(self.logged, ["b.log"])
+
+    def test_without_retries_a_failure_is_not_rebuilt(self) -> None:
+        status, _records, built = self.run_with(
+            builds=[(1, {})], missing=[["c"]], retries=0
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(built, [["a", "b", "c"]])
+
+    def test_a_failed_build_without_a_failed_test_keeps_its_status(self) -> None:
+        status, records, built = self.run_with(
+            builds=[(100, {})], missing=[[]], retries=1
+        )
+        self.assertEqual(status, 100)
+        self.assertEqual(len(built), 1)
+        self.assertTrue(all(r["result"] == "pass" for r in records))
+
+    def test_a_green_build_never_queries_the_store(self) -> None:
+        status, _records, built = self.run_with(builds=[(0, {})], missing=[], retries=1)
+        self.assertEqual(status, 0)
+        self.assertEqual(len(built), 1)
+
+
+class MissingOutputsTest(unittest.TestCase):
+    def test_a_test_with_an_invalid_output_is_missing(self) -> None:
+        def fake_run(command, **_kwargs):  # type: ignore[no-untyped-def]
+            if command[:3] == ["nix-store", "--query", "--outputs"]:
+                name = command[3].removeprefix("/nix/store/").removesuffix(".drv")
+                stdout = f"/nix/store/out-{name}\n"
+            else:
+                self.assertEqual(
+                    command[:3], ["nix-store", "--check-validity", "--print-invalid"]
+                )
+                stdout = "/nix/store/out-b\n"
+            return subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+        with mock.patch.object(run.subprocess, "run", side_effect=fake_run):
+            missing = run.missing_outputs(
+                {"/nix/store/a.drv": "a", "/nix/store/b.drv": "b"}
+            )
+        self.assertEqual(missing, ["b"])
+
+
+class ReportTest(unittest.TestCase):
+    OUTCOMES = {
+        "a": run.TestOutcome("pass", 40),
+        "b": run.TestOutcome("pass", 90, flaky=True),
+        "c": run.TestOutcome("fail", 12),
+    }
+
+    def test_summary_lists_failures_and_flaky_passes_first(self) -> None:
+        summary = run.format_summary("E2E shard 1/2", ["a", "b", "c"], self.OUTCOMES)
+        self.assertIn("## E2E shard 1/2", summary)
+        self.assertIn("3 test(s): 2 passed (1 FLAKY), 1 failed.", summary)
+        rows = [line for line in summary.splitlines() if line.startswith("| `")]
+        self.assertEqual(
+            rows,
+            [
+                "| `c` | FAIL | 12 |",
+                "| `b` | FLAKY (passed on retry) | 90 |",
+                "| `a` | pass | 40 |",
+            ],
+        )
+
+    def test_annotations_flag_failed_and_flaky_tests(self) -> None:
+        self.assertEqual(
+            run.format_annotations(["a", "b", "c"], self.OUTCOMES),
+            [
+                "::warning title=FLAKY E2E test::b failed, then passed on retry",
+                "::error title=E2E test failed::c failed",
+            ],
+        )
+
+
+@unittest.skipUnless(shutil.which("bash"), "the fake drivers need bash")
+class RunDriversTest(unittest.TestCase):
+    """run_drivers against stand-in drivers: one passes, one is flaky."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.tmp = Path(temporary.name)
+        self.drivers: dict[str, Path] = {}
+        for name, script in {
+            "steady": "echo booted; exit 0\n",
+            # Fails on the first run and passes on the second.
+            "wobbly": (
+                f'if [ -e "{self.tmp}/wobbly.seen" ]; then exit 0; fi\n'
+                f'touch "{self.tmp}/wobbly.seen"; echo broken; exit 1\n'
+            ),
+            "broken": 'echo "scratch=$TMPDIR"; exit 3\n',
+        }.items():
+            driver = self.tmp / name / "bin" / "nixos-test-driver"
+            driver.parent.mkdir(parents=True)
+            driver.write_text("#!/usr/bin/env bash\n" + script, encoding="utf-8")
+            driver.chmod(0o755)
+            self.drivers[name] = self.tmp / name
+
+    def execute(
+        self, tests: list[str], retries: int
+    ) -> tuple[int, dict[str, run.TestOutcome], Path]:
+        reported: dict[str, run.TestOutcome] = {}
+        logs = self.tmp / "logs"
+
+        def report(_tests, outcomes):  # type: ignore[no-untyped-def]
+            reported.update(outcomes)
+
+        with (
+            mock.patch.object(
+                run,
+                "_build_driver",
+                side_effect=lambda attr: self.drivers[attr.rsplit(".", 1)[-1]],
+            ),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            status = run.run_drivers(
+                tests,
+                {name: 900 for name in tests},
+                retries=retries,
+                log_dir=logs,
+                report=report,
+            )
+        return status, reported, logs
+
+    def test_a_driver_passing_on_retry_is_flaky(self) -> None:
+        status, outcomes, logs = self.execute(["steady", "wobbly"], retries=1)
+        self.assertEqual(status, 0)
+        self.assertFalse(outcomes["steady"].flaky)
+        self.assertEqual(outcomes["wobbly"].result, "pass")
+        self.assertTrue(outcomes["wobbly"].flaky)
+        # Passing logs are removed; only failures are worth uploading.
+        self.assertEqual(list(logs.glob("*.log")), [])
+
+    def test_a_failing_driver_fails_the_run_and_keeps_its_log(self) -> None:
+        status, outcomes, logs = self.execute(["steady", "broken"], retries=1)
+        self.assertEqual(status, 1)
+        self.assertEqual(outcomes["broken"].result, "fail")
+        log = (logs / "broken.log").read_text(encoding="utf-8")
+        # Every driver runs with a scratch TMPDIR of its own.
+        self.assertIn("scratch=", log)
+        self.assertNotIn(f"scratch={tempfile.gettempdir()}\n", log)
 
 
 class RunCommandTest(unittest.TestCase):

@@ -11,7 +11,7 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from . import interactive, plan, resolve, run
@@ -41,12 +41,18 @@ def _metadata() -> Metadata:
 
 
 def _resolve(
-    metadata: Metadata, targets: Sequence[str], affected: str | None
+    metadata: Metadata,
+    targets: Sequence[str],
+    affected: str | None,
+    exclude: Sequence[str] = (),
 ) -> list[str]:
     if affected is not None:
-        return resolve.resolve_affected(metadata, affected)
-    requested = list(targets) or _default_targets()
-    return resolve.resolve_targets(metadata, requested)
+        tests = resolve.resolve_affected(metadata, affected)
+    else:
+        requested = list(targets) or _default_targets()
+        tests = resolve.resolve_targets(metadata, requested)
+    excluded = set(resolve.resolve_targets(metadata, exclude))
+    return [test for test in tests if test not in excluded]
 
 
 def _shard(
@@ -87,32 +93,62 @@ def _command_list(args: argparse.Namespace) -> int:
 
 def _command_resolve(args: argparse.Namespace) -> int:
     metadata = _metadata()
-    for test in _resolve(metadata, args.targets, args.affected):
+    for test in _resolve(metadata, args.targets, args.affected, args.exclude):
         print(test)
     return 0
 
 
 def _command_plan(args: argparse.Namespace) -> int:
     metadata = _metadata()
-    tests = _resolve(metadata, args.targets, args.affected)
+    tests = _resolve(metadata, args.targets, args.affected, args.exclude)
     weights = _weights_for(metadata, args.weights)
-    split = plan.allocate(tests, weights or None, args.shards)
+    if args.shards is not None:
+        count = args.shards
+    else:
+        count = plan.shard_count(tests, weights, args.max_shards, args.shard_seconds)
+    split = plan.allocate(tests, weights or None, count)
     if args.format == "github-matrix":
+        # An empty shard would boot a runner for nothing, but a matrix needs
+        # at least one entry, so an empty selection keeps one empty shard.
+        shards = [
+            (shard, load)
+            for shard, load in zip(split.shards, split.loads, strict=True)
+            if shard
+        ] or [([], 0)]
         include = [
-            {"index": index, "count": args.shards, "tests": shard}
-            for index, shard in enumerate(split.shards, start=1)
+            {
+                "index": index,
+                "count": len(shards),
+                "tests": shard,
+                "timeout": plan.shard_timeout_minutes(load),
+            }
+            for index, (shard, load) in enumerate(shards, start=1)
         ]
         print(json.dumps({"include": include}))
     else:
         for index, shard in enumerate(split.shards, start=1):
             load = split.loads[index - 1]
-            print(f"shard {index}/{args.shards} ({load}s): " + " ".join(shard))
+            print(f"shard {index}/{count} ({load}s): " + " ".join(shard))
     return 0
+
+
+def _reporter(
+    args: argparse.Namespace,
+) -> Callable[[Sequence[str], Mapping[str, run.TestOutcome]], None]:
+    def report(tests: Sequence[str], outcomes: Mapping[str, run.TestOutcome]) -> None:
+        if args.summary is not None:
+            with args.summary.open("a", encoding="utf-8") as summary:
+                summary.write(run.format_summary(args.heading, tests, outcomes))
+        if args.github:
+            for annotation in run.format_annotations(tests, outcomes):
+                print(annotation)
+
+    return report
 
 
 def _command_run(args: argparse.Namespace) -> int:
     metadata = _metadata()
-    tests = _resolve(metadata, args.targets, args.affected)
+    tests = _resolve(metadata, args.targets, args.affected, args.exclude)
     if args.shard is not None:
         index, count = args.shard
         weights = _weights_for(metadata, args.weights)
@@ -120,10 +156,22 @@ def _command_run(args: argparse.Namespace) -> int:
     if not tests:
         print("no tests selected for this shard; nothing to run", file=sys.stderr)
         return 0
+    if args.execute:
+        return run.run_drivers(
+            tests,
+            metadata.timeouts,
+            durations_out=args.durations_out,
+            retries=args.retries,
+            log_dir=args.log_dir,
+            report=_reporter(args),
+        )
     return run.run_build(
         tests,
         jobs=args.jobs,
         durations_out=args.durations_out,
+        retries=args.retries,
+        log_dir=args.log_dir,
+        report=_reporter(args),
     )
 
 
@@ -192,6 +240,16 @@ def _positive_int(text: str) -> int:
     return value
 
 
+def _non_negative_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an integer") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{text!r} must not be negative")
+    return value
+
+
 def _fraction(text: str) -> float:
     try:
         value = float(text)
@@ -208,6 +266,13 @@ def _add_target_args(parser: argparse.ArgumentParser) -> None:
         "--affected",
         metavar="BASE_REV",
         help="run the ci group plus every test changed since this revision",
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="TARGET",
+        help="leave out the tests of this leaf test or group (repeatable)",
     )
 
 
@@ -234,7 +299,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan_cmd = commands.add_parser("plan", help="split tests into weighted shards")
     _add_target_args(plan_cmd)
-    plan_cmd.add_argument("--shards", type=_positive_int, required=True)
+    count = plan_cmd.add_mutually_exclusive_group(required=True)
+    count.add_argument("--shards", type=_positive_int, help="exactly this many")
+    count.add_argument(
+        "--max-shards",
+        type=_positive_int,
+        help="as many shards as --shard-seconds asks for, up to this many",
+    )
+    plan_cmd.add_argument(
+        "--shard-seconds",
+        type=_positive_int,
+        default=plan.SHARD_SECONDS,
+        help="weighted seconds of tests one shard should hold (--max-shards)",
+    )
     plan_cmd.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS)
     plan_cmd.add_argument(
         "--format", choices=("lines", "github-matrix"), default="lines"
@@ -247,6 +324,23 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd.add_argument("--jobs", type=_positive_int)
     run_cmd.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS)
     run_cmd.add_argument("--durations-out", type=Path, default=DEFAULT_DURATIONS)
+    run_cmd.add_argument(
+        "--retries",
+        type=_non_negative_int,
+        default=0,
+        help="run failed tests again up to this many times; a pass is FLAKY",
+    )
+    run_cmd.add_argument(
+        "--execute",
+        action="store_true",
+        help="run each test's driver directly, so cached results do not count",
+    )
+    run_cmd.add_argument(
+        "--log-dir", type=Path, help="write the log of every failed test here"
+    )
+    run_cmd.add_argument("--summary", type=Path, help="append Markdown to this file")
+    run_cmd.add_argument("--github", action="store_true", help="print annotations")
+    run_cmd.add_argument("--heading", default="E2E results")
     run_cmd.set_defaults(handler=_command_run)
 
     regen_cmd = commands.add_parser(

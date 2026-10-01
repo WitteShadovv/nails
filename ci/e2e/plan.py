@@ -37,6 +37,16 @@ DRIFT_THRESHOLD = 0.25
 # Below this many weighted samples a run's speed factor is too noisy to
 # normalise by, and raw durations are compared instead.
 MIN_TESTS_FOR_SPEED_FACTOR = 5
+# Weighted test seconds one CI shard should hold when the shard count is
+# derived. Setting up a runner (Nix, the VM closure) costs a few minutes on
+# top, so a shard of this size finishes in about 20 minutes.
+SHARD_SECONDS = 900
+# A shard's job timeout is this multiple of its weighted load plus the setup
+# allowance, so one retried test or a slower runner still fits, while a hung
+# shard is stopped long before GitHub's six-hour limit.
+SHARD_TIMEOUT_FACTOR = 1.5
+SHARD_SETUP_MINUTES = 15
+MIN_SHARD_TIMEOUT_MINUTES = 30
 
 
 class InputError(Exception):
@@ -255,6 +265,35 @@ def allocate(
         shards=[[tests[index] for index in sorted(shard)] for shard in members],
         loads=loads,
     )
+
+
+def shard_count(
+    tests: Sequence[str],
+    weights: Mapping[str, int] | None,
+    max_shards: int,
+    shard_seconds: int = SHARD_SECONDS,
+) -> int:
+    """How many shards ``tests`` need to hold about ``shard_seconds`` each.
+
+    The count never exceeds ``max_shards`` or the number of tests, so no shard
+    is empty, and is at least one. Without weights the duration is unknown and
+    every test gets a shard of its own, up to ``max_shards``.
+    """
+    if max_shards < 1 or shard_seconds < 1:
+        raise ValueError("max_shards and shard_seconds must be at least 1")
+    ceiling = max(1, min(max_shards, len(tests)))
+    if not weights:
+        return ceiling
+    default = _median_int(weights.values())
+    total = sum(weights.get(test, default) for test in tests)
+    needed = -(-total // shard_seconds)
+    return max(1, min(ceiling, needed))
+
+
+def shard_timeout_minutes(load: int) -> int:
+    """Job timeout in minutes for a shard of ``load`` weighted seconds."""
+    minutes = -(-round(load * SHARD_TIMEOUT_FACTOR) // 60) + SHARD_SETUP_MINUTES
+    return max(MIN_SHARD_TIMEOUT_MINUTES, minutes)
 
 
 def usable_weights(
