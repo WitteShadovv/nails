@@ -14,6 +14,39 @@ Decisions that apply across items:
 - E2E: smoke suite on GitHub-hosted runners for every PR, full suite on hosted runners nightly and on demand, Hetzner kept as one manual workflow.
 - `nix/forensics-eval` is replaced by disk-image checks inside the E2E suite; the obfuscation module is removed; an opt-in fresh-home persona mode is added.
 
+## Wave 0: Hermetic test suite
+
+### W0-C1: Hermetic tests
+
+Owns: `nails-core/src/deactivation/tests.rs`, `nails-core/src/manager/tests.rs`, `nails-core/src/notification/`, `nails-core/src/shell/prompt/tests.rs`, `nails-core/tests/real_filesystem.rs`, `nails-core/src/filesystem/real/tests.rs`, `nails-core/src/manager/helpers/service_controller.rs`, `nails-cli/src/cli/commands/activate/dry_run.rs`, `scripts/check-orphan-modules.sh`, `scripts/check-test-hermetic.sh`
+
+- [ ] **T-072: Test hygiene: stop temp-dir leaks and fixed /tmp names, run the shell syntax tests, delete the orphan module, fix notification naming** (low · effort S)
+
+  **Problem**
+  - A single `cargo test --workspace` run leaks ~34 temp dirs (hundreds of leftover `/tmp/.tmp*`). Causes: `.keep()` in `nails-core/src/deactivation/tests.rs` (in `setup_system_profile_stub` at line 120, invoked 9 times, and again at line 190) and `std::mem::forget(temp_dir)` at `nails-core/src/manager/tests.rs:4425`.
+  - Fixed shared `/tmp` names are never cleaned up: `nails-cli/src/cli/commands/activate/dry_run.rs:277` (`nails-dry-run-subprocess-{case}`), `nails-core/src/shell/prompt/tests.rs` (~103-248), `nails-core/tests/real_filesystem.rs:225,328,607`, and `nails-core/src/filesystem/real/tests.rs:43`.
+  - The six shell syntax tests are `#[ignore]` ("skipped in hermetic CI", `shell/prompt/tests.rs:103-243`), so generated shell is only exercised in VMs.
+  - `nails-core/src/manager/activation/test_gate.rs` (52 lines) is not declared in `manager/activation/mod.rs` and never compiles; the real gate lives at `deactivation/test_gate.rs`.
+  - Notification tests `thread::sleep(5ms)` "to ensure different filenames" (`notification/tests.rs:138,172,174,351`) although the titles already differ. The doc comment at `notification/mod.rs:76` says `{timestamp_millis}`, but the code uses `%Y%m%dT%H%M%S%3f` + `_` + sanitized title (lines 116,129) written via `std::fs::write` (line 139), so a same-millisecond, same-title write silently overwrites.
+
+  **Fix**
+  - Make helpers return their `TempDir` guards; `setup_system_profile_stub` returns `(TempDir, EnvGuard)`. Remove the `.keep()` calls and the `std::mem::forget`.
+  - Replace every fixed `/tmp` name with a `tempfile` dir, passing the path to subprocesses by argument or env var.
+  - Un-ignore the bash/zsh/fish syntax tests using `tempfile` paths; the shells are provided by the devShell and the CI test job.
+  - Delete `manager/activation/test_gate.rs` and add `scripts/check-orphan-modules.sh` to the lint job: list `.rs` files not reachable from `lib.rs`/`main.rs`/tests/benches. Keep it separate from `check-line-count.sh` (that script is being reworked).
+  - Notifications: drop the sleeps, correct the doc comment, and open files with `OpenOptions::create_new(true)`, retrying with a numeric suffix on `AlreadyExists`.
+  - Leave the file-based gate polling untouched; it is shared with the VM tests.
+
+  **Done when**
+  - With a fresh `TMPDIR`, `cargo test --workspace` leaves it empty (asserted in CI).
+  - The shell syntax tests run in CI without `--ignored` and pass.
+  - `scripts/check-orphan-modules.sh` fails when an unreferenced `.rs` file is added.
+  - Two notifications with the same title written in the same millisecond produce two distinct files.
+
+  **Also (moved to wave 0 because every later chunk runs the suite)**
+  - Tests must run unchanged inside a restricted sandbox (writable: the checkout and `$TMPDIR` only; Unix-domain sockets denied). Tests that need a Unix socket (`manager/helpers/service_controller.rs` `wait_for_unix_socket_ready_*`) detect `EPERM`/`EACCES` from `bind` and skip with a visible message instead of failing.
+  - Add `scripts/check-test-hermetic.sh`: runs `cargo test --workspace` with a fresh `TMPDIR` and fails if anything is left behind in it; CI's test job runs it.
+
 ## Wave 1: Foundational refactors begin + CI advisory/nix infra in parallel
 
 ### W1-C1: Binary hygiene
@@ -1625,33 +1658,6 @@ Owns: `nails-core/src/persona/inventory.rs`, `nails-core/src/preflight/checks/in
   - The check returns Warn with a count and never blocks activation. `nails check` and the activation confirmation both show the inventory.
   - An E2E test in `nix/e2e-tests/tests/session/` sets up a decoy user with an autostart entry and an enabled user timer. With masking on, neither runs in the hidden session, and after deactivation the decoy home hashes the same as before.
   - The guide and the threat model document the shared remote, account and network identifiers and include a pre-activation checklist. The network snippet is parse-checked by the lint gate.
-
-### W10-C3: Rust test hygiene
-
-Owns: `nails-core/src/deactivation/tests.rs`, `nails-core/src/notification/tests.rs`, `scripts/check-orphan-modules.sh`
-
-- [ ] **T-072: Test hygiene: stop temp-dir leaks and fixed /tmp names, run the shell syntax tests, delete the orphan module, fix notification naming** (low · effort S)
-
-  **Problem**
-  - A single `cargo test --workspace` run leaks ~34 temp dirs (hundreds of leftover `/tmp/.tmp*`). Causes: `.keep()` in `nails-core/src/deactivation/tests.rs` (in `setup_system_profile_stub` at line 120, invoked 9 times, and again at line 190) and `std::mem::forget(temp_dir)` at `nails-core/src/manager/tests.rs:4425`.
-  - Fixed shared `/tmp` names are never cleaned up: `nails-cli/src/cli/commands/activate/dry_run.rs:277` (`nails-dry-run-subprocess-{case}`), `nails-core/src/shell/prompt/tests.rs` (~103-248), `nails-core/tests/real_filesystem.rs:225,328,607`, and `nails-core/src/filesystem/real/tests.rs:43`.
-  - The six shell syntax tests are `#[ignore]` ("skipped in hermetic CI", `shell/prompt/tests.rs:103-243`), so generated shell is only exercised in VMs.
-  - `nails-core/src/manager/activation/test_gate.rs` (52 lines) is not declared in `manager/activation/mod.rs` and never compiles; the real gate lives at `deactivation/test_gate.rs`.
-  - Notification tests `thread::sleep(5ms)` "to ensure different filenames" (`notification/tests.rs:138,172,174,351`) although the titles already differ. The doc comment at `notification/mod.rs:76` says `{timestamp_millis}`, but the code uses `%Y%m%dT%H%M%S%3f` + `_` + sanitized title (lines 116,129) written via `std::fs::write` (line 139), so a same-millisecond, same-title write silently overwrites.
-
-  **Fix**
-  - Make helpers return their `TempDir` guards; `setup_system_profile_stub` returns `(TempDir, EnvGuard)`. Remove the `.keep()` calls and the `std::mem::forget`.
-  - Replace every fixed `/tmp` name with a `tempfile` dir, passing the path to subprocesses by argument or env var.
-  - Un-ignore the bash/zsh/fish syntax tests using `tempfile` paths; the shells are provided by the devShell and the CI test job.
-  - Delete `manager/activation/test_gate.rs` and add `scripts/check-orphan-modules.sh` to the lint job: list `.rs` files not reachable from `lib.rs`/`main.rs`/tests/benches. Keep it separate from `check-line-count.sh` (that script is being reworked).
-  - Notifications: drop the sleeps, correct the doc comment, and open files with `OpenOptions::create_new(true)`, retrying with a numeric suffix on `AlreadyExists`.
-  - Leave the file-based gate polling untouched; it is shared with the VM tests.
-
-  **Done when**
-  - With a fresh `TMPDIR`, `cargo test --workspace` leaves it empty (asserted in CI).
-  - The shell syntax tests run in CI without `--ignored` and pass.
-  - `scripts/check-orphan-modules.sh` fails when an unreferenced `.rs` file is added.
-  - Two notifications with the same title written in the same millisecond produce two distinct files.
 
 ## Wave 11: Verify overhaul + forensics-eval replacement + CLI thin + config layer
 
