@@ -39,13 +39,6 @@ fn test_shell_type_fish_history_path_for_home() {
 }
 
 #[test]
-fn test_shell_type_in_memory_clear_command() {
-    assert_eq!(ShellType::Bash.in_memory_clear_command(), "history -c");
-    assert_eq!(ShellType::Zsh.in_memory_clear_command(), "fc -W; fc -p");
-    assert_eq!(ShellType::Fish.in_memory_clear_command(), "history clear");
-}
-
-#[test]
 fn test_shell_type_all() {
     let all_shells = ShellType::all();
     assert_eq!(all_shells.len(), 3);

@@ -35,8 +35,7 @@ use std::path::PathBuf;
 
 /// Supported shell types for history cleanup
 ///
-/// Each shell stores history differently and has different
-/// commands for clearing in-memory history.
+/// Each shell stores its command history in a different file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellType {
     /// GNU Bash shell
@@ -80,18 +79,6 @@ impl ShellType {
         let home = std::env::var("HOME").ok()?;
         let home_path = PathBuf::from(home);
         Some(self.history_file_path_for_home(&home_path))
-    }
-
-    /// Get the command to clear in-memory history for this shell
-    ///
-    /// Note: These commands clear ALL in-memory history, not just nails-related.
-    /// This is intentional for security (forensic safety).
-    pub fn in_memory_clear_command(&self) -> &'static str {
-        match self {
-            ShellType::Bash => "history -c",
-            ShellType::Zsh => "fc -W; fc -p", // Write to file, then reload
-            ShellType::Fish => "history clear",
-        }
     }
 
     /// Get the display name of this shell type

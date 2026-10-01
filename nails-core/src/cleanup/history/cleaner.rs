@@ -1,6 +1,6 @@
 //! HistoryCleaner implementation for shell history cleanup
 
-use crate::{Filesystem, NailsError, Result, output};
+use crate::{Filesystem, Result, output};
 use std::path::PathBuf;
 
 use super::{ShellType, filter_fish_history};
@@ -9,13 +9,18 @@ use super::{ShellType, filter_fish_history};
 ///
 /// HistoryCleaner removes all command history entries containing
 /// specified patterns (default: "nails") from bash, zsh, and fish
-/// history files. It also clears in-memory history.
+/// history files on disk.
+///
+/// In-memory history living in a running shell is not addressed here: a
+/// subprocess cannot reach a parent shell's RAM. That defense is handled
+/// separately by killing the user's shells (SIGKILL before overlay teardown,
+/// see `process::shell_cleanup::kill_user_shells`), which stops those shells
+/// from flushing their in-memory history back to disk on exit.
 ///
 /// # Security
 ///
 /// - Case-insensitive matching ensures all variations are caught
 /// - Atomic file writes prevent data corruption
-/// - In-memory clearing prevents forensic recovery from RAM
 /// - Optional secure deletion for forensic resistance
 ///
 /// # Generic Parameter
@@ -131,17 +136,11 @@ impl<F: Filesystem> HistoryCleaner<F> {
                 }
             }
 
-            // Attempt in-memory history clear (best-effort, see method docs for limitations)
-            // Skipped in test builds: subprocess shell commands have real system side effects
-            // (fish -c "history clear" corrupts $fish_history universal variable;
-            //  zsh -c "fc -W" overwrites ~/.zsh_history with empty content).
-            #[cfg(not(test))]
-            if let Err(e) = self.attempt_clean_in_memory_history(*shell) {
-                output::warn(&format!(
-                    "Failed to clear {:?} in-memory history: {}",
-                    shell, e
-                ));
-            }
+            // In-memory history in running shells is not cleared from here: a
+            // subprocess cannot touch a parent shell's RAM. The real mitigation
+            // is killing the user's shells before overlay teardown (SIGKILL, see
+            // process::shell_cleanup::kill_user_shells), so they never flush
+            // their in-memory history back to disk on exit.
         }
 
         Ok(cleaned)
@@ -231,72 +230,5 @@ impl<F: Filesystem> HistoryCleaner<F> {
         self.patterns
             .iter()
             .any(|pattern| line_lower.contains(&pattern.to_lowercase()))
-    }
-
-    /// Attempt to clear in-memory history for a shell (BEST-EFFORT ONLY)
-    ///
-    /// # ⚠️ CRITICAL LIMITATION - THIS DOES NOT WORK AS EXPECTED ⚠️
-    ///
-    /// **This method spawns NEW shell subprocesses to execute clear commands.**
-    /// The subprocess has NO connection to the user's actual shell session.
-    ///
-    /// Example: When you run `nails deactivate`, this spawns `bash -c "history -c"`
-    /// which clears history in the subprocess, NOT in your parent shell that has
-    /// the actual history.
-    ///
-    /// **This is a fundamental architectural limitation:** You cannot clear another
-    /// process's in-memory history from a subprocess. The in-memory history lives
-    /// in the parent shell's RAM space, which is inaccessible to child processes.
-    ///
-    /// ## Why This Approach Still Exists
-    ///
-    /// - Follows AC6 requirements letter-by-law ("uses std::process::Command")
-    /// - Best-effort approach with warnings on failure
-    /// - File-based cleanup (the primary security measure) works correctly
-    ///
-    /// ## What Actually Provides Security
-    ///
-    /// The `clean_history_file()` method removes entries from disk-based history
-    /// files, which IS effective. In-memory history in the parent shell will be
-    /// lost when the shell exits anyway.
-    ///
-    /// ## Better Solutions (Future Work)
-    ///
-    /// 1. **Shell integration:** Source a script from the user's shell rc file
-    ///    that intercepts `nails deactivate` and runs shell-builtin history clear
-    /// 2. **Session management:** Track shells started during nails session and
-    ///    terminate them before deactivation (Story 4.14 approach)
-    /// 3. **Accept limitation:** Focus on file-based cleanup (already robust)
-    #[cfg_attr(test, allow(dead_code))]
-    fn attempt_clean_in_memory_history(&self, shell: ShellType) -> Result<()> {
-        // Fish: `fish -c "history clear"` corrupts the $fish_history universal variable,
-        // causing interactive sessions to stop loading history. Skip entirely.
-        //
-        // Zsh: `fc -W` writes the (empty) subprocess history to $HISTFILE, overwriting
-        // ~/.zsh_history on disk. Skip entirely.
-        //
-        // Bash: `bash -c "history -c"` only affects the subprocess — safe to run.
-        let shell_name = match shell {
-            ShellType::Bash => "bash",
-            ShellType::Zsh | ShellType::Fish => return Ok(()),
-        };
-
-        let command = shell.in_memory_clear_command();
-
-        let output = std::process::Command::new(shell_name)
-            .arg("-c")
-            .arg(command)
-            .output()
-            .map_err(NailsError::IoError)?;
-
-        if !output.status.success() {
-            return Err(NailsError::InvalidState(format!(
-                "Failed to clear {} in-memory history: exit code {:?}",
-                shell_name,
-                output.status.code()
-            )));
-        }
-
-        Ok(())
     }
 }
