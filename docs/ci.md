@@ -28,7 +28,7 @@ This repository is public. The CI and release workflows are written for a public
 
 The main CI workflow runs these jobs:
 
-1. **Lint & Format** — `cargo fmt`, `cargo clippy`, and the Rust file length check.
+1. **Lint & Format** — `cargo fmt`, `cargo clippy`, the Rust file length check, and the unit tests for the E2E tooling in `scripts/tests/`.
 2. **Dependency Policy** — `just deny` (cargo-deny over the shipped dependency graph): bans, licenses and sources on every run; advisories and the `deny.toml` ignore expiry check only when `Cargo.toml`, `Cargo.lock` or `deny.toml` change, or on manual runs.
 3. **Tests** — `cargo nextest run` across four shards.
 4. **Coverage Enforcement** — `cargo llvm-cov` with an **85%** line-coverage threshold.

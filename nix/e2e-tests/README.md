@@ -49,7 +49,7 @@ in {
 - `runDetachedCommandFn` → `run_detached_command(unit_name, command)`
 - `readStatusJsonFn` → `read_status_json(config_path=None)`
 - `runVerifyFn` → `run_verify(args="", config_path=None)`
-- `canonicalDeactivateFn` → `canonical_deactivate(config_path, unit_name="nails-deactivate")`
+- `canonicalDeactivateFn` → `canonical_deactivate(config_path, unit_name="nails-deactivate", shutdown_timeout=300, diagnostics_timeout=90)`
 
 ### `lib/assertions.nix`
 

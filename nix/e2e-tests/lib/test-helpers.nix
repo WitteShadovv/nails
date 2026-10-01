@@ -133,10 +133,65 @@
         return status, json.loads(output)
   '';
 
+  # Deactivation powers the VM off. The driver's wait_for_shutdown() waits on
+  # QEMU without a deadline, so a deactivation that never finished held the
+  # test until globalTimeout and reported nothing. This waits on the QEMU
+  # process with a deadline and fails with guest diagnostics instead.
   canonicalDeactivateFn = ''
-    def canonical_deactivate(config_path, unit_name="nails-deactivate"):
-        import json
+    def canonical_deactivate(
+        config_path,
+        unit_name="nails-deactivate",
+        shutdown_timeout=300,
+        diagnostics_timeout=90,
+    ):
         import shlex
+        import subprocess
+        import threading
+
+        def collect_shutdown_diagnostics():
+            quoted_unit = shlex.quote(unit_name)
+            commands = [
+                (
+                    f"systemctl status {unit_name}",
+                    f"systemctl status {quoted_unit} --no-pager --full",
+                ),
+                (
+                    f"journal of {unit_name}",
+                    f"journalctl -u {quoted_unit} -n 100 -o short-precise --no-pager",
+                ),
+                ("journal tail", "journalctl -b -n 200 -o short-precise --no-pager"),
+                ("pending systemd jobs", "systemctl list-jobs --no-pager"),
+                (
+                    "process list",
+                    "ps -eo pid,ppid,stat,etimes,wchan:32,args --forest",
+                ),
+            ]
+            sections = []
+
+            def run_commands():
+                for label, command in commands:
+                    _, output = machine.execute(
+                        f"timeout 10s {command} 2>&1 || true",
+                        check_return=False,
+                        timeout=30,
+                    )
+                    sections.append(f"--- {label} ---\n{output.rstrip()}")
+
+            # Once shutdown has begun the guest's backdoor shell may already be
+            # gone, and execute() then blocks reading from it forever (its
+            # timeout runs inside the guest). Collect on a daemon thread so a
+            # dead shell cannot hang the test a second time.
+            collector = threading.Thread(target=run_commands, daemon=True)
+            collector.start()
+            collector.join(diagnostics_timeout)
+            collected = list(sections)
+            if collector.is_alive():
+                console_tail = machine.get_console_log().splitlines()[-100:]
+                collected.append(
+                    "--- guest shell unresponsive; serial console tail ---\n"
+                    + "\n".join(console_tail)
+                )
+            return "\n".join(collected)
 
         machine.succeed(
             "systemd-run --unit "
@@ -146,37 +201,29 @@
                 "nails --config " + shlex.quote(config_path) + " deactivate"
             )
         )
-        try:
-            machine.wait_for_shutdown()
-        except Exception as exc:
-            diagnostics = {}
-            diagnostic_commands = {
-                "systemctl_status": (
-                    "timeout 10s systemctl status "
-                    + shlex.quote(unit_name)
-                    + " --no-pager --full || true"
-                ),
-                "journalctl": (
-                    "timeout 10s journalctl -u "
-                    + shlex.quote(unit_name)
-                    + " --no-pager -n 100 -o short-precise || true"
-                ),
-                "list_jobs": "timeout 10s systemctl list-jobs --no-pager || true",
-            }
-            for label, command in diagnostic_commands.items():
-                status, output = machine.execute(command)
-                diagnostics[label] = {
-                    "status": status,
-                    "output": output.strip(),
-                }
-            raise Exception(
-                "canonical_deactivate failed to reach shutdown for unit "
-                + unit_name
-                + ": "
-                + str(exc)
-                + "\nBounded diagnostics:\n"
-                + json.dumps(diagnostics, indent=2, sort_keys=True)
+
+        # Wait on QEMU itself rather than polling the guest: the guest shell
+        # goes away during power-off, so only the host process is reliable.
+        timed_out = False
+        process = machine.process
+        if process is not None:
+            with machine.nested(
+                f"waiting up to {shutdown_timeout}s for the VM to power off"
+            ):
+                try:
+                    process.wait(timeout=shutdown_timeout)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+        if timed_out:
+            raise AssertionError(
+                f"canonical_deactivate: VM did not power off within "
+                f"{shutdown_timeout}s after starting {unit_name}\n"
+                + collect_shutdown_diagnostics()
             )
+
+        # QEMU has exited, so this returns at once; it also resets the driver's
+        # booted/connected state so the machine can be started again.
+        machine.wait_for_shutdown()
         machine.start()
         machine.wait_for_unit("multi-user.target")
   '';
