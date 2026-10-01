@@ -707,6 +707,8 @@ jobs:
             echo "deadline_utc=${DEADLINE_UTC}"
           } >> "$GITHUB_OUTPUT"
 
+          # The backticks in the printf formats below are literal Markdown.
+          # shellcheck disable=SC2016
           {
             cat <<'EOF'
           ## Full E2E shard workflow budget
@@ -738,7 +740,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          mapfile -t shard_tests < <(./scripts/run-e2e-tests.sh --dry-run --shard-index "${{ inputs.shard-index }}" --shard-count "${{ inputs.shard-count }}" all)
+          # A process substitution would hide a planner failure behind an
+          # empty selection.
+          if ! selection="$(./scripts/run-e2e-tests.sh --dry-run --shard-index "${{ inputs.shard-index }}" --shard-count "${{ inputs.shard-count }}" all)"; then
+            echo "::error::Could not plan shard ${{ inputs.shard-index }}/${{ inputs.shard-count }}; see the planner output above."
+            exit 1
+          fi
+
+          shard_tests=()
+          if [[ -n "$selection" ]]; then
+            mapfile -t shard_tests <<<"$selection"
+          fi
 
           {
             printf 'Resolved %s leaf test(s) for shard %s/%s.\n' "${#shard_tests[@]}" '${{ inputs.shard-index }}' '${{ inputs.shard-count }}'
@@ -755,11 +767,13 @@ jobs:
           E2E_TIMEOUT_SECONDS: ${{ steps.workflow-budget.outputs.e2e_timeout_seconds }}
           NAILS_E2E_VM_CPU_TARGET_PERCENT: '100'
           NAILS_E2E_VM_HOST_RESERVED_CORES: '0'
+          SHARD_INDEX: ${{ inputs.shard-index }}
           WORKFLOW_DEADLINE_UTC: ${{ steps.workflow-budget.outputs.deadline_utc }}
         run: |
           set -euo pipefail
 
           LOG_DIR="${RUNNER_TEMP}/full-e2e-shard-logs"
+          DURATIONS_FILE="${RUNNER_TEMP}/e2e-durations/shard-${SHARD_INDEX}.jsonl"
           RUN_LOG="${LOG_DIR}/full-e2e-shard-${{ inputs.shard-index }}-of-${{ inputs.shard-count }}.log"
           HEARTBEAT_INTERVAL_SECONDS=300
 
@@ -802,7 +816,7 @@ jobs:
           heartbeat_pid=$!
 
           set +e
-          timeout --signal=TERM --kill-after=5m "${E2E_TIMEOUT_SECONDS}s" ./scripts/run-e2e-tests.sh --verbose --shard-index "${{ inputs.shard-index }}" --shard-count "${{ inputs.shard-count }}" all 2>&1 | tee "$RUN_LOG"
+          timeout --signal=TERM --kill-after=5m "${E2E_TIMEOUT_SECONDS}s" ./scripts/run-e2e-tests.sh --verbose --durations-out "$DURATIONS_FILE" --shard-index "${{ inputs.shard-index }}" --shard-count "${{ inputs.shard-count }}" all 2>&1 | tee "$RUN_LOG"
           status=$?
           set -e
 
@@ -818,6 +832,38 @@ jobs:
           if [[ "$status" -ne 0 ]]; then
             exit "$status"
           fi
+
+      # Durations feed the shard weights; see "Timeouts and shard weights" in
+      # nix/e2e-tests/README.md. Drift is reported, never enforced, because
+      # runner types differ from run to run.
+      - name: Report shard weight drift
+        if: always()
+        env:
+          SHARD_INDEX: ${{ inputs.shard-index }}
+        run: |
+          set -euo pipefail
+
+          durations_file="${RUNNER_TEMP}/e2e-durations/shard-${SHARD_INDEX}.jsonl"
+          if [[ ! -s "$durations_file" ]]; then
+            echo "No per-test durations were recorded for this shard."
+            exit 0
+          fi
+
+          python3 scripts/e2e_shard_weights.py drift \
+            --weights nix/e2e-tests/shard-durations.json \
+            --heading "E2E shard ${SHARD_INDEX} weight drift" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --github \
+            "$durations_file"
+
+      - name: Upload shard durations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: e2e-durations-shard-${{ inputs.shard-index }}
+          if-no-files-found: warn
+          retention-days: 90
+          path: ${{ runner.temp }}/e2e-durations/
 
       - name: Upload full E2E shard artifacts
         if: always()

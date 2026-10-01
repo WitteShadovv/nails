@@ -14,6 +14,7 @@ on:
       - 'nails-cli/**'
       - 'nix/**'
       - 'scripts/run-e2e-tests.sh'
+      - 'scripts/e2e_shard_weights.py'
       - '.github/workflows/e2e-tests.yml'
       - '.github/workflows/e2e-tests-full.yml'
       - '.github/workflows/e2e-tests-full-shard.yml'
@@ -41,6 +42,8 @@ jobs:
     steps:
       - name: Record approval gate context
         run: |
+          # The backticks in the printf formats below are literal Markdown.
+          # shellcheck disable=SC2016
           {
             cat <<'EOF'
           ## Hetzner PR approval
@@ -197,6 +200,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          # The backticks in the printf formats below are literal Markdown.
+          # shellcheck disable=SC2016
           {
             cat <<'EOF'
           ## Full E2E workflow result
