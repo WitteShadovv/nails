@@ -126,6 +126,19 @@ pub enum NailsError {
         reason: String,
     },
 
+    /// Refused to unmount a path that NAILS did not mount.
+    ///
+    /// The teardown path escalates to `MNT_FORCE | MNT_DETACH`, which would
+    /// lazily detach a real filesystem (`/home`, `/nix`, `/boot`) if stale state
+    /// pointed NAILS at a mount it never created. Every `unmount` first confirms
+    /// the target is a NAILS-owned overlay, pivot/staging bind, or the
+    /// `/nix/store` restore bind; anything else is refused with this error and
+    /// `umount2` is never called. Kept distinct from [`NailsError::UnmountError`]
+    /// so callers and structured output can tell a safety refusal apart from a
+    /// kernel failure.
+    #[error("Refused to unmount unmanaged mount: {path}")]
+    RefusedUnmanagedUnmount { path: std::path::PathBuf },
+
     /// Swap disable failed
     #[error("Swap disable failed")]
     SwapDisableFailed,
@@ -281,6 +294,11 @@ mod tests {
             err.to_string(),
             "Config file not found: /etc/nails/nails.toml"
         );
+
+        let err = NailsError::RefusedUnmanagedUnmount {
+            path: std::path::PathBuf::from("/home"),
+        };
+        assert_eq!(err.to_string(), "Refused to unmount unmanaged mount: /home");
     }
 
     #[test]
@@ -384,6 +402,9 @@ mod tests {
         };
         let _err19 = NailsError::ConfigNotFound {
             path: PathBuf::from("/test/nails.toml"),
+        };
+        let _err20 = NailsError::RefusedUnmanagedUnmount {
+            path: PathBuf::from("/test"),
         };
     }
 

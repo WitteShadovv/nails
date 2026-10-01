@@ -1,9 +1,24 @@
 //! Mount, unmount, and mount-query operations for RealFilesystem.
 
 use super::RealFilesystem;
+use crate::filesystem::mountinfo::{
+    NailsMounts, escape_overlay_path, parse_overlay_opts, read_mountinfo,
+};
 use crate::filesystem::{Filesystem, MountInfo, verify_mount_preconditions};
 use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
+
+/// Canonicalize the single queried target, falling back to the literal path.
+///
+/// Only the target is canonicalized — never a mount-table entry — so a dead
+/// NFS/CIFS/FUSE mount elsewhere cannot block the lookup. Mountinfo already
+/// records canonical kernel paths, so comparing a canonical target against the
+/// raw entries is correct.
+fn canonical_target(target: &Path) -> PathBuf {
+    target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf())
+}
 
 /// Perform an overlay mount.
 pub(super) fn mount_overlay(
@@ -20,17 +35,19 @@ pub(super) fn mount_overlay(
     }
     verify_mount_preconditions(fs, lower[0], upper, work, target)?;
 
-    let lowerdir: String = lower
+    // Escape `,`/`:`/`\` in every path segment and reject newlines so a path
+    // with those characters cannot break or inject overlay options.
+    let lowerdir = lower
         .iter()
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
+        .map(|p| escape_overlay_path(p))
+        .collect::<Result<Vec<_>>>()?
         .join(":");
 
     let options = format!(
         "lowerdir={},upperdir={},workdir={}",
         lowerdir,
-        upper.display(),
-        work.display()
+        escape_overlay_path(upper)?,
+        escape_overlay_path(work)?
     );
 
     nix::mount::mount(
@@ -57,9 +74,22 @@ pub(super) fn mount_overlay(
 }
 
 /// Unmount a filesystem (idempotent).
+///
+/// Before touching `umount2`, the mount at `target` is confirmed to be one NAILS
+/// created (an overlay, a pivot/staging bind, or the `/nix/store` restore bind).
+/// If it is not — for example a real ext4 `/home` that stale state wrongly points
+/// at — the call is refused so the `MNT_FORCE | MNT_DETACH` escalation can never
+/// lazily detach a host filesystem.
 pub(super) fn unmount(fs: &RealFilesystem, target: &Path, force: bool) -> Result<()> {
     if !fs.is_mounted(target)? {
         return Ok(());
+    }
+
+    let canonical = canonical_target(target);
+    if !NailsMounts::discover(None)?.is_owned(&canonical) {
+        return Err(NailsError::RefusedUnmanagedUnmount {
+            path: target.to_path_buf(),
+        });
     }
 
     let flags = if force {
@@ -85,107 +115,54 @@ pub(super) fn unmount(fs: &RealFilesystem, target: &Path, force: bool) -> Result
     Ok(())
 }
 
-/// Check if a path is currently mounted by parsing /proc/mounts.
+/// Check if a path is currently mounted.
 pub(super) fn is_mounted(target: &Path) -> Result<bool> {
-    let mounts = std::fs::read_to_string("/proc/mounts")?;
-    let canonical_target = target
-        .canonicalize()
-        .unwrap_or_else(|_| target.to_path_buf());
-
-    for line in mounts.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2
-            && let Ok(mount_point) = PathBuf::from(parts[1]).canonicalize()
-            && mount_point == canonical_target
-        {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
+    let canonical = canonical_target(target);
+    Ok(read_mountinfo()?.iter().any(|e| e.mount_point == canonical))
 }
 
 /// Get filesystem type at a mount point.
 pub(super) fn get_filesystem_type(target: &Path) -> Result<Option<String>> {
-    let mounts = std::fs::read_to_string("/proc/mounts")?;
-    let canonical_target = target
-        .canonicalize()
-        .unwrap_or_else(|_| target.to_path_buf());
-
-    for line in mounts.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3
-            && let Ok(mount_point) = PathBuf::from(parts[1]).canonicalize()
-            && mount_point == canonical_target
-        {
-            return Ok(Some(parts[2].to_string()));
-        }
-    }
-
-    Ok(None)
+    let canonical = canonical_target(target);
+    Ok(read_mountinfo()?
+        .into_iter()
+        .find(|e| e.mount_point == canonical)
+        .map(|e| e.fstype))
 }
 
 /// Check if a path has an overlayfs mount.
 pub(super) fn is_overlay_mounted(target: &Path) -> Result<bool> {
-    let mounts = std::fs::read_to_string("/proc/mounts")?;
-    let canonical_target = target
-        .canonicalize()
-        .unwrap_or_else(|_| target.to_path_buf());
-
-    for line in mounts.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3
-            && parts[2] == "overlay"
-            && let Ok(mount_point) = PathBuf::from(parts[1]).canonicalize()
-            && mount_point == canonical_target
-        {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
+    let canonical = canonical_target(target);
+    Ok(read_mountinfo()?
+        .iter()
+        .any(|e| e.mount_point == canonical && e.fstype == "overlay"))
 }
 
 /// Get mount info for a currently mounted overlay.
+///
+/// Returns `None` when the target is not a mounted overlay. A malformed or dead
+/// mount-table line no longer aborts the lookup — the parser skips it — so an
+/// overlay recorded after such a line is still found.
 pub(super) fn get_mount_info(target: &Path) -> Option<MountInfo> {
-    let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
-    let canonical_target = target.canonicalize().ok()?;
-
-    for line in mounts.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 4 {
-            let mount_point = PathBuf::from(parts[1]).canonicalize().ok()?;
-            let fs_type = parts[2];
-
-            if mount_point == canonical_target && fs_type == "overlay" {
-                let options = parts[3];
-                let mut lower = None;
-                let mut upper = None;
-                let mut work = None;
-
-                for opt in options.split(',') {
-                    if let Some(path) = opt.strip_prefix("lowerdir=") {
-                        lower = Some(PathBuf::from(path.split(':').next()?));
-                    } else if let Some(path) = opt.strip_prefix("upperdir=") {
-                        upper = Some(PathBuf::from(path));
-                    } else if let Some(path) = opt.strip_prefix("workdir=") {
-                        work = Some(PathBuf::from(path));
-                    }
-                }
-
-                if let (Some(l), Some(u), Some(w)) = (lower, upper, work) {
-                    return Some(MountInfo {
-                        lower: l,
-                        upper: u,
-                        work: w,
-                        target: canonical_target,
-                        mounted_at: chrono::Utc::now(),
-                    });
-                }
+    let canonical = canonical_target(target);
+    for entry in read_mountinfo().ok()? {
+        if entry.mount_point == canonical && entry.fstype == "overlay" {
+            let opts = parse_overlay_opts(&entry.super_opts);
+            if let (Some(lower), Some(upper), Some(work)) = (
+                opts.lowerdir.into_iter().next(),
+                opts.upperdir,
+                opts.workdir,
+            ) {
+                return Some(MountInfo {
+                    lower,
+                    upper,
+                    work,
+                    target: canonical,
+                    mounted_at: chrono::Utc::now(),
+                });
             }
         }
     }
-
     None
 }
 

@@ -39,11 +39,16 @@
 // Submodules
 pub mod mock;
 pub mod mount_info;
+pub mod mountinfo;
 pub mod real;
 mod traits;
 
 // Re-exports
 pub use mock::{MockFilesystem, MockOp};
 pub use mount_info::MountInfo;
+pub use mountinfo::{
+    MountEntry, NailsMounts, OverlayOpts, escape_overlay_path, parse_mountinfo, parse_overlay_opts,
+    read_mountinfo,
+};
 pub use real::RealFilesystem;
 pub use traits::*;

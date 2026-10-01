@@ -234,6 +234,49 @@ fn test_unmount_removes_mount_info() {
 }
 
 #[test]
+fn test_unmount_refuses_unmanaged_mount() {
+    let fs = MockFilesystem::new();
+
+    // A real ext4 /home that NAILS never mounted.
+    fs.mock_set_mount_unmanaged(Path::new("/home"));
+    assert!(fs.is_mounted(Path::new("/home")).unwrap());
+
+    // Both graceful and forced unmount must be refused, never detaching it.
+    for force in [false, true] {
+        let err = fs
+            .unmount(Path::new("/home"), force)
+            .expect_err("unmanaged unmount must be refused");
+        assert!(
+            matches!(err, NailsError::RefusedUnmanagedUnmount { .. }),
+            "expected RefusedUnmanagedUnmount, got {err:?}"
+        );
+    }
+
+    // Still mounted — the refusal did not touch it.
+    assert!(fs.is_mounted(Path::new("/home")).unwrap());
+}
+
+#[test]
+fn test_unmount_allows_nails_owned_mount() {
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists("/mnt/hidden/upper", true);
+    fs.mock_set_path_exists("/mnt/hidden/work", true);
+    fs.mount_overlay(
+        &[Path::new("/")],
+        Path::new("/mnt/hidden/upper"),
+        Path::new("/mnt/hidden/work"),
+        Path::new("/home"),
+    )
+    .unwrap();
+
+    // A NAILS-owned overlay unmounts normally.
+    fs.unmount(Path::new("/home"), false).unwrap();
+    assert!(!fs.is_mounted(Path::new("/home")).unwrap());
+}
+
+#[test]
 fn test_verify_mount_preconditions_succeeds_when_all_valid() {
     let fs = MockFilesystem::new();
 

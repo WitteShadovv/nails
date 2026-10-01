@@ -83,6 +83,12 @@ pub struct MockFilesystem {
     #[allow(clippy::type_complexity)]
     pub(super) files_with_pattern: Arc<Mutex<HashMap<(PathBuf, String), Vec<PathBuf>>>>,
     pub(super) mounted_overlays: Arc<Mutex<HashMap<PathBuf, MountInfo>>>,
+    /// Mounts NAILS is considered to own and may therefore unmount. Mirrors the
+    /// real ownership gate: `unmount` of a mounted-but-unowned path (e.g. a plain
+    /// ext4 `/home` set up with `mock_set_mount_unmanaged`) is refused. Every
+    /// mount created through a mount API, or marked with `mock_set_mounted`, is
+    /// owned.
+    pub(super) nails_owned_mounts: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) tmpfs_mounts: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) bind_mounts: Arc<Mutex<HashMap<PathBuf, PathBuf>>>,
     pub(super) written_files: Arc<Mutex<HashMap<PathBuf, String>>>,
@@ -141,6 +147,7 @@ impl MockFilesystem {
             file_contents: Arc::new(Mutex::new(HashMap::new())),
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
             mounted_overlays: Arc::new(Mutex::new(HashMap::new())),
+            nails_owned_mounts: Arc::new(Mutex::new(HashSet::new())),
             tmpfs_mounts: Arc::new(Mutex::new(HashSet::new())),
             bind_mounts: Arc::new(Mutex::new(HashMap::new())),
             written_files: Arc::new(Mutex::new(HashMap::new())),
@@ -213,6 +220,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.mounted_overlays
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.nails_owned_mounts
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();

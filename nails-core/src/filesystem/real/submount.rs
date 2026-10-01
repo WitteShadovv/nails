@@ -1,5 +1,6 @@
 //! Submount source detection for multi-lower-layer overlayfs.
 
+use crate::filesystem::mountinfo::parse_mountinfo;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,10 @@ use std::path::{Path, PathBuf};
 ///
 /// Returns a sorted `Vec<(mount_point, source_path)>`.
 pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(PathBuf, PathBuf)> {
+    // Parse once through the shared, octal-decoding parser so paths with spaces,
+    // tabs or backslashes resolve correctly and no line is split on whitespace.
+    let entries = parse_mountinfo(mountinfo);
+
     // Pass 1: Build a map from dev_id -> mount_point for entries where
     // fs_root == "/". These represent the root mounts of each device/partition.
     let mut device_root_mounts: HashMap<String, PathBuf> = HashMap::new();
@@ -25,15 +30,10 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
     let mut target_dev_id: Option<String> = None;
     let mut target_fs_root: Option<String> = None;
 
-    for line in mountinfo.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 5 {
-            continue;
-        }
-
-        let dev_id = parts[2];
-        let fs_root = parts[3];
-        let mount_point = PathBuf::from(parts[4]);
+    for entry in &entries {
+        let dev_id = entry.dev.as_str();
+        let fs_root = entry.root.to_string_lossy();
+        let mount_point = entry.mount_point.clone();
 
         if fs_root == "/" {
             match device_root_mounts.get_mut(dev_id) {
@@ -49,9 +49,9 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
         }
 
         // Track the target's device ID (last-wins for overmounts)
-        if Path::new(parts[4]) == target {
+        if entry.mount_point == target {
             target_dev_id = Some(dev_id.to_string());
-            target_fs_root = Some(fs_root.to_string());
+            target_fs_root = Some(fs_root.into_owned());
         }
     }
 
@@ -99,27 +99,19 @@ pub(crate) fn parse_submount_sources(mountinfo: &str, target: &Path) -> Vec<(Pat
             false
         };
 
-    for line in mountinfo.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 5 {
-            continue;
-        }
-
-        let dev_id = parts[2];
-        let fs_root = parts[3];
-        let mount_point = PathBuf::from(parts[4]);
+    for entry in &entries {
+        let dev_id = entry.dev.as_str();
+        let fs_root = entry.root.to_string_lossy();
+        let fs_root = fs_root.as_ref();
+        let mount_point = entry.mount_point.clone();
 
         // Include mount points strictly under target (not target itself)
         if !mount_point.starts_with(target) || mount_point == target {
             continue;
         }
 
-        // Find the source (mount source) after the "-" separator
-        let separator_pos = parts.iter().position(|&p| p == "-");
-        let mount_source = match separator_pos {
-            Some(pos) if pos + 2 < parts.len() => parts[pos + 2],
-            _ => continue,
-        };
+        let mount_source = entry.source.to_string_lossy();
+        let mount_source = mount_source.as_ref();
 
         if mount_source.starts_with("/") && !mount_source.starts_with("/dev/") {
             // Non-device path source — use directly

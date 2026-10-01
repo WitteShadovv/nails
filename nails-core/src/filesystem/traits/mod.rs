@@ -53,6 +53,11 @@ pub trait Filesystem: Send + Sync + Clone {
     ///
     /// * `target` - Mount point to unmount
     /// * `force` - If true, use MNT_FORCE | MNT_DETACH
+    ///
+    /// Unmounting a path NAILS did not mount is refused with
+    /// [`NailsError::RefusedUnmanagedUnmount`](crate::NailsError::RefusedUnmanagedUnmount)
+    /// before any syscall, so the force escalation can never detach a host
+    /// filesystem that stale state wrongly points at.
     fn unmount(&self, target: &Path, force: bool) -> Result<()>;
 
     /// Check if a path is currently mounted.

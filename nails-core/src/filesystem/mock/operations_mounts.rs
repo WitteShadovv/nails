@@ -48,6 +48,10 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .insert(target.to_path_buf(), mount_info);
+        self.nails_owned_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(target.to_path_buf());
 
         self.op_log
             .lock()
@@ -89,6 +93,19 @@ impl MockFilesystem {
             return Ok(());
         }
 
+        // Ownership gate: refuse to unmount a mount NAILS does not own, mirroring
+        // the real filesystem's protection against force-detaching a host mount.
+        if !self
+            .nails_owned_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .contains(target)
+        {
+            return Err(NailsError::RefusedUnmanagedUnmount {
+                path: target.to_path_buf(),
+            });
+        }
+
         let busy = self.busy.lock().expect("MockFilesystem mutex poisoned");
         if busy.contains(target) && !force {
             return Err(NailsError::MountBusy {
@@ -101,6 +118,10 @@ impl MockFilesystem {
         mounts.remove(target);
         drop(mounts);
         self.mounted_overlays
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .remove(target);
+        self.nails_owned_mounts
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .remove(target);
@@ -193,6 +214,10 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .insert(target.to_path_buf());
+        self.nails_owned_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(target.to_path_buf());
 
         Ok(())
     }
@@ -224,6 +249,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .remove(target);
         self.mounted
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .remove(target);
+        self.nails_owned_mounts
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .remove(target);
@@ -270,6 +299,10 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .insert(target.to_path_buf());
+        self.nails_owned_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(target.to_path_buf());
 
         Ok(())
     }
@@ -301,6 +334,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .remove(target);
         self.mounted
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .remove(target);
+        self.nails_owned_mounts
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .remove(target);

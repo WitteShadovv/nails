@@ -4,18 +4,44 @@ use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 
 impl MockFilesystem {
-    /// Set whether a path is mounted
+    /// Set whether a path is mounted.
+    ///
+    /// A mount set this way is treated as NAILS-owned, so it can be torn down by
+    /// `unmount`. Use [`mock_set_mount_unmanaged`](Self::mock_set_mount_unmanaged)
+    /// to simulate a foreign mount that `unmount` must refuse.
     pub fn mock_set_mounted(&self, path: &Path, mounted: bool) {
         let mut mounts = self.mounted.lock().expect("MockFilesystem mutex poisoned");
+        let mut owned = self
+            .nails_owned_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned");
         if mounted {
             mounts.insert(path.to_path_buf());
+            owned.insert(path.to_path_buf());
         } else {
             mounts.remove(path);
+            owned.remove(path);
             self.mounted_overlays
                 .lock()
                 .expect("MockFilesystem mutex poisoned")
                 .remove(path);
         }
+    }
+
+    /// Mark `path` as mounted but **not** NAILS-owned.
+    ///
+    /// Simulates a host filesystem (e.g. a real ext4 `/home`) that stale state
+    /// might wrongly point NAILS at: `unmount` must refuse it with
+    /// [`NailsError::RefusedUnmanagedUnmount`](crate::NailsError::RefusedUnmanagedUnmount).
+    pub fn mock_set_mount_unmanaged(&self, path: &Path) {
+        self.mounted
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf());
+        self.nails_owned_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .remove(path);
     }
 
     /// Set whether a path is mounted as an overlay filesystem.
