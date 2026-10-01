@@ -228,10 +228,7 @@ impl<F: Filesystem> NailsManager<F> {
         };
 
         // Update cached state with this mount
-        let mut cached = self
-            .cached_state
-            .lock()
-            .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+        let mut cached = self.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file
                 .overlay_status
@@ -269,10 +266,7 @@ impl<F: Filesystem> NailsManager<F> {
             failed_infos.len()
         );
 
-        let mut cached = self
-            .cached_state
-            .lock()
-            .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+        let mut cached = self.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file.failed_overlays = failed_infos;
             drop(cached);

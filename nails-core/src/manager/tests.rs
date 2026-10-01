@@ -100,7 +100,7 @@ fn test_new_does_not_load_state() {
     let manager = NailsManager::new(fs, config, state_path);
 
     // State is not loaded yet
-    let cached = manager.cached_state.lock().unwrap();
+    let cached = manager.cached_state.borrow();
     assert!(cached.is_none());
 }
 
@@ -109,7 +109,7 @@ fn test_new_initializes_cached_state_to_none() {
     let manager = create_test_manager();
 
     // Verify cached_state is None (not yet loaded)
-    let cached = manager.cached_state.lock().unwrap();
+    let cached = manager.cached_state.borrow();
     assert!(cached.is_none());
 }
 
@@ -140,7 +140,7 @@ fn test_current_state_lazy_loads_on_first_access() {
 
     // Verify state not loaded yet
     {
-        let cached = manager.cached_state.lock().unwrap();
+        let cached = manager.cached_state.borrow();
         assert!(cached.is_none());
     }
 
@@ -149,7 +149,7 @@ fn test_current_state_lazy_loads_on_first_access() {
 
     // Verify state is now cached
     {
-        let cached = manager.cached_state.lock().unwrap();
+        let cached = manager.cached_state.borrow();
         assert!(cached.is_some());
     }
 
@@ -529,7 +529,7 @@ fn test_activate_from_non_inactive_returns_error() {
         .unwrap();
 
     // Force manager to reload state from disk
-    *manager.lock().unwrap().cached_state.lock().unwrap() = None;
+    *manager.lock().unwrap().cached_state.borrow_mut() = None;
 
     // AC7: activate() is idempotent - calling from Active state should succeed (no-op)
     let result = NailsManager::activate(Arc::clone(&manager), true);
@@ -896,7 +896,7 @@ fn test_deactivate_failure_at_unmount_rolls_back_to_active() {
         .unwrap();
     {
         let mgr = manager.lock().unwrap();
-        let mut cached = mgr.cached_state.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file.overlay_status = overlay_status;
         }
@@ -1016,7 +1016,7 @@ fn test_deactivate_successful_unmounts_all_overlays() {
         .unwrap();
     {
         let mgr = manager.lock().unwrap();
-        let mut cached = mgr.cached_state.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file.overlay_status = overlay_status;
         }
@@ -1113,7 +1113,7 @@ fn test_deactivate_requests_reboot_only_after_successful_teardown() {
         .unwrap();
     {
         let mgr = manager.lock().unwrap();
-        let mut cached = mgr.cached_state.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file.overlay_status = overlay_status;
         }
@@ -1206,7 +1206,7 @@ fn test_deactivate_does_not_request_reboot_after_failed_teardown() {
         .unwrap();
     {
         let mgr = manager.lock().unwrap();
-        let mut cached = mgr.cached_state.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file.overlay_status = overlay_status;
         }
@@ -1386,7 +1386,7 @@ fn test_deactivate_partial_failure_unmounts_only_successful_ones() {
         .unwrap();
     {
         let mgr = manager.lock().unwrap();
-        let mut cached = mgr.cached_state.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file.overlay_status = overlay_status;
         }
@@ -2895,7 +2895,7 @@ fn test_rollback_clears_overlay_status_and_nixos_generation() {
             },
         );
 
-        let mut cached = mgr.cached_state.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
         let state_file = StateFile {
             overlay_status,
             nixos_generation: Some("test-generation-123".to_string()),
@@ -3029,7 +3029,7 @@ fn test_nails_manager_debug_impl() {
         "Debug should contain state_file_path"
     );
     assert!(
-        debug_output.contains("<Arc<Mutex<...>>>"),
+        debug_output.contains("<RefCell<...>>"),
         "Debug should mask cached_state"
     );
 }
@@ -5108,7 +5108,7 @@ fn test_activate_auto_mode_mount_order_is_alphabetical() {
 
     // Verify mount order is alphabetical by checking overlay_status
     let mgr = manager.lock().unwrap();
-    let cached = mgr.cached_state.lock().unwrap();
+    let cached = mgr.cached_state.borrow();
     if let Some(ref state_file) = *cached {
         let mut mount_targets: Vec<PathBuf> = state_file.overlay_status.keys().cloned().collect();
         mount_targets.sort();
@@ -5147,7 +5147,7 @@ fn test_activate_auto_mode_upper_work_dirs_at_correct_paths() {
 
     // Verify overlay paths are correct
     let mgr = manager.lock().unwrap();
-    let cached = mgr.cached_state.lock().unwrap();
+    let cached = mgr.cached_state.borrow();
     if let Some(ref state_file) = *cached {
         // /home overlay
         let home_info = state_file
@@ -5239,7 +5239,7 @@ fn test_activate_auto_mode_failed_overlays_recorded_on_failure() {
 
     // Verify failed overlays are recorded in state
     let mgr = manager.lock().unwrap();
-    let cached = mgr.cached_state.lock().unwrap();
+    let cached = mgr.cached_state.borrow();
     if let Some(ref state_file) = *cached {
         assert_eq!(
             state_file.failed_overlays.len(),
@@ -6369,7 +6369,7 @@ fn test_activate_auto_mode_all_directories_excluded() {
 
     // Verify system state is Active (even with 0 overlays)
     let mgr = manager.lock().unwrap();
-    let cached = mgr.cached_state.lock().unwrap();
+    let cached = mgr.cached_state.borrow();
     if let Some(ref state_file) = *cached {
         assert!(state_file.state.is_active(), "State should be Active");
         assert_eq!(state_file.overlay_status.len(), 0);
@@ -6443,7 +6443,7 @@ fn setup_active_with_etc_overlay() -> (
     // Register /etc overlay in cached state
     {
         let mgr = manager.lock().unwrap();
-        let mut cached = mgr.cached_state.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
         if let Some(ref mut sf) = *cached {
             sf.overlay_status.insert(
                 PathBuf::from("/etc"),
@@ -6521,7 +6521,7 @@ fn setup_active_with_home_overlay() -> (
     // Register /home overlay in cached state
     {
         let mgr = manager.lock().unwrap();
-        let mut cached = mgr.cached_state.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
         if let Some(ref mut sf) = *cached {
             sf.overlay_status.insert(
                 PathBuf::from("/home"),
@@ -6986,7 +6986,7 @@ fn test_config_fingerprint_field_persistence() {
 
     {
         let mgr = manager.lock().unwrap();
-        let state = mgr.cached_state.lock().unwrap();
+        let state = mgr.cached_state.borrow();
         assert!(
             state.is_some(),
             "State should be loaded after calling current_state()"
@@ -7002,7 +7002,7 @@ fn test_config_fingerprint_field_persistence() {
     let test_fingerprint = "abcd1234efgh5678".to_string();
     {
         let mgr = manager.lock().unwrap();
-        let mut cached = mgr.cached_state.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
         if let Some(ref mut state) = *cached {
             state.config_fingerprint = Some(test_fingerprint.clone());
             state.nixos_generation = Some("test-gen-123".to_string());
@@ -7098,7 +7098,7 @@ fn test_nixos_build_logs_fast_path_when_fingerprint_matches_and_generation_exist
     );
     manager.set_verbosity(Verbosity::Normal);
     {
-        let mut cached = manager.cached_state.lock().unwrap();
+        let mut cached = manager.cached_state.borrow_mut();
         *cached = Some(StateFile {
             state: SystemState::Inactive,
             config_fingerprint: Some(fingerprint),
@@ -7168,7 +7168,7 @@ fn test_nixos_build_does_not_take_fast_path_when_generation_missing() {
     );
     manager.set_verbosity(Verbosity::Normal);
     {
-        let mut cached = manager.cached_state.lock().unwrap();
+        let mut cached = manager.cached_state.borrow_mut();
         *cached = Some(StateFile {
             state: SystemState::Inactive,
             config_fingerprint: Some(fingerprint),
@@ -7235,7 +7235,7 @@ fn test_nixos_build_uses_empty_content_when_both_reads_fail() {
     );
     manager.set_verbosity(Verbosity::Normal);
     {
-        let mut cached = manager.cached_state.lock().unwrap();
+        let mut cached = manager.cached_state.borrow_mut();
         *cached = Some(StateFile {
             state: SystemState::Inactive,
             config_fingerprint: Some(fingerprint),

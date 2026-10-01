@@ -39,8 +39,8 @@
 //! ```
 
 use crate::{Config, Filesystem, NailsError, Result};
+use std::cell::RefCell;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
 // Module declarations
 pub mod activation;
@@ -78,13 +78,13 @@ pub(crate) use helpers::{
 /// - `filesystem`: Generic filesystem implementation (real or mock)
 /// - `config`: Application configuration
 /// - `state_file_path`: Path to state file (on hidden volume)
-/// - `cached_state`: Cached state file (lazy loaded, thread-safe)
+/// - `cached_state`: Cached state file (lazy loaded)
 ///
-/// # Thread Safety
+/// # Interior mutability
 ///
-/// `cached_state` uses `Arc<Mutex<_>>` for thread-safe lazy loading.
-/// While NAILS is single-threaded in Phase 1 (AR47), this pattern enables
-/// future extensions and parallel testing.
+/// `cached_state` uses `RefCell<_>` so the lazy load can populate the cache
+/// through a shared reference. NAILS orchestration is single-threaded (AR47),
+/// so no cross-thread synchronisation is required.
 ///
 /// # Requirements
 ///
@@ -101,9 +101,9 @@ pub struct NailsManager<F: Filesystem> {
     /// Path to state file (on hidden volume)
     state_file_path: PathBuf,
 
-    /// Cached state file (lazy loaded, thread-safe)
-    /// Arc<Mutex<_>> enables thread-safe access and clone implementation
-    cached_state: Arc<Mutex<Option<crate::StateFile>>>,
+    /// Cached state file (lazy loaded)
+    /// `RefCell` gives interior mutability for the lazy load through `&self`.
+    cached_state: RefCell<Option<crate::StateFile>>,
 
     /// NixOS profile builder (optional, for activation with NixOS switching)
     /// If None, activation will skip NixOS build/switch steps
@@ -120,7 +120,7 @@ impl<F: Filesystem> std::fmt::Debug for NailsManager<F> {
             .field("filesystem", &"<filesystem>")
             .field("config", &self.config)
             .field("state_file_path", &self.state_file_path)
-            .field("cached_state", &"<Arc<Mutex<...>>>")
+            .field("cached_state", &"<RefCell<...>>")
             .field(
                 "nixos_builder",
                 &self.nixos_builder.as_ref().map(|_| "<NixOSBuilder>"),
@@ -162,7 +162,7 @@ impl<F: Filesystem> NailsManager<F> {
             filesystem,
             config,
             state_file_path,
-            cached_state: Arc::new(Mutex::new(None)),
+            cached_state: RefCell::new(None),
             nixos_builder: None,
             verbosity: crate::verbosity::Verbosity::default(),
         }
@@ -210,7 +210,7 @@ impl<F: Filesystem> NailsManager<F> {
             filesystem,
             config,
             state_file_path,
-            cached_state: Arc::new(Mutex::new(None)),
+            cached_state: RefCell::new(None),
             nixos_builder: Some(nixos_builder),
             verbosity: crate::verbosity::Verbosity::default(),
         }

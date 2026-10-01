@@ -271,10 +271,7 @@ struct OverlayContext {
 fn requires_decoy_restore<F: Filesystem>(manager: &NailsManager<F>) -> Result<bool> {
     let _ = manager.current_state()?;
 
-    let cached = manager
-        .cached_state
-        .lock()
-        .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+    let cached = manager.cached_state.borrow();
 
     Ok(cached
         .as_ref()
@@ -311,10 +308,7 @@ fn build_cleanup_config<F: Filesystem>(
 fn inspect_overlay_context<F: Filesystem>(manager: &NailsManager<F>) -> Result<OverlayContext> {
     let _ = manager.current_state()?;
 
-    let cached = manager
-        .cached_state
-        .lock()
-        .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+    let cached = manager.cached_state.borrow();
 
     let overlay_paths: Vec<PathBuf> = cached
         .as_ref()

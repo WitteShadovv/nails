@@ -47,10 +47,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// assert_eq!(state, state2);
     /// ```
     pub fn current_state(&self) -> Result<SystemState> {
-        let mut cached = self
-            .cached_state
-            .lock()
-            .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+        let mut cached = self.cached_state.borrow_mut();
 
         // If cached, return immediately
         if let Some(ref state_file) = *cached {
@@ -187,10 +184,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// ```
     pub fn force_state(&mut self, new_state: SystemState) -> Result<()> {
         // Update state file without validation
-        let mut cached = self
-            .cached_state
-            .lock()
-            .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+        let mut cached = self.cached_state.borrow_mut();
         let mut state_file = cached.take().unwrap_or_default();
         state_file.state = new_state.clone();
         state_file.last_modified = Utc::now();
@@ -294,10 +288,7 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         // Update state file
-        let mut cached = self
-            .cached_state
-            .lock()
-            .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+        let mut cached = self.cached_state.borrow_mut();
         let mut state_file = cached.take().unwrap_or_default();
         state_file.state = new_state;
         state_file.last_modified = Utc::now();
@@ -321,10 +312,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// * `Ok(())` - State saved successfully
     /// * `Err(NailsError::StateFileError)` - Failed to write state file
     pub(crate) fn save_cached_state(&self) -> Result<()> {
-        let mut cached = self
-            .cached_state
-            .lock()
-            .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+        let mut cached = self.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file.last_modified = Utc::now();
             state_file
@@ -338,10 +326,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// Used during deactivation to avoid losing nixos_generation/config_fingerprint
     /// while still returning to a clean inactive tracker state.
     pub(crate) fn clear_overlay_status_in_cache(&self) -> Result<()> {
-        let mut cached = self
-            .cached_state
-            .lock()
-            .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+        let mut cached = self.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file.overlay_status.clear();
             state_file.failed_overlays.clear();
@@ -351,10 +336,7 @@ impl<F: Filesystem> NailsManager<F> {
 
     /// Return tracked overlay paths ordered by original mount time.
     pub(crate) fn tracked_overlay_paths_by_mount_order(&self) -> Result<Vec<PathBuf>> {
-        let cached = self
-            .cached_state
-            .lock()
-            .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
+        let cached = self.cached_state.borrow();
 
         let mut ordered: Vec<_> = cached
             .as_ref()
