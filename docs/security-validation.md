@@ -87,7 +87,7 @@ ignore = [
 ]
 ```
 
-`ci/deny_ignores.py` fails when an ignore has no expiry, a malformed one, or one that has passed. It runs in CI next to the advisory check, weekly in `scheduled.yml`, and as a pre-commit hook whenever `deny.toml` changes.
+`ci/deny_ignores.py` fails when an ignore has no expiry, a malformed one, one that has passed, or one more than 180 days ahead. It runs in CI next to the advisory check, weekly in `scheduled.yml`, and as a pre-commit hook whenever `deny.toml` changes.
 
 ### Run locally
 
