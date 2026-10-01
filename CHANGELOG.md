@@ -22,6 +22,33 @@ during the current alpha phase.
   still documents manual `umount` and `cryptsetup close` steps.
 - Directed non-security conduct reports to `contact@nails.run` while preserving
   `security@nails.run` for vulnerability-sensitive communications.
+- CI gates dependency advisories only on the shipped dependency graph (x86_64 Linux, no
+  dev-dependencies) and only when `Cargo.toml`, `Cargo.lock`, or `deny.toml` change; a weekly
+  scheduled workflow runs the full cross-target, dev-inclusive scan. Each `deny.toml` advisory
+  ignore now requires an `# expires: YYYY-MM-DD` date, enforced by `ci/deny_ignores.py`.
+- `nix flake check` is now a fast lint gate (nixfmt, statix, deadnix, shellcheck, actionlint,
+  zizmor, and shard-weight checks); the flake exposes `x86_64-linux` only. E2E VM tests moved to
+  `legacyPackages.x86_64-linux.e2e.<name>` with metadata under
+  `legacyPackages.x86_64-linux.e2e-metadata`, the E2E test `performance` was renamed to
+  `performance-validation`, and `run-e2e-tests.sh -i` now takes exactly one leaf test.
+- The `nails` package and E2E VM tests now build identically across commits and hosts (constant
+  `SOURCE_DATE_EPOCH`, cargo-only source, fixed 2-core VMs), and CI sets up Nix through one
+  `.github/actions/setup-nix` action with an optional project binary cache.
+- Updated `serial_test` to 3.5, which no longer pulls in the `scc` dependency.
+
+### Removed
+
+- `cargo-audit` from CI, pre-commit, both dev shells, and `scripts/ci-local.sh`; dependency
+  advisories are now covered entirely by cargo-deny.
+- The `NAILS_E2E_SYSTEM` and `NAILS_E2E_VM_*` environment overrides, the `apps.e2e-test-interactive`
+  output, the `checks.*.e2e-*` mapping, and the nix-community binary cache.
+
+### Fixed
+
+- E2E VM tests now time out after 900 s by default (1500 s for the performance test) and fail with
+  diagnostics after a 300 s power-off deadline instead of hanging for the driver's full hour; shard
+  weights no longer include two recorded one-hour hangs, and full-suite shards upload per-test
+  durations with a non-blocking weight-drift report.
 
 ## [0.2.0] - 2026-05-08
 
