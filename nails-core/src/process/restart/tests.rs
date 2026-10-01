@@ -1,4 +1,5 @@
 use super::*;
+use crate::process::run::{UNKNOWN_UNIT, UNUSED_PID, assert_refused_in_test_runtime};
 use std::path::PathBuf;
 
 /// Mock command executor for testing
@@ -419,31 +420,19 @@ fn test_restart_systemd_service_with_journald() {
     assert_eq!(calls[1], vec!["stop", "systemd-journald"]);
 }
 
-fn assert_refused_in_test_runtime<T: std::fmt::Debug>(result: Result<T>, program: &str) {
-    match result {
-        Err(crate::NailsError::InvalidState(message)) => {
-            assert!(
-                message.contains(&format!("Refusing to run {program}")),
-                "{message}"
-            );
-        }
-        other => panic!("expected the runtime guard to refuse {program}, got {other:?}"),
-    }
-}
-
 #[test]
 fn test_real_executor_is_refused_by_the_runtime_guard_in_tests() {
     assert_refused_in_test_runtime(
-        RealCommandExecutor.execute_systemctl(&["stop", "nix-daemon"]),
+        RealCommandExecutor.execute_systemctl(&["stop", UNKNOWN_UNIT]),
         "systemctl",
     );
-    assert_refused_in_test_runtime(RealCommandExecutor.execute_kill(4242, "TERM"), "kill");
+    assert_refused_in_test_runtime(RealCommandExecutor.execute_kill(UNUSED_PID, "0"), "kill");
 }
 
 #[test]
 fn test_restart_processes_through_real_executor_stops_at_the_guard() {
-    let systemd = make_test_process("nix-daemon", 4242, Some("nix-daemon".to_string()));
-    let plain = make_test_process("sleep", 4243, None);
+    let systemd = make_test_process("nails-test", UNUSED_PID, Some(UNKNOWN_UNIT.to_string()));
+    let plain = make_test_process("nails-test", UNUSED_PID, None);
 
     assert_refused_in_test_runtime(restart_processes(&[systemd]), "systemctl");
     assert_refused_in_test_runtime(restart_processes(&[plain]), "kill");

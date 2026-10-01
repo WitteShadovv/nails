@@ -166,15 +166,7 @@ fn real_runner_refuses_commands_that_did_not_opt_in_during_tests() {
         .arg("-c")
         .arg(format!("touch '{}'", marker.display()));
 
-    let err = RealProcessRunner.run(&command).unwrap_err();
-
-    match err {
-        NailsError::InvalidState(message) => {
-            assert!(message.contains("Refusing to run sh"), "{message}");
-            assert!(message.contains("test/test-like runtime"), "{message}");
-        }
-        other => panic!("expected InvalidState, got {other:?}"),
-    }
+    assert_refused_in_test_runtime(RealProcessRunner.run(&command), "sh");
     assert!(!marker.exists(), "refused command must not start");
 }
 

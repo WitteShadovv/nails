@@ -247,7 +247,9 @@ fn not_found(message: String) -> NailsError {
 #[cfg(test)]
 mod mock;
 #[cfg(test)]
-pub(crate) use mock::{MockProcessRunner, exited};
+pub(crate) use mock::{
+    MockProcessRunner, UNKNOWN_UNIT, UNUSED_PID, assert_refused_in_test_runtime, exited,
+};
 
 #[cfg(test)]
 mod tests;

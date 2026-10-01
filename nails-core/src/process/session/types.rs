@@ -135,32 +135,21 @@ impl SessionCommandExecutor for RealSessionCommandExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn assert_refused_in_test_runtime<T: std::fmt::Debug>(result: Result<T>, program: &str) {
-        match result {
-            Err(crate::NailsError::InvalidState(message)) => {
-                assert!(
-                    message.contains(&format!("Refusing to run {program}")),
-                    "{message}"
-                );
-            }
-            other => panic!("expected the runtime guard to refuse {program}, got {other:?}"),
-        }
-    }
+    use crate::process::run::{UNKNOWN_UNIT, UNUSED_PID, assert_refused_in_test_runtime};
 
     #[test]
     fn real_session_executor_is_refused_by_the_runtime_guard_in_tests() {
         let executor = RealSessionCommandExecutor;
 
         assert_refused_in_test_runtime(
-            executor.execute_systemctl(&["stop", "display-manager"]),
+            executor.execute_systemctl(&["is-active", UNKNOWN_UNIT]),
             "systemctl",
         );
         assert_refused_in_test_runtime(
-            executor.execute_loginctl(&["terminate-user", "1000"]),
+            executor.execute_loginctl(&["show-user", "nails-test-no-such-user"]),
             "loginctl",
         );
-        assert_refused_in_test_runtime(executor.execute_kill(4242, "KILL"), "kill");
+        assert_refused_in_test_runtime(executor.execute_kill(UNUSED_PID, "0"), "kill");
         assert!(!executor.loginctl_available());
     }
 

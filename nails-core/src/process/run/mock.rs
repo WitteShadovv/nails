@@ -1,7 +1,8 @@
-//! Recording [`ProcessRunner`] for unit tests.
+//! Test support for [`ProcessRunner`]: a recording runner and helpers for
+//! tests that drive the real executors into the runtime guard.
 
 use super::{ProcessCommand, ProcessRunner};
-use crate::Result;
+use crate::{NailsError, Result};
 use std::collections::VecDeque;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{ExitStatus, Output};
@@ -61,5 +62,28 @@ pub(crate) fn exited(code: i32, stdout: &str, stderr: &str) -> Output {
         status: ExitStatus::from_raw(code << 8),
         stdout: stdout.as_bytes().to_vec(),
         stderr: stderr.as_bytes().to_vec(),
+    }
+}
+
+/// A PID above the kernel's `PID_MAX_LIMIT` (2^22), so no process can hold it.
+///
+/// Tests that drive a real executor into the runtime guard use it so that a
+/// regressed guard still cannot signal a host process.
+pub(crate) const UNUSED_PID: u32 = 4_194_305;
+
+/// A systemd unit no host defines, for the same reason as [`UNUSED_PID`].
+pub(crate) const UNKNOWN_UNIT: &str = "nails-test-no-such-unit.service";
+
+/// Asserts that `result` is the real runner's test-runtime refusal of `program`.
+pub(crate) fn assert_refused_in_test_runtime<T: std::fmt::Debug>(result: Result<T>, program: &str) {
+    match result {
+        Err(NailsError::InvalidState(message)) => {
+            assert!(
+                message.contains(&format!("Refusing to run {program} ")),
+                "{message}"
+            );
+            assert!(message.contains("test/test-like runtime"), "{message}");
+        }
+        other => panic!("expected the runtime guard to refuse {program}, got {other:?}"),
     }
 }
