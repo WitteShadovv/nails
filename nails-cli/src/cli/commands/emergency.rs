@@ -32,7 +32,6 @@ pub fn execute(
     check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
 ) -> ! {
     use nails_core::{NailsManager, RealFilesystem, Verbosity};
-    use std::sync::{Arc, Mutex};
 
     // Configure color output
     nails_core::set_plain_mode(plain);
@@ -70,11 +69,8 @@ pub fn execute(
 
     // Create manager
     let filesystem = RealFilesystem;
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        filesystem, config, state_path,
-    )));
-    super::lock_manager_or_exit(&manager, "setting emergency deactivation verbosity")
-        .set_verbosity(verbosity);
+    let mut manager = NailsManager::new(filesystem, config, state_path);
+    manager.set_verbosity(verbosity);
 
     // Try to take the state lock, but never let a crashed or unresponsive holder
     // block an emergency teardown: proceed without it after a short timeout.
@@ -93,7 +89,7 @@ pub fn execute(
     }
 
     // Run emergency deactivation
-    match NailsManager::emergency_deactivate(Arc::clone(&manager)) {
+    match manager.emergency_deactivate() {
         Ok(()) => {
             if !json {
                 let success_prefix = if plain { "[PASS]" } else { "✓" };

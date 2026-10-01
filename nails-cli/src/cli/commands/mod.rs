@@ -4,9 +4,7 @@
 //! for a specific CLI command. Handlers are called from the main command dispatcher
 //! in the parent module.
 
-use std::fmt::Display;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
 
 use nails_core::{LoadedConfig, NailsError};
 
@@ -22,14 +20,6 @@ pub mod verify;
 /// Exit code for a configuration file that is missing (when named with
 /// `--config`), unreadable or invalid.
 pub(crate) const EXIT_CONFIG_ERROR: i32 = 3;
-
-pub(crate) fn exit_lock_error(context: &str, error: impl Display) -> ! {
-    eprintln!(
-        "Error: internal state unavailable while {}: {}",
-        context, error
-    );
-    std::process::exit(2);
-}
 
 /// Resolve and load the configuration strictly.
 ///
@@ -88,15 +78,6 @@ pub(crate) fn load_config_or_defaults(config_override: Option<&Path>) -> LoadedC
         loaded.config.loaded_config_path = Some(path);
         loaded
     })
-}
-
-pub(crate) fn lock_manager_or_exit<'a, F: nails_core::Filesystem>(
-    manager: &'a Arc<Mutex<nails_core::NailsManager<F>>>,
-    context: &str,
-) -> MutexGuard<'a, nails_core::NailsManager<F>> {
-    manager
-        .lock()
-        .unwrap_or_else(|error| exit_lock_error(context, error))
 }
 
 /// Directory holding the state file (and its `.lock`) on the hidden volume.

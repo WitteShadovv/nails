@@ -3,15 +3,21 @@
 //! Both `deactivate()` and `emergency_deactivate()` now route through
 //! `DeactivationOrchestrator`, with thin wrappers for mode-specific pre/post work.
 
-use super::{NailsManager, select_system_profile, start_service_and_socket};
+use super::NailsManager;
+use super::{ensure_run_current_system_symlink, select_system_profile, start_service_and_socket};
 use crate::cleanup::history::truncate_all_history_files;
+use crate::deactivation::test_gate::maybe_block_after_deactivating_state_transition;
 #[cfg(not(test))]
 use crate::deactivation::test_gate::should_skip_shell_cleanup_before_deactivation_gate;
+use crate::deactivation::{DeactivationReport, PostUnmountCleanupReport};
 #[cfg(not(test))]
 use crate::process::kill_user_shells;
-use crate::{CleanupConfig, DeactivationMode, Filesystem, NailsError, Result, SystemState};
+use crate::{
+    CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError, Result,
+    StateGuard, SystemState,
+};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 const SYSTEMCTL_REBOOT_OVERRIDE_ENV: &str = "NAILS_SYSTEMCTL_PATH";
 const REBOOT_BINARY_OVERRIDE_ENV: &str = "NAILS_REBOOT_PATH";
@@ -217,6 +223,20 @@ fn read_parent_pid(pid: u32) -> Option<u32> {
     })
 }
 
+/// Controls deactivation behavior.
+///
+/// - `Normal`: Full cleanup with verification, rollback on cleanup errors.
+///   Idempotent – returns `Ok` when the system is already inactive.
+/// - `Emergency`: Fast cleanup (best-effort, non-fatal errors), skips
+///   post-unmount cleanup. Fails if the system is not in `Active` state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeactivationMode {
+    /// Run all steps including thorough cleanup with verification.
+    Normal,
+    /// Skip non-essential cleanup for speed; cleanup errors are non-fatal.
+    Emergency,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ManagerDeactivationKind {
     Normal,
@@ -324,82 +344,53 @@ fn verify_history_truncation<F: Filesystem>(manager: &NailsManager<F>) {
     }
 }
 
-impl<F: Filesystem + 'static> NailsManager<F> {
-    fn run_deactivation(
-        manager_arc: Arc<Mutex<Self>>,
-        kind: ManagerDeactivationKind,
-    ) -> Result<()> {
-        use crate::deactivation::DeactivationOrchestrator;
-
-        if kind == ManagerDeactivationKind::Normal {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-
-            let state = manager.current_state()?;
-            if !matches!(state, SystemState::Active { .. }) {
-                return Err(NailsError::InvalidState(
-                    "Cannot deactivate: system is not in Active state".to_string(),
-                ));
-            }
-
-            if requires_decoy_restore(&manager)?
-                && select_system_profile(manager.filesystem())?.is_none()
-            {
-                return Err(NailsError::NixOSError(
-                    "No system profile found. Cannot restore decoy configuration.".to_string(),
-                ));
-            }
-        } else {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-
-            let state = manager.current_state()?;
-            if !matches!(state, SystemState::Active { .. }) {
-                let message = if state == SystemState::Inactive {
+impl<F: Filesystem> NailsManager<F> {
+    fn run_deactivation(&mut self, kind: ManagerDeactivationKind) -> Result<()> {
+        // Preconditions: both modes require an Active system; only the messages differ.
+        let state = self.current_state()?;
+        if !matches!(state, SystemState::Active { .. }) {
+            let message = match kind {
+                ManagerDeactivationKind::Normal => {
+                    "Cannot deactivate: system is not in Active state".to_string()
+                }
+                ManagerDeactivationKind::Emergency if state == SystemState::Inactive => {
                     "Cannot deactivate from state Inactive. Must be ACTIVE.".to_string()
-                } else {
+                }
+                ManagerDeactivationKind::Emergency => {
                     format!("Cannot deactivate from state {:?}. Must be ACTIVE.", state)
-                };
-
-                return Err(NailsError::InvalidState(message));
-            }
+                }
+            };
+            return Err(NailsError::InvalidState(message));
         }
 
-        let overlay_context = {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            inspect_overlay_context(&manager)?
-        };
+        if kind == ManagerDeactivationKind::Normal
+            && requires_decoy_restore(self)?
+            && select_system_profile(self.filesystem())?.is_none()
+        {
+            return Err(NailsError::NixOSError(
+                "No system profile found. Cannot restore decoy configuration.".to_string(),
+            ));
+        }
+
+        let overlay_context = inspect_overlay_context(self)?;
 
         if overlay_context.nix_was_overlaid {
             tracing::info!("Stopping nix-daemon before /nix overlay unmount...");
             let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();
 
             tracing::info!("Unmounting /nix/store bind mount...");
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            manager
-                .filesystem
+            self.filesystem
                 .unmount(Path::new("/nix/store"), false)
                 .or_else(|graceful_error| {
                     tracing::warn!(
                         error = %graceful_error,
                         "Graceful /nix/store unmount failed, trying force unmount"
                     );
-                    manager.filesystem.unmount(Path::new("/nix/store"), true)
+                    self.filesystem.unmount(Path::new("/nix/store"), true)
                 })?;
         }
 
-        let cleanup_config = {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            build_cleanup_config(&manager, kind)
-        };
+        let cleanup_config = build_cleanup_config(self, kind);
 
         #[cfg(not(test))]
         if should_skip_shell_cleanup_before_deactivation_gate() {
@@ -418,17 +409,13 @@ impl<F: Filesystem + 'static> NailsManager<F> {
             );
         }
 
-        let orchestrator = DeactivationOrchestrator::new(Arc::clone(&manager_arc), cleanup_config)
+        let restore_decoy_profile = requires_decoy_restore(self)?;
+        let orchestrator = DeactivationOrchestrator::new(cleanup_config)
             .with_mode(kind.orchestrator_mode())
             .with_switch_script_execution(kind == ManagerDeactivationKind::Normal)
-            .with_decoy_profile_restore({
-                let manager = manager_arc
-                    .lock()
-                    .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-                requires_decoy_restore(&manager)?
-            });
+            .with_decoy_profile_restore(restore_decoy_profile);
 
-        let result = orchestrator.run();
+        let result = orchestrator.run(self);
 
         if overlay_context.nix_was_overlaid {
             tracing::info!("Restarting nix-daemon...");
@@ -438,27 +425,18 @@ impl<F: Filesystem + 'static> NailsManager<F> {
         let _report = result?;
 
         if kind.requires_forensic_verification() {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-
             tracing::info!("Truncating all history files for forensic safety");
-            let truncated = truncate_all_history_files(&manager.filesystem, true);
+            let truncated = truncate_all_history_files(&self.filesystem, true);
             tracing::info!(
                 truncated_count = truncated.len(),
                 "History truncation complete"
             );
 
-            verify_history_truncation(&manager);
+            verify_history_truncation(self);
         }
 
         if kind.reboots_on_success() {
-            let verbosity = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?
-                .verbosity();
-
-            if verbosity >= crate::verbosity::Verbosity::Normal {
+            if self.verbosity() >= crate::verbosity::Verbosity::Normal {
                 tracing::info!("Rebooting system...");
             }
 
@@ -470,14 +448,519 @@ impl<F: Filesystem + 'static> NailsManager<F> {
         Ok(())
     }
 
-    /// Deactivate NAILS using the shared deactivation orchestrator, then reboot.
-    pub fn deactivate(manager_arc: Arc<Mutex<Self>>) -> Result<()> {
-        Self::run_deactivation(manager_arc, ManagerDeactivationKind::Normal)
+    /// Deactivate NAILS, restoring the decoy configuration, then reboot.
+    pub fn deactivate(&mut self) -> Result<()> {
+        self.run_deactivation(ManagerDeactivationKind::Normal)
     }
 
-    /// Emergency deactivation: thin wrapper around the shared orchestrator path.
-    pub fn emergency_deactivate(manager_arc: Arc<Mutex<Self>>) -> Result<()> {
-        Self::run_deactivation(manager_arc, ManagerDeactivationKind::Emergency)
+    /// Emergency deactivation: fast, best-effort teardown without a reboot.
+    pub fn emergency_deactivate(&mut self) -> Result<()> {
+        self.run_deactivation(ManagerDeactivationKind::Emergency)
+    }
+}
+
+fn overlay_unmount_targets<F: Filesystem>(
+    manager: &NailsManager<F>,
+    current_state: &SystemState,
+) -> Result<Vec<PathBuf>> {
+    let active_overlays = match current_state {
+        SystemState::Active { overlays, .. } => overlays.clone(),
+        _ => {
+            return Err(NailsError::InvalidState(
+                "Cannot extract overlays: not in ACTIVE state".to_string(),
+            ));
+        }
+    };
+
+    let mut merged = manager.tracked_overlay_paths_by_mount_order()?;
+    for path in active_overlays {
+        if !merged.iter().any(|existing| existing == &path) {
+            merged.push(path);
+        }
+    }
+
+    Ok(merged)
+}
+
+/// Single-layer deactivation sequence.
+///
+/// Holds only the deactivation configuration; the manager is borrowed for the
+/// duration of [`run`](DeactivationOrchestrator::run), which drives the whole
+/// teardown against one [`StateGuard`]:
+/// 1. State transition ACTIVE -> DEACTIVATING (guarded).
+/// 2. Artifact cleanup (history, temp files, logs).
+/// 3. Overlay unmounting in reverse LIFO order.
+/// 4. State transition DEACTIVATING -> INACTIVE.
+/// 5. Decoy system-profile switch.
+///
+/// If any step fails, the guard rolls the state back to ACTIVE on drop; unmount
+/// failures additionally remount what was already unmounted.
+pub struct DeactivationOrchestrator {
+    cleanup_config: CleanupConfig,
+    mode: DeactivationMode,
+    execute_switch_script: bool,
+    restore_decoy_profile: bool,
+}
+
+impl DeactivationOrchestrator {
+    /// Create a new orchestrator from a cleanup configuration.
+    pub fn new(cleanup_config: CleanupConfig) -> Self {
+        Self {
+            cleanup_config,
+            mode: DeactivationMode::Normal,
+            execute_switch_script: true,
+            restore_decoy_profile: true,
+        }
+    }
+
+    /// Set the deactivation mode (builder pattern).
+    pub fn with_mode(mut self, mode: DeactivationMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Control whether the decoy switch script is executed after symlink preparation.
+    pub(crate) fn with_switch_script_execution(mut self, execute_switch_script: bool) -> Self {
+        self.execute_switch_script = execute_switch_script;
+        self
+    }
+
+    /// Control whether the decoy profile restore path runs at all.
+    pub fn with_decoy_profile_restore(mut self, restore_decoy_profile: bool) -> Self {
+        self.restore_decoy_profile = restore_decoy_profile;
+        self
+    }
+
+    /// Execute deactivation against the borrowed manager.
+    ///
+    /// Returns a [`DeactivationReport`] on success; on failure the state has been
+    /// rolled back to ACTIVE (or left INACTIVE when only the decoy switch failed).
+    pub fn run<F: Filesystem>(&self, manager: &mut NailsManager<F>) -> Result<DeactivationReport> {
+        let start = Instant::now();
+
+        tracing::info!(phase = "deactivation", "Deactivation started");
+
+        // Step 0: Check if already inactive (idempotent). Emergency mode refuses.
+        let current_state = manager.current_state()?;
+        if current_state == SystemState::Inactive {
+            if self.mode == DeactivationMode::Emergency {
+                return Err(NailsError::InvalidState(
+                    "Cannot deactivate from state Inactive. Must be ACTIVE.".to_string(),
+                ));
+            }
+            tracing::info!(
+                state = ?current_state,
+                already_inactive = true,
+                "System already inactive, nothing to do"
+            );
+            return Ok(DeactivationReport {
+                cleanup_report: CleanupReport::default(),
+                unmounted_overlays: Vec::new(),
+                duration: start.elapsed(),
+                final_state: SystemState::Inactive,
+                was_already_inactive: true,
+                post_unmount_cleanup: PostUnmountCleanupReport::default(),
+            });
+        }
+
+        if !current_state.is_active() {
+            return Err(NailsError::InvalidState(format!(
+                "Cannot deactivate from state {:?}. Must be ACTIVE.",
+                current_state
+            )));
+        }
+
+        // Extract overlays BEFORE transitioning away from ACTIVE.
+        let overlays_to_unmount = overlay_unmount_targets(manager, &current_state)?;
+
+        // Step 1: Take the rollback guard and transition ACTIVE -> DEACTIVATING.
+        let mut guard = StateGuard::new(&mut *manager, current_state.clone());
+        let deactivating_state = SystemState::Deactivating {
+            started_at: chrono::Utc::now(),
+        };
+        guard.update_state(deactivating_state)?;
+        maybe_block_after_deactivating_state_transition()?;
+
+        // Step 2: Cleanup artifacts.
+        let cleanup_start = Instant::now();
+        let cleanup_report = if self.mode == DeactivationMode::Emergency {
+            match self.execute_emergency_cleanup(&guard) {
+                Ok(report) => {
+                    tracing::info!(
+                        cleaned_items = report.cleaned_items.len(),
+                        errors = report.errors.len(),
+                        duration_ms = cleanup_start.elapsed().as_millis() as u64,
+                        "Emergency cleanup complete (best-effort)"
+                    );
+                    report
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        phase = "cleanup",
+                        "Emergency cleanup failed (non-fatal) - continuing deactivation"
+                    );
+                    CleanupReport::default()
+                }
+            }
+        } else {
+            match self.execute_cleanup(&guard) {
+                Ok(report) => {
+                    tracing::info!(
+                        cleaned_items = report.cleaned_items.len(),
+                        duration_ms = cleanup_start.elapsed().as_millis() as u64,
+                        "Cleanup complete"
+                    );
+                    report
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        state = ?current_state,
+                        rollback = true,
+                        phase = "cleanup",
+                        "Cleanup failed, keeping system ACTIVE with overlays mounted"
+                    );
+                    // Guard drops here on return, rolling the state back to ACTIVE.
+                    return Err(e);
+                }
+            }
+        };
+
+        // Step 3: Unmount overlays in reverse order.
+        let unmount_start = Instant::now();
+        let unmounted = match self.unmount_overlays(&guard, &overlays_to_unmount) {
+            Ok(overlays) => {
+                tracing::info!(
+                    unmounted_paths = ?overlays,
+                    duration_ms = unmount_start.elapsed().as_millis() as u64,
+                    "Overlays unmounted"
+                );
+                overlays
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    state = ?current_state,
+                    rollback = true,
+                    phase = "unmount",
+                    "Unmount failed, rolling back to ACTIVE"
+                );
+                return Err(e);
+            }
+        };
+
+        // Step 3.5: Post-unmount cleanup on the real disk (Normal mode only).
+        let post_unmount_report = if self.mode == DeactivationMode::Emergency {
+            tracing::debug!("Skipping post-unmount cleanup in emergency mode");
+            PostUnmountCleanupReport::default()
+        } else if self.cleanup_config.post_unmount_cleanup {
+            self.execute_post_unmount_cleanup(&guard)
+        } else {
+            tracing::debug!("Post-unmount cleanup disabled in configuration");
+            PostUnmountCleanupReport::default()
+        };
+
+        // Step 4: Clear overlay_status and transition to INACTIVE.
+        guard.clear_overlay_status_in_cache()?;
+        let inactive_state = guard.current_state()?.complete_deactivation()?;
+        guard.update_state(inactive_state)?;
+
+        // Step 5: Switch to the newest available base system generation (decoy).
+        let switch_error = if !self.restore_decoy_profile {
+            None
+        } else if let Some(system_profile) = select_system_profile(guard.filesystem())? {
+            tracing::info!("Switching to decoy NixOS configuration...");
+
+            if let Err(e) = ensure_run_current_system_symlink(guard.filesystem(), &system_profile) {
+                Some(NailsError::NixOSError(format!(
+                    "Failed to prepare /run/current-system for NixOS switch: {}",
+                    e
+                )))
+            } else if !self.execute_switch_script {
+                None
+            } else {
+                let switch_script = system_profile.join("bin/switch-to-configuration");
+                match guard.filesystem().path_exists(&switch_script) {
+                    Ok(true) => {
+                        if crate::runtime_safety::should_skip_host_interaction() {
+                            None
+                        } else {
+                            match std::process::Command::new(&switch_script)
+                                .arg("switch")
+                                .output()
+                            {
+                                Ok(output) => {
+                                    if output.status.success() {
+                                        None
+                                    } else {
+                                        Some(NailsError::NixOSError(format!(
+                                            "System profile switch failed: {}",
+                                            String::from_utf8_lossy(&output.stderr)
+                                        )))
+                                    }
+                                }
+                                Err(e) => Some(NailsError::NixOSError(format!(
+                                    "System profile switch failed: {}",
+                                    e
+                                ))),
+                            }
+                        }
+                    }
+                    Ok(false) => Some(NailsError::NixOSError(format!(
+                        "System profile switch script missing: {}",
+                        switch_script.display()
+                    ))),
+                    Err(e) => Some(e),
+                }
+            }
+        } else {
+            Some(NailsError::NixOSError(
+                "No system profile available for decoy switch".into(),
+            ))
+        };
+
+        if let Some(err) = switch_error {
+            // State is already INACTIVE; keep it (do not roll back to ACTIVE).
+            guard.commit();
+            return Err(err);
+        }
+
+        // Step 6: Commit the guard (prevent rollback).
+        guard.commit();
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        tracing::info!(
+            duration_ms = duration_ms,
+            state_to = ?SystemState::Inactive,
+            unmounted_count = unmounted.len(),
+            post_unmount_cleaned = post_unmount_report.cleaned_items.len(),
+            "Deactivation complete"
+        );
+
+        Ok(DeactivationReport {
+            cleanup_report,
+            unmounted_overlays: unmounted,
+            duration: start.elapsed(),
+            final_state: SystemState::Inactive,
+            was_already_inactive: false,
+            post_unmount_cleanup: post_unmount_report,
+        })
+    }
+
+    /// Thorough cleanup with verification; errors trigger rollback.
+    fn execute_cleanup<F: Filesystem>(&self, manager: &NailsManager<F>) -> Result<CleanupReport> {
+        let cleanup_manager = CleanupManager::new(
+            manager.filesystem().clone(),
+            self.cleanup_config.clone(),
+            CleanupMode::Thorough {
+                verify_cleanup: true,
+            },
+        );
+
+        let report = cleanup_manager.cleanup()?;
+
+        if !report.errors.is_empty() {
+            let error_summary = report.errors.join("; ");
+            return Err(NailsError::CleanupError(format!(
+                "Cleanup had {} error(s): {}. Overlays remain mounted. State: ACTIVE",
+                report.errors.len(),
+                error_summary
+            )));
+        }
+
+        if let Some(false) = report.verification_passed {
+            return Err(NailsError::CleanupError(
+                "Cleanup verification failed: forensic artifacts may remain. Overlays remain mounted. State: ACTIVE".to_string()
+            ));
+        }
+
+        Ok(report)
+    }
+
+    /// Fast, best-effort cleanup; errors are logged but not fatal.
+    fn execute_emergency_cleanup<F: Filesystem>(
+        &self,
+        manager: &NailsManager<F>,
+    ) -> Result<CleanupReport> {
+        let cleanup_config = CleanupConfig {
+            clear_history: true,
+            clear_temp_files: true,
+            clear_logs: true,
+            secure_delete: true,
+            sanitize_memory: true,
+            ..self.cleanup_config.clone()
+        };
+
+        let cleanup_manager = CleanupManager::new(
+            manager.filesystem().clone(),
+            cleanup_config,
+            CleanupMode::Fast,
+        );
+
+        let report = cleanup_manager.cleanup()?;
+
+        for error in &report.errors {
+            tracing::warn!(error = %error, "Emergency cleanup error (non-fatal)");
+        }
+
+        Ok(report)
+    }
+
+    /// Phase 2 cleanup on the real disk after overlays are unmounted.
+    fn execute_post_unmount_cleanup<F: Filesystem>(
+        &self,
+        manager: &NailsManager<F>,
+    ) -> PostUnmountCleanupReport {
+        let post_unmount_start = Instant::now();
+        tracing::info!(
+            phase = "post_unmount_cleanup",
+            "Starting Phase 2 cleanup on real disk"
+        );
+
+        let cleaned_items = truncate_all_history_files(manager.filesystem(), true);
+
+        let report = PostUnmountCleanupReport {
+            cleaned_items,
+            warnings: Vec::new(),
+            was_performed: true,
+        };
+
+        tracing::info!(
+            phase = "post_unmount_cleanup",
+            cleaned_count = report.cleaned_items.len(),
+            duration_ms = post_unmount_start.elapsed().as_millis() as u64,
+            "Phase 2 cleanup complete"
+        );
+
+        report
+    }
+
+    /// Unmount overlays in reverse LIFO order, remounting on failure.
+    fn unmount_overlays<F: Filesystem>(
+        &self,
+        manager: &NailsManager<F>,
+        overlays: &[PathBuf],
+    ) -> Result<Vec<String>> {
+        let mut unmounted = Vec::new();
+
+        let overlays_reversed: Vec<_> = overlays.iter().rev().collect();
+
+        for overlay_path in overlays_reversed {
+            match self.unmount_single_overlay(manager, overlay_path) {
+                Ok(()) => {
+                    unmounted.push(overlay_path.to_string_lossy().to_string());
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        path = %overlay_path.display(),
+                        phase = "unmount",
+                        "Unmount failed for overlay"
+                    );
+                    self.rollback_unmounts(manager, &unmounted)?;
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(unmounted)
+    }
+
+    /// Unmount a single overlay with graceful -> force fallback.
+    fn unmount_single_overlay<F: Filesystem>(
+        &self,
+        manager: &NailsManager<F>,
+        path: &Path,
+    ) -> Result<()> {
+        match manager.filesystem().unmount(path, false) {
+            Ok(()) => {
+                tracing::info!(
+                    path = %path.display(),
+                    method = "graceful",
+                    "Overlay unmounted"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Graceful unmount failed, trying force unmount"
+                );
+                manager.filesystem().unmount(path, true)
+            }
+        }
+    }
+
+    /// Best-effort remount of overlays already unmounted when a later unmount fails.
+    fn rollback_unmounts<F: Filesystem>(
+        &self,
+        manager: &NailsManager<F>,
+        unmounted: &[String],
+    ) -> Result<()> {
+        tracing::warn!(
+            overlay_count = unmounted.len(),
+            phase = "rollback",
+            "Rolling back unmounts - attempting to remount overlays"
+        );
+
+        let mut remounted_count = 0;
+
+        for overlay_str in unmounted.iter().rev() {
+            let overlay_path = PathBuf::from(overlay_str);
+
+            if let Some(mount_info) = manager.filesystem().get_mount_info(&overlay_path) {
+                tracing::info!(
+                    overlay = overlay_str,
+                    lower = %mount_info.lower.display(),
+                    upper = %mount_info.upper.display(),
+                    work = %mount_info.work.display(),
+                    phase = "rollback",
+                    "Remounting overlay"
+                );
+
+                match manager.filesystem().mount_overlay(
+                    &[mount_info.lower.as_path()],
+                    &mount_info.upper,
+                    &mount_info.work,
+                    &mount_info.target,
+                ) {
+                    Ok(()) => {
+                        tracing::info!(
+                            overlay = overlay_str,
+                            phase = "rollback",
+                            "Successfully remounted overlay"
+                        );
+                        remounted_count += 1;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            overlay = overlay_str,
+                            error = %e,
+                            phase = "rollback",
+                            "Failed to remount overlay during rollback"
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    overlay = overlay_str,
+                    phase = "rollback",
+                    recovery = "manual",
+                    "Cannot remount - mount info not available"
+                );
+            }
+        }
+
+        tracing::info!(
+            remounted = remounted_count,
+            total = unmounted.len(),
+            phase = "rollback",
+            "Rollback complete"
+        );
+
+        Ok(())
     }
 }
 

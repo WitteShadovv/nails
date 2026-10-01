@@ -65,15 +65,14 @@ impl<F: Filesystem> NailsManager<F> {
     /// ```rust,no_run
     /// use nails_core::{NailsManager, MockFilesystem, Config};
     /// use std::path::PathBuf;
-    /// use std::sync::{Arc, Mutex};
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config::default();
     /// let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
-    /// let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    /// let mut manager = NailsManager::new(fs, config, state_path);
     ///
     /// // Activate with preflight checks (no_preflight = false)
-    /// let result = NailsManager::activate(manager, false);
+    /// let result = manager.activate(false);
     /// ```
     pub fn run_preflight_checks(&self, overlay_only: bool) -> Result<()> {
         use crate::preflight::{

@@ -37,26 +37,22 @@
 //!
 //! ```rust,ignore
 //! use nails_core::{DeactivationOrchestrator, DeactivationReport, CleanupConfig};
-//! use std::sync::{Arc, Mutex};
 //!
-//! let orchestrator = DeactivationOrchestrator::new(
-//!     Arc::clone(&manager),
-//!     CleanupConfig::default(),
-//! );
+//! let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 //!
-//! match orchestrator.run() {
+//! match orchestrator.run(&mut manager) {
 //!     Ok(report) => println!("{}", report),
 //!     Err(e) => eprintln!("Deactivation failed: {}", e),
 //! }
 //! ```
 
-mod orchestrator;
 mod report;
 pub(crate) mod test_gate;
 
 #[cfg(test)]
 mod tests;
 
-// Public exports
-pub use orchestrator::{DeactivationMode, DeactivationOrchestrator};
+// Public exports. The deactivation sequence itself now lives in the manager
+// module (`manager::deactivation`); this module keeps only the shared report
+// types and the test gate.
 pub use report::{DeactivationReport, PostUnmountCleanupReport};

@@ -40,12 +40,10 @@ fn make_already_inactive_report() -> DeactivationReport {
     }
 }
 
-fn make_manager()
--> std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<nails_core::MockFilesystem>>> {
+fn make_manager() -> nails_core::NailsManager<nails_core::MockFilesystem> {
     let fs = nails_core::MockFilesystem::new();
     let config = nails_core::Config::default();
-    let manager = nails_core::NailsManager::new(fs, config, PathBuf::from("/tmp/test-state.json"));
-    std::sync::Arc::new(std::sync::Mutex::new(manager))
+    nails_core::NailsManager::new(fs, config, PathBuf::from("/tmp/test-state.json"))
 }
 
 #[test]
@@ -251,20 +249,6 @@ fn test_json_with_shell_cleanup_no_type() {
 #[test]
 fn test_json_error() {
     let manager = make_manager();
-    let err = NailsError::InvalidState("failed".to_string());
-    print_deactivate_json(&Err(err), &manager, None);
-}
-
-#[test]
-fn test_json_error_with_poisoned_manager_falls_back_to_unknown_state() {
-    let manager = make_manager();
-    let poison_target = std::sync::Arc::clone(&manager);
-    let _ = std::thread::spawn(move || {
-        let _guard = poison_target.lock().unwrap();
-        panic!("poison manager lock for test");
-    })
-    .join();
-
     let err = NailsError::InvalidState("failed".to_string());
     print_deactivate_json(&Err(err), &manager, None);
 }

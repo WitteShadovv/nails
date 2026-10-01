@@ -4,7 +4,7 @@
 
 use super::SystemState;
 use crate::{Filesystem, NailsManager};
-use std::sync::{Arc, Mutex};
+use std::ops::{Deref, DerefMut};
 
 /// RAII guard for automatic state rollback on error or panic
 ///
@@ -14,38 +14,37 @@ use std::sync::{Arc, Mutex};
 ///
 /// # Pattern: Transaction-style State Management
 ///
-/// StateGuard enables transaction-style state management where:
-/// 1. Create guard capturing current state
-/// 2. Perform risky operations (may fail or panic)
-/// 3. Explicitly commit() on success to prevent rollback
-/// 4. Automatic rollback on failure (via Drop)
+/// StateGuard borrows the manager exclusively for the duration of a risky
+/// operation and derefs to it, so every step runs against the same borrow:
+/// 1. Create the guard capturing the current state.
+/// 2. Perform risky operations through the guard (`&mut *guard`).
+/// 3. Explicitly `commit()` on success to prevent rollback.
+/// 4. Automatic rollback on failure or panic (via Drop).
+///
+/// Holding the manager by `&mut` (instead of an `Arc<Mutex>` clone) removes the
+/// lock/poison handling and lets the activation and deactivation step functions
+/// reuse the single borrow the guard already owns.
 ///
 /// # Example
 ///
 /// ```rust
-/// use nails_core::{StateGuard, NailsManager, MockFilesystem, Config, SystemState};
-/// use std::sync::{Arc, Mutex};
+/// use nails_core::{StateGuard, NailsManager, MockFilesystem, Config};
 /// use std::path::PathBuf;
 ///
 /// let fs = MockFilesystem::new();
 /// let config = Config::default();
 /// let temp_dir = tempfile::tempdir().unwrap();
 /// let state_path = temp_dir.path().join("state.json");
-/// let manager = Arc::new(Mutex::new(
-///     NailsManager::new(fs, config, state_path)
-/// ));
+/// let mut manager = NailsManager::new(fs, config, state_path);
 ///
 /// // Capture current state for potential rollback
-/// let previous_state = {
-///     let m = manager.lock().expect("manager mutex poisoned");
-///     m.current_state().unwrap()
-/// };
+/// let previous_state = manager.current_state().unwrap();
 ///
 /// // Create guard - will rollback if not committed
-/// let guard = StateGuard::new(Arc::clone(&manager), previous_state);
+/// let guard = StateGuard::new(&mut manager, previous_state);
 ///
-/// // Perform operations that might fail...
-/// // If any step fails, guard.drop() automatically rolls back
+/// // Perform operations that might fail through `&mut *guard`...
+/// // If any step fails, guard's Drop automatically rolls back.
 ///
 /// // Explicitly commit to prevent rollback
 /// guard.commit();
@@ -66,9 +65,9 @@ use std::sync::{Arc, Mutex};
 /// - **NFR15**: Prevent memory leaks via RAII
 /// - **NFR20**: Rollback on partial failures
 /// - **NFR24**: Automatic cleanup even on panic
-pub struct StateGuard<F: Filesystem> {
-    /// Shared reference to NailsManager for state restoration
-    manager: Arc<Mutex<NailsManager<F>>>,
+pub struct StateGuard<'a, F: Filesystem> {
+    /// Exclusive borrow of the manager for state restoration
+    manager: &'a mut NailsManager<F>,
 
     /// State to restore if transaction is not committed
     previous_state: SystemState,
@@ -77,15 +76,16 @@ pub struct StateGuard<F: Filesystem> {
     committed: bool,
 }
 
-impl<F: Filesystem> StateGuard<F> {
+impl<'a, F: Filesystem> StateGuard<'a, F> {
     /// Create a new StateGuard capturing current state
     ///
-    /// The guard captures the current state for potential rollback.
-    /// Call commit() to mark the transaction successful and prevent rollback.
+    /// The guard captures the current state for potential rollback and borrows
+    /// the manager exclusively. Call `commit()` to mark the transaction
+    /// successful and prevent rollback.
     ///
     /// # Arguments
     ///
-    /// * `manager` - Shared NailsManager reference
+    /// * `manager` - Exclusive borrow of the NailsManager
     /// * `previous_state` - State to restore on rollback
     ///
     /// # Returns
@@ -96,22 +96,19 @@ impl<F: Filesystem> StateGuard<F> {
     ///
     /// ```rust
     /// use nails_core::{StateGuard, NailsManager, MockFilesystem, Config, SystemState};
-    /// use std::sync::{Arc, Mutex};
     /// use std::path::PathBuf;
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config::default();
     /// let temp_dir = tempfile::tempdir().unwrap();
     /// let state_path = temp_dir.path().join("state.json");
-    /// let manager = Arc::new(Mutex::new(
-    ///     NailsManager::new(fs, config, state_path)
-    /// ));
+    /// let mut manager = NailsManager::new(fs, config, state_path);
     ///
     /// let previous_state = SystemState::Inactive;
-    /// let guard = StateGuard::new(Arc::clone(&manager), previous_state);
+    /// let guard = StateGuard::new(&mut manager, previous_state);
     /// // guard will rollback to Inactive when dropped (unless committed)
     /// ```
-    pub fn new(manager: Arc<Mutex<NailsManager<F>>>, previous_state: SystemState) -> Self {
+    pub fn new(manager: &'a mut NailsManager<F>, previous_state: SystemState) -> Self {
         Self {
             manager,
             previous_state,
@@ -127,26 +124,22 @@ impl<F: Filesystem> StateGuard<F> {
     /// # Move Semantics
     ///
     /// This method consumes self (takes ownership), preventing further use
-    /// of the guard after commit. This is intentional - once committed,
-    /// the guard's job is done.
+    /// of the guard after commit and releasing the manager borrow.
     ///
     /// # Example
     ///
     /// ```rust
     /// use nails_core::{StateGuard, NailsManager, MockFilesystem, Config, SystemState};
-    /// use std::sync::{Arc, Mutex};
     /// use std::path::PathBuf;
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config::default();
     /// let temp_dir = tempfile::tempdir().unwrap();
     /// let state_path = temp_dir.path().join("state.json");
-    /// let manager = Arc::new(Mutex::new(
-    ///     NailsManager::new(fs, config, state_path)
-    /// ));
+    /// let mut manager = NailsManager::new(fs, config, state_path);
     ///
     /// let previous_state = SystemState::Inactive;
-    /// let guard = StateGuard::new(Arc::clone(&manager), previous_state);
+    /// let guard = StateGuard::new(&mut manager, previous_state);
     ///
     /// // Operation succeeded - commit to prevent rollback
     /// guard.commit();
@@ -167,18 +160,15 @@ impl<F: Filesystem> StateGuard<F> {
     ///
     /// ```rust
     /// use nails_core::{StateGuard, NailsManager, MockFilesystem, Config, SystemState};
-    /// use std::sync::{Arc, Mutex};
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config::default();
     /// let temp_dir = tempfile::tempdir().unwrap();
     /// let state_path = temp_dir.path().join("state.json");
-    /// let manager = Arc::new(Mutex::new(
-    ///     NailsManager::new(fs, config, state_path)
-    /// ));
+    /// let mut manager = NailsManager::new(fs, config, state_path);
     ///
     /// let previous_state = SystemState::Inactive;
-    /// let guard = StateGuard::new(Arc::clone(&manager), previous_state);
+    /// let guard = StateGuard::new(&mut manager, previous_state);
     ///
     /// // Check what state will be restored on rollback
     /// assert_eq!(*guard.previous_state(), SystemState::Inactive);
@@ -199,18 +189,15 @@ impl<F: Filesystem> StateGuard<F> {
     ///
     /// ```rust
     /// use nails_core::{StateGuard, NailsManager, MockFilesystem, Config, SystemState};
-    /// use std::sync::{Arc, Mutex};
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config::default();
     /// let temp_dir = tempfile::tempdir().unwrap();
     /// let state_path = temp_dir.path().join("state.json");
-    /// let manager = Arc::new(Mutex::new(
-    ///     NailsManager::new(fs, config, state_path)
-    /// ));
+    /// let mut manager = NailsManager::new(fs, config, state_path);
     ///
     /// let previous_state = SystemState::Inactive;
-    /// let mut guard = StateGuard::new(Arc::clone(&manager), previous_state);
+    /// let guard = StateGuard::new(&mut manager, previous_state);
     ///
     /// // Initially not committed
     /// assert!(!guard.is_committed());
@@ -224,7 +211,21 @@ impl<F: Filesystem> StateGuard<F> {
     }
 }
 
-impl<F: Filesystem> Drop for StateGuard<F> {
+impl<F: Filesystem> Deref for StateGuard<'_, F> {
+    type Target = NailsManager<F>;
+
+    fn deref(&self) -> &Self::Target {
+        self.manager
+    }
+}
+
+impl<F: Filesystem> DerefMut for StateGuard<'_, F> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.manager
+    }
+}
+
+impl<F: Filesystem> Drop for StateGuard<'_, F> {
     /// Automatic rollback on drop if not committed
     ///
     /// This method runs when the guard goes out of scope. If committed=false,
@@ -244,20 +245,8 @@ impl<F: Filesystem> Drop for StateGuard<F> {
         if !self.committed {
             tracing::warn!("Rolling back to previous state: {:?}", self.previous_state);
 
-            // Attempt to acquire manager lock
-            match self.manager.lock() {
-                Ok(mut manager) => {
-                    if let Err(e) = manager.force_state(self.previous_state.clone()) {
-                        tracing::error!("Failed to rollback state: {}", e);
-                    }
-                }
-                Err(poisoned) => {
-                    tracing::warn!("Manager lock poisoned during rollback, attempting recovery...");
-                    let mut manager = poisoned.into_inner();
-                    if let Err(e) = manager.force_state(self.previous_state.clone()) {
-                        tracing::error!("Failed to rollback state after lock poisoning: {}", e);
-                    }
-                }
+            if let Err(e) = self.manager.force_state(self.previous_state.clone()) {
+                tracing::error!("Failed to rollback state: {}", e);
             }
         }
     }

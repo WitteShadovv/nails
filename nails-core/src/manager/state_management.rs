@@ -133,8 +133,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// // SAFE: Rollback in StateGuard::drop()
     /// // We were in Active, tried to deactivate, unmount failed
     /// // Roll back to Active (remount what we can)
-    /// self.manager.lock().map_err(|e| NailsError::LockPoisoned(e.to_string()))?
-    ///     .force_state(self.previous_state.clone());
+    /// self.manager.force_state(self.previous_state.clone());
     /// // State machine returns to consistent Active state
     /// ```
     ///

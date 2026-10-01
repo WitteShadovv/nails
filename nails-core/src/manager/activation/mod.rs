@@ -26,7 +26,6 @@ use super::{MountTracker, NailsManager};
 use crate::notification::{Notification, write_notification};
 use crate::{Filesystem, NailsError, Result, Verbosity};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 mod gate;
 mod guards;
@@ -142,49 +141,42 @@ fn restart_session_after_success(_plan: &crate::process::SessionRestartPlan) -> 
 }
 
 impl<F: Filesystem> NailsManager<F> {
-    pub fn activate(manager_arc: Arc<Mutex<Self>>, no_preflight: bool) -> Result<()> {
-        // Use default options for backward compatibility with tests
-        let options = crate::ActivateOptions::default();
-        Self::activate_with_options(manager_arc, options, no_preflight)
+    /// Activate overlays with default options.
+    pub fn activate(&mut self, no_preflight: bool) -> Result<()> {
+        self.activate_with_options(crate::ActivateOptions::default(), no_preflight)
     }
 
-    /// Activate overlays with custom activation options
+    /// Activate overlays with custom activation options.
     ///
-    /// Extended version of activate() that accepts ActivateOptions for controlling:
-    /// - Session management (--kill-session)
-    /// - Process restart behavior (risky process prompts)
-    /// - Pivot mount policy (--accept-pivot-risks, --no-pivot)
-    /// - User interaction (--yes to skip prompts)
+    /// The flow is a short sequence of named step functions run against a single
+    /// borrow of the manager. A [`StateGuard`] takes that borrow for the duration
+    /// of the risky steps and rolls back to `previous_state` if any step returns
+    /// early or panics; `guard.commit()` disarms the rollback on success.
     ///
-    /// Story 4.15: User Prompts and CLI Flags for Overlay Strategy
-    ///
-    /// # Arguments
-    ///
-    /// * `manager_arc` - Shared reference to NailsManager
-    /// * `options` - Activation options controlling behavior
-    /// * `no_preflight` - Skip pre-flight checks (expert override)
+    /// Options control session management (`--kill-session`), process restart
+    /// behaviour, pivot policy (`--accept-pivot-risks` / `--no-pivot`) and prompt
+    /// skipping (`--yes`).
     ///
     /// # Example
     ///
     /// ```rust
     /// use nails_core::{ActivateOptions, NailsManager, MockFilesystem, Config};
     /// use std::path::PathBuf;
-    /// use std::sync::{Arc, Mutex};
     ///
     /// let fs = MockFilesystem::new();
     /// let config = Config::default();
     /// let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
-    /// let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    /// let mut manager = NailsManager::new(fs, config, state_path);
     ///
     /// let options = ActivateOptions {
-    ///     no_pivot: true,  // Strict security mode
+    ///     no_pivot: true, // Strict security mode
     ///     ..Default::default()
     /// };
     ///
-    /// let result = NailsManager::activate_with_options(Arc::clone(&manager), options, false);
+    /// let result = manager.activate_with_options(options, false);
     /// ```
     pub fn activate_with_options(
-        manager_arc: Arc<Mutex<Self>>,
+        &mut self,
         options: crate::ActivateOptions,
         no_preflight: bool,
     ) -> Result<()> {
@@ -192,22 +184,14 @@ impl<F: Filesystem> NailsManager<F> {
 
         let total_timer = Stopwatch::start();
 
-        // Validate options first
+        // Validate options first.
         options.validate()?;
 
-        // Step 1: Capture current state and verbosity for progress logging
-        let (previous_state, verbosity, has_nixos_switch) = {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            (
-                manager.current_state()?,
-                manager.verbosity,
-                manager.nixos_builder.is_some(),
-            )
-        };
+        // Step 1: Capture current state and context once.
+        let previous_state = self.current_state()?;
+        let verbosity = self.verbosity;
 
-        // Step 2: Idempotent check - if already active, return early (AC: 7)
+        // Step 2: Idempotent check - if already active, return early.
         if previous_state.is_active() {
             if verbosity >= Verbosity::Normal {
                 tracing::info!(event = "result", state = ?previous_state, "System already active, nothing to do");
@@ -215,34 +199,24 @@ impl<F: Filesystem> NailsManager<F> {
             return Ok(());
         }
 
-        // Story 9.3 AC#1: Log activation started with structured state field
         tracing::info!(event = "activation_started", state_from = ?previous_state, "Activation started");
 
-        // Progress: Step 1 — Preflight checks
-        if verbosity >= Verbosity::Normal {
-            tracing::info!(
-                event = "progress",
-                phase = "preflight",
-                current = 1,
-                total = 7,
-                "[1/7] Running preflight checks..."
-            );
-        }
+        // Step 3: Stage config and run preflight checks before any session
+        // disruption (no StateGuard yet, so an early failure leaves state alone).
+        emit_progress(
+            verbosity,
+            "preflight",
+            1,
+            "[1/7] Running preflight checks...",
+        );
+        self.run_preflight_phase(
+            no_preflight,
+            options.overlay_only,
+            verbosity,
+            options.pre_activation_cleanup,
+        )?;
 
-        // Step 2.75 & 3: Stage config and run preflight checks before any session disruption
-        {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            manager.run_preflight_phase(
-                no_preflight,
-                options.overlay_only,
-                verbosity,
-                options.pre_activation_cleanup,
-            )?;
-        }
-
-        // Progress: Step 2 — Session management
+        // Step 4: Handle --kill-session before taking the StateGuard.
         if verbosity >= Verbosity::Normal {
             if no_preflight {
                 tracing::info!(
@@ -262,76 +236,37 @@ impl<F: Filesystem> NailsManager<F> {
                 );
             }
         }
-
-        // Step 3.5: Handle --kill-session flag (Story 4.15, AC8)
         let restart_plan = Self::handle_session_kill(verbosity, &options)?;
         let restart_phase =
-            determine_session_restart_phase(&restart_plan, options.overlay_only, has_nixos_switch);
+            determine_session_restart_phase(&restart_plan, options.overlay_only, false);
 
-        // Auto-restart session if we exit early with an error after killing it.
+        // Auto-restart the session if we exit early with an error after killing it.
         let mut session_restart_guard = SessionRestartGuard::new(restart_plan.clone());
 
-        // Step 4: Create StateGuard for automatic rollback on failure/panic
-        let guard = StateGuard::new(Arc::clone(&manager_arc), previous_state.clone());
-
-        // Step 5: Validate transition is allowed
+        // Step 5: Take the rollback guard; every subsequent step runs through it.
         let activating_state = previous_state.begin_activation()?;
-
-        // Step 6: Transition to Activating state
-        {
-            let mut manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            manager.update_state(activating_state)?;
-        }
-
+        let mut guard = StateGuard::new(&mut *self, previous_state.clone());
+        guard.update_state(activating_state)?;
         maybe_block_after_activating_state_transition()?;
 
-        // Progress: Step 3 — Prepare NixOS switch metadata
-        if verbosity >= Verbosity::Normal {
-            tracing::info!(
-                event = "progress",
-                phase = "nixos_prepare",
-                current = 3,
-                total = 7,
-                "[3/7] Preparing NixOS switch metadata..."
-            );
-        }
+        // Step 6: Compute NixOS switch metadata (no rebuild yet).
+        emit_progress(
+            verbosity,
+            "nixos_prepare",
+            3,
+            "[3/7] Preparing NixOS switch metadata...",
+        );
+        let (generation, new_fingerprint) = guard.build_nixos_profile(verbosity)?;
 
-        // Step 7: Compute fingerprint / cached generation only. The actual
-        // switch/rebuild happens later, after overlays and any requested
-        // session/display-manager restart.
-        let (generation, new_fingerprint) = {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            manager.build_nixos_profile(verbosity)?
-        };
-
-        // Progress: Step 4 — Mount overlays
-        if verbosity >= Verbosity::Normal {
-            tracing::info!(
-                event = "progress",
-                phase = "overlay_mount",
-                current = 4,
-                total = 7,
-                "[4/7] Mounting overlays..."
-            );
-        }
-
-        // Step 8: Mount persistent and ephemeral overlays
+        // Step 7: Mount persistent and ephemeral overlays.
+        emit_progress(verbosity, "overlay_mount", 4, "[4/7] Mounting overlays...");
         let mount_timer = Stopwatch::start();
-        let (direct_mounts, pivot_mounts, leaking_targets, mounted_overlays) = {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            manager.mount_overlays(&options, verbosity)?
-        };
+        let (direct_mounts, pivot_mounts, leaking_targets, mounted_overlays) =
+            guard.mount_overlays(&options, verbosity)?;
 
         // The posture depends on surviving writers that still leak to the decoy,
         // not on whether any overlay used the pivot method.
         let security_status = derive_security_label(&leaking_targets, INTEGRITY_VERIFIED_TARGETS);
-
         if verbosity >= Verbosity::Normal {
             tracing::info!(
                 step = "mount_overlays",
@@ -345,55 +280,17 @@ impl<F: Filesystem> NailsManager<F> {
                 security_status
             );
         }
+        guard.emit_overlay_status_notification(security_status, direct_mounts, pivot_mounts);
 
-        // Write overlay status notification (best-effort)
-        {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            let notif = Notification {
-                title: "NAILS Overlay Active".to_string(),
-                body: format!(
-                    "Security: {} — {} overlay(s) mounted ({} direct, {} pivot)",
-                    security_status,
-                    direct_mounts + pivot_mounts,
-                    direct_mounts,
-                    pivot_mounts
-                ),
-                urgency: "normal".to_string(),
-                icon: Some(
-                    if security_status == "OPTIMAL" {
-                        "security-high"
-                    } else {
-                        "security-medium"
-                    }
-                    .to_string(),
-                ),
-                created_at: chrono::Utc::now().to_rfc3339(),
-            };
-            if let Err(e) = write_notification(&manager.config().hidden_volume_root, &notif) {
-                tracing::warn!("Failed to write overlay status notification: {}", e);
-            }
-        }
-
-        // Progress: Step 5 — Restart session / display manager
-        if verbosity >= Verbosity::Normal {
-            tracing::info!(
-                event = "progress",
-                phase = "session_restart",
-                current = 5,
-                total = 7,
-                "[5/7] Restarting session/display manager..."
-            );
-        }
-
+        // Step 8: Restart session / display manager after overlays are in place.
+        emit_progress(
+            verbosity,
+            "session_restart",
+            5,
+            "[5/7] Restarting session/display manager...",
+        );
         if restart_phase == SessionRestartPhase::AfterOverlayMounts {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            prepare_notification_autostart_before_session_restart(&manager);
-            drop(manager);
-
+            prepare_notification_autostart_before_session_restart(&guard);
             restart_session_after_success(&restart_plan).map_err(|e| {
                 NailsError::OverlayError(format!(
                     "Activation failed before NixOS switch because session restart failed: {}",
@@ -402,119 +299,32 @@ impl<F: Filesystem> NailsManager<F> {
             })?;
         }
 
-        // Progress: Step 6 — Run NixOS switch/rebuild
-        if verbosity >= Verbosity::Normal {
-            tracing::info!(
-                event = "progress",
-                phase = "profile_switch",
-                current = 6,
-                total = 7,
-                "[6/7] Running NixOS switch/rebuild..."
-            );
-        }
+        // Step 9: Run NixOS switch/rebuild. Failures here are non-fatal for
+        // overlay/session activation: preserve the mounted environment and
+        // continue to a consistent Active state.
+        emit_progress(
+            verbosity,
+            "profile_switch",
+            6,
+            "[6/7] Running NixOS switch/rebuild...",
+        );
+        let nixos_switch_warning =
+            guard.run_post_overlay_nixos_switch(&generation, &new_fingerprint, verbosity);
 
-        // Step 9: Run NixOS switch/rebuild. Per policy, failures here are
-        // non-fatal for overlay/session activation: preserve the mounted
-        // environment, notify the user, and continue to a consistent Active state.
-        let mut nixos_switch_warning: Option<String> = None;
-        {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            let switch_result =
-                manager.switch_nixos_profile(&generation, &new_fingerprint, verbosity);
-            let hidden_root = manager.config().hidden_volume_root.clone();
-            drop(manager);
+        // Step 10: Finalize - transition to Active.
+        emit_progress(verbosity, "finalize", 7, "[7/7] Finalizing activation...");
+        let current = guard.current_state()?;
+        let active_state = current.complete_activation(mounted_overlays)?;
+        guard.update_state(active_state)?;
 
-            match switch_result {
-                Ok(()) => {
-                    tracing::info!("NixOS profile switch complete");
-                    // Write rebuild success notification (best-effort)
-                    let notif = Notification {
-                        title: "NixOS Rebuild Complete".to_string(),
-                        body: "System profile switched successfully.".to_string(),
-                        urgency: "low".to_string(),
-                        icon: Some("system-software-update".to_string()),
-                        created_at: chrono::Utc::now().to_rfc3339(),
-                    };
-                    if let Err(e) = write_notification(&hidden_root, &notif) {
-                        tracing::warn!("Failed to write rebuild success notification: {}", e);
-                    }
-                }
-                Err(e) => {
-                    let error_msg = e.to_string();
-                    let truncated = if error_msg.len() > 200 {
-                        let boundary = error_msg
-                            .char_indices()
-                            .map(|(i, _)| i)
-                            .take_while(|&i| i <= 200)
-                            .last()
-                            .unwrap_or(0);
-                        format!("{}…", &error_msg[..boundary])
-                    } else {
-                        error_msg
-                    };
-                    let notif = Notification {
-                        title: "NixOS Rebuild Failed".to_string(),
-                        body: truncated.clone(),
-                        urgency: "critical".to_string(),
-                        icon: Some("dialog-error".to_string()),
-                        created_at: chrono::Utc::now().to_rfc3339(),
-                    };
-                    if let Err(write_err) = write_notification(&hidden_root, &notif) {
-                        tracing::warn!(
-                            "Failed to write rebuild failure notification: {}",
-                            write_err
-                        );
-                    }
-
-                    tracing::warn!(
-                        error = %e,
-                        preserve_activation = true,
-                        "NixOS switch/rebuild failed after overlays were mounted; preserving active session and overlays"
-                    );
-                    nixos_switch_warning = Some(truncated);
-                }
-            }
-        }
-
-        // Progress: Step 7 — Finalize activation
-        if verbosity >= Verbosity::Normal {
-            tracing::info!(
-                event = "progress",
-                phase = "finalize",
-                current = 7,
-                total = 7,
-                "[7/7] Finalizing activation..."
-            );
-        }
-
-        // Step 10: Transition to Active state (Story 4.7, AC1, Task 3.4)
-        {
-            let mut manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            let current = manager.current_state()?;
-            let active_state = current.complete_activation(mounted_overlays)?;
-            manager.update_state(active_state)?;
-        }
-
-        // Step 11: Success - commit guard to prevent rollback
+        // Step 11: Success - commit the guard (prevents rollback) and release the
+        // manager borrow, then suppress the error-path session restart.
         guard.commit();
-
-        // Once the success-path restart owner has completed, suppress the
-        // error-path restart guard to avoid a second visible bounce.
         session_restart_guard.disarm();
 
-        // Story 9.3 AC#1: Log activation complete with state transition and duration
-        let final_state = {
-            let manager = manager_arc
-                .lock()
-                .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            manager.current_state().ok()
-        };
+        let final_state = self.current_state().ok();
 
-        // Always show completion message, even in Quiet mode (AC: 3)
+        // Always show the completion message, even in Quiet mode.
         if verbosity >= Verbosity::Quiet {
             tracing::info!(
                 event = "activation_complete",
@@ -535,5 +345,115 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         Ok(())
+    }
+
+    /// Write the best-effort overlay-status notification after mounting.
+    fn emit_overlay_status_notification(
+        &self,
+        security_status: &str,
+        direct_mounts: usize,
+        pivot_mounts: usize,
+    ) {
+        let notif = Notification {
+            title: "NAILS Overlay Active".to_string(),
+            body: format!(
+                "Security: {} — {} overlay(s) mounted ({} direct, {} pivot)",
+                security_status,
+                direct_mounts + pivot_mounts,
+                direct_mounts,
+                pivot_mounts
+            ),
+            urgency: "normal".to_string(),
+            icon: Some(
+                if security_status == "OPTIMAL" {
+                    "security-high"
+                } else {
+                    "security-medium"
+                }
+                .to_string(),
+            ),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        if let Err(e) = write_notification(&self.config().hidden_volume_root, &notif) {
+            tracing::warn!("Failed to write overlay status notification: {}", e);
+        }
+    }
+
+    /// Run the post-overlay NixOS switch/rebuild and emit the matching
+    /// notification. Returns a warning string when the switch failed but the
+    /// activation was preserved; `None` on success.
+    fn run_post_overlay_nixos_switch(
+        &self,
+        generation: &Option<String>,
+        new_fingerprint: &Option<String>,
+        verbosity: Verbosity,
+    ) -> Option<String> {
+        let switch_result = self.switch_nixos_profile(generation, new_fingerprint, verbosity);
+        let hidden_root = self.config().hidden_volume_root.clone();
+
+        match switch_result {
+            Ok(()) => {
+                tracing::info!("NixOS profile switch complete");
+                let notif = Notification {
+                    title: "NixOS Rebuild Complete".to_string(),
+                    body: "System profile switched successfully.".to_string(),
+                    urgency: "low".to_string(),
+                    icon: Some("system-software-update".to_string()),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+                if let Err(e) = write_notification(&hidden_root, &notif) {
+                    tracing::warn!("Failed to write rebuild success notification: {}", e);
+                }
+                None
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                let truncated = if error_msg.len() > 200 {
+                    let boundary = error_msg
+                        .char_indices()
+                        .map(|(i, _)| i)
+                        .take_while(|&i| i <= 200)
+                        .last()
+                        .unwrap_or(0);
+                    format!("{}…", &error_msg[..boundary])
+                } else {
+                    error_msg
+                };
+                let notif = Notification {
+                    title: "NixOS Rebuild Failed".to_string(),
+                    body: truncated.clone(),
+                    urgency: "critical".to_string(),
+                    icon: Some("dialog-error".to_string()),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+                if let Err(write_err) = write_notification(&hidden_root, &notif) {
+                    tracing::warn!(
+                        "Failed to write rebuild failure notification: {}",
+                        write_err
+                    );
+                }
+
+                tracing::warn!(
+                    error = %e,
+                    preserve_activation = true,
+                    "NixOS switch/rebuild failed after overlays were mounted; preserving active session and overlays"
+                );
+                Some(truncated)
+            }
+        }
+    }
+}
+
+/// Emit a `[n/7]` progress log line at Normal verbosity or above.
+fn emit_progress(verbosity: Verbosity, phase: &str, current: u8, message: &str) {
+    if verbosity >= Verbosity::Normal {
+        tracing::info!(
+            event = "progress",
+            phase = phase,
+            current = current,
+            total = 7,
+            "{}",
+            message
+        );
     }
 }

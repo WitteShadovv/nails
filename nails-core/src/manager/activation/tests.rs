@@ -225,7 +225,11 @@ fn test_explicit_nix_overlay_restores_nix_store_bind_mount() {
         state_path,
     )));
 
-    NailsManager::activate(Arc::clone(&manager), true).expect("activation should succeed");
+    manager
+        .lock()
+        .unwrap()
+        .activate(true)
+        .expect("activation should succeed");
 
     let state = manager
         .lock()

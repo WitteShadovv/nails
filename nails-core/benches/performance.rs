@@ -14,9 +14,8 @@ use std::collections::HashMap;
 use std::hint::black_box;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
-fn create_subsequent_activation_manager() -> Arc<Mutex<NailsManager<MockFilesystem>>> {
+fn create_subsequent_activation_manager() -> NailsManager<MockFilesystem> {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.keep();
     let state_path = hidden_root.join("state.json");
@@ -40,7 +39,7 @@ fn create_subsequent_activation_manager() -> Arc<Mutex<NailsManager<MockFilesyst
         ..Config::default()
     };
 
-    Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)))
+    NailsManager::new(fs, config, state_path)
 }
 
 fn create_status_command() -> StatusCommand<MockFilesystem> {
@@ -84,7 +83,7 @@ fn create_status_command() -> StatusCommand<MockFilesystem> {
     StatusCommand::new(fs, config, state_path)
 }
 
-fn create_emergency_orchestrator() -> DeactivationOrchestrator<MockFilesystem> {
+fn create_emergency_orchestrator() -> (NailsManager<MockFilesystem>, DeactivationOrchestrator) {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.keep();
     let state_path = hidden_root.join("state.json");
@@ -157,10 +156,11 @@ fn create_emergency_orchestrator() -> DeactivationOrchestrator<MockFilesystem> {
         ..Config::default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
-    DeactivationOrchestrator::new(manager, CleanupConfig::default())
+    let manager = NailsManager::new(fs, config, state_path);
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default())
         .with_mode(DeactivationMode::Emergency)
-        .with_decoy_profile_restore(false)
+        .with_decoy_profile_restore(false);
+    (manager, orchestrator)
 }
 
 /// Benchmark Config::default() creation
@@ -274,7 +274,7 @@ fn benchmark_activate_subsequent(c: &mut Criterion) {
     c.bench_function("activate_subsequent", |b| {
         b.iter_batched(
             create_subsequent_activation_manager,
-            |manager| NailsManager::activate(black_box(manager), true).unwrap(),
+            |mut manager| black_box(manager.activate(true)).unwrap(),
             BatchSize::SmallInput,
         );
     });
@@ -285,8 +285,8 @@ fn benchmark_emergency(c: &mut Criterion) {
     c.bench_function("emergency_cleanup", |b| {
         b.iter_batched(
             create_emergency_orchestrator,
-            |orchestrator| {
-                let report = orchestrator.run().unwrap();
+            |(mut manager, orchestrator)| {
+                let report = orchestrator.run(&mut manager).unwrap();
                 black_box(report);
             },
             BatchSize::SmallInput,

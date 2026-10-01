@@ -668,11 +668,7 @@ use crate::NailsManager;
 
 fn create_test_manager_with_state(
     state: SystemState,
-) -> (
-    Arc<Mutex<NailsManager<MockFilesystem>>>,
-    PathBuf,
-    tempfile::TempDir,
-) {
+) -> (NailsManager<MockFilesystem>, PathBuf, tempfile::TempDir) {
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
     let mock_hidden_vol = temp_dir.path();
     let state_dir = mock_hidden_vol;
@@ -705,87 +701,63 @@ fn create_test_manager_with_state(
         ..Config::default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs,
-        config,
-        state_path.clone(),
-    )));
+    let manager = NailsManager::new(fs, config, state_path.clone());
     (manager, state_path, temp_dir)
 }
 
 #[test]
 fn test_state_guard_new_creates_uncommitted_guard() {
-    let (manager, _, _temp_dir) = create_test_manager_with_state(SystemState::Inactive);
+    let (mut manager, _, _temp_dir) = create_test_manager_with_state(SystemState::Inactive);
     let previous_state = SystemState::Inactive;
 
-    let guard = StateGuard::new(Arc::clone(&manager), previous_state.clone());
-
-    // Guard should exist
-    // committed field is private, but we can test behavior via drop
+    let guard = StateGuard::new(&mut manager, previous_state);
+    assert!(!guard.is_committed());
     drop(guard);
 }
 
 #[test]
 fn test_state_guard_commit_prevents_rollback() {
-    let (manager, state_path, _temp_dir) = create_test_manager_with_state(SystemState::Inactive);
+    let (mut manager, state_path, _temp_dir) =
+        create_test_manager_with_state(SystemState::Inactive);
 
-    // Change state to Activating
-    {
-        let mut m = manager.lock().unwrap();
-        m.force_state(SystemState::Activating {
+    // Change state to Activating.
+    manager
+        .force_state(SystemState::Activating {
             started_at: Utc::now(),
         })
         .unwrap();
-    }
 
-    // Create guard with Inactive as previous state
-    let previous_state = SystemState::Inactive;
-    let guard = StateGuard::new(Arc::clone(&manager), previous_state);
-
-    // Commit the guard - should prevent rollback
+    // Create guard with Inactive as previous state, then commit (no rollback).
+    let guard = StateGuard::new(&mut manager, SystemState::Inactive);
     guard.commit();
 
-    // Verify state is still Activating (not rolled back)
     let loaded = StateFile::load(&state_path).unwrap();
     assert!(matches!(loaded.state, SystemState::Activating { .. }));
 }
 
 #[test]
 fn test_state_guard_drop_rolls_back_if_not_committed() {
-    let (manager, state_path, _temp_dir) = create_test_manager_with_state(SystemState::Inactive);
+    let (mut manager, state_path, _temp_dir) =
+        create_test_manager_with_state(SystemState::Inactive);
 
-    // Capture initial state
-    let previous_state = {
-        let m = manager.lock().unwrap();
-        m.current_state().unwrap()
-    };
+    let previous_state = manager.current_state().unwrap();
 
     {
-        // Change state to Activating
-        {
-            let mut m = manager.lock().unwrap();
-            m.force_state(SystemState::Activating {
+        manager
+            .force_state(SystemState::Activating {
                 started_at: Utc::now(),
             })
             .unwrap();
-        }
 
-        // Create guard - will rollback when dropped
-        let _guard = StateGuard::new(Arc::clone(&manager), previous_state);
-
-        // Verify state changed to Activating
-        {
-            let m = manager.lock().unwrap();
-            assert!(matches!(
-                m.current_state().unwrap(),
-                SystemState::Activating { .. }
-            ));
-        }
-
-        // Guard goes out of scope here - should trigger rollback
+        // Guard captures Inactive; it will roll back when dropped.
+        let guard = StateGuard::new(&mut manager, previous_state);
+        assert!(matches!(
+            guard.current_state().unwrap(),
+            SystemState::Activating { .. }
+        ));
+        // Guard goes out of scope here - triggers rollback.
     }
 
-    // Verify state was rolled back to Inactive
     let loaded = StateFile::load(&state_path).unwrap();
     assert_eq!(loaded.state, SystemState::Inactive);
 }
@@ -794,49 +766,26 @@ fn test_state_guard_drop_rolls_back_if_not_committed() {
 fn test_state_guard_rolls_back_on_panic() {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    let (manager, state_path, _temp_dir) = create_test_manager_with_state(SystemState::Inactive);
+    let (mut manager, state_path, _temp_dir) =
+        create_test_manager_with_state(SystemState::Inactive);
+    assert!(manager.current_state().unwrap().is_inactive());
 
-    // Verify initial state is Inactive
-    {
-        let m = manager.lock().unwrap();
-        assert!(m.current_state().unwrap().is_inactive());
-    }
-
-    // Simulate panic during operation
-    let manager_clone = Arc::clone(&manager);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // Capture state for rollback
-        let previous_state = {
-            let m = manager_clone.lock().unwrap();
-            m.current_state().unwrap()
-        };
+        let previous_state = manager.current_state().unwrap();
+        let mut guard = StateGuard::new(&mut manager, previous_state);
 
-        // Create guard
-        let _guard = StateGuard::new(Arc::clone(&manager_clone), previous_state);
-
-        // Change state to Activating
-        {
-            let mut m = manager_clone.lock().unwrap();
-            m.force_state(SystemState::Activating {
+        guard
+            .force_state(SystemState::Activating {
                 started_at: Utc::now(),
             })
             .unwrap();
-        }
 
-        // Panic! Guard should still rollback via Drop during unwinding
+        // Panic! Guard should still rollback via Drop during unwinding.
         panic!("Simulated failure during activation!");
-
-        // This is never reached
-        #[allow(unreachable_code)]
-        {
-            _guard.commit();
-        }
     }));
 
-    // Verify panic was caught
     assert!(result.is_err());
 
-    // Verify state was rolled back to Inactive
     let loaded = StateFile::load(&state_path).unwrap();
     assert!(
         loaded.state.is_inactive(),
@@ -846,143 +795,94 @@ fn test_state_guard_rolls_back_on_panic() {
 
 #[test]
 fn test_state_guard_idempotent_rollback() {
-    let (manager, state_path, _temp_dir) = create_test_manager_with_state(SystemState::Inactive);
-
-    // Capture initial state
-    let previous_state = SystemState::Inactive;
+    let (mut manager, state_path, _temp_dir) =
+        create_test_manager_with_state(SystemState::Inactive);
 
     {
-        // Create guard
-        let _guard = StateGuard::new(Arc::clone(&manager), previous_state.clone());
-
-        // Don't change state - system already in Inactive
-        // Guard drop should still work (idempotent)
+        // Create and drop a guard without changing state (idempotent rollback).
+        let guard = StateGuard::new(&mut manager, SystemState::Inactive);
+        drop(guard);
     }
 
-    // Verify state is still Inactive
     let loaded = StateFile::load(&state_path).unwrap();
     assert_eq!(loaded.state, SystemState::Inactive);
 }
 
 #[test]
 fn test_state_guard_multiple_guards_sequential() {
-    let (manager, state_path, _temp_dir) = create_test_manager_with_state(SystemState::Inactive);
+    let (mut manager, state_path, _temp_dir) =
+        create_test_manager_with_state(SystemState::Inactive);
 
-    // First guard
     {
-        let previous_state = SystemState::Inactive;
-        let _guard1 = StateGuard::new(Arc::clone(&manager), previous_state);
-
-        // Change to Activating
-        {
-            let mut m = manager.lock().unwrap();
-            m.force_state(SystemState::Activating {
+        let mut guard1 = StateGuard::new(&mut manager, SystemState::Inactive);
+        guard1
+            .force_state(SystemState::Activating {
                 started_at: Utc::now(),
             })
             .unwrap();
-        }
-
-        // guard1 drops here, rolls back to Inactive
+        // guard1 drops here, rolls back to Inactive.
     }
 
-    // Verify first rollback worked
-    {
-        let m = manager.lock().unwrap();
-        assert!(m.current_state().unwrap().is_inactive());
-    }
+    assert!(manager.current_state().unwrap().is_inactive());
 
-    // Second guard
     {
-        let previous_state = SystemState::Inactive;
-        let _guard2 = StateGuard::new(Arc::clone(&manager), previous_state);
-
-        // Change to Activating again
-        {
-            let mut m = manager.lock().unwrap();
-            m.force_state(SystemState::Activating {
+        let mut guard2 = StateGuard::new(&mut manager, SystemState::Inactive);
+        guard2
+            .force_state(SystemState::Activating {
                 started_at: Utc::now(),
             })
             .unwrap();
-        }
-
-        // guard2 drops here, rolls back to Inactive again
+        // guard2 drops here, rolls back to Inactive again.
     }
 
-    // Verify second rollback worked
     let loaded = StateFile::load(&state_path).unwrap();
     assert_eq!(loaded.state, SystemState::Inactive);
 }
 
 #[test]
 fn test_state_guard_activation_failure_scenario() {
-    let (manager, state_path, _temp_dir) = create_test_manager_with_state(SystemState::Inactive);
+    let (mut manager, state_path, _temp_dir) =
+        create_test_manager_with_state(SystemState::Inactive);
 
-    // Simulate activation that fails midway
     {
-        let previous_state = {
-            let m = manager.lock().unwrap();
-            m.current_state().unwrap()
-        };
+        let previous_state = manager.current_state().unwrap();
+        let mut guard = StateGuard::new(&mut manager, previous_state);
 
-        // Create guard
-        let _guard = StateGuard::new(Arc::clone(&manager), previous_state);
-
-        // Begin activation
-        {
-            let mut m = manager.lock().unwrap();
-            m.force_state(SystemState::Activating {
+        guard
+            .force_state(SystemState::Activating {
                 started_at: Utc::now(),
             })
             .unwrap();
-        }
 
-        // Simulate mount failure - don't commit guard
-        // Guard will rollback automatically
+        // Simulate mount failure - don't commit; guard rolls back automatically.
     }
 
-    // Verify system returned to Inactive
     let loaded = StateFile::load(&state_path).unwrap();
     assert!(loaded.state.is_inactive());
 }
 
 #[test]
 fn test_state_guard_deactivation_failure_scenario() {
-    // Start with Active state
-    let (manager, state_path, _temp_dir) = create_test_manager_with_state(SystemState::Active {
-        activated_at: Utc::now(),
-        overlays: vec![],
-    });
+    let (mut manager, state_path, _temp_dir) =
+        create_test_manager_with_state(SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![],
+        });
 
-    // Force manager to load initial state into cache
+    let previous_state = manager.current_state().unwrap();
+
     {
-        let m = manager.lock().unwrap();
-        m.current_state().unwrap();
-    }
+        let mut guard = StateGuard::new(&mut manager, previous_state);
 
-    // Simulate deactivation that fails midway
-    {
-        let previous_state = {
-            let m = manager.lock().unwrap();
-            m.current_state().unwrap()
-        };
-
-        // Create guard
-        let _guard = StateGuard::new(Arc::clone(&manager), previous_state);
-
-        // Begin deactivation
-        {
-            let mut m = manager.lock().unwrap();
-            m.force_state(SystemState::Deactivating {
+        guard
+            .force_state(SystemState::Deactivating {
                 started_at: Utc::now(),
             })
             .unwrap();
-        }
 
-        // Simulate cleanup failure - don't commit guard
-        // Guard will rollback to Active
+        // Simulate cleanup failure - don't commit; guard rolls back to Active.
     }
 
-    // Verify system returned to Active
     let loaded = StateFile::load(&state_path).unwrap();
     assert!(
         loaded.state.is_active(),
@@ -992,93 +892,35 @@ fn test_state_guard_deactivation_failure_scenario() {
 }
 
 #[test]
-fn test_state_guard_lock_poisoning_doesnt_panic() {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-
-    let (manager, _state_path, _temp_dir) = create_test_manager_with_state(SystemState::Inactive);
-
-    // Poison the lock by panicking while holding it
-    let manager_clone = Arc::clone(&manager);
-    let poison_result = catch_unwind(AssertUnwindSafe(|| {
-        let _lock = manager_clone.lock().unwrap();
-        panic!("Intentionally poisoning the lock");
-    }));
-    assert!(
-        poison_result.is_err(),
-        "Lock poisoning panic should be caught"
-    );
-
-    // Now the lock is poisoned. Create a StateGuard and let it drop.
-    // The drop() implementation should handle the poisoned lock gracefully
-    // without panicking (which would cause abort).
-    let previous_state = SystemState::Inactive;
-
-    let manager_clone2 = Arc::clone(&manager);
-    let drop_result = catch_unwind(AssertUnwindSafe(|| {
-        // Create guard in a scope so it drops
-        {
-            let _guard = StateGuard::new(Arc::clone(&manager_clone2), previous_state);
-
-            // Attempt to change state (this will fail due to poisoned lock, but that's ok)
-            // The important thing is that drop() doesn't panic
-        }
-        // Guard drops here - should NOT panic even with poisoned lock
-    }));
-
-    // Verify drop() didn't panic
-    assert!(
-        drop_result.is_ok(),
-        "StateGuard drop() should not panic even with poisoned lock"
-    );
-
-    // Note: We can't verify the state file here because the lock is permanently poisoned.
-    // The important verification is that drop() didn't panic (no double-panic/abort).
-}
-
-#[test]
 fn test_state_guard_rollback_after_multiple_state_changes() {
-    let (manager, state_path, _temp_dir) = create_test_manager_with_state(SystemState::Inactive);
+    let (mut manager, state_path, _temp_dir) =
+        create_test_manager_with_state(SystemState::Inactive);
 
-    // Capture initial state
-    let initial_state = {
-        let m = manager.lock().unwrap();
-        m.current_state().unwrap()
-    };
+    let initial_state = manager.current_state().unwrap();
 
     {
-        // Create guard capturing Inactive
-        let _guard = StateGuard::new(Arc::clone(&manager), initial_state);
+        let mut guard = StateGuard::new(&mut manager, initial_state);
 
-        // Make multiple state changes
-        {
-            let mut m = manager.lock().unwrap();
-            m.force_state(SystemState::Activating {
+        guard
+            .force_state(SystemState::Activating {
                 started_at: Utc::now(),
             })
             .unwrap();
-        }
-
-        {
-            let mut m = manager.lock().unwrap();
-            m.force_state(SystemState::Active {
+        guard
+            .force_state(SystemState::Active {
                 activated_at: Utc::now(),
                 overlays: vec![],
             })
             .unwrap();
-        }
-
-        {
-            let mut m = manager.lock().unwrap();
-            m.force_state(SystemState::Deactivating {
+        guard
+            .force_state(SystemState::Deactivating {
                 started_at: Utc::now(),
             })
             .unwrap();
-        }
 
-        // Don't commit - guard should rollback to ORIGINAL state (Inactive)
+        // Don't commit - guard should rollback to ORIGINAL state (Inactive).
     }
 
-    // Verify rollback went back to initial state, not last intermediate state
     let loaded = StateFile::load(&state_path).unwrap();
     assert!(
         loaded.state.is_inactive(),
@@ -1088,31 +930,22 @@ fn test_state_guard_rollback_after_multiple_state_changes() {
 
 #[test]
 fn test_state_guard_commit_is_final() {
-    let (manager, state_path, _temp_dir) = create_test_manager_with_state(SystemState::Inactive);
-
-    let previous_state = SystemState::Inactive;
+    let (mut manager, state_path, _temp_dir) =
+        create_test_manager_with_state(SystemState::Inactive);
 
     {
-        let guard = StateGuard::new(Arc::clone(&manager), previous_state);
+        let mut guard = StateGuard::new(&mut manager, SystemState::Inactive);
 
-        // Change state
-        {
-            let mut m = manager.lock().unwrap();
-            m.force_state(SystemState::Activating {
+        guard
+            .force_state(SystemState::Activating {
                 started_at: Utc::now(),
             })
             .unwrap();
-        }
 
-        // Commit the transaction
+        // Commit the transaction (consumes the guard, prevents rollback).
         guard.commit();
-
-        // After commit, guard cannot be used again (consumed by move)
-        // This is enforced by the compiler - uncommenting would fail to compile:
-        // guard.commit(); // Error: use of moved value
     }
 
-    // Verify state was NOT rolled back (commit succeeded)
     let loaded = StateFile::load(&state_path).unwrap();
     assert!(
         matches!(loaded.state, SystemState::Activating { .. }),
@@ -1120,19 +953,11 @@ fn test_state_guard_commit_is_final() {
     );
 }
 
-/// Integration test: panic during activate() method triggers StateGuard rollback
-///
-/// This test verifies that StateGuard works correctly when integrated into
-/// NailsManager::activate(). It simulates a panic during activation by using
-/// a carefully timed mount failure that would cause a panic-like behavior.
-///
-/// Test addresses HIGH priority review item: "Add integration test for panic
-/// during activate() method with StateGuard rollback"
+/// Integration test: a failure during activate() triggers StateGuard rollback.
 #[test]
 fn test_integration_activate_panic_triggers_stateguard_rollback() {
     use crate::{Config, MockFilesystem, NailsManager, OverlayConfig};
 
-    // Setup: create mock filesystem with necessary paths
     let temp_dir = tempfile::tempdir().unwrap();
     let mock_hidden_vol = temp_dir.path();
     let state_dir = mock_hidden_vol;
@@ -1167,41 +992,23 @@ fn test_integration_activate_panic_triggers_stateguard_rollback() {
         ..Config::default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        config,
-        state_path.clone(),
-    )));
+    let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
 
-    // Verify initial state is Inactive
-    {
-        let m = manager.lock().unwrap();
-        assert!(m.current_state().unwrap().is_inactive());
-    }
+    assert!(manager.current_state().unwrap().is_inactive());
 
-    // Simulate a scenario where activate() encounters an error that triggers rollback
-    // We'll cause a mount failure which triggers StateGuard's automatic rollback
+    // Cause a mount failure which triggers StateGuard's automatic rollback.
     fs.mock_set_mount_should_fail("/home", true);
 
-    // Call activate() which will fail and trigger StateGuard rollback
-    let manager_clone = Arc::clone(&manager);
-    let result = NailsManager::activate(manager_clone, true);
-
-    // Activation should fail due to mount error
+    let result = manager.activate(true);
     assert!(result.is_err(), "Activation should fail due to mount error");
 
-    // Verify state was rolled back to Inactive via StateGuard
-    {
-        let m = manager.lock().unwrap();
-        let state = m.current_state().unwrap();
-        assert!(
-            state.is_inactive(),
-            "State should be rolled back to Inactive after activation failure, got: {:?}",
-            state
-        );
-    }
+    let state = manager.current_state().unwrap();
+    assert!(
+        state.is_inactive(),
+        "State should be rolled back to Inactive after activation failure, got: {:?}",
+        state
+    );
 
-    // Verify state file contains Inactive
     let loaded = StateFile::load(&state_path).unwrap();
     assert!(
         loaded.state.is_inactive(),
@@ -1209,20 +1016,12 @@ fn test_integration_activate_panic_triggers_stateguard_rollback() {
     );
 }
 
-/// Integration test: panic during deactivate() method triggers StateGuard rollback
-///
-/// This test verifies that StateGuard works correctly when integrated into
-/// NailsManager::deactivate(). It simulates a panic during deactivation by using
-/// a carefully timed unmount failure that would trigger rollback to Active state.
-///
-/// Test addresses HIGH priority review item: "Add integration test for panic
-/// during deactivate() method with StateGuard rollback"
+/// Integration test: a failure during deactivate() triggers StateGuard rollback.
 #[test]
 fn test_integration_deactivate_panic_triggers_stateguard_rollback() {
     use crate::{Config, MockFilesystem, NailsManager, OverlayConfig, OverlayInfo};
     use std::collections::HashMap;
 
-    // Setup: create mock filesystem with necessary paths
     let temp_dir = tempfile::tempdir().unwrap();
     let mock_hidden_vol = temp_dir.path();
     let state_dir = mock_hidden_vol;
@@ -1238,7 +1037,6 @@ fn test_integration_deactivate_panic_triggers_stateguard_rollback() {
     fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
     fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
 
-    // Set overlay as mounted
     fs.mock_set_mounted(Path::new("/home"), true);
 
     let config = Config {
@@ -1254,13 +1052,8 @@ fn test_integration_deactivate_panic_triggers_stateguard_rollback() {
         ..Config::default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        config,
-        state_path.clone(),
-    )));
+    let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
 
-    // Set up Active state with mounted overlay - use save_with_custom_root to bypass validation
     let mut overlay_status = HashMap::new();
     overlay_status.insert(
         PathBuf::from("/home"),
@@ -1281,52 +1074,32 @@ fn test_integration_deactivate_panic_triggers_stateguard_rollback() {
         overlay_status,
         ..StateFile::default()
     };
-    // Use save_with_custom_root to bypass hidden volume validation for test
     initial_state
         .save_with_custom_root(&state_path, mock_hidden_vol)
         .unwrap();
 
-    // Force manager to reload from disk by accessing it
-    {
-        let m = manager.lock().unwrap();
-        // This will load the Active state from disk we just wrote
-        m.current_state().unwrap();
-    }
+    // Load the Active state we just wrote.
+    assert!(matches!(
+        manager.current_state().unwrap(),
+        SystemState::Active { .. }
+    ));
 
-    // Verify initial state is Active
-    {
-        let m = manager.lock().unwrap();
-        assert!(matches!(
-            m.current_state().unwrap(),
-            SystemState::Active { .. }
-        ));
-    }
-
-    // Cause unmount to fail, triggering StateGuard rollback
+    // Cause unmount to fail, triggering StateGuard rollback.
     fs.mock_set_unmount_should_fail("/home", true);
 
-    // Call deactivate() which will fail and trigger StateGuard rollback
-    let manager_clone = Arc::clone(&manager);
-    let result = NailsManager::deactivate(manager_clone);
-
-    // Deactivation should fail due to unmount error
+    let result = manager.deactivate();
     assert!(
         result.is_err(),
         "Deactivation should fail due to unmount error"
     );
 
-    // Verify state was rolled back to Active via StateGuard (FR51)
-    {
-        let m = manager.lock().unwrap();
-        let state = m.current_state().unwrap();
-        assert!(
-            matches!(state, SystemState::Active { .. }),
-            "State should be rolled back to Active after deactivation failure, got: {:?}",
-            state
-        );
-    }
+    let state = manager.current_state().unwrap();
+    assert!(
+        matches!(state, SystemState::Active { .. }),
+        "State should be rolled back to Active after deactivation failure, got: {:?}",
+        state
+    );
 
-    // Verify state file contains Active
     let loaded = StateFile::load(&state_path).unwrap();
     assert!(
         loaded.state.is_active(),
@@ -1334,16 +1107,7 @@ fn test_integration_deactivate_panic_triggers_stateguard_rollback() {
     );
 }
 
-/// Comprehensive end-to-end test demonstrating StateGuard in real workflow
-///
-/// This test verifies the complete StateGuard pattern as documented in Dev Notes:
-/// 1. Capture current state
-/// 2. Create guard
-/// 3. Perform multi-step operation (may fail at any step)
-/// 4. Commit on success OR auto-rollback on failure
-///
-/// Tests both success path (commit) and failure path (rollback).
-/// (MEDIUM #2 from Code Review Follow-up)
+/// End-to-end test demonstrating the StateGuard pattern in a workflow.
 #[test]
 fn test_stateguard_end_to_end_workflow() {
     use chrono::Utc;
@@ -1362,141 +1126,89 @@ fn test_stateguard_end_to_end_workflow() {
         ..Config::default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        config,
-        state_path.clone(),
-    )));
+    let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
 
     // === TEST PART 1: Success Path (commit prevents rollback) ===
-
-    // Step 1: Capture current state for potential rollback
-    let previous_state = {
-        let m = manager.lock().unwrap();
-        m.current_state().unwrap()
-    };
+    let previous_state = manager.current_state().unwrap();
     assert_eq!(
         previous_state,
         SystemState::Inactive,
         "Should start Inactive"
     );
 
-    // Step 2: Create guard - if we don't commit, drop() will rollback
-    let guard = StateGuard::new(Arc::clone(&manager), previous_state);
-
-    // Verify guard internals using new getter methods
-    assert_eq!(*guard.previous_state(), SystemState::Inactive);
-    assert!(
-        !guard.is_committed(),
-        "Guard should be uncommitted initially"
-    );
-
-    // Step 3: Perform multi-step operation (simulated - just change state)
     {
-        let mut m = manager.lock().unwrap();
-        m.force_state(SystemState::Activating {
-            started_at: Utc::now(),
-        })
-        .unwrap(); // Simulate step 1
-    }
+        let mut guard = StateGuard::new(&mut manager, previous_state);
 
-    // Verify we're in intermediate state
-    {
-        let m = manager.lock().unwrap();
-        assert!(matches!(
-            m.current_state().unwrap(),
-            SystemState::Activating { .. }
-        ));
-    }
-
-    // Step 4: All steps succeeded - commit prevents rollback
-    guard.commit();
-    // Guard is dropped here but won't rollback because committed=true
-
-    // Verify state was NOT rolled back (stayed in Activating)
-    {
-        let m = manager.lock().unwrap();
+        // Verify guard internals via getters.
+        assert_eq!(*guard.previous_state(), SystemState::Inactive);
         assert!(
-            matches!(m.current_state().unwrap(), SystemState::Activating { .. }),
-            "State should remain Activating after commit"
+            !guard.is_committed(),
+            "Guard should be uncommitted initially"
         );
-    }
 
-    // === TEST PART 2: Failure Path (auto-rollback on error) ===
-
-    // Reset to Inactive for next test
-    {
-        let mut m = manager.lock().unwrap();
-        m.force_state(SystemState::Inactive).unwrap();
-    }
-
-    // Step 1: Capture current state
-    let previous_state = {
-        let m = manager.lock().unwrap();
-        m.current_state().unwrap()
-    };
-    assert_eq!(previous_state, SystemState::Inactive);
-
-    // Step 2: Create guard
-    let guard = StateGuard::new(Arc::clone(&manager), previous_state);
-
-    // Step 3: Start operation
-    {
-        let mut m = manager.lock().unwrap();
-        m.force_state(SystemState::Activating {
-            started_at: Utc::now(),
-        })
-        .unwrap();
-    }
-
-    // Step 4: Simulate operation failure - DON'T commit, just drop guard
-    // (In real code, this would be: return Err(...))
-    drop(guard);
-    // Guard's drop() should have rolled back to Inactive
-
-    // Verify automatic rollback occurred
-    {
-        let m = manager.lock().unwrap();
-        assert_eq!(
-            m.current_state().unwrap(),
-            SystemState::Inactive,
-            "State should be rolled back to Inactive when guard dropped without commit"
-        );
-    }
-
-    // === TEST PART 3: Rollback on early return (scope-based) ===
-
-    // Simulate early return pattern with nested scope
-    {
-        let previous_state = {
-            let m = manager.lock().unwrap();
-            m.current_state().unwrap()
-        };
-        let _guard = StateGuard::new(Arc::clone(&manager), previous_state);
-
-        {
-            let mut m = manager.lock().unwrap();
-            m.force_state(SystemState::Activating {
+        guard
+            .force_state(SystemState::Activating {
                 started_at: Utc::now(),
             })
             .unwrap();
-        }
 
-        // Early return without commit - guard dropped here
-        // (In real code: if some_condition { return Err(...); })
-    } // _guard dropped, rollback triggered
+        assert!(matches!(
+            guard.current_state().unwrap(),
+            SystemState::Activating { .. }
+        ));
 
-    // Verify rollback occurred
-    {
-        let m = manager.lock().unwrap();
-        assert_eq!(
-            m.current_state().unwrap(),
-            SystemState::Inactive,
-            "State should rollback on early return (scope exit)"
-        );
+        // All steps succeeded - commit prevents rollback.
+        guard.commit();
     }
 
-    // Verify state persisted correctly
+    assert!(
+        matches!(
+            manager.current_state().unwrap(),
+            SystemState::Activating { .. }
+        ),
+        "State should remain Activating after commit"
+    );
+
+    // === TEST PART 2: Failure Path (auto-rollback on error) ===
+    manager.force_state(SystemState::Inactive).unwrap();
+
+    let previous_state = manager.current_state().unwrap();
+    assert_eq!(previous_state, SystemState::Inactive);
+
+    {
+        let mut guard = StateGuard::new(&mut manager, previous_state);
+        guard
+            .force_state(SystemState::Activating {
+                started_at: Utc::now(),
+            })
+            .unwrap();
+        // Simulate operation failure - DON'T commit, just drop the guard.
+    }
+
+    assert_eq!(
+        manager.current_state().unwrap(),
+        SystemState::Inactive,
+        "State should be rolled back to Inactive when guard dropped without commit"
+    );
+
+    // === TEST PART 3: Rollback on early return (scope-based) ===
+    {
+        let previous_state = manager.current_state().unwrap();
+        let mut guard = StateGuard::new(&mut manager, previous_state);
+        guard
+            .force_state(SystemState::Activating {
+                started_at: Utc::now(),
+            })
+            .unwrap();
+        // Early return without commit - guard dropped here.
+    }
+
+    assert_eq!(
+        manager.current_state().unwrap(),
+        SystemState::Inactive,
+        "State should rollback on early return (scope exit)"
+    );
+
     let loaded = StateFile::load(&state_path).unwrap();
     assert_eq!(loaded.state, SystemState::Inactive);
 }

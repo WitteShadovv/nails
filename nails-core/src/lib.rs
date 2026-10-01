@@ -97,6 +97,7 @@ pub use config::{
 };
 pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
+pub use manager::deactivation::{DeactivationMode, DeactivationOrchestrator};
 pub use manager::{
     MountInfo, MountTracker, MountType, NailsManager, apply_exclusion_filter, build_overlay_targets,
 };
@@ -180,10 +181,8 @@ pub use cleanup::{
     temp_files::TempFilesCleaner,         // Story 5.3 - nested to access private imports
 };
 
-// Deactivation orchestrator exports (Story 5.5: DeactivationOrchestrator with Cleanup + Unmount + Rollback)
-pub use deactivation::{
-    DeactivationMode, DeactivationOrchestrator, DeactivationReport, PostUnmountCleanupReport,
-};
+// Deactivation report exports (the deactivation sequence lives in `manager::deactivation`)
+pub use deactivation::{DeactivationReport, PostUnmountCleanupReport};
 
 // Status command exports (Story 7.1: State Query with Overlay Verification)
 pub use status::{
@@ -247,8 +246,8 @@ pub use notification::{Notification, dispatch_all as dispatch_notifications};
 ///
 /// ```text
 /// // Internal pattern used by NailsManager methods
-/// let guard = StateGuard::new(Arc::clone(&manager), previous_state);
-/// // ... perform operations ...
+/// let mut guard = StateGuard::new(&mut manager, previous_state);
+/// // ... perform operations through `&mut *guard` ...
 /// if success {
 ///     guard.commit();  // Prevent rollback
 /// }

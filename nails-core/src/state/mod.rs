@@ -40,8 +40,6 @@ use std::path::{Path, PathBuf};
 // Re-export imports needed by tests (via `use super::*`)
 #[cfg(test)]
 pub(crate) use crate::NailsError;
-#[cfg(test)]
-pub(crate) use std::sync::{Arc, Mutex};
 
 mod file;
 mod guard;

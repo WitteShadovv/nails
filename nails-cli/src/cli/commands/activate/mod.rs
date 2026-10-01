@@ -19,7 +19,6 @@ use nails_core::{
     ActivateOptions, CliOverrides, Filesystem, NailsManager, NixOSBuilder, PreFlightCheck,
     RealFilesystem, Verbosity,
 };
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 fn suspicious_check_name() -> String {
@@ -165,12 +164,10 @@ pub fn execute(
     let filesystem = RealFilesystem;
     let nails_profile = std::path::PathBuf::from("/nix/var/nix/profiles/nails-system");
 
-    let manager = if overlay_only {
+    let mut manager = if overlay_only {
         // --overlay-only: skip NixOS builder creation entirely
         tracing::info!("Overlay-only mode: skipping NixOS profile switch");
-        Arc::new(Mutex::new(NailsManager::new(
-            filesystem, config, state_path,
-        )))
+        NailsManager::new(filesystem, config, state_path)
     } else if let Some(ref flake_ref) = config.nixos_flake {
         // Explicit flake reference from --flake flag or config nixos_flake
         // Skip auto-discovery and use the provided reference directly
@@ -179,9 +176,7 @@ pub fn execute(
             "Using explicit NixOS flake reference"
         );
         let builder = NixOSBuilder::new_with_flake_ref(flake_ref.clone(), nails_profile);
-        Arc::new(Mutex::new(NailsManager::with_nixos(
-            filesystem, config, state_path, builder,
-        )))
+        NailsManager::with_nixos(filesystem, config, state_path, builder)
     } else {
         // Auto-discovery cascade: hidden volume → /etc/nixos → legacy → no NixOS
         let nixos_flake_dir = config.hidden_volume_root.join("nixos");
@@ -191,28 +186,20 @@ pub fn execute(
         let system_profile = std::path::PathBuf::from("/nix/var/nix/profiles/system");
         if nixos_flake.exists() {
             let builder = NixOSBuilder::new(nixos_flake_dir, nails_profile);
-            Arc::new(Mutex::new(NailsManager::with_nixos(
-                filesystem, config, state_path, builder,
-            )))
+            NailsManager::with_nixos(filesystem, config, state_path, builder)
         } else if etc_flake.exists() {
             let builder = NixOSBuilder::new(std::path::PathBuf::from("/etc/nixos"), nails_profile);
-            Arc::new(Mutex::new(NailsManager::with_nixos(
-                filesystem, config, state_path, builder,
-            )))
+            NailsManager::with_nixos(filesystem, config, state_path, builder)
         } else if legacy_config.exists() || system_profile.exists() {
             let builder = NixOSBuilder::new_legacy(legacy_config, nails_profile);
-            Arc::new(Mutex::new(NailsManager::with_nixos(
-                filesystem, config, state_path, builder,
-            )))
+            NailsManager::with_nixos(filesystem, config, state_path, builder)
         } else {
-            Arc::new(Mutex::new(NailsManager::new(
-                filesystem, config, state_path,
-            )))
+            NailsManager::new(filesystem, config, state_path)
         }
     };
 
     // Set verbosity level
-    super::lock_manager_or_exit(&manager, "setting activation verbosity").set_verbosity(verbosity);
+    manager.set_verbosity(verbosity);
 
     // If kill-session, run preflight before detaching so output stays visible.
     let mut skip_preflight = no_preflight;
@@ -222,10 +209,7 @@ pub fn execute(
         }
 
         {
-            let mgr = super::lock_manager_or_exit(
-                &manager,
-                "running read-only NixOS preflight before detach",
-            );
+            let mgr = &manager;
             if let Err(e) = mgr.run_read_only_nixos_preflight(overlay_only) {
                 eprintln!("Error: {}", e);
                 std::process::exit(2);
@@ -255,8 +239,7 @@ pub fn execute(
 
         // Probe symlink support before staging (catches FAT32/exFAT early)
         {
-            let mgr =
-                super::lock_manager_or_exit(&manager, "probing hidden volume symlink support");
+            let mgr = &manager;
             match mgr
                 .filesystem()
                 .supports_symlinks(&mgr.config().hidden_volume_root)
@@ -279,10 +262,7 @@ pub fn execute(
         }
 
         {
-            let mgr = super::lock_manager_or_exit(
-                &manager,
-                "staging hidden config symlink before detach-safe pre-flight checks",
-            );
+            let mgr = &manager;
             if let Err(e) = nails_core::stage_hidden_config_symlink(
                 mgr.filesystem(),
                 &mgr.config().hidden_volume_root,
@@ -297,7 +277,7 @@ pub fn execute(
         }
 
         {
-            let mgr = super::lock_manager_or_exit(&manager, "running activation pre-flight checks");
+            let mgr = &manager;
             if let Err(e) = mgr.run_preflight_checks(overlay_only) {
                 eprintln!("Error: {}", e);
                 std::process::exit(2);
@@ -340,11 +320,10 @@ pub fn execute(
     // Refuse to activate over a state file we cannot trust: a corrupt or unreadable
     // file means the real state is unknown, and mounting on top of it could leak.
     {
-        let mgr = super::lock_manager_or_exit(&manager, "reading state before activation");
+        let mgr = &manager;
         if let Ok((_, outcome)) = mgr.current_state_with_outcome()
             && outcome.is_unknown()
         {
-            drop(mgr);
             eprintln!(
                 "Error: refusing to activate: the state file is corrupt or unreadable, so the \
                  current state is unknown. Run 'nails verify' and recover the hidden volume first."
@@ -355,27 +334,15 @@ pub fn execute(
 
     // Run activation with options and measure duration
     let start = Instant::now();
-    let result = NailsManager::activate_with_options(manager.clone(), options, skip_preflight);
+    let result = manager.activate_with_options(options, skip_preflight);
     let duration = start.elapsed().as_secs_f64();
 
     // If activation succeeded, set up shell instrumentation (non-critical)
     let shell_setup_result = if result.is_ok() {
         use nails_core::ShellInstrumentation;
-        match manager.lock() {
-            Ok(mgr) => {
-                let shell =
-                    ShellInstrumentation::new(nails_core::RealFilesystem, mgr.config().clone());
-                // shell_setup() never returns Err, only Ok(Some) or Ok(None)
-                shell.shell_setup().ok().flatten()
-            }
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "Skipping shell instrumentation because manager lock was poisoned"
-                );
-                None
-            }
-        }
+        let shell = ShellInstrumentation::new(nails_core::RealFilesystem, manager.config().clone());
+        // shell_setup() never returns Err, only Ok(Some) or Ok(None)
+        shell.shell_setup().ok().flatten()
     } else {
         None
     };

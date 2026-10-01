@@ -28,22 +28,19 @@ pub struct ShellCleanupJson {
 }
 
 fn manager_state_uppercase_or_unknown<F: nails_core::Filesystem>(
-    manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+    manager: &nails_core::NailsManager<F>,
 ) -> String {
-    match manager.lock() {
-        Ok(manager) => manager
-            .current_state()
-            .map(|state| format!("{:?}", state).to_uppercase())
-            .unwrap_or_else(|_| "UNKNOWN".to_string()),
-        Err(_) => "UNKNOWN".to_string(),
-    }
+    manager
+        .current_state()
+        .map(|state| format!("{:?}", state).to_uppercase())
+        .unwrap_or_else(|_| "UNKNOWN".to_string())
 }
 
 /// Print deactivation result in JSON format (AC7)
 #[allow(dead_code)]
 pub fn print_deactivate_json<F: nails_core::Filesystem>(
     result: &Result<nails_core::DeactivationReport, nails_core::NailsError>,
-    manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+    manager: &nails_core::NailsManager<F>,
     shell_cleanup: Option<&nails_core::ShellCleanupResult>,
 ) {
     let state = manager_state_uppercase_or_unknown(manager);

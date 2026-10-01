@@ -4,7 +4,6 @@ use nails_core::{
     stage_hidden_config_symlink,
 };
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 fn write_test_base_hardware_config(tmp: &TempDir) -> std::path::PathBuf {
@@ -278,15 +277,11 @@ fn test_init_generated_config_activates_with_minimal_mock_filesystem_setup() {
     mock_init_layout(&fs, &hidden_root);
     mock_minimal_activation_prereqs(&fs);
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        config.clone(),
-        config.state_file_path.clone(),
-    )));
+    let mut manager = NailsManager::new(fs.clone(), config.clone(), config.state_file_path.clone());
 
-    NailsManager::activate(Arc::clone(&manager), false).unwrap();
+    manager.activate(false).unwrap();
 
-    let state = manager.lock().unwrap().current_state().unwrap();
+    let state = manager.current_state().unwrap();
     match state {
         SystemState::Active { overlays, .. } => {
             assert_eq!(

@@ -485,7 +485,7 @@ fn test_activate_successful_activation_transitions_through_states() {
     )));
 
     // Activate should succeed
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_ok());
 
     // Final state should be Active
@@ -532,7 +532,7 @@ fn test_activate_from_non_inactive_returns_error() {
     *manager.lock().unwrap().cached_state.borrow_mut() = None;
 
     // AC7: activate() is idempotent - calling from Active state should succeed (no-op)
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(
         result.is_ok(),
         "Activate should be idempotent and succeed from Active state"
@@ -589,7 +589,7 @@ fn test_activate_calls_mount_overlay_for_each_configured_overlay() {
     )));
 
     // Activate
-    NailsManager::activate(Arc::clone(&manager), true).unwrap();
+    manager.lock().unwrap().activate(true).unwrap();
 
     // Verify mount was called
     assert!(fs_clone.is_mounted(Path::new("/home")).unwrap());
@@ -649,7 +649,7 @@ fn test_activate_failure_at_mount_rolls_back_to_inactive() {
     );
 
     // Activation should fail
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_err());
 
     // Verify state was rolled back to Inactive (FR50)
@@ -732,7 +732,7 @@ fn test_activate_failure_unmounts_already_mounted_overlays() {
     )));
 
     // Activation should fail at second overlay
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_err());
 
     // Verify /home was mounted initially but then unmounted during rollback
@@ -799,7 +799,7 @@ fn test_activate_failure_state_file_reflects_rollback() {
     )));
 
     // Activation should fail
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_err());
 
     // Verify state file was saved with Inactive state
@@ -909,7 +909,7 @@ fn test_deactivate_failure_at_unmount_rolls_back_to_active() {
     ));
 
     // Deactivation should fail (using emergency_deactivate for full unmount)
-    let result = NailsManager::emergency_deactivate(Arc::clone(&manager));
+    let result = manager.lock().unwrap().emergency_deactivate();
     assert!(result.is_err());
 
     // Verify error message (FR51) - orchestrator returns raw unmount error
@@ -1023,7 +1023,7 @@ fn test_deactivate_successful_unmounts_all_overlays() {
     }
 
     // Deactivation should succeed (using emergency_deactivate for full unmount)
-    let result = NailsManager::emergency_deactivate(Arc::clone(&manager));
+    let result = manager.lock().unwrap().emergency_deactivate();
     assert!(result.is_ok());
 
     // Verify overlay is unmounted
@@ -1122,7 +1122,7 @@ fn test_deactivate_requests_reboot_only_after_successful_teardown() {
     unsafe {
         std::env::set_var("NAILS_TEST_RUNTIME", "1");
     }
-    let result = NailsManager::deactivate(Arc::clone(&manager));
+    let result = manager.lock().unwrap().deactivate();
     unsafe {
         std::env::remove_var("NAILS_TEST_RUNTIME");
     }
@@ -1212,7 +1212,7 @@ fn test_deactivate_does_not_request_reboot_after_failed_teardown() {
         }
     }
 
-    let result = NailsManager::deactivate(Arc::clone(&manager));
+    let result = manager.lock().unwrap().deactivate();
 
     assert!(
         result.is_err(),
@@ -1253,43 +1253,9 @@ fn test_deactivate_from_non_active_returns_error() {
     );
 
     // deactivate() should fail from Inactive state
-    let result = NailsManager::deactivate(Arc::clone(&manager));
+    let result = manager.lock().unwrap().deactivate();
     assert!(result.is_err(), "Expected Err, got {:?}", result);
     assert!(matches!(result.unwrap_err(), NailsError::InvalidState(_)));
-}
-
-#[test]
-fn test_deactivate_returns_lock_poisoned_when_manager_mutex_is_poisoned() {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-
-    let manager = Arc::new(Mutex::new(create_test_manager()));
-
-    let poisoned = catch_unwind(AssertUnwindSafe({
-        let manager = Arc::clone(&manager);
-        move || {
-            let _guard = manager.lock().unwrap();
-            panic!("intentionally poison manager mutex");
-        }
-    }));
-    assert!(poisoned.is_err(), "test setup should poison the mutex");
-
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        NailsManager::deactivate(Arc::clone(&manager))
-    }));
-    assert!(
-        result.is_ok(),
-        "deactivate should return an error, not panic"
-    );
-
-    match result.unwrap() {
-        Err(NailsError::LockPoisoned(message)) => {
-            assert!(
-                message.to_lowercase().contains("poison"),
-                "expected poisoned-lock message, got: {message}"
-            );
-        }
-        other => panic!("expected LockPoisoned error, got: {:?}", other),
-    }
 }
 
 #[test]
@@ -1393,7 +1359,7 @@ fn test_deactivate_partial_failure_unmounts_only_successful_ones() {
     }
 
     // Deactivation should fail at /etc
-    let result = NailsManager::deactivate(Arc::clone(&manager));
+    let result = manager.lock().unwrap().deactivate();
     assert!(result.is_err());
 
     // Verify state was rolled back to Active
@@ -1512,7 +1478,7 @@ fn test_preflight_all_checks_pass_activation_proceeds() {
     )));
 
     // Activate with pre-flight checks (no_preflight = false)
-    let result = NailsManager::activate(Arc::clone(&manager), false);
+    let result = manager.lock().unwrap().activate(false);
     if let Err(ref e) = result {
         eprintln!("Activation error: {:?}", e);
     }
@@ -1576,7 +1542,7 @@ fn test_preflight_check_fails_activation_aborted() {
     );
 
     // Activate with pre-flight checks (should fail)
-    let result = NailsManager::activate(Arc::clone(&manager), false);
+    let result = manager.lock().unwrap().activate(false);
     assert!(result.is_err(), "Activation should fail when checks fail");
 
     // Verify error is PreFlightCheckFailed
@@ -1740,7 +1706,7 @@ fn test_preflight_multiple_checks_fail_all_reported() {
     let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
 
     // Activate with pre-flight checks
-    let result = NailsManager::activate(Arc::clone(&manager), false);
+    let result = manager.lock().unwrap().activate(false);
     assert!(result.is_err());
 
     // Verify error contains BOTH failures
@@ -1825,7 +1791,7 @@ fn test_preflight_warnings_only_activation_proceeds() {
     let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
 
     // Activate with pre-flight checks
-    let result = NailsManager::activate(Arc::clone(&manager), false);
+    let result = manager.lock().unwrap().activate(false);
     if let Err(ref e) = result {
         eprintln!("Activation error: {:?}", e);
     }
@@ -1869,7 +1835,7 @@ fn test_preflight_skip_with_no_preflight_flag() {
     let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
 
     // Activate with no_preflight = true (skip checks)
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
 
     // Should succeed even though checks would have failed
     assert!(
@@ -1929,7 +1895,7 @@ fn test_preflight_no_filesystem_changes_on_failure() {
     )));
 
     // Attempt activation (will fail at preflight)
-    let result = NailsManager::activate(Arc::clone(&manager), false);
+    let result = manager.lock().unwrap().activate(false);
     assert!(result.is_err());
 
     // Verify NO filesystem changes occurred:
@@ -1976,7 +1942,7 @@ fn test_suspicious_reference_preflight_fails_before_activation_state_or_mounts()
         state_path.clone(),
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), false);
+    let result = manager.lock().unwrap().activate(false);
     assert!(result.is_err(), "activation should fail in preflight");
 
     match result.unwrap_err() {
@@ -2065,7 +2031,7 @@ fn test_preflight_flake_builder_fails_when_default_flake_is_missing() {
         fs, config, state_path, builder,
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), false);
+    let result = manager.lock().unwrap().activate(false);
     assert!(
         result.is_err(),
         "Activation should fail when flake.nix is missing"
@@ -2122,7 +2088,7 @@ fn test_preflight_fails_when_explicit_flake_is_missing() {
         fs, config, state_path, builder,
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), false);
+    let result = manager.lock().unwrap().activate(false);
     assert!(
         result.is_err(),
         "Activation should fail when explicit flake.nix is missing"
@@ -2905,7 +2871,7 @@ fn test_rollback_clears_overlay_status_and_nixos_generation() {
     }
 
     // Activation should fail (mount fails)
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_err(), "Activation should fail");
 
     // AC4: Verify rollback cleared overlay_status and nixos_generation
@@ -3212,7 +3178,7 @@ fn test_activate_saves_state_incrementally_after_each_step() {
     )));
 
     // Run activation
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activation should succeed");
 
     // Verify Step 1: State file contains Activating after transition
@@ -3377,7 +3343,7 @@ fn test_activate_progress_timing_integration() {
     let manager_arc = Arc::new(Mutex::new(manager));
 
     // Run activate with no_preflight=true to skip checks
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
 
     // Should succeed (even with no overlays configured)
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
@@ -3422,7 +3388,7 @@ fn test_activate_with_quiet_verbosity() {
     let manager_arc = Arc::new(Mutex::new(manager));
 
     // Run activate
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
 
     // Should succeed
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
@@ -3467,7 +3433,7 @@ fn test_activate_with_verbose_verbosity() {
     let manager_arc = Arc::new(Mutex::new(manager));
 
     // Run activate
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
 
     // Should succeed
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
@@ -3507,7 +3473,7 @@ fn test_activate_with_debug_verbosity() {
     let manager_arc = Arc::new(Mutex::new(manager));
 
     // Run activate
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
 
     // Should succeed
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
@@ -3552,7 +3518,7 @@ fn test_activate_logs_all_progress_steps() {
     let manager_arc = Arc::new(Mutex::new(manager));
 
     // Run activate (skip pre-flight since we're testing progress logging, not validation)
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
 
     // Verify progress steps were logged (pre-flight will show warning, not "passed" message)
@@ -3595,7 +3561,7 @@ fn test_activate_logs_include_timing() {
     let manager_arc = Arc::new(Mutex::new(manager));
 
     // Run activate (skip pre-flight to avoid validation failures in test)
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
 
     // Verify timing is included (look for patterns like "0.1s", "1.2s", "150ms")
@@ -3641,7 +3607,7 @@ fn test_activate_quiet_mode_minimal_output() {
     let manager_arc = Arc::new(Mutex::new(manager));
 
     // Run activate
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
 
     // In quiet mode, should NOT see progress steps
@@ -3702,7 +3668,7 @@ fn test_activate_verbose_mode_detailed_output() {
     let manager_arc = Arc::new(Mutex::new(manager));
 
     // Run activate
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
 
     // In verbose mode, should see individual mount details
@@ -3747,7 +3713,7 @@ fn test_activate_already_active_logged() {
     let manager_arc = Arc::new(Mutex::new(manager));
 
     // Run activate (should be idempotent)
-    let result = NailsManager::activate(Arc::clone(&manager_arc), false);
+    let result = manager_arc.lock().unwrap().activate(false);
     assert!(result.is_ok(), "Activate should succeed idempotently");
 
     // Verify "already active" message was logged
@@ -3882,7 +3848,7 @@ fn test_rollback_tr45_first_mount_fails() {
     let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
     // WHEN: Running activation
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true); // skip preflight
+    let result = manager_arc.lock().unwrap().activate(true); // skip preflight
 
     // THEN: Activation fails
     assert!(result.is_err(), "Expected activation to fail");
@@ -3927,7 +3893,7 @@ fn test_rollback_tr45_first_mount_fails_error_message() {
     fs.mock_set_mount_should_fail("/home", true);
     let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -3955,7 +3921,7 @@ fn test_rollback_tr46_second_mount_fails() {
     let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
     // WHEN: Running activation
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
 
     // THEN: Activation fails
     assert!(result.is_err(), "Expected activation to fail");
@@ -4002,7 +3968,7 @@ fn test_rollback_tr46_second_mount_fails_verifies_rollback_order() {
     fs.mock_set_mount_should_fail("/etc", true);
     let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_err());
 
     // Verify /home was mounted then unmounted (rollback)
@@ -4023,7 +3989,7 @@ fn test_rollback_tr46_multiple_overlays_rolled_back() {
     fs.mock_set_mount_should_fail("/etc", true);
     let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_err());
 
     // Verify complete rollback
@@ -4062,7 +4028,7 @@ fn test_rollback_tr47_nixos_build_fails_placeholder() {
     let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
     // WHEN: Running activation (should succeed without builder)
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
 
     // THEN: Activation succeeds (no builder = no build failure possible)
     assert!(
@@ -4101,7 +4067,7 @@ fn test_rollback_tr48_state_file_write_during_activation() {
     let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
     // Normal activation should succeed (baseline test)
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
     assert!(
         result.is_ok(),
         "Activation should succeed with working state file"
@@ -4131,7 +4097,11 @@ fn test_rollback_tr49_cleanup_fails_remounts_overlays() {
 
     let fs = MockFilesystem::new();
     let (manager, _temp_dir) = create_rollback_test_manager(fs);
-    NailsManager::activate(Arc::clone(&manager), true).expect("Should activate for cleanup test");
+    manager
+        .lock()
+        .unwrap()
+        .activate(true)
+        .expect("Should activate for cleanup test");
 
     {
         let m = manager.lock().unwrap();
@@ -4147,11 +4117,10 @@ fn test_rollback_tr49_cleanup_fails_remounts_overlays() {
             .mock_set_write_should_fail(bash_history_str, true);
     }
 
-    let orchestrator =
-        crate::DeactivationOrchestrator::new(Arc::clone(&manager), crate::CleanupConfig::default());
+    let orchestrator = crate::DeactivationOrchestrator::new(crate::CleanupConfig::default());
 
     let err = orchestrator
-        .run()
+        .run(&mut manager.lock().unwrap())
         .expect_err("cleanup failure should abort deactivation");
     assert!(matches!(err, NailsError::CleanupError(_)));
 
@@ -4192,7 +4161,11 @@ fn test_rollback_tr50_unmount_fails_during_deactivation() {
     let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
     // Activate first
-    NailsManager::activate(Arc::clone(&manager_arc), true).expect("Should activate successfully");
+    manager_arc
+        .lock()
+        .unwrap()
+        .activate(true)
+        .expect("Should activate successfully");
 
     // Verify ACTIVE state
     let state_before = manager_arc.lock().unwrap().current_state().unwrap();
@@ -4200,7 +4173,7 @@ fn test_rollback_tr50_unmount_fails_during_deactivation() {
 
     // WHEN: Attempting deactivation with unmount failure on /etc
     // Deactivation tries to unmount overlays; /home succeeds, /etc fails
-    let result = NailsManager::emergency_deactivate(Arc::clone(&manager_arc));
+    let result = manager_arc.lock().unwrap().emergency_deactivate();
 
     // THEN: Deactivation fails
     assert!(result.is_err(), "Expected deactivation to fail");
@@ -4250,9 +4223,13 @@ fn test_rollback_tr50_unmount_fails_error_message() {
     fs.mock_set_unmount_should_fail("/etc", true);
     let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
-    NailsManager::activate(Arc::clone(&manager_arc), true).expect("Should activate");
+    manager_arc
+        .lock()
+        .unwrap()
+        .activate(true)
+        .expect("Should activate");
 
-    let result = NailsManager::emergency_deactivate(Arc::clone(&manager_arc));
+    let result = manager_arc.lock().unwrap().emergency_deactivate();
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -4275,9 +4252,13 @@ fn test_rollback_tr50_first_unmount_fails() {
     fs.mock_set_unmount_should_fail("/etc", true);
     let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
-    NailsManager::activate(Arc::clone(&manager_arc), true).expect("Should activate");
+    manager_arc
+        .lock()
+        .unwrap()
+        .activate(true)
+        .expect("Should activate");
 
-    let result = NailsManager::emergency_deactivate(Arc::clone(&manager_arc));
+    let result = manager_arc.lock().unwrap().emergency_deactivate();
     assert!(result.is_err());
 
     // State should remain ACTIVE
@@ -4303,7 +4284,7 @@ fn test_rollback_tr51_cascading_failures() {
     let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
     // WHEN: Running activation (will fail on /etc, then fail rollback on /home)
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
 
     // THEN: Activation fails
     assert!(result.is_err(), "Expected activation to fail");
@@ -4328,7 +4309,7 @@ fn test_rollback_tr51_multiple_rollback_failures() {
     fs.mock_set_unmount_should_fail("/home", true);
     let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
 
     // Should fail
     assert!(result.is_err());
@@ -4384,7 +4365,7 @@ fn test_rollback_tr38_state_consistency_after_rollback() {
         fs.mock_set_mount_should_fail(fail_path, true);
         let (manager_arc, _temp_dir) = create_rollback_test_manager(fs);
 
-        let _result = NailsManager::activate(Arc::clone(&manager_arc), true);
+        let _result = manager_arc.lock().unwrap().activate(true);
 
         // Verify state consistency after rollback
         verify_rollback_state_consistency(&manager_arc);
@@ -4428,7 +4409,7 @@ fn test_rollback_no_mounts_configured() {
     let manager_arc = Arc::new(Mutex::new(manager));
 
     // Activation with no overlays should succeed
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activation with no overlays should succeed");
 
     // `temp_dir` is held to the end of the test so its contents are removed when
@@ -4449,7 +4430,7 @@ fn test_rollback_preserves_previous_state() {
     assert_eq!(initial_state, SystemState::Inactive);
 
     // Failed activation should rollback to Inactive
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_err());
 
     let final_state = manager_arc.lock().unwrap().current_state().unwrap();
@@ -4874,7 +4855,7 @@ fn test_activation_emits_structured_events_with_state_fields() {
 
     let manager_arc = Arc::new(Mutex::new(manager));
 
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
 
     // Verify structured events with state fields (AC#1)
@@ -4937,7 +4918,7 @@ fn test_activation_error_emits_structured_error_fields() {
 
     let manager_arc = Arc::new(Mutex::new(manager));
 
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_err(), "Activate should fail due to mount failure");
 
     // Verify structured error event fields (AC#2)
@@ -4978,7 +4959,7 @@ fn test_overlays_mounted_event_includes_overlay_list() {
 
     let manager_arc = Arc::new(Mutex::new(manager));
 
-    let result = NailsManager::activate(Arc::clone(&manager_arc), true);
+    let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
 
     // With no overlays, the mount event won't fire, but activation complete will
@@ -5066,7 +5047,7 @@ fn test_activate_auto_mode_overlays_all_non_excluded_dirs() {
         state_path.clone(),
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activation should succeed: {:?}", result);
 
     // Verify all 3 directories were overlaid
@@ -5103,7 +5084,7 @@ fn test_activate_auto_mode_mount_order_is_alphabetical() {
         state_path.clone(),
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activation should succeed: {:?}", result);
 
     // Verify mount order is alphabetical by checking overlay_status
@@ -5142,7 +5123,7 @@ fn test_activate_auto_mode_upper_work_dirs_at_correct_paths() {
         state_path.clone(),
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activation should succeed: {:?}", result);
 
     // Verify overlay paths are correct
@@ -5197,7 +5178,7 @@ fn test_activate_auto_mode_stops_after_mount_failure() {
     )));
 
     // Activation should fail fast to avoid partial state
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_err(), "Activation should fail on mount error");
 
     // Verify state rolled back to Inactive and no overlays recorded
@@ -5234,7 +5215,7 @@ fn test_activate_auto_mode_failed_overlays_recorded_on_failure() {
         state_path.clone(),
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_err(), "Activation should fail on mount error");
 
     // Verify failed overlays are recorded in state
@@ -5280,7 +5261,7 @@ fn test_activate_auto_mode_all_mounts_fail_returns_first_mount_error() {
         state_path.clone(),
     )));
 
-    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
+    let err = manager.lock().unwrap().activate(true).unwrap_err();
     assert!(err.to_string().contains("/etc"));
 
     let state = manager.lock().unwrap().current_state().unwrap();
@@ -5309,7 +5290,7 @@ fn test_activate_auto_mode_with_user_exclusions() {
         state_path.clone(),
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activation should succeed: {:?}", result);
 
     // Only /etc and /home should be overlaid (boot and nix excluded)
@@ -5376,7 +5357,7 @@ fn test_activate_explicit_mode_uses_only_configured_overlays() {
         state_path.clone(),
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activation should succeed: {:?}", result);
 
     // Only 1 overlay (from config), NOT all 5 discovered directories
@@ -5465,7 +5446,7 @@ fn test_activation_injects_import_block_into_overlayed_hardware_config() {
         state_path.clone(),
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activation should succeed: {:?}", result);
 
     let written = fs
@@ -5521,7 +5502,7 @@ fn test_activate_explicit_mode_empty_overlays_fails() {
         state_path.clone(),
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
 
     // Should FAIL with clear error message
     assert!(
@@ -5586,7 +5567,7 @@ fn test_activation_aborts_when_base_hardware_config_is_dirty() {
         state_path,
     )));
 
-    let err = NailsManager::activate(Arc::clone(&manager), false).unwrap_err();
+    let err = manager.lock().unwrap().activate(false).unwrap_err();
     assert!(err.to_string().contains("suspicious-nails-reference"));
     assert!(err.to_string().contains("before any side effects"));
     assert!(
@@ -5653,7 +5634,7 @@ fn test_activation_aborts_when_base_hardware_config_cannot_be_read() {
         state_path,
     )));
 
-    let err = NailsManager::activate(Arc::clone(&manager), false).unwrap_err();
+    let err = manager.lock().unwrap().activate(false).unwrap_err();
     assert!(err.to_string().contains("File not found in mock"));
     assert!(
         fs.mock_ops().is_empty(),
@@ -5710,7 +5691,7 @@ fn test_activate_explicit_mode_rejects_critical_system_root_overlay_bin() {
         state_path,
     )));
 
-    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
+    let err = manager.lock().unwrap().activate(true).unwrap_err();
     assert!(
         err.to_string()
             .contains("Overlaying critical system root /bin is blocked")
@@ -5760,7 +5741,7 @@ fn test_activation_rolls_back_when_import_injection_fails_after_etc_mount() {
         state_path,
     )));
 
-    let err = NailsManager::activate(Arc::clone(&manager), true).unwrap_err();
+    let err = manager.lock().unwrap().activate(true).unwrap_err();
     assert!(err.to_string().contains("Mock write failure"));
     assert!(
         !fs.is_mounted(Path::new("/etc")).unwrap(),
@@ -5817,7 +5798,7 @@ fn test_activate_explicit_mode_continues_when_clean_stale_network_config_fails()
         state_path,
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(
         result.is_ok(),
         "activation should continue on stale network cleanup failure: {:?}",
@@ -5915,7 +5896,7 @@ fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
         builder,
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(
         result.is_ok(),
         "post-overlay rebuild failure should preserve activation: {result:?}"
@@ -6005,7 +5986,7 @@ fn test_overlay_mount_failure_error_format() {
 
     // Attempt activation - should succeed partially
     // Skip preflight to directly test mount failure error format
-    let _result = NailsManager::activate(manager, true);
+    let _result = manager.lock().unwrap().activate(true);
 
     // Verify error message format matches AC9 specification
     assert!(
@@ -6275,7 +6256,7 @@ fn test_activation_non_fatal_switch_failures_do_not_roll_back() {
         builder,
     )));
 
-    let result = NailsManager::activate(Arc::clone(&manager), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(
         result.is_ok(),
         "activation should tolerate non-fatal switch failures: {result:?}"
@@ -6353,7 +6334,7 @@ fn test_activate_auto_mode_all_directories_excluded() {
     )));
 
     // Attempt activation - should succeed with 0 overlays
-    let result = NailsManager::activate(manager.clone(), true);
+    let result = manager.lock().unwrap().activate(true);
 
     assert!(
         result.is_ok(),
@@ -6670,7 +6651,7 @@ fn test_activation_inject_happens_after_etc_overlay_mount() {
         mock_hidden_vol.join("state.json"),
     )));
 
-    let result = NailsManager::activate(manager.clone(), true);
+    let result = manager.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activation should succeed: {:?}", result);
 
     let ops = fs.mock_ops();
@@ -6712,7 +6693,7 @@ fn test_deactivation_succeeds_when_base_config_clean_after_unmount() {
         "{ config, lib, pkgs, ... }:\n{ }",
     );
 
-    let result = NailsManager::emergency_deactivate(Arc::clone(&manager));
+    let result = manager.lock().unwrap().emergency_deactivate();
     assert!(
         result.is_ok(),
         "Deactivation should succeed when base config is clean: {:?}",
@@ -6753,7 +6734,7 @@ fn test_deactivation_succeeds_when_base_config_dirty_after_unmount() {
         "{ config, lib, pkgs, ... }:\n{ imports = [ /mnt/hidden/nixos/configuration.nix ]; }",
     );
 
-    let result = NailsManager::emergency_deactivate(Arc::clone(&manager));
+    let result = manager.lock().unwrap().emergency_deactivate();
     assert!(
         result.is_ok(),
         "Deactivation should not fail late on suspicious base config references"
@@ -6787,7 +6768,7 @@ fn test_deactivation_skips_base_check_when_etc_not_overlaid() {
         "{ config, lib, pkgs, ... }:\n{ imports = [ /mnt/hidden/nixos/configuration.nix ]; }",
     );
 
-    let result = NailsManager::emergency_deactivate(Arc::clone(&manager));
+    let result = manager.lock().unwrap().emergency_deactivate();
     assert!(
         result.is_ok(),
         "Deactivation should succeed when /etc overlay was not mounted"
@@ -6881,7 +6862,7 @@ fn test_full_cycle_base_config_clean_after_deactivation() {
     )));
 
     // === Activate ===
-    let activate_result = NailsManager::activate(manager.clone(), true);
+    let activate_result = manager.lock().unwrap().activate(true);
     assert!(
         activate_result.is_ok(),
         "Activation should succeed: {:?}",
@@ -6901,7 +6882,7 @@ fn test_full_cycle_base_config_clean_after_deactivation() {
     );
 
     // === Deactivate ===
-    let deactivate_result = NailsManager::emergency_deactivate(Arc::clone(&manager));
+    let deactivate_result = manager.lock().unwrap().emergency_deactivate();
     assert!(
         deactivate_result.is_ok(),
         "Deactivation should succeed: {:?}",
@@ -7107,7 +7088,7 @@ fn test_nixos_build_logs_fast_path_when_fingerprint_matches_and_generation_exist
         });
     }
 
-    let result = NailsManager::activate(Arc::new(Mutex::new(manager)), true);
+    let result = Arc::new(Mutex::new(manager)).lock().unwrap().activate(true);
     assert!(result.is_err());
     assert!(logs_contain("Computing NixOS config fingerprint"));
     assert!(logs_contain("Fast-path check"));
@@ -7177,7 +7158,7 @@ fn test_nixos_build_does_not_take_fast_path_when_generation_missing() {
         });
     }
 
-    let result = NailsManager::activate(Arc::new(Mutex::new(manager)), true);
+    let result = Arc::new(Mutex::new(manager)).lock().unwrap().activate(true);
     assert!(result.is_err());
     assert!(logs_contain("Fast-path check"));
     assert!(!logs_contain("Fast path: fingerprint matches"));
@@ -7244,7 +7225,7 @@ fn test_nixos_build_uses_empty_content_when_both_reads_fail() {
         });
     }
 
-    let result = NailsManager::activate(Arc::new(Mutex::new(manager)), true);
+    let result = Arc::new(Mutex::new(manager)).lock().unwrap().activate(true);
     assert!(result.is_err());
     assert!(logs_contain(
         "Failed to read hardware-configuration.nix for fingerprint"

@@ -10,7 +10,8 @@
 use super::test_gate::{
     DeactivationGateTestGuard, maybe_block_after_deactivating_state_transition,
 };
-use super::{DeactivationOrchestrator, DeactivationReport, PostUnmountCleanupReport};
+use super::{DeactivationReport, PostUnmountCleanupReport};
+use crate::DeactivationOrchestrator;
 use crate::cleanup::test_utils::{TEST_HOME, assert_path_is_safe, set_safe_test_home};
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 use crate::filesystem::Filesystem;
@@ -400,10 +401,10 @@ fn test_deactivation_report_display_with_items() {
 #[test]
 #[serial]
 fn test_deactivation_orchestrator_new() {
-    let manager = setup_active_manager();
+    let _manager = setup_active_manager();
     let config = CleanupConfig::default();
 
-    let _orchestrator = DeactivationOrchestrator::new(Arc::clone(&manager), config.clone());
+    let _orchestrator = DeactivationOrchestrator::new(config.clone());
 
     // Verify orchestrator is created successfully (no panic)
     // Config is private but we can test it works via run()
@@ -432,11 +433,10 @@ fn test_idempotent_deactivation() {
     manager.force_state(SystemState::Inactive).unwrap();
 
     let manager = Arc::new(Mutex::new(manager));
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
     // Run deactivation when already inactive
-    let result = orchestrator.run();
+    let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_ok());
 
     let report = result.unwrap();
@@ -472,11 +472,10 @@ fn test_deactivation_from_non_active_state_fails() {
         .unwrap();
 
     let manager = Arc::new(Mutex::new(manager));
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
     // Run deactivation from ACTIVATING state (should fail)
-    let result = orchestrator.run();
+    let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_err());
 
     match result {
@@ -500,10 +499,9 @@ fn test_successful_deactivation() {
         m.filesystem().mock_set_mounted(Path::new("/etc"), true);
     }
 
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
-    let result = orchestrator.run();
+    let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_ok());
 
     let report = result.unwrap();
@@ -580,10 +578,11 @@ fn test_successful_deactivation_unmounts_all_tracked_overlays_in_lifo_order() {
         config,
         state_path.clone(),
     )));
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
-    let report = orchestrator.run().expect("deactivation should succeed");
+    let report = orchestrator
+        .run(&mut manager.lock().unwrap())
+        .expect("deactivation should succeed");
 
     assert_eq!(
         report.unmounted_overlays,
@@ -654,11 +653,10 @@ fn test_deactivation_skips_decoy_restore_when_disabled() {
         state_path.clone(),
     )));
     let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
-            .with_decoy_profile_restore(false);
+        DeactivationOrchestrator::new(CleanupConfig::default()).with_decoy_profile_restore(false);
 
     let report = orchestrator
-        .run()
+        .run(&mut manager.lock().unwrap())
         .expect("deactivation should succeed without restoring a decoy profile");
 
     assert_eq!(report.final_state, SystemState::Inactive);
@@ -684,11 +682,10 @@ fn test_deactivation_skips_switch_script_execution_when_disabled() {
     }
 
     let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
-            .with_switch_script_execution(false);
+        DeactivationOrchestrator::new(CleanupConfig::default()).with_switch_script_execution(false);
 
     let report = orchestrator
-        .run()
+        .run(&mut manager.lock().unwrap())
         .expect("deactivation should succeed without executing switch-to-configuration");
 
     assert_eq!(report.final_state, SystemState::Inactive);
@@ -712,11 +709,10 @@ fn test_deactivation_returns_error_when_no_decoy_profile_is_available() {
         m.filesystem().mock_set_mounted(Path::new("/etc"), true);
     }
 
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
     let err = orchestrator
-        .run()
+        .run(&mut manager.lock().unwrap())
         .expect_err("deactivation should report a missing decoy profile");
 
     assert!(
@@ -756,11 +752,10 @@ fn test_deactivation_returns_error_when_switch_script_is_missing() {
         m.filesystem().mock_set_mounted(Path::new("/etc"), true);
     }
 
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
     let err = orchestrator
-        .run()
+        .run(&mut manager.lock().unwrap())
         .expect_err("deactivation should fail when switch-to-configuration is missing");
 
     assert!(
@@ -825,9 +820,8 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
         m.filesystem().mock_set_mounted(Path::new("/etc"), true);
     }
 
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
-    let result = orchestrator.run();
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
+    let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_ok());
 
     let loaded = StateFile::load(
@@ -889,10 +883,11 @@ fn test_deactivation_clears_failed_overlays_tracker_state() {
     }
 
     let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
-            .with_decoy_profile_restore(false);
+        DeactivationOrchestrator::new(CleanupConfig::default()).with_decoy_profile_restore(false);
 
-    let report = orchestrator.run().expect("deactivation should succeed");
+    let report = orchestrator
+        .run(&mut manager.lock().unwrap())
+        .expect("deactivation should succeed");
     assert_eq!(report.final_state, SystemState::Inactive);
 
     let loaded = StateFile::load(&state_path).unwrap();
@@ -951,7 +946,10 @@ fn test_emergency_cleanup_preserves_explicit_config_path() {
         m.filesystem().mock_set_mounted(Path::new("/home"), true);
     }
 
-    NailsManager::emergency_deactivate(Arc::clone(&manager))
+    manager
+        .lock()
+        .unwrap()
+        .emergency_deactivate()
         .expect("emergency deactivation should succeed");
 
     let m = manager.lock().unwrap();
@@ -999,10 +997,9 @@ fn test_cleanup_failure_rollback() {
             .mock_set_write_should_fail(bash_history_str, true);
     }
 
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
-    let result = orchestrator.run();
+    let result = orchestrator.run(&mut manager.lock().unwrap());
 
     // AC4: Cleanup failure should cause deactivation to fail and rollback to ACTIVE
     // This is required for forensic safety - if traces can't be cleaned, we must
@@ -1065,10 +1062,9 @@ fn test_cleanup_failure_keeps_overlays_mounted() {
             .mock_set_write_should_fail(bash_history_str, true);
     }
 
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
-    let _result = orchestrator.run();
+    let _result = orchestrator.run(&mut manager.lock().unwrap());
 
     // Verify overlays are still mounted (AC4: "overlays are NOT unmounted")
     let m = manager.lock().unwrap();
@@ -1102,7 +1098,7 @@ fn test_emergency_deactivate_from_inactive_state_returns_error() {
 
     let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
 
-    let err = NailsManager::emergency_deactivate(Arc::clone(&manager)).unwrap_err();
+    let err = manager.lock().unwrap().emergency_deactivate().unwrap_err();
     assert!(matches!(err, NailsError::InvalidState(_)));
     assert_eq!(
         manager.lock().unwrap().current_state().unwrap(),
@@ -1124,7 +1120,7 @@ fn test_emergency_deactivate_from_activating_state_returns_error_without_unmount
         fs.mock_set_mounted(Path::new("/etc"), true);
     }
 
-    let err = NailsManager::emergency_deactivate(Arc::clone(&manager)).unwrap_err();
+    let err = manager.lock().unwrap().emergency_deactivate().unwrap_err();
     assert!(matches!(err, NailsError::InvalidState(_)));
     let err_msg = err.to_string();
     assert!(
@@ -1159,7 +1155,7 @@ fn test_emergency_deactivate_from_deactivating_state_returns_error_without_unmou
         fs.mock_set_mounted(Path::new("/etc"), true);
     }
 
-    let err = NailsManager::emergency_deactivate(Arc::clone(&manager)).unwrap_err();
+    let err = manager.lock().unwrap().emergency_deactivate().unwrap_err();
     assert!(matches!(err, NailsError::InvalidState(_)));
     let err_msg = err.to_string();
     assert!(
@@ -1219,7 +1215,11 @@ fn test_emergency_deactivate_force_unmount_succeeds_after_graceful_failure() {
         fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
     }
 
-    NailsManager::emergency_deactivate(Arc::clone(&manager)).expect("deactivation should work");
+    manager
+        .lock()
+        .unwrap()
+        .emergency_deactivate()
+        .expect("deactivation should work");
 
     let manager_guard = manager.lock().unwrap();
     assert_eq!(
@@ -1272,7 +1272,7 @@ fn test_deactivate_returns_error_when_no_system_profile_exists() {
     let manager_inner = NailsManager::new(fs, config, state_path);
     let manager = Arc::new(Mutex::new(manager_inner));
 
-    let err = NailsManager::deactivate(Arc::clone(&manager)).unwrap_err();
+    let err = manager.lock().unwrap().deactivate().unwrap_err();
     assert!(
         err.to_string()
             .contains("No system profile found. Cannot restore decoy configuration.")
@@ -1324,7 +1324,11 @@ fn test_deactivate_overlay_only_session_succeeds_without_system_profile() {
         fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
     }
 
-    NailsManager::deactivate(Arc::clone(&manager)).expect("overlay-only deactivation should work");
+    manager
+        .lock()
+        .unwrap()
+        .deactivate()
+        .expect("overlay-only deactivation should work");
 
     let manager_guard = manager.lock().unwrap();
     assert_eq!(
@@ -1422,7 +1426,10 @@ fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
     }
     set_state_nixos_generation(&state_path, &hidden_root, "1");
 
-    let err = NailsManager::deactivate(Arc::clone(&manager))
+    let err = manager
+        .lock()
+        .unwrap()
+        .deactivate()
         .expect_err("normal deactivation should fail when no decoy profile is available");
     let err_text = err.to_string();
     assert!(
@@ -1515,7 +1522,11 @@ fn test_deactivate_prepares_decoy_symlink_when_restore_is_required() {
             .mock_set_path_exists(work_dir.to_str().unwrap(), true);
     }
 
-    NailsManager::deactivate(Arc::clone(&manager)).expect("normal deactivation should succeed");
+    manager
+        .lock()
+        .unwrap()
+        .deactivate()
+        .expect("normal deactivation should succeed");
 
     assert_eq!(
         manager
@@ -1614,10 +1625,10 @@ fn test_deactivate_uses_overlay_metadata_when_active_overlay_list_is_incomplete(
             .mock_set_path_exists(work_etc.to_str().unwrap(), true);
     }
 
-    let report = DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
+    let report = DeactivationOrchestrator::new(CleanupConfig::default())
         .with_decoy_profile_restore(false)
         .with_switch_script_execution(false)
-        .run()
+        .run(&mut manager.lock().unwrap())
         .expect("deactivation should use tracked overlay metadata");
 
     assert_eq!(
@@ -1671,7 +1682,10 @@ fn test_emergency_deactivate_fails_when_nix_store_unmount_fails() {
         fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
     }
 
-    let err = NailsManager::emergency_deactivate(Arc::clone(&manager))
+    let err = manager
+        .lock()
+        .unwrap()
+        .emergency_deactivate()
         .expect_err("deactivation should fail when /nix/store cannot be unmounted");
     assert!(err.to_string().contains("/nix/store"));
     assert!(manager.lock().unwrap().current_state().unwrap().is_active());
@@ -1729,7 +1743,10 @@ fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
         state_path.clone(),
     )));
 
-    NailsManager::emergency_deactivate(Arc::clone(&manager))
+    manager
+        .lock()
+        .unwrap()
+        .emergency_deactivate()
         .expect("overlay-only emergency deactivation should work");
     assert_eq!(
         manager.lock().unwrap().current_state().unwrap(),
@@ -1782,7 +1799,11 @@ fn test_emergency_deactivate_unmounts_nix_store_when_nix_overlay_present() {
         fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
     }
 
-    NailsManager::emergency_deactivate(Arc::clone(&manager)).expect("deactivation should work");
+    manager
+        .lock()
+        .unwrap()
+        .emergency_deactivate()
+        .expect("deactivation should work");
 
     let manager_guard = manager.lock().unwrap();
     assert_eq!(
@@ -1822,10 +1843,9 @@ fn test_deactivation_emits_structured_events() {
         m.filesystem().mock_set_mounted(Path::new("/etc"), true);
     }
 
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
-    let result = orchestrator.run();
+    let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_ok(), "Deactivation should succeed");
 
     // Verify structured deactivation events (AC#3)
@@ -1861,10 +1881,9 @@ fn test_deactivation_cleanup_event_includes_count() {
             .mock_set_file_content(bash_history_str, "nails activate\nsome command\n");
     }
 
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
-    let result = orchestrator.run();
+    let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_ok(), "Deactivation should succeed");
 
     // Verify cleanup event includes count (AC#3)
@@ -1884,10 +1903,9 @@ fn test_deactivation_unmount_event_includes_overlay_list() {
         m.filesystem().mock_set_mounted(Path::new("/etc"), true);
     }
 
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
-    let result = orchestrator.run();
+    let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_ok(), "Deactivation should succeed");
 
     // Verify unmount event includes overlay list (AC#3)
@@ -1909,10 +1927,9 @@ fn test_deactivation_idempotent_log() {
             .expect("Should set inactive");
     }
 
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default());
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
-    let result = orchestrator.run();
+    let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_ok(), "Idempotent deactivation should succeed");
 
     // Verify idempotent message with structured fields
@@ -2053,11 +2070,10 @@ fn test_emergency_mode_skips_non_essential_steps() {
         m.filesystem().mock_set_mounted(Path::new("/etc"), true);
     }
 
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
-            .with_mode(DeactivationMode::Emergency);
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default())
+        .with_mode(DeactivationMode::Emergency);
 
-    let result = orchestrator.run();
+    let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_ok(), "Emergency deactivation should succeed");
 
     let report = result.unwrap();
@@ -2097,12 +2113,11 @@ fn test_emergency_mode_fails_on_inactive_state() {
     manager.force_state(SystemState::Inactive).unwrap();
 
     let manager = Arc::new(Mutex::new(manager));
-    let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
-            .with_mode(DeactivationMode::Emergency);
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default())
+        .with_mode(DeactivationMode::Emergency);
 
     // Emergency mode should NOT be idempotent - must fail on Inactive
-    let result = orchestrator.run();
+    let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(
         result.is_err(),
         "Emergency mode should fail on Inactive state"
@@ -2141,11 +2156,10 @@ fn test_normal_mode_is_idempotent_on_inactive() {
 
     let manager = Arc::new(Mutex::new(manager));
     let orchestrator =
-        DeactivationOrchestrator::new(Arc::clone(&manager), CleanupConfig::default())
-            .with_mode(DeactivationMode::Normal);
+        DeactivationOrchestrator::new(CleanupConfig::default()).with_mode(DeactivationMode::Normal);
 
     // Normal mode should be idempotent
-    let result = orchestrator.run();
+    let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_ok());
     assert!(result.unwrap().was_already_inactive);
 }

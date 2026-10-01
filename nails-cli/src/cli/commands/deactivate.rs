@@ -34,7 +34,6 @@ pub fn execute(
     check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
 ) -> ! {
     use nails_core::{NailsManager, RealFilesystem, Verbosity};
-    use std::sync::{Arc, Mutex};
 
     // Configure color output
     nails_core::set_plain_mode(plain);
@@ -76,11 +75,8 @@ pub fn execute(
 
     // Create manager
     let filesystem = RealFilesystem;
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        filesystem, config, state_path,
-    )));
-    super::lock_manager_or_exit(&manager, "setting deactivation verbosity")
-        .set_verbosity(verbosity);
+    let mut manager = NailsManager::new(filesystem, config, state_path);
+    manager.set_verbosity(verbosity);
 
     if let Err(e) = maybe_detach_for_deactivation() {
         if !json {
@@ -96,7 +92,7 @@ pub fn execute(
     let _state_lock = super::acquire_state_lock_or_exit(&lock_state_path);
 
     // Run quick deactivation (restore symlink + reboot)
-    match NailsManager::deactivate(Arc::clone(&manager)) {
+    match manager.deactivate() {
         Ok(()) => {
             // Success - system will reboot
             if !json {

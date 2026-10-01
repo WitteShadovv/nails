@@ -31,22 +31,19 @@ struct FailedCheckJson {
 }
 
 fn manager_state_debug<F: nails_core::Filesystem>(
-    manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+    manager: &nails_core::NailsManager<F>,
 ) -> Option<String> {
-    match manager.lock() {
-        Ok(manager) => manager
-            .current_state()
-            .ok()
-            .map(|state| format!("{:?}", state)),
-        Err(_) => None,
-    }
+    manager
+        .current_state()
+        .ok()
+        .map(|state| format!("{:?}", state))
 }
 
 /// Print activation result in JSON format
 pub fn print_activate_json<F: nails_core::Filesystem>(
     result: &Result<(), nails_core::NailsError>,
     duration: f64,
-    manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+    manager: &nails_core::NailsManager<F>,
     shell_setup: Option<&nails_core::ShellSetupResult>,
 ) {
     let output = build_activate_json_output(result, duration, manager, shell_setup);
@@ -60,7 +57,7 @@ pub fn print_activate_json<F: nails_core::Filesystem>(
 fn build_activate_json_output<F: nails_core::Filesystem>(
     result: &Result<(), nails_core::NailsError>,
     duration: f64,
-    manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+    manager: &nails_core::NailsManager<F>,
     shell_setup: Option<&nails_core::ShellSetupResult>,
 ) -> ActivateResult {
     use nails_core::NailsError;
@@ -124,7 +121,7 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
 pub fn print_activate_human<F: nails_core::Filesystem>(
     result: &Result<(), nails_core::NailsError>,
     duration: f64,
-    manager: &std::sync::Arc<std::sync::Mutex<nails_core::NailsManager<F>>>,
+    manager: &nails_core::NailsManager<F>,
     shell_setup: Option<&nails_core::ShellSetupResult>,
     quiet: bool,
 ) {
@@ -289,13 +286,11 @@ mod tests {
     use super::*;
     use nails_core::{Config, MockFilesystem, NailsError, NailsManager, ShellSetupResult};
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
 
-    fn make_manager() -> Arc<Mutex<NailsManager<MockFilesystem>>> {
+    fn make_manager() -> NailsManager<MockFilesystem> {
         let fs = MockFilesystem::new();
         let config = Config::default();
-        let manager = NailsManager::new(fs, config, PathBuf::from("/tmp/test-state.json"));
-        Arc::new(Mutex::new(manager))
+        NailsManager::new(fs, config, PathBuf::from("/tmp/test-state.json"))
     }
 
     fn make_shell_setup_rc_modified() -> ShellSetupResult {
@@ -386,20 +381,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_json_poisoned_manager_falls_back_to_unknown_state() {
-        let manager = make_manager();
-        let poison_target = Arc::clone(&manager);
-        let _ = std::thread::spawn(move || {
-            let _guard = poison_target.lock().unwrap();
-            panic!("poison manager lock for test");
-        })
-        .join();
-
-        let output = build_activate_json_output(&Ok(()), 0.2, &manager, None);
-        assert_eq!(output.state, "UNKNOWN");
-    }
-
     // ── print_activate_human ───────────────────────────────────────────────────
 
     #[test]
@@ -455,20 +436,6 @@ mod tests {
     #[test]
     fn test_human_other_error() {
         let manager = make_manager();
-        let err = NailsError::InvalidState("bad state".to_string());
-        print_activate_human(&Err(err), 0.3, &manager, None, false);
-    }
-
-    #[test]
-    fn test_human_error_with_poisoned_manager_does_not_panic() {
-        let manager = make_manager();
-        let poison_target = Arc::clone(&manager);
-        let _ = std::thread::spawn(move || {
-            let _guard = poison_target.lock().unwrap();
-            panic!("poison manager lock for test");
-        })
-        .join();
-
         let err = NailsError::InvalidState("bad state".to_string());
         print_activate_human(&Err(err), 0.3, &manager, None, false);
     }
