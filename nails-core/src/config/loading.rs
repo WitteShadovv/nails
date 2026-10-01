@@ -95,10 +95,9 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// Returns `NailsError::ConfigError` if:
-    /// - File does not exist (includes example config in error)
-    /// - YAML syntax is invalid (includes line number)
-    /// - Required field `hidden_volume_path` is missing
+    /// - Returns `NailsError::ConfigNotFound` if the file does not exist.
+    /// - Returns `NailsError::ConfigError` if YAML syntax is invalid (includes
+    ///   line number) or a required field is missing.
     ///
     /// # Example
     ///
@@ -118,11 +117,9 @@ impl Config {
         // Read file contents with descriptive error
         let contents = std::fs::read_to_string(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                NailsError::ConfigError(format!(
-                    "Config file not found: {}\n\nCreate one with:\n{}",
-                    path.display(),
-                    Self::example_config()
-                ))
+                NailsError::ConfigNotFound {
+                    path: path.to_path_buf(),
+                }
             } else {
                 NailsError::ConfigError(format!("Failed to read config: {}", e))
             }
@@ -289,9 +286,7 @@ color_scheme:
     pub fn load_or_default(path: &std::path::Path) -> crate::error::Result<Self> {
         match Self::load(path) {
             Ok(config) => Ok(config),
-            Err(crate::error::NailsError::ConfigError(msg))
-                if msg.contains("Config file not found") =>
-            {
+            Err(crate::error::NailsError::ConfigNotFound { .. }) => {
                 tracing::info!("No config file found at {}, using defaults", path.display());
                 Ok(Self::default())
             }

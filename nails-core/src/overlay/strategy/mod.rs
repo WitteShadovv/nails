@@ -7,6 +7,7 @@
 //! 4. Fall back to pivot mount if needed (with user consent)
 
 use crate::{Filesystem, NailsError, Result};
+use nix::errno::Errno;
 use std::path::Path;
 
 use super::pivot::{pivot_overlay_mount, snapshot_pivot_overlay_mount};
@@ -312,24 +313,26 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
                 stopped_services,
             });
         }
-        Err(e) => {
-            let error_msg = format!("{}", e);
-            if error_msg.contains("Invalid argument")
-                || error_msg.contains("Device or resource busy")
-                || error_msg.contains("not supported")
+        Err(e) => match &e {
+            // A busy or unsupported target reports EINVAL/EBUSY/EOPNOTSUPP; those
+            // are recoverable via the pivot fallback. Any other errno (and any
+            // non-mount error) is fatal. Branching on the typed errno avoids
+            // depending on libc's human-readable error strings.
+            NailsError::Mount { errno, .. }
+                if matches!(*errno, Errno::EINVAL | Errno::EBUSY | Errno::EOPNOTSUPP) =>
             {
                 tracing::warn!(
-                    error = %error_msg.lines().next().unwrap_or("unknown error"),
-                    "  ✗ Direct mount failed ({}), trying pivot fallback",
-                    error_msg.lines().next().unwrap_or("unknown error")
+                    error = %e,
+                    "  ✗ Direct mount failed, trying pivot fallback"
                 );
                 // Continue to Phase 4
-            } else {
+            }
+            _ => {
                 // Other errors are fatal
                 restart_services_after_failure(&stopped_services);
                 return Err(e);
             }
-        }
+        },
     }
 
     // ========== Phase 4: Pivot Mount Fallback (busy directory) ==========

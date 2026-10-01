@@ -470,12 +470,10 @@ fn test_load_file_not_found_error() {
     assert!(result.is_err());
 
     match result {
-        Err(crate::error::NailsError::ConfigError(msg)) => {
-            assert!(msg.contains("Config file not found"));
-            assert!(msg.contains("/nonexistent/config.yaml"));
-            assert!(msg.contains("Create one with:"));
+        Err(crate::error::NailsError::ConfigNotFound { path }) => {
+            assert_eq!(path, PathBuf::from("/nonexistent/config.yaml"));
         }
-        _ => panic!("Expected ConfigError for missing file"),
+        other => panic!("Expected ConfigNotFound for missing file, got {other:?}"),
     }
 }
 

@@ -226,8 +226,9 @@ fn test_mount_overlay_with_strategy_direct_mount_succeeds_when_no_fstype() {
 }
 
 #[test]
-fn test_direct_mount_fatal_error_is_returned_without_pivot_fallback() {
+fn test_direct_mount_fatal_errno_is_returned_without_pivot_fallback() {
     use crate::filesystem::MockFilesystem;
+    use nix::errno::Errno;
     use std::path::Path;
 
     let fs = MockFilesystem::new();
@@ -235,7 +236,9 @@ fn test_direct_mount_fatal_error_is_returned_without_pivot_fallback() {
     fs.mock_set_path_exists("/mnt/upper", true);
     fs.mock_set_path_exists("/mnt/work", true);
     fs.mock_set_filesystem_type(Path::new("/data"), "ext4");
-    fs.mock_set_mount_should_fail("/data", true);
+    // ENOSPC is not a busy/unsupported errno, so it stays fatal even though
+    // the pivot fallback is allowed and auto-accepted.
+    fs.mock_set_mount_fail_errno("/data", Errno::ENOSPC);
 
     let options = OverlayStrategyOptions {
         skip_process_detection: false,
@@ -255,16 +258,18 @@ fn test_direct_mount_fatal_error_is_returned_without_pivot_fallback() {
 
     assert!(result.is_err());
     match result.unwrap_err() {
-        NailsError::OverlayError(msg) => {
-            assert!(msg.contains("Mock mount failure for testing"));
+        NailsError::Mount { target, errno } => {
+            assert_eq!(target, Path::new("/data"));
+            assert_eq!(errno, Errno::ENOSPC);
         }
-        other => panic!("expected OverlayError, got {other:?}"),
+        other => panic!("expected Mount error, got {other:?}"),
     }
 }
 
 #[test]
 fn test_busy_direct_mount_without_pivot_returns_invalid_state() {
     use crate::filesystem::MockFilesystem;
+    use nix::errno::Errno;
     use std::path::Path;
 
     let fs = MockFilesystem::new();
@@ -272,7 +277,9 @@ fn test_busy_direct_mount_without_pivot_returns_invalid_state() {
     fs.mock_set_path_exists("/mnt/upper", true);
     fs.mock_set_path_exists("/mnt/work", true);
     fs.mock_set_filesystem_type(Path::new("/data"), "ext4");
-    fs.mock_set_mount_should_fail("/data", true);
+    // EINVAL is one of the recoverable errnos, so the strategy treats /data as a
+    // busy target that needs the pivot fallback.
+    fs.mock_set_mount_fail_errno("/data", Errno::EINVAL);
 
     let options = OverlayStrategyOptions {
         skip_process_detection: false,
@@ -291,17 +298,20 @@ fn test_busy_direct_mount_without_pivot_returns_invalid_state() {
     );
 
     assert!(result.is_err());
+    // EINVAL routed into Phase 4; --no-pivot then rejects the pivot fallback.
     match result.unwrap_err() {
-        NailsError::OverlayError(msg) => {
-            assert!(msg.contains("Mock mount failure for testing"));
+        NailsError::InvalidState(msg) => {
+            assert!(msg.contains("Pivot mount required"), "{msg}");
+            assert!(msg.contains("--no-pivot"), "{msg}");
         }
-        other => panic!("expected OverlayError, got {other:?}"),
+        other => panic!("expected InvalidState, got {other:?}"),
     }
 }
 
 #[test]
-fn test_busy_direct_mount_with_auto_accept_uses_pivot_fallback() {
+fn test_busy_direct_mount_with_auto_accept_enters_pivot_fallback() {
     use crate::filesystem::MockFilesystem;
+    use nix::errno::Errno;
     use std::path::Path;
 
     let fs = MockFilesystem::new();
@@ -309,7 +319,9 @@ fn test_busy_direct_mount_with_auto_accept_uses_pivot_fallback() {
     fs.mock_set_path_exists("/mnt/upper", true);
     fs.mock_set_path_exists("/mnt/work", true);
     fs.mock_set_filesystem_type(Path::new("/data"), "ext4");
-    fs.mock_set_mount_should_fail("/data", true);
+    // EINVAL marks /data as a busy target, so the direct mount fails and, with the
+    // pivot auto-accepted, Phase 4 runs the pivot.
+    fs.mock_set_mount_fail_errno("/data", Errno::EINVAL);
     fs.mock_set_directory_creatable("/mnt/nails-pivot/data", true);
 
     let options = OverlayStrategyOptions {
@@ -328,11 +340,17 @@ fn test_busy_direct_mount_with_auto_accept_uses_pivot_fallback() {
         &options,
     );
 
+    // The pivot is entered: its staging directory is created and the staging
+    // overlay is mounted. The mock then fails the bind back onto /data (the
+    // target is still in the mount-fail set), so the operation surfaces that
+    // bind failure rather than the --no-pivot InvalidState of the no-pivot case.
+    assert!(
+        fs.path_exists(Path::new("/mnt/nails-pivot/data")).unwrap(),
+        "pivot staging directory should be created when Phase 4 runs"
+    );
     assert!(result.is_err());
-    match result.unwrap_err() {
-        NailsError::OverlayError(msg) => {
-            assert!(msg.contains("Mock mount failure for testing"));
-        }
-        other => panic!("expected OverlayError, got {other:?}"),
-    }
+    assert!(
+        !matches!(result.unwrap_err(), NailsError::InvalidState(_)),
+        "auto-accepted pivot must not short-circuit as InvalidState"
+    );
 }

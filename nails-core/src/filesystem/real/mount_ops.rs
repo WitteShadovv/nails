@@ -44,7 +44,12 @@ pub(super) fn mount_overlay(
         if e == nix::errno::Errno::EACCES || e == nix::errno::Errno::EPERM {
             NailsError::PermissionDenied("Mount requires root privileges".to_string())
         } else {
-            NailsError::OverlayError(format!("Failed to mount {}: {}", target.display(), e))
+            // Preserve the raw errno so the overlay strategy can decide whether
+            // to fall back to a pivot mount without parsing the error text.
+            NailsError::Mount {
+                target: target.to_path_buf(),
+                errno: e,
+            }
         }
     })?;
 

@@ -1,3 +1,4 @@
+use nix::errno::Errno;
 use thiserror::Error;
 
 /// Format pre-flight check failures for display
@@ -51,6 +52,20 @@ pub enum NailsError {
     #[error("Overlay operation failed: {0}")]
     OverlayError(String),
 
+    /// Overlay mount rejected by the kernel, carrying the raw errno.
+    ///
+    /// The errno is what the overlay strategy branches on: `EINVAL`, `EBUSY`,
+    /// and `EOPNOTSUPP` mean the target is busy or unsupported for a direct
+    /// mount, so a pivot fallback is attempted; any other errno is fatal.
+    /// The errno is also exposed as the error `source` so a cause chain can
+    /// surface it to structured output.
+    #[error("Failed to mount overlay at {target}: {errno}")]
+    Mount {
+        target: std::path::PathBuf,
+        #[source]
+        errno: Errno,
+    },
+
     /// NixOS-specific operation failed
     ///
     /// Covers profile switching, NixOS rebuild, and configuration errors.
@@ -74,9 +89,17 @@ pub enum NailsError {
     #[error("Pre-flight checks failed:\n{}", format_preflight_errors(.0))]
     PreFlightCheckFailed(Vec<(String, String)>),
 
-    /// Configuration error (missing file, invalid format, etc.)
+    /// Configuration error (invalid format, missing required field, etc.)
     #[error("Configuration error: {0}")]
     ConfigError(String),
+
+    /// Configuration file does not exist at the resolved path.
+    ///
+    /// Kept distinct from [`NailsError::ConfigError`] so callers can fall back
+    /// to defaults (`Config::load_or_default`) by matching the variant rather
+    /// than the error text.
+    #[error("Config file not found: {path}")]
+    ConfigNotFound { path: std::path::PathBuf },
 
     /// Invalid command-line argument or option
     ///
@@ -242,6 +265,38 @@ mod tests {
             err.to_string(),
             "Failed to fork emergency process: Resource temporarily unavailable"
         );
+
+        let err = NailsError::Mount {
+            target: std::path::PathBuf::from("/home"),
+            errno: Errno::EINVAL,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Failed to mount overlay at /home"), "{msg}");
+        assert!(msg.contains(&Errno::EINVAL.to_string()), "{msg}");
+
+        let err = NailsError::ConfigNotFound {
+            path: std::path::PathBuf::from("/etc/nails/nails.toml"),
+        };
+        assert_eq!(
+            err.to_string(),
+            "Config file not found: /etc/nails/nails.toml"
+        );
+    }
+
+    #[test]
+    fn test_mount_error_exposes_errno_as_source() {
+        use std::error::Error;
+
+        let err = NailsError::Mount {
+            target: std::path::PathBuf::from("/var"),
+            errno: Errno::EBUSY,
+        };
+
+        let source = err.source().expect("Mount error should chain a source");
+        let errno = source
+            .downcast_ref::<Errno>()
+            .expect("Mount source should be an Errno");
+        assert_eq!(*errno, Errno::EBUSY);
     }
 
     #[test]
@@ -323,6 +378,13 @@ mod tests {
         };
         let _err16 = NailsError::ForkFailed("Resource temporarily unavailable".into());
         let _err17 = NailsError::LockPoisoned("test lock poisoned".into());
+        let _err18 = NailsError::Mount {
+            target: PathBuf::from("/test"),
+            errno: Errno::EINVAL,
+        };
+        let _err19 = NailsError::ConfigNotFound {
+            path: PathBuf::from("/test/nails.toml"),
+        };
     }
 
     #[test]

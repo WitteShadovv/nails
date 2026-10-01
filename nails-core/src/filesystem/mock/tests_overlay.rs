@@ -157,11 +157,15 @@ fn test_mock_filesystem_can_simulate_mount_failure() {
 
     assert!(result.is_err());
     match result.unwrap_err() {
-        NailsError::OverlayError(msg) => {
-            assert!(msg.contains("Mock mount failure for testing"));
-            assert!(msg.contains("/home"), "Error should include target path");
+        NailsError::Mount { target, errno } => {
+            assert_eq!(target, Path::new("/home"), "Error should carry the target");
+            assert_eq!(
+                errno,
+                nix::errno::Errno::EIO,
+                "Default simulated mount errno should be the fatal EIO"
+            );
         }
-        _ => panic!("Expected OverlayError for simulated failure"),
+        other => panic!("Expected Mount error for simulated failure, got {other:?}"),
     }
 }
 

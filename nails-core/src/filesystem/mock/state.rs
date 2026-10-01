@@ -1,5 +1,6 @@
 use super::super::MountInfo;
 use chrono::{DateTime, Utc};
+use nix::errno::Errno;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -71,7 +72,10 @@ pub struct MockFilesystem {
     pub(super) busy: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) nixos_profiles: Arc<Mutex<HashSet<String>>>,
     pub(super) current_profile: Arc<Mutex<Option<String>>>,
-    pub(super) mount_should_fail: Arc<Mutex<HashSet<PathBuf>>>,
+    /// Paths whose mount operations fail, mapped to the errno they fail with.
+    /// The errno lets tests exercise the strategy's EINVAL/EBUSY/EOPNOTSUPP
+    /// pivot-fallback branch versus a fatal errno.
+    pub(super) mount_should_fail: Arc<Mutex<HashMap<PathBuf, Errno>>>,
     pub(super) unmount_should_fail: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) unmount_graceful_fails: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) nails_process_running: Arc<Mutex<bool>>,
@@ -130,7 +134,7 @@ impl MockFilesystem {
             busy: Arc::new(Mutex::new(HashSet::new())),
             nixos_profiles: Arc::new(Mutex::new(HashSet::new())),
             current_profile: Arc::new(Mutex::new(None)),
-            mount_should_fail: Arc::new(Mutex::new(HashSet::new())),
+            mount_should_fail: Arc::new(Mutex::new(HashMap::new())),
             unmount_should_fail: Arc::new(Mutex::new(HashSet::new())),
             unmount_graceful_fails: Arc::new(Mutex::new(HashSet::new())),
             nails_process_running: Arc::new(Mutex::new(false)),

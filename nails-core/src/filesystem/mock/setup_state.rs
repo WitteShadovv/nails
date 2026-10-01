@@ -185,15 +185,41 @@ impl MockFilesystem {
     /// assert!(result.is_err());
     /// ```
     pub fn mock_set_mount_should_fail(&self, path: &str, should_fail: bool) {
-        let mut fail_set = self
+        let mut fail_map = self
             .mount_should_fail
             .lock()
             .expect("MockFilesystem mutex poisoned");
         if should_fail {
-            fail_set.insert(PathBuf::from(path));
+            // EIO is a generic, fatal mount failure: it is *not* one of the
+            // EINVAL/EBUSY/EOPNOTSUPP errnos the overlay strategy retries with a
+            // pivot fallback, so a plain `mount_should_fail` keeps the historical
+            // "mount fails outright" behaviour. Tests that need the pivot-fallback
+            // branch pick the errno explicitly via `mock_set_mount_fail_errno`.
+            fail_map.insert(PathBuf::from(path), nix::errno::Errno::EIO);
         } else {
-            fail_set.remove(&PathBuf::from(path));
+            fail_map.remove(&PathBuf::from(path));
         }
+    }
+
+    /// Configure a mount operation to fail with a specific errno.
+    ///
+    /// Like [`MockFilesystem::mock_set_mount_should_fail`], but lets tests choose
+    /// the errno so strategy code that branches on `EINVAL`/`EBUSY`/`EOPNOTSUPP`
+    /// versus a fatal errno can be exercised directly.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nails_core::filesystem::MockFilesystem;
+    ///
+    /// let fs = MockFilesystem::new();
+    /// fs.mock_set_mount_fail_errno("/data", nix::errno::Errno::ENOSPC);
+    /// ```
+    pub fn mock_set_mount_fail_errno(&self, path: &str, errno: nix::errno::Errno) {
+        self.mount_should_fail
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(PathBuf::from(path), errno);
     }
 
     /// Set whether an unmount operation should fail for a specific path

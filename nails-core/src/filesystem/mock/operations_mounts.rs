@@ -11,17 +11,18 @@ impl MockFilesystem {
         work: &Path,
         target: &Path,
     ) -> Result<()> {
-        let fail_set = self
+        let injected_errno = self
             .mount_should_fail
             .lock()
-            .expect("MockFilesystem mutex poisoned");
-        if fail_set.contains(target) {
-            return Err(NailsError::OverlayError(format!(
-                "Mock mount failure for testing: {}",
-                target.display()
-            )));
+            .expect("MockFilesystem mutex poisoned")
+            .get(target)
+            .copied();
+        if let Some(errno) = injected_errno {
+            return Err(NailsError::Mount {
+                target: target.to_path_buf(),
+                errno,
+            });
         }
-        drop(fail_set);
 
         if lower.is_empty() {
             return Err(NailsError::OverlayError(
@@ -231,17 +232,17 @@ impl MockFilesystem {
     }
 
     pub(super) fn bind_mount_impl(&self, source: &Path, target: &Path) -> Result<()> {
-        let fail_set = self
+        let bind_fails = self
             .mount_should_fail
             .lock()
-            .expect("MockFilesystem mutex poisoned");
-        if fail_set.contains(target) {
+            .expect("MockFilesystem mutex poisoned")
+            .contains_key(target);
+        if bind_fails {
             return Err(NailsError::OverlayError(format!(
                 "Mock bind mount failure for testing: {}",
                 target.display()
             )));
         }
-        drop(fail_set);
 
         if !self.path_exists_impl(source)? {
             return Err(NailsError::OverlayError(format!(
