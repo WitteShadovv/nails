@@ -1,29 +1,22 @@
-"""Plan, check, regenerate and monitor the E2E shard weights.
+"""Shard weights: plan, validate, regenerate and monitor them.
 
 The full E2E suite is split into shards by a greedy longest-first allocator
-fed with per-test weights in seconds from nix/e2e-tests/shard-durations.json.
+fed with per-test weights in seconds from ``nix/e2e-tests/shard-durations.json``.
 A weight that captured a hang (one test once weighed 3609 s, just above the
 driver's one-hour timeout) skews every shard, so weights are checked against
 each test's effective timeout from the E2E metadata:
 
 * a weight at or above the test's timeout is always rejected;
-* a weight must lie in [MIN_WEIGHT, timeout / TIMEOUT_HEADROOM], every weight
-  must belong to a leaf test, and every leaf test should have a weight.
+* a weight must lie in ``[MIN_WEIGHT, timeout / TIMEOUT_HEADROOM]``, every
+  weight must belong to a leaf test, and every leaf test should have a weight.
 
-The runner records one JSON line per test ({"test", "result", "seconds"}).
-Only passing runs of at least MIN_WEIGHT seconds count as samples; anything
+The runner records one JSON line per test (``{"test", "result", "seconds"}``).
+Only passing runs of at least ``MIN_WEIGHT`` seconds count as samples; anything
 shorter did not boot a VM and was served from the Nix store.
-
-Subcommands:
-  plan   print the tests of one shard (used by scripts/run-e2e-tests.sh)
-  check  strict validation of the weights file
-  regen  rewrite the weights file from recorded durations
-  drift  report tests whose recorded duration drifted from their weight
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import statistics
 import sys
@@ -45,9 +38,6 @@ DRIFT_THRESHOLD = 0.25
 # normalise by, and raw durations are compared instead.
 MIN_TESTS_FOR_SPEED_FACTOR = 5
 
-EXIT_INVALID = 1
-EXIT_BAD_INPUT = 2
-
 
 class InputError(Exception):
     """An input file is missing, unreadable or malformed."""
@@ -57,8 +47,9 @@ class InputError(Exception):
 class Findings:
     """Problems found in a weights file.
 
-    `errors` make a weight unusable. `issues` are hygiene problems: fatal for
-    `check`, warnings when planning so a cosmetic problem never blocks a run.
+    ``errors`` make a weight unusable. ``issues`` are hygiene problems: fatal
+    for ``check``, warnings when planning so a cosmetic problem never blocks a
+    run.
     """
 
     errors: list[str] = field(default_factory=list)
@@ -66,7 +57,7 @@ class Findings:
 
 
 @dataclass
-class Plan:
+class ShardSplit:
     shards: list[list[str]]
     loads: list[int]
 
@@ -132,7 +123,7 @@ def load_weights(path: Path) -> dict[str, object] | None:
     return payload
 
 
-def load_metadata(path: Path | str, stdin: TextIO | None = None) -> dict[str, int]:
+def load_timeouts(path: Path | str, stdin: TextIO | None = None) -> dict[str, int]:
     """Return each leaf test's effective timeout, in leaf test order."""
     payload = _read_json(path, stdin)
     name = "<stdin>" if str(path) == "-" else str(path)
@@ -232,7 +223,7 @@ def _usable_weight(raw: object, timeout: int) -> int | None:
 
 def allocate(
     tests: Sequence[str], weights: Mapping[str, int] | None, shard_count: int
-) -> Plan:
+) -> ShardSplit:
     """Split tests into shard_count shards, each kept in the original order.
 
     Longest tests are placed first, each on the currently lightest shard
@@ -260,10 +251,28 @@ def allocate(
             )
             members[target].append(index)
             loads[target] += weight_of(index)
-    return Plan(
+    return ShardSplit(
         shards=[[tests[index] for index in sorted(shard)] for shard in members],
         loads=loads,
     )
+
+
+def usable_weights(
+    raw: Mapping[str, object], timeouts: Mapping[str, int]
+) -> dict[str, int]:
+    """Return the weights that are valid positive seconds, rejecting hangs.
+
+    A weight at or above its test's timeout is an error, never a silent drop,
+    so a corrupted hang-weight cannot pass planning unnoticed.
+    """
+    findings = validate(raw, timeouts)
+    if findings.errors:
+        raise InputError("; ".join(findings.errors))
+    return {
+        test: value
+        for test, raw_value in raw.items()
+        if (value := _seconds(raw_value)) is not None and test in timeouts
+    }
 
 
 def regen(
@@ -423,176 +432,9 @@ def format_drift_annotations(report: DriftReport) -> list[str]:
     return annotations
 
 
-def _print_findings(findings: Findings, *, strict: bool) -> None:
+def print_findings(findings: Findings, *, strict: bool) -> None:
     for error in findings.errors:
         print(f"error: {error}", file=sys.stderr)
     label = "error" if strict else "warning"
     for issue in findings.issues:
         print(f"{label}: {issue}", file=sys.stderr)
-
-
-def _command_plan(args: argparse.Namespace) -> int:
-    if not 1 <= args.shard_index <= args.shard_count:
-        raise InputError("--shard-index must be between 1 and --shard-count")
-    timeouts = load_metadata(args.metadata)
-    unknown = [test for test in args.tests if test not in timeouts]
-    if unknown:
-        raise InputError("not leaf E2E tests: " + ", ".join(unknown))
-    raw = load_weights(args.weights)
-    weights: dict[str, int] | None = None
-    if raw:
-        findings = validate(raw, timeouts)
-        _print_findings(findings, strict=False)
-        if findings.errors:
-            print(
-                f"error: refusing to plan shards from {args.weights}",
-                file=sys.stderr,
-            )
-            return EXIT_INVALID
-        weights = {
-            test: value
-            for test, raw_value in raw.items()
-            if (value := _seconds(raw_value)) is not None
-        }
-    else:
-        print(
-            f"warning: no weights in {args.weights}; dealing tests round-robin",
-            file=sys.stderr,
-        )
-    plan = allocate(args.tests, weights, args.shard_count)
-    print(
-        "planned shard loads (s): " + " ".join(str(load) for load in plan.loads),
-        file=sys.stderr,
-    )
-    for test in plan.shards[args.shard_index - 1]:
-        print(test)
-    return 0
-
-
-def _command_check(args: argparse.Namespace) -> int:
-    timeouts = load_metadata(args.metadata)
-    raw = load_weights(args.weights)
-    if raw is None:
-        raise InputError(f"{args.weights}: no such file")
-    findings = validate(raw, timeouts)
-    _print_findings(findings, strict=True)
-    if findings.errors or findings.issues:
-        return EXIT_INVALID
-    print(f"{args.weights}: {len(raw)} weights match {len(timeouts)} tests")
-    return 0
-
-
-def _command_regen(args: argparse.Namespace) -> int:
-    timeouts = load_metadata(args.metadata)
-    raw = load_weights(args.weights) or {}
-    samples = load_samples(args.samples)
-    if not samples:
-        raise InputError("the duration files hold no boot-verified samples")
-    weights, notes = regen(raw, samples, timeouts)
-    for note in notes:
-        print(f"note: {note}", file=sys.stderr)
-    args.weights.write_text(format_weights(weights), encoding="utf-8")
-    print(
-        f"{args.weights}: wrote {len(weights)} weights from samples of "
-        f"{len(samples)} tests"
-    )
-    return 0
-
-
-def _command_drift(args: argparse.Namespace) -> int:
-    raw = load_weights(args.weights) or {}
-    weights = {
-        test: value
-        for test, raw_value in raw.items()
-        if (value := _seconds(raw_value)) is not None
-    }
-    report = drift(weights, load_samples(args.samples), args.threshold)
-    markdown = format_drift_markdown(report, args.heading)
-    if args.summary is not None:
-        with args.summary.open("a", encoding="utf-8") as summary:
-            summary.write(markdown)
-    else:
-        sys.stdout.write(markdown)
-    if args.github:
-        for annotation in format_drift_annotations(report):
-            print(annotation)
-    return 0
-
-
-def _positive_int(text: str) -> int:
-    try:
-        value = int(text)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"{text!r} is not an integer") from None
-    if value < 1:
-        raise argparse.ArgumentTypeError(f"{text!r} must be at least 1")
-    return value
-
-
-def _fraction(text: str) -> float:
-    try:
-        value = float(text)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
-    if not value > 0:
-        raise argparse.ArgumentTypeError(f"{text!r} must be positive")
-    return value
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Plan, check, regenerate and monitor the E2E shard weights."
-    )
-    commands = parser.add_subparsers(dest="command", required=True)
-
-    plan = commands.add_parser("plan", help="print the tests of one shard")
-    plan.add_argument("--shard-index", type=_positive_int, required=True)
-    plan.add_argument("--shard-count", type=_positive_int, required=True)
-    plan.add_argument("--weights", type=Path, required=True)
-    plan.add_argument(
-        "--metadata", required=True, help="E2E metadata JSON file, or - for stdin"
-    )
-    plan.add_argument("tests", nargs="*", help="resolved leaf tests in run order")
-    plan.set_defaults(handler=_command_plan)
-
-    check = commands.add_parser("check", help="strictly validate the weights file")
-    check.add_argument("--weights", type=Path, required=True)
-    check.add_argument("--metadata", required=True)
-    check.set_defaults(handler=_command_check)
-
-    regenerate = commands.add_parser(
-        "regen", help="rewrite the weights file from recorded durations"
-    )
-    regenerate.add_argument("--weights", type=Path, required=True)
-    regenerate.add_argument("--metadata", required=True)
-    regenerate.add_argument("samples", nargs="+", type=Path)
-    regenerate.set_defaults(handler=_command_regen)
-
-    report = commands.add_parser(
-        "drift", help="report durations that drifted from their weights"
-    )
-    report.add_argument("--weights", type=Path, required=True)
-    report.add_argument("--threshold", type=_fraction, default=DRIFT_THRESHOLD)
-    report.add_argument(
-        "--summary", type=Path, help="append the Markdown report to this file"
-    )
-    report.add_argument(
-        "--github", action="store_true", help="print GitHub warning annotations"
-    )
-    report.add_argument("--heading", default="E2E shard weight drift")
-    report.add_argument("samples", nargs="+", type=Path)
-    report.set_defaults(handler=_command_drift)
-    return parser
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    try:
-        return int(args.handler(args))
-    except InputError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_BAD_INPUT
-
-
-if __name__ == "__main__":
-    sys.exit(main())

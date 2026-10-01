@@ -1,0 +1,27 @@
+# Lint and type-check configuration for the repository's Python: the ci/
+# package, the in-VM nails_e2e helpers, and the stand-alone scripts. There is
+# no build backend here; nothing is packaged or published. CI passes the paths
+# to check explicitly (`ruff check ci scripts`, `mypy ci scripts`).
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+  "E",  # pycodestyle errors
+  "F",  # pyflakes
+  "W",  # pycodestyle warnings
+  "I",  # import sorting
+  "UP", # pyupgrade
+  "B",  # flake8-bugbear
+]
+
+[tool.mypy]
+python_version = "3.11"
+# Non-strict: catch obvious mistakes without demanding annotations everywhere.
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+ignore_missing_imports = true

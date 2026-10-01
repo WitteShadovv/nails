@@ -30,8 +30,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
-      - name: Test E2E tooling
-        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Test E2E and CI tooling
+        run: |
+          python3 -m unittest discover -s scripts/tests -v
+          python3 -m unittest discover -s ci/tests -t . -v
 
       # No arguments: rustup installs the channel, components and targets from rust-toolchain.toml
       - name: Install Rust toolchain

@@ -14,7 +14,7 @@ on:
       - 'nails-cli/**'
       - 'nix/**'
       - 'scripts/run-e2e-tests.sh'
-      - 'scripts/e2e_shard_weights.py'
+      - 'ci/e2e/**'
       - '.github/workflows/e2e-tests.yml'
       - '.github/workflows/e2e-tests-full.yml'
       - '.github/workflows/e2e-tests-full-shard.yml'

@@ -108,12 +108,12 @@ in
   # in nix/e2e-tests/default.nix without building any VM test.
   e2e-shard-weights = lint "e2e-shard-weights" {
     files = fs.unions [
-      ../scripts/e2e_shard_weights.py
+      ../ci
       ./e2e-tests/shard-durations.json
     ];
     tools = [ pkgs.python3 ];
     script = ''
-      python3 scripts/e2e_shard_weights.py check \
+      python3 -m ci.e2e check \
         --weights nix/e2e-tests/shard-durations.json \
         --metadata ${e2eMetadataJson}
     '';

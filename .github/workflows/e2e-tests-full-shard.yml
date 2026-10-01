@@ -833,7 +833,7 @@ jobs:
             exit 0
           fi
 
-          python3 scripts/e2e_shard_weights.py drift \
+          python3 -m ci.e2e drift \
             --weights nix/e2e-tests/shard-durations.json \
             --heading "E2E shard ${SHARD_INDEX} weight drift" \
             --summary "$GITHUB_STEP_SUMMARY" \
