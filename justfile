@@ -1,5 +1,10 @@
 # Task runner shared by local development and CI; `just` lists the recipes.
-# The tools come from the flake dev shell (`nix develop`).
+# The tools come from the flake dev shell (`nix develop`). Every cargo call
+# passes `--locked` so a stale Cargo.lock fails here exactly as it does in CI.
+# The line-coverage floor lives in `coverage_threshold` and nowhere else: CI
+# calls `just coverage`, and local runs reach the same number through `ci-rust`.
+
+coverage_threshold := "85"
 
 [private]
 default:
@@ -11,10 +16,106 @@ default:
 
 shipped_graph := "--exclude-dev --target x86_64-unknown-linux-musl --target x86_64-unknown-linux-gnu"
 
-# Check the shipped dependency graph against deny.toml (the CI merge gate)
+# --- Rust quality gate ---
+
+# Check formatting without rewriting files.
+fmt-check:
+    cargo fmt --all -- --check
+
+# Clippy over every target and feature, with warnings denied.
+lint:
+    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+# Run the unit and integration suite through nextest.
+test:
+    cargo nextest run --workspace --all-features --locked --no-fail-fast
+
+# Run the documentation tests, which nextest does not execute.
+doctest:
+    cargo test --doc --workspace --all-features --locked
+
+# Line coverage over nextest; fails below coverage_threshold.
+coverage:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Every report lands under target/coverage, so nothing is written outside
+    # the build directory. In CI the percentage is exported for the job summary
+    # and the pull-request comment.
+    out=target/coverage
+    mkdir -p "$out"
+    cargo llvm-cov --no-report nextest --workspace --all-features --locked
+    cargo llvm-cov report --cobertura --output-path "$out/cobertura.xml"
+    cargo llvm-cov report --lcov --output-path "$out/lcov.info"
+    cargo llvm-cov report --html --output-dir "$out/html"
+    rate=$(grep -oP 'line-rate="\K[0-9.]+' "$out/cobertura.xml" | head -1)
+    pct=$(awk "BEGIN { printf \"%.2f\", ${rate:-0} * 100 }")
+    echo "Line coverage: ${pct}% (threshold {{ coverage_threshold }}%)"
+    if [ -n "${GITHUB_ENV:-}" ]; then
+        {
+            echo "COVERAGE_PCT=${pct}"
+            echo "COVERAGE_THRESHOLD={{ coverage_threshold }}"
+        } >> "$GITHUB_ENV"
+    fi
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        echo "Line coverage: ${pct}% (threshold {{ coverage_threshold }}%)" >> "$GITHUB_STEP_SUMMARY"
+    fi
+    awk "BEGIN { exit !(${pct} >= {{ coverage_threshold }}) }" || {
+        echo "Coverage ${pct}% is below the {{ coverage_threshold }}% threshold" >&2
+        exit 1
+    }
+
+# The pre-push gate: formatting, lints and the test suite.
+check: fmt-check lint test
+
+# Everything the ci.yml Rust jobs run, for reproducing the gate locally.
+ci-rust: fmt-check lint coverage doctest
+
+# --- Dependency policy ---
+
+# Check the shipped dependency graph against deny.toml (the CI merge gate).
 deny *checks="advisories bans licenses sources":
     cargo deny --locked {{ shipped_graph }} check {{ checks }}
 
-# Check every target and dev-dependency against deny.toml (weekly, never gates)
+# Check every target and dev-dependency against deny.toml (weekly, never gates).
 deny-full *checks="advisories bans licenses sources":
     cargo deny --locked check {{ checks }}
+
+# --- Nix ---
+
+# Format-check and lint every tracked Nix file, the way the hooks and flake do.
+nix-lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mapfile -t files < <(git ls-files '*.nix' ':!:*hardware-configuration.nix')
+    if [ ${#files[@]} -eq 0 ]; then
+        echo "no Nix files to check"
+        exit 0
+    fi
+    nixfmt --check "${files[@]}"
+    deadnix --fail "${files[@]}"
+    for file in "${files[@]}"; do
+        statix check "$file"
+    done
+
+# --- End-to-end ---
+
+# Build one E2E target: a leaf test or a group (defaults to the CI group).
+e2e target="ci":
+    ./scripts/run-e2e-tests.sh run {{ target }}
+
+# Open the interactive driver of one E2E leaf test.
+e2e-debug name:
+    ./scripts/run-e2e-tests.sh interactive {{ name }}
+
+# --- Flaky-test detection ---
+
+# Repeat the suite to surface flaky, order- or timing-dependent tests.
+stress iterations="10":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # With no retries, a single failure in any iteration fails the run.
+    for i in $(seq 1 {{ iterations }}); do
+        echo "stress iteration ${i}/{{ iterations }}"
+        cargo nextest run --workspace --all-features --locked --no-fail-fast --retries 0
+    done
+    echo "no flaky tests across {{ iterations }} iterations"

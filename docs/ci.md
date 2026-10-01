@@ -31,7 +31,7 @@ The main CI workflow runs these jobs:
 1. **Lint & Format** — `cargo fmt`, `cargo clippy`, the Rust file length check, and the unit tests for the E2E tooling in `scripts/tests/`.
 2. **Dependency Policy** — `just deny` (cargo-deny over the shipped dependency graph): bans, licenses and sources on every run; advisories and the `deny.toml` ignore expiry check only when `Cargo.toml`, `Cargo.lock` or `deny.toml` change, or on manual runs.
 3. **Tests** — `cargo nextest run` across four shards.
-4. **Coverage Enforcement** — `cargo llvm-cov` with an **85%** line-coverage threshold.
+4. **Coverage Enforcement** — `just coverage` (cargo-llvm-cov over nextest); the line-coverage threshold is defined once, in the `justfile`.
 5. **SBOM Generation** — CycloneDX 1.6 JSON via `cargo sbom`, validated with `cyclonedx-cli`.
 6. **Unsafe Code Audit** — `cargo geiger` report upload.
 7. **Burn-In Loop** — ten full test iterations on PRs, scheduled runs, and manual dispatch.
@@ -232,14 +232,19 @@ GitHub artifact attestations are generated in the release workflow when reposito
 
 ## Local commands that mirror CI
 
+The `justfile` is the single source of these commands; `just --list` shows them all. The `nix develop` shell provides every tool they need and installs the git hooks on first entry.
+
 ```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-just deny
-cargo nextest run --no-fail-fast --status-level all
-cargo llvm-cov --all-features --workspace --all-targets --cobertura --output-path ./coverage/cobertura.xml
+just check        # formatting, clippy and the test suite (the pre-push gate)
+just ci-rust      # everything the ci.yml Rust jobs run, including coverage
+just coverage     # line coverage; the threshold is defined only in the justfile
+just deny         # dependency policy over the shipped graph
+just nix-lint     # nixfmt, deadnix and statix over the tracked Nix files
+just e2e ci       # build one E2E target or group
 nix build -L .#nails-release -o result --option accept-flake-config false
 ```
+
+A commit runs only the fast, offline pre-commit hooks (formatting, file and secret checks); `just check` runs on push through the pre-push hook.
 
 ## Secrets and permissions
 

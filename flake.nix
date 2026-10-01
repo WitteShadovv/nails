@@ -261,7 +261,6 @@
           cargo-deny
           cargo-nextest
           cargo-llvm-cov
-          bc # Floating-point arithmetic for scripts/ci-local.sh coverage check
         ];
 
         # A fresh clone has no git hooks. Install them on first shell entry so

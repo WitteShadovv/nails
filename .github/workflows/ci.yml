@@ -17,7 +17,6 @@ on:
 env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
-  COVERAGE_THRESHOLD: 85
 
 jobs:
   # Stage 1: Lint and format checks
@@ -205,56 +204,29 @@ jobs:
           cache-targets: "true"
           cache-all-crates: "true"
 
-      - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov@0.8.4 --locked
+      - name: Install coverage tooling
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: cargo-llvm-cov@0.8.4,cargo-nextest@0.9.72,just@1.49.0
+          fallback: none
 
-      - name: Run coverage analysis
-        run: |
-          mkdir -p coverage
-          cargo llvm-cov \
-            --all-features \
-            --workspace \
-            --all-targets \
-            --cobertura --output-path ./coverage/cobertura.xml
-          cargo llvm-cov \
-            --all-features \
-            --workspace \
-            --all-targets \
-            --lcov --output-path ./coverage/lcov.info \
-            --no-run
-          cargo llvm-cov \
-            --all-features \
-            --workspace \
-            --all-targets \
-            --html --output-dir ./coverage/html \
-            --no-run
-
-      - name: Enforce 85% coverage threshold
-        run: |
-          COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' coverage/cobertura.xml | head -1)
-          COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc)
-
-          echo "Coverage: ${COVERAGE_PCT}%"
-          echo "Required: ${COVERAGE_THRESHOLD}%"
-          echo "COVERAGE_PCT=${COVERAGE_PCT}" >> "$GITHUB_ENV"
-
-          if (( $(echo "$COVERAGE_PCT < $COVERAGE_THRESHOLD" | bc -l) )); then
-            echo "Coverage below threshold: ${COVERAGE_PCT}% < ${COVERAGE_THRESHOLD}%"
-            exit 1
-          fi
+      # The threshold and the report paths live in the justfile recipe, so the
+      # gate is identical locally (`just coverage`) and in CI.
+      - name: Run coverage
+        run: just coverage
 
       - name: Upload coverage report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: coverage-report
-          path: coverage/
+          path: target/coverage/
           retention-days: 30
 
       - name: Upload coverage to Codecov
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
         with:
-          files: ./coverage/cobertura.xml
+          files: ./target/coverage/cobertura.xml
           fail_ci_if_error: false
 
       - name: Post coverage comment to PR

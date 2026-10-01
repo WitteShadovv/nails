@@ -68,7 +68,7 @@ grype sbom:sbom.cdx.json
 
 | Recipe | Scope | Where it runs |
 |---|---|---|
-| `just deny` | The shipped graph: the x86_64 Linux release targets without dev-dependencies | Merge gate in `ci.yml`, pre-commit, `scripts/ci-local.sh` |
+| `just deny` | The shipped graph: the x86_64 Linux release targets without dev-dependencies | Merge gate in `ci.yml`; run locally with `just deny` |
 | `just deny-full` | Every target and every dev-dependency | Weekly in `scheduled.yml`; never blocks a merge |
 
 Both recipes take the checks to run, for example `just deny advisories`.
