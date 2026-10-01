@@ -208,9 +208,12 @@ fn octal_unescape(field: &str) -> String {
             && matches!(bytes[i + 2], b'0'..=b'7')
             && matches!(bytes[i + 3], b'0'..=b'7')
         {
-            let value =
-                (bytes[i + 1] - b'0') * 64 + (bytes[i + 2] - b'0') * 8 + (bytes[i + 3] - b'0');
-            out.push(value);
+            // Compute in a wider type: a leading octal digit of 4-7 would
+            // overflow `u8` (7 * 64 = 448) and panic in debug builds.
+            let code = (u16::from(bytes[i + 1] - b'0') << 6)
+                | (u16::from(bytes[i + 2] - b'0') << 3)
+                | u16::from(bytes[i + 3] - b'0');
+            out.push(code as u8);
             i += 4;
         } else {
             out.push(bytes[i]);
@@ -250,4 +253,34 @@ fn contains_bounded_ascii_token(content: &str, token: &str) -> bool {
 
 fn is_ascii_identifier_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+}
+
+#[cfg(test)]
+mod octal_decode_tests {
+    use super::octal_unescape;
+
+    #[test]
+    fn decodes_kernel_escapes_and_passes_through_plain_bytes() {
+        assert_eq!(
+            octal_unescape("/mnt/hidden\\040volume"),
+            "/mnt/hidden volume"
+        );
+        assert_eq!(octal_unescape("a\\011b"), "a\tb");
+        assert_eq!(octal_unescape("a\\134b"), "a\\b");
+        assert_eq!(octal_unescape("/dev/mapper/vault"), "/dev/mapper/vault");
+    }
+
+    #[test]
+    fn decodes_high_octal_value_without_overflow() {
+        // A leading octal digit of 4-7 exceeds a single-byte product; the
+        // decoder must widen the arithmetic instead of overflowing.
+        assert_eq!(octal_unescape("\\101"), "A");
+        assert_eq!(octal_unescape("\\176"), "~");
+    }
+
+    #[test]
+    fn leaves_incomplete_escapes_untouched() {
+        assert_eq!(octal_unescape("\\04"), "\\04");
+        assert_eq!(octal_unescape("\\09x"), "\\09x");
+    }
 }
