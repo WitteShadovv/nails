@@ -22,6 +22,8 @@ Owns: `nails-core/src/deactivation/tests.rs`, `nails-core/src/manager/tests.rs`,
 
 - [ ] **T-072: Test hygiene: stop temp-dir leaks and fixed /tmp names, run the shell syntax tests, delete the orphan module, fix notification naming** (low · effort S)
 
+  _Status: still open after wave 0 — no changes were produced to integrate. The `wait_for_unix_socket_ready_*` tests still abort under the restricted sandbox (EPERM on `bind`) instead of skipping._
+
   **Problem**
   - A single `cargo test --workspace` run leaks ~34 temp dirs (hundreds of leftover `/tmp/.tmp*`). Causes: `.keep()` in `nails-core/src/deactivation/tests.rs` (in `setup_system_profile_stub` at line 120, invoked 9 times, and again at line 190) and `std::mem::forget(temp_dir)` at `nails-core/src/manager/tests.rs:4425`.
   - Fixed shared `/tmp` names are never cleaned up: `nails-cli/src/cli/commands/activate/dry_run.rs:277` (`nails-dry-run-subprocess-{case}`), `nails-core/src/shell/prompt/tests.rs` (~103-248), `nails-core/tests/real_filesystem.rs:225,328,607`, and `nails-core/src/filesystem/real/tests.rs:43`.
