@@ -53,6 +53,9 @@ jobs:
       - name: Enforce 500-line limit on Rust files
         run: ./scripts/check-line-count.sh
 
+      - name: Check for orphan (undeclared) modules
+        run: ./scripts/check-orphan-modules.sh
+
   # Stage 2: Dependency policy (cargo-deny) over the shipped dependency graph.
   # The full graph, dev-dependencies and other targets included, is scanned
   # weekly by scheduled.yml and never gates a merge.
@@ -153,12 +156,21 @@ jobs:
       - name: Install cargo-nextest
         run: cargo install cargo-nextest@0.9.72 --locked
 
+      - name: Install shells for prompt syntax tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh fish
+
       - name: Run tests (shard ${{ matrix.shard }}/4)
         run: |
           cargo nextest run \
             --partition count:${{ matrix.shard }}/4 \
             --no-fail-fast \
             --status-level all
+
+      - name: Check the test suite leaves no temp files behind
+        if: matrix.shard == 1
+        run: ./scripts/check-test-hermetic.sh
 
       - name: Upload test results on failure
         if: failure()

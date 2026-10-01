@@ -222,16 +222,14 @@ fn test_real_filesystem_swap_disable_without_root() {
 fn test_real_filesystem_create_directory_in_tmp() {
     // GIVEN: RealFilesystem
     let fs = RealFilesystem;
-    let test_dir = std::env::temp_dir().join("nails_coverage_test_dir");
+    let temp_dir = tempfile::tempdir().unwrap();
+    let test_dir = temp_dir.path().join("nails_coverage_test_dir");
 
-    // WHEN: Creating a directory in /tmp
+    // WHEN: Creating a directory inside a private temp dir
     let result = fs.create_directory(&test_dir);
 
     // THEN: Should succeed
     assert!(result.is_ok());
-
-    // Cleanup
-    let _ = std::fs::remove_dir(&test_dir);
 }
 
 #[test]
@@ -325,7 +323,8 @@ fn test_real_filesystem_is_writable_for_directory() {
 fn test_real_filesystem_is_writable_for_file() {
     // GIVEN: RealFilesystem and a test file
     let fs = RealFilesystem;
-    let test_file = std::env::temp_dir().join("nails_test_writable_file.txt");
+    let temp_dir = tempfile::tempdir().unwrap();
+    let test_file = temp_dir.path().join("nails_test_writable_file.txt");
 
     // Create test file
     std::fs::write(&test_file, b"test").unwrap();
@@ -335,9 +334,6 @@ fn test_real_filesystem_is_writable_for_file() {
 
     // THEN: Should work (true or false depending on permissions)
     assert!(result.is_ok());
-
-    // Cleanup
-    let _ = std::fs::remove_file(&test_file);
 }
 
 #[test]
@@ -368,13 +364,13 @@ fn test_real_filesystem_unmount_without_force_flag() {
 fn test_real_filesystem_mount_overlay_validates_all_paths() {
     // GIVEN: RealFilesystem
     let fs = RealFilesystem;
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = tempfile::tempdir().unwrap();
 
     // Create some temporary directories for testing
-    let lower = temp_dir.join("nails_test_lower");
-    let upper = temp_dir.join("nails_test_upper");
-    let work = temp_dir.join("nails_test_work");
-    let target = temp_dir.join("nails_test_target");
+    let lower = temp_dir.path().join("nails_test_lower");
+    let upper = temp_dir.path().join("nails_test_upper");
+    let work = temp_dir.path().join("nails_test_work");
+    let target = temp_dir.path().join("nails_test_target");
 
     let _ = std::fs::create_dir_all(&lower);
     let _ = std::fs::create_dir_all(&upper);
@@ -386,49 +382,36 @@ fn test_real_filesystem_mount_overlay_validates_all_paths() {
     // THEN: Either succeeds (unlikely without root) or fails at mount operation
     // The important thing is we covered the path validation code
     let _ = result;
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&lower);
-    let _ = std::fs::remove_dir_all(&upper);
-    let _ = std::fs::remove_dir_all(&work);
-    let _ = std::fs::remove_dir_all(&target);
 }
 
 #[test]
 fn test_real_filesystem_mount_overlay_validates_lower_exists() {
     // GIVEN: RealFilesystem with missing lower path
     let fs = RealFilesystem;
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = tempfile::tempdir().unwrap();
 
-    let upper = temp_dir.join("nails_test_upper_valid");
-    let work = temp_dir.join("nails_test_work_valid");
+    let upper = temp_dir.path().join("nails_test_upper_valid");
+    let work = temp_dir.path().join("nails_test_work_valid");
+    let target = temp_dir.path().join("nails_test_target");
     let _ = std::fs::create_dir_all(&upper);
     let _ = std::fs::create_dir_all(&work);
 
     // WHEN: Attempting to mount with nonexistent lower path
-    let result = fs.mount_overlay(
-        &[Path::new("/nonexistent/lower")],
-        &upper,
-        &work,
-        Path::new("/tmp/target"),
-    );
+    let result = fs.mount_overlay(&[Path::new("/nonexistent/lower")], &upper, &work, &target);
 
     // THEN: Should fail with error about lower path
     assert!(result.is_err());
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&upper);
-    let _ = std::fs::remove_dir_all(&work);
 }
 
 #[test]
 fn test_real_filesystem_mount_overlay_validates_upper_exists() {
     // GIVEN: RealFilesystem with missing upper path
     let fs = RealFilesystem;
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = tempfile::tempdir().unwrap();
 
-    let lower = temp_dir.join("nails_test_lower_valid");
-    let work = temp_dir.join("nails_test_work_valid2");
+    let lower = temp_dir.path().join("nails_test_lower_valid");
+    let work = temp_dir.path().join("nails_test_work_valid2");
+    let target = temp_dir.path().join("nails_test_target");
     let _ = std::fs::create_dir_all(&lower);
     let _ = std::fs::create_dir_all(&work);
 
@@ -437,25 +420,22 @@ fn test_real_filesystem_mount_overlay_validates_upper_exists() {
         &[lower.as_path()],
         Path::new("/nonexistent/upper"),
         &work,
-        Path::new("/tmp/target"),
+        &target,
     );
 
     // THEN: Should fail with error about upper path
     assert!(result.is_err());
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&lower);
-    let _ = std::fs::remove_dir_all(&work);
 }
 
 #[test]
 fn test_real_filesystem_mount_overlay_validates_work_exists() {
     // GIVEN: RealFilesystem with missing work path
     let fs = RealFilesystem;
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = tempfile::tempdir().unwrap();
 
-    let lower = temp_dir.join("nails_test_lower_valid2");
-    let upper = temp_dir.join("nails_test_upper_valid2");
+    let lower = temp_dir.path().join("nails_test_lower_valid2");
+    let upper = temp_dir.path().join("nails_test_upper_valid2");
+    let target = temp_dir.path().join("nails_test_target");
     let _ = std::fs::create_dir_all(&lower);
     let _ = std::fs::create_dir_all(&upper);
 
@@ -464,15 +444,11 @@ fn test_real_filesystem_mount_overlay_validates_work_exists() {
         &[lower.as_path()],
         &upper,
         Path::new("/nonexistent/work"),
-        Path::new("/tmp/target"),
+        &target,
     );
 
     // THEN: Should fail with error about work path
     assert!(result.is_err());
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&lower);
-    let _ = std::fs::remove_dir_all(&upper);
 }
 
 #[test]
@@ -510,8 +486,8 @@ fn test_real_filesystem_is_readable_for_nonexistent() {
 fn test_real_filesystem_nixos_switch_profile_command_execution_path() {
     // GIVEN: RealFilesystem
     let fs = RealFilesystem;
-    let temp_dir = std::env::temp_dir();
-    let fake_profile_dir = temp_dir.join("nails_fake_nix_profiles");
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fake_profile_dir = temp_dir.path().join("nails_fake_nix_profiles");
     let fake_profile = fake_profile_dir.join("test_profile");
 
     // Create fake profile to satisfy the exists check
@@ -523,9 +499,6 @@ fn test_real_filesystem_nixos_switch_profile_command_execution_path() {
 
     // THEN: Should fail (profile not actually in /nix/var/nix/profiles)
     assert!(result.is_err());
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&fake_profile_dir);
 }
 
 #[test]
@@ -589,7 +562,9 @@ fn test_real_filesystem_is_mounted_with_invalid_path() {
 fn test_real_filesystem_create_directory_with_parents() {
     // GIVEN: RealFilesystem
     let fs = RealFilesystem;
-    let test_dir = std::env::temp_dir()
+    let temp_dir = tempfile::tempdir().unwrap();
+    let test_dir = temp_dir
+        .path()
         .join("nails_test_parent")
         .join("child")
         .join("grandchild");
@@ -602,7 +577,4 @@ fn test_real_filesystem_create_directory_with_parents() {
 
     // Verify directory was created
     assert!(test_dir.exists());
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(std::env::temp_dir().join("nails_test_parent"));
 }

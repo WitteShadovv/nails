@@ -15,6 +15,8 @@
 
 use crate::{Result, obfuscate};
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -73,7 +75,12 @@ pub fn notifications_dir(hidden_volume_root: &Path) -> PathBuf {
 /// Write a notification signal file to the pending directory.
 ///
 /// Creates the notifications directory if it doesn't exist.
-/// Files are named `{timestamp_millis}_{sanitized_title}.json` for ordering.
+///
+/// Files are named `{YYYYMMDDTHHMMSSmmm}_{sanitized_title}.json`: a
+/// millisecond-precision UTC timestamp followed by the sanitized title, so they
+/// sort chronologically. The file is created exclusively; if a file of that
+/// name already exists (same title written in the same millisecond), an
+/// incrementing numeric suffix is appended so no notification is overwritten.
 pub fn write_notification(hidden_volume_root: &Path, notification: &Notification) -> Result<()> {
     let dir = notifications_dir(hidden_volume_root);
     std::fs::create_dir_all(&dir).map_err(|e| {
@@ -126,9 +133,6 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
         })
         .take(40)
         .collect();
-    let filename = format!("{}_{}.json", timestamp, safe_title);
-    let path = dir.join(filename);
-
     let json = serde_json::to_string_pretty(notification).map_err(|e| {
         crate::NailsError::IoError(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -136,7 +140,43 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
         ))
     })?;
 
-    std::fs::write(&path, json).map_err(|e| {
+    // Create the file exclusively so two notifications written in the same
+    // millisecond with the same title cannot silently overwrite one another; on
+    // a name collision, append an incrementing numeric suffix.
+    const MAX_COLLISION_SUFFIXES: u32 = 10_000;
+    let base = format!("{}_{}", timestamp, safe_title);
+    let mut path = dir.join(format!("{}.json", base));
+    let mut attempt: u32 = 0;
+    let mut file = loop {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => break file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                attempt += 1;
+                if attempt > MAX_COLLISION_SUFFIXES {
+                    return Err(crate::NailsError::IoError(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        format!(
+                            "Failed to find a free notification filename for {} after {} attempts",
+                            base, MAX_COLLISION_SUFFIXES
+                        ),
+                    )));
+                }
+                path = dir.join(format!("{}_{}.json", base, attempt));
+            }
+            Err(e) => {
+                return Err(crate::NailsError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to create notification file {}: {}",
+                        path.display(),
+                        e
+                    ),
+                )));
+            }
+        }
+    };
+
+    file.write_all(json.as_bytes()).map_err(|e| {
         crate::NailsError::IoError(std::io::Error::new(
             e.kind(),
             format!(

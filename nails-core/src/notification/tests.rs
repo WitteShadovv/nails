@@ -25,6 +25,38 @@ fn test_write_and_read_notification() {
 }
 
 #[test]
+fn test_same_title_same_millisecond_writes_produce_distinct_files() {
+    let dir = TempDir::new().unwrap();
+
+    // Two notifications with an identical title written back-to-back are almost
+    // certain to share a millisecond timestamp; the exclusive-create path must
+    // still give them separate files instead of overwriting the first.
+    write_notification(dir.path(), &make_notification("Same Title", "first")).unwrap();
+    write_notification(dir.path(), &make_notification("Same Title", "second")).unwrap();
+
+    let notif_dir = notifications_dir(dir.path());
+    let file_count = std::fs::read_dir(&notif_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+        .count();
+    assert_eq!(file_count, 2, "expected two distinct notification files");
+
+    let pending = read_pending(dir.path()).unwrap();
+    assert_eq!(pending.len(), 2);
+    let bodies: std::collections::HashSet<&str> =
+        pending.iter().map(|(_, n)| n.body.as_str()).collect();
+    assert!(
+        bodies.contains("first"),
+        "first notification was overwritten"
+    );
+    assert!(
+        bodies.contains("second"),
+        "second notification was overwritten"
+    );
+}
+
+#[test]
 fn test_write_creates_notifications_dir() {
     let dir = TempDir::new().unwrap();
     let n = make_notification("Title", "Body");
@@ -135,8 +167,6 @@ fn test_clear_all_removes_all_notifications() {
     let dir = TempDir::new().unwrap();
 
     write_notification(dir.path(), &make_notification("First", "body 1")).unwrap();
-    // Small delay to ensure different filenames
-    std::thread::sleep(std::time::Duration::from_millis(5));
     write_notification(dir.path(), &make_notification("Second", "body 2")).unwrap();
 
     let pending = read_pending(dir.path()).unwrap();
@@ -168,10 +198,10 @@ fn test_clear_all_returns_error_when_notifications_path_is_not_a_directory() {
 fn test_multiple_notifications_sorted_chronologically() {
     let dir = TempDir::new().unwrap();
 
+    // Titles are already distinct, so filenames differ without any delay; the
+    // timestamp prefix (and the title tiebreak) keeps them in insertion order.
     write_notification(dir.path(), &make_notification("First", "1")).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(5));
     write_notification(dir.path(), &make_notification("Second", "2")).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(5));
     write_notification(dir.path(), &make_notification("Third", "3")).unwrap();
 
     let pending = read_pending(dir.path()).unwrap();
@@ -348,13 +378,16 @@ fn test_notification_urgency_variants() {
     };
 
     write_notification(dir.path(), &low).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(5));
     write_notification(dir.path(), &critical).unwrap();
 
     let pending = read_pending(dir.path()).unwrap();
     assert_eq!(pending.len(), 2);
-    assert_eq!(pending[0].1.urgency, "low");
-    assert_eq!(pending[1].1.urgency, "critical");
+    // Both urgencies round-trip; filename order depends on the title tiebreak
+    // when the timestamps match, so assert on the set rather than the sequence.
+    let urgencies: std::collections::HashSet<&str> =
+        pending.iter().map(|(_, n)| n.urgency.as_str()).collect();
+    assert!(urgencies.contains("low"));
+    assert!(urgencies.contains("critical"));
 }
 
 #[test]

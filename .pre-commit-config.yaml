@@ -134,6 +134,13 @@ repos:
         types: [rust]
         pass_filenames: false
 
+      - id: check-orphan-modules
+        name: Check for orphan (undeclared) modules
+        entry: scripts/check-orphan-modules.sh
+        language: script
+        types: [rust]
+        pass_filenames: false
+
       - id: rust-fmt
         name: Format Rust code
         entry: cargo fmt --

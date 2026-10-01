@@ -261,9 +261,14 @@ mod tests {
         "cli::commands::activate::dry_run::tests::subprocess_dry_run_entrypoint";
 
     fn run_dry_run_subprocess(case: &str) -> std::process::Output {
+        // The parent owns the hidden-root tempdir and passes its path to the
+        // child, so the directory is cleaned up when this guard drops after the
+        // child exits, instead of leaking a fixed `/tmp` path.
+        let hidden_root = tempfile::tempdir().expect("create dry-run hidden-root tempdir");
         std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
             .env("NAILS_DRY_RUN_SUBPROCESS_CASE", case)
+            .env("NAILS_DRY_RUN_HIDDEN_ROOT", hidden_root.path())
             .output()
             .expect("failed to run dry-run subprocess test")
     }
@@ -274,7 +279,10 @@ mod tests {
             return;
         };
 
-        let hidden_root = std::env::temp_dir().join(format!("nails-dry-run-subprocess-{case}"));
+        let hidden_root = PathBuf::from(
+            std::env::var_os("NAILS_DRY_RUN_HIDDEN_ROOT")
+                .expect("NAILS_DRY_RUN_HIDDEN_ROOT must be set by the parent test"),
+        );
         std::fs::create_dir_all(&hidden_root).unwrap();
 
         let mut config = Config {
@@ -338,8 +346,9 @@ mod tests {
 
     #[test]
     fn build_preflight_registry_includes_nixos_checks_when_not_overlay_only() {
+        let hidden_root = tempfile::tempdir().unwrap();
         let config = Config {
-            hidden_volume_root: PathBuf::from("/tmp/nails-dry-run-hidden"),
+            hidden_volume_root: hidden_root.path().to_path_buf(),
             minimum_space_mb: 64,
             ..Config::default()
         };
@@ -351,8 +360,9 @@ mod tests {
 
     #[test]
     fn build_preflight_registry_skips_nixos_checks_for_overlay_only_mode() {
+        let hidden_root = tempfile::tempdir().unwrap();
         let config = Config {
-            hidden_volume_root: PathBuf::from("/tmp/nails-dry-run-hidden"),
+            hidden_volume_root: hidden_root.path().to_path_buf(),
             minimum_space_mb: 64,
             ..Config::default()
         };
@@ -364,16 +374,17 @@ mod tests {
 
     #[test]
     fn build_preflight_registry_supports_explicit_overlay_mode() {
-        let hidden_root = PathBuf::from("/tmp/nails-dry-run-hidden-explicit");
+        let hidden_root = tempfile::tempdir().unwrap();
+        let hidden_path = hidden_root.path();
         let config = Config {
-            hidden_volume_root: hidden_root.clone(),
+            hidden_volume_root: hidden_path.to_path_buf(),
             minimum_space_mb: 64,
             overlay_mode: OverlayMode::Explicit,
             overlays: vec![OverlayConfig {
                 name: "etc".to_string(),
                 lower: PathBuf::from("/etc"),
-                upper: hidden_root.join("etc"),
-                work: hidden_root.join(".work/etc"),
+                upper: hidden_path.join("etc"),
+                work: hidden_path.join(".work/etc"),
                 target: PathBuf::from("/etc"),
             }],
             ..Config::default()

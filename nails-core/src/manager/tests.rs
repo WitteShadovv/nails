@@ -4422,7 +4422,9 @@ fn test_rollback_no_mounts_configured() {
     let result = NailsManager::activate(Arc::clone(&manager_arc), true);
     assert!(result.is_ok(), "Activation with no overlays should succeed");
 
-    std::mem::forget(temp_dir);
+    // `temp_dir` is held to the end of the test so its contents are removed when
+    // it drops here; the earlier `std::mem::forget` leaked the directory.
+    drop(temp_dir);
 }
 
 #[test]

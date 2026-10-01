@@ -115,13 +115,48 @@ fn spawn_deactivation_gate_releaser(
     })
 }
 
-/// Helper function to configure a stub system profile for decoy switching.
-fn setup_system_profile_stub(fs: &MockFilesystem) {
-    let profile_root = tempfile::tempdir().expect("tempdir").keep();
-    let system_profile_path = profile_root.join("system");
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile_path);
+/// Restores `NAILS_SYSTEM_PROFILE_PATH` to its previous value when dropped so a
+/// test's override never leaks into the next (serial) test.
+struct SystemProfileEnvGuard {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl SystemProfileEnvGuard {
+    fn set(path: &Path) -> Self {
+        let previous = std::env::var_os("NAILS_SYSTEM_PROFILE_PATH");
+        unsafe {
+            std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", path);
+        }
+        Self { previous }
     }
+}
+
+impl Drop for SystemProfileEnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => unsafe {
+                std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", value);
+            },
+            None => unsafe {
+                std::env::remove_var("NAILS_SYSTEM_PROFILE_PATH");
+            },
+        }
+    }
+}
+
+/// A configured stub system profile for decoy switching. Holds the backing
+/// temp dir and the environment override; both are cleaned up on drop, so the
+/// profile lives exactly as long as the test that owns it.
+struct SystemProfileStub {
+    _dir: tempfile::TempDir,
+    _env: SystemProfileEnvGuard,
+}
+
+/// Helper function to configure a stub system profile for decoy switching.
+fn setup_system_profile_stub(fs: &MockFilesystem) -> SystemProfileStub {
+    let profile_root = tempfile::tempdir().expect("tempdir");
+    let system_profile_path = profile_root.path().join("system");
+    let env_guard = SystemProfileEnvGuard::set(&system_profile_path);
 
     let profiles_dir = system_profile_path
         .parent()
@@ -144,12 +179,34 @@ fn setup_system_profile_stub(fs: &MockFilesystem) {
     fs.mock_set_directory_contents(&profiles_dir, vec![system_link]);
     fs.mock_set_path_exists(switch_script.to_str().unwrap(), true);
     fs.mock_set_path_type(switch_script.to_str().unwrap(), "file");
+
+    SystemProfileStub {
+        _dir: profile_root,
+        _env: env_guard,
+    }
+}
+
+/// A manager wired up for a test together with the temporary state directory
+/// (and optional system-profile stub) that must outlive it. Dereferences to the
+/// `Arc<Mutex<..>>` so call sites use it exactly like the bare manager handle.
+struct ManagerFixture {
+    manager: Arc<Mutex<NailsManager<MockFilesystem>>>,
+    _hidden_root: tempfile::TempDir,
+    _profile: Option<SystemProfileStub>,
+}
+
+impl std::ops::Deref for ManagerFixture {
+    type Target = Arc<Mutex<NailsManager<MockFilesystem>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.manager
+    }
 }
 
 /// Helper function to create a test manager in ACTIVE state
-fn setup_active_manager() -> Arc<Mutex<NailsManager<MockFilesystem>>> {
+fn setup_active_manager() -> ManagerFixture {
     let fs = MockFilesystem::new();
-    setup_system_profile_stub(&fs);
+    let profile = setup_system_profile_stub(&fs);
 
     // Setup mock filesystem for active state
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
@@ -158,12 +215,12 @@ fn setup_active_manager() -> Arc<Mutex<NailsManager<MockFilesystem>>> {
     fs.mock_set_path_type("/mnt/hidden-volume", "directory");
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mock_hidden_vol = temp_dir.path();
-    std::fs::create_dir_all(mock_hidden_vol).unwrap();
+    let mock_hidden_vol = temp_dir.path().to_path_buf();
+    std::fs::create_dir_all(&mock_hidden_vol).unwrap();
     let state_path = mock_hidden_vol.join("state.json");
 
     let config = Config {
-        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        hidden_volume_root: mock_hidden_vol.clone(),
         state_file_path: state_path.clone(),
         overlays: vec![],
         ..Config::test_default()
@@ -179,15 +236,19 @@ fn setup_active_manager() -> Arc<Mutex<NailsManager<MockFilesystem>>> {
         })
         .unwrap();
 
-    Arc::new(Mutex::new(manager))
+    ManagerFixture {
+        manager: Arc::new(Mutex::new(manager)),
+        _hidden_root: temp_dir,
+        _profile: Some(profile),
+    }
 }
 
-fn setup_manager_in_state(state: SystemState) -> Arc<Mutex<NailsManager<MockFilesystem>>> {
+fn setup_manager_in_state(state: SystemState) -> ManagerFixture {
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mock_hidden_vol = temp_dir.keep();
+    let mock_hidden_vol = temp_dir.path().to_path_buf();
     std::fs::create_dir_all(&mock_hidden_vol).unwrap();
     let state_path = mock_hidden_vol.join("state.json");
 
@@ -201,7 +262,11 @@ fn setup_manager_in_state(state: SystemState) -> Arc<Mutex<NailsManager<MockFile
     let mut manager = NailsManager::new(fs, config, state_path);
     manager.force_state(state).unwrap();
 
-    Arc::new(Mutex::new(manager))
+    ManagerFixture {
+        manager: Arc::new(Mutex::new(manager)),
+        _hidden_root: temp_dir,
+        _profile: None,
+    }
 }
 
 fn write_state_with_overlay(
@@ -458,7 +523,7 @@ fn test_successful_deactivation_unmounts_all_tracked_overlays_in_lifo_order() {
     clear_system_profile_env();
 
     let fs = MockFilesystem::new();
-    setup_system_profile_stub(&fs);
+    let _profile = setup_system_profile_stub(&fs);
 
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
@@ -714,7 +779,7 @@ fn test_deactivation_returns_error_when_switch_script_is_missing() {
 #[serial]
 fn test_deactivation_preserves_generation_and_fingerprint() {
     let fs = MockFilesystem::new();
-    setup_system_profile_stub(&fs);
+    let _profile = setup_system_profile_stub(&fs);
 
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
     fs.mock_set_path_exists("/mnt/hidden-volume", true);
@@ -783,7 +848,7 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
 #[serial]
 fn test_deactivation_clears_failed_overlays_tracker_state() {
     let fs = MockFilesystem::new();
-    setup_system_profile_stub(&fs);
+    let _profile = setup_system_profile_stub(&fs);
 
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
@@ -837,7 +902,7 @@ fn test_deactivation_clears_failed_overlays_tracker_state() {
 #[serial]
 fn test_emergency_cleanup_preserves_explicit_config_path() {
     let fs = MockFilesystem::new();
-    setup_system_profile_stub(&fs);
+    let _profile = setup_system_profile_stub(&fs);
 
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
@@ -1119,7 +1184,7 @@ fn test_emergency_deactivate_force_unmount_succeeds_after_graceful_failure() {
     clear_system_profile_env();
 
     let fs = MockFilesystem::new();
-    setup_system_profile_stub(&fs);
+    let _profile = setup_system_profile_stub(&fs);
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
@@ -1570,7 +1635,7 @@ fn test_emergency_deactivate_fails_when_nix_store_unmount_fails() {
     clear_system_profile_env();
 
     let fs = MockFilesystem::new();
-    setup_system_profile_stub(&fs);
+    let _profile = setup_system_profile_stub(&fs);
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
@@ -1682,7 +1747,7 @@ fn test_emergency_deactivate_unmounts_nix_store_when_nix_overlay_present() {
     clear_system_profile_env();
 
     let fs = MockFilesystem::new();
-    setup_system_profile_stub(&fs);
+    let _profile = setup_system_profile_stub(&fs);
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
@@ -1744,7 +1809,7 @@ fn test_deactivate_unmounts_ephemeral_overlays_before_completing_deactivation() 
     clear_system_profile_env();
 
     let fs = MockFilesystem::new();
-    setup_system_profile_stub(&fs);
+    let _profile = setup_system_profile_stub(&fs);
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");

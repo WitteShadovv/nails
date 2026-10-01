@@ -94,31 +94,50 @@ fn test_fish_cleanup_restores_function() {
     assert!(cleanup.contains("functions -e _nails_orig_prompt"));
 }
 
-// These syntax-validation tests are intentionally ignored because they
-// shell out to real bash/zsh/fish executables. The non-ignored tests above
-// validate generated script content in hermetic CI; these are opt-in host
-// compatibility checks for environments that actually have those shells.
+// These syntax-validation tests shell out to real bash/zsh/fish binaries. They
+// run as part of the normal suite: wherever a shell is installed it validates
+// the generated script, and where it is absent the test skips with a visible
+// message (CI installs all three, so nothing is silently skipped there).
 
-#[test]
-#[ignore = "Requires a real bash binary for syntax validation; skipped in hermetic CI"]
-fn test_bash_script_syntax_valid() {
-    let script = generate_bash_prompt_script();
-
+/// Write `script` to a temporary file and run `program args... <file>` to check
+/// its syntax. Returns `None` after printing a skip notice when `program` is not
+/// installed, so a missing shell never fails the suite.
+fn run_shell_syntax_check(
+    program: &str,
+    args: &[&str],
+    script: &str,
+    extension: &str,
+) -> Option<std::process::Output> {
     use std::io::Write;
-    let temp_dir = std::env::temp_dir();
-    let script_path = temp_dir.join("nails_prompt_test.bash");
 
-    let mut file = std::fs::File::create(&script_path).expect("Failed to create temp script file");
+    let temp_dir = tempfile::tempdir().expect("create temp dir for shell script");
+    let script_path = temp_dir
+        .path()
+        .join(format!("nails_prompt_test.{extension}"));
+    let mut file = std::fs::File::create(&script_path).expect("create temp script file");
     file.write_all(script.as_bytes())
-        .expect("Failed to write script");
+        .expect("write generated script");
 
-    let output = std::process::Command::new("bash")
-        .arg("-n")
+    match std::process::Command::new(program)
+        .args(args)
         .arg(&script_path)
         .output()
-        .expect("Failed to execute bash -n");
+    {
+        Ok(output) => Some(output),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("skipping {program} syntax check: {program} is not installed");
+            None
+        }
+        Err(e) => panic!("failed to execute {program}: {e}"),
+    }
+}
 
-    let _ = std::fs::remove_file(&script_path);
+#[test]
+fn test_bash_script_syntax_valid() {
+    let script = generate_bash_prompt_script();
+    let Some(output) = run_shell_syntax_check("bash", &["-n"], &script, "bash") else {
+        return;
+    };
 
     assert!(
         output.status.success(),
@@ -128,25 +147,11 @@ fn test_bash_script_syntax_valid() {
 }
 
 #[test]
-#[ignore = "Requires a real zsh binary for syntax validation; skipped in hermetic CI"]
 fn test_zsh_script_syntax_valid() {
     let script = generate_zsh_prompt_script();
-
-    use std::io::Write;
-    let temp_dir = std::env::temp_dir();
-    let script_path = temp_dir.join("nails_prompt_test.zsh");
-
-    let mut file = std::fs::File::create(&script_path).expect("Failed to create temp script file");
-    file.write_all(script.as_bytes())
-        .expect("Failed to write script");
-
-    let output = std::process::Command::new("zsh")
-        .arg("-n")
-        .arg(&script_path)
-        .output()
-        .expect("Failed to execute zsh -n");
-
-    let _ = std::fs::remove_file(&script_path);
+    let Some(output) = run_shell_syntax_check("zsh", &["-n"], &script, "zsh") else {
+        return;
+    };
 
     assert!(
         output.status.success(),
@@ -156,25 +161,11 @@ fn test_zsh_script_syntax_valid() {
 }
 
 #[test]
-#[ignore = "Requires a real fish binary for syntax validation; skipped in hermetic CI"]
 fn test_fish_script_syntax_valid() {
     let script = generate_fish_prompt_script();
-
-    use std::io::Write;
-    let temp_dir = std::env::temp_dir();
-    let script_path = temp_dir.join("nails_prompt_test.fish");
-
-    let mut file = std::fs::File::create(&script_path).expect("Failed to create temp script file");
-    file.write_all(script.as_bytes())
-        .expect("Failed to write script");
-
-    let output = std::process::Command::new("fish")
-        .arg("--no-execute")
-        .arg(&script_path)
-        .output()
-        .expect("Failed to execute fish --no-execute");
-
-    let _ = std::fs::remove_file(&script_path);
+    let Some(output) = run_shell_syntax_check("fish", &["--no-execute"], &script, "fish") else {
+        return;
+    };
 
     assert!(
         output.status.success(),
@@ -184,25 +175,11 @@ fn test_fish_script_syntax_valid() {
 }
 
 #[test]
-#[ignore = "Requires a real bash binary for syntax validation; skipped in hermetic CI"]
 fn test_bash_cleanup_script_syntax_valid() {
     let cleanup = generate_bash_prompt_cleanup();
-
-    use std::io::Write;
-    let temp_dir = std::env::temp_dir();
-    let script_path = temp_dir.join("nails_cleanup_test.bash");
-
-    let mut file = std::fs::File::create(&script_path).expect("Failed to create temp script file");
-    file.write_all(cleanup.as_bytes())
-        .expect("Failed to write script");
-
-    let output = std::process::Command::new("bash")
-        .arg("-n")
-        .arg(&script_path)
-        .output()
-        .expect("Failed to execute bash -n");
-
-    let _ = std::fs::remove_file(&script_path);
+    let Some(output) = run_shell_syntax_check("bash", &["-n"], &cleanup, "bash") else {
+        return;
+    };
 
     assert!(
         output.status.success(),
@@ -212,25 +189,11 @@ fn test_bash_cleanup_script_syntax_valid() {
 }
 
 #[test]
-#[ignore = "Requires a real zsh binary for syntax validation; skipped in hermetic CI"]
 fn test_zsh_cleanup_script_syntax_valid() {
     let cleanup = generate_zsh_prompt_cleanup();
-
-    use std::io::Write;
-    let temp_dir = std::env::temp_dir();
-    let script_path = temp_dir.join("nails_cleanup_test.zsh");
-
-    let mut file = std::fs::File::create(&script_path).expect("Failed to create temp script file");
-    file.write_all(cleanup.as_bytes())
-        .expect("Failed to write script");
-
-    let output = std::process::Command::new("zsh")
-        .arg("-n")
-        .arg(&script_path)
-        .output()
-        .expect("Failed to execute zsh -n");
-
-    let _ = std::fs::remove_file(&script_path);
+    let Some(output) = run_shell_syntax_check("zsh", &["-n"], &cleanup, "zsh") else {
+        return;
+    };
 
     assert!(
         output.status.success(),
@@ -240,25 +203,11 @@ fn test_zsh_cleanup_script_syntax_valid() {
 }
 
 #[test]
-#[ignore = "Requires a real fish binary for syntax validation; skipped in hermetic CI"]
 fn test_fish_cleanup_script_syntax_valid() {
     let cleanup = generate_fish_prompt_cleanup();
-
-    use std::io::Write;
-    let temp_dir = std::env::temp_dir();
-    let script_path = temp_dir.join("nails_cleanup_test.fish");
-
-    let mut file = std::fs::File::create(&script_path).expect("Failed to create temp script file");
-    file.write_all(cleanup.as_bytes())
-        .expect("Failed to write script");
-
-    let output = std::process::Command::new("fish")
-        .arg("--no-execute")
-        .arg(&script_path)
-        .output()
-        .expect("Failed to execute fish --no-execute");
-
-    let _ = std::fs::remove_file(&script_path);
+    let Some(output) = run_shell_syntax_check("fish", &["--no-execute"], &cleanup, "fish") else {
+        return;
+    };
 
     assert!(
         output.status.success(),

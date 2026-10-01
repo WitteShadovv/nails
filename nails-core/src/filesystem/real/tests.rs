@@ -39,9 +39,9 @@ fn test_real_overlay_mount_creates_merged_view() {
 
     let fs = RealFilesystem;
 
-    // Create test directories in /tmp (requires cleanup on failure)
-    let test_dir = std::env::temp_dir().join("nails-overlay-test-XXXXXX");
-    fs::create_dir_all(&test_dir).unwrap();
+    // Create test directories in a private temp dir (removed when the guard drops)
+    let test_dir_guard = tempfile::tempdir().unwrap();
+    let test_dir = test_dir_guard.path();
 
     let lower = test_dir.join("lower");
     let upper = test_dir.join("upper");
@@ -68,8 +68,7 @@ fn test_real_overlay_mount_creates_merged_view() {
     // Mount overlay
     let result = fs.mount_overlay(&[lower.as_path()], &upper, &work, &target);
     if let Err(e) = result {
-        // Clean up on failure
-        let _ = fs::remove_dir_all(&test_dir);
+        // `test_dir_guard` removes the tree when it drops during unwinding.
         panic!("Overlay mount failed: {:?}", e);
     }
 
@@ -101,9 +100,6 @@ fn test_real_overlay_mount_creates_merged_view() {
 
     // Unmount
     fs.unmount(&target, false).unwrap();
-
-    // Cleanup
-    fs::remove_dir_all(&test_dir).unwrap();
 }
 
 // ========================================================================

@@ -355,8 +355,27 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
+    /// Probe whether this environment permits binding Unix-domain sockets.
+    ///
+    /// Restricted sandboxes deny `bind(2)` (EPERM/EACCES), so the socket
+    /// readiness tests skip rather than fail there; a normal host binds the
+    /// probe successfully and the tests run.
+    fn unix_sockets_available() -> bool {
+        let Ok(dir) = tempfile::tempdir() else {
+            return false;
+        };
+        UnixListener::bind(dir.path().join("probe.sock")).is_ok()
+    }
+
     #[test]
     fn wait_for_unix_socket_ready_returns_when_listener_appears() {
+        if !unix_sockets_available() {
+            eprintln!(
+                "skipping Unix-socket readiness test: binding Unix sockets is not permitted here"
+            );
+            return;
+        }
+
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let socket_path = temp_dir.path().join("daemon.sock");
         let socket_path_clone = socket_path.clone();
@@ -381,6 +400,13 @@ mod tests {
 
     #[test]
     fn wait_for_unix_socket_ready_times_out_when_socket_never_appears() {
+        if !unix_sockets_available() {
+            eprintln!(
+                "skipping Unix-socket timeout test: binding Unix sockets is not permitted here"
+            );
+            return;
+        }
+
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let socket_path: PathBuf = temp_dir.path().join("missing.sock");
 
