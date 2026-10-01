@@ -8,7 +8,6 @@
 use crate::constants::ENV_TARGET_UID;
 #[cfg(not(test))]
 use nix::libc;
-use std::collections::HashSet;
 #[cfg(not(test))]
 use std::fs;
 #[cfg(not(test))]
@@ -24,7 +23,6 @@ const SHELL_NAMES: &[&str] = &["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh
 /// but it does not exist in production deployments.
 #[cfg(not(test))]
 const SKIPPED_SERVICE_NAMES: &[&str] = &["backdoor"];
-const PROTECTED_PIDS_ENV: &str = "NAILS_SHELL_CLEANUP_PROTECTED_PIDS";
 
 #[cfg(not(test))]
 fn read_service_name(pid: u32) -> Option<String> {
@@ -75,17 +73,13 @@ fn should_kill_shell_process(shell_uid: u32, target_uid: Option<u32>) -> bool {
     target_uid.is_some_and(|target_uid| shell_uid == target_uid)
 }
 
-fn protected_shell_cleanup_pids() -> HashSet<u32> {
-    std::env::var(PROTECTED_PIDS_ENV)
-        .ok()
-        .into_iter()
-        .flat_map(|value| {
-            value
-                .split(',')
-                .filter_map(|pid| pid.trim().parse::<u32>().ok())
-                .collect::<Vec<_>>()
-        })
-        .collect()
+/// Whether a scanned PID is in the caller-supplied protected set.
+///
+/// Protected PIDs are the deactivation process's own ancestry plus any PIDs
+/// handed across the `systemd-run` boundary by the detached invocation, so the
+/// calling session's shells survive the cleanup.
+fn pid_is_protected(pid: u32, protected: &[u32]) -> bool {
+    protected.contains(&pid)
 }
 
 #[cfg(not(test))]
@@ -122,13 +116,19 @@ fn read_uid_from_status(pid: u32) -> Option<u32> {
 /// write in-memory commands to disk — exactly what we're trying to prevent.
 /// SIGKILL terminates immediately with no signal handler execution.
 ///
+/// # Arguments
+///
+/// * `protected_pids` - PIDs that must never be killed (the caller's own
+///   process ancestry plus any PIDs handed across the `systemd-run` boundary).
+///
 /// # Returns
 ///
 /// `ShellKillReport` with details of what was killed, failed, or skipped.
-pub fn kill_user_shells() -> ShellKillReport {
+pub fn kill_user_shells(protected_pids: &[u32]) -> ShellKillReport {
     // Defense-in-depth: Never kill shells during tests
     #[cfg(test)]
     {
+        let _ = protected_pids;
         tracing::warn!("kill_user_shells() called in test context - returning no-op");
         ShellKillReport::default()
     }
@@ -138,7 +138,6 @@ pub fn kill_user_shells() -> ShellKillReport {
         let mut report = ShellKillReport::default();
         let own_pid = std::process::id();
         let target_uid = shell_cleanup_target_uid();
-        let protected_pids = protected_shell_cleanup_pids();
 
         if target_uid.is_none() {
             tracing::warn!(
@@ -172,7 +171,7 @@ pub fn kill_user_shells() -> ShellKillReport {
                 continue;
             }
 
-            if protected_pids.contains(&pid) {
+            if pid_is_protected(pid, protected_pids) {
                 tracing::debug!(pid = pid, "Skipping protected shell process by pid");
                 report.skipped.push(pid);
                 continue;
@@ -250,7 +249,6 @@ pub fn kill_user_shells() -> ShellKillReport {
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::collections::HashSet;
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -327,20 +325,12 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    fn protected_shell_cleanup_pids_parses_valid_pid_list() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        unsafe {
-            std::env::set_var(PROTECTED_PIDS_ENV, "123, 456, nope, 789");
-        }
-
-        let parsed = protected_shell_cleanup_pids();
-        let expected: HashSet<u32> = [123, 456, 789].into_iter().collect();
-        assert_eq!(parsed, expected);
-
-        unsafe {
-            std::env::remove_var(PROTECTED_PIDS_ENV);
-        }
+    fn pid_is_protected_honours_explicit_pid_list() {
+        let protected = [123u32, 456, 789];
+        assert!(pid_is_protected(123, &protected));
+        assert!(pid_is_protected(789, &protected));
+        assert!(!pid_is_protected(999, &protected));
+        assert!(!pid_is_protected(123, &[]));
     }
 
     #[test]
@@ -350,7 +340,7 @@ mod tests {
         // kill path on the host OS. It should only run in a disposable,
         // isolated environment where killing matching shell processes is safe.
         // The assertion here verifies we still protect the current test PID.
-        let report = kill_user_shells();
+        let report = kill_user_shells(&[]);
         // Our own shell process (if any) should not have been killed
         let own_pid = std::process::id();
         assert!(!report.killed.contains(&own_pid));

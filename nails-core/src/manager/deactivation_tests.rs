@@ -1,8 +1,9 @@
 use super::{
     REBOOT_BINARY_OVERRIDE_ENV, SYSTEMCTL_REBOOT_OVERRIDE_ENV, dispatch_reboot_candidates,
-    reboot_candidates, request_reboot,
+    merge_protected_pids, reboot_candidates, request_reboot,
 };
 use serial_test::serial;
+use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
@@ -122,4 +123,21 @@ fn reboot_override_never_falls_back_to_real_host_commands() {
     let err = dispatch_reboot_candidates(reboot_candidates())
         .expect_err("broken override must not fall back to host binaries");
     assert!(err.to_string().contains("override failed"));
+}
+
+#[test]
+fn merge_protected_pids_without_handoff_returns_ancestry() {
+    assert_eq!(merge_protected_pids(vec![10, 20], None), vec![10, 20]);
+}
+
+#[test]
+fn merge_protected_pids_appends_handoff_and_dedups() {
+    let merged = merge_protected_pids(vec![10, 20], Some(OsStr::new("20, 30, bad, 40")));
+    assert_eq!(merged, vec![10, 20, 30, 40]);
+}
+
+#[test]
+fn merge_protected_pids_handles_empty_ancestry() {
+    let merged = merge_protected_pids(Vec::new(), Some(OsStr::new("7,8")));
+    assert_eq!(merged, vec![7, 8]);
 }

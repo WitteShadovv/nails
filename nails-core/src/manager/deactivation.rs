@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 
 const SYSTEMCTL_REBOOT_OVERRIDE_ENV: &str = "NAILS_SYSTEMCTL_PATH";
 const REBOOT_BINARY_OVERRIDE_ENV: &str = "NAILS_REBOOT_PATH";
+#[cfg(not(test))]
 const SHELL_CLEANUP_PROTECTED_PIDS_ENV: &str = "NAILS_SHELL_CLEANUP_PROTECTED_PIDS";
 
 #[derive(Debug, Clone)]
@@ -155,61 +156,37 @@ fn request_reboot() -> Result<()> {
     dispatch_reboot_candidates(reboot_candidates())
 }
 
-struct ProtectedShellPidEnvGuard {
-    original: Option<std::ffi::OsString>,
+/// Merge this process's ancestry with any PIDs handed across the `systemd-run`
+/// boundary by the detached invocation (via `SHELL_CLEANUP_PROTECTED_PIDS_ENV`),
+/// de-duplicating while preserving order.
+///
+/// The merged set is the shells that must survive deactivation: the process
+/// tree running the teardown plus the caller's session recorded before detach.
+fn merge_protected_pids(mut ancestry: Vec<u32>, handoff: Option<&std::ffi::OsStr>) -> Vec<u32> {
+    if let Some(handoff) = handoff {
+        for pid in handoff
+            .to_string_lossy()
+            .split(',')
+            .filter_map(|value| value.trim().parse::<u32>().ok())
+        {
+            if !ancestry.contains(&pid) {
+                ancestry.push(pid);
+            }
+        }
+    }
+
+    ancestry
 }
 
-impl ProtectedShellPidEnvGuard {
-    #[cfg(not(test))]
-    fn protect_current_process_tree() -> Self {
-        let original = std::env::var_os(SHELL_CLEANUP_PROTECTED_PIDS_ENV);
-        let mut protected_pids = current_process_ancestry();
-
-        if let Some(existing) = &original {
-            for pid in existing
-                .to_string_lossy()
-                .split(',')
-                .filter_map(|value| value.trim().parse::<u32>().ok())
-            {
-                if !protected_pids.contains(&pid) {
-                    protected_pids.push(pid);
-                }
-            }
-        }
-
-        let joined = protected_pids
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-
-        unsafe {
-            std::env::set_var(SHELL_CLEANUP_PROTECTED_PIDS_ENV, joined);
-        }
-
-        Self { original }
-    }
-
-    #[cfg(test)]
-    fn protect_current_process_tree() -> Self {
-        Self {
-            original: std::env::var_os(SHELL_CLEANUP_PROTECTED_PIDS_ENV),
-        }
-    }
-}
-
-impl Drop for ProtectedShellPidEnvGuard {
-    fn drop(&mut self) {
-        if let Some(value) = &self.original {
-            unsafe {
-                std::env::set_var(SHELL_CLEANUP_PROTECTED_PIDS_ENV, value);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var(SHELL_CLEANUP_PROTECTED_PIDS_ENV);
-            }
-        }
-    }
+/// Protected PIDs for shell cleanup: this process's ancestry plus the detached
+/// handoff set. Computed once per deactivation and passed explicitly to
+/// [`kill_user_shells`], replacing the previous global environment variable.
+#[cfg(not(test))]
+fn collect_protected_shell_pids() -> Vec<u32> {
+    merge_protected_pids(
+        current_process_ancestry(),
+        std::env::var_os(SHELL_CLEANUP_PROTECTED_PIDS_ENV).as_deref(),
+    )
 }
 
 #[cfg(not(test))]
@@ -354,8 +331,6 @@ impl<F: Filesystem + 'static> NailsManager<F> {
     ) -> Result<()> {
         use crate::deactivation::DeactivationOrchestrator;
 
-        let _protected_shell_pid_guard = ProtectedShellPidEnvGuard::protect_current_process_tree();
-
         if kind == ManagerDeactivationKind::Normal {
             let manager = manager_arc
                 .lock()
@@ -433,7 +408,8 @@ impl<F: Filesystem + 'static> NailsManager<F> {
             );
         } else {
             tracing::info!("Killing user shell processes immediately before overlay teardown");
-            let report = kill_user_shells();
+            let protected = collect_protected_shell_pids();
+            let report = kill_user_shells(&protected);
             tracing::info!(
                 killed = report.killed.len(),
                 failed = report.failed.len(),
