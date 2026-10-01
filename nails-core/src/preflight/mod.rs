@@ -36,7 +36,6 @@
 //! ```
 
 use crate::{Filesystem, NailsError, Result};
-use colored::Colorize;
 use std::fmt;
 
 // ============================================================================
@@ -52,12 +51,8 @@ use std::fmt;
 ///
 /// # Display Formatting
 ///
-/// When displayed, CheckResult uses colored output:
-/// - Pass: Green checkmark (✓)
-/// - Warn: Yellow warning (⚠)
-/// - Fail: Red X (✗)
-///
-/// Color output can be disabled via `NO_COLOR` or `NAILS_NO_COLOR` environment variables.
+/// Displayed as the shared pass/warn/fail mark followed by the message. Marks
+/// and colour follow the stderr style configured in [`crate::output`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckResult {
     /// Check succeeded - activation can proceed
@@ -95,39 +90,17 @@ impl CheckResult {
 }
 
 impl fmt::Display for CheckResult {
+    /// Check results are diagnostics written to stderr, so they follow the
+    /// stderr style.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let plain = crate::output::is_plain_mode_enabled();
-        let no_color = crate::output::is_color_disabled();
+        use crate::output::{Mark, Stream};
 
-        match self {
-            CheckResult::Pass(msg) => {
-                if plain {
-                    write!(f, "[PASS] {}", msg)
-                } else if no_color {
-                    write!(f, "✓ {}", msg)
-                } else {
-                    write!(f, "{} {}", "✓".green().bold(), msg.green())
-                }
-            }
-            CheckResult::Warn(msg) => {
-                if plain {
-                    write!(f, "[WARN] {}", msg)
-                } else if no_color {
-                    write!(f, "⚠ {}", msg)
-                } else {
-                    write!(f, "{} {}", "⚠".yellow().bold(), msg.yellow())
-                }
-            }
-            CheckResult::Fail(msg) => {
-                if plain {
-                    write!(f, "[FAIL] {}", msg)
-                } else if no_color {
-                    write!(f, "✗ {}", msg)
-                } else {
-                    write!(f, "{} {}", "✗".red().bold(), msg.red())
-                }
-            }
-        }
+        let mark = match self {
+            CheckResult::Pass(_) => Mark::Pass,
+            CheckResult::Warn(_) => Mark::Warn,
+            CheckResult::Fail(_) => Mark::Fail,
+        };
+        f.write_str(&crate::output::style(Stream::Stderr).marked(mark, self.message()))
     }
 }
 
@@ -434,10 +407,8 @@ mod tests {
 
     #[test]
     #[serial(render_state)]
-    fn test_check_result_display_no_color_keeps_unicode_without_ansi() {
+    fn test_check_result_display_without_colour_keeps_unicode_without_ansi() {
         let _guard = crate::output::RenderStateTestGuard::new();
-        crate::output::set_plain_mode(false);
-        crate::output::set_color_enabled(false);
 
         let rendered = format!("{}", CheckResult::Warn("Minor issue".to_string()));
 
@@ -447,13 +418,25 @@ mod tests {
 
     #[test]
     #[serial(render_state)]
-    fn test_check_result_display_plain_uses_ascii() {
+    fn test_check_result_display_ascii_uses_bracket_markers() {
         let _guard = crate::output::RenderStateTestGuard::new();
-        crate::output::set_plain_mode(true);
+        crate::output::configure(true, true, true);
 
         let rendered = format!("{}", CheckResult::Warn("Minor issue".to_string()));
 
-        assert_eq!(rendered, "[WARN] Minor issue");
+        assert!(rendered.contains("[WARN]"), "{rendered}");
+        assert!(rendered.ends_with(" Minor issue"), "{rendered}");
+    }
+
+    #[test]
+    #[serial(render_state)]
+    fn test_check_result_display_follows_stderr_colour_only() {
+        let _guard = crate::output::RenderStateTestGuard::new();
+        crate::output::configure(true, false, false);
+        assert!(!format!("{}", CheckResult::Fail("x".into())).contains('\u{001b}'));
+
+        crate::output::configure(false, true, false);
+        assert!(format!("{}", CheckResult::Fail("x".into())).contains('\u{001b}'));
     }
 
     #[test]

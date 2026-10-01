@@ -42,12 +42,8 @@ pub struct OpSecReminder {
 }
 
 impl OpSecReminder {
-    /// Get ASCII-only representation for plain output mode
-    ///
-    /// Returns a string without emoji indicators, suitable for:
-    /// - `--plain` flag output
-    /// - NO_COLOR environment variable
-    /// - Terminal environments that don't support Unicode
+    /// ASCII-only representation, used when output is restricted to ASCII
+    /// (`--ascii`, `TERM=dumb`, a non-UTF-8 locale or a non-terminal stdout).
     ///
     /// # Example
     ///
@@ -62,18 +58,23 @@ impl OpSecReminder {
     /// assert_eq!(reminder.to_plain(), "[CRITICAL] Session >24 hours");
     /// ```
     pub fn to_plain(&self) -> String {
-        format!("[{}] {}", self.severity, self.message)
+        format!("{} {}", self.severity.to_plain(), self.message)
+    }
+
+    /// Render the reminder in `style`: the severity label for ASCII output,
+    /// otherwise the (possibly coloured) shared mark.
+    pub fn render(&self, style: crate::output::Style) -> String {
+        if style.ascii {
+            self.to_plain()
+        } else {
+            style.marked(self.severity.mark(), &self.message)
+        }
     }
 }
 
 impl fmt::Display for OpSecReminder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let emoji = match self.severity {
-            ReminderSeverity::Info => "\u{1f4a1}", // Info/lightbulb for awareness
-            ReminderSeverity::Warning => "\u{26a0}", // Warning triangle
-            ReminderSeverity::Critical => "\u{1f6d1}", // Stop sign for critical
-        };
-        write!(f, "{} {}", emoji, self.message)
+        f.write_str(&self.render(crate::output::Style::default()))
     }
 }
 
@@ -120,9 +121,7 @@ impl fmt::Display for ReminderSeverity {
 }
 
 impl ReminderSeverity {
-    /// Get ASCII-only representation for plain output mode
-    ///
-    /// Returns a string without emoji indicators.
+    /// ASCII-only label, used when output is restricted to ASCII.
     ///
     /// # Example
     ///
@@ -138,6 +137,16 @@ impl ReminderSeverity {
             ReminderSeverity::Info => "[INFO]",
             ReminderSeverity::Warning => "[WARNING]",
             ReminderSeverity::Critical => "[CRITICAL]",
+        }
+    }
+
+    /// The shared mark for this severity.
+    pub fn mark(&self) -> crate::output::Mark {
+        use crate::output::Mark;
+        match self {
+            ReminderSeverity::Info => Mark::Info,
+            ReminderSeverity::Warning => Mark::Warn,
+            ReminderSeverity::Critical => Mark::Fail,
         }
     }
 }

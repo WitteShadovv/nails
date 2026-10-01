@@ -1,4 +1,6 @@
 use super::execute;
+use crate::cli::args::ActivateArgs;
+use crate::cli::output::OutputSettings;
 use std::path::PathBuf;
 
 const SUBPROCESS_TEST_NAME: &str = "cli::commands::activate::tests::subprocess_activate_entrypoint";
@@ -18,29 +20,6 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
         .expect("failed to run activate subprocess test")
 }
 
-fn run_subprocess_with_env(
-    case: &str,
-    config_path: Option<&std::path::Path>,
-    envs: &[(&str, &str)],
-) -> std::process::Output {
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-    command
-        .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
-        .env("NAILS_ACTIVATE_SUBPROCESS_CASE", case);
-
-    if let Some(path) = config_path {
-        command.env("NAILS_ACTIVATE_SUBPROCESS_CONFIG", path);
-    }
-
-    for (key, value) in envs {
-        command.env(key, value);
-    }
-
-    command
-        .output()
-        .expect("failed to run activate subprocess test")
-}
-
 #[test]
 fn subprocess_activate_entrypoint() {
     let Ok(case) = std::env::var("NAILS_ACTIVATE_SUBPROCESS_CASE") else {
@@ -49,109 +28,67 @@ fn subprocess_activate_entrypoint() {
 
     let config_override = std::env::var_os("NAILS_ACTIVATE_SUBPROCESS_CONFIG").map(PathBuf::from);
 
+    let config = config_override.as_deref();
+    let ascii = OutputSettings {
+        ascii: true,
+        ..OutputSettings::default()
+    };
+    let keep_session = ActivateArgs {
+        no_kill_session: true,
+        ..ActivateArgs::default()
+    };
+    let guarded = ActivateArgs {
+        no_preflight: true,
+        ..keep_session.clone()
+    };
+    let dry_run = ActivateArgs {
+        dry_run: true,
+        overlay_only: true,
+        ..guarded.clone()
+    };
+
     match case.as_str() {
         "interactive-requires-yes" => execute(
-            false,
-            false,
-            0,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            true,
-            None,
-            false,
-            false,
+            &OutputSettings::default(),
+            &ActivateArgs {
+                interactive: true,
+                ..ActivateArgs::default()
+            },
             None,
             |_| Ok(()),
         ),
         "invalid-config" => execute(
-            false,
-            false,
-            0,
-            false,
-            false,
-            false,
-            false,
-            true,
-            false,
-            false,
-            None,
-            false,
-            false,
-            config_override,
+            &OutputSettings::default(),
+            &keep_session,
+            config,
             |_| Ok(()),
         ),
-        "safety-guard" => execute(
-            true,
-            false,
-            0,
-            false,
-            false,
-            false,
-            false,
-            true,
-            false,
-            false,
-            None,
-            false,
-            false,
-            config_override,
-            |_| Err("activate guard blocked".to_string()),
-        ),
+        "safety-guard" => execute(&OutputSettings::default(), &guarded, config, |_| {
+            Err("activate guard blocked".to_string())
+        }),
         "dry-run" => execute(
-            true,
-            false,
-            2,
-            false,
-            false,
-            true,
-            false,
-            true,
-            false,
-            false,
-            None,
-            true,
-            true,
-            config_override,
+            &OutputSettings {
+                verbosity: nails_core::Verbosity::Debug,
+                ..ascii
+            },
+            &dry_run,
+            config,
             |_| Ok(()),
         ),
-        "dry-run-no-color" => execute(
-            true,
-            false,
-            0,
-            false,
-            true,
-            false,
-            false,
-            true,
-            false,
-            false,
-            None,
-            true,
-            true,
-            config_override,
+        "dry-run-no-color" => execute(&OutputSettings::default(), &dry_run, config, |_| Ok(())),
+        "dry-run-color" => execute(
+            &OutputSettings {
+                color_stdout: true,
+                color_stderr: true,
+                ..OutputSettings::default()
+            },
+            &dry_run,
+            config,
             |_| Ok(()),
         ),
-        "safety-guard-plain" => execute(
-            true,
-            false,
-            0,
-            false,
-            false,
-            true,
-            false,
-            true,
-            false,
-            false,
-            None,
-            false,
-            false,
-            config_override,
-            |_| Err("activate guard blocked".to_string()),
-        ),
+        "safety-guard-plain" => execute(&ascii, &guarded, config, |_| {
+            Err("activate guard blocked".to_string())
+        }),
         other => panic!("unknown activate subprocess case: {other}"),
     }
 }
@@ -279,7 +216,7 @@ fn execute_no_color_keeps_unicode_but_strips_ansi_from_failures() {
 }
 
 #[test]
-fn execute_plain_uses_ascii_for_failures() {
+fn execute_ascii_uses_ascii_for_failures() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -298,12 +235,13 @@ fn execute_plain_uses_ascii_for_failures() {
 }
 
 #[test]
-fn execute_no_color_env_keeps_unicode_without_ansi_in_dry_run() {
-    let output = run_subprocess_with_env("dry-run-no-color", None, &[("NO_COLOR", "1")]);
+fn execute_colour_settings_paint_dry_run_marks() {
+    let output = run_subprocess("dry-run-color", None);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success(), "stdout={stdout}");
-    assert!(stdout.contains("⚠ Pre-flight checks skipped (--no-preflight)"));
-    assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
-    assert!(!stdout.is_ascii(), "stdout={stdout}");
+    assert!(
+        stdout.contains("\u{001b}[1;33m⚠\u{001b}[0m Pre-flight checks skipped (--no-preflight)"),
+        "stdout={stdout}"
+    );
 }

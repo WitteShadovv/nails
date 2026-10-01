@@ -1,9 +1,19 @@
 use super::*;
+use nails_core::output::Style;
 use nails_core::status::{
     OpSecReminder, OverlayMountStatus, ReminderSeverity, StatusReport, VerificationStatus,
 };
 use nails_core::{LoadOutcome, SystemState};
 use std::path::PathBuf;
+
+const COLOR: Style = Style {
+    color: true,
+    ascii: false,
+};
+const ASCII: Style = Style {
+    color: false,
+    ascii: true,
+};
 
 fn inactive_report() -> StatusReport {
     StatusReport {
@@ -182,6 +192,7 @@ fn test_print_status_human_inactive() {
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         &PathBuf::from("/mnt/hidden/logs"),
+        COLOR,
     );
 }
 
@@ -194,6 +205,7 @@ fn test_print_status_human_active_basic() {
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         &PathBuf::from("/mnt/hidden/logs"),
+        COLOR,
     );
 }
 
@@ -206,6 +218,7 @@ fn test_print_status_human_active_verbose_with_details() {
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         &PathBuf::from("/mnt/hidden/logs"),
+        COLOR,
     );
 }
 
@@ -218,6 +231,7 @@ fn test_print_status_human_active_verbose_no_details() {
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         &PathBuf::from("/mnt/hidden/logs"),
+        COLOR,
     );
 }
 
@@ -230,6 +244,7 @@ fn test_print_status_human_with_reminders() {
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         &PathBuf::from("/mnt/hidden/logs"),
+        COLOR,
     );
 }
 
@@ -261,6 +276,7 @@ fn test_print_status_human_with_logs() {
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         dir.path(),
+        COLOR,
     );
 }
 
@@ -289,6 +305,7 @@ fn test_print_status_human_verbose_shows_debug_logs() {
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         dir.path(),
+        COLOR,
     );
 }
 
@@ -317,6 +334,7 @@ fn test_print_status_human_logs_filtered_before_activation() {
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         dir.path(),
+        COLOR,
     );
 }
 
@@ -345,6 +363,7 @@ fn test_print_status_human_logs_no_activation_time() {
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         dir.path(),
+        COLOR,
     );
 }
 
@@ -368,68 +387,74 @@ fn test_print_status_human_logs_invalid_json_ignored() {
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         dir.path(),
+        COLOR,
     );
 }
 
-// ── print_status_ascii ─────────────────────────────────────────────────────
+// ── print_status_human (ASCII style) ─────────────────────────────────────────────────────
 
 #[test]
 fn test_print_status_ascii_inactive() {
-    print_status_ascii(
+    print_status_human(
         &inactive_report(),
         false,
         &PathBuf::from("/etc/nails.toml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         &PathBuf::from("/mnt/hidden/logs"),
+        ASCII,
     );
 }
 
 #[test]
 fn test_print_status_ascii_active_basic() {
-    print_status_ascii(
+    print_status_human(
         &active_report(),
         false,
         &PathBuf::from("/etc/nails.toml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         &PathBuf::from("/mnt/hidden/logs"),
+        ASCII,
     );
 }
 
 #[test]
 fn test_print_status_ascii_active_verbose_with_details() {
-    print_status_ascii(
+    print_status_human(
         &active_report_with_overlay_details(),
         true,
         &PathBuf::from("/etc/nails.toml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         &PathBuf::from("/mnt/hidden/logs"),
+        ASCII,
     );
 }
 
 #[test]
 fn test_print_status_ascii_verbose_no_details() {
-    print_status_ascii(
+    print_status_human(
         &active_report(),
         true,
         &PathBuf::from("/etc/nails.toml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         &PathBuf::from("/mnt/hidden/logs"),
+        ASCII,
     );
 }
 
 #[test]
 fn test_print_status_ascii_with_all_reminder_severities() {
-    print_status_ascii(
+    print_status_human(
         &active_report_with_reminders(),
         false,
         &PathBuf::from("/etc/nails.toml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         &PathBuf::from("/mnt/hidden/logs"),
+        ASCII,
     );
 }
 
@@ -451,13 +476,14 @@ fn test_print_status_ascii_with_logs() {
 
     let mut report = active_report();
     report.activated_at = Some(now - chrono::Duration::hours(1));
-    print_status_ascii(
+    print_status_human(
         &report,
         false,
         &PathBuf::from("/etc/nails.toml"),
         &PathBuf::from("/mnt/hidden/state.json"),
         &PathBuf::from("/mnt/hidden"),
         dir.path(),
+        ASCII,
     );
 }
 

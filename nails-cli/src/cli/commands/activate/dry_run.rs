@@ -1,5 +1,6 @@
 //! Dry-run mode for the activate command
 
+use nails_core::output::{Mark, Style};
 use nails_core::{Config, RealFilesystem, build_overlay_targets};
 
 /// Execute dry-run mode: preview activation steps without making changes
@@ -12,14 +13,14 @@ pub(super) fn execute_dry_run(
     no_preflight: bool,
     overlay_only: bool,
     no_kill_session: bool,
-    plain: bool,
+    style: Style,
 ) -> ! {
     use nails_core::preflight::CheckResult;
 
-    let pass = if plain { "[PASS]" } else { "✓" };
-    let fail = if plain { "[FAIL]" } else { "✗" };
-    let warn = if plain { "[WARN]" } else { "⚠" };
-    let info = if plain { "[INFO]" } else { "ℹ" };
+    let pass = style.mark(Mark::Pass);
+    let fail = style.mark(Mark::Fail);
+    let warn = style.mark(Mark::Warn);
+    let info = style.mark(Mark::Info);
 
     println!("=== NAILS Dry-Run: Activation Preview ===");
     println!();
@@ -34,9 +35,9 @@ pub(super) fn execute_dry_run(
         let (results, all_passed) = registry.run_all_detailed(&fs);
         for (name, result) in &results {
             let symbol = match result {
-                CheckResult::Pass(_) => pass,
-                CheckResult::Warn(_) => warn,
-                CheckResult::Fail(_) => fail,
+                CheckResult::Pass(_) => &pass,
+                CheckResult::Warn(_) => &warn,
+                CheckResult::Fail(_) => &fail,
             };
             println!("  {} {}: {}", symbol, name, result.message());
         }
@@ -241,7 +242,13 @@ fn build_preflight_registry(
 #[cfg(test)]
 mod tests {
     use super::{build_preflight_registry, execute_dry_run};
+    use nails_core::output::Style;
     use nails_core::{Config, OverlayConfig, OverlayMode, RealFilesystem};
+
+    const ASCII: Style = Style {
+        color: false,
+        ascii: true,
+    };
     use std::path::PathBuf;
 
     const SUBPROCESS_TEST_NAME: &str =
@@ -280,14 +287,14 @@ mod tests {
 
         match case.as_str() {
             "skip-preflight-overlay-only" => {
-                execute_dry_run(&config, true, true, true, true);
+                execute_dry_run(&config, true, true, true, ASCII);
             }
             "run-preflight" => {
-                execute_dry_run(&config, false, false, true, true);
+                execute_dry_run(&config, false, false, true, ASCII);
             }
             "flake-session-check" => {
                 config.nixos_flake = Some("/etc/nixos#test-host".to_string());
-                execute_dry_run(&config, true, false, false, true);
+                execute_dry_run(&config, true, false, false, ASCII);
             }
             other => panic!("unknown dry-run subprocess case: {other}"),
         }

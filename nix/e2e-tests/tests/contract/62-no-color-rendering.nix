@@ -28,6 +28,7 @@ in
     ${testHelpers.runDetachedCommandFn}
     ${testHelpers.canonicalDeactivateFn}
     ${contractHelpers.runPtyCommandCaptureFn}
+    ${contractHelpers.runCommandCaptureFn}
     ${contractHelpers.assertNoAnsiFn}
 
     def remount_hidden_volume_and_rewrite_config():
@@ -38,7 +39,7 @@ in
         prefix = (command_prefix + " ").strip()
         command = " ".join(part for part in [
             prefix,
-            "nails --no-logs --config",
+            "nails --no-log-file --config",
             shlex.quote(headless_config),
             "activate --overlay-only --no-kill-session -y",
         ] if part)
@@ -51,6 +52,31 @@ in
         write_headless_config(headless_config)
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
+    def verify_via_tty(name, command_prefix=""):
+        # verify paints its header whenever colour is on; its exit code
+        # reflects findings and is irrelevant here.
+        prefix = (command_prefix + " ").strip()
+        command = " ".join(part for part in [
+            prefix,
+            "nails --no-log-file --config",
+            shlex.quote(headless_config),
+            "verify",
+        ] if part)
+        return run_pty_command_capture(name, command)
+
+    with subtest("empty NO_COLOR keeps colour on a TTY"):
+        empty = verify_via_tty("no-color-empty", command_prefix="NO_COLOR=")
+        assert_has_ansi(empty["combined"], "verify output with empty NO_COLOR")
+        set_env = verify_via_tty("no-color-set", command_prefix="NO_COLOR=1")
+        assert_no_ansi(set_env["combined"], "verify output with NO_COLOR=1")
+
+    with subtest("piped output is never coloured"):
+        piped = run_command_capture(
+            "no-color-piped",
+            f"nails --no-log-file --config {shlex.quote(headless_config)} verify",
+        )
+        assert_no_ansi(piped["combined"], "piped verify output")
+
     with subtest("baseline TTY activation emits ANSI escapes"):
         baseline = activate_via_tty("no-color-baseline")
         assert baseline["rc"] == 0, baseline
@@ -58,17 +84,17 @@ in
         canonical_deactivate(headless_config, unit_name="nails-deactivate-no-color-baseline")
         remount_hidden_volume_and_rewrite_config()
 
-    with subtest("--no-color suppresses ANSI escapes"):
+    with subtest("--color never suppresses ANSI escapes"):
         disabled = run_pty_command_capture(
             "no-color-flag",
             " ".join([
-                "nails --no-logs --config",
+                "nails --no-log-file --config",
                 shlex.quote(headless_config),
-                "activate --overlay-only --no-kill-session -y --no-color",
+                "activate --overlay-only --no-kill-session -y --color never",
             ]),
         )
         assert disabled["rc"] == 0, disabled
-        assert_no_ansi(disabled["combined"], "--no-color activation output")
+        assert_no_ansi(disabled["combined"], "--color never activation output")
         canonical_deactivate(headless_config, unit_name="nails-deactivate-no-color-flag")
         remount_hidden_volume_and_rewrite_config()
 

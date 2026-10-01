@@ -1,57 +1,47 @@
 //! Output formatting for the verify command
 
+use nails_core::output::{Mark, Style, Tone};
 use nails_core::{StateFileStatus, VerifyResult};
 
 /// Print verification results in human-readable format
 ///
-/// This function is pub(crate) to enable testing of the output formatting.
-pub fn print_verify_result(result: &VerifyResult) {
-    use colored::Colorize;
+/// Marks come from the shared table and colour/ASCII follow `style` (the
+/// stdout style from the resolved output settings).
+pub fn print_verify_result(result: &VerifyResult, style: Style) {
     use nails_core::{Severity, VerifyStatus};
 
-    // Print header
-    match result.status {
-        VerifyStatus::Secure => {
-            println!(
-                "{}",
-                "✓ SECURE: No traces found. System appears clean."
-                    .green()
-                    .bold()
-            );
-        }
-        VerifyStatus::Warning => {
-            println!(
-                "{}",
-                format!(
-                    "⚠ WARNING: Found {} potential issues",
-                    result.findings.len()
-                )
-                .yellow()
-                .bold()
-            );
-        }
-        VerifyStatus::Critical => {
-            println!(
-                "{}",
-                format!(
-                    "✗ CRITICAL: Found {} artifacts requiring attention",
-                    result.findings.len()
-                )
-                .red()
-                .bold()
-            );
-        }
-    }
+    let header = match result.status {
+        VerifyStatus::Secure => style.paint_bold(
+            format_args!(
+                "{} SECURE: No traces found. System appears clean.",
+                style.glyph(Mark::Pass)
+            ),
+            Tone::Green,
+        ),
+        VerifyStatus::Warning => style.paint_bold(
+            format_args!(
+                "{} WARNING: Found {} potential issues",
+                style.glyph(Mark::Warn),
+                result.findings.len()
+            ),
+            Tone::Yellow,
+        ),
+        VerifyStatus::Critical => style.paint_bold(
+            format_args!(
+                "{} CRITICAL: Found {} artifacts requiring attention",
+                style.glyph(Mark::Fail),
+                result.findings.len()
+            ),
+            Tone::Red,
+        ),
+    };
+    println!("{header}");
 
-    // Print scan depth info
-    match result.scan_depth {
-        nails_core::ScanDepth::Deep => {
-            println!(
-                "{}",
-                "Deep scan enabled - comprehensive validation".dimmed()
-            );
-        }
-        nails_core::ScanDepth::Standard => {}
+    if let nails_core::ScanDepth::Deep = result.scan_depth {
+        println!(
+            "{}",
+            style.paint("Deep scan enabled - comprehensive validation", Tone::Dim)
+        );
     }
 
     if let Some(summary) = config_scan_summary(result) {
@@ -62,23 +52,23 @@ pub fn print_verify_result(result: &VerifyResult) {
         println!("{}", summary);
     }
 
-    // Print findings
     if !result.findings.is_empty() {
         println!();
         for finding in &result.findings {
-            let severity_str = match finding.severity {
-                Severity::Info => "[INFO]".blue(),
-                Severity::Warn => "[WARN]".yellow(),
-                Severity::Critical => "[CRIT]".red(),
+            let severity = match finding.severity {
+                Severity::Info => style.paint("[INFO]", Tone::Blue),
+                Severity::Warn => style.paint("[WARN]", Tone::Yellow),
+                Severity::Critical => style.paint("[CRIT]", Tone::Red),
             };
 
-            println!(
-                "{} [{}] {}",
-                severity_str, finding.category, finding.message
-            );
+            println!("{} [{}] {}", severity, finding.category, finding.message);
 
             if let Some(ref guidance) = finding.fix_guidance {
-                println!("  → {}", guidance.dimmed());
+                println!(
+                    "  {} {}",
+                    style.glyph(Mark::Arrow),
+                    style.paint(guidance, Tone::Dim)
+                );
             }
         }
     }
@@ -123,7 +113,7 @@ mod tests {
         // Test that secure status prints correctly
         let result = VerifyResult::new(VerifyStatus::Secure, vec![], ScanDepth::Standard);
         // This will print to stdout - we're testing it doesn't panic and covers the code path
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -134,7 +124,7 @@ mod tests {
                 .with_fix_guidance("Delete the file"),
         ];
         let result = VerifyResult::new(VerifyStatus::Warning, findings, ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -145,14 +135,14 @@ mod tests {
             Finding::new(Severity::Warn, "file", "Artifact file found"),
         ];
         let result = VerifyResult::new(VerifyStatus::Critical, findings, ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
     fn test_print_verify_result_deep_scan() {
         // Test deep scan depth message
         let result = VerifyResult::new(VerifyStatus::Secure, vec![], ScanDepth::Deep);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -166,7 +156,7 @@ mod tests {
                 .with_fix_guidance("Run nails deactivate"),
         ];
         let result = VerifyResult::new(VerifyStatus::Critical, findings, ScanDepth::Deep);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -178,14 +168,14 @@ mod tests {
             "RAM may retain data briefly",
         )];
         let result = VerifyResult::new(VerifyStatus::Secure, findings, ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
     fn test_print_verify_result_empty_findings() {
         // Test with empty findings array
         let result = VerifyResult::new(VerifyStatus::Secure, vec![], ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -197,14 +187,14 @@ mod tests {
             Finding::new(Severity::Warn, "file", "Artifact 3"),
         ];
         let result = VerifyResult::new(VerifyStatus::Warning, findings, ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
     fn test_print_verify_result_standard_scan_no_depth_message() {
         // Test that standard scan doesn't print depth message
         let result = VerifyResult::new(VerifyStatus::Secure, vec![], ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -212,7 +202,7 @@ mod tests {
         // Edge case: warning status with exactly 1 finding
         let findings = vec![Finding::new(Severity::Warn, "test", "Single warning")];
         let result = VerifyResult::new(VerifyStatus::Warning, findings, ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -229,7 +219,7 @@ mod tests {
             })
             .collect();
         let result = VerifyResult::new(VerifyStatus::Critical, findings, ScanDepth::Deep);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]

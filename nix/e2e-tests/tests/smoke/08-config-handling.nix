@@ -27,7 +27,7 @@ in
     machine.wait_for_unit("multi-user.target")
 
     print("\n=== Test 1: Nonexistent config path ===")
-    code, output = machine.execute("nails --no-logs --config /nonexistent/path/config.toml status 2>&1")
+    code, output = machine.execute("nails --no-log-file --config /nonexistent/path/config.toml status 2>&1")
     assert code == 3, f"expected exit 3 for a missing --config, got {code}: {output!r}"
     assert output.strip() == (
         "Error: config file not found: /nonexistent/path/config.toml "

@@ -1,12 +1,9 @@
 //! Shared string constants used across the crate.
 //!
 //! These are the environment-variable names the tool reads to coordinate
-//! detached activation, session detection, notifications and colour output.
+//! detached activation, session detection and notifications.
 //! They are plain literals: the binary is identifiable, and hiding these
 //! names from a `strings` scan never offered real protection.
-
-/// Disables coloured output (mirrors the conventional `NO_COLOR`).
-pub const ENV_NO_COLOR: &str = "NAILS_NO_COLOR";
 
 /// Overrides the target user for privilege-dropped operations.
 pub const ENV_TARGET_USER: &str = "NAILS_TARGET_USER";
@@ -44,7 +41,6 @@ mod tests {
 
     #[test]
     fn env_var_names_match_their_literals() {
-        assert_eq!(ENV_NO_COLOR, "NAILS_NO_COLOR");
         assert_eq!(ENV_TARGET_USER, "NAILS_TARGET_USER");
         assert_eq!(ENV_TARGET_UID, "NAILS_TARGET_UID");
         assert_eq!(ENV_SYSTEM_PROFILE_PATH, "NAILS_SYSTEM_PROFILE_PATH");

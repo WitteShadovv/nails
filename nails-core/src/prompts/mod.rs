@@ -5,7 +5,9 @@
 //! - Risky process restart warnings
 //! - Pivot mount security trade-off acceptance
 //!
-//! Part of Story 4.15: User Prompts and CLI Flags for Overlay Strategy
+//! Prompts are written to stderr, never stdout: stdout carries command results
+//! (and JSON), which must stay parseable even when a question is asked. Marks
+//! come from the shared table in [`crate::output`], so prompts honour ASCII mode.
 //!
 //! # Testing Support
 //!
@@ -13,9 +15,15 @@
 //! and `Write` implementations, enabling deterministic testing without real stdin/stdout.
 
 use crate::Result;
+use crate::output::{Mark, Stream, Style};
 use crate::process::ProcessInfo;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
+
+/// Style for prompt text: prompts are written to stderr.
+fn prompt_style() -> Style {
+    crate::output::style(Stream::Stderr)
+}
 
 /// Internal implementation of yes/no prompt with injectable I/O for testing
 ///
@@ -86,10 +94,17 @@ pub fn prompt_yes_no(message: &str, default_no: bool) -> Result<bool> {
         return Ok(answer);
     }
 
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
-    let mut writer = io::stdout();
-    prompt_yes_no_with_io(message, default_no, &mut reader, &mut writer)
+    prompt_yes_no_on_terminal(message, default_no)
+}
+
+/// Ask on the real terminal: read stdin, write the question to stderr.
+pub(crate) fn prompt_yes_no_on_terminal(message: &str, default_no: bool) -> Result<bool> {
+    prompt_yes_no_with_io(
+        message,
+        default_no,
+        &mut io::stdin().lock(),
+        &mut io::stderr(),
+    )
 }
 
 /// Test-only version that panics if called during tests
@@ -105,28 +120,34 @@ pub fn prompt_yes_no(message: &str, _default_no: bool) -> Result<bool> {
 /// Internal implementation of risky process restart prompt with injectable I/O
 pub fn prompt_risky_process_restart_with_io<R: BufRead, W: Write>(
     risky_processes: &[ProcessInfo],
+    style: Style,
     reader: &mut R,
     writer: &mut W,
 ) -> Result<bool> {
+    let bullet = style.glyph(Mark::Bullet);
     writeln!(writer)?;
     writeln!(
         writer,
-        "⚠️  Risky processes detected that may cause service disruption:"
+        "{}",
+        style.marked(
+            Mark::Warn,
+            "Risky processes detected that may cause service disruption:"
+        )
     )?;
 
     for proc in risky_processes {
         if let Some(ref service_name) = proc.service_name {
-            writeln!(writer, "    • {} ({})", proc.name, service_name)?;
+            writeln!(writer, "    {bullet} {} ({})", proc.name, service_name)?;
         } else {
-            writeln!(writer, "    • {} (PID {})", proc.name, proc.pid)?;
+            writeln!(writer, "    {bullet} {} (PID {})", proc.name, proc.pid)?;
         }
     }
 
     writeln!(writer)?;
     writeln!(writer, "    Restarting these may briefly interrupt:")?;
-    writeln!(writer, "    • Network connectivity")?;
-    writeln!(writer, "    • Desktop notifications")?;
-    writeln!(writer, "    • Some application features")?;
+    writeln!(writer, "    {bullet} Network connectivity")?;
+    writeln!(writer, "    {bullet} Desktop notifications")?;
+    writeln!(writer, "    {bullet} Some application features")?;
     writeln!(writer)?;
 
     prompt_yes_no_with_io("    Restart these processes?", true, reader, writer)
@@ -143,10 +164,19 @@ pub fn prompt_risky_process_restart(risky_processes: &[ProcessInfo]) -> Result<b
         return Ok(false);
     }
 
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
-    let mut writer = io::stdout();
-    prompt_risky_process_restart_with_io(risky_processes, &mut reader, &mut writer)
+    prompt_risky_process_restart_on_terminal(risky_processes)
+}
+
+/// Ask on the real terminal: read stdin, write the question to stderr.
+pub(crate) fn prompt_risky_process_restart_on_terminal(
+    risky_processes: &[ProcessInfo],
+) -> Result<bool> {
+    prompt_risky_process_restart_with_io(
+        risky_processes,
+        prompt_style(),
+        &mut io::stdin().lock(),
+        &mut io::stderr(),
+    )
 }
 
 /// Test-only version that panics if called during tests
@@ -162,14 +192,19 @@ pub fn prompt_risky_process_restart(risky_processes: &[ProcessInfo]) -> Result<b
 pub fn prompt_pivot_mount_acceptance_with_io<R: BufRead, W: Write>(
     target: &Path,
     blocking_processes: &[ProcessInfo],
+    style: Style,
     reader: &mut R,
     writer: &mut W,
 ) -> Result<bool> {
+    let bullet = style.glyph(Mark::Bullet);
     writeln!(writer)?;
     writeln!(
         writer,
-        "⚠️  CANNOT mount {} overlay directly.",
-        target.display()
+        "{}",
+        style.marked(
+            Mark::Warn,
+            format_args!("CANNOT mount {} overlay directly.", target.display())
+        )
     )?;
     writeln!(writer)?;
     writeln!(
@@ -182,11 +217,11 @@ pub fn prompt_pivot_mount_acceptance_with_io<R: BufRead, W: Write>(
         if !proc.cmdline.is_empty() {
             writeln!(
                 writer,
-                "  • {} (PID {}) - {}",
+                "  {bullet} {} (PID {}) - {}",
                 proc.name, proc.pid, proc.cmdline
             )?;
         } else {
-            writeln!(writer, "  • {} (PID {})", proc.name, proc.pid)?;
+            writeln!(writer, "  {bullet} {} (PID {})", proc.name, proc.pid)?;
         }
     }
 
@@ -200,12 +235,19 @@ pub fn prompt_pivot_mount_acceptance_with_io<R: BufRead, W: Write>(
     writeln!(writer)?;
     writeln!(
         writer,
-        "  ⚠️  OLD processes (listed above) continue writing to ORIGINAL {}",
-        target.display()
+        "  {}",
+        style.marked(
+            Mark::Warn,
+            format_args!(
+                "OLD processes (listed above) continue writing to ORIGINAL {}",
+                target.display()
+            )
+        )
     )?;
     writeln!(
         writer,
-        "  ✓  NEW processes will write to the hidden overlay"
+        "  {}",
+        style.marked(Mark::Pass, "NEW processes will write to the hidden overlay")
     )?;
     writeln!(writer)?;
     writeln!(writer, "  SECURITY RISK:")?;
@@ -246,10 +288,21 @@ pub fn prompt_pivot_mount_acceptance(
         return Ok(false);
     }
 
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
-    let mut writer = io::stdout();
-    prompt_pivot_mount_acceptance_with_io(target, blocking_processes, &mut reader, &mut writer)
+    prompt_pivot_mount_acceptance_on_terminal(target, blocking_processes)
+}
+
+/// Ask on the real terminal: read stdin, write the question to stderr.
+pub(crate) fn prompt_pivot_mount_acceptance_on_terminal(
+    target: &Path,
+    blocking_processes: &[ProcessInfo],
+) -> Result<bool> {
+    prompt_pivot_mount_acceptance_with_io(
+        target,
+        blocking_processes,
+        prompt_style(),
+        &mut io::stdin().lock(),
+        &mut io::stderr(),
+    )
 }
 
 /// Test-only version that panics if called during tests
@@ -266,12 +319,22 @@ pub fn prompt_pivot_mount_acceptance(
 }
 
 /// Internal implementation of abort message display with injectable I/O
-pub fn display_abort_message_with_io<W: Write>(target: &Path, writer: &mut W) -> Result<()> {
+pub fn display_abort_message_with_io<W: Write>(
+    target: &Path,
+    style: Style,
+    writer: &mut W,
+) -> Result<()> {
     writeln!(writer)?;
     writeln!(
         writer,
-        "✗ Activation aborted: User declined pivot mount for {}",
-        target.display()
+        "{}",
+        style.marked(
+            Mark::Fail,
+            format_args!(
+                "Activation aborted: User declined pivot mount for {}",
+                target.display()
+            )
+        )
     )?;
     writeln!(writer)?;
     writeln!(writer, "Suggestions:")?;
@@ -297,11 +360,10 @@ pub fn display_abort_message_with_io<W: Write>(target: &Path, writer: &mut W) ->
     Ok(())
 }
 
-/// Display abort message with suggestions
+/// Display abort message with suggestions on stderr
 pub fn display_abort_message(target: &Path) {
-    let mut writer = io::stdout();
     // Ignore errors from display function - it's just informational output
-    let _ = display_abort_message_with_io(target, &mut writer);
+    let _ = display_abort_message_with_io(target, prompt_style(), &mut io::stderr());
 }
 
 #[cfg(test)]

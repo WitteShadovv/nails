@@ -1,8 +1,12 @@
 //! Deactivate command handler
 
-use std::path::PathBuf;
+use std::path::Path;
 
+use nails_core::output::Mark;
+
+use crate::cli::args::DeactivateArgs;
 use crate::cli::detach::maybe_detach_for_deactivation;
+use crate::cli::output::OutputSettings;
 
 /// Execute the deactivate command
 ///
@@ -10,56 +14,30 @@ use crate::cli::detach::maybe_detach_for_deactivation;
 ///
 /// # Arguments
 ///
+/// * `settings` - Output settings resolved once from the global flags
+/// * `args` - The `deactivate` arguments
 /// * `config_override` - Optional config file path override
-/// * `no_clear_history` - Skip shell history cleanup
-/// * `quiet` - Suppress output except errors
-/// * `verbose` - Verbosity level (0 = normal, 1 = verbose, 2+ = debug)
-/// * `json` - Output results in JSON format
-/// * `no_color` - Disable colored output
-/// * `plain` - ASCII-only output (no Unicode symbols)
 ///
 /// # Returns
 ///
 /// Never returns - exits with code 0 on success, 1 on deactivation failure, 2 on safety guard
 /// or detach failures. A missing or invalid config is logged as a warning and defaults are used.
-#[allow(clippy::too_many_arguments)]
 pub fn execute(
-    config_override: Option<PathBuf>,
-    no_clear_history: bool,
-    quiet: bool,
-    verbose: u8,
-    json: bool,
-    no_color: bool,
-    plain: bool,
+    settings: &OutputSettings,
+    args: &DeactivateArgs,
+    config_override: Option<&Path>,
     check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
 ) -> ! {
-    use nails_core::{NailsManager, RealFilesystem, Verbosity};
+    use nails_core::{NailsManager, RealFilesystem};
 
-    // Configure color output
-    nails_core::set_plain_mode(plain);
-    nails_core::set_color_enabled(
-        !(plain
-            || no_color
-            || std::env::var("NO_COLOR").is_ok()
-            || std::env::var(nails_core::constants::ENV_NO_COLOR).is_ok()),
-    );
-
-    // Convert CLI flags to Verbosity enum
-    let verbosity = if quiet {
-        Verbosity::Quiet
-    } else {
-        match verbose {
-            0 => Verbosity::Normal,
-            1 => Verbosity::Verbose,
-            _ => Verbosity::Debug,
-        }
-    };
+    let json = settings.is_json();
+    let verbosity = settings.verbosity;
 
     // A broken or missing config must never block returning to the decoy.
-    let mut config = super::load_config_or_defaults(config_override.as_deref()).into_config();
+    let mut config = super::load_config_or_defaults(config_override).into_config();
 
     // Apply --no-clear-history CLI override
-    if no_clear_history {
+    if args.no_clear_history {
         config.clear_history = false;
     }
 
@@ -96,11 +74,15 @@ pub fn execute(
         Ok(()) => {
             // Success - system will reboot
             if !json {
-                let success_prefix = if plain { "[PASS]" } else { "✓" };
-                println!("{success_prefix} System configuration restored");
+                println!(
+                    "{}",
+                    settings
+                        .stdout_style()
+                        .marked(Mark::Pass, "System configuration restored")
+                );
                 println!("  Rebooting to decoy environment...");
                 eprintln!();
-                for line in deactivate_recovery_guidance(plain) {
+                for line in deactivate_recovery_guidance(settings) {
                     eprintln!("{line}");
                 }
             } else {
@@ -111,8 +93,12 @@ pub fn execute(
         }
         Err(e) => {
             if !json {
-                let error_prefix = if plain { "[FAIL]" } else { "✗" };
-                eprintln!("{error_prefix} Deactivation failed: {}", e);
+                eprintln!(
+                    "{}",
+                    settings
+                        .stderr_style()
+                        .marked(Mark::Fail, format_args!("Deactivation failed: {e}"))
+                );
             } else {
                 eprintln!("{{\"status\":\"error\",\"message\":\"{}\"}}", e);
             }
@@ -126,25 +112,21 @@ fn deactivate_success_json() -> String {
     r#"{"status":"success","message":"Rebooting to decoy configuration","recovery_guidance":["Dismount hidden volume","Reboot to ensure clean state"]}"#.to_string()
 }
 
-/// Recovery guidance lines for human-readable deactivation output
+/// Recovery guidance printed to stderr after deactivation; the first line
+/// carries the shared warning mark in the stderr style.
 const DEACTIVATE_RECOVERY_GUIDANCE: &[&str] = &[
-    "⚠ Important: Hidden storage may still be mounted. Your system is not in a fully safe state until:",
+    "Important: Hidden storage may still be mounted. Your system is not in a fully safe state until:",
     "  1. The hidden volume is dismounted",
     "  2. The system is rebooted",
 ];
 
-const DEACTIVATE_RECOVERY_GUIDANCE_PLAIN: &[&str] = &[
-    "[WARN] Important: Hidden storage may still be mounted. Your system is not in a fully safe state until:",
-    "  1. The hidden volume is dismounted",
-    "  2. The system is rebooted",
-];
-
-fn deactivate_recovery_guidance(plain: bool) -> &'static [&'static str] {
-    if plain {
-        DEACTIVATE_RECOVERY_GUIDANCE_PLAIN
-    } else {
-        DEACTIVATE_RECOVERY_GUIDANCE
-    }
+fn deactivate_recovery_guidance(settings: &OutputSettings) -> Vec<String> {
+    let mut lines: Vec<String> = DEACTIVATE_RECOVERY_GUIDANCE
+        .iter()
+        .map(|line| line.to_string())
+        .collect();
+    lines[0] = settings.stderr_style().marked(Mark::Warn, &lines[0]);
+    lines
 }
 
 #[cfg(test)]

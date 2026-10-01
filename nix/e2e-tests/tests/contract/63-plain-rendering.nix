@@ -49,7 +49,7 @@ in
         active_payload = json.loads(active_status["stdout"])
         assert active_payload["state"].startswith("Active"), active_payload
 
-    with subtest("regular status output renders baseline status content"):
+    with subtest("piped status output has no escapes and falls back to ASCII"):
         regular = run_command_capture(
             "plain-rendering-regular",
             f"nails --config {shlex.quote(headless_config)} status",
@@ -57,18 +57,29 @@ in
         assert regular["rc"] == 0, regular
         assert "NAILS Status Report" in regular["stdout"], regular
         assert "Security Posture:" in regular["stdout"], regular
+        assert_no_ansi(regular["combined"], "piped status output")
+        assert "╭" not in regular["stdout"], regular
 
-    with subtest("plain status output has no ANSI escape codes"):
+    with subtest("--ascii status output is ASCII-only without escapes"):
         plain = run_command_capture(
-            "plain-rendering-plain",
-            f"nails --config {shlex.quote(headless_config)} status --plain -v",
+            "plain-rendering-ascii",
+            f"nails --config {shlex.quote(headless_config)} status --ascii --details",
         )
         assert plain["rc"] == 0, plain
-        assert_no_ansi(plain["combined"], "status --plain output")
+        assert_no_ansi(plain["combined"], "status --ascii output")
+        assert_ascii_only(plain["stdout"], "status --ascii output")
         assert "NAILS Status Report" in plain["stdout"], plain
         assert "Security Posture:" in plain["stdout"], plain
-        assert "╭" not in plain["combined"], plain
-        assert len(plain["stdout"]) > 0, plain
+        assert "Details:" in plain["stdout"], plain
+
+    with subtest("TERM=dumb with the C locale is ASCII-only"):
+        dumb = run_command_capture(
+            "plain-rendering-dumb",
+            f"TERM=dumb LANG=C LC_ALL= nails --config {shlex.quote(headless_config)} status --details",
+        )
+        assert dumb["rc"] == 0, dumb
+        assert_no_ansi(dumb["combined"], "TERM=dumb status output")
+        assert_ascii_only(dumb["stdout"], "TERM=dumb status output")
 
     with subtest("deactivate cleanly after plain rendering checks"):
         canonical_deactivate(headless_config, unit_name="nails-deactivate-plain-rendering")

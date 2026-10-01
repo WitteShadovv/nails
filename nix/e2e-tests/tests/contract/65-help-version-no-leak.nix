@@ -45,10 +45,10 @@ in
         assert_help_or_version_is_clean("help-main", "nails --help", "Overlay environment manager for NixOS")
 
     with subtest("activate help does not leak default paths"):
-        assert_help_or_version_is_clean("help-activate", "nails activate --help", "--no-color")
+        assert_help_or_version_is_clean("help-activate", "nails activate --help", "--color <WHEN>")
 
     with subtest("status help does not leak default paths"):
-        assert_help_or_version_is_clean("help-status", "nails status --help", "--plain")
+        assert_help_or_version_is_clean("help-status", "nails status --help", "--details")
 
     with subtest("version output does not leak default paths"):
         version = run_command_capture("version-main", "nails --version")

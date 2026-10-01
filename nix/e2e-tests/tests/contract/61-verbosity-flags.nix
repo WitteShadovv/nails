@@ -1,5 +1,7 @@
 # Test 61: Global Verbosity Flags
 # Self-check: uses subtests, hard assertions, shared lib helpers, tags contract, no sleep.
+# The flags are global: they are passed after the subcommand here to prove they
+# still reach the console log filter (-q errors only, -v debug, -vv trace).
 
 { self, pkgs, ... }:
 let
@@ -52,15 +54,15 @@ in
                 f"verbosity-{label}",
                 " ".join([
                     "nails",
-                    "--no-logs",
-                    flag,
+                    "--no-log-file",
                     "--config",
                     shlex.quote(headless_config),
                     "activate",
                     "--overlay-only",
                     "--no-kill-session",
                     "-y",
-                    "--plain",
+                    "--ascii",
+                    flag,
                 ]),
             )
             assert result["rc"] == 0, result

@@ -100,7 +100,7 @@ fn test_deactivate_command_flags_help() {
         .stdout(predicates::str::contains("--quiet"))
         .stdout(predicates::str::contains("--verbose"))
         .stdout(predicates::str::contains("--json"))
-        .stdout(predicates::str::contains("--no-color"));
+        .stdout(predicates::str::contains("--color <WHEN>"));
 }
 
 /// Test that emergency command accepts new flags (Story 6.4)
@@ -114,7 +114,7 @@ fn test_emergency_command_flags_help() {
         .stdout(predicates::str::contains("--quiet"))
         .stdout(predicates::str::contains("--verbose"))
         .stdout(predicates::str::contains("--json"))
-        .stdout(predicates::str::contains("--no-color"));
+        .stdout(predicates::str::contains("--color <WHEN>"));
 }
 
 /// Test that emergency command no longer has --delay flag (AR33: fixed 3s countdown)
@@ -124,17 +124,18 @@ fn test_emergency_command_no_delay_flag() {
     cmd.args(["emergency", "--delay", "10"]).assert().failure(); // --delay should not exist
 }
 
-/// Test that status command accepts --verbose flag
+/// Test that status command offers --details (and -v stays global verbosity)
 #[test]
-fn test_status_command_verbose_flag() {
+fn test_status_command_details_flag() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["status", "--help"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("--verbose"))
+        .stdout(predicates::str::contains("--details"))
         .stdout(predicates::str::contains(
-            "Display detailed overlay mount information",
-        ));
+            "Show resolved paths and overlay mount details",
+        ))
+        .stdout(predicates::str::contains("-v, --verbose"));
 }
 
 /// Test that all 4 core commands are defined
@@ -218,18 +219,23 @@ fn test_activate_has_json_flag() {
         .assert()
         .success()
         .stdout(predicates::str::contains("--json"))
-        .stdout(predicates::str::contains("Output results in JSON format"));
+        .stdout(predicates::str::contains(
+            "Print machine-readable JSON on stdout",
+        ));
 }
 
-/// Test that activate command has --no-color flag in help
+/// Test that activate command help lists the global --color and --ascii flags
 #[test]
-fn test_activate_has_no_color_flag() {
+fn test_activate_has_color_and_ascii_flags() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["activate", "--help"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("--no-color"))
-        .stdout(predicates::str::contains("Disable colored output"));
+        .stdout(predicates::str::contains("--color <WHEN>"))
+        .stdout(predicates::str::contains("When to use colour"))
+        .stdout(predicates::str::contains("--ascii"))
+        .stdout(predicates::str::contains("--no-color").not())
+        .stdout(predicates::str::contains("--plain").not());
 }
 
 /// Test that activate command with --json produces JSON output
@@ -257,16 +263,15 @@ fn test_activate_help_includes_quiet_flag() {
         .success()
         .stdout(predicates::str::contains("-q, --quiet"))
         .stdout(predicates::str::contains(
-            "Quiet mode: only show final result",
+            "Print only errors and the final result",
         ));
 }
 
-/// Test that activate command with --no-color doesn't produce ANSI codes
+/// Test that activate help with --color never has no ANSI codes
 #[test]
-fn test_activate_no_color_flag() {
+fn test_activate_color_never_flag() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    // Verify: command fails (expected without setup) AND has no ANSI codes
-    cmd.args(["activate", "--no-color", "--help"])
+    cmd.args(["activate", "--color", "never", "--help"])
         .assert()
         .success()
         .stdout(predicates::str::is_match(r"\x1b\[").unwrap().not()); // No ANSI escape sequences
@@ -428,15 +433,15 @@ fn test_deactivate_verbosity_combinations() {
     cmd.args(["deactivate", "-vv"]).assert().failure().code(2);
 }
 
-/// Test deactivate with --plain flag
+/// Test deactivate with --ascii flag
 #[test]
-fn test_deactivate_with_plain() {
-    if !check_unsafe_ops_allowed("test_deactivate_with_plain") {
+fn test_deactivate_with_ascii() {
+    if !check_unsafe_ops_allowed("test_deactivate_with_ascii") {
         return;
     }
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["deactivate", "--plain"])
+    cmd.args(["deactivate", "--ascii"])
         .assert()
         .failure()
         .code(2);
@@ -457,15 +462,15 @@ fn test_deactivate_respects_no_color_env() {
         .code(2);
 }
 
-/// Test that deactivate command with --no-color uses text markers instead of symbols
+/// Test that deactivate command accepts --color never
 #[test]
-fn test_deactivate_no_color_flag() {
-    if !check_unsafe_ops_allowed("test_deactivate_no_color_flag") {
+fn test_deactivate_color_never_flag() {
+    if !check_unsafe_ops_allowed("test_deactivate_color_never_flag") {
         return; // Skip test - not opted in to unsafe operations
     }
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["deactivate", "--no-color"])
+    cmd.args(["deactivate", "--color", "never"])
         .assert()
         .failure() // Now fails with safety guard
         .code(2);
@@ -545,30 +550,22 @@ fn test_status_command_json_output() {
 }
 
 #[test]
-fn test_status_command_plain_output() {
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["status", "--plain"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("NAILS Status Report"))
-        .stdout(predicates::str::contains("===="))
-        .stdout(predicates::str::contains("State:"));
+fn test_status_command_ascii_output() {
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args(["status", "--ascii"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "stdout={stdout}");
+    assert!(stdout.contains("NAILS Status Report"), "{stdout}");
+    assert!(stdout.contains("===="), "{stdout}");
+    assert!(stdout.contains("State:"), "{stdout}");
+    assert!(stdout.is_ascii(), "{stdout}");
 }
 
 #[test]
-fn test_status_command_no_color_has_unicode_without_ansi() {
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["status", "--no-color"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("NAILS Status Report"))
-        .stdout(predicates::str::contains("State:"))
-        .stdout(predicates::str::contains("🟢").or(predicates::str::contains("🔴")))
-        .stdout(predicates::str::contains("\u{001b}").not());
-}
-
-#[test]
-fn test_status_command_verbose_inactive_reports_paths_and_load_outcome() {
+fn test_status_command_details_inactive_reports_paths_and_load_outcome() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -594,14 +591,14 @@ fn test_status_command_verbose_inactive_reports_paths_and_load_outcome() {
             "--config",
             config_path.to_str().unwrap(),
             "status",
-            "--verbose",
+            "--details",
         ])
         .output()
         .expect("failed to run verbose inactive status");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "stdout={stdout}");
-    assert!(stdout.contains("Verbose Details:"));
+    assert!(stdout.contains("Details:"));
     assert!(stdout.contains(&format!("Config file:        {}", config_path.display())));
     assert!(stdout.contains(&format!("Hidden volume root: {}", hidden_root.display())));
     assert!(stdout.contains(&format!("State file:         {}", state_path.display())));
@@ -610,7 +607,7 @@ fn test_status_command_verbose_inactive_reports_paths_and_load_outcome() {
 }
 
 #[test]
-fn test_status_command_verbose_active_shows_overlay_details() {
+fn test_status_command_details_active_shows_overlay_details() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -670,7 +667,7 @@ fn test_status_command_verbose_active_shows_overlay_details() {
             "--config",
             config_path.to_str().unwrap(),
             "status",
-            "--verbose",
+            "--details",
         ])
         .output()
         .expect("failed to run verbose active status");
@@ -691,7 +688,7 @@ fn test_status_command_verbose_active_shows_overlay_details() {
 }
 
 #[test]
-fn test_status_command_no_color_verbose_reports_corrupt_state_load() {
+fn test_status_command_details_reports_corrupt_state_load() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -715,8 +712,9 @@ fn test_status_command_no_color_verbose_reports_corrupt_state_load() {
             "--config",
             config_path.to_str().unwrap(),
             "status",
-            "--verbose",
-            "--no-color",
+            "--details",
+            "--color",
+            "never",
         ])
         .output()
         .expect("failed to run corrupt-state status");
@@ -724,12 +722,12 @@ fn test_status_command_no_color_verbose_reports_corrupt_state_load() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "stdout={stdout}");
     assert!(stdout.contains("State loaded:       corrupt (state unknown, using defaults)"));
-    assert!(stdout.contains("Verbose Details:"));
+    assert!(stdout.contains("Details:"));
     assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
 }
 
 #[test]
-fn test_status_command_no_color_verbose_reports_loaded_state() {
+fn test_status_command_details_reports_loaded_state() {
     use nails_core::{StateFile, SystemState};
     use std::io::Write;
 
@@ -763,8 +761,9 @@ fn test_status_command_no_color_verbose_reports_loaded_state() {
             "--config",
             config_path.to_str().unwrap(),
             "status",
-            "--verbose",
-            "--no-color",
+            "--details",
+            "--color",
+            "never",
         ])
         .output()
         .expect("failed to run loaded status");
@@ -772,7 +771,7 @@ fn test_status_command_no_color_verbose_reports_loaded_state() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "stdout={stdout}");
     assert!(stdout.contains("State loaded:       normal"));
-    assert!(stdout.contains("Verbose Details:"));
+    assert!(stdout.contains("Details:"));
     assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
 }
 
@@ -1223,7 +1222,7 @@ fn test_activate_dry_run_skips_preflight_without_real_mutations() {
         "--no-preflight",
         "--no-kill-session",
         "--overlay-only",
-        "--plain",
+        "--ascii",
     ])
     .assert()
     .success()
@@ -1267,7 +1266,7 @@ fn test_activate_dry_run_executes_preflight_and_reports_results() {
             "activate",
             "--dry-run",
             "--no-kill-session",
-            "--plain",
+            "--ascii",
         ])
         .output()
         .expect("failed to run activate dry-run");
@@ -1314,7 +1313,7 @@ fn test_activate_dry_run_checks_session_context_by_default() {
         "activate",
         "--dry-run",
         "--no-preflight",
-        "--plain",
+        "--ascii",
     ])
     .assert()
     .success()
@@ -1353,7 +1352,7 @@ fn test_activate_dry_run_reports_explicit_flake_reference() {
         "--no-preflight",
         "--no-kill-session",
         "-vv",
-        "--plain",
+        "--ascii",
     ])
     .assert()
     .success()
@@ -1428,7 +1427,7 @@ fn test_activate_kill_session_fails_before_detach_on_flake_lock_preflight_error(
             config_file.path().to_str().unwrap(),
             "activate",
             "--kill-session",
-            "--plain",
+            "--ascii",
         ])
         .env("PATH", &fake_bin)
         .env("DISPLAY", ":0")
@@ -1569,15 +1568,15 @@ fn test_activate_multiple_verbosity() {
         .code(2);
 }
 
-/// Test activate with --plain flag (ASCII-only output)
+/// Test activate with --ascii flag (ASCII-only output)
 #[test]
-fn test_activate_plain_output() {
-    if !check_unsafe_ops_allowed("test_activate_plain_output") {
+fn test_activate_ascii_output() {
+    if !check_unsafe_ops_allowed("test_activate_ascii_output") {
         return;
     }
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--plain", "--no-preflight"])
+    cmd.args(["activate", "--ascii", "--no-preflight"])
         .assert()
         .failure()
         .code(2);
@@ -1640,8 +1639,8 @@ fn test_config_flag_accepted() {
     cmd.arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains("--config"))
-        .stdout(predicates::str::contains("Path to configuration file"));
+        .stdout(predicates::str::contains("-c, --config <PATH>"))
+        .stdout(predicates::str::contains("Path to the configuration file"));
 }
 
 // ========== Story 14.1 Config Discovery Helper ==========
@@ -1750,7 +1749,7 @@ fn test_binary_relative_config_loading_integration() {
         .arg("--config")
         .arg(&config_path)
         .arg("status")
-        .arg("--verbose")
+        .arg("--details")
         .output()
         .expect("Failed to execute nails status");
 
@@ -1801,7 +1800,7 @@ fn test_binary_relative_config_loading_integration() {
 fn test_explicit_config_missing_fails() {
     let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
         .args([
-            "--no-logs",
+            "--no-log-file",
             "--config",
             "/nonexistent/path/nails.toml",
             "status",
@@ -1893,4 +1892,181 @@ fn test_config_flag_overrides_binary_relative() {
     ])
     .assert()
     .success();
+}
+
+// ========== Global output flags ==========
+
+/// A config whose hidden root and state live in a temp dir, so status output
+/// is deterministic.
+fn isolated_status_config() -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+    let config_path = temp_dir.path().join("nails.toml");
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
+        hidden_root.display(),
+        hidden_root.join("state.json").display(),
+    )
+    .unwrap();
+    (temp_dir, config_path)
+}
+
+/// Diagnostic lines with their leading tracing timestamp removed.
+fn without_timestamps(stderr: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(|line| match line.split_once(' ') {
+            Some((first, rest)) if first.starts_with("20") && first.ends_with('Z') => {
+                rest.trim_start().to_string()
+            }
+            _ => line.to_string(),
+        })
+        .collect()
+}
+
+fn run_nails(args: &[&str], envs: &[(&str, &str)]) -> std::process::Output {
+    // No log file: each run would otherwise append to the hidden-volume log
+    // that status shows, making otherwise identical runs differ.
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.arg("--no-log-file")
+        .args(args)
+        .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR_FORCE");
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    cmd.output().unwrap()
+}
+
+#[test]
+fn test_global_flags_behave_identically_before_and_after_the_subcommand() {
+    let (_dir, config) = isolated_status_config();
+    let config = config.to_str().unwrap();
+
+    for (before, after) in [
+        (
+            vec!["-c", config, "-q", "status"],
+            vec!["-c", config, "status", "-q"],
+        ),
+        (
+            vec!["-c", config, "--json", "status"],
+            vec!["-c", config, "status", "--json"],
+        ),
+        (
+            vec!["--json", "--config", config, "status"],
+            vec!["status", "--config", config, "--json"],
+        ),
+    ] {
+        let a = run_nails(&before, &[]);
+        let b = run_nails(&after, &[]);
+        assert!(a.status.success(), "{before:?}: {a:?}");
+        assert_eq!(a.status.code(), b.status.code(), "{before:?} vs {after:?}");
+        assert_eq!(a.stdout, b.stdout, "{before:?} vs {after:?}");
+        assert_eq!(
+            without_timestamps(&a.stderr),
+            without_timestamps(&b.stderr),
+            "{before:?} vs {after:?}"
+        );
+    }
+
+    let json = run_nails(&["-c", config, "status", "--json"], &[]);
+    let parsed: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert!(parsed.get("state").is_some(), "{parsed}");
+}
+
+#[test]
+fn test_quiet_and_verbose_conflict_in_any_position() {
+    for args in [
+        &["-q", "-v", "status"][..],
+        &["-q", "status", "-v"][..],
+        &["status", "--verbose", "--quiet"][..],
+    ] {
+        let output = run_nails(args, &[]);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("cannot be used with"),
+            "{args:?}: {output:?}"
+        );
+    }
+}
+
+#[test]
+fn test_removed_output_flags_are_rejected() {
+    for args in [
+        &["status", "--plain"][..],
+        &["status", "--no-color"][..],
+        &["--no-logs", "status"][..],
+    ] {
+        let output = run_nails(args, &[]);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+    }
+}
+
+#[test]
+fn test_piped_status_has_no_escape_sequences_and_is_ascii() {
+    let (_dir, config) = isolated_status_config();
+    let output = run_nails(
+        &["-c", config.to_str().unwrap(), "status", "--details"],
+        &[("TERM", "xterm-256color"), ("LANG", "en_US.UTF-8")],
+    );
+    let combined = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+    let text = String::from_utf8_lossy(&combined);
+
+    assert!(output.status.success(), "{text}");
+    assert!(!text.contains('\u{1b}'), "{text}");
+    assert!(text.is_ascii(), "{text}");
+    assert!(!text.contains('╭'), "{text}");
+}
+
+#[test]
+fn test_dumb_terminal_and_c_locale_are_ascii_only() {
+    let (_dir, config) = isolated_status_config();
+    let output = run_nails(
+        &["-c", config.to_str().unwrap(), "status", "--details"],
+        &[("TERM", "dumb"), ("LANG", "C"), ("LC_ALL", "")],
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{text}");
+    assert!(text.is_ascii(), "{text}");
+    assert!(text.contains("[DECOY]"), "{text}");
+}
+
+#[test]
+fn test_colour_flag_and_environment_precedence() {
+    let (_dir, config) = isolated_status_config();
+    let config = config.to_str().unwrap();
+    // verify's header is always painted when colour is on.
+    let has_ansi = |args: &[&str], envs: &[(&str, &str)]| {
+        let output = run_nails(&[&["-c", config], args].concat(), envs);
+        String::from_utf8_lossy(&output.stdout).contains('\u{1b}')
+    };
+
+    assert!(!has_ansi(&["verify"], &[]), "auto is off when piped");
+    assert!(has_ansi(&["verify", "--color", "always"], &[]));
+    assert!(has_ansi(
+        &["--color", "always", "verify"],
+        &[("NO_COLOR", "1")]
+    ));
+    assert!(has_ansi(&["verify"], &[("CLICOLOR_FORCE", "1")]));
+    assert!(!has_ansi(
+        &["verify"],
+        &[("CLICOLOR_FORCE", "1"), ("NO_COLOR", "1")]
+    ));
+    assert!(!has_ansi(
+        &["verify", "--color", "never"],
+        &[("CLICOLOR_FORCE", "1")]
+    ));
+    // Empty NO_COLOR counts as unset, so forcing still applies.
+    assert!(has_ansi(
+        &["verify"],
+        &[("CLICOLOR_FORCE", "1"), ("NO_COLOR", "")]
+    ));
+    // JSON on stdout is never painted.
+    assert!(!has_ansi(&["verify", "--json", "--color", "always"], &[]));
 }

@@ -55,7 +55,7 @@ in
 
     with subtest("dispatch signal through notify-send stub and clear queue"):
         result = run_command_capture(
-            f'su - testuser -c "PATH={stub_dir}:$PATH nails --no-logs --config {config_path} notify-dispatch --json"',
+            f'su - testuser -c "PATH={stub_dir}:$PATH nails --no-log-file --config {config_path} notify-dispatch --json"',
             "/tmp/notify-flow",
         )
         assert result["rc"] == 0, result

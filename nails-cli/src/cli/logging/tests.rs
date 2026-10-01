@@ -1,7 +1,9 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use super::{RenderMode, StdoutFormat, render_mode};
+use super::{StdoutFormat, logging_init_line};
+use crate::cli::output::OutputSettings;
+use nails_core::Verbosity;
 
 #[derive(Clone, Default)]
 struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
@@ -128,49 +130,42 @@ fn test_existing_log_file_normalized_to_0o600() {
     );
 }
 
-#[test]
-fn render_mode_treats_plain_as_stricter_than_no_color() {
-    nails_core::set_plain_mode(false);
-    nails_core::set_color_enabled(true);
-
-    assert_eq!(render_mode(false, false), RenderMode::Human);
-    assert_eq!(render_mode(true, false), RenderMode::NoColor);
-    assert_eq!(render_mode(true, true), RenderMode::Plain);
+fn settings(verbosity: Verbosity, color_stderr: bool, ascii: bool) -> OutputSettings {
+    OutputSettings {
+        verbosity,
+        color_stderr,
+        ascii,
+        ..OutputSettings::default()
+    }
 }
 
 #[test]
-fn logging_init_warning_uses_ascii_in_plain_mode() {
-    let rendered = match RenderMode::Plain {
-        RenderMode::Plain => {
-            let message = "Failed to open log file: denied, continuing without file logging";
-            let mut out = String::new();
-            let _ = std::fmt::write(&mut out, format_args!("[WARN] {message}"));
-            out
-        }
-        _ => unreachable!(),
-    };
-
-    assert!(rendered.is_ascii());
-    assert!(rendered.starts_with("[WARN]"));
+fn logging_init_warning_uses_ascii_marks_in_ascii_mode() {
+    let line = logging_init_line(&settings(Verbosity::Normal, false, true), false, "w").unwrap();
+    assert_eq!(line, "[WARN] w");
+    let line = logging_init_line(&settings(Verbosity::Normal, false, true), true, "e").unwrap();
+    assert_eq!(line, "[FAIL] e");
 }
 
 #[test]
-fn logging_init_warning_no_color_keeps_unicode_without_ansi() {
-    let rendered = match RenderMode::NoColor {
-        RenderMode::NoColor => {
-            let message = "Failed to open log file: denied, continuing without file logging";
-            let mut out = String::new();
-            let _ = std::fmt::write(&mut out, format_args!("⚠ {message}"));
-            out
-        }
-        _ => unreachable!(),
-    };
+fn logging_init_warning_without_colour_keeps_unicode_without_ansi() {
+    let line = logging_init_line(&settings(Verbosity::Normal, false, false), false, "w").unwrap();
+    assert_eq!(line, "⚠ w");
+    let line = logging_init_line(&settings(Verbosity::Normal, false, false), true, "e").unwrap();
+    assert_eq!(line, "✗ e");
+}
 
-    assert_eq!(
-        rendered,
-        "⚠ Failed to open log file: denied, continuing without file logging"
-    );
-    assert!(!rendered.contains("\u{001b}"));
+#[test]
+fn logging_init_message_follows_stderr_colour() {
+    let line = logging_init_line(&settings(Verbosity::Normal, true, false), true, "e").unwrap();
+    assert!(line.contains('\u{001b}'), "{line}");
+}
+
+#[test]
+fn logging_init_warning_is_dropped_in_quiet_mode_but_errors_are_not() {
+    let quiet = settings(Verbosity::Quiet, false, false);
+    assert_eq!(logging_init_line(&quiet, false, "w"), None);
+    assert_eq!(logging_init_line(&quiet, true, "e").as_deref(), Some("✗ e"));
 }
 
 const SUBPROCESS_TEST_NAME: &str = "cli::logging::tests::subprocess_logging_entrypoint";
@@ -199,25 +194,37 @@ fn subprocess_logging_entrypoint() {
     let config_override =
         std::env::var_os("NAILS_LOGGING_SUBPROCESS_CONFIG").map(std::path::PathBuf::from);
 
+    let normal = OutputSettings::default();
+    let with = |verbosity| OutputSettings {
+        verbosity,
+        ..OutputSettings::default()
+    };
+    let config = config_override.as_deref();
+
     match case.as_str() {
         "stdout-human" => {
-            super::init_stdout_subscriber(1, false, true, config_override.as_deref());
+            super::init_subscriber(
+                &with(Verbosity::Verbose),
+                false,
+                config,
+                StdoutFormat::Human,
+            );
             tracing::debug!(phase = "logging", "debug line from subprocess");
         }
+        "stdout-human-color" => {
+            let colored = OutputSettings {
+                color_stderr: true,
+                ..OutputSettings::default()
+            };
+            super::init_subscriber(&colored, false, config, StdoutFormat::Human);
+            tracing::info!(phase = "logging", "coloured line from subprocess");
+        }
         "stdout-human-with-file-layer" => {
-            super::init_stdout_subscriber(1, false, false, config_override.as_deref());
+            super::init_subscriber(&with(Verbosity::Verbose), true, config, StdoutFormat::Human);
             tracing::debug!(phase = "logging", "debug line with file layer");
         }
         "stdout-json" => {
-            super::init_stdout_subscriber_with_mode(
-                0,
-                false,
-                true,
-                false,
-                false,
-                config_override.as_deref(),
-                StdoutFormat::ActivateJsonStream,
-            );
+            super::init_subscriber(&normal, false, config, StdoutFormat::ActivateJsonStream);
             tracing::info!(
                 event = "progress",
                 phase = "logging",
@@ -227,15 +234,7 @@ fn subprocess_logging_entrypoint() {
             );
         }
         "stdout-json-with-file-layer" => {
-            super::init_stdout_subscriber_with_mode(
-                0,
-                false,
-                false,
-                false,
-                false,
-                config_override.as_deref(),
-                StdoutFormat::ActivateJsonStream,
-            );
+            super::init_subscriber(&normal, true, config, StdoutFormat::ActivateJsonStream);
             tracing::info!(
                 event = "progress",
                 phase = "logging",
@@ -245,46 +244,48 @@ fn subprocess_logging_entrypoint() {
             );
         }
         "stdout-quiet" => {
-            super::init_stdout_subscriber(0, true, true, config_override.as_deref());
+            super::init_subscriber(&with(Verbosity::Quiet), false, config, StdoutFormat::Human);
             tracing::info!(phase = "logging", "quiet info line");
             tracing::warn!(phase = "logging", "quiet warn line");
+            tracing::error!(phase = "logging", "quiet error line");
         }
         "stdout-trace" => {
-            super::init_stdout_subscriber(2, false, true, config_override.as_deref());
+            super::init_subscriber(&with(Verbosity::Debug), false, config, StdoutFormat::Human);
             tracing::trace!(phase = "logging", "trace line from subprocess");
         }
-        "emit-plain-warning" => {
-            super::emit_logging_init_message(RenderMode::Plain, false, "plain warning");
+        "stdout-normal" => {
+            super::init_subscriber(&normal, false, config, StdoutFormat::Human);
+            tracing::debug!(phase = "logging", "hidden debug line");
+            tracing::info!(phase = "logging", "visible info line");
+        }
+        "emit-ascii-warning" => {
+            let ascii = OutputSettings {
+                ascii: true,
+                ..OutputSettings::default()
+            };
+            super::emit_logging_init_message(&ascii, false, "ascii warning");
         }
         "emit-no-color-error" => {
-            super::emit_logging_init_message(RenderMode::NoColor, true, "no color error");
+            super::emit_logging_init_message(&normal, true, "no color error");
         }
         "invalid-file-layer-config" => {
-            super::init_stdout_subscriber(0, false, false, config_override.as_deref());
+            super::init_subscriber(&normal, true, config, StdoutFormat::Human);
             tracing::info!(phase = "logging", "fallback stdout line");
         }
         "directory-log-target-human" => {
-            super::init_stdout_subscriber(0, false, false, config_override.as_deref());
+            super::init_subscriber(&normal, true, config, StdoutFormat::Human);
             tracing::info!(phase = "logging", "directory fallback line");
         }
-        "directory-log-target-plain" => {
-            super::init_stdout_subscriber_with_mode(
-                0,
-                false,
-                false,
-                false,
-                true,
-                config_override.as_deref(),
-                StdoutFormat::Human,
-            );
-            tracing::info!(phase = "logging", "plain directory fallback line");
+        "directory-log-target-quiet" => {
+            super::init_subscriber(&with(Verbosity::Quiet), true, config, StdoutFormat::Human);
+            tracing::error!(phase = "logging", "quiet directory fallback line");
         }
         other => panic!("unknown logging subprocess case: {other}"),
     }
 }
 
 #[test]
-fn init_stdout_subscriber_wrapper_emits_debug_to_stderr_in_subprocess() {
+fn init_subscriber_wrapper_emits_debug_to_stderr_in_subprocess() {
     let output = run_subprocess("stdout-human", None);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -297,7 +298,7 @@ fn init_stdout_subscriber_wrapper_emits_debug_to_stderr_in_subprocess() {
 }
 
 #[test]
-fn init_stdout_subscriber_json_mode_emits_structured_stdout_in_subprocess() {
+fn init_subscriber_json_mode_emits_structured_stdout_in_subprocess() {
     let output = run_subprocess("stdout-json", None);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -311,7 +312,7 @@ fn init_stdout_subscriber_json_mode_emits_structured_stdout_in_subprocess() {
 }
 
 #[test]
-fn init_stdout_subscriber_json_mode_with_file_layer_emits_stdout_and_writes_log() {
+fn init_subscriber_json_mode_with_file_layer_emits_stdout_and_writes_log() {
     use std::io::Write;
 
     let temp_dir = tempfile::TempDir::new().unwrap();
@@ -346,18 +347,43 @@ fn init_stdout_subscriber_json_mode_with_file_layer_emits_stdout_and_writes_log(
 }
 
 #[test]
-fn init_stdout_subscriber_quiet_mode_filters_info_but_keeps_warn() {
+fn init_subscriber_quiet_mode_shows_only_errors() {
     let output = run_subprocess("stdout-quiet", None);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(output.status.success(), "stderr={stderr}");
-    assert!(stderr.contains("WARN"), "stderr={stderr}");
-    assert!(stderr.contains("quiet warn line"), "stderr={stderr}");
+    assert!(stderr.contains("quiet error line"), "stderr={stderr}");
+    assert!(!stderr.contains("quiet warn line"), "stderr={stderr}");
     assert!(!stderr.contains("quiet info line"), "stderr={stderr}");
 }
 
 #[test]
-fn init_stdout_subscriber_trace_verbosity_emits_trace_lines() {
+fn init_subscriber_normal_mode_hides_debug() {
+    let output = run_subprocess("stdout-normal", None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "stderr={stderr}");
+    assert!(stderr.contains("visible info line"), "stderr={stderr}");
+    assert!(!stderr.contains("hidden debug line"), "stderr={stderr}");
+}
+
+#[test]
+fn init_subscriber_emits_ansi_only_when_stderr_colour_is_on() {
+    let plain = run_subprocess("stdout-normal", None);
+    let plain_stderr = String::from_utf8_lossy(&plain.stderr);
+    assert!(!plain_stderr.contains('\u{001b}'), "stderr={plain_stderr}");
+
+    let colored = run_subprocess("stdout-human-color", None);
+    let colored_stderr = String::from_utf8_lossy(&colored.stderr);
+    assert!(colored.status.success(), "stderr={colored_stderr}");
+    assert!(
+        colored_stderr.contains('\u{001b}'),
+        "stderr={colored_stderr}"
+    );
+}
+
+#[test]
+fn init_subscriber_trace_verbosity_emits_trace_lines() {
     let output = run_subprocess("stdout-trace", None);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -370,22 +396,22 @@ fn init_stdout_subscriber_trace_verbosity_emits_trace_lines() {
 }
 
 #[test]
-fn emit_logging_init_message_plain_warning_is_ascii_in_subprocess() {
-    let output = run_subprocess("emit-plain-warning", None);
+fn emit_logging_init_message_ascii_warning_is_ascii_in_subprocess() {
+    let output = run_subprocess("emit-ascii-warning", None);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(output.status.success(), "stderr={stderr}");
-    assert!(stderr.contains("[WARN] plain warning"), "stderr={stderr}");
+    assert!(stderr.contains("[WARN] ascii warning"), "stderr={stderr}");
     assert!(stderr.is_ascii(), "stderr={stderr}");
 }
 
 #[test]
-fn emit_logging_init_message_no_color_error_uses_plain_unicode_without_ansi() {
+fn emit_logging_init_message_no_color_error_uses_unicode_without_ansi() {
     let output = run_subprocess("emit-no-color-error", None);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(output.status.success(), "stderr={stderr}");
-    assert!(stderr.contains("X no color error"), "stderr={stderr}");
+    assert!(stderr.contains("✗ no color error"), "stderr={stderr}");
     assert!(!stderr.contains("\u{001b}"), "stderr={stderr}");
 }
 
@@ -410,7 +436,8 @@ fn init_file_layer_returns_some_for_existing_hidden_volume() {
     )
     .unwrap();
 
-    let file_layer = super::init_file_layer(Some(&config_path), RenderMode::Human).unwrap();
+    let file_layer =
+        super::init_file_layer(Some(&config_path), &OutputSettings::default()).unwrap();
     assert!(file_layer.is_some());
     assert!(log_dir.join("nails.log").exists());
 }
@@ -432,12 +459,13 @@ fn init_file_layer_gracefully_returns_none_for_missing_hidden_volume() {
     )
     .unwrap();
 
-    let file_layer = super::init_file_layer(Some(&config_path), RenderMode::Human).unwrap();
+    let file_layer =
+        super::init_file_layer(Some(&config_path), &OutputSettings::default()).unwrap();
     assert!(file_layer.is_none());
 }
 
 #[test]
-fn init_stdout_subscriber_with_file_layer_writes_json_log_and_stderr() {
+fn init_subscriber_with_file_layer_writes_json_log_and_stderr() {
     use std::io::Write;
 
     let temp_dir = tempfile::TempDir::new().unwrap();
@@ -476,7 +504,7 @@ fn init_stdout_subscriber_with_file_layer_writes_json_log_and_stderr() {
 }
 
 #[test]
-fn init_stdout_subscriber_falls_back_when_log_path_is_invalid() {
+fn init_subscriber_falls_back_when_log_path_is_invalid() {
     use std::io::Write;
 
     let temp_dir = tempfile::TempDir::new().unwrap();
@@ -506,7 +534,7 @@ fn init_stdout_subscriber_falls_back_when_log_path_is_invalid() {
 }
 
 #[test]
-fn init_stdout_subscriber_warns_when_log_file_target_is_a_directory() {
+fn init_subscriber_warns_when_log_file_target_is_a_directory() {
     use std::io::Write;
 
     let temp_dir = tempfile::TempDir::new().unwrap();
@@ -540,7 +568,7 @@ fn init_stdout_subscriber_warns_when_log_file_target_is_a_directory() {
 }
 
 #[test]
-fn init_stdout_subscriber_plain_mode_suppresses_log_file_open_warning_noise() {
+fn init_subscriber_quiet_mode_suppresses_log_file_open_warning() {
     use std::io::Write;
 
     let temp_dir = tempfile::TempDir::new().unwrap();
@@ -559,12 +587,12 @@ fn init_stdout_subscriber_plain_mode_suppresses_log_file_open_warning_noise() {
     )
     .unwrap();
 
-    let output = run_subprocess("directory-log-target-plain", Some(&config_path));
+    let output = run_subprocess("directory-log-target-quiet", Some(&config_path));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(output.status.success(), "stderr={stderr}");
     assert!(
-        stderr.contains("plain directory fallback line"),
+        stderr.contains("quiet directory fallback line"),
         "stderr={stderr}"
     );
     assert!(

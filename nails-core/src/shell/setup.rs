@@ -1,6 +1,5 @@
 //! Shell setup and cleanup operations for activation/deactivation
 
-use crate::constants::ENV_NO_COLOR;
 use crate::{Filesystem, Result};
 
 use super::{ShellCleanupResult, ShellInstrumentation, ShellSetupResult, color_scheme};
@@ -52,13 +51,12 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             return;
         }
 
-        // Respect the NO_COLOR convention and our own NAILS_NO_COLOR override.
-        // This also ensures OSC sequences are suppressed when cargo test runs
-        // with a PTY (where is_terminal() returns true but we still must not
-        // mutate the developer's terminal colors).
-        if std::env::var("NO_COLOR").is_ok() || std::env::var(ENV_NO_COLOR).is_ok() {
+        // Follow the colour decision the CLI resolved once for stdout. It is
+        // off until configured, so library callers never repaint a terminal
+        // they did not ask for.
+        if !crate::output::style(crate::output::Stream::Stdout).color {
             tracing::debug!(
-                "Skipping terminal color scheme ({}): NO_COLOR / NAILS_NO_COLOR is set",
+                "Skipping terminal color scheme ({}): colour is disabled for stdout",
                 context
             );
             return;

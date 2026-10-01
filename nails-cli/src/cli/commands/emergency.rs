@@ -1,6 +1,11 @@
 //! Emergency command handler
 
-use std::path::PathBuf;
+use std::path::Path;
+
+use nails_core::output::Mark;
+
+use crate::cli::args::EmergencyArgs;
+use crate::cli::output::OutputSettings;
 
 /// Execute the emergency command
 ///
@@ -8,53 +13,27 @@ use std::path::PathBuf;
 ///
 /// # Arguments
 ///
+/// * `settings` - Output settings resolved once from the global flags
+/// * `args` - The `emergency` arguments
 /// * `config_override` - Optional config file path override
-/// * `no_countdown` - Skip the 3-second countdown (proceed immediately)
-/// * `quiet` - Suppress output except final result
-/// * `verbose` - Verbosity level (0 = normal, 1 = verbose, 2+ = debug)
-/// * `json` - Output results in JSON format
-/// * `no_color` - Disable colored output
-/// * `plain` - ASCII-only output (no Unicode symbols)
 ///
 /// # Returns
 ///
 /// Never returns - exits with code 0 on success, 1 on failure, 2 on safety guard failures.
 /// A missing or invalid config is logged as a warning and defaults are used.
-#[allow(clippy::too_many_arguments)]
 pub fn execute(
-    config_override: Option<PathBuf>,
-    no_countdown: bool,
-    quiet: bool,
-    verbose: u8,
-    json: bool,
-    no_color: bool,
-    plain: bool,
+    settings: &OutputSettings,
+    args: &EmergencyArgs,
+    config_override: Option<&Path>,
     check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
 ) -> ! {
-    use nails_core::{NailsManager, RealFilesystem, Verbosity};
+    use nails_core::{NailsManager, RealFilesystem};
 
-    // Configure color output
-    nails_core::set_plain_mode(plain);
-    nails_core::set_color_enabled(
-        !(plain
-            || no_color
-            || std::env::var("NO_COLOR").is_ok()
-            || std::env::var(nails_core::constants::ENV_NO_COLOR).is_ok()),
-    );
-
-    // Convert CLI flags to Verbosity enum
-    let verbosity = if quiet {
-        Verbosity::Quiet
-    } else {
-        match verbose {
-            0 => Verbosity::Normal,
-            1 => Verbosity::Verbose,
-            _ => Verbosity::Debug,
-        }
-    };
+    let json = settings.is_json();
+    let verbosity = settings.verbosity;
 
     // A broken or missing config must never block an emergency teardown.
-    let config = super::load_config_or_defaults(config_override.as_deref()).into_config();
+    let config = super::load_config_or_defaults(config_override).into_config();
 
     // TEST SAFETY GUARD
     if let Err(msg) = check_real_ops(&config.hidden_volume_root) {
@@ -77,7 +56,7 @@ pub fn execute(
     let _state_lock = super::acquire_state_lock_for_emergency(&lock_state_path);
 
     // Countdown before emergency deactivation (skip if --no-countdown, --quiet, or --json)
-    if !no_countdown && !quiet && !json {
+    if !args.no_countdown && !settings.is_quiet() && !json {
         use std::io::Write;
 
         for i in (1..=3).rev() {
@@ -92,11 +71,15 @@ pub fn execute(
     match manager.emergency_deactivate() {
         Ok(()) => {
             if !json {
-                let success_prefix = if plain { "[PASS]" } else { "✓" };
-                println!("{success_prefix} Emergency deactivation complete");
+                println!(
+                    "{}",
+                    settings
+                        .stdout_style()
+                        .marked(Mark::Pass, "Emergency deactivation complete")
+                );
                 println!("  System returned to decoy configuration");
                 eprintln!();
-                for line in emergency_recovery_guidance(plain) {
+                for line in emergency_recovery_guidance(settings) {
                     eprintln!("{line}");
                 }
             } else {
@@ -106,8 +89,13 @@ pub fn execute(
         }
         Err(e) => {
             if !json {
-                let error_prefix = if plain { "[FAIL]" } else { "✗" };
-                eprintln!("{error_prefix} Emergency deactivation failed: {}", e);
+                eprintln!(
+                    "{}",
+                    settings.stderr_style().marked(
+                        Mark::Fail,
+                        format_args!("Emergency deactivation failed: {e}")
+                    )
+                );
             } else {
                 eprintln!("{{\"status\":\"error\",\"message\":\"{}\"}}", e);
             }
@@ -121,25 +109,21 @@ fn emergency_success_json() -> String {
     r#"{"status":"success","message":"Emergency deactivation complete","recovery_guidance":["Dismount the hidden volume when it is safe to do so","If you are unsure cleanup was complete, reboot immediately"]}"#.to_string()
 }
 
-/// Recovery guidance lines for human-readable emergency output
+/// Recovery guidance printed to stderr after an emergency teardown; the first
+/// line carries the shared warning mark in the stderr style.
 const EMERGENCY_RECOVERY_GUIDANCE: &[&str] = &[
-    "⚠ Critical: For maximum safety:",
+    "Critical: For maximum safety:",
     "  1. Dismount the hidden volume when it is safe to do so",
     "  2. If you are unsure cleanup was complete, reboot immediately",
 ];
 
-const EMERGENCY_RECOVERY_GUIDANCE_PLAIN: &[&str] = &[
-    "[WARN] Critical: For maximum safety:",
-    "  1. Dismount the hidden volume when it is safe to do so",
-    "  2. If you are unsure cleanup was complete, reboot immediately",
-];
-
-fn emergency_recovery_guidance(plain: bool) -> &'static [&'static str] {
-    if plain {
-        EMERGENCY_RECOVERY_GUIDANCE_PLAIN
-    } else {
-        EMERGENCY_RECOVERY_GUIDANCE
-    }
+fn emergency_recovery_guidance(settings: &OutputSettings) -> Vec<String> {
+    let mut lines: Vec<String> = EMERGENCY_RECOVERY_GUIDANCE
+        .iter()
+        .map(|line| line.to_string())
+        .collect();
+    lines[0] = settings.stderr_style().marked(Mark::Warn, &lines[0]);
+    lines
 }
 
 #[cfg(test)]
@@ -147,6 +131,8 @@ mod tests {
     use super::{
         EMERGENCY_RECOVERY_GUIDANCE, emergency_recovery_guidance, emergency_success_json, execute,
     };
+    use crate::cli::args::EmergencyArgs;
+    use crate::cli::output::{OutputMode, OutputSettings};
     use std::path::PathBuf;
 
     const SUBPROCESS_TEST_NAME: &str =
@@ -182,20 +168,25 @@ mod tests {
             .without_time()
             .try_init();
 
+        let args = EmergencyArgs { no_countdown: true };
         match case.as_str() {
             "invalid-config" => execute(
-                config_override,
-                true,
-                false,
-                0,
-                false,
-                false,
-                false,
+                &OutputSettings::default(),
+                &args,
+                config_override.as_deref(),
                 |root| Err(format!("guard saw root {}", root.display())),
             ),
-            "guard" => execute(config_override, true, false, 1, true, true, true, |_| {
-                Err("emergency guard blocked".to_string())
-            }),
+            "guard" => {
+                let settings = OutputSettings {
+                    verbosity: nails_core::Verbosity::Verbose,
+                    mode: OutputMode::Json,
+                    ascii: true,
+                    ..OutputSettings::default()
+                };
+                execute(&settings, &args, config_override.as_deref(), |_| {
+                    Err("emergency guard blocked".to_string())
+                })
+            }
             other => panic!("unknown emergency subprocess case: {other}"),
         }
     }
@@ -254,11 +245,30 @@ mod tests {
     }
 
     #[test]
-    fn emergency_plain_recovery_guidance_is_ascii_only() {
-        let combined = emergency_recovery_guidance(true).join("\n");
+    fn emergency_ascii_recovery_guidance_is_ascii_only() {
+        let settings = OutputSettings {
+            color_stderr: true,
+            ascii: true,
+            ..OutputSettings::default()
+        };
+        let combined = emergency_recovery_guidance(&settings).join("\n");
 
-        assert!(combined.is_ascii(), "guidance={combined}");
-        assert!(combined.contains("[WARN]"));
+        assert!(combined.contains("[WARN]"), "guidance={combined}");
+        let without_escapes = combined.replace("\x1b[1;33m", "").replace("\x1b[0m", "");
+        assert!(without_escapes.is_ascii(), "guidance={combined}");
+    }
+
+    #[test]
+    fn emergency_recovery_guidance_follows_stderr_colour() {
+        let plain = emergency_recovery_guidance(&OutputSettings::default()).join("\n");
+        assert!(plain.starts_with("⚠ Critical"), "{plain}");
+        assert!(!plain.contains('\x1b'), "{plain}");
+
+        let coloured = OutputSettings {
+            color_stderr: true,
+            ..OutputSettings::default()
+        };
+        assert!(emergency_recovery_guidance(&coloured)[0].contains('\x1b'));
     }
 
     #[test]

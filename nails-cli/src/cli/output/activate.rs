@@ -1,5 +1,9 @@
 //! Output formatting for the activate command
 
+use nails_core::output::{Mark, Tone};
+
+use super::OutputSettings;
+
 /// JSON output structure for activate command
 #[derive(Debug, serde::Serialize)]
 struct ActivateResult {
@@ -118,166 +122,139 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
 }
 
 /// Print activation result in human-readable format
+///
+/// Results go to stdout and failures to stderr, each painted with that
+/// stream's style; under `--quiet` only the result line is printed.
 pub fn print_activate_human<F: nails_core::Filesystem>(
     result: &Result<(), nails_core::NailsError>,
     duration: f64,
     manager: &nails_core::NailsManager<F>,
     shell_setup: Option<&nails_core::ShellSetupResult>,
-    quiet: bool,
+    settings: &OutputSettings,
 ) {
-    use colored::Colorize;
     use nails_core::NailsError;
 
-    let plain = nails_core::is_plain_mode_enabled();
-    let no_color = nails_core::is_color_disabled();
-    let success_prefix = if plain { "[PASS]" } else { "✓" };
-    let error_prefix = if plain { "[FAIL]" } else { "✗" };
-    let bullet = if plain { "-" } else { "•" };
+    let out = settings.stdout_style();
+    let err = settings.stderr_style();
+    let manual_hint = "You can manually source scripts from the hidden volume if needed";
 
     match result {
         Ok(_) => {
-            if no_color {
-                println!("{success_prefix} Activation complete in {:.1}s", duration);
-            } else {
-                println!(
-                    "{}",
-                    format!("✓ Activation complete in {:.1}s", duration)
-                        .green()
-                        .bold()
-                );
+            println!(
+                "{}",
+                out.paint_bold(
+                    format_args!(
+                        "{} Activation complete in {:.1}s",
+                        out.glyph(Mark::Pass),
+                        duration
+                    ),
+                    Tone::Green
+                )
+            );
+
+            if settings.is_quiet() {
+                return;
             }
 
-            // Print shell integration instructions (unless quiet mode)
-            if !quiet {
-                if let Some(setup) = shell_setup {
-                    if let Some(ref warn) = setup.warning {
-                        // Script generation failed, show warning with reason
-                        println!();
-                        if no_color {
-                            println!("Shell prompt not updated: {}", warn);
-                            println!(
-                                "You can manually source scripts from the hidden volume if needed"
-                            );
-                        } else {
-                            println!("{}", format!("Shell prompt not updated: {}", warn).yellow());
-                            println!(
-                                "{}",
-                                "You can manually source scripts from the hidden volume if needed"
-                                    .dimmed()
-                            );
-                        }
-                    } else if setup.rc_modified {
+            println!();
+            match shell_setup {
+                Some(setup) if setup.warning.is_some() => {
+                    // Script generation failed, show warning with reason
+                    let reason = setup.warning.as_deref().unwrap_or_default();
+                    println!(
+                        "{}",
+                        out.paint(
+                            format_args!("Shell prompt not updated: {reason}"),
+                            Tone::Yellow
+                        )
+                    );
+                    println!("{}", out.paint(manual_hint, Tone::Dim));
+                }
+                Some(setup) => {
+                    println!("{}", out.paint_bold("Shell Integration:", Tone::Cyan));
+                    if setup.rc_modified {
                         // RC file was modified - new terminals auto-configured
+                        println!(
+                            "{}",
+                            out.paint(
+                                format_args!(
+                                    "{} New terminals will automatically have prompt, alias, and color scheme.",
+                                    out.glyph(Mark::Pass)
+                                ),
+                                Tone::Green
+                            )
+                        );
                         println!();
-                        if no_color {
-                            println!("Shell Integration:");
-                            println!(
-                                "{success_prefix} New terminals will automatically have prompt, alias, and color scheme."
-                            );
-                        } else {
-                            println!("{}", "Shell Integration:".cyan().bold());
-                            println!(
-                                "{}",
-                                "✓ New terminals will automatically have prompt, alias, and color scheme."
-                                    .green()
-                            );
-                        }
-                        println!();
-                        if no_color {
-                            println!("To apply to this terminal now, run:");
-                        } else {
-                            println!("{}", "To apply to this terminal now, run:".dimmed());
-                        }
-                        for cmd in &setup.instructions {
-                            if no_color {
-                                println!("  {}", cmd);
-                            } else {
-                                println!("  {}", cmd.bright_white());
-                            }
-                        }
+                        println!(
+                            "{}",
+                            out.paint("To apply to this terminal now, run:", Tone::Dim)
+                        );
                     } else {
-                        // RC file not modified - show fallback instructions
-                        println!();
-                        if no_color {
-                            println!("Shell Integration:");
-                            println!("To update your prompt and add the 'nails' alias, run:");
-                        } else {
-                            println!("{}", "Shell Integration:".cyan().bold());
-                            println!(
-                                "{}",
-                                "To update your prompt and add the 'nails' alias, run:".dimmed()
-                            );
-                        }
-                        for cmd in &setup.instructions {
-                            if no_color {
-                                println!("  {}", cmd);
-                            } else {
-                                println!("  {}", cmd.bright_white());
-                            }
-                        }
+                        println!(
+                            "{}",
+                            out.paint(
+                                "To update your prompt and add the 'nails' alias, run:",
+                                Tone::Dim
+                            )
+                        );
                     }
-                } else {
+                    for cmd in &setup.instructions {
+                        println!("  {}", out.paint(cmd, Tone::Bold));
+                    }
+                }
+                None => {
                     // No shell detected or unsupported shell
-                    println!();
-                    if no_color {
-                        println!("Shell prompt not updated - no supported shell detected");
-                        println!(
-                            "You can manually source scripts from the hidden volume if needed"
-                        );
-                    } else {
-                        println!(
-                            "{}",
-                            "Shell prompt not updated - no supported shell detected".yellow()
-                        );
-                        println!(
-                            "{}",
-                            "You can manually source scripts from the hidden volume if needed"
-                                .dimmed()
-                        );
-                    }
+                    println!(
+                        "{}",
+                        out.paint(
+                            "Shell prompt not updated - no supported shell detected",
+                            Tone::Yellow
+                        )
+                    );
+                    println!("{}", out.paint(manual_hint, Tone::Dim));
                 }
             }
         }
-        Err(e) => match e {
-            NailsError::PreFlightCheckFailed(failures) => {
-                if no_color {
-                    eprintln!("{error_prefix} Pre-flight checks failed:");
-                } else {
-                    eprintln!("{}", "✗ Pre-flight checks failed:".red().bold());
-                }
-                for (name, reason) in failures {
-                    if no_color {
-                        eprintln!("  {bullet} {name}: {reason}");
-                    } else {
-                        eprintln!("  • {}: {}", name.yellow(), reason);
-                    }
-                }
-                if no_color {
-                    eprintln!("\n  Fix: Review system state and ensure hidden volume is mounted");
-                } else {
-                    eprintln!(
-                        "\n  {}",
-                        "Fix: Review system state and ensure hidden volume is mounted".yellow()
-                    );
-                }
+        Err(NailsError::PreFlightCheckFailed(failures)) => {
+            eprintln!(
+                "{}",
+                err.paint_bold(
+                    format_args!("{} Pre-flight checks failed:", err.glyph(Mark::Fail)),
+                    Tone::Red
+                )
+            );
+            for (name, reason) in failures {
+                eprintln!(
+                    "  {} {}: {}",
+                    err.glyph(Mark::Bullet),
+                    err.paint(name, Tone::Yellow),
+                    reason
+                );
             }
-            _ => {
-                if no_color {
-                    eprintln!("{error_prefix} Activation failed: {}", e);
-                    eprintln!("  Automatic rollback completed.");
-                } else {
-                    eprintln!("{}", format!("✗ Activation failed: {}", e).red().bold());
-                    eprintln!("  {}", "Automatic rollback completed.".dimmed());
-                }
-                if let Some(state) = manager_state_debug(manager) {
-                    if no_color {
-                        eprintln!("  Current state: {}", state);
-                    } else {
-                        eprintln!("  {}: {}", "Current state".dimmed(), state);
-                    }
-                }
+            eprintln!(
+                "\n  {}",
+                err.paint(
+                    "Fix: Review system state and ensure hidden volume is mounted",
+                    Tone::Yellow
+                )
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "{}",
+                err.paint_bold(
+                    format_args!("{} Activation failed: {}", err.glyph(Mark::Fail), e),
+                    Tone::Red
+                )
+            );
+            eprintln!(
+                "  {}",
+                err.paint("Automatic rollback completed.", Tone::Dim)
+            );
+            if let Some(state) = manager_state_debug(manager) {
+                eprintln!("  {}: {}", err.paint("Current state", Tone::Dim), state);
             }
-        },
+        }
     }
 }
 
@@ -286,6 +263,13 @@ mod tests {
     use super::*;
     use nails_core::{Config, MockFilesystem, NailsError, NailsManager, ShellSetupResult};
     use std::path::PathBuf;
+
+    fn quiet_settings() -> OutputSettings {
+        OutputSettings {
+            verbosity: nails_core::Verbosity::Quiet,
+            ..OutputSettings::default()
+        }
+    }
 
     fn make_manager() -> NailsManager<MockFilesystem> {
         let fs = MockFilesystem::new();
@@ -386,41 +370,59 @@ mod tests {
     #[test]
     fn test_human_success_no_shell() {
         let manager = make_manager();
-        print_activate_human(&Ok(()), 1.5, &manager, None, false);
+        print_activate_human(&Ok(()), 1.5, &manager, None, &OutputSettings::default());
     }
 
     #[test]
     fn test_human_success_quiet() {
         let manager = make_manager();
-        print_activate_human(&Ok(()), 1.5, &manager, None, true);
+        print_activate_human(&Ok(()), 1.5, &manager, None, &quiet_settings());
     }
 
     #[test]
     fn test_human_success_shell_rc_modified() {
         let manager = make_manager();
         let setup = make_shell_setup_rc_modified();
-        print_activate_human(&Ok(()), 1.0, &manager, Some(&setup), false);
+        print_activate_human(
+            &Ok(()),
+            1.0,
+            &manager,
+            Some(&setup),
+            &OutputSettings::default(),
+        );
     }
 
     #[test]
     fn test_human_success_shell_no_rc() {
         let manager = make_manager();
         let setup = make_shell_setup_no_rc();
-        print_activate_human(&Ok(()), 1.0, &manager, Some(&setup), false);
+        print_activate_human(
+            &Ok(()),
+            1.0,
+            &manager,
+            Some(&setup),
+            &OutputSettings::default(),
+        );
     }
 
     #[test]
     fn test_human_success_shell_with_warning() {
         let manager = make_manager();
         let setup = make_shell_setup_with_warning();
-        print_activate_human(&Ok(()), 1.0, &manager, Some(&setup), false);
+        print_activate_human(
+            &Ok(()),
+            1.0,
+            &manager,
+            Some(&setup),
+            &OutputSettings::default(),
+        );
     }
 
     #[test]
     fn test_human_success_shell_quiet_suppresses_instructions() {
         let manager = make_manager();
         let setup = make_shell_setup_rc_modified();
-        print_activate_human(&Ok(()), 1.0, &manager, Some(&setup), true);
+        print_activate_human(&Ok(()), 1.0, &manager, Some(&setup), &quiet_settings());
     }
 
     #[test]
@@ -430,13 +432,13 @@ mod tests {
             "hidden_volume".to_string(),
             "not mounted".to_string(),
         )]);
-        print_activate_human(&Err(err), 0.1, &manager, None, false);
+        print_activate_human(&Err(err), 0.1, &manager, None, &OutputSettings::default());
     }
 
     #[test]
     fn test_human_other_error() {
         let manager = make_manager();
         let err = NailsError::InvalidState("bad state".to_string());
-        print_activate_human(&Err(err), 0.3, &manager, None, false);
+        print_activate_human(&Err(err), 0.3, &manager, None, &OutputSettings::default());
     }
 }

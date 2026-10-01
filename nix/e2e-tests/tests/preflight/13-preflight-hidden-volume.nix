@@ -52,7 +52,7 @@ in
         write_hidden_volume_config("/tmp/preflight-unmounted.toml", "/mnt/preflight-unmounted")
         result = run_command_capture(
             "preflight-hidden-unmounted",
-            "nails --config /tmp/preflight-unmounted.toml activate --dry-run --overlay-only --no-kill-session --plain",
+            "nails --config /tmp/preflight-unmounted.toml activate --dry-run --overlay-only --no-kill-session --ascii",
         )
         assert_command_succeeded(result)
         assert_result_contains(result, ["hidden-volume", "is not mounted"], stream="stdout")
@@ -61,7 +61,7 @@ in
         write_hidden_volume_config("/tmp/preflight-store.toml", "${builtins.storeDir}")
         result = run_command_capture(
             "preflight-hidden-store",
-            "nails --config /tmp/preflight-store.toml activate --dry-run --overlay-only --no-kill-session --plain",
+            "nails --config /tmp/preflight-store.toml activate --dry-run --overlay-only --no-kill-session --ascii",
         )
         assert_command_succeeded(result)
         assert_result_contains(result, ["hidden-volume", "${builtins.storeDir}", "not writable"], stream="stdout")
@@ -72,7 +72,7 @@ in
         write_hidden_volume_config("/tmp/preflight-readonly.toml", "/mnt/hidden-volume")
         result = run_command_capture(
             "preflight-hidden-readonly",
-            "nails --config /tmp/preflight-readonly.toml activate --dry-run --overlay-only --no-kill-session --plain",
+            "nails --config /tmp/preflight-readonly.toml activate --dry-run --overlay-only --no-kill-session --ascii",
         )
         assert_command_succeeded(result)
         assert_result_contains(result, ["hidden-volume", "/mnt/hidden-volume", "not writable"], stream="stdout")
@@ -83,7 +83,7 @@ in
         machine.succeed("chattr +i /mnt/hidden-volume")
         result = run_command_capture(
             "preflight-hidden-immutable",
-            "nails --config /tmp/preflight-readonly.toml activate --dry-run --overlay-only --no-kill-session --plain",
+            "nails --config /tmp/preflight-readonly.toml activate --dry-run --overlay-only --no-kill-session --ascii",
         )
         assert_command_succeeded(result)
         assert_result_contains(result, ["hidden-volume", "/mnt/hidden-volume", "not writable"], stream="stdout")

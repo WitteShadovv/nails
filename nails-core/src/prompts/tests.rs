@@ -147,7 +147,8 @@ fn test_prompt_risky_process_restart_accepts_yes() {
 
     let mut input = Cursor::new("y\n");
     let mut output = Vec::new();
-    let result = prompt_risky_process_restart_with_io(&processes, &mut input, &mut output);
+    let result =
+        prompt_risky_process_restart_with_io(&processes, Style::default(), &mut input, &mut output);
     assert!(result.unwrap());
 }
 
@@ -162,7 +163,8 @@ fn test_prompt_risky_process_restart_accepts_no() {
 
     let mut input = Cursor::new("n\n");
     let mut output = Vec::new();
-    let result = prompt_risky_process_restart_with_io(&processes, &mut input, &mut output);
+    let result =
+        prompt_risky_process_restart_with_io(&processes, Style::default(), &mut input, &mut output);
     assert!(!result.unwrap());
 }
 
@@ -172,7 +174,8 @@ fn test_prompt_risky_process_restart_default_no() {
 
     let mut input = Cursor::new("\n");
     let mut output = Vec::new();
-    let result = prompt_risky_process_restart_with_io(&processes, &mut input, &mut output);
+    let result =
+        prompt_risky_process_restart_with_io(&processes, Style::default(), &mut input, &mut output);
     // Should default to no (safe option)
     assert!(!result.unwrap());
 }
@@ -188,7 +191,8 @@ fn test_prompt_risky_process_restart_displays_warning() {
 
     let mut input = Cursor::new("n\n");
     let mut output = Vec::new();
-    let _ = prompt_risky_process_restart_with_io(&processes, &mut input, &mut output);
+    let _ =
+        prompt_risky_process_restart_with_io(&processes, Style::default(), &mut input, &mut output);
 
     let output_str = String::from_utf8(output).unwrap();
     assert!(output_str.contains("Risky processes detected"));
@@ -202,7 +206,8 @@ fn test_prompt_risky_process_restart_shows_pid_when_no_service() {
 
     let mut input = Cursor::new("n\n");
     let mut output = Vec::new();
-    let _ = prompt_risky_process_restart_with_io(&processes, &mut input, &mut output);
+    let _ =
+        prompt_risky_process_restart_with_io(&processes, Style::default(), &mut input, &mut output);
 
     let output_str = String::from_utf8(output).unwrap();
     assert!(output_str.contains("custom-app"));
@@ -215,7 +220,8 @@ fn test_prompt_risky_process_restart_shows_disruption_warnings() {
 
     let mut input = Cursor::new("n\n");
     let mut output = Vec::new();
-    let _ = prompt_risky_process_restart_with_io(&processes, &mut input, &mut output);
+    let _ =
+        prompt_risky_process_restart_with_io(&processes, Style::default(), &mut input, &mut output);
 
     let output_str = String::from_utf8(output).unwrap();
     assert!(output_str.contains("Network connectivity"));
@@ -234,6 +240,7 @@ fn test_prompt_pivot_mount_acceptance_accepts_yes() {
     let result = prompt_pivot_mount_acceptance_with_io(
         Path::new("/home"),
         &processes,
+        Style::default(),
         &mut input,
         &mut output,
     );
@@ -249,6 +256,7 @@ fn test_prompt_pivot_mount_acceptance_accepts_no() {
     let result = prompt_pivot_mount_acceptance_with_io(
         Path::new("/home"),
         &processes,
+        Style::default(),
         &mut input,
         &mut output,
     );
@@ -264,6 +272,7 @@ fn test_prompt_pivot_mount_acceptance_default_no() {
     let result = prompt_pivot_mount_acceptance_with_io(
         Path::new("/home"),
         &processes,
+        Style::default(),
         &mut input,
         &mut output,
     );
@@ -280,6 +289,7 @@ fn test_prompt_pivot_mount_acceptance_displays_target_path() {
     let _ = prompt_pivot_mount_acceptance_with_io(
         Path::new("/home"),
         &processes,
+        Style::default(),
         &mut input,
         &mut output,
     );
@@ -306,6 +316,7 @@ fn test_prompt_pivot_mount_acceptance_displays_blocking_processes() {
     let _ = prompt_pivot_mount_acceptance_with_io(
         Path::new("/home"),
         &processes,
+        Style::default(),
         &mut input,
         &mut output,
     );
@@ -327,6 +338,7 @@ fn test_prompt_pivot_mount_acceptance_displays_security_warnings() {
     let _ = prompt_pivot_mount_acceptance_with_io(
         Path::new("/home"),
         &processes,
+        Style::default(),
         &mut input,
         &mut output,
     );
@@ -347,6 +359,7 @@ fn test_prompt_pivot_mount_with_empty_cmdline() {
     let result = prompt_pivot_mount_acceptance_with_io(
         Path::new("/home"),
         &processes,
+        Style::default(),
         &mut input,
         &mut output,
     );
@@ -364,14 +377,14 @@ fn test_prompt_pivot_mount_with_empty_cmdline() {
 #[test]
 fn test_display_abort_message_does_not_panic() {
     let mut output = Vec::new();
-    let result = display_abort_message_with_io(Path::new("/home"), &mut output);
+    let result = display_abort_message_with_io(Path::new("/home"), Style::default(), &mut output);
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_display_abort_message_contains_target() {
     let mut output = Vec::new();
-    let _ = display_abort_message_with_io(Path::new("/home"), &mut output);
+    let _ = display_abort_message_with_io(Path::new("/home"), Style::default(), &mut output);
 
     let output_str = String::from_utf8(output).unwrap();
     assert!(output_str.contains("/home"));
@@ -381,7 +394,7 @@ fn test_display_abort_message_contains_target() {
 #[test]
 fn test_display_abort_message_contains_suggestions() {
     let mut output = Vec::new();
-    let _ = display_abort_message_with_io(Path::new("/home"), &mut output);
+    let _ = display_abort_message_with_io(Path::new("/home"), Style::default(), &mut output);
 
     let output_str = String::from_utf8(output).unwrap();
     assert!(output_str.contains("Suggestions:"));
@@ -393,7 +406,7 @@ fn test_display_abort_message_contains_suggestions() {
 #[test]
 fn test_display_abort_message_shows_inactive_state() {
     let mut output = Vec::new();
-    let _ = display_abort_message_with_io(Path::new("/home"), &mut output);
+    let _ = display_abort_message_with_io(Path::new("/home"), Style::default(), &mut output);
 
     let output_str = String::from_utf8(output).unwrap();
     assert!(output_str.contains("INACTIVE (unchanged)"));
@@ -404,7 +417,8 @@ fn test_display_abort_message_different_targets() {
     let targets = vec!["/home", "/etc", "/var", "/opt", "/usr/local"];
     for target in targets {
         let mut output = Vec::new();
-        let result = display_abort_message_with_io(Path::new(target), &mut output);
+        let result =
+            display_abort_message_with_io(Path::new(target), Style::default(), &mut output);
         assert!(result.is_ok());
 
         let output_str = String::from_utf8(output).unwrap();
@@ -429,4 +443,98 @@ fn test_process_info_with_service_name() {
 
     assert_eq!(proc.pid, 888);
     assert_eq!(proc.service_name, Some("test.service".to_string()));
+}
+
+// ==================== ASCII rendering ====================
+
+const ASCII: Style = Style {
+    color: false,
+    ascii: true,
+};
+
+#[test]
+fn test_prompts_render_ascii_only_in_ascii_style() {
+    let processes = vec![
+        make_test_process(1, "sway", "Wayland compositor", None),
+        make_test_process(2, "NetworkManager", "", Some("nm.service".to_string())),
+    ];
+
+    let mut output = Vec::new();
+    prompt_risky_process_restart_with_io(&processes, ASCII, &mut Cursor::new("n\n"), &mut output)
+        .unwrap();
+    prompt_pivot_mount_acceptance_with_io(
+        Path::new("/home"),
+        &processes,
+        ASCII,
+        &mut Cursor::new("n\n"),
+        &mut output,
+    )
+    .unwrap();
+    display_abort_message_with_io(Path::new("/home"), ASCII, &mut output).unwrap();
+
+    let text = String::from_utf8(output).unwrap();
+    assert!(text.is_ascii(), "{text}");
+    assert!(text.contains("[WARN] Risky processes detected"), "{text}");
+    assert!(text.contains("[FAIL] Activation aborted"), "{text}");
+}
+
+// ==================== stdout isolation (real streams) ====================
+
+const PROMPT_SUBPROCESS_TEST: &str = "prompts::tests::subprocess_prompt_entrypoint";
+const PROMPT_SUBPROCESS_ENV: &str = "NAILS_PROMPT_SUBPROCESS";
+
+/// Runs inside a child process whose stdout and stderr the parent captures;
+/// it drives every prompt against the real stdin/stderr wiring.
+#[test]
+fn subprocess_prompt_entrypoint() {
+    if std::env::var_os(PROMPT_SUBPROCESS_ENV).is_none() {
+        return;
+    }
+
+    let processes = vec![make_test_process(7, "pipewire", "", None)];
+    assert!(prompt_yes_no_on_terminal("Proceed with the stream check?", true).unwrap());
+    assert!(prompt_risky_process_restart_on_terminal(&processes).unwrap());
+    assert!(prompt_pivot_mount_acceptance_on_terminal(Path::new("/home"), &processes).unwrap());
+    display_abort_message(Path::new("/home"));
+}
+
+#[test]
+fn test_prompts_never_write_to_stdout() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            PROMPT_SUBPROCESS_TEST,
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(PROMPT_SUBPROCESS_ENV, "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"y\ny\ny\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "stdout={stdout}\nstderr={stderr}");
+    for prompt_text in [
+        "Proceed with the stream check?",
+        "Risky processes detected",
+        "Accept pivot mount",
+        "Activation aborted",
+    ] {
+        assert!(
+            stderr.contains(prompt_text),
+            "missing {prompt_text:?}: {stderr}"
+        );
+        assert!(
+            !stdout.contains(prompt_text),
+            "{prompt_text:?} leaked to stdout: {stdout}"
+        );
+    }
 }

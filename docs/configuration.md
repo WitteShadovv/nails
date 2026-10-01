@@ -66,7 +66,7 @@ is the `name` key of each `[[overlays]]` table.
 |---|---|---|---|
 | `hidden_volume_root` | path | derived from the binary location | Root of the hidden volume; overlay layers, the state file and logs live under it. Unset, it is the directory holding the `nails` binary (symlinks resolved), or `/mnt/hidden-volume` when the binary runs from a build directory or the Nix store. Leave it unset so the file keeps working when the volume is mounted somewhere else. See [Path rules](#path-rules). |
 | `state_file_path` | path | `<hidden_volume_root>/state.json` | Activation state file. Must lie inside `hidden_volume_root`. |
-| `log_path` | path | `<hidden_volume_root>/logs` | Directory of `nails.log`. Must lie inside `hidden_volume_root`. `--no-logs` turns file logging off for one run. |
+| `log_path` | path | `<hidden_volume_root>/logs` | Directory of `nails.log`. Must lie inside `hidden_volume_root`. `--no-log-file` turns file logging off for one run. |
 | `overlay_mode` | `"auto"` or `"explicit"` | `"auto"` | How overlay targets are chosen; see [Overlay semantics](#overlay-semantics). |
 | `overlay_exclusions` | array of paths | `[]` | Auto mode: top-level directories to leave out in addition to the [default exclusions](#default-exclusions). Writes under them reach the decoy disk. |
 | `overlay_exclusions_remove` | array of paths | `[]` | Auto mode: default exclusions to overlay anyway. It cannot lift the [safety floor](#safety-floor). |

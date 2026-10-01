@@ -46,7 +46,7 @@ in
 
     with subtest("dispatcher exits cleanly and preserves pending file"):
         result = run_command_capture(
-            f'su - testuser -c "PATH=/run/wrappers/bin:/bin {nails_path} --no-logs --config {config_path} notify-dispatch --json"',
+            f'su - testuser -c "PATH=/run/wrappers/bin:/bin {nails_path} --no-log-file --config {config_path} notify-dispatch --json"',
             "/tmp/notify-missing-bin",
         )
         assert result["rc"] == 0, result

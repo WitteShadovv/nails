@@ -456,7 +456,7 @@ fn test_security_posture_active_verified() {
 
     let posture = report.security_posture();
     assert_eq!(posture, SecurityPosture::Secure);
-    assert!(format!("{}", posture).contains('🟢'));
+    assert!(format!("{}", posture).contains('✓'));
     let plain = posture.to_plain();
     assert!(plain.contains("[SECURE]"));
 }
@@ -476,7 +476,7 @@ fn test_security_posture_active_mismatch() {
 
     let posture = report.security_posture();
     assert_eq!(posture, SecurityPosture::Warning);
-    assert!(format!("{}", posture).contains('🟡'));
+    assert!(format!("{}", posture).contains('⚠'));
     let plain = posture.to_plain();
     assert!(plain.contains("[WARNING]"));
 }
@@ -493,7 +493,7 @@ fn test_security_posture_activating() {
 
     let posture = report.security_posture();
     assert_eq!(posture, SecurityPosture::Warning);
-    assert!(format!("{}", posture).contains('🟡'));
+    assert!(format!("{}", posture).contains('⚠'));
     let plain = posture.to_plain();
     assert!(plain.contains("[WARNING]"));
 }
@@ -510,7 +510,7 @@ fn test_security_posture_deactivating() {
 
     let posture = report.security_posture();
     assert_eq!(posture, SecurityPosture::Warning);
-    assert!(format!("{}", posture).contains('🟡'));
+    assert!(format!("{}", posture).contains('⚠'));
     let plain = posture.to_plain();
     assert!(plain.contains("[WARNING]"));
 }
@@ -525,7 +525,7 @@ fn test_security_posture_inactive() {
 
     let posture = report.security_posture();
     assert_eq!(posture, SecurityPosture::Decoy);
-    assert!(format!("{}", posture).contains('🔴'));
+    assert!(format!("{}", posture).contains('○'));
     assert!(format!("{}", posture).contains("DECOY"));
     assert!(format!("{}", posture).contains("Decoy system"));
     assert!(!format!("{}", posture).contains("CRITICAL"));
@@ -548,7 +548,7 @@ fn test_security_posture_degraded() {
 
     let posture = report.security_posture();
     assert_eq!(posture, SecurityPosture::Critical);
-    assert!(format!("{}", posture).contains('🔴'));
+    assert!(format!("{}", posture).contains('✗'));
     assert!(format!("{}", posture).contains("CRITICAL"));
     assert!(format!("{}", posture).contains("Emergency deactivation"));
     let plain = posture.to_plain();
@@ -560,7 +560,7 @@ fn test_security_posture_display_secure() {
     let posture = SecurityPosture::Secure;
     let display = format!("{}", posture);
 
-    assert!(display.contains('🟢'));
+    assert!(display.contains('✓'));
     assert!(display.contains("SECURE"));
     assert!(display.contains("Hidden environment active"));
 }
@@ -570,7 +570,7 @@ fn test_security_posture_display_warning() {
     let posture = SecurityPosture::Warning;
     let display = format!("{}", posture);
 
-    assert!(display.contains('🟡'));
+    assert!(display.contains('⚠'));
     assert!(display.contains("WARNING"));
     assert!(display.contains("transitional state"));
 }
@@ -580,7 +580,7 @@ fn test_security_posture_display_critical() {
     let posture = SecurityPosture::Critical;
     let display = format!("{}", posture);
 
-    assert!(display.contains('🔴'));
+    assert!(display.contains('✗'));
     assert!(display.contains("CRITICAL"));
     assert!(display.contains("Emergency deactivation"));
 }
@@ -590,7 +590,7 @@ fn test_security_posture_display_decoy() {
     let posture = SecurityPosture::Decoy;
     let display = format!("{}", posture);
 
-    assert!(display.contains('🔴'));
+    assert!(display.contains('○'));
     assert!(display.contains("DECOY"));
     assert!(display.contains("Decoy system"));
     assert!(!display.contains("CRITICAL"));
@@ -601,7 +601,7 @@ fn test_security_posture_to_plain_secure() {
     let posture = SecurityPosture::Secure;
     let plain = posture.to_plain();
 
-    assert!(!plain.contains('🟢')); // No emoji
+    assert!(!plain.contains('✓')); // ASCII only
     assert!(plain.contains("[SECURE]"));
     assert!(plain.contains("Hidden environment active"));
     assert_eq!(
@@ -615,7 +615,7 @@ fn test_security_posture_to_plain_warning() {
     let posture = SecurityPosture::Warning;
     let plain = posture.to_plain();
 
-    assert!(!plain.contains('🟡')); // No emoji
+    assert!(!plain.contains('⚠')); // ASCII only
     assert!(plain.contains("[WARNING]"));
     assert!(plain.contains("transitional state"));
     assert_eq!(
@@ -629,7 +629,7 @@ fn test_security_posture_to_plain_decoy() {
     let posture = SecurityPosture::Decoy;
     let plain = posture.to_plain();
 
-    assert!(!plain.contains('🔴')); // No emoji
+    assert!(!plain.contains('○')); // ASCII only
     assert!(plain.contains("[DECOY]"));
     assert!(plain.contains("Decoy system"));
     assert!(!plain.contains("[CRITICAL]"));
@@ -641,7 +641,7 @@ fn test_security_posture_to_plain_critical() {
     let posture = SecurityPosture::Critical;
     let plain = posture.to_plain();
 
-    assert!(!plain.contains('🔴')); // No emoji
+    assert!(!plain.contains('✗')); // ASCII only
     assert!(plain.contains("[CRITICAL]"));
     assert!(plain.contains("Emergency deactivation"));
     assert_eq!(
@@ -837,7 +837,7 @@ fn test_opsec_reminder_display_info() {
         message: "Test message".to_string(),
     };
     let display = format!("{}", reminder);
-    assert!(display.contains('💡')); // Info uses lightbulb emoji
+    assert!(display.contains('ℹ'));
     assert!(display.contains("Test message"));
 }
 
@@ -848,7 +848,7 @@ fn test_opsec_reminder_display_warning() {
         message: "Warning message".to_string(),
     };
     let display = format!("{}", reminder);
-    assert!(display.contains('⚠')); // Warning uses warning triangle
+    assert!(display.contains('⚠'));
     assert!(display.contains("Warning message"));
 }
 
@@ -859,7 +859,7 @@ fn test_opsec_reminder_display_critical() {
         message: "Critical message".to_string(),
     };
     let display = format!("{}", reminder);
-    assert!(display.contains('🛑')); // Critical uses stop sign
+    assert!(display.contains('✗'));
     assert!(display.contains("Critical message"));
 }
 
@@ -870,7 +870,7 @@ fn test_opsec_reminder_to_plain() {
         message: "Session >24 hours".to_string(),
     };
     let plain = reminder.to_plain();
-    assert!(!plain.contains('⚠')); // No emoji
+    assert!(plain.is_ascii());
     assert!(plain.contains("[CRITICAL]"));
     assert!(plain.contains("Session >24 hours"));
 }
@@ -1426,4 +1426,70 @@ fn test_overlay_mount_statuses_empty_for_transitional_states() {
     let report2 = cmd2.run().unwrap();
 
     assert_eq!(report2.overlay_mount_statuses.len(), 0);
+}
+
+#[test]
+fn test_decoy_and_critical_postures_render_distinctly() {
+    use crate::output::Style;
+
+    for style in [
+        Style::default(),
+        Style {
+            color: true,
+            ascii: false,
+        },
+        Style {
+            color: false,
+            ascii: true,
+        },
+    ] {
+        let decoy = SecurityPosture::Decoy.render(style);
+        let critical = SecurityPosture::Critical.render(style);
+        assert_ne!(
+            decoy.split_whitespace().next(),
+            critical.split_whitespace().next(),
+            "{style:?}: {decoy} / {critical}"
+        );
+    }
+
+    // Only the critical posture is painted red.
+    let color = Style {
+        color: true,
+        ascii: false,
+    };
+    assert!(
+        SecurityPosture::Critical
+            .render(color)
+            .contains("\x1b[1;31m")
+    );
+    assert!(!SecurityPosture::Decoy.render(color).contains('\x1b'));
+}
+
+#[test]
+fn test_posture_and_reminder_ascii_render_is_ascii() {
+    use crate::output::Style;
+
+    let ascii = Style {
+        color: true,
+        ascii: true,
+    };
+    for posture in [
+        SecurityPosture::Secure,
+        SecurityPosture::Warning,
+        SecurityPosture::Decoy,
+        SecurityPosture::Critical,
+    ] {
+        assert!(posture.render(ascii).is_ascii(), "{posture:?}");
+    }
+    for severity in [
+        ReminderSeverity::Info,
+        ReminderSeverity::Warning,
+        ReminderSeverity::Critical,
+    ] {
+        let reminder = OpSecReminder {
+            severity,
+            message: "m".to_string(),
+        };
+        assert_eq!(reminder.render(ascii), reminder.to_plain());
+    }
 }

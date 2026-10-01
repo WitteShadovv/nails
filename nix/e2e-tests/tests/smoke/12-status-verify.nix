@@ -53,16 +53,16 @@ in
     assert status_json["state"] == "Inactive", f"Expected Inactive, got: {status_json}"
     print(f"✓ Status --json returns valid JSON with state={status_json['state']}")
 
-    print("\n=== Test 3: Status --verbose exposes real diagnostics ===")
+    print("\n=== Test 3: Status --details exposes real diagnostics ===")
     verbose_result = run_command_capture(
         "status-verify-inactive-verbose",
-        f"nails --config {shlex.quote(headless_config)} status --verbose",
+        f"nails --config {shlex.quote(headless_config)} status --details",
     )
     assert verbose_result["rc"] == 0, verbose_result
-    assert "Verbose Details:" in verbose_result["stdout"], verbose_result
+    assert "Details:" in verbose_result["stdout"], verbose_result
     assert "State loaded:" in verbose_result["stdout"], verbose_result
     assert "Log path:" in verbose_result["stdout"], verbose_result
-    print("✓ Status --verbose returns concrete inactive diagnostics")
+    print("✓ Status --details returns concrete inactive diagnostics")
 
     print("\n=== Test 4: Verify detects planted artifacts ===")
     machine.succeed("touch /tmp/nails.log")
@@ -92,12 +92,12 @@ in
     machine.succeed("test -f /mnt/hidden-volume/logs/nails.log")
     active_verbose = run_command_capture(
         "status-verify-active-verbose",
-        f"nails --config {shlex.quote(headless_config)} status --verbose",
+        f"nails --config {shlex.quote(headless_config)} status --details",
     )
     assert active_verbose["rc"] == 0, active_verbose
     assert "Overlay Mount Details:" in active_verbose["stdout"], active_verbose
     assert "Recent Logs:" in active_verbose["stdout"], active_verbose
-    print("✓ Default hidden log directory/file are created and visible via status --verbose")
+    print("✓ Default hidden log directory/file are created and visible via status --details")
 
     print("\n=== Test 8: Non-root status stays truthful on unreadable state ===")
     machine.succeed("chown root:root /mnt/hidden-volume/state.json")

@@ -13,7 +13,7 @@ use crate::{NailsError, Result};
 /// - Session management (`--kill-session`)
 /// - Security trade-offs (`--accept-pivot-risks`, `--no-pivot`)
 /// - User interaction (`--yes`)
-/// - Output formatting (`--quiet`, `--json`, `--no-color`)
+/// - Output formatting (`--quiet`, `--json`, `--color`)
 ///
 /// # Validation
 ///

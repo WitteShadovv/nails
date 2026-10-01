@@ -58,14 +58,15 @@ impl VerificationStatus {
 /// Security posture indicator with graduated levels
 ///
 /// Represents the overall security posture of the NAILS system based on
-/// system state and overlay verification. Provides visual indicators (emoji)
-/// for at-a-glance status assessment.
+/// system state and overlay verification, with a mark from the shared table
+/// for at-a-glance assessment.
 ///
 /// # Variants
 ///
-/// - **Secure** (🟢): Hidden environment active, overlays verified
-/// - **Warning** (🟡): Transitional state or overlay inconsistency detected
-/// - **Critical** (🔴): No protection (inactive) or emergency state
+/// - **Secure** (✓, green): Hidden environment active, overlays verified
+/// - **Warning** (⚠, yellow): Transitional state or overlay inconsistency detected
+/// - **Decoy** (○, uncoloured): Inactive; the decoy system is in use
+/// - **Critical** (✗, red): Emergency or degraded state
 ///
 /// # Example
 ///
@@ -73,7 +74,7 @@ impl VerificationStatus {
 /// use nails_core::status::SecurityPosture;
 ///
 /// let posture = SecurityPosture::Secure;
-/// assert_eq!(format!("{}", posture), "🟢 SECURE: Hidden environment active, overlays verified");
+/// assert_eq!(format!("{}", posture), "✓ SECURE: Hidden environment active, overlays verified");
 /// assert_eq!(posture.to_plain(), "[SECURE] Hidden environment active, overlays verified");
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,13 +93,17 @@ pub enum SecurityPosture {
 }
 
 impl SecurityPosture {
-    /// Get the emoji indicator for this security posture
-    fn emoji(&self) -> &'static str {
+    /// The shared mark for this posture.
+    ///
+    /// The decoy state is neither protected nor in trouble, so it gets the
+    /// neutral mark; only a critical posture is shown as a failure.
+    pub fn mark(&self) -> crate::output::Mark {
+        use crate::output::Mark;
         match self {
-            SecurityPosture::Secure => "\u{1f7e2}",
-            SecurityPosture::Warning => "\u{1f7e1}",
-            SecurityPosture::Decoy => "\u{1f534}",
-            SecurityPosture::Critical => "\u{1f534}",
+            SecurityPosture::Secure => Mark::Pass,
+            SecurityPosture::Warning => Mark::Warn,
+            SecurityPosture::Decoy => Mark::Neutral,
+            SecurityPosture::Critical => Mark::Fail,
         }
     }
 
@@ -135,17 +140,26 @@ impl SecurityPosture {
     pub fn to_plain(&self) -> String {
         format!("[{}] {}", self.level(), self.description())
     }
+
+    /// Render the posture in `style`: the level label in brackets for ASCII
+    /// output, otherwise the (possibly coloured) shared mark.
+    pub fn render(&self, style: crate::output::Style) -> String {
+        if style.ascii {
+            self.to_plain()
+        } else {
+            format!(
+                "{} {}: {}",
+                style.mark(self.mark()),
+                self.level(),
+                self.description()
+            )
+        }
+    }
 }
 
 impl fmt::Display for SecurityPosture {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} {}: {}",
-            self.emoji(),
-            self.level(),
-            self.description()
-        )
+        f.write_str(&self.render(crate::output::Style::default()))
     }
 }
 

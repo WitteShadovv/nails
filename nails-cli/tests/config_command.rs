@@ -9,7 +9,7 @@ use std::io::Write;
 
 fn nails() -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.arg("--no-logs");
+    cmd.arg("--no-log-file");
     cmd
 }
 

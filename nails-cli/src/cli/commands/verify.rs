@@ -1,8 +1,9 @@
 //! Verify command handler
 
-use crate::cli::output;
+use crate::cli::args::VerifyArgs;
+use crate::cli::output::{self, OutputSettings};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Execute the verify command
 ///
@@ -12,8 +13,8 @@ use std::path::PathBuf;
 ///
 /// # Arguments
 ///
-/// * `deep` - Perform deep scan (slower, more thorough)
-/// * `json` - Output results as JSON
+/// * `settings` - Output settings resolved once from the global flags
+/// * `args` - The `verify` arguments (`--deep`)
 /// * `config_override` - Optional config file path override
 ///
 /// # Returns
@@ -22,14 +23,14 @@ use std::path::PathBuf;
 /// - 0: System is secure
 /// - 1: Warning or critical issues found
 /// - 2: Error running verification
-pub fn execute(deep: bool, json: bool, config_override: Option<PathBuf>) -> ! {
+pub fn execute(settings: &OutputSettings, args: &VerifyArgs, config_override: Option<&Path>) -> ! {
     use nails_core::{RealFilesystem, StateFile, StateFileStatus, Verifier};
 
     // Create verifier with real filesystem
     let filesystem = RealFilesystem;
 
     // Load config fail-closed for malformed or unreadable files; missing config still uses defaults.
-    let config = super::load_config_or_exit(config_override.as_deref()).into_config();
+    let config = super::load_config_or_exit(config_override).into_config();
 
     // Load state file status explicitly for verify reporting.
     let state_path = config.state_file_path.clone();
@@ -65,7 +66,7 @@ pub fn execute(deep: bool, json: bool, config_override: Option<PathBuf>) -> ! {
     let verifier = Verifier::with_config(filesystem, config, state, state_file_status);
 
     // Run verification
-    let result = match verifier.run(deep) {
+    let result = match verifier.run(args.deep) {
         Ok(result) => result,
         Err(e) => {
             eprintln!("Error running verification: {}", e);
@@ -74,14 +75,14 @@ pub fn execute(deep: bool, json: bool, config_override: Option<PathBuf>) -> ! {
     };
 
     // Output results
-    if json {
+    if settings.is_json() {
         // JSON output
         let json_output =
             serde_json::to_string_pretty(&result).expect("Failed to serialize verification result");
         println!("{}", json_output);
     } else {
         // Human-readable output
-        output::print_verify_result(&result);
+        output::print_verify_result(&result, settings.stdout_style());
     }
 
     // Set exit code based on status

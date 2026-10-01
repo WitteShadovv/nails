@@ -1,8 +1,9 @@
 //! Status command handler
 
-use crate::cli::output;
+use crate::cli::args::StatusArgs;
+use crate::cli::output::{self, OutputSettings};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Execute the status command
 ///
@@ -10,37 +11,20 @@ use std::path::PathBuf;
 ///
 /// # Arguments
 ///
+/// * `settings` - Output settings resolved once from the global flags
+/// * `args` - The `status` arguments (`--details`)
 /// * `config_override` - Optional config file path override
-/// * `json` - Output results in JSON format
-/// * `no_color` - Disable colored output
-/// * `plain` - ASCII-only output (no Unicode symbols)
-/// * `verbose` - Display detailed overlay mount information
 ///
 /// # Returns
 ///
 /// Never returns - exits with code 0 for status results, 3 for config load failures
-pub fn execute(
-    config_override: Option<PathBuf>,
-    json: bool,
-    no_color: bool,
-    plain: bool,
-    verbose: bool,
-) -> ! {
+pub fn execute(settings: &OutputSettings, args: &StatusArgs, config_override: Option<&Path>) -> ! {
     use nails_core::{NailsError, RealFilesystem, StatusCommand, status::SecurityPosture};
 
-    // Configure color output (must be done before any colored output)
-    // Story 14.7: Integrate output module with NO_COLOR/--no-color/--plain support
-    // Note: set_plain_mode() already handles colored::control::set_override()
-    nails_core::set_plain_mode(plain);
-    nails_core::set_color_enabled(
-        !(plain
-            || no_color
-            || std::env::var("NO_COLOR").is_ok()
-            || std::env::var(nails_core::constants::ENV_NO_COLOR).is_ok()),
-    );
+    let json = settings.is_json();
+    let style = settings.stdout_style();
 
-    // Load configuration (Story 14.1)
-    let loaded = super::load_config_or_exit(config_override.as_deref());
+    let loaded = super::load_config_or_exit(config_override);
     let config_path = loaded.path.clone();
     let config = loaded.into_config();
 
@@ -98,56 +82,35 @@ pub fn execute(
                     "{{\"state\":\"UNKNOWN\",\"security_posture\":\"warning\",\"error\":\"{}\"}}",
                     error_msg.replace('"', "\\\"")
                 );
-            } else if plain {
-                println!("=== NAILS Status Report ===");
-                println!();
-                println!("State:              UNKNOWN");
-                println!("Security Posture:   {}", posture.to_plain());
-                println!();
-                println!("Error: {}", error_msg);
-                println!();
-                println!("Run status with sufficient privileges or fix state file access");
             } else {
-                println!("╭─────────────────────────────────────╮");
-                println!("│  NAILS Status Report                │");
-                println!("╰─────────────────────────────────────╯");
-                println!();
+                output::print_status_header(style);
                 println!("State:              UNKNOWN");
-                println!("Security Posture:   {}", posture);
+                println!("Security Posture:   {}", posture.render(style));
                 println!();
                 println!("Error: {}", error_msg);
                 println!();
                 println!("Run status with sufficient privileges or fix state file access");
             }
             let _ = std::io::stdout().flush();
-            std::process::exit(0); // FR63: Always exit 0
+            std::process::exit(0); // Status always exits 0 once it produced a report
         }
     };
 
-    // Format output based on flags
     if json {
         output::print_status_json(&report);
-    } else if plain {
-        output::print_status_ascii(
-            &report,
-            verbose,
-            &config_path,
-            &state_path,
-            &hidden_volume_root,
-            &log_path,
-        );
     } else {
         output::print_status_human(
             &report,
-            verbose,
+            args.details,
             &config_path,
             &state_path,
             &hidden_volume_root,
             &log_path,
+            style,
         );
     }
 
-    // FR63: Status always succeeds (exit code 0)
+    // Status always succeeds (exit code 0) once it produced a report.
     let _ = std::io::stdout().flush();
     std::process::exit(0);
 }

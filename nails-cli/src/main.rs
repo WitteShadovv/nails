@@ -4,126 +4,69 @@
 //!
 //! The actual CLI logic is in lib.rs to allow for proper unit test coverage.
 
-use clap::Parser;
 use nails::cli::logging::StdoutFormat;
-use nails::cli::{Cli, Commands, execute_command};
+use nails::cli::{Cli, Commands, OutputSettings, execute_command};
 
-fn render_flags_for_command(command: &Commands) -> (bool, bool) {
+/// `activate --json` streams progress events as NDJSON on stdout ahead of the
+/// final result; every other command keeps diagnostics on stderr.
+fn stdout_format_for(command: &Commands, settings: &OutputSettings) -> StdoutFormat {
     match command {
-        Commands::Activate {
-            no_color, plain, ..
-        }
-        | Commands::Deactivate {
-            no_color, plain, ..
-        }
-        | Commands::Emergency {
-            no_color, plain, ..
-        }
-        | Commands::Status {
-            no_color, plain, ..
-        } => (*no_color, *plain),
-        _ => (false, false),
-    }
-}
-
-fn stdout_format_for_command(command: &Commands) -> StdoutFormat {
-    match command {
-        Commands::Activate { json: true, .. } => StdoutFormat::ActivateJsonStream,
+        Commands::Activate(_) if settings.is_json() => StdoutFormat::ActivateJsonStream,
         _ => StdoutFormat::Human,
     }
 }
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    // Parse CLI args to extract verbosity BEFORE initializing tracing
-    let cli = Cli::parse();
-    let (no_color, plain) = render_flags_for_command(&cli.command);
+    let cli = Cli::parse_checked();
 
-    // Configure output formatting (NO_COLOR environment variable)
-    nails_core::set_plain_mode(plain);
-    nails_core::set_color_enabled(
-        !(plain
-            || no_color
-            || std::env::var("NO_COLOR").is_ok()
-            || std::env::var(nails_core::constants::ENV_NO_COLOR).is_ok()),
+    // Resolve verbosity, colour and ASCII once, before anything prints.
+    let settings = OutputSettings::detect(&cli.global);
+    settings.install();
+
+    nails::cli::logging::init_subscriber(
+        &settings,
+        !cli.global.no_log_file,
+        cli.global.config.as_deref(),
+        stdout_format_for(&cli.command, &settings),
     );
 
-    let stdout_format = stdout_format_for_command(&cli.command);
-
-    // Initialize tracing subscriber with verbosity-aware filtering
-    // Story 9.3: Wire verbosity flags to tracing subscriber (AC #5)
-    nails::cli::logging::init_stdout_subscriber_with_mode(
-        cli.verbose,
-        cli.quiet,
-        cli.no_logs,
-        no_color,
-        plain,
-        cli.config.as_deref(),
-        stdout_format,
-    );
-
-    execute_command(cli)
+    execute_command(cli, &settings)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nails::cli::args::{ActivateArgs, VerifyArgs};
+    use nails::cli::output::OutputMode;
 
-    fn activate_command(json: bool) -> Commands {
-        Commands::Activate {
-            no_preflight: false,
-            quiet: false,
-            verbose: 0,
-            json,
-            no_color: false,
-            plain: false,
-            no_clear_history: false,
-            kill_session: false,
-            no_kill_session: false,
-            accept_pivot_risks: false,
-            no_pivot: false,
-            yes: false,
-            interactive: false,
-            nixos_flake: None,
-            dry_run: false,
-            overlay_only: false,
+    fn json() -> OutputSettings {
+        OutputSettings {
+            mode: OutputMode::Json,
+            ..OutputSettings::default()
         }
     }
 
     #[test]
-    fn status_render_flags_are_detected() {
-        let command = Commands::Status {
-            json: false,
-            no_color: true,
-            plain: false,
-            verbose: false,
-        };
-
-        assert_eq!(render_flags_for_command(&command), (true, false));
-    }
-
-    #[test]
-    fn non_rendering_commands_default_to_colored_human_mode() {
-        let command = Commands::Verify {
-            deep: false,
-            json: false,
-        };
-
-        assert_eq!(render_flags_for_command(&command), (false, false));
-    }
-
-    #[test]
     fn activate_json_uses_json_stream_stdout_format() {
+        let activate = Commands::Activate(ActivateArgs::default());
         assert_eq!(
-            stdout_format_for_command(&activate_command(true)),
+            stdout_format_for(&activate, &json()),
             StdoutFormat::ActivateJsonStream
         );
     }
 
     #[test]
     fn activate_without_json_uses_human_stdout_format() {
+        let activate = Commands::Activate(ActivateArgs::default());
         assert_eq!(
-            stdout_format_for_command(&activate_command(false)),
+            stdout_format_for(&activate, &OutputSettings::default()),
             StdoutFormat::Human
         );
+    }
+
+    #[test]
+    fn other_commands_with_json_keep_tracing_on_stderr() {
+        let verify = Commands::Verify(VerifyArgs::default());
+        assert_eq!(stdout_format_for(&verify, &json()), StdoutFormat::Human);
     }
 }

@@ -1,6 +1,9 @@
 use super::{
     DEACTIVATE_RECOVERY_GUIDANCE, deactivate_recovery_guidance, deactivate_success_json, execute,
 };
+use crate::cli::args::DeactivateArgs;
+use crate::cli::output::{OutputMode, OutputSettings};
+use nails_core::Verbosity;
 use nails_core::constants::{ENV_FORCE_DETACH, ENV_SKIP_DETACH};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -93,85 +96,53 @@ fn subprocess_deactivate_entrypoint() {
         .without_time()
         .try_init();
 
+    let keep_history = DeactivateArgs {
+        no_clear_history: true,
+    };
+    let json_debug = OutputSettings {
+        verbosity: Verbosity::Debug,
+        mode: OutputMode::Json,
+        ascii: true,
+        ..OutputSettings::default()
+    };
+    let with_verbosity = |verbosity| OutputSettings {
+        verbosity,
+        ..OutputSettings::default()
+    };
+    let config = config_override.as_deref();
+
     match case.as_str() {
         "invalid-config" => execute(
-            config_override,
-            false,
-            false,
-            0,
-            false,
-            false,
-            false,
+            &OutputSettings::default(),
+            &DeactivateArgs::default(),
+            config,
             report_root,
         ),
-        "inactive-error" => execute(
-            config_override,
-            true,
-            false,
-            2,
-            true,
-            true,
-            true,
-            allow_real_ops,
-        ),
-        "runtime-inactive-error" => execute(
-            config_override,
-            true,
-            false,
-            2,
-            true,
-            true,
-            true,
-            allow_real_ops,
-        ),
-        "detach-error-json" => execute(
-            config_override,
-            true,
-            false,
-            2,
-            true,
-            true,
-            true,
-            allow_real_ops,
-        ),
+        "inactive-error" | "runtime-inactive-error" | "detach-error-json" => {
+            execute(&json_debug, &keep_history, config, allow_real_ops)
+        }
         "detach-error-human" => execute(
-            config_override,
-            false,
-            false,
-            0,
-            false,
-            false,
-            false,
+            &OutputSettings::default(),
+            &DeactivateArgs::default(),
+            config,
             allow_real_ops,
         ),
         "real-ops-blocked" => execute(
-            config_override,
-            false,
-            false,
-            0,
-            false,
-            false,
-            false,
+            &OutputSettings::default(),
+            &DeactivateArgs::default(),
+            config,
             reject_real_ops,
         ),
         "real-ops-blocked-quiet" => execute(
-            config_override,
-            false,
-            true,
-            0,
-            false,
-            false,
-            false,
+            &with_verbosity(Verbosity::Quiet),
+            &DeactivateArgs::default(),
+            config,
             reject_real_ops,
         ),
         "real-ops-blocked-verbose" => execute(
-            config_override,
-            false,
-            false,
-            1,
-            false,
-            false,
-            false,
+            &with_verbosity(Verbosity::Verbose),
+            &DeactivateArgs::default(),
+            config,
             reject_real_ops,
         ),
         other => panic!("unknown deactivate subprocess case: {other}"),
@@ -422,8 +393,12 @@ fn execute_deactivate_blocks_disallowed_real_operations_with_verbose_mode() {
 }
 
 #[test]
-fn deactivate_plain_recovery_guidance_is_ascii_only() {
-    let combined = deactivate_recovery_guidance(true).join("\n");
+fn deactivate_ascii_recovery_guidance_is_ascii_only() {
+    let settings = OutputSettings {
+        ascii: true,
+        ..OutputSettings::default()
+    };
+    let combined = deactivate_recovery_guidance(&settings).join("\n");
 
     assert!(combined.is_ascii(), "guidance={combined}");
     assert!(combined.contains("[WARN]"));
@@ -449,7 +424,7 @@ fn deactivate_recovery_guidance_contains_expected_text() {
 
 #[test]
 fn deactivate_recovery_guidance_default_mode_uses_unicode_warning_text() {
-    let combined = deactivate_recovery_guidance(false).join("\n");
+    let combined = deactivate_recovery_guidance(&OutputSettings::default()).join("\n");
 
     assert!(combined.contains("⚠ Important"));
     assert!(combined.contains("hidden volume is dismounted"));

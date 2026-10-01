@@ -1,4 +1,6 @@
 use super::execute;
+use crate::cli::args::StatusArgs;
+use crate::cli::output::{OutputMode, OutputSettings};
 use std::path::PathBuf;
 
 const SUBPROCESS_TEST_NAME: &str = "cli::commands::status::tests::subprocess_status_entrypoint";
@@ -18,29 +20,6 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
         .expect("failed to run status subprocess test")
 }
 
-fn run_subprocess_with_env(
-    case: &str,
-    config_path: Option<&std::path::Path>,
-    envs: &[(&str, &str)],
-) -> std::process::Output {
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-    command
-        .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
-        .env("NAILS_STATUS_SUBPROCESS_CASE", case);
-
-    if let Some(path) = config_path {
-        command.env("NAILS_STATUS_SUBPROCESS_CONFIG", path);
-    }
-
-    for (key, value) in envs {
-        command.env(key, value);
-    }
-
-    command
-        .output()
-        .expect("failed to run status subprocess test")
-}
-
 #[test]
 fn subprocess_status_entrypoint() {
     let Ok(case) = std::env::var("NAILS_STATUS_SUBPROCESS_CASE") else {
@@ -49,17 +28,33 @@ fn subprocess_status_entrypoint() {
 
     let config_override = std::env::var_os("NAILS_STATUS_SUBPROCESS_CONFIG").map(PathBuf::from);
 
+    let config = config_override.as_deref();
+    let details = StatusArgs { details: true };
     match case.as_str() {
-        "plain" => execute(config_override, false, false, true, true),
-        "json" => execute(config_override, true, false, false, false),
-        "no-color" => execute(config_override, false, true, false, true),
-        "invalid-config" => execute(config_override, false, false, false, false),
+        "ascii" => execute(
+            &OutputSettings {
+                ascii: true,
+                ..OutputSettings::default()
+            },
+            &details,
+            config,
+        ),
+        "json" => execute(
+            &OutputSettings {
+                mode: OutputMode::Json,
+                ..OutputSettings::default()
+            },
+            &StatusArgs::default(),
+            config,
+        ),
+        "no-color" => execute(&OutputSettings::default(), &details, config),
+        "invalid-config" => execute(&OutputSettings::default(), &StatusArgs::default(), config),
         other => panic!("unknown status subprocess case: {other}"),
     }
 }
 
 #[test]
-fn execute_status_plain_mode_succeeds_with_missing_state_file() {
+fn execute_status_ascii_mode_succeeds_with_missing_state_file() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -76,7 +71,7 @@ fn execute_status_plain_mode_succeeds_with_missing_state_file() {
     )
     .unwrap();
 
-    let output = run_subprocess("plain", Some(config.path()));
+    let output = run_subprocess("ascii", Some(config.path()));
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success(), "stdout={stdout}");
@@ -133,12 +128,14 @@ fn execute_status_no_color_keeps_unicode_without_ansi() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success(), "stdout={stdout}");
-    assert!(stdout.contains("🟢") || stdout.contains("🟡") || stdout.contains("🔴"));
+    // A missing state file means the decoy is in use: neutral mark, not failure.
+    assert!(stdout.contains("○ DECOY"), "stdout={stdout}");
+    assert!(!stdout.contains("✗ DECOY"), "stdout={stdout}");
     assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
 }
 
 #[test]
-fn execute_status_no_color_env_keeps_unicode_without_ansi() {
+fn execute_status_ascii_mode_is_ascii_only() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -155,12 +152,13 @@ fn execute_status_no_color_env_keeps_unicode_without_ansi() {
     )
     .unwrap();
 
-    let output = run_subprocess_with_env("no-color", Some(config.path()), &[("NO_COLOR", "1")]);
+    let output = run_subprocess("ascii", Some(config.path()));
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success(), "stdout={stdout}");
-    assert!(!stdout.is_ascii(), "stdout={stdout}");
-    assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
+    assert!(stdout.is_ascii(), "stdout={stdout}");
+    assert!(stdout.contains("[DECOY]"), "stdout={stdout}");
+    assert!(!stdout.contains('\u{001b}'), "stdout={stdout}");
 }
 
 #[test]
@@ -202,7 +200,7 @@ fn execute_status_permission_denied_reports_unknown_not_inactive() {
     )
     .unwrap();
 
-    let output = run_subprocess("plain", Some(config.path()));
+    let output = run_subprocess("ascii", Some(config.path()));
 
     let mut restore = std::fs::metadata(&state_path).unwrap().permissions();
     restore.set_mode(0o600);
@@ -254,7 +252,7 @@ fn execute_status_no_color_verbose_reports_loaded_outcome() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success(), "stdout={stdout}");
-    assert!(stdout.contains("Verbose Details:"), "stdout={stdout}");
+    assert!(stdout.contains("Details:"), "stdout={stdout}");
     assert!(
         stdout.contains("State loaded:       normal"),
         "stdout={stdout}"
@@ -285,7 +283,7 @@ fn execute_status_no_color_verbose_reports_corrupt_state() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success(), "stdout={stdout}");
-    assert!(stdout.contains("Verbose Details:"), "stdout={stdout}");
+    assert!(stdout.contains("Details:"), "stdout={stdout}");
     assert!(
         stdout.contains("State loaded:       corrupt (state unknown, using defaults)"),
         "stdout={stdout}"

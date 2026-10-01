@@ -12,8 +12,9 @@
 
 mod dry_run;
 
+use crate::cli::args::ActivateArgs;
 use crate::cli::detach::maybe_detach_for_session_kill;
-use crate::cli::output;
+use crate::cli::output::{self, OutputSettings};
 
 use nails_core::{
     ActivateOptions, CliOverrides, Filesystem, NailsManager, NixOSBuilder, PreFlightCheck,
@@ -32,18 +33,9 @@ fn suspicious_check_name() -> String {
 ///
 /// # Parameters
 ///
-/// - `no_preflight`: Skip pre-flight checks (DANGEROUS - expert use only)
-/// - `quiet`: Quiet mode, only show final result
-/// - `verbose`: Verbosity level (0 = normal, 1 = verbose, 2+ = debug)
-/// - `json`: Output results in JSON format
-/// - `no_color`: Disable colored output
-/// - `plain`: ASCII-only output (no Unicode symbols)
-/// - `no_clear_history`: Skip clearing shell history on deactivation
-/// - `no_kill_session`: Do not kill graphical session (interactive mode)
-/// - `accept_pivot_risks`: Accept pivot mount fallback for any volume (degraded security)
-/// - `interactive`: Prompt for confirmations instead of auto-accepting
-/// - `nixos_flake`: Optional NixOS flake reference (e.g., /etc/nixos#hostname)
-/// - `config_override`: Optional path to configuration file
+/// - `settings`: Output settings resolved once from the global flags
+/// - `args`: The `activate` arguments
+/// - `config_override`: Optional path to configuration file (`--config`)
 /// - `check_real_ops`: Safety guard callback to verify real operations are allowed
 ///
 /// # Returns
@@ -51,45 +43,27 @@ fn suspicious_check_name() -> String {
 /// This function never returns normally - it always exits the process with an
 /// appropriate exit code (0 for success, 1 for activation failure, 2 for errors,
 /// 3 for a missing or invalid configuration file).
-#[allow(clippy::too_many_arguments)]
 pub fn execute(
-    no_preflight: bool,
-    quiet: bool,
-    verbose: u8,
-    json: bool,
-    no_color: bool,
-    plain: bool,
-    no_clear_history: bool,
-    no_kill_session: bool,
-    accept_pivot_risks: bool,
-    interactive: bool,
-    nixos_flake: Option<String>,
-    dry_run: bool,
-    overlay_only: bool,
-    config_override: Option<std::path::PathBuf>,
+    settings: &OutputSettings,
+    args: &ActivateArgs,
+    config_override: Option<&std::path::Path>,
     check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
 ) -> ! {
-    // Configure color output (must be done before any colored output)
-    // Story 14.7: Integrate output module with NO_COLOR/--no-color/--plain support
-    // Note: set_plain_mode() already handles colored::control::set_override()
-    nails_core::set_plain_mode(plain);
-    nails_core::set_color_enabled(
-        !(plain
-            || no_color
-            || std::env::var("NO_COLOR").is_ok()
-            || std::env::var(nails_core::constants::ENV_NO_COLOR).is_ok()),
-    );
-
-    // Convert CLI flags to Verbosity enum
-    let verbosity = if quiet {
-        Verbosity::Quiet
-    } else {
-        match verbose {
-            0 => Verbosity::Normal,
-            1 => Verbosity::Verbose,
-            _ => Verbosity::Debug, // 2+ maps to Debug
-        }
-    };
+    let ActivateArgs {
+        no_preflight,
+        no_clear_history,
+        kill_session: _,
+        no_kill_session,
+        accept_pivot_risks,
+        no_pivot: _,
+        yes: _,
+        interactive,
+        ref nixos_flake,
+        dry_run,
+        overlay_only,
+    } = *args;
+    let verbosity = settings.verbosity;
+    let json = settings.is_json();
 
     // Apply defaults: kill_session, yes, and no_pivot are enabled by default
     // Users must explicitly disable them with --no-kill-session, --interactive, or --accept-pivot-risks
@@ -103,10 +77,14 @@ pub fn execute(
         accept_pivot_risks,
         no_pivot,
         yes,
-        quiet,
-        verbosity: verbose,
+        quiet: settings.is_quiet(),
+        verbosity: match verbosity {
+            Verbosity::Quiet | Verbosity::Normal => 0,
+            Verbosity::Verbose => 1,
+            Verbosity::Debug => 2,
+        },
         json,
-        no_color,
+        no_color: !settings.color_stdout,
         overlay_only,
         skip_process_detection_override: None, // Use default test behavior
         session_kill_confirmed: false,
@@ -135,12 +113,12 @@ pub fn execute(
     // CLI flags override config file values
     let cli_overrides = CliOverrides {
         clear_history: if no_clear_history { Some(false) } else { None },
-        nixos_flake,
+        nixos_flake: nixos_flake.clone(),
     };
 
     // Strict load: a missing --config file, a typo or an unknown key exits 3
     // instead of silently activating with defaults.
-    let mut loaded = super::load_config_or_exit(config_override.as_deref());
+    let mut loaded = super::load_config_or_exit(config_override);
     loaded.apply_cli_overrides(&cli_overrides);
     let config = loaded.into_config();
 
@@ -152,7 +130,13 @@ pub fn execute(
 
     // --dry-run: preview activation steps without making changes
     if dry_run {
-        dry_run::execute_dry_run(&config, no_preflight, overlay_only, no_kill_session, plain);
+        dry_run::execute_dry_run(
+            &config,
+            no_preflight,
+            overlay_only,
+            no_kill_session,
+            settings.stdout_style(),
+        );
     }
 
     let state_path = config.state_file_path.clone();
@@ -356,7 +340,7 @@ pub fn execute(
             duration,
             &manager,
             shell_setup_result.as_ref(),
-            quiet,
+            settings,
         );
     }
 

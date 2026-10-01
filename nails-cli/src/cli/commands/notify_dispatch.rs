@@ -4,7 +4,9 @@
 //! dispatches them as desktop notifications via `notify-send`.
 //! Called by the XDG autostart entry after user login.
 
-use std::path::PathBuf;
+use std::path::Path;
+
+use crate::cli::output::OutputSettings;
 
 /// Execute the notify-dispatch command
 ///
@@ -13,10 +15,11 @@ use std::path::PathBuf;
 ///
 /// # Arguments
 ///
+/// * `settings` - Output settings resolved once from the global flags
 /// * `config_override` - Optional config file path override
-/// * `json` - Output results in JSON format
-pub fn execute(config_override: Option<PathBuf>, json: bool) -> ! {
-    let config = super::load_config_or_exit(config_override.as_deref()).into_config();
+pub fn execute(settings: &OutputSettings, config_override: Option<&Path>) -> ! {
+    let json = settings.is_json();
+    let config = super::load_config_or_exit(config_override).into_config();
 
     match nails_core::notification::dispatch_all(&config.hidden_volume_root) {
         Ok(initial_count) => {
@@ -77,6 +80,7 @@ pub fn execute(config_override: Option<PathBuf>, json: bool) -> ! {
 #[cfg(test)]
 mod tests {
     use super::execute;
+    use crate::cli::output::{OutputMode, OutputSettings};
     use std::path::PathBuf;
 
     const SUBPROCESS_TEST_NAME: &str =
@@ -107,8 +111,14 @@ mod tests {
             std::env::var_os("NAILS_NOTIFY_DISPATCH_SUBPROCESS_CONFIG").map(PathBuf::from);
 
         match case.as_str() {
-            "json" => execute(config_override, true),
-            "invalid-config" => execute(config_override, false),
+            "json" => execute(
+                &OutputSettings {
+                    mode: OutputMode::Json,
+                    ..OutputSettings::default()
+                },
+                config_override.as_deref(),
+            ),
+            "invalid-config" => execute(&OutputSettings::default(), config_override.as_deref()),
             other => panic!("unknown notify-dispatch subprocess case: {other}"),
         }
     }

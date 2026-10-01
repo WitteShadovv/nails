@@ -51,7 +51,7 @@ in
         write_overlay_compat_config("/tmp/preflight-overlay-compat.toml")
         result = run_command_capture(
             "preflight-overlay-compat",
-            "nails --config /tmp/preflight-overlay-compat.toml activate --dry-run --overlay-only --no-kill-session --plain",
+            "nails --config /tmp/preflight-overlay-compat.toml activate --dry-run --overlay-only --no-kill-session --ascii",
         )
         assert_command_succeeded(result)
         assert_result_contains(result, ["overlay-compatibility", "vfat", "snapshot pivot"], stream="stdout")
