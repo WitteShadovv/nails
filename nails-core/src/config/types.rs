@@ -34,7 +34,6 @@ pub fn get_default_hidden_volume_root() -> String {
 ///   (contents copied to tmpfs in RAM, then overlayed)
 /// - System library symlinks common in NixOS (/lib, /lib64, /sbin)
 /// - Filesystem recovery directory (/lost+found)
-/// - Non-standard user directories (/Downloads)
 ///
 /// Directories like /etc, /home, /nix, /var, /tmp, /srv, /root, /opt, /media
 /// ARE included by default for maximum forensic protection.
@@ -53,7 +52,6 @@ pub const DEFAULT_OVERLAY_EXCLUSIONS: &[&str] = &[
     "/lib64",
     "/sbin",
     "/lost+found",
-    "/Downloads",
 ];
 
 /// CLI argument overrides for configuration
@@ -74,15 +72,12 @@ pub const DEFAULT_OVERLAY_EXCLUSIONS: &[&str] = &[
 /// use nails_core::CliOverrides;
 ///
 /// let overrides = CliOverrides {
-///     preflight_checks: Some(false), // --no-preflight flag
+///     clear_history: Some(false), // --no-clear-history flag
 ///     ..Default::default()
 /// };
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
-    /// Override preflight_checks (--no-preflight sets to false)
-    pub preflight_checks: Option<bool>,
-
     /// Override clear_history (--no-clear-history sets to false)
     pub clear_history: Option<bool>,
 
@@ -189,7 +184,7 @@ pub struct Config {
     /// Directories to exclude from overlay in Auto mode, in addition to the defaults.
     /// These paths are merged with the default exclusion list.
     ///
-    /// **Default exclusions**: `/proc`, `/sys`, `/dev`, `/run`, `/mnt`, `/bin`, `/usr`, `/lib`, `/lib64`, `/sbin`, `/lost+found`, `/Downloads`
+    /// **Default exclusions**: `/proc`, `/sys`, `/dev`, `/run`, `/mnt`, `/bin`, `/usr`, `/lib`, `/lib64`, `/sbin`, `/lost+found`
     ///
     /// **Use case**: Exclude additional directories you don't want overlaid
     /// (e.g., `/nix` for Nix store performance). Note: `/boot` is NOT excluded
@@ -224,10 +219,6 @@ pub struct Config {
     #[serde(default = "super::defaults::default_clear_history")]
     pub clear_history: bool,
 
-    /// Whether to run preflight checks before activation
-    #[serde(default = "super::defaults::default_preflight_checks")]
-    pub preflight_checks: bool,
-
     /// Whether to show OpSec reminders based on uptime thresholds
     #[serde(default = "super::defaults::default_show_opsec_reminders")]
     pub show_opsec_reminders: bool,
@@ -244,14 +235,6 @@ pub struct Config {
     /// Runtime-only metadata: this is never read from or written to user config.
     #[serde(skip, default)]
     pub loaded_config_path: Option<PathBuf>,
-
-    /// Maximum log file size in megabytes before rotation
-    #[serde(default = "super::defaults::default_max_log_size_mb")]
-    pub max_log_size_mb: u64,
-
-    /// Number of days to retain log files
-    #[serde(default = "super::defaults::default_retention_days")]
-    pub retention_days: u64,
 
     /// Terminal color scheme configuration
     #[serde(default)]
@@ -297,10 +280,7 @@ pub const CONFIG_KEYS: &[&str] = &[
     "overlays",
     "minimum_space_mb",
     "clear_history",
-    "preflight_checks",
     "show_opsec_reminders",
-    "max_log_size_mb",
-    "retention_days",
     "prompt_label",
     "nixos_flake",
     "color_scheme",

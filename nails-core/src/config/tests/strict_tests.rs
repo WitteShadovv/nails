@@ -92,6 +92,25 @@ targt = "/home"
 }
 
 #[test]
+fn keys_without_an_effect_are_rejected() {
+    // Nothing ever read these: preflight checks are skipped only by
+    // `activate --no-preflight`, and log rotation is not wired up.
+    for key in [
+        "preflight_checks = false",
+        "max_log_size_mb = 20",
+        "retention_days = 3",
+    ] {
+        let message = load_error(&format!("{key}\n"));
+        let name = key.split(' ').next().unwrap();
+
+        assert!(
+            message.contains(&format!("unknown key `{name}`")),
+            "{message}"
+        );
+    }
+}
+
+#[test]
 fn unknown_overlay_mode_value_is_rejected_with_hint() {
     let message = load_error("overlay_mode = \"explict\"\n");
 
@@ -103,7 +122,7 @@ fn unknown_overlay_mode_value_is_rejected_with_hint() {
 
 #[test]
 fn wrong_type_is_rejected_with_location() {
-    let message = load_error("clear_history = true\nretention_days = \"seven\"\n");
+    let message = load_error("clear_history = true\nminimum_space_mb = \"500\"\n");
 
     assert!(message.contains("line 2"), "{message}");
     assert!(message.contains("invalid type"), "{message}");
@@ -236,27 +255,26 @@ fn init_template_escapes_unusual_paths() {
 
 #[test]
 fn sources_distinguish_file_default_derived_and_cli() {
-    let file = write_config("clear_history = false\nnixos_flake = \"/a#b\"\n");
+    let file = write_config("minimum_space_mb = 750\nnixos_flake = \"/a#b\"\n");
     let mut loaded = LoadedConfig::load(file.path()).unwrap();
 
     assert!(loaded.file_found);
-    assert_eq!(loaded.source("clear_history"), ValueSource::File);
+    assert_eq!(loaded.source("minimum_space_mb"), ValueSource::File);
     assert_eq!(loaded.source("nixos_flake"), ValueSource::File);
     assert_eq!(loaded.source("hidden_volume_root"), ValueSource::Derived);
     assert_eq!(loaded.source("state_file_path"), ValueSource::Derived);
-    assert_eq!(loaded.source("retention_days"), ValueSource::Default);
+    assert_eq!(loaded.source("clear_history"), ValueSource::Default);
 
     loaded.apply_cli_overrides(&CliOverrides {
         nixos_flake: Some("/c#d".to_string()),
-        preflight_checks: Some(false),
-        ..Default::default()
+        clear_history: Some(false),
     });
 
     assert_eq!(loaded.source("nixos_flake"), ValueSource::Cli);
-    assert_eq!(loaded.source("preflight_checks"), ValueSource::Cli);
-    assert_eq!(loaded.source("clear_history"), ValueSource::File);
+    assert_eq!(loaded.source("clear_history"), ValueSource::Cli);
+    assert_eq!(loaded.source("minimum_space_mb"), ValueSource::File);
     assert_eq!(loaded.config.nixos_flake.as_deref(), Some("/c#d"));
-    assert!(!loaded.config.preflight_checks);
+    assert!(!loaded.config.clear_history);
 }
 
 #[test]
@@ -325,7 +343,7 @@ target = "/home"
         "{rendered}"
     );
     assert!(
-        rendered.contains("retention_days = 7  # default"),
+        rendered.contains("minimum_space_mb = 500  # default"),
         "{rendered}"
     );
     assert!(
@@ -361,14 +379,14 @@ fn annotated_toml_notes_unset_optional_keys_and_missing_file() {
 
 #[test]
 fn json_rendering_carries_path_existence_config_and_sources() {
-    let file = write_config("retention_days = 3\n");
+    let file = write_config("minimum_space_mb = 750\n");
     let loaded = LoadedConfig::load(file.path()).unwrap();
 
     let json = loaded.to_json().unwrap();
     assert_eq!(json["path"], file.path().display().to_string());
     assert_eq!(json["exists"], true);
-    assert_eq!(json["config"]["retention_days"], 3);
-    assert_eq!(json["sources"]["retention_days"], "file");
+    assert_eq!(json["config"]["minimum_space_mb"], 750);
+    assert_eq!(json["sources"]["minimum_space_mb"], "file");
     assert_eq!(json["sources"]["hidden_volume_root"], "derived");
     assert_eq!(json["sources"]["clear_history"], "default");
     assert!(json["config"].get("loaded_config_path").is_none());

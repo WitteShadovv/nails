@@ -232,18 +232,11 @@ fn render_template(root: &Path, title: &str) -> String {
 # Clear shell history on deactivation.
 # clear_history = true
 
-# Run pre-flight checks before activation.
-# preflight_checks = true
-
 # Show OpSec reminders based on session uptime.
 # show_opsec_reminders = true
 
 # Minimum free space on the hidden volume for activation, in MB.
 # minimum_space_mb = 500
-
-# Log rotation.
-# max_log_size_mb = 10
-# retention_days = 7
 
 # Shell prompt indicator while the hidden environment is active. Empty shows
 # nothing; any text is visible on screen and in screenshots.

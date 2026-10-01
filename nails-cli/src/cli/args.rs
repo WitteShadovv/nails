@@ -224,10 +224,6 @@ pub enum ConfigCommand {
         #[arg(long = "flake", value_name = "FLAKE_REF", conflicts_with = "example")]
         nixos_flake: Option<String>,
 
-        /// Preview the effect of `activate --no-preflight`
-        #[arg(long, conflicts_with = "example")]
-        no_preflight: bool,
-
         /// Preview the effect of `activate --no-clear-history`
         #[arg(long, conflicts_with = "example")]
         no_clear_history: bool,

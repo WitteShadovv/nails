@@ -57,16 +57,18 @@ fn config_path_without_override_is_binary_relative() {
 
 #[test]
 fn config_show_annotates_sources_in_toml_and_json() {
-    let file = write_config("retention_days = 3\n");
+    let file = write_config("minimum_space_mb = 750\n");
     let path = file.path().to_str().unwrap();
 
     nails()
-        .args(["--config", path, "config", "show", "--no-preflight"])
+        .args(["--config", path, "config", "show", "--no-clear-history"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("retention_days = 3  # file"))
-        .stdout(predicate::str::contains("preflight_checks = false  # cli"))
-        .stdout(predicate::str::contains("clear_history = true  # default"))
+        .stdout(predicate::str::contains("minimum_space_mb = 750  # file"))
+        .stdout(predicate::str::contains("clear_history = false  # cli"))
+        .stdout(predicate::str::contains(
+            "show_opsec_reminders = true  # default",
+        ))
         .stdout(predicate::str::contains("# derived"));
 
     let output = nails()
@@ -76,8 +78,8 @@ fn config_show_annotates_sources_in_toml_and_json() {
     assert!(output.status.success());
     let value = stdout_json(&output);
     assert_eq!(value["exists"], true);
-    assert_eq!(value["config"]["retention_days"], 3);
-    assert_eq!(value["sources"]["retention_days"], "file");
+    assert_eq!(value["config"]["minimum_space_mb"], 750);
+    assert_eq!(value["sources"]["minimum_space_mb"], "file");
     assert_eq!(value["sources"]["hidden_volume_root"], "derived");
 }
 

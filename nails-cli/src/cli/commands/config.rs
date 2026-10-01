@@ -55,12 +55,10 @@ fn run(config_override: Option<&Path>, command: ConfigCommand) -> Outcome {
         ConfigCommand::Show {
             json,
             nixos_flake,
-            no_preflight,
             no_clear_history,
             ..
         } => {
             let overrides = CliOverrides {
-                preflight_checks: no_preflight.then_some(false),
                 clear_history: no_clear_history.then_some(false),
                 nixos_flake,
             };
@@ -153,7 +151,6 @@ mod tests {
             json,
             example: false,
             nixos_flake: None,
-            no_preflight: false,
             no_clear_history: false,
         }
     }
@@ -200,11 +197,11 @@ mod tests {
 
     #[test]
     fn show_renders_annotated_toml() {
-        let file = write_config("retention_days = 3\n");
+        let file = write_config("minimum_space_mb = 750\n");
         let outcome = run(Some(file.path()), show_command(false));
 
         assert_eq!(outcome.code, 0, "{outcome:?}");
-        assert!(outcome.stdout.contains("retention_days = 3  # file"));
+        assert!(outcome.stdout.contains("minimum_space_mb = 750  # file"));
         assert!(outcome.stdout.contains("clear_history = true  # default"));
         assert!(outcome.stdout.contains("hidden_volume_root = "));
         assert!(outcome.stdout.contains("# derived"));
@@ -219,17 +216,16 @@ mod tests {
                 json: true,
                 example: false,
                 nixos_flake: Some("/c#d".to_string()),
-                no_preflight: true,
-                no_clear_history: false,
+                no_clear_history: true,
             },
         );
         let value: serde_json::Value = serde_json::from_str(&outcome.stdout).unwrap();
 
         assert_eq!(value["config"]["nixos_flake"], "/c#d");
         assert_eq!(value["sources"]["nixos_flake"], "cli");
-        assert_eq!(value["config"]["preflight_checks"], false);
-        assert_eq!(value["sources"]["preflight_checks"], "cli");
-        assert_eq!(value["sources"]["clear_history"], "default");
+        assert_eq!(value["config"]["clear_history"], false);
+        assert_eq!(value["sources"]["clear_history"], "cli");
+        assert_eq!(value["sources"]["minimum_space_mb"], "default");
         assert_eq!(value["exists"], true);
     }
 
@@ -241,7 +237,6 @@ mod tests {
                 json: false,
                 example: true,
                 nixos_flake: None,
-                no_preflight: false,
                 no_clear_history: false,
             },
         );

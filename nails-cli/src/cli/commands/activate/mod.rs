@@ -135,7 +135,6 @@ pub fn execute(
 
     // CLI flags override config file values
     let cli_overrides = CliOverrides {
-        preflight_checks: if no_preflight { Some(false) } else { None },
         clear_history: if no_clear_history { Some(false) } else { None },
         nixos_flake,
     };

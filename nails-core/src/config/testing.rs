@@ -3,10 +3,7 @@
 use std::path::PathBuf;
 
 use super::colors::ColorSchemeConfig;
-use super::defaults::{
-    default_clear_history, default_max_log_size_mb, default_preflight_checks,
-    default_retention_days, default_show_opsec_reminders,
-};
+use super::defaults::{default_clear_history, default_show_opsec_reminders};
 use super::overlay::{OverlayConfig, OverlayMode};
 use super::types::{Config, DEFAULT_HIDDEN_VOLUME_ROOT};
 
@@ -57,12 +54,9 @@ impl Config {
             overlay_exclusions: vec![],
             overlay_exclusions_remove: vec![],
             clear_history: default_clear_history(),
-            preflight_checks: default_preflight_checks(),
             show_opsec_reminders: default_show_opsec_reminders(),
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root
             loaded_config_path: None,
-            max_log_size_mb: default_max_log_size_mb(),
-            retention_days: default_retention_days(),
             color_scheme: ColorSchemeConfig::default(),
             prompt_label: String::new(),
             nixos_flake: None,

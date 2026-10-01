@@ -140,10 +140,6 @@ pub(super) fn default_clear_history() -> bool {
     true
 }
 
-pub(super) fn default_preflight_checks() -> bool {
-    true
-}
-
 pub(super) fn default_show_opsec_reminders() -> bool {
     true
 }
@@ -151,14 +147,6 @@ pub(super) fn default_show_opsec_reminders() -> bool {
 pub(super) fn default_log_path() -> PathBuf {
     // Replaced by `{hidden_volume_root}/logs` when a config file omits it
     PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs")
-}
-
-pub(super) fn default_max_log_size_mb() -> u64 {
-    10
-}
-
-pub(super) fn default_retention_days() -> u64 {
-    7
 }
 
 impl Default for Config {
@@ -208,12 +196,9 @@ impl Default for Config {
             overlay_exclusions: vec![],
             overlay_exclusions_remove: vec![],
             clear_history: default_clear_history(),
-            preflight_checks: default_preflight_checks(),
             show_opsec_reminders: default_show_opsec_reminders(),
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root
             loaded_config_path: None,
-            max_log_size_mb: default_max_log_size_mb(),
-            retention_days: default_retention_days(),
             color_scheme: ColorSchemeConfig::default(),
             prompt_label: String::new(),
             nixos_flake: None,

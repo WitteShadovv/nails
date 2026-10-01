@@ -121,7 +121,7 @@ fn test_init_creates_directory_structure() {
         "the root must stay commented out so it is derived from the binary"
     );
     assert!(contents.contains("# clear_history = true"));
-    assert!(contents.contains("# preflight_checks = true"));
+    assert!(contents.contains("# minimum_space_mb = 500"));
     assert!(contents.contains("# nixos_flake = "));
     assert!(contents.contains("# [[overlays]]"));
     assert_eq!(contents, Config::init_template(tmp.path()));

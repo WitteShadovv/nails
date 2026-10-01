@@ -4,8 +4,7 @@ use std::path::PathBuf;
 
 use super::colors::ColorSchemeConfig;
 use super::defaults::{
-    default_clear_history, default_max_log_size_mb, default_minimum_space_mb,
-    default_preflight_checks, default_retention_days, default_show_opsec_reminders,
+    default_clear_history, default_minimum_space_mb, default_show_opsec_reminders,
     derive_hidden_volume_root,
 };
 use super::overlay::{OverlayConfig, OverlayMode};
@@ -38,11 +37,8 @@ pub struct ConfigBuilder {
     overlay_exclusions: Option<Vec<PathBuf>>,
     overlay_exclusions_remove: Option<Vec<PathBuf>>,
     clear_history: Option<bool>,
-    preflight_checks: Option<bool>,
     show_opsec_reminders: Option<bool>,
     log_path: Option<PathBuf>,
-    max_log_size_mb: Option<u64>,
-    retention_days: Option<u64>,
     color_scheme: Option<ColorSchemeConfig>,
 }
 
@@ -117,14 +113,6 @@ impl ConfigBuilder {
         self
     }
 
-    /// Set whether to run preflight checks before activation
-    ///
-    /// Default: `true`
-    pub fn preflight_checks(mut self, enabled: bool) -> Self {
-        self.preflight_checks = Some(enabled);
-        self
-    }
-
     /// Set whether to show OpSec reminders based on uptime thresholds
     ///
     /// Default: `true`
@@ -138,22 +126,6 @@ impl ConfigBuilder {
     /// Default: `{hidden_volume_root}/logs`
     pub fn log_path(mut self, path: PathBuf) -> Self {
         self.log_path = Some(path);
-        self
-    }
-
-    /// Set maximum log file size in megabytes before rotation
-    ///
-    /// Default: 10 MB
-    pub fn max_log_size_mb(mut self, size: u64) -> Self {
-        self.max_log_size_mb = Some(size);
-        self
-    }
-
-    /// Set number of days to retain log files
-    ///
-    /// Default: 7 days
-    pub fn retention_days(mut self, days: u64) -> Self {
-        self.retention_days = Some(days);
         self
     }
 
@@ -195,10 +167,6 @@ impl ConfigBuilder {
 
         let clear_history = self.clear_history.unwrap_or_else(default_clear_history);
 
-        let preflight_checks = self
-            .preflight_checks
-            .unwrap_or_else(default_preflight_checks);
-
         let show_opsec_reminders = self
             .show_opsec_reminders
             .unwrap_or_else(default_show_opsec_reminders);
@@ -207,10 +175,6 @@ impl ConfigBuilder {
         let log_path = self
             .log_path
             .unwrap_or_else(|| hidden_volume_root.join("logs"));
-
-        let max_log_size_mb = self.max_log_size_mb.unwrap_or_else(default_max_log_size_mb);
-
-        let retention_days = self.retention_days.unwrap_or_else(default_retention_days);
 
         let color_scheme = self.color_scheme.unwrap_or_default();
 
@@ -223,12 +187,9 @@ impl ConfigBuilder {
             overlay_exclusions,
             overlay_exclusions_remove,
             clear_history,
-            preflight_checks,
             show_opsec_reminders,
             log_path,
             loaded_config_path: None,
-            max_log_size_mb,
-            retention_days,
             color_scheme,
             prompt_label: String::new(),
             nixos_flake: None,

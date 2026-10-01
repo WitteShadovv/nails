@@ -19,17 +19,14 @@ impl Config {
     ///
     /// let mut config = Config::default();
     /// let overrides = CliOverrides {
-    ///     preflight_checks: Some(false),
+    ///     clear_history: Some(false),
     ///     ..Default::default()
     /// };
     ///
     /// config.apply_cli_overrides(&overrides);
-    /// assert!(!config.preflight_checks);
+    /// assert!(!config.clear_history);
     /// ```
     pub fn apply_cli_overrides(&mut self, overrides: &CliOverrides) {
-        if let Some(v) = overrides.preflight_checks {
-            self.preflight_checks = v;
-        }
         if let Some(v) = overrides.clear_history {
             self.clear_history = v;
         }
@@ -43,9 +40,6 @@ impl CliOverrides {
     /// Top-level config keys this set of overrides replaces.
     pub(super) fn overridden_keys(&self) -> Vec<&'static str> {
         let mut keys = Vec::new();
-        if self.preflight_checks.is_some() {
-            keys.push("preflight_checks");
-        }
         if self.clear_history.is_some() {
             keys.push("clear_history");
         }

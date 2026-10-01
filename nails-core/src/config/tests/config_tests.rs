@@ -32,13 +32,10 @@ fn test_config_default() {
     assert_eq!(config.overlays[2].name, "etc");
     assert_eq!(config.overlays[3].name, "var");
     assert!(config.clear_history);
-    assert!(config.preflight_checks);
     assert!(config.show_opsec_reminders);
     assert_eq!(config.minimum_space_mb, 500);
     // log_path should be derived from hidden_volume_root
     assert_eq!(config.log_path, config.hidden_volume_root.join("logs"));
-    assert_eq!(config.max_log_size_mb, 10);
-    assert_eq!(config.retention_days, 7);
 }
 
 #[test]
@@ -54,13 +51,10 @@ fn test_config_test_default() {
     assert_eq!(config.overlays[2].name, "etc");
     assert_eq!(config.overlays[3].name, "var");
     assert!(config.clear_history);
-    assert!(config.preflight_checks);
     assert_eq!(
         config.log_path,
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs")
     );
-    assert_eq!(config.max_log_size_mb, 10);
-    assert_eq!(config.retention_days, 7);
 }
 
 #[test]
@@ -172,11 +166,8 @@ fn test_builder_with_all_fields_specified() {
         .overlay_exclusions_remove(vec![PathBuf::from("/mnt")])
         .minimum_space_mb(1000)
         .clear_history(false)
-        .preflight_checks(false)
         .show_opsec_reminders(false)
         .log_path(PathBuf::from("/custom/logs"))
-        .max_log_size_mb(20)
-        .retention_days(14)
         .build()
         .expect("Build should succeed");
 
@@ -194,11 +185,8 @@ fn test_builder_with_all_fields_specified() {
     );
     assert_eq!(config.minimum_space_mb, 1000);
     assert!(!config.clear_history);
-    assert!(!config.preflight_checks);
     assert!(!config.show_opsec_reminders);
     assert_eq!(config.log_path, PathBuf::from("/custom/logs"));
-    assert_eq!(config.max_log_size_mb, 20);
-    assert_eq!(config.retention_days, 14);
 }
 
 #[test]
@@ -217,10 +205,7 @@ fn test_builder_with_minimal_fields_applies_defaults() {
     assert_eq!(config.overlay_mode, OverlayMode::Auto);
     assert_eq!(config.minimum_space_mb, 500);
     assert!(config.clear_history);
-    assert!(config.preflight_checks);
     assert_eq!(config.log_path, PathBuf::from("/mnt/hidden/logs"));
-    assert_eq!(config.max_log_size_mb, 10);
-    assert_eq!(config.retention_days, 7);
 }
 
 #[test]
@@ -276,11 +261,8 @@ fn test_load_valid_toml_file() {
         r##"
 hidden_volume_root = "/mnt/test-volume"
 clear_history = false
-preflight_checks = true
 show_opsec_reminders = false
 log_path = "/mnt/test-volume/custom-logs"
-max_log_size_mb = 20
-retention_days = 14
 minimum_space_mb = 750
 prompt_label = "ctx"
 nixos_flake = "/mnt/test-volume/nixos#host"
@@ -302,14 +284,11 @@ reset = false
     let config = Config::load(file.path()).unwrap();
     assert_eq!(config.hidden_volume_root, PathBuf::from("/mnt/test-volume"));
     assert!(!config.clear_history);
-    assert!(config.preflight_checks);
     assert!(!config.show_opsec_reminders);
     assert_eq!(
         config.log_path,
         PathBuf::from("/mnt/test-volume/custom-logs")
     );
-    assert_eq!(config.max_log_size_mb, 20);
-    assert_eq!(config.retention_days, 14);
     assert_eq!(config.minimum_space_mb, 750);
     assert_eq!(config.prompt_label, "ctx");
     assert_eq!(
@@ -373,11 +352,11 @@ fn test_load_file_not_found_error() {
 
 #[test]
 fn test_load_without_root_derives_it() {
-    let file = write_config("clear_history = true\npreflight_checks = true\n");
+    let file = write_config("clear_history = true\nshow_opsec_reminders = true\n");
 
     let config = Config::load(file.path()).expect("root is optional");
     assert!(config.clear_history);
-    assert!(config.preflight_checks);
+    assert!(config.show_opsec_reminders);
     assert_eq!(config.hidden_volume_root, derive_hidden_volume_root());
     assert_eq!(
         config.state_file_path,
@@ -393,7 +372,6 @@ fn test_load_partial_config_with_defaults() {
     let config = Config::load(file.path()).unwrap();
     assert_eq!(config.hidden_volume_root, PathBuf::from("/mnt/partial"));
     assert!(!config.clear_history);
-    assert!(config.preflight_checks);
     assert!(config.show_opsec_reminders);
 }
 
@@ -466,21 +444,8 @@ fn test_load_or_default_with_invalid_file_returns_error() {
 #[test]
 fn test_cli_overrides_default() {
     let overrides = CliOverrides::default();
-    assert!(overrides.preflight_checks.is_none());
     assert!(overrides.clear_history.is_none());
     assert!(overrides.nixos_flake.is_none());
-}
-
-#[test]
-fn test_apply_cli_overrides_preflight_checks() {
-    let mut config = Config::default();
-    assert!(config.preflight_checks);
-
-    config.apply_cli_overrides(&CliOverrides {
-        preflight_checks: Some(false),
-        ..Default::default()
-    });
-    assert!(!config.preflight_checks);
 }
 
 #[test]
@@ -598,7 +563,7 @@ fn test_compute_effective_exclusions_defaults_only() {
 
     let exclusions = config.compute_effective_exclusions();
 
-    assert_eq!(exclusions.len(), 12);
+    assert_eq!(exclusions.len(), 11);
     assert!(exclusions.contains(&PathBuf::from("/proc")));
     assert!(exclusions.contains(&PathBuf::from("/sys")));
     assert!(exclusions.contains(&PathBuf::from("/dev")));
@@ -610,6 +575,8 @@ fn test_compute_effective_exclusions_defaults_only() {
     assert!(exclusions.contains(&PathBuf::from("/lib")));
     assert!(exclusions.contains(&PathBuf::from("/lib64")));
     assert!(exclusions.contains(&PathBuf::from("/sbin")));
+    assert!(exclusions.contains(&PathBuf::from("/lost+found")));
+    assert!(!exclusions.contains(&PathBuf::from("/Downloads")));
 }
 
 #[test]
@@ -621,7 +588,7 @@ fn test_compute_effective_exclusions_with_user_additions() {
 
     let exclusions = config.compute_effective_exclusions();
 
-    assert_eq!(exclusions.len(), 14);
+    assert_eq!(exclusions.len(), 13);
     assert!(exclusions.contains(&PathBuf::from("/proc")));
     assert!(exclusions.contains(&PathBuf::from("/custom1")));
     assert!(exclusions.contains(&PathBuf::from("/custom2")));
@@ -641,7 +608,7 @@ fn test_compute_effective_exclusions_with_user_removals() {
     let exclusions = config.compute_effective_exclusions();
 
     // /boot is not a default, so only two entries are removed
-    assert_eq!(exclusions.len(), 10);
+    assert_eq!(exclusions.len(), 9);
     assert!(exclusions.contains(&PathBuf::from("/proc")));
     assert!(!exclusions.contains(&PathBuf::from("/mnt")));
     assert!(!exclusions.contains(&PathBuf::from("/boot")));
@@ -671,7 +638,7 @@ fn test_compute_effective_exclusions_combined_add_and_remove() {
 
     let exclusions = config.compute_effective_exclusions();
 
-    assert_eq!(exclusions.len(), 12);
+    assert_eq!(exclusions.len(), 11);
     assert!(exclusions.contains(&PathBuf::from("/custom")));
     assert!(!exclusions.contains(&PathBuf::from("/mnt")));
 }
