@@ -5453,19 +5453,29 @@ fn test_activation_injects_import_block_into_overlayed_hardware_config() {
         .get_written_content(&PathBuf::from("/etc/nixos/hardware-configuration.nix"))
         .expect("Injection should write overlayed hardware config");
 
-    // AC2: Injected import present and first in imports list
-    let nails_pos = written
-        .find("./nails/configuration.nix")
-        .expect("nails import should be injected");
-    let existing_pos = written
-        .find("installer/scan/not-detected.nix")
-        .expect("original imports should remain");
-    assert!(nails_pos < existing_pos, "nails import should be first");
-
-    // AC3: Base content preserved (underlay unchanged in effect)
+    // The live hardware-configuration.nix becomes the fixed wrapper importing
+    // the preserved base and the hidden module.
     assert!(
-        written.contains("boot.loader.grub.enable = true;"),
-        "Original hardware config should be preserved"
+        written.contains("./nails/configuration.nix"),
+        "wrapper should import the hidden module"
+    );
+    assert!(
+        written.contains("./hardware-configuration.base.nix"),
+        "wrapper should import the preserved base"
+    );
+    assert!(
+        !written.contains("installer/scan/not-detected.nix"),
+        "wrapper must not inline the original hardware config"
+    );
+
+    // The original content is preserved verbatim in the base file.
+    let base_written = fs
+        .get_written_content(&PathBuf::from("/etc/nixos/hardware-configuration.base.nix"))
+        .expect("Injection should preserve the original as the base file");
+    assert!(base_written.contains("installer/scan/not-detected.nix"));
+    assert!(
+        base_written.contains("boot.loader.grub.enable = true;"),
+        "Original hardware config should be preserved in the base file"
     );
 }
 
@@ -7042,10 +7052,16 @@ fn test_nixos_build_logs_fast_path_when_fingerprint_matches_and_generation_exist
     let hw_content = fs
         .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.nix"))
         .unwrap();
+    // The wrapper's real hardware content lives in the base file; both feed the
+    // fingerprint exactly as the manager combines them.
+    let base_content = fs
+        .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.base.nix"))
+        .unwrap_or_default();
     let cfg_content = fs
         .read_file_content(&hidden_root.join("config/nixos/configuration.nix"))
         .unwrap();
-    let fingerprint = compute_config_fingerprint(&hw_content, &cfg_content);
+    let fingerprint =
+        compute_config_fingerprint(&format!("{hw_content}\n{base_content}"), &cfg_content);
 
     let upper_home = hidden_root.join("overlays/home/upper");
     let work_home = hidden_root.join("overlays/home/work");
@@ -7113,10 +7129,16 @@ fn test_nixos_build_does_not_take_fast_path_when_generation_missing() {
     let hw_content = fs
         .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.nix"))
         .unwrap();
+    // The wrapper's real hardware content lives in the base file; both feed the
+    // fingerprint exactly as the manager combines them.
+    let base_content = fs
+        .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.base.nix"))
+        .unwrap_or_default();
     let cfg_content = fs
         .read_file_content(&hidden_root.join("config/nixos/configuration.nix"))
         .unwrap();
-    let fingerprint = compute_config_fingerprint(&hw_content, &cfg_content);
+    let fingerprint =
+        compute_config_fingerprint(&format!("{hw_content}\n{base_content}"), &cfg_content);
 
     let upper_home = hidden_root.join("overlays/home/upper");
     let work_home = hidden_root.join("overlays/home/work");
@@ -7184,7 +7206,9 @@ fn test_nixos_build_uses_empty_content_when_both_reads_fail() {
     fs.mock_set_mount_should_fail("/home", true);
     fs.mock_set_path_exists("/", true);
 
-    let fingerprint = compute_config_fingerprint("", "");
+    // All three hidden config reads fail, so the wrapper and base contents are
+    // both empty and the manager fingerprints the "{empty}\n{empty}" material.
+    let fingerprint = compute_config_fingerprint("\n", "");
     let upper_home = hidden_root.join("overlays/home/upper");
     let work_home = hidden_root.join("overlays/home/work");
     std::fs::create_dir_all(&upper_home).unwrap();

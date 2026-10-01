@@ -1,5 +1,6 @@
 use super::*;
 use crate::filesystem::MockFilesystem;
+use std::sync::Arc;
 
 #[test]
 fn test_nixos_config_check_success() {
@@ -158,11 +159,20 @@ fn test_nixos_config_check_missing_modified_hardware_config() {
         .expect("Auto-created hardware config should be readable");
     assert!(
         created.contains("./nails/configuration.nix"),
-        "Auto-created config should include hidden import"
+        "Auto-created wrapper should include hidden import"
     );
     assert!(
-        created.contains("# base config"),
-        "Auto-created config should preserve base content"
+        created.contains("./hardware-configuration.base.nix"),
+        "Auto-created wrapper should import the preserved base"
+    );
+    let base = fs
+        .read_file_content(&PathBuf::from(
+            "/mnt/hidden/etc/nixos/hardware-configuration.base.nix",
+        ))
+        .expect("Preserved base config should be readable");
+    assert!(
+        base.contains("# base config"),
+        "Base config content should be preserved verbatim in the base file"
     );
 }
 
@@ -475,4 +485,99 @@ fn test_nixos_config_check_integration_with_registry() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, "nixos-config");
     assert!(results[0].1.is_pass());
+}
+
+/// A parser seam used to drive the parse gate without invoking nix-instantiate.
+#[derive(Debug)]
+struct FixedNixParser {
+    result: std::result::Result<(), String>,
+}
+
+impl crate::NixParser for FixedNixParser {
+    fn parse_file(&self, _path: &std::path::Path) -> std::result::Result<(), String> {
+        self.result.clone()
+    }
+}
+
+fn valid_hidden_config(fs: &MockFilesystem) {
+    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+
+    fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_file_content(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        "{ ... }: {\n  imports = [\n    ./hardware-configuration.base.nix\n    ./nails/configuration.nix\n  ];\n}\n",
+    );
+    fs.mock_set_path_exists(
+        "/mnt/hidden/etc/nixos/hardware-configuration.base.nix",
+        true,
+    );
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.base.nix",
+        "file",
+    );
+    fs.mock_set_file_content(
+        "/mnt/hidden/etc/nixos/hardware-configuration.base.nix",
+        "{ config, lib, pkgs, ... }:\n{ }\n",
+    );
+    fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
+    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", "file");
+    fs.mock_set_file_content(
+        "/mnt/hidden/config/nixos/configuration.nix",
+        "{ ... }: { }\n",
+    );
+}
+
+#[test]
+fn test_nixos_config_check_passes_when_parser_accepts() {
+    let fs = MockFilesystem::new();
+    valid_hidden_config(&fs);
+
+    let check = NixOSConfigCheck::with_parser(
+        PathBuf::from("/mnt/hidden"),
+        Arc::new(FixedNixParser { result: Ok(()) }),
+    );
+    let result = check.run(&fs).expect("Check should not error");
+    assert!(result.is_pass(), "valid structure and parse should pass");
+}
+
+#[test]
+fn test_nixos_config_check_fails_on_parse_error_before_mount() {
+    let fs = MockFilesystem::new();
+    valid_hidden_config(&fs);
+
+    let check = NixOSConfigCheck::with_parser(
+        PathBuf::from("/mnt/hidden"),
+        Arc::new(FixedNixParser {
+            result: Err("syntax error, unexpected '='".to_string()),
+        }),
+    );
+    let result = check.run(&fs).expect("Check should not error");
+
+    assert!(
+        result.is_fail(),
+        "a syntax error must fail preflight before any mount"
+    );
+    assert!(
+        result.message().contains("failed to parse"),
+        "message should explain the parse failure: {}",
+        result.message()
+    );
+    assert!(
+        result.message().contains("syntax error, unexpected '='"),
+        "message should carry the parser diagnostic: {}",
+        result.message()
+    );
+
+    // No overlay mount is attempted: the check only reads the mock filesystem.
+    let mounted = fs
+        .mock_ops()
+        .iter()
+        .any(|op| matches!(op, crate::filesystem::MockOp::MountOverlay { .. }));
+    assert!(!mounted, "preflight must not mount anything");
 }

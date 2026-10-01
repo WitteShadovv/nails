@@ -1,238 +1,162 @@
-//! NixOS configuration import injection and Nix source parsing helpers.
+//! NixOS hardware-configuration wrapper staging and parse checking.
 
+use super::{HARDWARE_BASE_CONFIG_FILE, HARDWARE_CONFIG_FILE, HARDWARE_WRAPPER};
 use crate::error::Result;
 use crate::filesystem::Filesystem;
-use std::path::PathBuf;
+use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
+use std::path::Path;
 
-/// Ensure the hardware configuration includes the NAILS import block.
+/// Ensures the overlayed `/etc/nixos/hardware-configuration.nix` is the NAILS wrapper.
 ///
-/// Returns updated content when the import is missing, or the original content
-/// when the import is already present (idempotent).
-pub fn ensure_nails_import_block(content: &str) -> String {
-    if contains_active_path(content, "./nails/configuration.nix") {
-        return content.to_string();
-    }
-
-    const NAILS_ENTRY: &str = "    ./nails/configuration.nix";
-    const INJECTED_BLOCK: &str =
-        "# NAILS: injected import (do not edit)\nimports = [\n  ./nails/configuration.nix\n];\n\n";
-
-    if let Some(imports_pos) = find_imports_bracket(content) {
-        // An imports = [ ... ] block exists — insert our entry as the first element.
-        let (before, after) = content.split_at(imports_pos);
-        format!("{}{}\n{}", before, NAILS_ENTRY, after)
-    } else {
-        // No imports block — prepend a complete one.
-        format!("{}{}", INJECTED_BLOCK, content)
-    }
-}
-
-/// Injects a NAILS import block into the overlayed `/etc/nixos/hardware-configuration.nix`.
+/// This must be called **after** the `/etc` overlay has been mounted so that
+/// writes land in the overlay upper layer, leaving the base underlay
+/// forensically clean.
 ///
-/// This function must be called **after** the `/etc` overlay has been mounted so that
-/// writes land in the overlay upper layer, leaving the base underlay forensically clean.
+/// ## Behaviour
 ///
-/// ## Injection behaviour
+/// Instead of editing the original Nix source, the original file is preserved
+/// verbatim as `hardware-configuration.base.nix` and `hardware-configuration.nix`
+/// is replaced with a fixed wrapper that imports the base file and the hidden
+/// module ([`HARDWARE_WRAPPER`]). The wrapper is a constant, so the result is
+/// always valid Nix no matter how the original file was written.
 ///
-/// * If no `imports` attribute exists in the file, a complete block is **prepended**:
-///   ```nix
-///   # NAILS: injected import (do not edit)
-///   imports = [
-///     ./nails/configuration.nix
-///   ];
-///   ```
-/// * If an `imports = [` attribute already exists, `./nails/configuration.nix` is inserted
-///   as the **first** element without adding a second `imports` attribute.
-/// * If `./nails/configuration.nix` is already present the function is a **no-op**
-///   (idempotent).
+/// The function is idempotent: once the base file exists and the live file is
+/// already the wrapper, it is a no-op. On a non-NixOS system (no
+/// `hardware-configuration.nix`) it skips gracefully.
 ///
 /// ## Errors
 ///
 /// Returns `Err(NailsError::NixOSError)` on permission or I/O failure.
 pub fn inject_import_block<F: Filesystem>(fs: &F) -> Result<()> {
-    let target = PathBuf::from("/etc/nixos/hardware-configuration.nix");
+    let dir = Path::new("/etc/nixos");
+    let hardware = dir.join(HARDWARE_CONFIG_FILE);
 
-    if !fs.path_exists(&target)? {
-        // Non-NixOS systems may not have this file — skip injection gracefully.
+    if !fs.path_exists(&hardware)? {
+        // Non-NixOS systems may not have this file — skip gracefully.
         tracing::debug!(
-            "inject_import_block: /etc/nixos/hardware-configuration.nix not found, skipping (non-NixOS system?)"
+            "inject_import_block: {} not found, skipping (non-NixOS system?)",
+            hardware.display()
         );
         return Ok(());
     }
 
-    let content = fs.read_file_content(&target)?;
-
-    let new_content = ensure_nails_import_block(&content);
-    if new_content == content {
-        tracing::debug!("inject_import_block: ./nails/configuration.nix already present, skipping");
-        return Ok(());
+    if ensure_hardware_wrapper(fs, dir)? {
+        tracing::info!(
+            "inject_import_block: staged hardware-configuration wrapper under {}",
+            dir.display()
+        );
+    } else {
+        tracing::debug!("inject_import_block: hardware-configuration wrapper already in place");
     }
-
-    fs.write_file_content(&target, &new_content)?;
-    tracing::info!(
-        "inject_import_block: injected ./nails/configuration.nix into {}",
-        target.display()
-    );
     Ok(())
 }
 
-/// Returns the byte offset of the character **immediately after** the opening `[` of the
-/// first `imports = [` (or `imports=[`) attribute found in `content`, so that a new entry
-/// can be inserted there as the first element.
+/// Ensures `hardware-configuration.nix` under `dir` is the NAILS wrapper, with
+/// the original preserved as `hardware-configuration.base.nix`.
 ///
-/// Returns `None` if no `imports` attribute is present.
-fn find_imports_bracket(content: &str) -> Option<usize> {
-    // Match `imports` followed by optional whitespace, `=`, optional whitespace, `[`
-    let bytes = content.as_bytes();
-    let search = b"imports";
+/// Returns `Ok(true)` when a write was performed and `Ok(false)` when nothing
+/// changed (already wrapped). The caller guarantees `hardware-configuration.nix`
+/// exists unless the base file is already present.
+pub(crate) fn ensure_hardware_wrapper<F: Filesystem>(fs: &F, dir: &Path) -> Result<bool> {
+    let hardware = dir.join(HARDWARE_CONFIG_FILE);
+    let base = dir.join(HARDWARE_BASE_CONFIG_FILE);
 
-    let mut i = 0usize;
-    let mut in_string = false;
-    let mut in_comment = false;
-
-    while i < bytes.len() {
-        let b = bytes[i];
-
-        if in_comment {
-            if b == b'\n' {
-                in_comment = false;
-            }
-            i += 1;
-            continue;
+    if fs.path_exists(&base)? {
+        // The original is already preserved; make sure the live file is the
+        // wrapper (idempotent — second run is a no-op).
+        if fs.path_exists(&hardware)? && fs.read_file_content(&hardware)? == HARDWARE_WRAPPER {
+            return Ok(false);
         }
-
-        if in_string {
-            if b == b'\\' {
-                // Skip escaped char in string
-                i = i.saturating_add(2);
-                continue;
-            }
-            if b == b'"' {
-                in_string = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if b == b'#' {
-            in_comment = true;
-            i += 1;
-            continue;
-        }
-        if b == b'"' {
-            in_string = true;
-            i += 1;
-            continue;
-        }
-
-        if i + search.len() > bytes.len() {
-            break;
-        }
-
-        if &bytes[i..i + search.len()] != search {
-            i += 1;
-            continue;
-        }
-
-        // Ensure we're not matching a larger identifier or dotted access (e.g., config.imports)
-        let prev = if i == 0 { None } else { Some(bytes[i - 1]) };
-        if prev.is_some_and(|p| is_ident_char(p) || p == b'.') {
-            i += 1;
-            continue;
-        }
-        let next = bytes.get(i + search.len()).copied();
-        if next.is_some_and(is_ident_char) {
-            i += 1;
-            continue;
-        }
-
-        // Skip whitespace after "imports"
-        let mut j = i + search.len();
-        while j < bytes.len() && is_whitespace(bytes[j]) {
-            j += 1;
-        }
-        // Expect '='
-        if j >= bytes.len() || bytes[j] != b'=' {
-            i += 1;
-            continue;
-        }
-        j += 1;
-        // Skip whitespace after '='
-        while j < bytes.len() && is_whitespace(bytes[j]) {
-            j += 1;
-        }
-        // Expect '['
-        if j >= bytes.len() || bytes[j] != b'[' {
-            i += 1;
-            continue;
-        }
-        // Return position right after the '[', then skip to the next line start so our
-        // inserted entry appears on its own line.
-        j += 1; // move past '['
-        if j < bytes.len() && bytes[j] == b'\n' {
-            j += 1;
-        }
-        return Some(j);
-    }
-    None
-}
-
-fn contains_active_path(content: &str, path: &str) -> bool {
-    let bytes = content.as_bytes();
-    let needle = path.as_bytes();
-
-    let mut i = 0usize;
-    let mut in_string = false;
-    let mut in_comment = false;
-
-    while i < bytes.len() {
-        let b = bytes[i];
-
-        if in_comment {
-            if b == b'\n' {
-                in_comment = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_string {
-            if b == b'\\' {
-                i = i.saturating_add(2);
-                continue;
-            }
-            if b == b'"' {
-                in_string = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if b == b'#' {
-            in_comment = true;
-            i += 1;
-            continue;
-        }
-        if b == b'"' {
-            in_string = true;
-            i += 1;
-            continue;
-        }
-
-        if i + needle.len() <= bytes.len() && &bytes[i..i + needle.len()] == needle {
-            return true;
-        }
-
-        i += 1;
+        fs.write_file_content(&hardware, HARDWARE_WRAPPER)?;
+        return Ok(true);
     }
 
-    false
+    // First run: preserve the original verbatim, then install the wrapper.
+    let original = fs.read_file_content(&hardware)?;
+    if original == HARDWARE_WRAPPER {
+        // Wrapper present without a base file: there is nothing to preserve, and
+        // writing the base from the wrapper would make it import itself. Leave
+        // the live file untouched rather than create that cycle.
+        return Ok(false);
+    }
+    fs.write_file_content(&base, &original)?;
+    fs.write_file_content(&hardware, HARDWARE_WRAPPER)?;
+    Ok(true)
 }
 
-fn is_ident_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+/// Parses Nix source files without evaluating them.
+///
+/// Implementations check only syntax; they never evaluate expressions, follow
+/// imports, or copy anything into a Nix store.
+pub trait NixParser: Send + Sync + std::fmt::Debug {
+    /// Parse the file at `path`.
+    ///
+    /// Returns `Ok(())` when the file parses, or `Err(message)` carrying the
+    /// parser's diagnostic when it does not.
+    fn parse_file(&self, path: &Path) -> std::result::Result<(), String>;
 }
 
-fn is_whitespace(b: u8) -> bool {
-    b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
+/// Parses Nix files with `nix-instantiate --parse`.
+///
+/// `--parse` lexes and parses the single named file only: it does not evaluate
+/// it, follow its imports, or realise anything into a store. In test and
+/// test-like runtimes the host guard refuses external programs, so the parse is
+/// skipped there; the gate is a production defence exercised through an injected
+/// parser in unit tests.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RealNixParser;
+
+impl NixParser for RealNixParser {
+    fn parse_file(&self, path: &Path) -> std::result::Result<(), String> {
+        if crate::runtime_safety::should_skip_host_interaction() {
+            return Ok(());
+        }
+
+        let command = ProcessCommand::tool("nix-instantiate")
+            .arg("--parse")
+            .arg(path);
+        match RealProcessRunner.run_text(&command) {
+            Ok((true, _, _)) => Ok(()),
+            Ok((false, _, stderr)) => {
+                let message = stderr.trim();
+                if message.is_empty() {
+                    Err("nix-instantiate --parse reported a syntax error".to_string())
+                } else {
+                    Err(message.to_string())
+                }
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// Parse-checks the composed hardware configuration under `etc_nixos_dir`.
+///
+/// Parses the wrapper, the preserved base file, and the hidden module, in that
+/// order, skipping any that do not exist (they are created elsewhere; this gate
+/// only rejects files that exist and fail to parse). `nix-instantiate --parse`
+/// does not follow imports, so each file is parsed explicitly. Returns the first
+/// parser error, prefixed with the offending path.
+pub fn parse_check_composed_config<F: Filesystem>(
+    parser: &dyn NixParser,
+    fs: &F,
+    etc_nixos_dir: &Path,
+    hidden_module: &Path,
+) -> Result<std::result::Result<(), String>> {
+    let candidates = [
+        etc_nixos_dir.join(HARDWARE_CONFIG_FILE),
+        etc_nixos_dir.join(HARDWARE_BASE_CONFIG_FILE),
+        hidden_module.to_path_buf(),
+    ];
+
+    for file in candidates {
+        if !fs.path_exists(&file)? {
+            continue;
+        }
+        if let Err(message) = parser.parse_file(&file) {
+            return Ok(Err(format!("{}: {}", file.display(), message)));
+        }
+    }
+
+    Ok(Ok(()))
 }

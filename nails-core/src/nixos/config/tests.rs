@@ -409,108 +409,181 @@ fn test_verify_base_config_clean_allows_unrelated_filesystem_entry() {
     assert!(is_clean, "An unrelated fileSystems entry must stay clean");
 }
 
-#[test]
-fn test_inject_import_block_no_imports_prepends_full_block() {
-    let fs = MockFilesystem::new();
-    let target = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
+const LIVE_HARDWARE: &str = "/etc/nixos/hardware-configuration.nix";
+const LIVE_BASE: &str = "/etc/nixos/hardware-configuration.base.nix";
 
-    // Create base config without imports
-    let original = "{ config, pkgs, ... }: {\n  boot.loader.grub.enable = true;\n}";
-    <MockFilesystem as Filesystem>::write_file_content(&fs, &target, original).unwrap();
+fn seed_live_hardware(fs: &MockFilesystem, content: &str) {
+    fs.mock_set_path_exists(LIVE_HARDWARE, true);
+    fs.mock_set_path_type(LIVE_HARDWARE, "file");
+    <MockFilesystem as Filesystem>::write_file_content(
+        fs,
+        std::path::Path::new(LIVE_HARDWARE),
+        content,
+    )
+    .unwrap();
+}
 
-    // Inject import block
-    inject_import_block(&fs).unwrap();
+fn read_live(fs: &MockFilesystem, path: &str) -> String {
+    <MockFilesystem as Filesystem>::read_file_content(fs, std::path::Path::new(path)).unwrap()
+}
 
-    // Verify import was prepended
-    let content = <MockFilesystem as Filesystem>::read_file_content(&fs, &target).unwrap();
-    assert!(content.contains("# NAILS: injected import"));
-    assert!(content.contains("imports = ["));
-    assert!(content.contains("./nails/configuration.nix"));
+/// The wrapper is identical regardless of the original's shape, and the original
+/// is preserved verbatim in `hardware-configuration.base.nix`.
+fn assert_wrapped(fs: &MockFilesystem, original: &str) {
+    assert_eq!(
+        read_live(fs, LIVE_HARDWARE),
+        HARDWARE_WRAPPER,
+        "hardware-configuration.nix must become the fixed wrapper"
+    );
     assert!(
-        content.contains(original),
-        "Original content should be preserved"
+        contains_nails_import(&read_live(fs, LIVE_HARDWARE)),
+        "wrapper must still import ./nails/configuration.nix"
+    );
+    assert_eq!(
+        read_live(fs, LIVE_BASE),
+        original,
+        "original hardware-configuration.nix must be preserved verbatim as the base"
     );
 }
 
 #[test]
-fn test_inject_import_block_idempotent_when_already_injected() {
+fn test_inject_import_block_wraps_config_with_imports() {
     let fs = MockFilesystem::new();
-    let target = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
+    let original = "{ config, pkgs, ... }: {\n  imports = [\n    ./sub.nix\n  ];\n}\n";
+    seed_live_hardware(&fs, original);
 
-    // Create config that already has the import
-    let original = "imports = [ ./nails/configuration.nix ];\n{ config, pkgs, ... }: { }";
-    <MockFilesystem as Filesystem>::write_file_content(&fs, &target, original).unwrap();
-
-    // Inject import block (should be no-op)
     inject_import_block(&fs).unwrap();
 
-    // Verify content unchanged
-    let content = <MockFilesystem as Filesystem>::read_file_content(&fs, &target).unwrap();
-    assert_eq!(
-        content, original,
-        "Content should be unchanged (idempotent)"
-    );
+    assert_wrapped(&fs, original);
 }
 
 #[test]
-fn test_ensure_nails_import_block_inserts_into_existing_imports_as_first_entry() {
-    let original = "{ ... }: {\n  imports = [\n    ./foo.nix\n    ./bar.nix\n  ];\n}\n";
+fn test_inject_import_block_wraps_config_without_imports() {
+    let fs = MockFilesystem::new();
+    let original = "{ config, pkgs, ... }: {\n  boot.loader.grub.enable = true;\n}\n";
+    seed_live_hardware(&fs, original);
 
-    let updated = ensure_nails_import_block(original);
+    inject_import_block(&fs).unwrap();
 
-    assert_eq!(
-        updated,
-        "{ ... }: {\n  imports = [\n    ./nails/configuration.nix\n    ./foo.nix\n    ./bar.nix\n  ];\n}\n"
-    );
+    assert_wrapped(&fs, original);
 }
 
 #[test]
-fn test_ensure_nails_import_block_detects_imports_without_spaces() {
-    let original = "{ ... }: {\n  imports=[\n    ./foo.nix\n  ];\n}\n";
-
-    let updated = ensure_nails_import_block(original);
-
-    assert_eq!(
-        updated,
-        "{ ... }: {\n  imports=[\n    ./nails/configuration.nix\n    ./foo.nix\n  ];\n}\n"
-    );
-}
-
-#[test]
-fn test_ensure_nails_import_block_ignores_commented_out_nails_path() {
+fn test_inject_import_block_wraps_config_with_lib_optionals() {
+    let fs = MockFilesystem::new();
+    // A form that the old text-patcher could not handle safely.
     let original =
-        "{ ... }: {\n  # ./nails/configuration.nix\n  imports = [\n    ./foo.nix\n  ];\n}\n";
+        "{ config, lib, ... }: {\n  imports = lib.optionals true [ ./foo.nix ] ++ [ ];\n}\n";
+    seed_live_hardware(&fs, original);
 
-    let updated = ensure_nails_import_block(original);
+    inject_import_block(&fs).unwrap();
 
+    assert_wrapped(&fs, original);
+}
+
+#[test]
+fn test_inject_import_block_second_run_is_noop() {
+    let fs = MockFilesystem::new();
+    let original = "{ config, pkgs, ... }: {\n  boot.loader.grub.enable = true;\n}\n";
+    seed_live_hardware(&fs, original);
+
+    inject_import_block(&fs).unwrap();
+    assert_wrapped(&fs, original);
+
+    // Second run must not rewrite the live file or clobber the preserved base.
+    inject_import_block(&fs).unwrap();
+    assert_wrapped(&fs, original);
+}
+
+#[test]
+fn test_inject_import_block_skips_when_hardware_config_absent() {
+    let fs = MockFilesystem::new();
+
+    // Non-NixOS host: no hardware-configuration.nix at all.
+    inject_import_block(&fs).unwrap();
+
+    assert!(
+        <MockFilesystem as Filesystem>::read_file_content(&fs, std::path::Path::new(LIVE_BASE))
+            .is_err(),
+        "no base file should be created when there is no hardware-configuration.nix"
+    );
+}
+
+#[derive(Debug)]
+struct ScriptedNixParser {
+    failing: std::collections::HashSet<std::path::PathBuf>,
+    parsed: std::sync::Mutex<Vec<std::path::PathBuf>>,
+}
+
+impl ScriptedNixParser {
+    fn new(failing: &[&str]) -> Self {
+        Self {
+            failing: failing.iter().map(std::path::PathBuf::from).collect(),
+            parsed: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl NixParser for ScriptedNixParser {
+    fn parse_file(&self, path: &std::path::Path) -> std::result::Result<(), String> {
+        self.parsed.lock().unwrap().push(path.to_path_buf());
+        if self.failing.contains(path) {
+            Err("syntax error, unexpected '='".to_string())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn test_parse_check_composed_config_skips_missing_files_and_passes() {
+    let fs = MockFilesystem::new();
+    let etc = std::path::PathBuf::from("/mnt/hidden/etc/nixos");
+    let module = std::path::PathBuf::from("/mnt/hidden/config/nixos/configuration.nix");
+
+    // Only the wrapper and the module exist; base.nix is absent.
+    fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
+
+    let parser = ScriptedNixParser::new(&[]);
+    let result = parse_check_composed_config(&parser, &fs, &etc, &module).unwrap();
+    assert!(result.is_ok(), "no file fails to parse");
+
+    let parsed = parser.parsed.lock().unwrap();
     assert_eq!(
-        updated,
-        "{ ... }: {\n  # ./nails/configuration.nix\n  imports = [\n    ./nails/configuration.nix\n    ./foo.nix\n  ];\n}\n"
+        *parsed,
+        vec![
+            std::path::PathBuf::from("/mnt/hidden/etc/nixos/hardware-configuration.nix"),
+            module,
+        ],
+        "only existing files are parsed, in composed order, base.nix skipped"
     );
 }
 
 #[test]
-fn test_ensure_nails_import_block_ignores_string_literal_nails_path() {
-    let original = "{ ... }: {\n  environment.etc.\"example\".text = \"./nails/configuration.nix\";\n  imports = [\n    ./foo.nix\n  ];\n}\n";
+fn test_parse_check_composed_config_reports_first_syntax_error() {
+    let fs = MockFilesystem::new();
+    let etc = std::path::PathBuf::from("/mnt/hidden/etc/nixos");
+    let module = std::path::PathBuf::from("/mnt/hidden/config/nixos/configuration.nix");
 
-    let updated = ensure_nails_import_block(original);
-
-    assert_eq!(
-        updated,
-        "{ ... }: {\n  environment.etc.\"example\".text = \"./nails/configuration.nix\";\n  imports = [\n    ./nails/configuration.nix\n    ./foo.nix\n  ];\n}\n"
+    fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_exists(
+        "/mnt/hidden/etc/nixos/hardware-configuration.base.nix",
+        true,
     );
-}
+    fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
 
-#[test]
-fn test_ensure_nails_import_block_ignores_dotted_and_larger_identifier_matches() {
-    let original =
-        "{ ... }: {\n  config.imports = [ ./foo.nix ];\n  importsExtra = [ ./bar.nix ];\n}\n";
+    let parser = ScriptedNixParser::new(&["/mnt/hidden/etc/nixos/hardware-configuration.base.nix"]);
+    let result = parse_check_composed_config(&parser, &fs, &etc, &module).unwrap();
 
-    let updated = ensure_nails_import_block(original);
-
-    assert_eq!(
-        updated,
-        "# NAILS: injected import (do not edit)\nimports = [\n  ./nails/configuration.nix\n];\n\n{ ... }: {\n  config.imports = [ ./foo.nix ];\n  importsExtra = [ ./bar.nix ];\n}\n"
+    let message = result.expect_err("base file has a syntax error");
+    assert!(
+        message.contains("hardware-configuration.base.nix"),
+        "error must name the offending file: {message}"
+    );
+    assert!(
+        message.contains("syntax error"),
+        "error must carry the parser message: {message}"
     );
 }
 
@@ -768,14 +841,23 @@ fn test_ensure_hidden_hardware_configuration_bootstraps_from_base_config() {
 
     ensure_hidden_hardware_configuration(&fs, &hidden_path, &base_hardware).unwrap();
 
+    let hidden_base = hidden_path.join("etc/nixos/hardware-configuration.base.nix");
     let content = <MockFilesystem as Filesystem>::read_file_content(&fs, &hidden_hardware).unwrap();
-    assert!(content.contains("modulesPath + \"/installer/scan/not-detected.nix\""));
-    assert!(content.contains("./nails/configuration.nix"));
+    assert_eq!(
+        content, HARDWARE_WRAPPER,
+        "hidden hardware-configuration.nix must be the fixed wrapper"
+    );
+    let base = <MockFilesystem as Filesystem>::read_file_content(&fs, &hidden_base).unwrap();
+    assert!(
+        base.contains("modulesPath + \"/installer/scan/not-detected.nix\""),
+        "the decoy hardware config must be preserved verbatim as the base"
+    );
     assert_eq!(
         fs.mock_get_permissions(&hidden_path.join("etc/nixos")),
         Some(0o700)
     );
     assert_eq!(fs.mock_get_permissions(&hidden_hardware), Some(0o600));
+    assert_eq!(fs.mock_get_permissions(&hidden_base), Some(0o600));
 }
 
 #[test]
@@ -809,10 +891,19 @@ fn test_ensure_hidden_hardware_configuration_updates_existing_hidden_file() {
 
     ensure_hidden_hardware_configuration(&fs, &hidden_path, &base_hardware).unwrap();
 
+    let hidden_base = hidden_path.join("etc/nixos/hardware-configuration.base.nix");
     let content = <MockFilesystem as Filesystem>::read_file_content(&fs, &hidden_hardware).unwrap();
-    assert!(content.contains("networking.hostName = \"hidden\";"));
-    assert!(content.contains("./nails/configuration.nix"));
+    assert_eq!(
+        content, HARDWARE_WRAPPER,
+        "an existing hidden config is migrated to the wrapper"
+    );
+    let base = <MockFilesystem as Filesystem>::read_file_content(&fs, &hidden_base).unwrap();
+    assert!(
+        base.contains("networking.hostName = \"hidden\";"),
+        "the previous hidden config is preserved verbatim as the base"
+    );
     assert_eq!(fs.mock_get_permissions(&hidden_hardware), Some(0o600));
+    assert_eq!(fs.mock_get_permissions(&hidden_base), Some(0o600));
 }
 
 #[test]
@@ -951,7 +1042,8 @@ fn test_ensure_hidden_hardware_configuration_errors_when_write_fails() {
     let err = ensure_hidden_hardware_configuration(&fs, &hidden_path, &base_hardware).unwrap_err();
     assert!(
         err.to_string()
-            .contains("Failed to write hidden hardware-configuration.nix")
+            .contains("Failed to stage hidden hardware-configuration wrapper"),
+        "unexpected error: {err}"
     );
 }
 
@@ -1134,7 +1226,9 @@ fn test_ensure_hidden_hardware_configuration_real_filesystem_bootstraps_permissi
     ensure_hidden_hardware_configuration(&crate::RealFilesystem, &hidden_path, &base_hardware)
         .unwrap();
 
+    let hidden_base = hidden_etc_nixos.join("hardware-configuration.base.nix");
     let content = std::fs::read_to_string(&hidden_hardware).unwrap();
+    let base_content = std::fs::read_to_string(&hidden_base).unwrap();
     let dir_mode = std::fs::metadata(&hidden_etc_nixos)
         .unwrap()
         .permissions()
@@ -1145,11 +1239,18 @@ fn test_ensure_hidden_hardware_configuration_real_filesystem_bootstraps_permissi
         .permissions()
         .mode()
         & 0o777;
+    let base_mode = std::fs::metadata(&hidden_base)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
 
+    assert_eq!(content, HARDWARE_WRAPPER);
     assert!(content.contains("./nails/configuration.nix"));
-    assert!(content.contains("modulesPath + \"/installer/scan/not-detected.nix\""));
+    assert!(base_content.contains("modulesPath + \"/installer/scan/not-detected.nix\""));
     assert_eq!(dir_mode, 0o700);
     assert_eq!(file_mode, 0o600);
+    assert_eq!(base_mode, 0o600);
 }
 
 #[test]

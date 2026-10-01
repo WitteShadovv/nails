@@ -144,10 +144,17 @@ fn test_init_creates_directory_structure() {
     let hidden_hardware_meta = fs::metadata(&hidden_hardware).unwrap();
     assert_eq!(hidden_hardware_meta.permissions().mode() & 0o777, 0o600);
     let hidden_hardware_contents = fs::read_to_string(&hidden_hardware).unwrap();
+    // hardware-configuration.nix is the fixed wrapper importing the preserved
+    // base and the hidden module.
     assert!(hidden_hardware_contents.contains("./nails/configuration.nix"));
-    assert!(
-        hidden_hardware_contents.contains("modulesPath + \"/installer/scan/not-detected.nix\"")
-    );
+    assert!(hidden_hardware_contents.contains("./hardware-configuration.base.nix"));
+
+    let hidden_base = tmp.path().join("etc/nixos/hardware-configuration.base.nix");
+    assert!(hidden_base.is_file());
+    let hidden_base_meta = fs::metadata(&hidden_base).unwrap();
+    assert_eq!(hidden_base_meta.permissions().mode() & 0o777, 0o600);
+    let hidden_base_contents = fs::read_to_string(&hidden_base).unwrap();
+    assert!(hidden_base_contents.contains("modulesPath + \"/installer/scan/not-detected.nix\""));
 
     let staged_dir = tmp.path().join("etc/nixos/nails");
     let staged_dir_meta = fs::metadata(&staged_dir).unwrap();

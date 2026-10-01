@@ -122,9 +122,10 @@ pub use verify::{
 
 // NixOS profile builder exports
 pub use nixos::{
-    NixOSBuilder, NixOSConfigInfo, compute_config_fingerprint, ensure_hidden_configuration_module,
-    ensure_hidden_hardware_configuration, inject_import_block, prepare_nixos_config_overlay,
-    stage_hidden_config_symlink, verify_base_config_clean,
+    NixOSBuilder, NixOSConfigInfo, NixParser, RealNixParser, compute_config_fingerprint,
+    ensure_hidden_configuration_module, ensure_hidden_hardware_configuration, inject_import_block,
+    parse_check_composed_config, prepare_nixos_config_overlay, stage_hidden_config_symlink,
+    verify_base_config_clean,
 };
 pub(crate) use nixos::{classify_nixos_failure_category, format_classified_nixos_failure};
 

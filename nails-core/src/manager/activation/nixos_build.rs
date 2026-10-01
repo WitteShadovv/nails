@@ -38,12 +38,19 @@ impl<F: Filesystem> NailsManager<F> {
             .config
             .hidden_volume_root
             .join("etc/nixos/hardware-configuration.nix");
+        // hardware-configuration.nix is now a fixed wrapper, so the real
+        // hardware config lives in hardware-configuration.base.nix. Both feed
+        // the fingerprint so edits to the original still trigger a rebuild.
+        let base_path = self
+            .config
+            .hidden_volume_root
+            .join("etc/nixos/hardware-configuration.base.nix");
         let cfg_path = self
             .config
             .hidden_volume_root
             .join("config/nixos/configuration.nix");
 
-        let hw_content = match self.filesystem.read_file_content(&hw_path) {
+        let wrapper_content = match self.filesystem.read_file_content(&hw_path) {
             Ok(content) => content,
             Err(e) => {
                 tracing::warn!(
@@ -54,6 +61,18 @@ impl<F: Filesystem> NailsManager<F> {
                 String::new()
             }
         };
+        let base_content = match self.filesystem.read_file_content(&base_path) {
+            Ok(content) => content,
+            Err(e) => {
+                tracing::warn!(
+                    path = %base_path.display(),
+                    error = %e,
+                    "Failed to read hardware-configuration.base.nix for fingerprint, using empty content"
+                );
+                String::new()
+            }
+        };
+        let hw_content = format!("{wrapper_content}\n{base_content}");
         let cfg_content = match self.filesystem.read_file_content(&cfg_path) {
             Ok(content) => content,
             Err(e) => {

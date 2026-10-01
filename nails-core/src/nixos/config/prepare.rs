@@ -161,13 +161,25 @@ pub fn ensure_hidden_configuration_module<F: Filesystem>(fs: &F, hidden_path: &P
     Ok(())
 }
 
+/// Stages the hidden `/etc/nixos` hardware configuration as a wrapper.
+///
+/// The original hardware configuration is preserved verbatim as
+/// `hardware-configuration.base.nix` and `hardware-configuration.nix` becomes a
+/// fixed wrapper that imports the base file plus `./nails/configuration.nix`
+/// (see [`super::HARDWARE_WRAPPER`]). This never edits Nix source text, so the
+/// staged file is always valid Nix regardless of the original's shape.
+///
+/// On a fresh hidden store (neither file present) the base is seeded from
+/// `base_hardware_config` (the decoy `/etc/nixos/hardware-configuration.nix`). An
+/// existing store is migrated in place and left unchanged on subsequent runs.
 pub fn ensure_hidden_hardware_configuration<F: Filesystem>(
     fs: &F,
     hidden_path: &Path,
     base_hardware_config: &Path,
 ) -> Result<()> {
     let hidden_etc_nixos = hidden_path.join("etc/nixos");
-    let hidden_hardware = hidden_etc_nixos.join("hardware-configuration.nix");
+    let hidden_hardware = hidden_etc_nixos.join(super::HARDWARE_CONFIG_FILE);
+    let hidden_base = hidden_etc_nixos.join(super::HARDWARE_BASE_CONFIG_FILE);
 
     if !fs.path_exists(&hidden_etc_nixos)? {
         fs.create_directory(&hidden_etc_nixos).map_err(|e| {
@@ -187,28 +199,27 @@ pub fn ensure_hidden_hardware_configuration<F: Filesystem>(
         ))
     })?;
 
-    let hidden_exists = fs.path_exists(&hidden_hardware)?;
-    let source_content = if hidden_exists {
-        fs.read_file_content(&hidden_hardware).map_err(|e| {
-            NailsError::NixOSError(format!(
-                "Failed to read hidden hardware-configuration.nix at {}: {}",
-                hidden_hardware.display(),
-                e
-            ))
-        })?
-    } else {
-        fs.read_file_content(base_hardware_config).map_err(|e| {
+    let base_exists = fs.path_exists(&hidden_base)?;
+    let hardware_exists = fs.path_exists(&hidden_hardware)?;
+
+    if !base_exists && !hardware_exists {
+        // Fresh hidden store: seed the base from the decoy hardware config, then
+        // install the wrapper.
+        let seed = fs.read_file_content(base_hardware_config).map_err(|e| {
             NailsError::NixOSError(format!(
                 "Failed to bootstrap hidden hardware-configuration.nix from {}: {}",
                 base_hardware_config.display(),
                 e
             ))
-        })?
-    };
-
-    let ensured_content = super::ensure_nails_import_block(&source_content);
-    if !hidden_exists || ensured_content != source_content {
-        fs.write_file_content(&hidden_hardware, &ensured_content)
+        })?;
+        fs.write_file_content(&hidden_base, &seed).map_err(|e| {
+            NailsError::NixOSError(format!(
+                "Failed to write hidden hardware-configuration.base.nix at {}: {}",
+                hidden_base.display(),
+                e
+            ))
+        })?;
+        fs.write_file_content(&hidden_hardware, super::HARDWARE_WRAPPER)
             .map_err(|e| {
                 NailsError::NixOSError(format!(
                     "Failed to write hidden hardware-configuration.nix at {}: {}",
@@ -216,6 +227,26 @@ pub fn ensure_hidden_hardware_configuration<F: Filesystem>(
                     e
                 ))
             })?;
+    } else {
+        // Existing store: ensure the wrapper (idempotent; an older in-place
+        // edited file is preserved verbatim as the base on first migration).
+        super::inject::ensure_hardware_wrapper(fs, &hidden_etc_nixos).map_err(|e| {
+            NailsError::NixOSError(format!(
+                "Failed to stage hidden hardware-configuration wrapper at {}: {}",
+                hidden_hardware.display(),
+                e
+            ))
+        })?;
+    }
+
+    if fs.path_exists(&hidden_base)? {
+        fs.set_permissions(&hidden_base, 0o600).map_err(|e| {
+            NailsError::NixOSError(format!(
+                "Failed to set permissions on hidden hardware-configuration.base.nix at {}: {}",
+                hidden_base.display(),
+                e
+            ))
+        })?;
     }
 
     fs.set_permissions(&hidden_hardware, 0o600).map_err(|e| {

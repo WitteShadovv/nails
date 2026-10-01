@@ -1,5 +1,12 @@
 # Test 32: Config Inject Hardware Imports
 # Checklist: subtests, deterministic waits, hard assertions, meta.tags, shared helpers, forensic invariants preserved.
+#
+# Covers the hardware-configuration wrapper: instead of text-patching Nix source,
+# activation preserves the original hardware-configuration.nix as
+# hardware-configuration.base.nix and replaces it with a fixed wrapper that
+# imports the base file plus ./nails/configuration.nix. The decoy file here has
+# NO imports attribute at all — the shape the old text-patcher turned into
+# invalid Nix — so this proves the wrapper is valid regardless of the original.
 
 { self, ... }:
 let
@@ -60,14 +67,32 @@ in
         )
         return "PATH=/var/lib/nails-tests/nails-wrapper/bin:$PATH"
 
+    # Replace the decoy hardware-configuration.nix (a store-managed symlink) with
+    # a plain file that has NO imports attribute at all.
+    def install_decoy_without_imports():
+        machine.succeed(
+            """rm -f /etc/nixos/hardware-configuration.nix
+    cat > /etc/nixos/hardware-configuration.nix <<'EOF'
+    { config, lib, pkgs, ... }:
+    {
+      boot.loader.grub.enable = false;
+    }
+    EOF"""
+        )
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
     headless_config = "/var/lib/nails-tests/nails-headless.toml"
     write_headless_config(headless_config)
     wrapper_env = install_nixos_rebuild_wrapper("/var/lib/nails-tests/nixos-rebuild-hardware-imports.log")
+    install_decoy_without_imports()
 
-    with subtest("first full activation auto-creates hidden hardware config with import"):
+    # Sanity: the decoy really has no imports list.
+    decoy = machine.succeed("cat /etc/nixos/hardware-configuration.nix")
+    assert "imports" not in decoy, f"decoy fixture should have no imports attribute, got: {decoy!r}"
+
+    with subtest("first activation generates a valid wrapper from a no-imports hardware file"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.fail("test -e /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
         machine.succeed("""cat > /mnt/hidden-volume/config/nixos/configuration.nix <<'EOF'
@@ -78,39 +103,66 @@ in
         machine.succeed(f"{wrapper_env} nails --config {headless_config} activate --session keep -y")
         assert_status_state_local("Active", headless_config)
         assert_overlay_mounted_local("/etc")
-        first_rebuild_log = machine.succeed("cat /var/lib/nails-tests/nixos-rebuild-hardware-imports.log")
-        assert "test" in first_rebuild_log, f"Expected nixos-rebuild test invocation, got: {first_rebuild_log!r}"
-        assert "-I nixos-config=/etc/nixos/configuration.nix" in first_rebuild_log, \
-            f"Expected legacy nixos-rebuild invocation, got: {first_rebuild_log!r}"
-        first_hidden_hardware = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
-        assert first_hidden_hardware.count("./nails/configuration.nix") == 1, \
-            f"Expected exactly one injected import after first activation, got: {first_hidden_hardware!r}"
+
+        # The hidden hardware config is the fixed wrapper; the original is preserved
+        # verbatim as the base file.
+        hidden_wrapper = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
+        assert hidden_wrapper.count("./nails/configuration.nix") == 1, \
+            f"wrapper should import the hidden module exactly once, got: {hidden_wrapper!r}"
+        assert "./hardware-configuration.base.nix" in hidden_wrapper, \
+            f"wrapper should import the preserved base, got: {hidden_wrapper!r}"
+        hidden_base = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.base.nix")
+        assert "boot.loader.grub.enable = false;" in hidden_base, \
+            f"base should preserve the original hardware config, got: {hidden_base!r}"
+        assert "imports" not in hidden_base, \
+            f"base should be the verbatim no-imports original, got: {hidden_base!r}"
+
+        # The composed files are valid Nix (this is what the preflight parse gate
+        # checks; `--parse` only lexes/parses, it does not evaluate or realise).
+        machine.succeed("nix-instantiate --parse /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
+        machine.succeed("nix-instantiate --parse /mnt/hidden-volume/etc/nixos/hardware-configuration.base.nix")
+
+        # The overlayed /etc/nixos shows the same wrapper + base, and the staged
+        # nails symlink resolves.
+        live_wrapper = machine.succeed("cat /etc/nixos/hardware-configuration.nix")
+        assert "./nails/configuration.nix" in live_wrapper, \
+            f"overlayed hardware config should be the wrapper, got: {live_wrapper!r}"
+        assert "./hardware-configuration.base.nix" in live_wrapper, \
+            f"overlayed hardware config should import the base, got: {live_wrapper!r}"
+        machine.succeed("test -e /etc/nixos/hardware-configuration.base.nix")
         machine.succeed("test -L /mnt/hidden-volume/etc/nixos/nails/configuration.nix")
         machine.succeed("test -L /etc/nixos/nails/configuration.nix")
 
-    with subtest("second full activation is idempotent for hidden hardware import"):
+        # The hidden config is applied: the rebuild ran against it.
+        rebuild_log = machine.succeed("cat /var/lib/nails-tests/nixos-rebuild-hardware-imports.log")
+        assert "test" in rebuild_log, f"expected a nixos-rebuild invocation, got: {rebuild_log!r}"
+
+    with subtest("second activation is idempotent for the wrapper and base"):
         canonical_deactivate(headless_config, unit_name="nails-deactivate-hardware-imports-phase-1")
         assert_status_state_local("Inactive", headless_config)
         assert_no_overlays_local(["/etc", "/home", "/root", "/srv", "/tmp"])
         machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
-        before_second_activation = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
-        assert before_second_activation.count("./nails/configuration.nix") == 1, \
-            f"Expected one injected import before second activation, got: {before_second_activation!r}"
+        before = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
+        before_base = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.base.nix")
         machine.succeed(f"{wrapper_env} nails --config {headless_config} activate --session keep -y")
         assert_status_state_local("Active", headless_config)
-        rebuild_log = machine.succeed("cat /var/lib/nails-tests/nixos-rebuild-hardware-imports.log")
-        assert rebuild_log.count("test -I nixos-config=/etc/nixos/configuration.nix") == 2, \
-            f"Expected two full activation rebuild invocations, got: {rebuild_log!r}"
-        after_second_activation = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
-        assert after_second_activation.count("./nails/configuration.nix") == 1, \
-            f"Expected exactly one injected import after second activation, got: {after_second_activation!r}"
-        assert after_second_activation == before_second_activation, \
-            "Hidden hardware-configuration.nix changed on second activation despite idempotent import staging"
+        after = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
+        after_base = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.base.nix")
+        assert after == before, "hidden wrapper changed on second activation (not idempotent)"
+        assert after_base == before_base, "preserved base changed on second activation (not idempotent)"
 
     with subtest("final deactivate restores decoy state cleanly"):
         canonical_deactivate(headless_config, unit_name="nails-deactivate-hardware-imports-phase-2")
         assert_status_state_local("Inactive", headless_config)
         assert_no_overlays_local(["/etc", "/home", "/root", "/srv", "/tmp"])
         machine.fail("test -e /etc/nixos/nails/configuration.nix")
+        # The wrapper and base lived only in the overlay upper, so the decoy
+        # /etc/nixos reverts to the original no-imports file.
+        machine.fail("test -e /etc/nixos/hardware-configuration.base.nix")
+        restored = machine.succeed("cat /etc/nixos/hardware-configuration.nix")
+        assert "boot.loader.grub.enable = false;" in restored, \
+            f"decoy hardware config should be restored, got: {restored!r}"
+        assert "./nails/configuration.nix" not in restored, \
+            f"decoy hardware config must be clean after deactivate, got: {restored!r}"
   '';
 }

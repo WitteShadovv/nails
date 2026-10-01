@@ -4,9 +4,11 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::{
-    Filesystem, Result, ensure_hidden_configuration_module, ensure_hidden_hardware_configuration,
+    Filesystem, NixParser, RealNixParser, Result, ensure_hidden_configuration_module,
+    ensure_hidden_hardware_configuration, parse_check_composed_config,
 };
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Validates NixOS configuration overlay structure in hidden storage
 ///
@@ -21,7 +23,10 @@ use std::path::PathBuf;
 ///
 /// # Example
 ///
-/// ```rust
+/// `run` ends with a `nix-instantiate --parse` gate over the composed config,
+/// so the example is `no_run` (it shells out on a real host).
+///
+/// ```no_run
 /// use nails_core::preflight::{NixOSConfigCheck, PreFlightCheck, CheckResult};
 /// use nails_core::MockFilesystem;
 /// use std::path::PathBuf;
@@ -45,6 +50,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct NixOSConfigCheck {
     hidden_storage_path: PathBuf,
+    parser: Arc<dyn NixParser>,
 }
 
 impl NixOSConfigCheck {
@@ -56,6 +62,17 @@ impl NixOSConfigCheck {
     pub fn new(hidden_storage_path: PathBuf) -> Self {
         Self {
             hidden_storage_path,
+            parser: Arc::new(RealNixParser),
+        }
+    }
+
+    /// Create a check with an injected Nix parser (used by tests to exercise the
+    /// parse gate without invoking `nix-instantiate`).
+    #[cfg(test)]
+    pub(crate) fn with_parser(hidden_storage_path: PathBuf, parser: Arc<dyn NixParser>) -> Self {
+        Self {
+            hidden_storage_path,
+            parser,
         }
     }
 }
@@ -136,6 +153,26 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
                 "Hidden configuration.nix not found at {}. Auto-create failed: {}",
                 hidden_config.display(),
                 e
+            )));
+        }
+
+        // Check 7: the composed configuration parses. This runs
+        // `nix-instantiate --parse` over the wrapper, the preserved base file,
+        // and the hidden module — syntax only, nothing is evaluated or copied
+        // into the decoy store. It runs before any overlay is mounted, so a
+        // syntax error fails the activation while the user is still safely on
+        // the decoy generation.
+        let hidden_module = self
+            .hidden_storage_path
+            .join("config/nixos/configuration.nix");
+        if let Err(message) = parse_check_composed_config(
+            self.parser.as_ref(),
+            fs,
+            &hidden_etc_nixos,
+            &hidden_module,
+        )? {
+            return Ok(CheckResult::Fail(format!(
+                "NixOS configuration failed to parse before mounting: {message}"
             )));
         }
 

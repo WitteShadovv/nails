@@ -23,8 +23,15 @@
 //! 1. Validating hidden storage has required NixOS configuration structure
 //! 2. Staging a symlink from `{hidden}/etc/nixos/nails/configuration.nix` to
 //!    `{hidden}/config/nixos/configuration.nix`
-//! 3. Injecting an import statement into the overlayed hardware-configuration.nix
-//! 4. The import resolves via the symlink to the hidden configuration
+//! 3. Moving the original `hardware-configuration.nix` aside to
+//!    `hardware-configuration.base.nix` and replacing it with a fixed wrapper
+//!    that imports both the base file and `./nails/configuration.nix`
+//! 4. The wrapper is always valid Nix regardless of the original file's shape,
+//!    and the import resolves via the symlink to the hidden configuration
+//!
+//! The wrapper never parses or edits the original Nix source, so it cannot
+//! produce invalid output; a preflight step runs `nix-instantiate --parse` over
+//! the composed files to catch syntax errors before any overlay is mounted.
 
 mod inject;
 mod prepare;
@@ -34,7 +41,7 @@ mod verify;
 mod tests;
 
 // Re-export public API
-pub use inject::{ensure_nails_import_block, inject_import_block};
+pub use inject::{NixParser, RealNixParser, inject_import_block, parse_check_composed_config};
 pub use prepare::{
     ensure_hidden_configuration_module, ensure_hidden_hardware_configuration,
     prepare_nixos_config_overlay, stage_hidden_config_symlink,
@@ -45,6 +52,19 @@ use std::path::PathBuf;
 
 pub(crate) const AUTO_GENERATED_HIDDEN_CONFIGURATION: &str =
     "{ pkgs, ... }: {\n  environment.systemPackages = [ pkgs.ripgrep ];\n}\n";
+
+/// The live hardware configuration file NixOS reads at build time.
+pub(crate) const HARDWARE_CONFIG_FILE: &str = "hardware-configuration.nix";
+
+/// The original hardware configuration, moved aside so the wrapper can import it.
+pub(crate) const HARDWARE_BASE_CONFIG_FILE: &str = "hardware-configuration.base.nix";
+
+/// Fixed wrapper written as `hardware-configuration.nix`.
+///
+/// It imports the preserved original plus the hidden module via the staged
+/// `./nails/configuration.nix` symlink. Being a constant, it is always valid
+/// Nix and never depends on the shape of the file it replaces.
+pub(crate) const HARDWARE_WRAPPER: &str = "{ ... }: {\n  imports = [\n    ./hardware-configuration.base.nix\n    ./nails/configuration.nix\n  ];\n}\n";
 
 /// NixOS configuration overlay information
 ///

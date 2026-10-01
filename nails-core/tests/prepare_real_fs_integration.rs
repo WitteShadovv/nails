@@ -118,7 +118,9 @@ fn ensure_hidden_hardware_configuration_real_filesystem_injects_import_into_exis
     ensure_hidden_hardware_configuration(&RealFilesystem, &hidden_root, &base_hardware).unwrap();
 
     let hidden_hardware = hidden_root.join("etc/nixos/hardware-configuration.nix");
+    let hidden_base = hidden_root.join("etc/nixos/hardware-configuration.base.nix");
     let content = std::fs::read_to_string(&hidden_hardware).unwrap();
+    let base = std::fs::read_to_string(&hidden_base).unwrap();
     let dir_mode = std::fs::metadata(hidden_root.join("etc/nixos"))
         .unwrap()
         .permissions()
@@ -129,14 +131,26 @@ fn ensure_hidden_hardware_configuration_real_filesystem_injects_import_into_exis
         .permissions()
         .mode()
         & 0o777;
+    let base_mode = std::fs::metadata(&hidden_base)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
 
+    // The wrapper imports the hidden module and the preserved base; the original
+    // imports list is preserved verbatim in the base file.
     assert!(
         content.contains("./nails/configuration.nix"),
         "content={content}"
     );
-    assert!(content.contains("./foo.nix"), "content={content}");
+    assert!(
+        content.contains("./hardware-configuration.base.nix"),
+        "content={content}"
+    );
+    assert!(base.contains("./foo.nix"), "base={base}");
     assert_eq!(dir_mode, 0o700);
     assert_eq!(file_mode, 0o600);
+    assert_eq!(base_mode, 0o600);
 }
 
 #[test]
@@ -160,7 +174,9 @@ fn ensure_hidden_hardware_configuration_real_filesystem_bootstraps_missing_hidde
     ensure_hidden_hardware_configuration(&RealFilesystem, &hidden_root, &base_hardware).unwrap();
 
     let hidden_hardware = hidden_root.join("etc/nixos/hardware-configuration.nix");
+    let hidden_base = hidden_root.join("etc/nixos/hardware-configuration.base.nix");
     let content = std::fs::read_to_string(&hidden_hardware).unwrap();
+    let base = std::fs::read_to_string(&hidden_base).unwrap();
     let dir_mode = std::fs::metadata(hidden_root.join("etc/nixos"))
         .unwrap()
         .permissions()
@@ -171,17 +187,27 @@ fn ensure_hidden_hardware_configuration_real_filesystem_bootstraps_missing_hidde
         .permissions()
         .mode()
         & 0o777;
+    let base_mode = std::fs::metadata(&hidden_base)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
 
     assert!(
         content.contains("./nails/configuration.nix"),
         "content={content}"
     );
     assert!(
-        content.contains("modulesPath + \"/installer/scan/not-detected.nix\""),
+        content.contains("./hardware-configuration.base.nix"),
         "content={content}"
+    );
+    assert!(
+        base.contains("modulesPath + \"/installer/scan/not-detected.nix\""),
+        "base={base}"
     );
     assert_eq!(dir_mode, 0o700);
     assert_eq!(file_mode, 0o600);
+    assert_eq!(base_mode, 0o600);
 }
 
 #[test]
@@ -238,7 +264,7 @@ fn ensure_hidden_hardware_configuration_real_filesystem_errors_when_hidden_hardw
 
     assert!(
         err.to_string()
-            .contains("Failed to read hidden hardware-configuration.nix"),
+            .contains("Failed to stage hidden hardware-configuration wrapper"),
         "err={err}"
     );
 }
