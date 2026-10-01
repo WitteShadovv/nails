@@ -1,14 +1,33 @@
 name: Scheduled
 
-# Weekly maintenance checks. They watch for problems that appear without a
-# change to this repository, such as new advisories, and never affect pull
-# request checks.
+# Maintenance that watches for problems appearing without a change to this
+# repository: new advisories, expiring deny.toml ignores, a crate fetcher that
+# crates.io stopped serving, evicted caches and flaky tests. Nothing here gates
+# a pull request; the report jobs at the end track red runs in issues instead.
+# GitHub disables a schedule after 60 days without repository activity.
 
 on:
   schedule:
-    # Mondays at 03:00 UTC
+    # Mondays at 03:00 UTC: every weekly task
     - cron: "0 3 * * 1"
+    # Thursdays at 03:00 UTC: cache-warm alone. GitHub evicts a cache entry
+    # after 7 days without access, so a weekly touch alone can come too late.
+    # The tasks job below repeats this expression.
+    - cron: "0 3 * * 4"
   workflow_dispatch:
+    inputs:
+      task:
+        description: Task to run; 'all' runs every weekly task
+        type: choice
+        default: all
+        options:
+          - all
+          - advisories
+          - fetcher-canary
+          - cache-warm
+          - stress
+          - benchmarks
+          - geiger
 
 permissions:
   contents: read
@@ -17,11 +36,44 @@ concurrency:
   group: scheduled-${{ github.ref }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
+  # Decides once which tasks this run executes, so every job below only asks
+  # whether its own task is in the list.
+  tasks:
+    name: Select tasks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.select.outputs.run }}
+
+    steps:
+      - name: Select tasks
+        id: select
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          TASK: ${{ inputs.task }}
+        run: |
+          if [ "$SCHEDULE" = "0 3 * * 4" ]; then
+            run='["cache-warm"]'
+          elif [ "${TASK:-all}" = all ]; then
+            # geiger is opt-in: it runs only when dispatched by name
+            run='["advisories","fetcher-canary","cache-warm","stress","benchmarks"]'
+          else
+            run=$(jq -cn --arg task "$TASK" '[$task]')
+          fi
+          echo "Tasks: $run"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
   # Full-graph scan: every target and every dev-dependency, including the
   # crates that the merge gate in ci.yml deliberately leaves out.
   advisories-full:
     name: Dependency Policy (full graph)
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'advisories')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -47,6 +99,8 @@ jobs:
 
   deny-ignore-expiry:
     name: deny.toml ignore expiry
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'advisories')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
 
@@ -58,3 +112,246 @@ jobs:
 
       - name: Check that no advisory ignore has expired
         run: python3 ci/deny_ignores.py
+
+  # Builds the release from source with cache.nixos.org as the only
+  # substituter, then downloads every vendored crate again. A crates.io change
+  # that breaks importCargoLock (like the HTTP 403 that went unnoticed for a
+  # month) fails here instead of in the next pull request touching Cargo.lock.
+  fetcher-canary:
+    name: Crate fetcher canary
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'fetcher-canary')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Set up Nix without the project cache
+        uses: ./.github/actions/setup-nix
+        with:
+          cache: 'false'
+
+      - name: Build the release bundle
+        run: nix build -L .#nails-release --no-link
+
+      # The build substitutes any crate tarball that cache.nixos.org happens
+      # to hold. --check fetches each one from crates.io again and compares it
+      # with the hash in Cargo.lock.
+      - name: Download every vendored crate again
+        run: |
+          vendor=$(nix path-info --derivation .#nails.cargoDeps)
+          mapfile -t crates < <(nix-store --query --requisites "$vendor" | grep -E -- '-crate-.+\.tar\.gz\.drv$')
+          if [ "${#crates[@]}" -eq 0 ]; then
+            echo "::error::no crate downloads found behind $vendor"
+            exit 1
+          fi
+          echo "Downloading ${#crates[@]} crates again"
+          nix-store --realise --check "${crates[@]}" > /dev/null
+
+  # Restores the Rust caches that ci.yml saves on main. A restore counts as an
+  # access, so the caches survive weeks without a push to main.
+  cache-warm:
+    name: Warm Rust cache (${{ matrix.key }})
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'cache-warm')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # rust-cache hashes every CARGO* and RUST* variable into its key, so these
+    # must equal the top-level env of ci.yml or every restore misses.
+    env:
+      RUST_BACKTRACE: 1
+      CARGO_TERM_COLOR: always
+    strategy:
+      fail-fast: false
+      matrix:
+        # The shared-key of every ci.yml job that runs on a push to main
+        key:
+          - lint
+          - audit
+          - test-shard-1
+          - test-shard-2
+          - test-shard-3
+          - test-shard-4
+          - coverage
+          - sbom
+          - geiger
+          - benchmarks
+          - privileged-mounts
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      # The key also covers the compiler version, so it has to be the same
+      # toolchain that ci.yml installs.
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Restore the cache
+        id: restore
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          shared-key: ${{ matrix.key }}
+          save-if: false
+
+      # A miss is not an error (main may not have saved this key yet), but it
+      # means this job warmed nothing, so it shows up in the run summary.
+      - name: Record the result
+        env:
+          KEY: ${{ matrix.key }}
+          HIT: ${{ steps.restore.outputs.cache-hit }}
+        run: |
+          echo "rust-cache '$KEY': exact match ${HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
+
+  # Flaky-test hunt: the whole suite ten times through nextest, no retries.
+  stress:
+    name: Stress (flaky tests)
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'stress')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install shells for prompt syntax tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh fish
+
+      - name: Install test tools
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: cargo-nextest@0.9.72,just@1.49.0
+          fallback: none
+
+      - name: Repeat the test suite
+        run: just stress
+
+  # Informational: the Criterion report is uploaded for comparison, but a slow
+  # or failing run never turns the workflow red or opens an issue. The budgets
+  # that gate merges live in ci.yml.
+  benchmarks:
+    name: Benchmarks (informational)
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'benchmarks')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Run benchmarks
+        run: cargo bench --workspace --all-features --locked --bench '*'
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: benchmark-results
+          path: target/criterion/
+          retention-days: 90
+
+  # Opt-in unsafe-code report: dispatch this workflow with task 'geiger'.
+  geiger:
+    name: Unsafe code report (informational)
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'geiger')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install cargo-geiger
+        run: cargo install cargo-geiger@0.13.0 --locked
+
+      - name: Report unsafe code
+        run: cargo geiger --all-features --all-targets 2>&1 | tee geiger-report.txt
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: geiger-report
+          path: geiger-report.txt
+          retention-days: 30
+
+  # Advisories and expired ignores are triaged on their own, under the
+  # advisory label, apart from broken infrastructure.
+  report-advisories:
+    name: Report advisories
+    needs: [advisories-full, deny-ignore-expiry]
+    # !cancelled() rather than always(): a run cancelled by hand says nothing
+    # about the jobs, while a job that hit its timeout still reports as red.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}
+          label: advisory
+          title: "Dependency advisories"
+
+  # The infrastructure tasks share the ci-red issue 'CI red: Scheduled'. The
+  # informational benchmarks and geiger jobs are left out on purpose.
+  report-ci:
+    name: Report CI status
+    needs: [tasks, fetcher-canary, cache-warm, stress]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}
+          label: ci-red

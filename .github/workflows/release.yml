@@ -40,3 +40,27 @@ jobs:
     with:
       release-tag: ${{ github.ref_name }}
       publication-mode: ${{ needs.classify-tag.outputs.publication-mode }}
+
+  # Tag pushes run unattended: a failed release opens or comments on the
+  # 'CI red: Release' issue, and the next successful release closes it.
+  report-status:
+    name: Report status
+    needs: [classify-tag, release]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}

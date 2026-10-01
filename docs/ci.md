@@ -8,8 +8,8 @@ This repository is public. The CI and release workflows are written for a public
 
 | Workflow | Purpose | Triggers |
 |---|---|---|
-| `.github/workflows/ci.yml` | Primary quality gate for Rust code, coverage, dependency policy, SBOM generation, flaky-test detection, and benchmark enforcement | Push to `main`/`dev`, PRs targeting `main`/`dev`, weekly schedule, manual dispatch |
-| `.github/workflows/scheduled.yml` | Weekly maintenance checks that never gate a merge: the full-graph dependency policy scan (`just deny-full`) and the `deny.toml` ignore expiry check | Weekly schedule, manual dispatch |
+| `.github/workflows/ci.yml` | Primary quality gate for Rust code, coverage, dependency policy, SBOM generation, flaky-test detection, and benchmark enforcement | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
+| `.github/workflows/scheduled.yml` | Maintenance that never gates a merge: the full-graph dependency policy scan (`just deny-full`), the `deny.toml` ignore expiry check, the crate fetcher canary, Rust cache warming, the stress loop (`just stress`), informational benchmarks and an opt-in geiger report | Weekly schedule (cache warming twice a week), manual dispatch with a `task` input |
 | `.github/workflows/forensics-eval-regression.yml` | Cheap non-privileged forensics regression lane covering Python tests plus a fixture-backed smoke run | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
 | `.github/workflows/e2e-tests.yml` | Nix-based smoke validation for the fast CI E2E subset | Push/PR to `dev` with path filters, manual dispatch |
 | `.github/workflows/e2e-tests-full.yml` | Full Hetzner-backed E2E suite for trusted manual runs and PR runs gated by native GitHub environment approval | `pull_request_target` to `main` with path filters, manual dispatch |
@@ -34,7 +34,7 @@ The main CI workflow runs these jobs:
 4. **Coverage Enforcement** — `just coverage` (cargo-llvm-cov over nextest); the line-coverage threshold is defined once, in the `justfile`.
 5. **SBOM Generation** — CycloneDX 1.6 JSON via `cargo sbom`, validated with `cyclonedx-cli`.
 6. **Unsafe Code Audit** — `cargo geiger` report upload.
-7. **Burn-In Loop** — ten full test iterations on PRs, scheduled runs, and manual dispatch.
+7. **Burn-In Loop** — ten full test iterations on PRs and manual dispatch; the weekly stress loop runs in `scheduled.yml`.
 8. **Benchmarks** — enforced Criterion budgets on `main` and manual runs.
 9. **`ci-success`** — final aggregate status check.
 
@@ -47,6 +47,16 @@ The main CI workflow runs these jobs:
 - **Nix release-path verification is also separate.** `nix-pr-verify.yml` is the dedicated check for the exact release derivation used by the release workflow.
 
 This split is deliberate: the repository keeps fast, broadly applicable CI in `ci.yml` while preserving deeper release-path and NixOS validation in dedicated workflows.
+
+### Tracking issues for unattended runs
+
+Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `scheduled.yml`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
+
+- A failed or cancelled job opens the issue (label `ci-red`, title `CI red: <workflow>`; `CI red: main` for `ci.yml`), or comments on it with the run link and the red jobs when it is already open.
+- A run in which every reported job passed closes the issue. A run that skipped some jobs without a failure (for example a manual dispatch of a single `scheduled.yml` task) leaves it as it is.
+- The full-graph advisory scan and the `deny.toml` ignore expiry check report under their own `advisory` label (`Dependency advisories`), so they never touch the `ci-red` issue or any pull request check. The informational benchmark and geiger jobs never report.
+
+Only the reporting jobs get `issues: write`. The rules live in `report_status.py` next to the action and are tested in `scripts/tests/test_report_status.py`.
 
 ### `forensics-eval-regression.yml` behavior
 

@@ -9,9 +9,8 @@ on:
     branches:
       - main
       - dev
-  schedule:
-    # Run burn-in weekly (Sundays at 2am UTC)
-    - cron: "0 2 * * 0"
+  # Scheduled checks (advisories, the crate fetcher canary, the stress loop)
+  # live in scheduled.yml.
   workflow_dispatch:
 
 env:
@@ -92,7 +91,7 @@ jobs:
       # Advisory results follow the RustSec database, not this repository, so
       # only a change to the dependencies or their policy is gated on them.
       # An unknown base (new branch, force push, manual run) counts as a
-      # change; scheduled runs leave advisories to scheduled.yml.
+      # change.
       - name: Detect dependency changes
         id: deps
         env:
@@ -102,7 +101,6 @@ jobs:
           case "$EVENT_NAME" in
             pull_request) base=HEAD^1 ;; # first parent of the PR merge commit
             push) base=$PUSH_BEFORE ;;
-            schedule) echo "changed=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
             *) base= ;;
           esac
           if [ -n "$base" ] && git rev-parse -q --verify "$base^{commit}" >/dev/null &&
@@ -332,7 +330,6 @@ jobs:
     timeout-minutes: 60
     needs: coverage
     if: |
-      github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' && contains(fromJson('["main", "dev"]'), github.base_ref)) ||
       github.event_name == 'workflow_dispatch'
 
@@ -590,3 +587,39 @@ jobs:
           fi
 
           echo "All CI checks passed"
+
+  # A push to main runs unattended: a red one opens or comments on the
+  # 'CI red: main' issue, and the next push where every job passes closes it.
+  # burn-in is left out because it never runs on a push.
+  report-status:
+    name: Report status
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs:
+      [
+        lint,
+        audit,
+        test,
+        coverage,
+        sbom,
+        geiger,
+        benchmarks,
+        privileged-mounts,
+      ]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}
+          title: "CI red: main"
