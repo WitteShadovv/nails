@@ -236,10 +236,9 @@ jobs:
           file "$extracted_dir/nails"
           "$extracted_dir/nails" --version
 
+      # No arguments: rustup installs the channel from rust-toolchain.toml
       - name: Install Rust toolchain for SBOM
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: 1.93.0
+        run: rustup toolchain install
 
       - name: Install cargo-sbom
         run: cargo install cargo-sbom@0.10.0 --locked

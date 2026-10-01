@@ -28,8 +28,12 @@
       releaseSourceDateEpoch = toString (self.lastModified or 1);
       shortRev = self.shortRev or (self.dirtyShortRev or "dirty");
 
+      # rust-toolchain.toml is the single source of truth for the pinned
+      # version; rustup reads it in CI and the flake reads it here.
+      rustChannel = (lib.importTOML ./rust-toolchain.toml).toolchain.channel;
+
       # Native Rust toolchain pinned for local development.
-      rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
+      rustToolchain = pkgs.rust-bin.stable.${rustChannel}.default.override {
         extensions = [
           "rust-src"
           "rust-analyzer"
@@ -40,7 +44,7 @@
 
       # Dedicated musl cross toolchain for the canonical release build.
       pkgsMusl = pkgs.pkgsCross.musl64;
-      rustToolchainMusl = pkgsMusl.buildPackages.rust-bin.stable."1.93.0".default.override {
+      rustToolchainMusl = pkgsMusl.buildPackages.rust-bin.stable.${rustChannel}.default.override {
         extensions = [ "rust-src" ];
         targets = [ targetTriple ];
       };
@@ -239,6 +243,7 @@
         packages = with pkgs; [
           rustToolchain
           pre-commit
+          git
           bash
           coreutils
           gnugrep
@@ -247,13 +252,34 @@
           deadnix
           statix
           shellcheck
+          actionlint
+          zizmor
           just
           python3 # ci/*.py checks; tomllib needs Python 3.11 or newer
+          ruff
+          mypy
           cargo-deny
-          cargo-tarpaulin
+          cargo-nextest
           cargo-llvm-cov
-          bc # Floating-point arithmetic for coverage threshold checks
+          bc # Floating-point arithmetic for scripts/ci-local.sh coverage check
         ];
+
+        # A fresh clone has no git hooks. Install them on first shell entry so
+        # the pre-commit, pre-push and commit-msg checks run without a manual
+        # step. This is the only place that installs them.
+        shellHook = ''
+          if git rev-parse --git-dir >/dev/null 2>&1; then
+            hooks_dir="$(git rev-parse --git-path hooks)"
+            if [ ! -x "$hooks_dir/pre-commit" ] \
+              || [ ! -x "$hooks_dir/pre-push" ] \
+              || [ ! -x "$hooks_dir/commit-msg" ]; then
+              pre-commit install --install-hooks \
+                --hook-type pre-commit \
+                --hook-type pre-push \
+                --hook-type commit-msg
+            fi
+          fi
+        '';
       };
     };
 }

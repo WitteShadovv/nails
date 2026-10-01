@@ -72,7 +72,7 @@ This split is deliberate: the repository keeps fast, broadly applicable CI in `c
 - The workflow is explicitly positioned as the **smoke** E2E lane, while `e2e-tests-full.yml` remains the comprehensive gated suite.
 - Workflow concurrency is branch/PR-aware with `cancel-in-progress: true`, so superseded smoke runs are cancelled automatically.
 - Trigger scope: pushes to `dev`, PRs targeting `dev`, and manual dispatch. `main` and PRs to `main` are owned by `e2e-tests-full.yml` to avoid duplicate E2E runs.
-- Path coverage includes the E2E runner script, relevant workflow files, the `setup-nix` action, flake inputs, Cargo manifests, and `shell.nix` so smoke runs follow CI/E2E infrastructure changes more reliably.
+- Path coverage includes the E2E runner script, relevant workflow files, the `setup-nix` action, flake inputs, and Cargo manifests so smoke runs follow CI/E2E infrastructure changes more reliably.
 
 This keeps suite membership in one source of truth under `nix/e2e-tests/default.nix`, while making CI execution order explicit and safer for shared-host runner state than invoking the aggregate `e2e.ci` derivation as a single build target.
 
