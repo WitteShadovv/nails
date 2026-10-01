@@ -105,7 +105,9 @@ Use only:
 
 The runner expands suites/groups such as `ci`, `all`, or tag names into concrete leaf tests using Nix metadata (`_testNames` and `_groups`) and then executes those leaf tests sequentially. Duplicate tests are removed in stable first-seen order, so mixed inputs such as `ci verify smoke` still run each resolved leaf test only once.
 
-When `--shard-index/--shard-count` are used, the runner keeps sharding deterministic but prefers a checked-in runtime-aware assignment from `nix/e2e-tests/shard-durations.json`. If that file is absent, the runner falls back to the older stable round-robin behavior.
+When `--shard-index/--shard-count` are used, `scripts/e2e_shard_weights.py plan` assigns the resolved tests to shards deterministically, balancing the checked-in weights in `nix/e2e-tests/shard-durations.json` (see [Timeouts and shard weights](#timeouts-and-shard-weights)). If that file is absent, tests are dealt round-robin. If the weights are unusable, the run stops instead of running an empty shard.
+
+`--durations-out FILE` writes one JSON line per test (`test`, `result`, `seconds`) as soon as each test finishes, so the record survives a shard that is later killed.
 
 VM CPU auto-sizing defaults to the full visible runner CPU budget (`NAILS_E2E_VM_CPU_TARGET_PERCENT=100`, `NAILS_E2E_VM_HOST_RESERVED_CORES=0`) unless the caller overrides those environment variables.
 
@@ -118,6 +120,24 @@ Default target selection is environment-aware:
 CI intentionally uses the runner instead of building the aggregate `e2e-ci` link farm directly so the workflow exercises the same suite expansion logic, emits per-leaf progress, and serializes execution in a CI-safe way.
 
 Inside a Python `testScript`, use `breakpoint()` for interactive debugging with `--interactive`.
+
+## Timeouts and shard weights
+
+- Every test runs with a driver `globalTimeout` of 900 s (`defaultGlobalTimeout` in `default.nix`). A test that needs longer sets a top-level `globalTimeout` next to its `name`, with a comment giving its measured runtime (see `tests/performance/07-performance.nix`). `meta.timeout` is derived as `globalTimeout + 60` and must not be set by a test. The effective value of each test is published as `timeouts` in the E2E metadata.
+- `canonical_deactivate` waits at most `shutdown_timeout` seconds (300 by default) for the VM to power off. On timeout it fails with the unit status, the unit and boot journals, pending systemd jobs and the process list, or with the serial console tail if the guest shell no longer answers.
+- `shard-durations.json` holds one weight in seconds per leaf test, and every weight must satisfy `30 <= weight <= timeout / 2`. A weight at or above the test's timeout is a recorded hang: the planner refuses to use it. The remaining rules are enforced by `python3 scripts/e2e_shard_weights.py check --weights nix/e2e-tests/shard-durations.json --metadata meta.json` and by the unit tests in `scripts/tests/` (`python3 -m unittest discover -s scripts/tests`), which CI runs on every PR.
+- Each full E2E shard uploads its per-test durations as the `e2e-durations-shard-N` artifact and adds a drift report to its step summary: tests more than 25% off their weight after allowing for the runner's overall speed. The report never fails the job.
+
+To regenerate the weights, download the `e2e-durations-shard-*` artifacts of one or more full runs (for example with `gh run download RUN_ID -p 'e2e-durations-shard-*'`), then run:
+
+```sh
+nix eval --json .#e2e-test-metadata.x86_64-linux > meta.json
+python3 scripts/e2e_shard_weights.py regen \
+  --weights nix/e2e-tests/shard-durations.json \
+  --metadata meta.json e2e-durations-shard-*/shard-*.jsonl
+```
+
+`regen` takes the median of each test's passing runs of at least 30 s (a shorter pass was served from the Nix store without booting a VM), clamps it to half the test's timeout and reports every clamp, keeps the weights of tests without samples, and drops tests that no longer exist. Raise a test's `globalTimeout` instead of accepting a clamp.
 
 ## Forensic invariants
 
@@ -134,7 +154,7 @@ Do not violate:
 
 1. Place it under the correct `tests/<category>/` subfolder.
 2. Preserve numeric filename form: `NN-name.nix`.
-3. Set `name` and `meta.tags`.
+3. Set `name` and `meta.tags`, and add an estimated weight to `shard-durations.json` (refresh it from the next full run).
 4. Import shared helpers instead of duplicating Python.
 5. Use `with subtest(...)` for each logical phase.
 6. Verify with a direct `nix build` target before sending for review.

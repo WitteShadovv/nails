@@ -9,6 +9,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 E2E_SHARD_DURATION_WEIGHTS_FILE="$PROJECT_ROOT/nix/e2e-tests/shard-durations.json"
+E2E_SHARD_WEIGHTS_TOOL="$SCRIPT_DIR/e2e_shard_weights.py"
 
 # Colors
 BLUE='\033[0;34m'
@@ -27,6 +28,7 @@ VERBOSE=false
 DRY_RUN=false
 SHARD_INDEX=""
 SHARD_COUNT=""
+DURATIONS_OUT=""
 E2E_METADATA_JSON=""
 HOST_CPU_COUNT=""
 VM_CPU_PLAN_MODE=""
@@ -373,6 +375,9 @@ print_usage() {
     echo "      --resolve-only      Alias for --dry-run"
     echo "      --shard-index N     Run only shard N (1-based) of the resolved tests"
     echo "      --shard-count N     Total number of deterministic shards"
+    echo "      --durations-out FILE"
+    echo "                          Write one JSON line per test (test, result,"
+    echo "                          seconds) to FILE, replacing its contents"
     echo ""
     echo "Arguments:"
     echo "  TEST_NAME               Run specific test(s), tag groups, or suite targets"
@@ -458,47 +463,39 @@ select_shard_tests() {
         return 0
     fi
 
-    python3 - <<'PY' "$SHARD_INDEX" "$SHARD_COUNT" "$E2E_SHARD_DURATION_WEIGHTS_FILE" "${tests[@]}"
-import json
-import sys
-from pathlib import Path
+    # The planner refuses weights at or above a test's timeout, so the
+    # metadata (which carries the timeouts) is passed in alongside them.
+    python3 "$E2E_SHARD_WEIGHTS_TOOL" plan \
+        --shard-index "$SHARD_INDEX" \
+        --shard-count "$SHARD_COUNT" \
+        --weights "$E2E_SHARD_DURATION_WEIGHTS_FILE" \
+        --metadata - \
+        -- "${tests[@]}" <<<"$E2E_METADATA_JSON"
+}
 
-shard_index = int(sys.argv[1])
-shard_count = int(sys.argv[2])
-weights_path = Path(sys.argv[3])
-tests = sys.argv[4:]
+prepare_durations_out() {
+    local durations_dir
 
-weights = None
-if weights_path.is_file():
-    weights = json.loads(weights_path.read_text(encoding="utf-8"))
+    [[ -n "$DURATIONS_OUT" ]] || return 0
 
-if not weights:
-    for index, name in enumerate(tests):
-        if (index % shard_count) + 1 == shard_index:
-            print(name)
-    raise SystemExit(0)
+    durations_dir="$(dirname "$DURATIONS_OUT")"
+    mkdir -p "$durations_dir"
+    # Absolute, because run_tests changes into the project root.
+    DURATIONS_OUT="$(cd "$durations_dir" && pwd)/$(basename "$DURATIONS_OUT")"
+    : >"$DURATIONS_OUT"
+}
 
-default_weight = 120
-shard_loads = [0] * shard_count
-shard_members = [[] for _ in range(shard_count)]
+# Written right after each test so the record survives a shard that is
+# later killed by its timeout.
+record_duration() {
+    local test_name="$1"
+    local result="$2"
+    local seconds="$3"
 
-weighted_tests = [
-    (-int(weights.get(name, default_weight)), original_index, name)
-    for original_index, name in enumerate(tests)
-]
+    [[ -n "$DURATIONS_OUT" ]] || return 0
 
-for negative_weight, original_index, name in sorted(weighted_tests):
-    weight = -negative_weight
-    target_shard = min(
-        range(shard_count),
-        key=lambda shard: (shard_loads[shard], len(shard_members[shard]), shard),
-    )
-    shard_members[target_shard].append((original_index, name))
-    shard_loads[target_shard] += weight
-
-for _, name in sorted(shard_members[shard_index - 1]):
-    print(name)
-PY
+    python3 -c 'import json, sys; print(json.dumps({"test": sys.argv[1], "result": sys.argv[2], "seconds": int(sys.argv[3])}))' \
+        "$test_name" "$result" "$seconds" >>"$DURATIONS_OUT"
 }
 
 run_single_test() {
@@ -536,11 +533,13 @@ run_single_test() {
         end_time=$(date +%s)
         duration=$((end_time - start_time))
         echo -e "${GREEN}  PASS${NC} $test_name (${duration}s)"
+        record_duration "$test_name" pass "$duration"
         return 0
     else
         end_time=$(date +%s)
         duration=$((end_time - start_time))
         echo -e "${RED}  FAIL${NC} $test_name (${duration}s)"
+        record_duration "$test_name" fail "$duration"
         return 1
     fi
 }
@@ -560,6 +559,7 @@ run_tests() {
     fi
     echo ""
 
+    prepare_durations_out
     cd "$PROJECT_ROOT"
     total_start=$(date +%s)
 
@@ -657,6 +657,11 @@ while [[ $# -gt 0 ]]; do
             SHARD_COUNT="$2"
             shift 2
             ;;
+        --durations-out)
+            option_requires_value "$1" "${2:-}"
+            DURATIONS_OUT="$2"
+            shift 2
+            ;;
         -*)
             echo -e "${RED}Error: Unknown option: $1${NC}" >&2
             print_usage
@@ -691,7 +696,17 @@ if [ "${#RESOLVED_TESTS[@]}" -eq 0 ]; then
     exit 1
 fi
 
-mapfile -t RESOLVED_TESTS < <(select_shard_tests "${RESOLVED_TESTS[@]}")
+# A command substitution, unlike a process substitution, lets a planner
+# failure stop the run instead of looking like an empty shard.
+if ! shard_selection="$(select_shard_tests "${RESOLVED_TESTS[@]}")"; then
+    echo -e "${RED}Error: could not select the tests for this run; see the messages above${NC}" >&2
+    exit 1
+fi
+
+RESOLVED_TESTS=()
+if [[ -n "$shard_selection" ]]; then
+    mapfile -t RESOLVED_TESTS <<<"$shard_selection"
+fi
 
 if [ "${#RESOLVED_TESTS[@]}" -eq 0 ]; then
     if [[ -n "$SHARD_INDEX" && -n "$SHARD_COUNT" ]]; then
