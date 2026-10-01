@@ -189,9 +189,54 @@ pub enum Commands {
     },
     /// Initialize NAILS directory structure on a hidden volume
     Init(InitArgs),
+    /// Inspect and check the configuration file (nails.toml)
+    #[command(subcommand)]
+    Config(ConfigCommand),
     /// Dispatch pending desktop notifications (called by XDG autostart on login)
     #[command(name = "notify-dispatch")]
     NotifyDispatch {
+        /// Output results in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// `nails config` subcommands
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum ConfigCommand {
+    /// Print the resolved configuration file path and whether it exists
+    Path {
+        /// Output results in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the effective configuration and where each value comes from
+    Show {
+        /// Output results in JSON format
+        #[arg(long, conflicts_with = "example")]
+        json: bool,
+
+        /// Print a commented example configuration instead
+        #[arg(long)]
+        example: bool,
+
+        /// Preview the effect of `activate --flake FLAKE_REF`
+        #[arg(long = "flake", value_name = "FLAKE_REF", conflicts_with = "example")]
+        nixos_flake: Option<String>,
+
+        /// Preview the effect of `activate --no-preflight`
+        #[arg(long, conflicts_with = "example")]
+        no_preflight: bool,
+
+        /// Preview the effect of `activate --no-clear-history`
+        #[arg(long, conflicts_with = "example")]
+        no_clear_history: bool,
+    },
+    /// Check a configuration file strictly (syntax, types, unknown keys)
+    Validate {
+        /// File to check (default: the resolved configuration file)
+        path: Option<PathBuf>,
+
         /// Output results in JSON format
         #[arg(long)]
         json: bool,

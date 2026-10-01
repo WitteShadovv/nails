@@ -6,6 +6,15 @@ mod json;
 pub use human::print_status_human;
 pub use json::print_status_json;
 
+/// The config file path as shown in verbose status, noting when it is absent.
+pub(super) fn config_file_label(config_path: &std::path::Path) -> String {
+    if config_path.is_file() {
+        config_path.display().to_string()
+    } else {
+        format!("{} (not found, using defaults)", config_path.display())
+    }
+}
+
 /// Helper function to read recent log entries from the configured log path
 ///
 /// Filters logs by:
@@ -175,7 +184,7 @@ pub fn print_status_ascii(
     if verbose && matches!(report.state, SystemState::Active { .. }) {
         println!();
         println!("Verbose Details:");
-        println!("  Config file:        {}", config_path.display());
+        println!("  Config file:        {}", config_file_label(config_path));
         println!("  State file:         {}", state_path.display());
         println!();
 
@@ -202,7 +211,7 @@ pub fn print_status_ascii(
 
         println!();
         println!("Verbose Details:");
-        println!("  Config file:        {}", config_path.display());
+        println!("  Config file:        {}", config_file_label(config_path));
         println!("  Hidden volume root: {}", hidden_volume_root.display());
         println!("  State file:         {}", state_path.display());
         println!("  Log path:           {}", log_path.display());

@@ -48,7 +48,7 @@ use std::path::PathBuf;
 /// ```
 #[derive(Debug, Clone)]
 pub struct SpaceCheck {
-    pub(crate) hidden_volume_path: PathBuf,
+    pub(crate) hidden_volume_root: PathBuf,
     pub(crate) minimum_space_mb: u64,
 }
 
@@ -57,11 +57,11 @@ impl SpaceCheck {
     ///
     /// # Arguments
     ///
-    /// * `hidden_volume_path` - Path to check for free space
+    /// * `hidden_volume_root` - Path to check for free space
     /// * `minimum_space_mb` - Minimum space required in megabytes
-    pub fn new(hidden_volume_path: PathBuf, minimum_space_mb: u64) -> Self {
+    pub fn new(hidden_volume_root: PathBuf, minimum_space_mb: u64) -> Self {
         Self {
-            hidden_volume_path,
+            hidden_volume_root,
             minimum_space_mb,
         }
     }
@@ -108,7 +108,7 @@ impl Default for SpaceCheck {
     /// Create check with default hidden volume path and 1024 MB minimum
     fn default() -> Self {
         Self {
-            hidden_volume_path: PathBuf::from(get_default_hidden_volume_root()),
+            hidden_volume_root: PathBuf::from(get_default_hidden_volume_root()),
             minimum_space_mb: 1024, // 1 GB default
         }
     }
@@ -125,7 +125,7 @@ impl<F: Filesystem> PreFlightCheck<F> for SpaceCheck {
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
         // Get available space in bytes
-        let available_bytes = fs.get_free_space(&self.hidden_volume_path)?;
+        let available_bytes = fs.get_free_space(&self.hidden_volume_root)?;
         let available_mb = Self::bytes_to_mb(available_bytes);
         let minimum_mb = self.minimum_space_mb;
         let warn_threshold = minimum_mb / 2; // 50% of minimum

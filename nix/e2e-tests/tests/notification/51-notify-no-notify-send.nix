@@ -29,7 +29,7 @@ in
         machine.start()
         machine.wait_for_unit("multi-user.target")
 
-        config_path = "/tmp/nails-notify.yaml"
+        config_path = "/tmp/nails-notify.toml"
         signal_path = "/mnt/hidden-volume/notifications/20260101T000000000_missing-notify-send.json"
         nails_path = machine.succeed("command -v nails").strip()
         testuser_group = machine.succeed("id -gn testuser").strip()

@@ -29,7 +29,7 @@ in
     machine.wait_for_unit("multi-user.target")
     machine.succeed("mkdir -p /srv /opt /var/lib")
 
-    config_path = "/tmp/nails-extended.yaml"
+    config_path = "/tmp/nails-extended.toml"
     write_extended_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     machine.succeed("mkdir -p /opt")

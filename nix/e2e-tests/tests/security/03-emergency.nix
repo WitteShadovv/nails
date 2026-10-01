@@ -23,7 +23,7 @@ in
         imports = [ ./../../lib/vm-config.nix ];
         environment.systemPackages = [ self.packages.x86_64-linux.nails ];
         services.getty.autologinUser = "root";
-        systemd.services.nails-emergency-test = emergency.makeEmergencyUnit self.packages.x86_64-linux.nails "/tmp/nails-headless.yaml";
+        systemd.services.nails-emergency-test = emergency.makeEmergencyUnit self.packages.x86_64-linux.nails "/tmp/nails-headless.toml";
       };
   };
 
@@ -37,7 +37,7 @@ in
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
 
     print("\n=== Setting up active session with data ===")

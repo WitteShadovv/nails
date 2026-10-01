@@ -34,7 +34,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-headless.yaml"
+    config_path = "/tmp/nails-headless.toml"
     shell_path = "/run/current-system/sw/bin/zsh"
     write_headless_config(config_path)
 

@@ -54,6 +54,6 @@ in
         machine.succeed("test -f /mnt/hidden-volume/config")
         contents = machine.succeed("cat /mnt/hidden-volume/config")
         assert contents == "do-not-overwrite\n", contents
-        machine.fail("test -e /mnt/hidden-volume/config/nails.yaml")
+        machine.fail("test -e /mnt/hidden-volume/config/nails.toml")
   '';
 }

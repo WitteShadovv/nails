@@ -18,7 +18,8 @@ use std::path::PathBuf;
 ///
 /// # Returns
 ///
-/// Never returns - exits with code 0 on success, 1 on failure, 2 on config or safety guard failures
+/// Never returns - exits with code 0 on success, 1 on failure, 2 on safety guard failures.
+/// A missing or invalid config is logged as a warning and defaults are used.
 #[allow(clippy::too_many_arguments)]
 pub fn execute(
     config_override: Option<PathBuf>,
@@ -53,12 +54,8 @@ pub fn execute(
         }
     };
 
-    // Load config
-    let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-    let mut config = super::load_config_or_exit(&config_path, config_override.as_deref());
-    config.loaded_config_path = config_override
-        .clone()
-        .or_else(|| Some(config_path.clone()));
+    // A broken or missing config must never block an emergency teardown.
+    let config = super::load_config_or_defaults(config_override.as_deref()).into_config();
 
     // TEST SAFETY GUARD
     if let Err(msg) = check_real_ops(&config.hidden_volume_root) {
@@ -183,12 +180,23 @@ mod tests {
         let config_override =
             std::env::var_os("NAILS_EMERGENCY_SUBPROCESS_CONFIG").map(PathBuf::from);
 
+        // Make the config warning visible on stderr, as the binary's subscriber does.
+        let _ = tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .without_time()
+            .try_init();
+
         match case.as_str() {
-            "invalid-config" => {
-                execute(config_override, true, false, 0, false, false, false, |_| {
-                    Ok(())
-                })
-            }
+            "invalid-config" => execute(
+                config_override,
+                true,
+                false,
+                0,
+                false,
+                false,
+                false,
+                |root| Err(format!("guard saw root {}", root.display())),
+            ),
             "guard" => execute(config_override, true, false, 1, true, true, true, |_| {
                 Err("emergency guard blocked".to_string())
             }),
@@ -197,18 +205,38 @@ mod tests {
     }
 
     #[test]
-    fn execute_emergency_fails_closed_for_invalid_config() {
+    fn execute_emergency_warns_and_proceeds_with_defaults_for_invalid_config() {
         use std::io::Write;
 
         let mut config = tempfile::NamedTempFile::new().unwrap();
-        writeln!(config, "hidden_volume_path: [broken").unwrap();
+        writeln!(config, "[color_scheme]\nenable = false").unwrap();
 
         let output = run_subprocess("invalid-config", Some(config.path()));
         let stderr = String::from_utf8_lossy(&output.stderr);
 
+        // Exit 2 comes from the safety guard, which runs only after config
+        // loading has fallen back to defaults instead of refusing.
         assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-        assert!(stderr.contains("Error loading config"));
-        assert!(stderr.contains("Invalid YAML"));
+        assert!(stderr.contains("did you mean `enabled`?"), "{stderr}");
+        assert!(stderr.contains("continuing with defaults"), "{stderr}");
+        let derived = nails_core::config::derive_hidden_volume_root();
+        assert!(
+            stderr.contains(&format!("guard saw root {}", derived.display())),
+            "{stderr}"
+        );
+    }
+
+    #[test]
+    fn execute_emergency_warns_and_proceeds_when_explicit_config_is_missing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing = temp_dir.path().join("missing.toml");
+
+        let output = run_subprocess("invalid-config", Some(&missing));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+        assert!(stderr.contains("config file not found"), "{stderr}");
+        assert!(stderr.contains("guard saw root"), "{stderr}");
     }
 
     #[test]
@@ -220,7 +248,7 @@ mod tests {
         std::fs::create_dir_all(&hidden_root).unwrap();
 
         let mut config = tempfile::NamedTempFile::new().unwrap();
-        writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+        writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
         let output = run_subprocess("guard", Some(config.path()));
         let stderr = String::from_utf8_lossy(&output.stderr);

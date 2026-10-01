@@ -597,7 +597,7 @@ fn test_write_prompt_scripts_idempotent() {
 
 #[test]
 #[serial]
-fn test_write_prompt_scripts_uses_custom_hidden_volume_path() {
+fn test_write_prompt_scripts_uses_custom_hidden_volume_root() {
     let fs = MockFilesystem::new();
     let config = Config {
         hidden_volume_root: "/custom/hidden".into(),

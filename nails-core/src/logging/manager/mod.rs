@@ -21,7 +21,7 @@ use super::rotation::{
 /// # Fields
 ///
 /// * `log_path` - Directory where log files are written (must be within hidden volume)
-/// * `hidden_volume_path` - Root path of the hidden volume mount
+/// * `hidden_volume_root` - Root path of the hidden volume mount
 /// * `max_log_size_mb` - Maximum size of a single log file in MB (default: 10)
 /// * `retention_days` - Number of days to retain log files (default: 7)
 #[derive(Debug, Clone)]
@@ -29,7 +29,7 @@ pub struct LoggingManager {
     /// Directory where log files are written
     pub log_path: PathBuf,
     /// Root path of the hidden volume mount
-    pub hidden_volume_path: PathBuf,
+    pub hidden_volume_root: PathBuf,
     /// Maximum log file size in megabytes
     pub max_log_size_mb: u64,
     /// Log retention period in days
@@ -42,7 +42,7 @@ impl LoggingManager {
     /// # Arguments
     ///
     /// * `log_path` - Directory for log files (must be within hidden volume)
-    /// * `hidden_volume_path` - Root of the hidden volume mount point
+    /// * `hidden_volume_root` - Root of the hidden volume mount point
     ///
     /// # Examples
     ///
@@ -57,10 +57,10 @@ impl LoggingManager {
     /// assert_eq!(manager.max_log_size_mb, 10);
     /// assert_eq!(manager.retention_days, 7);
     /// ```
-    pub fn new(log_path: PathBuf, hidden_volume_path: PathBuf) -> Self {
+    pub fn new(log_path: PathBuf, hidden_volume_root: PathBuf) -> Self {
         Self {
             log_path,
-            hidden_volume_path,
+            hidden_volume_root,
             max_log_size_mb: DEFAULT_MAX_LOG_SIZE_MB,
             retention_days: DEFAULT_RETENTION_DAYS,
         }
@@ -68,7 +68,7 @@ impl LoggingManager {
 
     /// Validate that the log path is within the hidden volume
     ///
-    /// Checks that `log_path` starts with `hidden_volume_path` to prevent
+    /// Checks that `log_path` starts with `hidden_volume_root` to prevent
     /// forensic leakage. Uses component-based path comparison to handle
     /// path traversal attacks (e.g., `/mnt/hidden-volume/../var/log`).
     ///
@@ -89,7 +89,7 @@ impl LoggingManager {
     /// - Logs critical refusal to stderr before returning error
     pub fn validate_log_path(&self) -> Result<()> {
         let cleaned_log = clean_path(&self.log_path);
-        let cleaned_hidden = clean_path(&self.hidden_volume_path);
+        let cleaned_hidden = clean_path(&self.hidden_volume_root);
 
         if !cleaned_log.starts_with(&cleaned_hidden) {
             // Security violation - use ERROR format (not WARNING)
@@ -132,7 +132,7 @@ impl LoggingManager {
 
         // Verify hidden volume is mounted (FR36)
         // Graceful degradation: if hidden volume is not mounted, return None (stderr-only mode)
-        if !fs.path_exists(&self.hidden_volume_path)? {
+        if !fs.path_exists(&self.hidden_volume_root)? {
             output::warn("Hidden volume not available, file logging disabled");
             return Ok(None);
         }

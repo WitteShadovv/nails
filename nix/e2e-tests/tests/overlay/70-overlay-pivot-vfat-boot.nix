@@ -30,7 +30,7 @@ in
     machine.wait_for_unit("multi-user.target")
     machine.wait_until_succeeds("findmnt -n -o FSTYPE /boot | grep -qx vfat")
 
-    config_path = "/tmp/nails-boot-pivot.yaml"
+    config_path = "/tmp/nails-boot-pivot.toml"
     write_boot_only_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     machine.succeed("mkdir -p /mnt/hidden-volume/boot /mnt/hidden-volume/.work/boot")

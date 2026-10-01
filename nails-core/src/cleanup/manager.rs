@@ -99,7 +99,7 @@ impl<F: Filesystem> CleanupManager<F> {
     fn cleanup_logs(&self, report: &mut CleanupReport) {
         let log_cleaner = LogCleaner::new(self.filesystem.clone())
             .with_log_path(self.config.log_path.clone())
-            .with_hidden_volume_path(self.config.hidden_volume_path.clone())
+            .with_hidden_volume_root(self.config.hidden_volume_root.clone())
             .with_secure_delete(self.config.secure_delete);
 
         match log_cleaner.clean() {

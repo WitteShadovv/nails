@@ -211,21 +211,8 @@ fn build_preflight_registry(
         }
     };
 
-    let ephemeral_overlay_target_paths: Vec<std::path::PathBuf> =
-        if config.extended_overlays.enabled {
-            config
-                .extended_overlays
-                .directories
-                .iter()
-                .map(|dir| dir.path.clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
-
     registry.add_check(Box::new(OverlayCompatibilityCheck::new(
         persistent_overlay_target_paths,
-        ephemeral_overlay_target_paths,
         config.hidden_volume_root.clone(),
     )));
 

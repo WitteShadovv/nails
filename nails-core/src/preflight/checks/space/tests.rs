@@ -5,10 +5,10 @@ use std::path::Path;
 
 #[test]
 fn test_space_check_struct_with_fields() {
-    // AC 1: Create SpaceCheck struct with minimum_space_mb and hidden_volume_path fields
+    // AC 1: Create SpaceCheck struct with minimum_space_mb and hidden_volume_root fields
     let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 2048);
     assert_eq!(
-        check.hidden_volume_path,
+        check.hidden_volume_root,
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
     );
     assert_eq!(check.minimum_space_mb, 2048);
@@ -19,7 +19,7 @@ fn test_space_check_default_values() {
     // AC 1: Default trait provides 1024 MB minimum and default path
     let check = SpaceCheck::default();
     assert_eq!(
-        check.hidden_volume_path,
+        check.hidden_volume_root,
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
     );
     assert_eq!(check.minimum_space_mb, 1024);
@@ -242,7 +242,7 @@ fn test_space_check_clone() {
     // Verify SpaceCheck is Clone
     let check = SpaceCheck::default();
     let cloned = check.clone();
-    assert_eq!(check.hidden_volume_path, cloned.hidden_volume_path);
+    assert_eq!(check.hidden_volume_root, cloned.hidden_volume_root);
     assert_eq!(check.minimum_space_mb, cloned.minimum_space_mb);
 }
 

@@ -5,10 +5,13 @@
 //! in the parent module.
 
 use std::fmt::Display;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use nails_core::{LoadedConfig, NailsError};
+
 pub mod activate;
+pub mod config;
 pub mod deactivate;
 pub mod emergency;
 pub mod init;
@@ -16,14 +19,9 @@ pub mod notify_dispatch;
 pub mod status;
 pub mod verify;
 
-pub(crate) fn exit_config_error(config_path: &Path, error: impl Display) -> ! {
-    eprintln!(
-        "Error loading config from {}: {}",
-        config_path.display(),
-        error
-    );
-    std::process::exit(2);
-}
+/// Exit code for a configuration file that is missing (when named with
+/// `--config`), unreadable or invalid.
+pub(crate) const EXIT_CONFIG_ERROR: i32 = 3;
 
 pub(crate) fn exit_lock_error(context: &str, error: impl Display) -> ! {
     eprintln!(
@@ -33,23 +31,63 @@ pub(crate) fn exit_lock_error(context: &str, error: impl Display) -> ! {
     std::process::exit(2);
 }
 
-/// Load configuration, failing closed when the user explicitly specified `--config`.
+/// Resolve and load the configuration strictly.
 ///
-/// * `config_override` is `Some` → strict load; missing/unreadable file is a fatal error.
-/// * `config_override` is `None`  → implicit discovery; missing file falls back to defaults.
-pub(crate) fn load_config_or_exit(
-    config_path: &Path,
-    config_override: Option<&Path>,
-) -> nails_core::Config {
-    if config_override.is_some() {
-        // Explicit --config: fail closed on any error (including missing file)
-        nails_core::Config::load(config_path)
-            .unwrap_or_else(|error| exit_config_error(config_path, error))
+/// * `config_override` is `Some` (`--config`): the file must exist.
+/// * `config_override` is `None`: the binary-relative file is optional and
+///   built-in defaults apply when it is missing.
+///
+/// Either way an unreadable or invalid file is an error. `loaded_config_path`
+/// is set to the consulted path so cleanup preserves it.
+pub(crate) fn resolve_config(config_override: Option<&Path>) -> Result<LoadedConfig, NailsError> {
+    let path = nails_core::config::discover_config_path(config_override);
+    let mut loaded = if config_override.is_some() {
+        LoadedConfig::load(&path)?
     } else {
-        // Implicit discovery: fall back to defaults when file is missing
-        nails_core::Config::load_or_default(config_path)
-            .unwrap_or_else(|error| exit_config_error(config_path, error))
+        LoadedConfig::load_or_default(&path)?
+    };
+    loaded.config.loaded_config_path = Some(path);
+    Ok(loaded)
+}
+
+/// One-line description of a configuration load failure.
+pub(crate) fn config_error_line(error: &NailsError) -> String {
+    match error {
+        NailsError::ConfigNotFound { path } => format!(
+            "config file not found: {} (run `nails init <root>` or pass --config)",
+            path.display()
+        ),
+        NailsError::ConfigError(message) => message.clone(),
+        other => other.to_string(),
     }
+}
+
+/// Load the configuration for a command that must not run on a file the
+/// operator did not mean: print one error line and exit 3 on any problem.
+pub(crate) fn load_config_or_exit(config_override: Option<&Path>) -> LoadedConfig {
+    resolve_config(config_override).unwrap_or_else(|error| {
+        eprintln!("Error: {}", config_error_line(&error));
+        std::process::exit(EXIT_CONFIG_ERROR);
+    })
+}
+
+/// Load the configuration for a teardown command, which must never refuse.
+///
+/// On any problem this logs a single warning and continues with built-in
+/// defaults, whose hidden volume root is derived from the binary location;
+/// the teardown itself then only unmounts what the live mount table shows
+/// NAILS created.
+pub(crate) fn load_config_or_defaults(config_override: Option<&Path>) -> LoadedConfig {
+    resolve_config(config_override).unwrap_or_else(|error| {
+        let path: PathBuf = nails_core::config::discover_config_path(config_override);
+        tracing::warn!(
+            "{}; continuing with defaults derived from the binary location",
+            config_error_line(&error)
+        );
+        let mut loaded = LoadedConfig::defaults(&path);
+        loaded.config.loaded_config_path = Some(path);
+        loaded
+    })
 }
 
 pub(crate) fn lock_manager_or_exit<'a, F: nails_core::Filesystem>(

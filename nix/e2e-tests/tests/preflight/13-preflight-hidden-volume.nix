@@ -33,14 +33,15 @@ in
 
     def write_hidden_volume_config(path, hidden_root):
         write_text_file(path, f"""
-    hidden_volume_root: {hidden_root}
-    overlay_mode: explicit
-    overlays:
-      - name: home
-        lower: /home
-        upper: {hidden_root}/home
-        work: {hidden_root}/.work/home
-        target: /home
+    hidden_volume_root = "{hidden_root}"
+    overlay_mode = "explicit"
+
+    [[overlays]]
+    name = "home"
+    lower = "/home"
+    upper = "{hidden_root}/home"
+    work = "{hidden_root}/.work/home"
+    target = "/home"
     """.strip() + "\n")
 
     machine.start()
@@ -48,19 +49,19 @@ in
 
     with subtest("unmounted hidden volume is rejected"):
         machine.succeed("mkdir -p /mnt/preflight-unmounted")
-        write_hidden_volume_config("/tmp/preflight-unmounted.yaml", "/mnt/preflight-unmounted")
+        write_hidden_volume_config("/tmp/preflight-unmounted.toml", "/mnt/preflight-unmounted")
         result = run_command_capture(
             "preflight-hidden-unmounted",
-            "nails --config /tmp/preflight-unmounted.yaml activate --dry-run --overlay-only --no-kill-session --plain",
+            "nails --config /tmp/preflight-unmounted.toml activate --dry-run --overlay-only --no-kill-session --plain",
         )
         assert_command_succeeded(result)
         assert_result_contains(result, ["hidden-volume", "is not mounted"], stream="stdout")
 
     with subtest("nix store hidden volume is rejected as non-writable"):
-        write_hidden_volume_config("/tmp/preflight-store.yaml", "${builtins.storeDir}")
+        write_hidden_volume_config("/tmp/preflight-store.toml", "${builtins.storeDir}")
         result = run_command_capture(
             "preflight-hidden-store",
-            "nails --config /tmp/preflight-store.yaml activate --dry-run --overlay-only --no-kill-session --plain",
+            "nails --config /tmp/preflight-store.toml activate --dry-run --overlay-only --no-kill-session --plain",
         )
         assert_command_succeeded(result)
         assert_result_contains(result, ["hidden-volume", "${builtins.storeDir}", "not writable"], stream="stdout")
@@ -68,10 +69,10 @@ in
     with subtest("read-only hidden volume is rejected"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("mount -o remount,ro /mnt/hidden-volume")
-        write_hidden_volume_config("/tmp/preflight-readonly.yaml", "/mnt/hidden-volume")
+        write_hidden_volume_config("/tmp/preflight-readonly.toml", "/mnt/hidden-volume")
         result = run_command_capture(
             "preflight-hidden-readonly",
-            "nails --config /tmp/preflight-readonly.yaml activate --dry-run --overlay-only --no-kill-session --plain",
+            "nails --config /tmp/preflight-readonly.toml activate --dry-run --overlay-only --no-kill-session --plain",
         )
         assert_command_succeeded(result)
         assert_result_contains(result, ["hidden-volume", "/mnt/hidden-volume", "not writable"], stream="stdout")
@@ -82,7 +83,7 @@ in
         machine.succeed("chattr +i /mnt/hidden-volume")
         result = run_command_capture(
             "preflight-hidden-immutable",
-            "nails --config /tmp/preflight-readonly.yaml activate --dry-run --overlay-only --no-kill-session --plain",
+            "nails --config /tmp/preflight-readonly.toml activate --dry-run --overlay-only --no-kill-session --plain",
         )
         assert_command_succeeded(result)
         assert_result_contains(result, ["hidden-volume", "/mnt/hidden-volume", "not writable"], stream="stdout")

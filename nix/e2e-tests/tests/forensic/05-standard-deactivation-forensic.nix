@@ -45,7 +45,7 @@ in
     print("PHASE 1: SETUP AND ACTIVATE")
     print("=" * 70)
 
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
 
     baseline_history_size = int(machine.succeed(

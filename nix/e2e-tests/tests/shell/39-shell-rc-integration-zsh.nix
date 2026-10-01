@@ -34,7 +34,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-headless.yaml"
+    config_path = "/tmp/nails-headless.toml"
     shell_path = "/run/current-system/sw/bin/zsh"
     rc_path = "/home/testuser/.zshrc"
     expected_lower = "# lower zshrc\nexport LOWER_ZSH_RC=1\n"

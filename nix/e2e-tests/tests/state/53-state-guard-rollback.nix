@@ -38,19 +38,22 @@ in
     def write_partial_failure_config(path):
         machine.succeed(
             """cat > %s <<'EOF'
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: explicit
-    overlays:
-      - name: home
-        lower: /home
-        upper: /mnt/hidden-volume/home
-        work: /mnt/hidden-volume/.work/home
-        target: /home
-      - name: doomed
-        lower: /etc
-        upper: /mnt/hidden-volume/doomed
-        work: /mnt/hidden-volume/.work/doomed
-        target: /state-rollback-missing-target
+    hidden_volume_root = "/mnt/hidden-volume"
+    overlay_mode = "explicit"
+
+    [[overlays]]
+    name = "home"
+    lower = "/home"
+    upper = "/mnt/hidden-volume/home"
+    work = "/mnt/hidden-volume/.work/home"
+    target = "/home"
+
+    [[overlays]]
+    name = "doomed"
+    lower = "/etc"
+    upper = "/mnt/hidden-volume/doomed"
+    work = "/mnt/hidden-volume/.work/doomed"
+    target = "/state-rollback-missing-target"
     EOF"""
             % path
         )
@@ -58,7 +61,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/state-guard-rollback.yaml"
+    config_path = "/tmp/state-guard-rollback.toml"
     state_path = "/mnt/hidden-volume/state.json"
 
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")

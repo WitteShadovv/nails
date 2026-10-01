@@ -1,8 +1,9 @@
 //! Ephemeral overlay directory configuration
 //!
-//! This module provides configuration for ephemeral overlays with tmpfs-backed
-//! upper layers. These overlays store data in RAM and destroy it on unmount,
-//! providing defense-in-depth against forensic analysis.
+//! This module describes an ephemeral overlay with tmpfs-backed upper layers,
+//! as taken by the overlay mount primitives in [`crate::overlay`]. These
+//! overlays store data in RAM and destroy it on unmount. It is not part of
+//! `nails.toml`: no configuration key enables ephemeral overlays.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

@@ -83,7 +83,7 @@ in
     machine.wait_for_unit("display-manager.service")
     machine.wait_until_succeeds("systemctl is-active user@1000.service")
 
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/tmp/nails-headless.toml"
     shell_path = "/run/current-system/sw/bin/bash"
     osc_sequence = "\x1b]11;#1a1a2e\x07\x1b]10;#e0e0e0\x07"
     shell_command = (

@@ -49,8 +49,8 @@ in
     graphical.wait_for_unit("display-manager.service")
     graphical.wait_until_succeeds("systemctl is-active user@1000.service")
 
-    tty_config = "/var/lib/nails-tests/tty-headless.yaml"
-    graphical_config = "/var/lib/nails-tests/graphical-headless.yaml"
+    tty_config = "/var/lib/nails-tests/tty-headless.toml"
+    graphical_config = "/var/lib/nails-tests/graphical-headless.toml"
 
     def bind_node(node):
         for helper in [

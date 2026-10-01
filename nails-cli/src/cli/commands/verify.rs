@@ -29,11 +29,7 @@ pub fn execute(deep: bool, json: bool, config_override: Option<PathBuf>) -> ! {
     let filesystem = RealFilesystem;
 
     // Load config fail-closed for malformed or unreadable files; missing config still uses defaults.
-    let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-    let mut config = super::load_config_or_exit(&config_path, config_override.as_deref());
-    config.loaded_config_path = config_override
-        .clone()
-        .or_else(|| Some(config_path.clone()));
+    let config = super::load_config_or_exit(config_override.as_deref()).into_config();
 
     // Load state file status explicitly for verify reporting.
     let state_path = config.state_file_path.clone();

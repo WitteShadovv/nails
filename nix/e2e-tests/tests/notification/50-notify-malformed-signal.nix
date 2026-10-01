@@ -29,7 +29,7 @@ in
         machine.start()
         machine.wait_for_unit("multi-user.target")
 
-        config_path = "/tmp/nails-notify.yaml"
+        config_path = "/tmp/nails-notify.toml"
         stub_dir = "/tmp/notify-stub/bin"
         stub_log = "/tmp/notify-send.log"
         bad_path = "/mnt/hidden-volume/notifications/20260101T000000000_bad.json"

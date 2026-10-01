@@ -70,7 +70,7 @@ fn execute_status_plain_mode_succeeds_with_missing_state_file() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         state_path.display()
     )
@@ -98,7 +98,7 @@ fn execute_status_json_mode_succeeds() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\noverlays = []",
         hidden_root.display()
     )
     .unwrap();
@@ -123,7 +123,7 @@ fn execute_status_no_color_keeps_unicode_without_ansi() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         state_path.display()
     )
@@ -149,7 +149,7 @@ fn execute_status_no_color_env_keeps_unicode_without_ansi() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         state_path.display()
     )
@@ -168,14 +168,14 @@ fn execute_status_fails_closed_for_invalid_config() {
     use std::io::Write;
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_path: [broken").unwrap();
+    writeln!(config, "hidden_volume_root = [broken").unwrap();
 
     let output = run_subprocess("invalid-config", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-    assert!(stderr.contains("Error loading config"));
-    assert!(stderr.contains("Invalid YAML"));
+    assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
+    assert!(stderr.contains("invalid config"), "{stderr}");
+    assert!(!stderr.contains("Example"), "no example dump: {stderr}");
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn execute_status_permission_denied_reports_unknown_not_inactive() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         state_path.display()
     )
@@ -244,7 +244,7 @@ fn execute_status_no_color_verbose_reports_loaded_outcome() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         state_path.display()
     )
@@ -275,7 +275,7 @@ fn execute_status_no_color_verbose_reports_corrupt_state() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         state_path.display()
     )
@@ -349,7 +349,7 @@ fn execute_status_no_color_verbose_active_shows_overlay_details_and_logs() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\nstate_file_path: {}\nlog_path: {}\noverlays:\n  - name: home\n    lower: /home\n    upper: {}/overlays/home/upper\n    work: {}/overlays/home/work\n    target: /home",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\nlog_path = \"{}\"\n[[overlays]]\nname = \"home\"\nlower = \"/home\"\nupper = \"{}/overlays/home/upper\"\nwork = \"{}/overlays/home/work\"\ntarget = \"/home\"",
         hidden_root.display(),
         state_path.display(),
         log_dir.display(),

@@ -29,7 +29,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-tracker-integrity.yaml"
+    config_path = "/tmp/nails-tracker-integrity.toml"
     expected_paths = {"/home", "/etc", "/srv"}
     write_ordered_overlay_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")

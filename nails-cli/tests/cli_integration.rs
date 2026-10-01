@@ -263,7 +263,7 @@ fn test_activate_help_includes_quiet_flag() {
 
 /// Test that activate command with --no-color doesn't produce ANSI codes
 #[test]
-fn test_activate_no_color_output() {
+fn test_activate_no_color_flag() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     // Verify: command fails (expected without setup) AND has no ANSI codes
     cmd.args(["activate", "--no-color", "--help"])
@@ -459,8 +459,8 @@ fn test_deactivate_respects_no_color_env() {
 
 /// Test that deactivate command with --no-color uses text markers instead of symbols
 #[test]
-fn test_deactivate_no_color_output() {
-    if !check_unsafe_ops_allowed("test_deactivate_no_color_output") {
+fn test_deactivate_no_color_flag() {
+    if !check_unsafe_ops_allowed("test_deactivate_no_color_flag") {
         return; // Skip test - not opted in to unsafe operations
     }
 
@@ -556,7 +556,7 @@ fn test_status_command_plain_output() {
 }
 
 #[test]
-fn test_status_command_no_color_output_has_unicode_without_ansi() {
+fn test_status_command_no_color_has_unicode_without_ansi() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["status", "--no-color"])
         .assert()
@@ -575,14 +575,14 @@ fn test_status_command_verbose_inactive_reports_paths_and_load_outcome() {
     let hidden_root = temp_dir.path().join("hidden-volume");
     let log_path = hidden_root.join("custom-logs");
     let state_path = hidden_root.join("custom-state.json");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
 
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nstate_file_path: {}\nlog_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\nlog_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         state_path.display(),
         log_path.display(),
@@ -617,7 +617,7 @@ fn test_status_command_verbose_active_shows_overlay_details() {
     let hidden_root = temp_dir.path().join("hidden-volume");
     let log_dir = hidden_root.join("logs");
     let state_path = hidden_root.join("state.json");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
     std::fs::create_dir_all(&log_dir).unwrap();
 
     let activated_at = "2026-01-02T03:04:05Z";
@@ -656,7 +656,7 @@ fn test_status_command_verbose_active_shows_overlay_details() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nstate_file_path: {}\nlog_path: {}\noverlays:\n  - name: home\n    lower: /home\n    upper: {}/overlays/home/upper\n    work: {}/overlays/home/work\n    target: /home",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\nlog_path = \"{}\"\n[[overlays]]\nname = \"home\"\nlower = \"/home\"\nupper = \"{}/overlays/home/upper\"\nwork = \"{}/overlays/home/work\"\ntarget = \"/home\"",
         hidden_root.display(),
         state_path.display(),
         log_dir.display(),
@@ -697,14 +697,14 @@ fn test_status_command_no_color_verbose_reports_corrupt_state_load() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().join("hidden-volume");
     let state_path = hidden_root.join("state.json");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
     std::fs::create_dir_all(&hidden_root).unwrap();
     std::fs::write(&state_path, "{ invalid-json").unwrap();
 
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         state_path.display(),
     )
@@ -736,7 +736,7 @@ fn test_status_command_no_color_verbose_reports_loaded_state() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().join("hidden-volume");
     let state_path = hidden_root.join("state.json");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     // Save through the durable path so the file carries a valid integrity digest.
@@ -752,7 +752,7 @@ fn test_status_command_no_color_verbose_reports_loaded_state() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         state_path.display(),
     )
@@ -784,55 +784,34 @@ fn test_status_fails_closed_on_invalid_config() {
     cmd.args(["--config", config_file.path().to_str().unwrap(), "status"])
         .assert()
         .failure()
-        .code(2)
-        .stderr(predicates::str::contains("Error loading config from"))
+        .code(3)
+        .stderr(predicates::str::contains("invalid config"))
         .stderr(predicates::str::contains(
             config_file.path().to_str().unwrap(),
         ))
-        .stderr(predicates::str::contains("Invalid YAML"));
+        .stderr(predicates::str::contains("line 1"));
 }
 
 #[test]
-fn test_deactivate_fails_closed_on_unreadable_config_path() {
+fn test_status_fails_closed_on_unreadable_config_path() {
     let config_dir = tempfile::tempdir().unwrap();
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args([
-        "--config",
-        config_dir.path().to_str().unwrap(),
-        "deactivate",
-    ])
-    .assert()
-    .failure()
-    .code(2)
-    .stderr(predicates::str::contains("Error loading config from"))
-    .stderr(predicates::str::contains(
-        config_dir.path().to_str().unwrap(),
-    ))
-    .stderr(predicates::str::contains("Failed to read config"));
+    cmd.args(["--config", config_dir.path().to_str().unwrap(), "status"])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicates::str::contains("cannot read config"))
+        .stderr(predicates::str::contains(
+            config_dir.path().to_str().unwrap(),
+        ));
 }
 
-#[test]
-fn test_emergency_fails_closed_on_invalid_config_before_safety_guard() {
-    let config_file = create_invalid_config_file();
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args([
-        "--config",
-        config_file.path().to_str().unwrap(),
-        "emergency",
-        "--no-countdown",
-    ])
-    .assert()
-    .failure()
-    .code(2)
-    .stderr(predicates::str::contains("Error loading config from"))
-    .stderr(predicates::str::contains(
-        config_file.path().to_str().unwrap(),
-    ))
-    .stderr(predicates::str::contains("Invalid YAML"))
-    .stderr(predicates::str::contains("TEST SAFETY GUARD").not());
-}
+// emergency and deactivate fall back to defaults on a bad config instead of
+// refusing. Running the real binary here would therefore start a real
+// teardown, so that behaviour is covered by the in-crate subprocess tests in
+// `commands/emergency.rs` and `commands/deactivate/tests.rs`, which inject a
+// blocking safety guard.
 
 #[test]
 fn test_verify_command_json_output() {
@@ -890,12 +869,12 @@ fn test_verify_command_human_output_reports_config_paths_and_missing_state_file(
     let hidden_root = temp_dir.path().join("hidden-volume");
     let state_path = hidden_root.join("custom-state.json");
     let log_path = hidden_root.join("logs");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
 
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nstate_file_path: {}\nlog_path: {}\noverlays:\n  - name: home\n    lower: /home\n    upper: {}/home\n    work: {}/.work/home\n    target: /home\n  - name: etc\n    lower: /etc\n    upper: {}/etc\n    work: {}/.work/etc\n    target: /etc",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\nlog_path = \"{}\"\n[[overlays]]\nname = \"home\"\nlower = \"/home\"\nupper = \"{}/home\"\nwork = \"{}/.work/home\"\ntarget = \"/home\"\n[[overlays]]\nname = \"etc\"\nlower = \"/etc\"\nupper = \"{}/etc\"\nwork = \"{}/.work/etc\"\ntarget = \"/etc\"",
         hidden_root.display(),
         state_path.display(),
         log_path.display(),
@@ -937,7 +916,7 @@ fn test_verify_command_json_output_reports_present_state_file_status() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let state_path = hidden_root.join("state.json");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
 
     let state_json = r#"{
   \"version\": \"0.2.0\",
@@ -954,7 +933,7 @@ fn test_verify_command_json_output_reports_present_state_file_status() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nstate_file_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         state_path.display(),
     )
@@ -1032,7 +1011,12 @@ fn test_activate_kill_session_detaches_via_systemd_run() {
     fs::create_dir_all(&fake_bin).unwrap();
 
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root = \"{}\"",
+        hidden_root.display()
+    )
+    .unwrap();
 
     let systemd_run_path = fake_bin.join("systemd-run");
     fs::write(
@@ -1116,7 +1100,12 @@ fn test_activate_kill_session_surfaces_systemd_run_failures() {
     fs::create_dir_all(&fake_bin).unwrap();
 
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root = \"{}\"",
+        hidden_root.display()
+    )
+    .unwrap();
 
     let systemd_run_path = fake_bin.join("systemd-run");
     fs::write(
@@ -1165,7 +1154,12 @@ fn test_activate_kill_session_refuses_real_transient_units_in_test_runtime() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root = \"{}\"",
+        hidden_root.display()
+    )
+    .unwrap();
 
     let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
         .args([
@@ -1213,7 +1207,12 @@ fn test_activate_dry_run_skips_preflight_without_real_mutations() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root = \"{}\"",
+        hidden_root.display()
+    )
+    .unwrap();
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args([
@@ -1254,7 +1253,12 @@ fn test_activate_dry_run_executes_preflight_and_reports_results() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root = \"{}\"",
+        hidden_root.display()
+    )
+    .unwrap();
 
     let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
         .args([
@@ -1296,7 +1300,12 @@ fn test_activate_dry_run_checks_session_context_by_default() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config_file, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root = \"{}\"",
+        hidden_root.display()
+    )
+    .unwrap();
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args([
@@ -1330,7 +1339,7 @@ fn test_activate_dry_run_reports_explicit_flake_reference() {
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nnixos_flake: /etc/nixos#test-host",
+        "hidden_volume_root = \"{}\"\nnixos_flake = \"/etc/nixos#test-host\"",
         hidden_root.display()
     )
     .unwrap();
@@ -1407,7 +1416,7 @@ fn test_activate_kill_session_fails_before_detach_on_flake_lock_preflight_error(
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root: {}\nnixos_flake: {}#host-alpha",
+        "hidden_volume_root = \"{}\"\nnixos_flake = \"{}#host-alpha\"",
         hidden_root.display(),
         explicit_flake_dir.display()
     )
@@ -1462,9 +1471,8 @@ fn test_activate_fails_closed_on_invalid_config_before_safety_guard() {
     ])
     .assert()
     .failure()
-    .code(2)
-    .stderr(predicates::str::contains("Error loading config"))
-    .stderr(predicates::str::contains("Invalid YAML"))
+    .code(3)
+    .stderr(predicates::str::contains("invalid config"))
     .stderr(predicates::str::contains("TEST SAFETY GUARD").not());
 }
 
@@ -1608,7 +1616,7 @@ fn test_backward_compatibility_without_config_file() {
 
     // Create a temporary home directory with no config file
     let temp_home = TempDir::new().unwrap();
-    let config_path = temp_home.path().join(".nails/config.yaml");
+    let config_path = temp_home.path().join("config/nails.toml");
 
     // Verify config file doesn't exist
     assert!(!config_path.exists());
@@ -1643,14 +1651,14 @@ fn test_config_flag_accepted() {
 fn create_test_config_file(volume_path: &str) -> tempfile::NamedTempFile {
     use std::io::Write;
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config_file, "hidden_volume_path: {}", volume_path).unwrap();
+    writeln!(config_file, "hidden_volume_root = \"{}\"", volume_path).unwrap();
     config_file
 }
 
 fn create_invalid_config_file() -> tempfile::NamedTempFile {
     use std::io::Write;
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config_file, "hidden_volume_path: [broken").unwrap();
+    writeln!(config_file, "hidden_volume_root = [broken").unwrap();
     config_file
 }
 
@@ -1696,7 +1704,7 @@ fn test_config_flag_global_after_subcommand() {
 /// This verifies graceful defaults when config doesn't exist
 #[test]
 fn test_binary_relative_config_graceful_defaults() {
-    // Binary will try to load from {binary_dir}/config/nails.yaml
+    // Binary will try to load from {binary_dir}/config/nails.toml
     // If it doesn't exist (which it won't in test environment), it should use defaults
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.arg("status")
@@ -1728,12 +1736,11 @@ fn test_binary_relative_config_loading_integration() {
     fs::create_dir_all(&config_dir).unwrap();
 
     // Create config file with distinctive value
-    let config_path = config_dir.join("nails.yaml");
+    let config_path = config_dir.join("nails.toml");
     let mut config_file = fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        r#"hidden_volume_path: /mnt/custom-integration-test-volume
-"#
+        r#"hidden_volume_root = "/mnt/custom-integration-test-volume""#
     )
     .unwrap();
 
@@ -1759,7 +1766,7 @@ fn test_binary_relative_config_loading_integration() {
     );
 
     // Test 2: Explicit --config with non-existent path must FAIL (P0-04: fail closed)
-    let nonexistent_config = temp_dir.path().join("nonexistent.yaml");
+    let nonexistent_config = temp_dir.path().join("nonexistent.toml");
     let output2 = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
         .arg("--config")
         .arg(&nonexistent_config)
@@ -1776,13 +1783,14 @@ fn test_binary_relative_config_loading_integration() {
         "Explicit --config with missing file must fail. stderr: {}",
         stderr2
     );
+    assert_eq!(output2.status.code(), Some(3), "stderr: {}", stderr2);
     assert!(
-        stderr2.contains("Config file not found"),
+        stderr2.contains("config file not found"),
         "Error should mention missing config file. stderr: {}",
         stderr2
     );
     assert!(
-        stderr2.contains("nonexistent.yaml"),
+        stderr2.contains("nonexistent.toml"),
         "Error should name the missing path. stderr: {}",
         stderr2
     );
@@ -1791,12 +1799,24 @@ fn test_binary_relative_config_loading_integration() {
 /// P0-04: Explicit --config with missing file must fail
 #[test]
 fn test_explicit_config_missing_fails() {
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["--config", "/nonexistent/path/nails.yaml", "status"])
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains("Config file not found"))
-        .stderr(predicates::str::contains("/nonexistent/path/nails.yaml"));
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--no-logs",
+            "--config",
+            "/nonexistent/path/nails.toml",
+            "status",
+        ])
+        .output()
+        .expect("failed to run nails status");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
+    assert_eq!(
+        stderr.trim(),
+        "Error: config file not found: /nonexistent/path/nails.toml \
+         (run `nails init <root>` or pass --config)",
+        "exactly one error line"
+    );
 }
 
 /// P0-04: Explicit --config with unreadable file must fail
@@ -1812,7 +1832,8 @@ fn test_explicit_config_unreadable_fails() {
     cmd.args(["--config", config_file.path().to_str().unwrap(), "status"])
         .assert()
         .failure()
-        .stderr(predicates::str::contains("Error loading config from"));
+        .code(3)
+        .stderr(predicates::str::contains("cannot read config"));
 
     // Restore permissions so temp file cleanup works
     std::fs::set_permissions(config_file.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -1852,9 +1873,13 @@ fn test_config_flag_overrides_binary_relative() {
     fs::create_dir_all(&config_dir).unwrap();
 
     // Create binary-relative config
-    let binary_relative_config = config_dir.join("nails.yaml");
+    let binary_relative_config = config_dir.join("nails.toml");
     let mut file1 = fs::File::create(&binary_relative_config).unwrap();
-    writeln!(file1, "hidden_volume_path: /mnt/binary-relative-volume").unwrap();
+    writeln!(
+        file1,
+        "hidden_volume_root = \"/mnt/binary-relative-volume\""
+    )
+    .unwrap();
 
     // Create override config with different value using helper
     let override_config = create_test_config_file("/mnt/override-volume");

@@ -151,21 +151,8 @@ impl<F: Filesystem> NailsManager<F> {
                     .collect(),
             };
 
-        let ephemeral_overlay_target_paths: Vec<std::path::PathBuf> =
-            if self.config.extended_overlays.enabled {
-                self.config
-                    .extended_overlays
-                    .directories
-                    .iter()
-                    .map(|dir| dir.path.clone())
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
         registry.add_check(Box::new(OverlayCompatibilityCheck::new(
             persistent_overlay_target_paths,
-            ephemeral_overlay_target_paths,
             self.config.hidden_volume_root.clone(),
         )));
 

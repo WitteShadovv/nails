@@ -1,7 +1,7 @@
 //! Overlay Mounting Logic
 //!
-//! Handles mounting both persistent and ephemeral overlays with process detection
-//! and automatic rollback on failure.
+//! Handles mounting persistent overlays with process detection and automatic
+//! rollback on failure.
 //!
 //! Split into sub-modules:
 //! - `auto_mount` - Auto mode overlay mounting (dynamic target enumeration)
@@ -24,7 +24,7 @@ use chrono::Utc;
 use std::path::{Path, PathBuf};
 
 impl<F: Filesystem> NailsManager<F> {
-    /// Mount persistent and ephemeral overlays
+    /// Mount persistent overlays
     ///
     /// Returns: (direct_mounts, pivot_mounts, leaking_targets, mounted_overlays)
     /// where `leaking_targets` are the targets still referenced by surviving
@@ -40,7 +40,6 @@ impl<F: Filesystem> NailsManager<F> {
             tracing::info!("Mounting overlays...");
         }
 
-        // Create shared tracker for both persistent and ephemeral overlays (Story 4.11)
         // Tracker will be committed only after full activation succeeds.
         let mut tracker = MountTracker::new(&self.filesystem);
 
@@ -85,19 +84,13 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
-        // Extract persistent overlay paths for state file (before mounting ephemeral)
+        // Persistent overlay paths for the state file
         let mounted_overlays: Vec<PathBuf> = tracker
             .mounted
             .iter()
             .filter(|info| info.mount_type == MountType::Persistent)
             .map(|info| info.target.clone())
             .collect();
-
-        // Step 8b: Mount ephemeral overlays (/var, /tmp, /srv, /opt) - Story 4.11
-        // These are RAM-backed and NOT tracked in state file (ephemeral = destroyed on unmount)
-        if self.config.extended_overlays.enabled {
-            self.mount_ephemeral_overlays(&mut tracker, verbosity)?;
-        }
 
         // Story 9.3 AC#1: Log overlays mounted with structured fields
         let mounted_paths: Vec<_> = tracker
@@ -249,83 +242,6 @@ impl<F: Filesystem> NailsManager<F> {
                 && verbosity >= Verbosity::Debug
             {
                 tracing::warn!("Failed to save state after mount: {}", e);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Mount ephemeral overlays (RAM-backed, not persisted in state)
-    fn mount_ephemeral_overlays(
-        &self,
-        tracker: &mut MountTracker<F>,
-        verbosity: Verbosity,
-    ) -> Result<()> {
-        if verbosity >= Verbosity::Verbose {
-            tracing::info!("Mounting ephemeral overlays...");
-        }
-
-        for ephemeral_dir in &self.config.extended_overlays.directories {
-            if verbosity >= Verbosity::Debug {
-                tracing::debug!(
-                    "Mounting ephemeral overlay: {} (upper: {}, work: {})",
-                    ephemeral_dir.path.display(),
-                    ephemeral_dir.tmpfs_upper_size,
-                    ephemeral_dir.tmpfs_work_size
-                );
-            }
-
-            // Use pivot_ephemeral_mount for active directories (Story 4.11)
-            // Direct mount fails with EINVAL on busy directories like /var
-            // Pivot strategy: mount to staging → bind mount to target
-            match crate::overlay::pivot_ephemeral_mount(
-                &self.filesystem,
-                ephemeral_dir,
-                &ephemeral_dir.path,
-            ) {
-                Ok(mount_info) => {
-                    // Track pivot mount with staging + tmpfs paths for rollback
-                    // Note: staging path is also needed for proper unmount
-                    tracker.push_mount(MountInfo::ephemeral(
-                        mount_info.target.clone(),
-                        vec![
-                            mount_info.staging.clone(), // staging (overlay mount point)
-                            mount_info
-                                .upper
-                                .parent()
-                                .expect("ephemeral upper should have shared tmpfs parent")
-                                .to_path_buf(), // shared tmpfs backing
-                        ],
-                    ));
-
-                    if verbosity >= Verbosity::Verbose {
-                        tracing::info!(
-                            "  ✓ {} mounted (ephemeral, RAM-backed)",
-                            ephemeral_dir.path.display()
-                        );
-                    }
-                }
-                Err(e) => {
-                    // Story 9.3 AC#2: Structured error event for ephemeral mount failure
-                    tracing::error!(
-                        error = %e,
-                        target = %ephemeral_dir.path.display(),
-                        mount_type = "ephemeral",
-                        rollback = true,
-                        "Ephemeral overlay mount failed"
-                    );
-
-                    // Rollback all mounts (persistent + any ephemeral that succeeded)
-                    if let Err(rollback_err) = tracker.rollback_all() {
-                        tracing::error!(
-                            error = %rollback_err,
-                            context = "ephemeral_mount_failure_recovery",
-                            rollback = true,
-                            "Rollback failed during ephemeral mount failure recovery"
-                        );
-                    }
-                    return Err(e);
-                }
             }
         }
 

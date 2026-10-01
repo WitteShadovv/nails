@@ -29,7 +29,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-overlay-order.yaml"
+    config_path = "/tmp/nails-overlay-order.toml"
     write_ordered_overlay_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     machine.succeed("mkdir -p /mnt/hidden-volume/srv /mnt/hidden-volume/.work/srv")

@@ -30,25 +30,28 @@ in
 
     def write_storage_config(path):
         write_text_file(path, """
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: explicit
-    overlays:
-      - name: home
-        lower: /home
-        upper: /mnt/hidden-volume/home
-        work: /mnt/hidden-volume/.work/home
-        target: /home
-      - name: srv
-        lower: /srv
-        upper: /mnt/hidden-volume/srv
-        work: /mnt/hidden-volume/.work/srv
-        target: /srv
+    hidden_volume_root = "/mnt/hidden-volume"
+    overlay_mode = "explicit"
+
+    [[overlays]]
+    name = "home"
+    lower = "/home"
+    upper = "/mnt/hidden-volume/home"
+    work = "/mnt/hidden-volume/.work/home"
+    target = "/home"
+
+    [[overlays]]
+    name = "srv"
+    lower = "/srv"
+    upper = "/mnt/hidden-volume/srv"
+    work = "/mnt/hidden-volume/.work/srv"
+    target = "/srv"
     """.strip() + "\n")
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/preflight-storage-readiness.yaml"
+    config_path = "/tmp/preflight-storage-readiness.toml"
     write_storage_config(config_path)
     machine.succeed("mkdir -p /srv")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")

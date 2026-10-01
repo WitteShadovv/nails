@@ -1,6 +1,6 @@
 use nails_core::SystemState;
 
-use super::read_recent_logs;
+use super::{config_file_label, read_recent_logs};
 
 /// Human-readable state label, reporting "Unknown" when the state file could not
 /// be read or trusted rather than claiming the safe default is the real state.
@@ -79,7 +79,7 @@ pub fn print_status_human(
     if verbose && matches!(report.state, SystemState::Active { .. }) {
         println!();
         println!("Verbose Details:");
-        println!("  Config file:        {}", config_path.display());
+        println!("  Config file:        {}", config_file_label(config_path));
         println!("  State file:         {}", state_path.display());
         println!();
 
@@ -104,7 +104,7 @@ pub fn print_status_human(
 
         println!();
         println!("Verbose Details:");
-        println!("  Config file:        {}", config_path.display());
+        println!("  Config file:        {}", config_file_label(config_path));
         println!("  Hidden volume root: {}", hidden_volume_root.display());
         println!("  State file:         {}", state_path.display());
         println!("  Log path:           {}", log_path.display());
@@ -213,7 +213,7 @@ fn print_status_no_color(
     if verbose && matches!(report.state, SystemState::Active { .. }) {
         println!();
         println!("Verbose Details:");
-        println!("  Config file:        {}", config_path.display());
+        println!("  Config file:        {}", config_file_label(config_path));
         println!("  State file:         {}", state_path.display());
         println!();
 
@@ -238,7 +238,7 @@ fn print_status_no_color(
 
         println!();
         println!("Verbose Details:");
-        println!("  Config file:        {}", config_path.display());
+        println!("  Config file:        {}", config_file_label(config_path));
         println!("  Hidden volume root: {}", hidden_volume_root.display());
         println!("  State file:         {}", state_path.display());
         println!("  Log path:           {}", log_path.display());

@@ -93,7 +93,7 @@ mod runtime_safety;
 // Re-export for convenience
 pub use config::{
     CliOverrides, ColorProfile, ColorSchemeConfig, Config, ConfigBuilder, DecoyProfile,
-    EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig, OverlayMode,
+    EphemeralOverlayDir, LoadedConfig, OverlayConfig, OverlayMode, ValueSource,
 };
 pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};

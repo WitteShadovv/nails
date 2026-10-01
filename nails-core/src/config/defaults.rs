@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use super::colors::ColorSchemeConfig;
-use super::overlay::{ExtendedOverlayConfig, OverlayConfig, OverlayMode};
+use super::overlay::{OverlayConfig, OverlayMode};
 use super::types::{Config, DEFAULT_HIDDEN_VOLUME_ROOT, get_default_hidden_volume_root};
 
 /// Derive hidden volume root from binary location
@@ -122,13 +122,13 @@ pub fn derive_hidden_volume_root() -> PathBuf {
     }
 }
 
-// Serde default functions for new user-configurable fields
+// Serde default functions
 pub(super) fn default_hidden_volume_root() -> PathBuf {
     derive_hidden_volume_root()
 }
 
 pub(super) fn default_state_file_path() -> PathBuf {
-    // This will be overridden in load() to use the actual hidden_volume_root
+    // Replaced by `{hidden_volume_root}/state.json` when a config file omits it
     PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("state.json")
 }
 
@@ -144,28 +144,12 @@ pub(super) fn default_preflight_checks() -> bool {
     true
 }
 
-pub(super) fn default_verbosity() -> String {
-    "info".to_string()
-}
-
-pub(super) fn default_color_output() -> bool {
-    true
-}
-
-pub(super) fn default_verify_on_deactivate() -> bool {
-    true
-}
-
-pub(super) fn default_milestone_tips() -> bool {
-    true
-}
-
 pub(super) fn default_show_opsec_reminders() -> bool {
     true
 }
 
 pub(super) fn default_log_path() -> PathBuf {
-    // Default will be derived from hidden_volume_root in builder
+    // Replaced by `{hidden_volume_root}/logs` when a config file omits it
     PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs")
 }
 
@@ -183,7 +167,7 @@ impl Default for Config {
     /// Uses binary-derived hidden volume root for zero-config operation.
     /// Includes default overlays for /home, /etc, and /var for VM testing.
     fn default() -> Self {
-        // Auto-derive hidden volume root from binary location (Story 14.9)
+        // Derive the hidden volume root from the binary location
         let hidden_root = derive_hidden_volume_root();
 
         Self {
@@ -219,23 +203,12 @@ impl Default for Config {
                     target: PathBuf::from("/var"),
                 },
             ],
-            minimum_space_mb: 500, // Default minimum: 500 MB
-            // Ephemeral overlays DISABLED - using regular overlays instead (Story 4.11)
-            extended_overlays: ExtendedOverlayConfig {
-                enabled: false,
-                directories: vec![],
-            },
-            // Dynamic overlay configuration (Story 14.10)
+            minimum_space_mb: default_minimum_space_mb(),
             overlay_mode: OverlayMode::Auto,
             overlay_exclusions: vec![],
             overlay_exclusions_remove: vec![],
-            // User-configurable options with smart defaults (Epic 10)
             clear_history: default_clear_history(),
             preflight_checks: default_preflight_checks(),
-            default_verbosity: default_verbosity(),
-            color_output: default_color_output(),
-            verify_on_deactivate: default_verify_on_deactivate(),
-            milestone_tips: default_milestone_tips(),
             show_opsec_reminders: default_show_opsec_reminders(),
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root
             loaded_config_path: None,

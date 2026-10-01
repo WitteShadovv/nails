@@ -29,7 +29,7 @@ in
         machine.wait_for_unit("multi-user.target")
         machine.wait_for_unit("display-manager.service")
 
-        config_path = "/tmp/nails-notify.yaml"
+        config_path = "/tmp/nails-notify.toml"
         stub_dir = "/tmp/notify-stub/bin"
         stub_log = "/tmp/notify-send.log"
         signal_path = "/mnt/hidden-volume/notifications/20260101T000000000_flow.json"

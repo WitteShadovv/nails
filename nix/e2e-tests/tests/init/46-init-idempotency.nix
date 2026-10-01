@@ -38,17 +38,18 @@ in
 
     with subtest("first init establishes baseline"):
         machine.succeed("nails init /mnt/hidden-volume")
-        machine.succeed("printf '\n# SENTINEL_KEEP\n' >> /mnt/hidden-volume/config/nails.yaml")
-        before_hash = machine.succeed("sha256sum /mnt/hidden-volume/config/nails.yaml | cut -d\" \" -f1").strip()
+        machine.succeed("printf '\n# SENTINEL_KEEP\n' >> /mnt/hidden-volume/config/nails.toml")
+        before_hash = machine.succeed("sha256sum /mnt/hidden-volume/config/nails.toml | cut -d\" \" -f1").strip()
 
     with subtest("second init is safe and non-destructive"):
         machine.succeed("nails init /mnt/hidden-volume")
-        after_hash = machine.succeed("sha256sum /mnt/hidden-volume/config/nails.yaml | cut -d\" \" -f1").strip()
+        after_hash = machine.succeed("sha256sum /mnt/hidden-volume/config/nails.toml | cut -d\" \" -f1").strip()
         assert after_hash == before_hash, f"Config hash changed across repeated init: {before_hash} -> {after_hash}"
 
     with subtest("existing generated artifacts remain valid and non-duplicated"):
-        config_text = machine.succeed("cat /mnt/hidden-volume/config/nails.yaml")
+        config_text = machine.succeed("cat /mnt/hidden-volume/config/nails.toml")
         assert "# SENTINEL_KEEP" in config_text, config_text
+        machine.succeed("nails config validate /mnt/hidden-volume/config/nails.toml")
 
         hardware_text = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
         import_count = hardware_text.count("./nails/configuration.nix")

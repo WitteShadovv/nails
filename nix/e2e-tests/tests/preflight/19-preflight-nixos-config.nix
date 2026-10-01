@@ -28,19 +28,20 @@ in
 
     def write_nixos_config(path):
         write_text_file(path, """
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: explicit
-    overlays:
-      - name: home
-        lower: /home
-        upper: /mnt/hidden-volume/home
-        work: /mnt/hidden-volume/.work/home
-        target: /home
+    hidden_volume_root = "/mnt/hidden-volume"
+    overlay_mode = "explicit"
+
+    [[overlays]]
+    name = "home"
+    lower = "/home"
+    upper = "/mnt/hidden-volume/home"
+    work = "/mnt/hidden-volume/.work/home"
+    target = "/home"
     """.strip() + "\n")
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-    config_path = "/tmp/preflight-nixos-config.yaml"
+    config_path = "/tmp/preflight-nixos-config.toml"
     write_nixos_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 

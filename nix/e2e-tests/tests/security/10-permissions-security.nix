@@ -5,8 +5,8 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  symlinkFixture = ./../../fixtures/configs/symlink-target.yaml;
-  traversalFixture = ./../../fixtures/configs/path-traversal.yaml;
+  symlinkFixture = ./../../fixtures/configs/symlink-target.toml;
+  traversalFixture = ./../../fixtures/configs/path-traversal.toml;
 in
 {
   name = "permissions-security";
@@ -27,7 +27,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
@@ -55,9 +55,9 @@ in
     print("\n=== Test 2: Symlink rejection ===")
     machine.succeed("nails emergency")
     machine.succeed("ln -sfn /mnt/hidden-volume /tmp/symlink-to-hidden")
-    machine.succeed("cp ${symlinkFixture} /tmp/symlink-config.yaml")
+    machine.succeed("cp ${symlinkFixture} /tmp/symlink-config.toml")
 
-    result = machine.execute("nails --config /tmp/symlink-config.yaml activate --overlay-only --no-kill-session -y 2>&1")
+    result = machine.execute("nails --config /tmp/symlink-config.toml activate --overlay-only --no-kill-session -y 2>&1")
     print(f"  Symlink activation result: exit={result[0]}")
     if result[0] != 0:
         print("✓ Symlinked hidden-volume root is rejected")
@@ -65,12 +65,12 @@ in
         print("Note: Symlinked hidden-volume root was accepted (cleanup needed)")
         machine.succeed("nails emergency")
 
-    machine.succeed("rm -f /tmp/symlink-to-hidden /tmp/symlink-config.yaml")
+    machine.succeed("rm -f /tmp/symlink-to-hidden /tmp/symlink-config.toml")
 
     print("\n=== Test 3: Path traversal rejection ===")
-    machine.succeed("cp ${traversalFixture} /tmp/traversal-config.yaml")
+    machine.succeed("cp ${traversalFixture} /tmp/traversal-config.toml")
 
-    result = machine.execute("nails --config /tmp/traversal-config.yaml activate --overlay-only --no-kill-session -y 2>&1")
+    result = machine.execute("nails --config /tmp/traversal-config.toml activate --overlay-only --no-kill-session -y 2>&1")
     print(f"  Path traversal activation result: exit={result[0]}")
     if result[0] != 0:
         print("✓ Path traversal in config is rejected")
@@ -78,7 +78,7 @@ in
         print("Note: Path traversal was accepted (cleanup needed)")
         machine.succeed("nails emergency")
 
-    machine.succeed("rm -f /tmp/traversal-config.yaml")
+    machine.succeed("rm -f /tmp/traversal-config.toml")
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
     print("\n=== All Permissions Security Tests Passed ===")
   '';

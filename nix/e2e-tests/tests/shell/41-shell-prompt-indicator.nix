@@ -31,12 +31,17 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-headless.yaml"
+    config_path = "/tmp/nails-headless.toml"
     shell_path = "/run/current-system/sw/bin/bash"
     prompt_label = "ctx"
     write_headless_config(config_path)
-    # Opt into a neutral active-state indicator (empty by default).
-    machine.succeed("printf 'prompt_label: \"%s\"\\n' " + prompt_label + " >> " + config_path)
+    # Opt into a neutral active-state indicator (empty by default). Prepend it:
+    # in TOML a key after a table header belongs to that table.
+    machine.succeed(
+        "printf 'prompt_label = \"%s\"\\n' " + prompt_label
+        + " | cat - " + config_path + " > " + config_path + ".new"
+        + " && mv " + config_path + ".new " + config_path
+    )
 
     prompt_command = (
         "sudo -u testuser env HOME=/home/testuser "

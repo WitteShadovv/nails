@@ -16,11 +16,7 @@ use std::path::PathBuf;
 /// * `config_override` - Optional config file path override
 /// * `json` - Output results in JSON format
 pub fn execute(config_override: Option<PathBuf>, json: bool) -> ! {
-    let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-    let mut config = super::load_config_or_exit(&config_path, config_override.as_deref());
-    config.loaded_config_path = config_override
-        .clone()
-        .or_else(|| Some(config_path.clone()));
+    let config = super::load_config_or_exit(config_override.as_deref()).into_config();
 
     match nails_core::notification::dispatch_all(&config.hidden_volume_root) {
         Ok(initial_count) => {
@@ -126,7 +122,7 @@ mod tests {
         std::fs::create_dir_all(&hidden_root).unwrap();
 
         let mut config = tempfile::NamedTempFile::new().unwrap();
-        writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+        writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
         let output = run_subprocess("json", Some(config.path()));
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -157,7 +153,7 @@ mod tests {
         .unwrap();
 
         let mut config = tempfile::NamedTempFile::new().unwrap();
-        writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+        writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
         let output = run_subprocess("json", Some(config.path()));
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -179,13 +175,12 @@ mod tests {
         use std::io::Write;
 
         let mut config = tempfile::NamedTempFile::new().unwrap();
-        writeln!(config, "hidden_volume_path: [broken").unwrap();
+        writeln!(config, "hidden_volume_root = [broken").unwrap();
 
         let output = run_subprocess("invalid-config", Some(config.path()));
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-        assert!(stderr.contains("Error loading config"));
-        assert!(stderr.contains("Invalid YAML"));
+        assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
+        assert!(stderr.contains("invalid config"), "{stderr}");
     }
 }

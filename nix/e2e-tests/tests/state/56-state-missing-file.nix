@@ -38,7 +38,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/tmp/nails-headless.toml"
     state_path = "/mnt/hidden-volume/state.json"
     write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")

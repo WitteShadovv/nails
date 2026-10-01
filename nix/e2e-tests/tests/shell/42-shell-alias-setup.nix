@@ -31,7 +31,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-headless.yaml"
+    config_path = "/tmp/nails-headless.toml"
     shell_path = "/run/current-system/sw/bin/bash"
     alias_command = (
         "sudo -u testuser env HOME=/home/testuser "

@@ -289,7 +289,7 @@ fn build_cleanup_config<F: Filesystem>(
     let cleanup_config = CleanupConfig {
         clear_history: manager.config().clear_history,
         log_path: manager.config().log_path.clone(),
-        hidden_volume_path: manager.config().hidden_volume_root.clone(),
+        hidden_volume_root: manager.config().hidden_volume_root.clone(),
         config_file_path: manager.config().loaded_config_path.clone(),
         ..CleanupConfig::default()
     };
@@ -324,43 +324,6 @@ fn inspect_overlay_context<F: Filesystem>(manager: &NailsManager<F>) -> Result<O
     Ok(OverlayContext {
         nix_was_overlaid: overlay_paths.iter().any(|p| p == Path::new("/nix")),
     })
-}
-
-fn unmount_ephemeral_overlays<F: Filesystem>(manager: &NailsManager<F>) {
-    if !manager.config.extended_overlays.enabled {
-        return;
-    }
-
-    tracing::info!("Unmounting ephemeral overlays before deactivation");
-
-    for ephemeral_dir in manager.config.extended_overlays.directories.iter().rev() {
-        let dir_name = ephemeral_dir
-            .path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
-
-        let mount_info = crate::overlay::PivotMountInfo {
-            target: ephemeral_dir.path.clone(),
-            staging: PathBuf::from(format!(
-                "{}/{}",
-                crate::overlay::PIVOT_STAGING_BASE,
-                dir_name
-            )),
-            upper: PathBuf::from(format!("/run/nails/{}-ephemeral/upper", dir_name)),
-            work: PathBuf::from(format!("/run/nails/{}-ephemeral/work", dir_name)),
-            lower: ephemeral_dir.path.clone(),
-            is_ephemeral: true,
-        };
-
-        if let Err(e) = crate::overlay::unmount_pivot_overlay(&manager.filesystem, &mount_info) {
-            tracing::warn!(
-                error = %e,
-                path = %ephemeral_dir.path.display(),
-                "Ephemeral overlay unmount failed (non-fatal)"
-            );
-        }
-    }
 }
 
 fn verify_history_truncation<F: Filesystem>(manager: &NailsManager<F>) {
@@ -439,9 +402,7 @@ impl<F: Filesystem + 'static> NailsManager<F> {
             let manager = manager_arc
                 .lock()
                 .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
-            let context = inspect_overlay_context(&manager)?;
-            unmount_ephemeral_overlays(&manager);
-            context
+            inspect_overlay_context(&manager)?
         };
 
         if overlay_context.nix_was_overlaid {

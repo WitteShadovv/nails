@@ -50,7 +50,7 @@ in
     machine.wait_for_unit("display-manager.service")
     machine.wait_until_succeeds("systemctl is-active user@1000.service")
 
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/tmp/nails-headless.toml"
     desktop_path = "/home/testuser/.config/autostart/nails-notify.desktop"
     hidden_desktop_path = "/mnt/hidden-volume/home/testuser/.config/autostart/nails-notify.desktop"
     staged_signal_path = "/mnt/hidden-volume/notifications/20260101T000000000_autostart.json"

@@ -63,7 +63,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    headless_config = "/var/lib/nails-tests/nails-headless.yaml"
+    headless_config = "/var/lib/nails-tests/nails-headless.toml"
     write_headless_config(headless_config)
     wrapper_env = install_nixos_rebuild_wrapper("/var/lib/nails-tests/nixos-rebuild-hardware-imports.log")
 

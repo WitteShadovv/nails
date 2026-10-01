@@ -3,7 +3,7 @@
 {
   # Python function to write the standard headless config file.
   # Usage in testScript: ${testHelpers.writeHeadlessConfigFn}
-  # Then call: write_headless_config("/run/nails-tests/nails-headless.yaml")
+  # Then call: write_headless_config("/run/nails-tests/nails-headless.toml")
   writeHeadlessConfigFn = ''
     def write_headless_config(path):
         import os
@@ -13,34 +13,43 @@
         machine.succeed("mkdir -p " + shlex.quote(parent_dir))
         machine.succeed(
             """cat > %s <<'EOF'
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: explicit
-    overlays:
-      - name: etc
-        lower: /etc
-        upper: /mnt/hidden-volume/etc
-        work: /mnt/hidden-volume/.work/etc
-        target: /etc
-      - name: home
-        lower: /home
-        upper: /mnt/hidden-volume/home
-        work: /mnt/hidden-volume/.work/home
-        target: /home
-      - name: root
-        lower: /root
-        upper: /mnt/hidden-volume/root
-        work: /mnt/hidden-volume/.work/root
-        target: /root
-      - name: srv
-        lower: /srv
-        upper: /mnt/hidden-volume/srv
-        work: /mnt/hidden-volume/.work/srv
-        target: /srv
-      - name: tmp
-        lower: /tmp
-        upper: /mnt/hidden-volume/tmp
-        work: /mnt/hidden-volume/.work/tmp
-        target: /tmp
+    hidden_volume_root = "/mnt/hidden-volume"
+    overlay_mode = "explicit"
+
+    [[overlays]]
+    name = "etc"
+    lower = "/etc"
+    upper = "/mnt/hidden-volume/etc"
+    work = "/mnt/hidden-volume/.work/etc"
+    target = "/etc"
+
+    [[overlays]]
+    name = "home"
+    lower = "/home"
+    upper = "/mnt/hidden-volume/home"
+    work = "/mnt/hidden-volume/.work/home"
+    target = "/home"
+
+    [[overlays]]
+    name = "root"
+    lower = "/root"
+    upper = "/mnt/hidden-volume/root"
+    work = "/mnt/hidden-volume/.work/root"
+    target = "/root"
+
+    [[overlays]]
+    name = "srv"
+    lower = "/srv"
+    upper = "/mnt/hidden-volume/srv"
+    work = "/mnt/hidden-volume/.work/srv"
+    target = "/srv"
+
+    [[overlays]]
+    name = "tmp"
+    lower = "/tmp"
+    upper = "/mnt/hidden-volume/tmp"
+    work = "/mnt/hidden-volume/.work/tmp"
+    target = "/tmp"
     EOF""" % path
         )
   '';
@@ -232,87 +241,57 @@
     def write_extended_config(path):
         machine.succeed(
             """cat > %s <<'EOF'
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: explicit
-    overlays:
-      - name: etc
-        lower: /etc
-        upper: /mnt/hidden-volume/etc
-        work: /mnt/hidden-volume/.work/etc
-        target: /etc
-      - name: home
-        lower: /home
-        upper: /mnt/hidden-volume/home
-        work: /mnt/hidden-volume/.work/home
-        target: /home
-      - name: root
-        lower: /root
-        upper: /mnt/hidden-volume/root
-        work: /mnt/hidden-volume/.work/root
-        target: /root
-      - name: var
-        lower: /var
-        upper: /mnt/hidden-volume/var
-        work: /mnt/hidden-volume/.work/var
-        target: /var
-      - name: tmp
-        lower: /tmp
-        upper: /mnt/hidden-volume/tmp
-        work: /mnt/hidden-volume/.work/tmp
-        target: /tmp
-      - name: srv
-        lower: /srv
-        upper: /mnt/hidden-volume/srv
-        work: /mnt/hidden-volume/.work/srv
-        target: /srv
-      - name: opt
-        lower: /opt
-        upper: /mnt/hidden-volume/opt
-        work: /mnt/hidden-volume/.work/opt
-        target: /opt
-    EOF""" % path
-        )
-  '';
+    hidden_volume_root = "/mnt/hidden-volume"
+    overlay_mode = "explicit"
 
-  writeEphemeralConfigFn = ''
-    def write_ephemeral_config(path):
-        machine.succeed(
-            """cat > %s <<'EOF'
-    # Harness fixture for unsupported extended_overlays coverage.
-    # This is not a supported ephemeral mode; activation is expected to fail in preflight.
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: explicit
-    overlays:
-      - name: etc
-        lower: /etc
-        upper: /mnt/hidden-volume/etc
-        work: /mnt/hidden-volume/.work/etc
-        target: /etc
-      - name: home
-        lower: /home
-        upper: /mnt/hidden-volume/home
-        work: /mnt/hidden-volume/.work/home
-        target: /home
-      - name: root
-        lower: /root
-        upper: /mnt/hidden-volume/root
-        work: /mnt/hidden-volume/.work/root
-        target: /root
-    extended_overlays:
-      enabled: true
-      directories:
-        - path: /var
-          tmpfs_upper_size: 256M
-          tmpfs_work_size: 128M
-        - path: /tmp
-          tmpfs_upper_size: 256M
-          tmpfs_work_size: 128M
-        - path: /srv
-          tmpfs_upper_size: 128M
-          tmpfs_work_size: 64M
-        - path: /opt
-          tmpfs_upper_size: 128M
-          tmpfs_work_size: 64M
+    [[overlays]]
+    name = "etc"
+    lower = "/etc"
+    upper = "/mnt/hidden-volume/etc"
+    work = "/mnt/hidden-volume/.work/etc"
+    target = "/etc"
+
+    [[overlays]]
+    name = "home"
+    lower = "/home"
+    upper = "/mnt/hidden-volume/home"
+    work = "/mnt/hidden-volume/.work/home"
+    target = "/home"
+
+    [[overlays]]
+    name = "root"
+    lower = "/root"
+    upper = "/mnt/hidden-volume/root"
+    work = "/mnt/hidden-volume/.work/root"
+    target = "/root"
+
+    [[overlays]]
+    name = "var"
+    lower = "/var"
+    upper = "/mnt/hidden-volume/var"
+    work = "/mnt/hidden-volume/.work/var"
+    target = "/var"
+
+    [[overlays]]
+    name = "tmp"
+    lower = "/tmp"
+    upper = "/mnt/hidden-volume/tmp"
+    work = "/mnt/hidden-volume/.work/tmp"
+    target = "/tmp"
+
+    [[overlays]]
+    name = "srv"
+    lower = "/srv"
+    upper = "/mnt/hidden-volume/srv"
+    work = "/mnt/hidden-volume/.work/srv"
+    target = "/srv"
+
+    [[overlays]]
+    name = "opt"
+    lower = "/opt"
+    upper = "/mnt/hidden-volume/opt"
+    work = "/mnt/hidden-volume/.work/opt"
+    target = "/opt"
     EOF""" % path
         )
   '';

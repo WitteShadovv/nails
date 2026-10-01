@@ -5,7 +5,7 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  badYamlFixture = ./../../fixtures/configs/bad-yaml.yaml;
+  invalidTypeFixture = ./../../fixtures/configs/invalid-type.toml;
 in
 {
   name = "config-handling";
@@ -27,11 +27,16 @@ in
     machine.wait_for_unit("multi-user.target")
 
     print("\n=== Test 1: Nonexistent config path ===")
-    machine.fail("nails --config /nonexistent/path/config.yaml status")
-    print("✓ nails --config /nonexistent exits non-zero")
+    code, output = machine.execute("nails --no-logs --config /nonexistent/path/config.toml status 2>&1")
+    assert code == 3, f"expected exit 3 for a missing --config, got {code}: {output!r}"
+    assert output.strip() == (
+        "Error: config file not found: /nonexistent/path/config.toml "
+        "(run `nails init <root>` or pass --config)"
+    ), f"expected exactly one error line, got: {output!r}"
+    print("✓ nails --config /nonexistent exits 3 with one error line")
 
     print("\n=== Test 2: Valid config path ===")
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
 
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
@@ -44,10 +49,12 @@ in
         f"Expected status output with state info, got: {status_output}"
     print("✓ nails status (no --config) works with defaults")
 
-    print("\n=== Test 4: Invalid YAML config ===")
-    machine.succeed("cp ${badYamlFixture} /tmp/bad-config.yaml")
-    machine.fail("nails --config /tmp/bad-config.yaml status")
-    print("✓ Invalid YAML config produces error and exits non-zero")
+    print("\n=== Test 4: Invalid TOML config ===")
+    machine.succeed("cp ${invalidTypeFixture} /tmp/bad-config.toml")
+    code, output = machine.execute("nails --config /tmp/bad-config.toml status 2>&1")
+    assert code == 3, f"expected exit 3 for an invalid config, got {code}: {output!r}"
+    assert "invalid config /tmp/bad-config.toml: line 3" in output, output
+    print("✓ Invalid TOML config exits 3 and names the line")
 
     print("\n=== Test 5: Config with restrictive permissions ===")
     machine.succeed(f"chmod 0400 {headless_config}")

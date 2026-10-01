@@ -31,7 +31,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-headless.yaml"
+    config_path = "/tmp/nails-headless.toml"
     shell_path = "/run/current-system/sw/bin/bash"
     osc_sequence = "\x1b]11;#1a1a2e\x07\x1b]10;#e0e0e0\x07"
     shell_command = (

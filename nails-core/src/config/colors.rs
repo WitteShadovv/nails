@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(config.hidden.background, "#1a1a2e");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ColorSchemeConfig {
     /// Whether color scheme switching is enabled
     #[serde(default = "default_color_scheme_enabled")]
@@ -83,6 +84,7 @@ impl Default for ColorSchemeConfig {
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ColorProfile {
     /// Background color (hex format, e.g., "#1a1a2e")
     ///
@@ -122,6 +124,7 @@ impl Default for ColorProfile {
 /// assert!(profile.reset);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecoyProfile {
     /// Whether to reset terminal to defaults (true = use OSC reset sequences)
     #[serde(default = "default_decoy_reset")]

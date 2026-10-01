@@ -1,0 +1,5 @@
+# A misspelt key inside a table ("enable" for "enabled") is rejected too.
+hidden_volume_root = "/mnt/hidden-volume"
+
+[color_scheme]
+enable = false

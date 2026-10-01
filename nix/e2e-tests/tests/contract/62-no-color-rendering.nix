@@ -47,7 +47,7 @@ in
     with subtest("boot and prepare hidden volume"):
         machine.start()
         machine.wait_for_unit("multi-user.target")
-        headless_config = "/run/nails-tests/no-color-headless.yaml"
+        headless_config = "/run/nails-tests/no-color-headless.toml"
         write_headless_config(headless_config)
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 

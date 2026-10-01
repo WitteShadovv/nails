@@ -1,8 +1,10 @@
 //! Configuration management for NAILS
 //!
-//! This module provides configuration structures for the NAILS system,
-//! including the `Config` struct with user-configurable options and
-//! `ConfigBuilder` for fluent API construction with validation.
+//! Configuration lives in a strict TOML file, `nails.toml`, discovered next to
+//! the binary (see [`discover_config_path`]). Every key is optional; unknown
+//! keys at any level are rejected so a typo can never silently fall back to a
+//! default. [`LoadedConfig`] records where each effective value came from, and
+//! [`ConfigBuilder`] constructs a [`Config`] programmatically.
 //!
 //! # Example
 //!
@@ -11,9 +13,8 @@
 //! use std::path::PathBuf;
 //!
 //! let config = ConfigBuilder::new()
-//!     .hidden_volume_path(PathBuf::from("/mnt/hidden-volume"))
+//!     .hidden_volume_root(PathBuf::from("/mnt/hidden-volume"))
 //!     .clear_history(false)
-//!     .default_verbosity("debug")
 //!     .build()
 //!     .expect("Failed to build config");
 //! ```
@@ -23,12 +24,14 @@ pub mod colors;
 pub mod ephemeral;
 pub mod overlay;
 
-// Sub-modules for config implementation (Phase 10B refactoring)
+// Sub-modules for config implementation
 mod builder;
 mod defaults;
 mod dynamic;
+mod effective;
 mod loading;
 mod overrides;
+mod suggest;
 mod types;
 
 // Test-only utilities module
@@ -38,11 +41,11 @@ mod testing;
 // Re-exports for public API - color types
 pub use colors::{ColorProfile, ColorSchemeConfig, DecoyProfile};
 pub use ephemeral::EphemeralOverlayDir;
-pub use overlay::{ExtendedOverlayConfig, OverlayConfig, OverlayMode};
+pub use overlay::{OverlayConfig, OverlayMode};
 
 // Re-exports for public API - core types
 pub use types::{
-    CliOverrides, Config, DEFAULT_HIDDEN_VOLUME_ROOT, DEFAULT_OVERLAY_EXCLUSIONS,
+    CONFIG_KEYS, CliOverrides, Config, DEFAULT_HIDDEN_VOLUME_ROOT, DEFAULT_OVERLAY_EXCLUSIONS,
     get_default_hidden_volume_root,
 };
 
@@ -50,7 +53,8 @@ pub use types::{
 pub use builder::ConfigBuilder;
 
 // Re-exports for public API - loading
-pub use loading::discover_config_path;
+pub use effective::{LoadedConfig, ValueSource};
+pub use loading::{CONFIG_DIR_NAME, CONFIG_FILE_NAME, discover_config_path};
 
 // Re-exports for public API - defaults
 pub use defaults::derive_hidden_volume_root;

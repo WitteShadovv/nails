@@ -34,7 +34,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-headless.yaml"
+    config_path = "/tmp/nails-headless.toml"
     shell_path = "/run/current-system/sw/bin/fish"
     rc_path = "/home/testuser/.config/fish/config.fish"
     expected_lower = "# lower fish config\nset -gx LOWER_FISH_RC 1\n"

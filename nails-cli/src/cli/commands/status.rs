@@ -18,7 +18,7 @@ use std::path::PathBuf;
 ///
 /// # Returns
 ///
-/// Never returns - exits with code 0 for status results, 2 for config load failures
+/// Never returns - exits with code 0 for status results, 3 for config load failures
 pub fn execute(
     config_override: Option<PathBuf>,
     json: bool,
@@ -40,12 +40,9 @@ pub fn execute(
     );
 
     // Load configuration (Story 14.1)
-    let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-
-    let mut config = super::load_config_or_exit(&config_path, config_override.as_deref());
-    config.loaded_config_path = config_override
-        .clone()
-        .or_else(|| Some(config_path.clone()));
+    let loaded = super::load_config_or_exit(config_override.as_deref());
+    let config_path = loaded.path.clone();
+    let config = loaded.into_config();
 
     let state_path = config.state_file_path.clone();
     let hidden_volume_root = config.hidden_volume_root.clone();

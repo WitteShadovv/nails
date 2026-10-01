@@ -268,10 +268,10 @@ fn init_file_layer(
         .unwrap_or_else(|_| nails_core::config::Config::default());
 
     let log_dir = config.log_path.clone();
-    let hidden_volume_path = config.hidden_volume_root.clone();
+    let hidden_volume_root = config.hidden_volume_root.clone();
 
     // Create LoggingManager using configured log_path
-    let logging_manager = LoggingManager::new(log_dir, hidden_volume_path);
+    let logging_manager = LoggingManager::new(log_dir, hidden_volume_root);
 
     // Initialize LoggingManager with validation (Task 2.2)
     // Returns Ok(None) for graceful degradation (hidden volume not available)

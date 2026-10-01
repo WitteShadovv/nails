@@ -230,7 +230,7 @@ def _plant_canaries():
     )
 
 def _capture_common(label):
-    _capture_command(label + "-status-json", "nails --config /tmp/nails-headless.yaml status --json")
+    _capture_command(label + "-status-json", "nails --config /tmp/nails-headless.toml status --json")
     _capture_command(label + "-mounts", "mount | sort")
     _capture_command(label + "-home-tree", "find /home/testuser -maxdepth 4 -printf '%y %p\\n' | sort")
     _capture_command(label + "-tmp-tree", "find /tmp -maxdepth 3 -printf '%y %p\\n' | sort")
@@ -258,7 +258,7 @@ def stage_python_body(stage_name: str) -> str:
         return r"""
 machine.start()
 machine.wait_for_unit("multi-user.target")
-write_headless_config("/tmp/nails-headless.yaml")
+write_headless_config("/tmp/nails-headless.toml")
 machine.copy_from_host(CANARIES_FILE, "/tmp/forensics-canaries.json")
 machine.copy_from_host(SCENARIO_FILE, "/tmp/forensics-scenario.json")
 machine.succeed("mkdir -p /tmp/forensics-stage/artifacts /tmp/forensics-stage/commands /tmp/forensics-stage/metadata")
@@ -272,13 +272,13 @@ _finalize()
         return r'''
 machine.start()
 machine.wait_for_unit("multi-user.target")
-write_headless_config("/tmp/nails-headless.yaml")
+write_headless_config("/tmp/nails-headless.toml")
 machine.copy_from_host(CANARIES_FILE, "/tmp/forensics-canaries.json")
 machine.copy_from_host(SCENARIO_FILE, "/tmp/forensics-scenario.json")
 machine.succeed("mkdir -p /tmp/forensics-stage/artifacts /tmp/forensics-stage/commands /tmp/forensics-stage/metadata")
 _write_stage_metadata("active")
 machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-machine.succeed("nails --config /tmp/nails-headless.yaml activate --overlay-only --no-kill-session -y")
+machine.succeed("nails --config /tmp/nails-headless.toml activate --overlay-only --no-kill-session -y")
 machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
 _plant_canaries()
 _capture_common("active")
@@ -296,16 +296,16 @@ _finalize()
         return r'''
 machine.start()
 machine.wait_for_unit("multi-user.target")
-write_headless_config("/tmp/nails-headless.yaml")
+write_headless_config("/tmp/nails-headless.toml")
 machine.copy_from_host(CANARIES_FILE, "/tmp/forensics-canaries.json")
 machine.copy_from_host(SCENARIO_FILE, "/tmp/forensics-scenario.json")
 machine.succeed("mkdir -p /tmp/forensics-stage/artifacts /tmp/forensics-stage/commands /tmp/forensics-stage/metadata")
 _write_stage_metadata("post-standard")
 machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-machine.succeed("nails --config /tmp/nails-headless.yaml activate --overlay-only --no-kill-session -y")
+machine.succeed("nails --config /tmp/nails-headless.toml activate --overlay-only --no-kill-session -y")
 machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
 _plant_canaries()
-canonical_deactivate("/tmp/nails-headless.yaml", unit_name="nails-forensics-standard")
+canonical_deactivate("/tmp/nails-headless.toml", unit_name="nails-forensics-standard")
 machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
 _capture_post_cleanup("post-standard")
 _finalize()
@@ -314,25 +314,25 @@ _finalize()
         return r'''
 machine.start()
 machine.wait_for_unit("multi-user.target")
-write_headless_config("/tmp/nails-headless.yaml")
+write_headless_config("/tmp/nails-headless.toml")
 machine.copy_from_host(CANARIES_FILE, "/tmp/forensics-canaries.json")
 machine.copy_from_host(SCENARIO_FILE, "/tmp/forensics-scenario.json")
 machine.succeed("mkdir -p /tmp/forensics-stage/artifacts /tmp/forensics-stage/commands /tmp/forensics-stage/metadata")
 _write_stage_metadata("post-emergency")
 machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-machine.succeed("nails --config /tmp/nails-headless.yaml activate --overlay-only --no-kill-session -y")
+machine.succeed("nails --config /tmp/nails-headless.toml activate --overlay-only --no-kill-session -y")
 machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
 _plant_canaries()
 result = run_shellless_transient_command(
     "/run/nails-tests/forensics-emergency",
-    ["nails", "--config", "/tmp/nails-headless.yaml", "emergency", "--no-countdown"],
+    ["nails", "--config", "/tmp/nails-headless.toml", "emergency", "--no-countdown"],
     unit_name="nails-forensics-emergency",
     timeout=45,
 )
 assert result["rc"] == 0, result
 assert result["systemd"].get("Result") == "success", result
 assert "Emergency deactivation complete" in result["stdout"], result
-status = read_status_json(config_path="/tmp/nails-headless.yaml")
+status = read_status_json(config_path="/tmp/nails-headless.toml")
 assert status["state"] == "Inactive", status
 _copy_text(
     _stage_path("metadata/emergency-command.json"),
@@ -389,7 +389,7 @@ pkgs.testers.runNixOSTest {{
     imports = [ {repo}/nix/e2e-tests/lib/vm-config.nix ];
     environment.systemPackages = [ self.packages.${{system}}.nails pkgs.jq pkgs.python3 ];
     services.getty.autologinUser = "root";
-    systemd.services.nails-emergency-test = emergency.makeEmergencyUnit self.packages.${{system}}.nails "/tmp/nails-headless.yaml";
+    systemd.services.nails-emergency-test = emergency.makeEmergencyUnit self.packages.${{system}}.nails "/tmp/nails-headless.toml";
   }};
   testScript = {nix_indented(test_script)};
 }}

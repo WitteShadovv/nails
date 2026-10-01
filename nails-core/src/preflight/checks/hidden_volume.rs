@@ -40,7 +40,7 @@ use std::path::PathBuf;
 /// ```
 #[derive(Debug, Clone)]
 pub struct HiddenVolumeCheck {
-    hidden_volume_path: PathBuf,
+    hidden_volume_root: PathBuf,
 }
 
 impl HiddenVolumeCheck {
@@ -48,9 +48,9 @@ impl HiddenVolumeCheck {
     ///
     /// # Arguments
     ///
-    /// * `hidden_volume_path` - Path to the hidden volume mount point
-    pub fn new(hidden_volume_path: PathBuf) -> Self {
-        Self { hidden_volume_path }
+    /// * `hidden_volume_root` - Path to the hidden volume mount point
+    pub fn new(hidden_volume_root: PathBuf) -> Self {
+        Self { hidden_volume_root }
     }
 }
 
@@ -58,7 +58,7 @@ impl Default for HiddenVolumeCheck {
     /// Create check with default hidden volume path
     fn default() -> Self {
         Self {
-            hidden_volume_path: PathBuf::from(get_default_hidden_volume_root()),
+            hidden_volume_root: PathBuf::from(get_default_hidden_volume_root()),
         }
     }
 }
@@ -74,32 +74,32 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
         // Step 1: Check path exists
-        if !fs.path_exists(&self.hidden_volume_path)? {
+        if !fs.path_exists(&self.hidden_volume_root)? {
             return Ok(CheckResult::Fail(format!(
                 "Hidden volume not found at {}. Mount volume before activation.",
-                self.hidden_volume_path.display()
+                self.hidden_volume_root.display()
             )));
         }
 
         // Step 2: Check path is mounted
-        if !fs.is_mounted(&self.hidden_volume_path)? {
+        if !fs.is_mounted(&self.hidden_volume_root)? {
             return Ok(CheckResult::Fail(format!(
                 "Hidden volume at {} is not mounted. Mount the hidden LUKS volume to this path before activation.",
-                self.hidden_volume_path.display()
+                self.hidden_volume_root.display()
             )));
         }
 
         // Step 3: Check path is writable
-        if !fs.is_writable(&self.hidden_volume_path)? {
+        if !fs.is_writable(&self.hidden_volume_root)? {
             return Ok(CheckResult::Fail(format!(
                 "Hidden volume at {} is not writable. Check permissions.",
-                self.hidden_volume_path.display()
+                self.hidden_volume_root.display()
             )));
         }
 
         Ok(CheckResult::Pass(format!(
             "Hidden volume mounted at {}",
-            self.hidden_volume_path.display()
+            self.hidden_volume_root.display()
         )))
     }
 }
@@ -115,7 +115,7 @@ mod tests {
     fn test_hidden_volume_check_default_path() {
         let check = HiddenVolumeCheck::default();
         assert_eq!(
-            check.hidden_volume_path,
+            check.hidden_volume_root,
             PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
         );
     }
@@ -124,7 +124,7 @@ mod tests {
     fn test_hidden_volume_check_custom_path() {
         let custom_path = PathBuf::from("/custom/path");
         let check = HiddenVolumeCheck::new(custom_path.clone());
-        assert_eq!(check.hidden_volume_path, custom_path);
+        assert_eq!(check.hidden_volume_root, custom_path);
     }
 
     #[test]
@@ -228,6 +228,6 @@ mod tests {
     fn test_hidden_volume_check_clone() {
         let check = HiddenVolumeCheck::default();
         let cloned = check.clone();
-        assert_eq!(check.hidden_volume_path, cloned.hidden_volume_path);
+        assert_eq!(check.hidden_volume_root, cloned.hidden_volume_root);
     }
 }

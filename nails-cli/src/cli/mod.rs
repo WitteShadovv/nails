@@ -6,7 +6,7 @@ pub mod output;
 pub mod safety;
 
 // Re-export main types for convenience
-pub use args::{Cli, Commands};
+pub use args::{Cli, Commands, ConfigCommand};
 pub use logging::init_stdout_subscriber;
 pub use safety::check_real_operations_allowed;
 
@@ -97,6 +97,7 @@ pub fn execute_command(cli: Cli) -> std::result::Result<(), Box<dyn std::error::
         } => commands::status::execute(config, json, no_color, plain, verbose),
         Commands::Verify { deep, json } => commands::verify::execute(deep, json, config),
         Commands::Init(args) => commands::init::execute(args),
+        Commands::Config(command) => commands::config::execute(config, command),
         Commands::NotifyDispatch { json } => commands::notify_dispatch::execute(config, json),
     }
 }

@@ -28,7 +28,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-whiteouts.yaml"
+    config_path = "/tmp/nails-whiteouts.toml"
     whiteout_path = "/mnt/hidden-volume/home/testuser/whiteout-target.txt"
     write_headless_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")

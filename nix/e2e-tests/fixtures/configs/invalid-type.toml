@@ -1,0 +1,3 @@
+# overlay_mode must be "auto" or "explicit"; an integer is a type error.
+hidden_volume_root = "/mnt/hidden-volume"
+overlay_mode = 12345

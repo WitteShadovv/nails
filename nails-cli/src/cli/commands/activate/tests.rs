@@ -166,18 +166,58 @@ fn execute_rejects_interactive_kill_session_before_loading_config() {
 }
 
 #[test]
-fn execute_fails_closed_for_invalid_config() {
+fn execute_exits_3_with_hint_for_unknown_key() {
     use std::io::Write;
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_path: [broken").unwrap();
+    writeln!(
+        config,
+        "hidden_volume_root = \"/mnt/hv\"\nnixos_flak = \"x\""
+    )
+    .unwrap();
 
     let output = run_subprocess("invalid-config", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-    assert!(stderr.contains("Error loading config"));
-    assert!(stderr.contains("Invalid YAML"));
+    assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
+    assert!(stderr.contains("invalid config"), "{stderr}");
+    assert!(
+        stderr.contains("unknown key `nixos_flak` (did you mean `nixos_flake`?)"),
+        "{stderr}"
+    );
+    assert_eq!(stderr.trim().lines().count(), 1, "one error line: {stderr}");
+}
+
+#[test]
+fn execute_exits_3_for_unknown_nested_key() {
+    use std::io::Write;
+
+    let mut config = tempfile::NamedTempFile::new().unwrap();
+    writeln!(config, "[color_scheme.decoy]\nrest = true").unwrap();
+
+    let output = run_subprocess("invalid-config", Some(config.path()));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
+    assert!(stderr.contains("did you mean `reset`?"), "{stderr}");
+}
+
+#[test]
+fn execute_exits_3_with_one_line_for_missing_explicit_config() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let missing = temp_dir.path().join("missing.toml");
+
+    let output = run_subprocess("invalid-config", Some(&missing));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
+    assert_eq!(
+        stderr.trim(),
+        format!(
+            "Error: config file not found: {} (run `nails init <root>` or pass --config)",
+            missing.display()
+        )
+    );
 }
 
 #[test]
@@ -189,7 +229,7 @@ fn execute_honors_safety_guard_after_loading_config() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
     let output = run_subprocess("safety-guard", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -207,7 +247,7 @@ fn execute_routes_into_dry_run_mode() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
     let output = run_subprocess("dry-run", Some(config.path()));
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -226,7 +266,7 @@ fn execute_no_color_keeps_unicode_but_strips_ansi_from_failures() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
     let output = run_subprocess("dry-run-no-color", Some(config.path()));
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -247,7 +287,7 @@ fn execute_plain_uses_ascii_for_failures() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
     let output = run_subprocess("safety-guard-plain", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);

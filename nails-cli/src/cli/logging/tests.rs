@@ -317,14 +317,14 @@ fn init_stdout_subscriber_json_mode_with_file_layer_emits_stdout_and_writes_log(
     let temp_dir = tempfile::TempDir::new().unwrap();
     let hidden_root = temp_dir.path().join("hidden-volume");
     let log_dir = hidden_root.join("logs");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
 
     std::fs::create_dir_all(&log_dir).unwrap();
 
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nlog_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         log_dir.display(),
     )
@@ -396,7 +396,7 @@ fn init_file_layer_returns_some_for_existing_hidden_volume() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let hidden_root = temp_dir.path().join("hidden-volume");
     let log_dir = hidden_root.join("logs");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
 
     std::fs::create_dir_all(&hidden_root).unwrap();
     std::fs::create_dir_all(&log_dir).unwrap();
@@ -404,7 +404,7 @@ fn init_file_layer_returns_some_for_existing_hidden_volume() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nlog_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         log_dir.display(),
     )
@@ -421,12 +421,12 @@ fn init_file_layer_gracefully_returns_none_for_missing_hidden_volume() {
 
     let temp_dir = tempfile::TempDir::new().unwrap();
     let hidden_root = temp_dir.path().join("missing-hidden-volume");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
 
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nlog_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         hidden_root.join("logs").display(),
     )
@@ -443,14 +443,14 @@ fn init_stdout_subscriber_with_file_layer_writes_json_log_and_stderr() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let hidden_root = temp_dir.path().join("hidden-volume");
     let log_dir = hidden_root.join("logs");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
 
     std::fs::create_dir_all(&log_dir).unwrap();
 
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nlog_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         log_dir.display(),
     )
@@ -481,13 +481,13 @@ fn init_stdout_subscriber_falls_back_when_log_path_is_invalid() {
 
     let temp_dir = tempfile::TempDir::new().unwrap();
     let hidden_root = temp_dir.path().join("hidden-volume");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nlog_path: /var/log\noverlays: []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"/var/log\"\noverlays = []",
         hidden_root.display(),
     )
     .unwrap();
@@ -507,14 +507,14 @@ fn init_stdout_subscriber_warns_when_log_file_target_is_a_directory() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let hidden_root = temp_dir.path().join("hidden-volume");
     let log_dir = hidden_root.join("logs");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
 
     std::fs::create_dir_all(log_dir.join("nails.log")).unwrap();
 
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nlog_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         log_dir.display(),
     )
@@ -541,14 +541,14 @@ fn init_stdout_subscriber_plain_mode_suppresses_log_file_open_warning_noise() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let hidden_root = temp_dir.path().join("hidden-volume");
     let log_dir = hidden_root.join("logs");
-    let config_path = temp_dir.path().join("nails.yaml");
+    let config_path = temp_dir.path().join("nails.toml");
 
     std::fs::create_dir_all(log_dir.join("nails.log")).unwrap();
 
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_path: {}\nlog_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
         hidden_root.display(),
         log_dir.display(),
     )

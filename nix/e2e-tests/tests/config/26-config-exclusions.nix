@@ -28,23 +28,19 @@ in
 
     def write_exclusions_config(path):
         write_text_file(path, """
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: auto
-    overlay_exclusions:
-      - /opt
-      - /nix
-      - /var
-      - /tmp
+    hidden_volume_root = "/mnt/hidden-volume"
+    overlay_mode = "auto"
+    overlay_exclusions = ["/opt", "/nix", "/var", "/tmp"]
     """.strip() + "\n")
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.succeed("mkdir -p /opt /srv")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    write_exclusions_config("/tmp/exclusions.yaml")
+    write_exclusions_config("/tmp/exclusions.toml")
 
     with subtest("custom exclusions are honored while defaults still stay excluded"):
-        machine.succeed("nails --config /tmp/exclusions.yaml activate --overlay-only --no-kill-session -y")
+        machine.succeed("nails --config /tmp/exclusions.toml activate --overlay-only --no-kill-session -y")
         assert_status_state("active")
         assert_overlay_mounted("/etc")
         assert_overlay_mounted("/home")
@@ -52,7 +48,7 @@ in
         assert_no_overlays(["/opt", "/run", "/mnt", "/proc", "/var", "/tmp", "/nix"])
 
     with subtest("deactivation returns the system to decoy mounts"):
-        canonical_deactivate("/tmp/exclusions.yaml", unit_name="nails-deactivate-config-exclusions")
+        canonical_deactivate("/tmp/exclusions.toml", unit_name="nails-deactivate-config-exclusions")
         assert_status_state("inactive")
         assert_no_overlays(["/etc", "/home", "/srv", "/opt", "/run", "/mnt"])
   '';

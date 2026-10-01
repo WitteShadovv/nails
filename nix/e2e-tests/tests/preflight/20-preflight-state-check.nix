@@ -34,7 +34,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/preflight-state-check.yaml"
+    config_path = "/tmp/preflight-state-check.toml"
     write_headless_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 

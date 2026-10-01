@@ -28,14 +28,15 @@ in
 
     def write_fat_hidden_config(path):
         write_text_file(path, """
-    hidden_volume_root: /mnt/fat-hidden
-    overlay_mode: explicit
-    overlays:
-      - name: home
-        lower: /home
-        upper: /mnt/fat-hidden/home
-        work: /mnt/fat-hidden/.work/home
-        target: /home
+    hidden_volume_root = "/mnt/fat-hidden"
+    overlay_mode = "explicit"
+
+    [[overlays]]
+    name = "home"
+    lower = "/home"
+    upper = "/mnt/fat-hidden/home"
+    work = "/mnt/fat-hidden/.work/home"
+    target = "/home"
     """.strip() + "\n")
 
     machine.start()
@@ -45,10 +46,10 @@ in
         machine.succeed(
                 "bash -lc 'truncate -s 96M /tmp/fat-hidden.img && mkfs.vfat /tmp/fat-hidden.img && mkdir -p /mnt/fat-hidden && mount -o loop /tmp/fat-hidden.img /mnt/fat-hidden'"
             )
-        write_fat_hidden_config("/tmp/preflight-symlink-support.yaml")
+        write_fat_hidden_config("/tmp/preflight-symlink-support.toml")
         result = run_command_capture(
             "preflight-symlink-support",
-            "nails --config /tmp/preflight-symlink-support.yaml activate --overlay-only --no-kill-session -y",
+            "nails --config /tmp/preflight-symlink-support.toml activate --overlay-only --no-kill-session -y",
         )
         assert_command_failed(result)
         assert_result_contains(

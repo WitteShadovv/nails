@@ -83,6 +83,16 @@ fn subprocess_deactivate_entrypoint() {
         Err("real operations blocked for test".to_string())
     }
 
+    fn report_root(root: &std::path::Path) -> Result<(), String> {
+        Err(format!("guard saw root {}", root.display()))
+    }
+
+    // Make the config warning visible on stderr, as the binary's subscriber does.
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .without_time()
+        .try_init();
+
     match case.as_str() {
         "invalid-config" => execute(
             config_override,
@@ -92,7 +102,7 @@ fn subprocess_deactivate_entrypoint() {
             false,
             false,
             false,
-            allow_real_ops,
+            report_root,
         ),
         "inactive-error" => execute(
             config_override,
@@ -169,18 +179,47 @@ fn subprocess_deactivate_entrypoint() {
 }
 
 #[test]
-fn execute_deactivate_fails_closed_for_invalid_config() {
+fn execute_deactivate_warns_and_proceeds_with_defaults_for_invalid_config() {
     use std::io::Write;
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_path: [broken").unwrap();
+    writeln!(
+        config,
+        "hidden_volume_root = \"/elsewhere\"\nnixos_flak = \"x\""
+    )
+    .unwrap();
 
     let output = run_subprocess("invalid-config", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
+    // Exit 2 comes from the safety guard, which runs only after config loading
+    // has fallen back to defaults instead of refusing.
     assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-    assert!(stderr.contains("Error loading config"));
-    assert!(stderr.contains("Invalid YAML"));
+    assert!(stderr.contains("did you mean `nixos_flake`?"), "{stderr}");
+    assert!(stderr.contains("continuing with defaults"), "{stderr}");
+    let derived = nails_core::config::derive_hidden_volume_root();
+    assert!(
+        stderr.contains(&format!("guard saw root {}", derived.display())),
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr.matches("continuing with defaults").count(),
+        1,
+        "exactly one warning line: {stderr}"
+    );
+}
+
+#[test]
+fn execute_deactivate_warns_and_proceeds_when_explicit_config_is_missing() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let missing = temp_dir.path().join("missing.toml");
+
+    let output = run_subprocess("invalid-config", Some(&missing));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert!(stderr.contains("config file not found"), "{stderr}");
+    assert!(stderr.contains("guard saw root"), "{stderr}");
 }
 
 #[test]
@@ -194,7 +233,7 @@ fn execute_deactivate_reports_inactive_error_path() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\noverlays = []",
         hidden_root.display()
     )
     .unwrap();
@@ -217,7 +256,7 @@ fn execute_deactivate_runtime_safety_skips_transient_unit_handoff() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\noverlays = []",
         hidden_root.display()
     )
     .unwrap();
@@ -243,7 +282,7 @@ fn execute_deactivate_reports_detach_error_as_json() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\noverlays = []",
         hidden_root.display()
     )
     .unwrap();
@@ -275,7 +314,7 @@ fn execute_deactivate_reports_detach_error_in_human_output() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\noverlays = []",
         hidden_root.display()
     )
     .unwrap();
@@ -306,7 +345,7 @@ fn execute_deactivate_blocks_disallowed_real_operations_before_manager_creation(
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\noverlays = []",
         hidden_root.display()
     )
     .unwrap();
@@ -336,7 +375,7 @@ fn execute_deactivate_blocks_disallowed_real_operations_in_quiet_mode() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\noverlays = []",
         hidden_root.display()
     )
     .unwrap();
@@ -363,7 +402,7 @@ fn execute_deactivate_blocks_disallowed_real_operations_with_verbose_mode() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config,
-        "hidden_volume_path: {}\noverlays: []",
+        "hidden_volume_root = \"{}\"\noverlays = []",
         hidden_root.display()
     )
     .unwrap();

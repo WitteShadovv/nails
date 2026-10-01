@@ -1,36 +1,34 @@
 //! Configuration loading and discovery
 
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
-use super::defaults::derive_hidden_volume_root;
-use super::types::{Config, get_default_hidden_volume_root};
+use super::effective::LoadedConfig;
+use super::types::{Config, DEFAULT_HIDDEN_VOLUME_ROOT};
+use crate::error::{NailsError, Result};
 
-/// Discover configuration file path using binary-relative resolution
+/// Directory next to the binary that holds the configuration file.
+pub const CONFIG_DIR_NAME: &str = "config";
+
+/// File name of the configuration file inside [`CONFIG_DIR_NAME`].
+pub const CONFIG_FILE_NAME: &str = "nails.toml";
+
+/// Discover the configuration file path
 ///
-/// Priority order (Story 14.1):
-/// 1. --config CLI flag override (highest priority)
-/// 2. Binary-relative path: `{binary_dir}/config/nails.yaml` (symlinks resolved)
-/// 3. CWD fallback: `{current_dir}/config/nails.yaml` (if current_exe() fails)
+/// Resolution order:
+/// 1. `--config <PATH>` (any TOML file; highest priority)
+/// 2. `{binary_dir}/config/nails.toml`, where `binary_dir` is the directory
+///    of the running executable after symlinks are resolved
+/// 3. `{current_dir}/config/nails.toml`, only when the executable path cannot
+///    be determined
 ///
-/// # Symlink Handling
+/// Resolving symlinks first means a `/usr/local/bin/nails` link to
+/// `/mnt/hidden-volume/nails` reads `/mnt/hidden-volume/config/nails.toml`:
+/// the configuration always travels with the binary on the hidden volume.
 ///
-/// This function uses `canonicalize()` on the binary path to resolve symlinks.
-/// For example, if `/usr/local/bin/nails` is a symlink to `/mnt/hidden-volume/bin/nails`,
-/// the config will be resolved to `/mnt/hidden-volume/config/nails.yaml`.
-///
-/// # Fallback Behavior
-///
-/// If `current_exe()` fails (rare cases like proc not mounted on Linux),
-/// a warning is logged via `tracing::warn!` and the current working directory
-/// is used as fallback. If CWD also cannot be determined, `./config/nails.yaml` is returned.
-///
-/// # Arguments
-///
-/// * `config_override` - Optional path from `--config` CLI flag
-///
-/// # Returns
-///
-/// Resolved config path (always returns a path, never fails)
+/// This function only computes the path; it never checks that the file
+/// exists. A missing file at the discovered location means "use defaults",
+/// while a missing file named by `--config` is an error (see the CLI).
 ///
 /// # Example
 ///
@@ -39,258 +37,247 @@ use super::types::{Config, get_default_hidden_volume_root};
 /// use std::path::PathBuf;
 ///
 /// // With CLI override
-/// let path = discover_config_path(Some(&PathBuf::from("/custom/config.yaml")));
-/// assert_eq!(path, PathBuf::from("/custom/config.yaml"));
+/// let path = discover_config_path(Some(&PathBuf::from("/custom/config.toml")));
+/// assert_eq!(path, PathBuf::from("/custom/config.toml"));
 ///
 /// // Binary-relative (most common case)
 /// let path = discover_config_path(None);
-/// // Returns {binary_dir}/config/nails.yaml
+/// assert!(path.ends_with("config/nails.toml"));
 /// ```
-pub fn discover_config_path(config_override: Option<&std::path::Path>) -> PathBuf {
-    // Priority 1: Explicit --config override
+pub fn discover_config_path(config_override: Option<&Path>) -> PathBuf {
     if let Some(override_path) = config_override {
         return override_path.to_path_buf();
     }
 
-    // Priority 2: Binary-relative path (preferred)
-    // Use canonicalize() to resolve symlinks before getting parent directory
-    // This handles the case where /usr/local/bin/nails is a symlink to
-    // /mnt/hidden-volume/bin/nails - we want config at the actual binary location
+    let relative = Path::new(CONFIG_DIR_NAME).join(CONFIG_FILE_NAME);
+
     if let Ok(exe_path) = std::env::current_exe()
         && let Ok(resolved_path) = exe_path.canonicalize()
         && let Some(exe_dir) = resolved_path.parent()
     {
-        return exe_dir.join("config/nails.yaml");
+        return exe_dir.join(relative);
     }
 
-    // Priority 3: CWD fallback (when current_exe() or canonicalize() fails)
     tracing::warn!(
         "Failed to determine binary location for config discovery, trying current working directory"
     );
 
-    let cwd = std::env::current_dir();
-    match cwd {
-        Ok(dir) => dir.join("config/nails.yaml"),
+    match std::env::current_dir() {
+        Ok(dir) => dir.join(relative),
         Err(e) => {
-            // Both current_exe() and current_dir() failed - this is very unusual
-            // Log error and return relative path as last resort
             tracing::error!(
-                "Failed to determine current directory for config discovery: {}. Using fallback ./config/nails.yaml",
-                e
+                "Failed to determine current directory for config discovery: {}. Using fallback ./{}",
+                e,
+                relative.display()
             );
-            PathBuf::from("./config/nails.yaml")
+            Path::new(".").join(relative)
         }
     }
 }
 
+/// A strictly parsed config file: the resolved config and the top-level keys
+/// the file set explicitly.
+pub(super) struct ParsedFile {
+    pub(super) config: Config,
+    pub(super) keys: BTreeSet<String>,
+}
+
+/// Parse `contents` (read from `path`) strictly.
+///
+/// Unknown keys at any level, wrong types and TOML syntax errors are all
+/// rejected with a one-line message that names the file, the line and column,
+/// and for a misspelt key the closest valid key. Paths the file leaves unset
+/// (`state_file_path`, `log_path`) are derived from `hidden_volume_root`.
+pub(super) fn parse_config_file(path: &Path, contents: &str) -> Result<ParsedFile> {
+    let mut config: Config =
+        toml::from_str(contents).map_err(|e| invalid_config(path, contents, &e))?;
+    let table: toml::Table =
+        toml::from_str(contents).map_err(|e| invalid_config(path, contents, &e))?;
+    let keys: BTreeSet<String> = table.keys().cloned().collect();
+
+    if config.hidden_volume_root.as_os_str().is_empty() {
+        return Err(NailsError::ConfigError(format!(
+            "invalid config {}: hidden_volume_root is empty (remove the key to derive it from the binary location)",
+            path.display()
+        )));
+    }
+
+    if !keys.contains("state_file_path") {
+        config.state_file_path = config.hidden_volume_root.join("state.json");
+    }
+    if !keys.contains("log_path") {
+        config.log_path = config.hidden_volume_root.join("logs");
+    }
+    config.loaded_config_path = Some(path.to_path_buf());
+
+    Ok(ParsedFile { config, keys })
+}
+
+fn invalid_config(path: &Path, contents: &str, error: &toml::de::Error) -> NailsError {
+    let detail = super::suggest::describe(error.message());
+    let message = match error.span() {
+        Some(span) => {
+            let (line, column) = line_and_column(contents, span.start);
+            format!(
+                "invalid config {}: line {line}, column {column}: {detail}",
+                path.display()
+            )
+        }
+        None => format!("invalid config {}: {detail}", path.display()),
+    };
+    NailsError::ConfigError(message)
+}
+
+/// 1-based line and column of byte `offset` in `text`.
+fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
+    let before = &text[..floor_char_boundary(text, offset)];
+    let line = before.matches('\n').count() + 1;
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    let column = before[line_start..].chars().count() + 1;
+    (line, column)
+}
+
+fn floor_char_boundary(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
 impl Config {
-    /// Load configuration from YAML file
-    ///
-    /// Reads and parses configuration from the specified path. Returns descriptive
-    /// errors for missing files, malformed YAML, or missing required fields.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Path to YAML configuration file (typically `~/.nails/config.yaml`)
+    /// Load configuration from a TOML file, strictly
     ///
     /// # Errors
     ///
-    /// - Returns `NailsError::ConfigNotFound` if the file does not exist.
-    /// - Returns `NailsError::ConfigError` if YAML syntax is invalid (includes
-    ///   line number) or a required field is missing.
+    /// - `NailsError::ConfigNotFound` if the file does not exist.
+    /// - `NailsError::ConfigError` if the file cannot be read, is not valid
+    ///   TOML, contains an unknown key at any level, or has a value of the
+    ///   wrong type. The message is one line and names the line and column;
+    ///   for a misspelt key it suggests the closest valid key.
     ///
     /// # Example
     ///
     /// ```rust
     /// use nails_core::config::Config;
-    /// use std::path::PathBuf;
     ///
     /// # use std::io::Write;
     /// # use tempfile::NamedTempFile;
     /// # let mut file = NamedTempFile::new().unwrap();
-    /// # writeln!(file, "hidden_volume_path: /mnt/hidden-volume").unwrap();
+    /// # writeln!(file, "hidden_volume_root = \"/mnt/hidden-volume\"").unwrap();
     /// let config = Config::load(file.path()).expect("Failed to load config");
+    /// assert_eq!(config.state_file_path.to_str(), Some("/mnt/hidden-volume/state.json"));
     /// ```
-    pub fn load(path: &std::path::Path) -> crate::error::Result<Self> {
-        use crate::error::NailsError;
-
-        // Read file contents with descriptive error
-        let contents = std::fs::read_to_string(path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                NailsError::ConfigNotFound {
-                    path: path.to_path_buf(),
-                }
-            } else {
-                NailsError::ConfigError(format!("Failed to read config: {}", e))
-            }
-        })?;
-
-        // Parse YAML with line number in errors
-        let mut config: Config = serde_saphyr::from_str(&contents).map_err(|e| {
-            let line_info = if let Some(location) = e.location() {
-                format!(" at line {}", location.line())
-            } else {
-                String::new()
-            };
-
-            NailsError::ConfigError(format!(
-                "Invalid YAML{}: {}\n\nExample config:\n{}",
-                line_info,
-                e,
-                Self::example_config()
-            ))
-        })?;
-
-        // If hidden_volume_root not specified in YAML, derive from binary (Story 14.9)
-        // Priority order: config file value > binary-derived > DEFAULT_HIDDEN_VOLUME_ROOT
-        if config.hidden_volume_root.as_os_str().is_empty() {
-            tracing::info!("Config file missing hidden_volume_root, deriving from binary location");
-            config.hidden_volume_root = derive_hidden_volume_root();
-        }
-
-        // Derive state_file_path from hidden_volume_root if it's still the default
-        let default_state_path =
-            std::path::PathBuf::from(get_default_hidden_volume_root()).join("state.json");
-        if config.state_file_path == default_state_path {
-            config.state_file_path = config.hidden_volume_root.join("state.json");
-        }
-
-        // Derive log_path from hidden_volume_root if it's still the default
-        // When hidden_volume_root is auto-derived, log_path still gets the constant default
-        // via serde default function. This ensures log_path matches the derived root.
-        let default_log_path =
-            std::path::PathBuf::from(get_default_hidden_volume_root()).join("logs");
-        if config.log_path == default_log_path {
-            config.log_path = config.hidden_volume_root.join("logs");
-        }
-
-        config.loaded_config_path = Some(path.to_path_buf());
-
-        Ok(config)
+    pub fn load(path: &Path) -> Result<Self> {
+        LoadedConfig::load(path).map(LoadedConfig::into_config)
     }
 
-    /// Returns example YAML configuration with all fields documented
+    /// Load configuration from file, or return defaults if the file doesn't exist
     ///
-    /// Provides a complete example config showing required and optional fields
-    /// with their default values. Useful for error messages and documentation.
+    /// Any other error (unreadable file, invalid TOML, unknown key) is still
+    /// returned.
+    pub fn load_or_default(path: &Path) -> Result<Self> {
+        LoadedConfig::load_or_default(path).map(LoadedConfig::into_config)
+    }
+
+    /// Commented example configuration listing every key
     ///
-    /// # Note
-    ///
-    /// The example configuration is generated dynamically at runtime to avoid
-    /// embedding sensitive paths in the binary. This ensures forensic resistance.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use nails_core::config::Config;
-    ///
-    /// let example = Config::example_config();
-    /// println!("{}", example);
-    /// ```
+    /// Every assignment is commented out, so the example is also a valid
+    /// (empty) configuration. Printed by `nails config show --example`.
     pub fn example_config() -> String {
-        let hidden_vol = get_default_hidden_volume_root();
-        format!(
-            r##"# NAILS Configuration
-# Required fields:
-hidden_volume_path: {hidden_vol}
-
-# Optional fields (defaults shown):
-clear_history: true
-preflight_checks: true
-default_verbosity: info  # quiet, info, debug
-color_output: true
-verify_on_deactivate: true
-milestone_tips: true
-
-# Logging configuration:
-log_path: {hidden_vol}/logs
-max_log_size_mb: 10
-retention_days: 7
-
-# Terminal color scheme configuration:
-color_scheme:
-  enabled: true
-  hidden:
-    background: "#1a1a2e"
-    foreground: "#e0e0e0"
-  decoy:
-    reset: true
-
-# Overlay mode configuration (Story 14.10):
-# overlay_mode: auto  # auto (default) or explicit
-#
-# Auto mode (recommended): Dynamically overlay ALL directories under /
-# except those in the exclusion list. Provides maximum forensic protection.
-#
-# Explicit mode: Only overlay directories listed in 'overlays' section below.
-# Use this for fine-grained control over what gets overlaid.
-
-# Overlay exclusion configuration (Auto mode only):
-# overlay_exclusions:
-#   - /boot        # Add custom exclusions (merged with defaults)
-#   - /nix
-#
-# overlay_exclusions_remove:
-#   - /mnt         # Remove from default exclusions if needed
-#
-# Default exclusions: /proc, /sys, /dev, /run, /mnt
-# (pseudo-filesystems that cannot/should not be overlaid)
-
-# Overlay configuration (Explicit mode only):
-# overlays:
-#   - name: home
-#     lower: /home
-#     upper: {hidden_vol}/home
-#     work: {hidden_vol}/.work/home
-#     target: /home
-
-# Extended overlay configuration (ephemeral tmpfs-backed overlays):
-# WARNING: currently unsupported. overlayfs requires upperdir and workdir to
-# live on the same mount; NAILS rejects extended_overlays during preflight.
-# extended_overlays:
-#   enabled: false
-#   directories:
-#     - path: /var
-#       tmpfs_upper_size: 512M
-#       tmpfs_work_size: 128M
-
-# NixOS flake reference (optional, auto-detected if not set):
-# nixos_flake: /etc/nixos#amnesia-virtualbox
-"##
+        render_template(
+            Path::new(DEFAULT_HIDDEN_VOLUME_ROOT),
+            "# Example nails configuration (nails.toml).",
         )
     }
 
-    /// Load configuration from file, or return default if file doesn't exist
+    /// Starter configuration written by `nails init`
     ///
-    /// Convenience method that attempts to load config from file, but falls back
-    /// to `Config::default()` if the file doesn't exist. Other errors (malformed
-    /// YAML, missing required fields) are still returned.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Path to YAML configuration file
-    ///
-    /// # Errors
-    ///
-    /// Returns `NailsError::ConfigError` for parsing errors, but NOT for missing files.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use nails_core::config::Config;
-    /// use std::path::PathBuf;
-    ///
-    /// let config = Config::load_or_default(&PathBuf::from("~/.nails/config.yaml"))
-    ///     .expect("Failed to load config");
-    /// ```
-    pub fn load_or_default(path: &std::path::Path) -> crate::error::Result<Self> {
-        match Self::load(path) {
-            Ok(config) => Ok(config),
-            Err(crate::error::NailsError::ConfigNotFound { .. }) => {
-                tracing::info!("No config file found at {}, using defaults", path.display());
-                Ok(Self::default())
-            }
-            Err(e) => Err(e),
-        }
+    /// Same content as [`Config::example_config`], with example paths under
+    /// `hidden_root`. `hidden_volume_root` stays commented out so the root is
+    /// derived from the binary location and survives the volume being mounted
+    /// somewhere else.
+    pub fn init_template(hidden_root: &Path) -> String {
+        render_template(
+            hidden_root,
+            "# nails configuration, generated by `nails init`.",
+        )
     }
+}
+
+/// Render the commented configuration template with example paths under `root`.
+fn render_template(root: &Path, title: &str) -> String {
+    let quote = |path: PathBuf| toml::Value::String(path.to_string_lossy().into_owned());
+    let root_value = quote(root.to_path_buf());
+    let state_value = quote(root.join("state.json"));
+    let log_value = quote(root.join("logs"));
+    let flake_value = quote(root.join("nixos#my-host"));
+    let upper_value = quote(root.join("home"));
+    let work_value = quote(root.join(".work/home"));
+
+    format!(
+        r##"{title}
+#
+# Every key is optional and unknown keys are rejected. Check this file with
+# `nails config validate`; show the effective values with `nails config show`.
+
+# Root of the hidden volume. Unset: derived from the location of the nails
+# binary, which keeps working when the volume is mounted somewhere else.
+# hidden_volume_root = {root_value}
+
+# State file and log directory. Unset: placed under hidden_volume_root.
+# state_file_path = {state_value}
+# log_path = {log_value}
+
+# Clear shell history on deactivation.
+# clear_history = true
+
+# Run pre-flight checks before activation.
+# preflight_checks = true
+
+# Show OpSec reminders based on session uptime.
+# show_opsec_reminders = true
+
+# Minimum free space on the hidden volume for activation, in MB.
+# minimum_space_mb = 500
+
+# Log rotation.
+# max_log_size_mb = 10
+# retention_days = 7
+
+# Shell prompt indicator while the hidden environment is active. Empty shows
+# nothing; any text is visible on screen and in screenshots.
+# prompt_label = ""
+
+# NixOS flake reference for the hidden environment. Unset: auto-detected.
+# nixos_flake = {flake_value}
+
+# Overlay target selection. "auto" overlays every top-level directory except
+# the exclusions; "explicit" overlays only the [[overlays]] tables below.
+# overlay_mode = "auto"
+
+# Auto mode: extra exclusions, and default exclusions to overlay anyway.
+# overlay_exclusions = ["/srv"]
+# overlay_exclusions_remove = ["/mnt"]
+
+# Explicit mode: one table per overlay.
+# [[overlays]]
+# name = "home"
+# lower = "/home"
+# upper = {upper_value}
+# work = {work_value}
+# target = "/home"
+
+# Terminal colors while the hidden environment is active.
+# [color_scheme]
+# enabled = true
+#
+# [color_scheme.hidden]
+# background = "#1a1a2e"
+# foreground = "#e0e0e0"
+#
+# [color_scheme.decoy]
+# reset = true
+"##
+    )
 }

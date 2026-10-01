@@ -20,7 +20,8 @@ use crate::cli::detach::maybe_detach_for_deactivation;
 ///
 /// # Returns
 ///
-/// Never returns - exits with code 0 on success, 1 on deactivation failure, 2 on config failure
+/// Never returns - exits with code 0 on success, 1 on deactivation failure, 2 on safety guard
+/// or detach failures. A missing or invalid config is logged as a warning and defaults are used.
 #[allow(clippy::too_many_arguments)]
 pub fn execute(
     config_override: Option<PathBuf>,
@@ -55,12 +56,8 @@ pub fn execute(
         }
     };
 
-    // Load configuration
-    let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-    let mut config = super::load_config_or_exit(&config_path, config_override.as_deref());
-    config.loaded_config_path = config_override
-        .clone()
-        .or_else(|| Some(config_path.clone()));
+    // A broken or missing config must never block returning to the decoy.
+    let mut config = super::load_config_or_defaults(config_override.as_deref()).into_config();
 
     // Apply --no-clear-history CLI override
     if no_clear_history {

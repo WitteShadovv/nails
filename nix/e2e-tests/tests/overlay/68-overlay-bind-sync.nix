@@ -26,7 +26,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-bind-sync.yaml"
+    config_path = "/tmp/nails-bind-sync.toml"
     write_srv_only_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     machine.succeed("mkdir -p /mnt/hidden-volume/srv /mnt/hidden-volume/.work/srv")

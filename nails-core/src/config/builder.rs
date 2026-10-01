@@ -4,11 +4,11 @@ use std::path::PathBuf;
 
 use super::colors::ColorSchemeConfig;
 use super::defaults::{
-    default_clear_history, default_color_output, default_max_log_size_mb, default_milestone_tips,
+    default_clear_history, default_max_log_size_mb, default_minimum_space_mb,
     default_preflight_checks, default_retention_days, default_show_opsec_reminders,
-    default_verbosity, default_verify_on_deactivate, derive_hidden_volume_root,
+    derive_hidden_volume_root,
 };
-use super::overlay::{ExtendedOverlayConfig, OverlayConfig, OverlayMode};
+use super::overlay::{OverlayConfig, OverlayMode};
 use super::types::Config;
 
 /// Builder for Config with validation and smart defaults
@@ -23,9 +23,8 @@ use super::types::Config;
 /// use std::path::PathBuf;
 ///
 /// let config = ConfigBuilder::new()
-///     .hidden_volume_path(PathBuf::from("/mnt/hidden-volume"))
+///     .hidden_volume_root(PathBuf::from("/mnt/hidden-volume"))
 ///     .clear_history(false)
-///     .default_verbosity("debug")
 ///     .build()
 ///     .expect("Failed to build config");
 /// ```
@@ -35,16 +34,11 @@ pub struct ConfigBuilder {
     state_file_path: Option<PathBuf>,
     overlays: Option<Vec<OverlayConfig>>,
     minimum_space_mb: Option<u64>,
-    extended_overlays: Option<ExtendedOverlayConfig>,
     overlay_mode: Option<OverlayMode>,
     overlay_exclusions: Option<Vec<PathBuf>>,
     overlay_exclusions_remove: Option<Vec<PathBuf>>,
     clear_history: Option<bool>,
     preflight_checks: Option<bool>,
-    default_verbosity: Option<String>,
-    color_output: Option<bool>,
-    verify_on_deactivate: Option<bool>,
-    milestone_tips: Option<bool>,
     show_opsec_reminders: Option<bool>,
     log_path: Option<PathBuf>,
     max_log_size_mb: Option<u64>,
@@ -58,10 +52,11 @@ impl ConfigBuilder {
         Self::default()
     }
 
-    /// Set the hidden volume root path (required)
+    /// Set the hidden volume root path
     ///
-    /// This is the only required field. All other fields have smart defaults.
-    pub fn hidden_volume_path(mut self, path: PathBuf) -> Self {
+    /// Default: derived from the binary location. All other paths default to
+    /// locations under this root.
+    pub fn hidden_volume_root(mut self, path: PathBuf) -> Self {
         self.hidden_volume_root = Some(path);
         self
     }
@@ -90,11 +85,27 @@ impl ConfigBuilder {
         self
     }
 
-    /// Set extended overlay configuration
+    /// Set the overlay target selection mode
     ///
-    /// Default: disabled
-    pub fn extended_overlays(mut self, config: ExtendedOverlayConfig) -> Self {
-        self.extended_overlays = Some(config);
+    /// Default: `OverlayMode::Auto`
+    pub fn overlay_mode(mut self, mode: OverlayMode) -> Self {
+        self.overlay_mode = Some(mode);
+        self
+    }
+
+    /// Set additional overlay exclusions (Auto mode)
+    ///
+    /// Default: empty list
+    pub fn overlay_exclusions(mut self, exclusions: Vec<PathBuf>) -> Self {
+        self.overlay_exclusions = Some(exclusions);
+        self
+    }
+
+    /// Set default exclusions to remove (Auto mode)
+    ///
+    /// Default: empty list
+    pub fn overlay_exclusions_remove(mut self, removals: Vec<PathBuf>) -> Self {
+        self.overlay_exclusions_remove = Some(removals);
         self
     }
 
@@ -111,40 +122,6 @@ impl ConfigBuilder {
     /// Default: `true`
     pub fn preflight_checks(mut self, enabled: bool) -> Self {
         self.preflight_checks = Some(enabled);
-        self
-    }
-
-    /// Set default verbosity level for logging
-    ///
-    /// Common values: "quiet", "info", "debug"
-    ///
-    /// Default: `"info"`
-    pub fn default_verbosity(mut self, level: &str) -> Self {
-        self.default_verbosity = Some(level.to_string());
-        self
-    }
-
-    /// Set whether to use colored output in terminal
-    ///
-    /// Default: `true`
-    pub fn color_output(mut self, enabled: bool) -> Self {
-        self.color_output = Some(enabled);
-        self
-    }
-
-    /// Set whether to run verify command after deactivation
-    ///
-    /// Default: `true`
-    pub fn verify_on_deactivate(mut self, enabled: bool) -> Self {
-        self.verify_on_deactivate = Some(enabled);
-        self
-    }
-
-    /// Set whether to show milestone tips during operations
-    ///
-    /// Default: `true`
-    pub fn milestone_tips(mut self, enabled: bool) -> Self {
-        self.milestone_tips = Some(enabled);
         self
     }
 
@@ -188,13 +165,12 @@ impl ConfigBuilder {
         self
     }
 
-    /// Build the Config with validation and smart defaults
+    /// Build the Config, applying defaults for every unset field
     ///
     /// # Errors
     ///
-    /// Returns `NailsError::ConfigError` if required fields are missing.
+    /// Currently infallible; the `Result` leaves room for validation.
     pub fn build(self) -> crate::error::Result<Config> {
-        // Use explicit value if set, otherwise derive from binary (Story 14.9)
         // Priority order: explicit value > binary-derived > DEFAULT_HIDDEN_VOLUME_ROOT
         let hidden_volume_root = self
             .hidden_volume_root
@@ -207,9 +183,9 @@ impl ConfigBuilder {
 
         let overlays = self.overlays.unwrap_or_default();
 
-        let minimum_space_mb = self.minimum_space_mb.unwrap_or(500);
-
-        let extended_overlays = self.extended_overlays.unwrap_or_default();
+        let minimum_space_mb = self
+            .minimum_space_mb
+            .unwrap_or_else(default_minimum_space_mb);
 
         let overlay_mode = self.overlay_mode.unwrap_or_default();
 
@@ -222,16 +198,6 @@ impl ConfigBuilder {
         let preflight_checks = self
             .preflight_checks
             .unwrap_or_else(default_preflight_checks);
-
-        let default_verbosity = self.default_verbosity.unwrap_or_else(default_verbosity);
-
-        let color_output = self.color_output.unwrap_or_else(default_color_output);
-
-        let verify_on_deactivate = self
-            .verify_on_deactivate
-            .unwrap_or_else(default_verify_on_deactivate);
-
-        let milestone_tips = self.milestone_tips.unwrap_or_else(default_milestone_tips);
 
         let show_opsec_reminders = self
             .show_opsec_reminders
@@ -253,16 +219,11 @@ impl ConfigBuilder {
             state_file_path,
             overlays,
             minimum_space_mb,
-            extended_overlays,
             overlay_mode,
             overlay_exclusions,
             overlay_exclusions_remove,
             clear_history,
             preflight_checks,
-            default_verbosity,
-            color_output,
-            verify_on_deactivate,
-            milestone_tips,
             show_opsec_reminders,
             log_path,
             loaded_config_path: None,

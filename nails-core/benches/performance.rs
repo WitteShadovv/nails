@@ -176,9 +176,8 @@ fn benchmark_config_builder(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 ConfigBuilder::new()
-                    .hidden_volume_path(PathBuf::from("/mnt/hidden-volume"))
+                    .hidden_volume_root(PathBuf::from("/mnt/hidden-volume"))
                     .clear_history(true)
-                    .default_verbosity("info")
                     .build()
                     .unwrap(),
             )

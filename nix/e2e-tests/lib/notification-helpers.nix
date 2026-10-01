@@ -3,7 +3,7 @@
     def write_notification_config(path, hidden_volume_root="/mnt/hidden-volume"):
         machine.succeed(
             """cat > %s <<'EOF'
-    hidden_volume_path: "%s"
+    hidden_volume_root = "%s"
     EOF""" % (path, hidden_volume_root)
         )
   '';

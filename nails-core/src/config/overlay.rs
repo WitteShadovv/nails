@@ -1,8 +1,7 @@
 //! Overlay filesystem configuration
 //!
-//! This module provides configuration structures for overlay filesystem management,
-//! including explicit overlay definitions and extended overlay configurations for
-//! ephemeral (tmpfs-backed) overlays.
+//! This module provides configuration structures for overlay filesystem management:
+//! explicit overlay definitions and the overlay target selection mode.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -36,6 +35,7 @@ use std::path::PathBuf;
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OverlayConfig {
     /// Human-readable name for this overlay (e.g., "home", "etc")
     pub name: String,
@@ -104,57 +104,4 @@ pub enum OverlayMode {
     /// Explicit mode: only overlay directories explicitly listed in `overlays` config
     /// This preserves legacy behavior for users who want fine-grained control.
     Explicit,
-}
-
-/// Extended overlay configuration for ephemeral (tmpfs-backed) overlays
-///
-/// Enables optional extended overlay mounting for high-activity directories
-/// (/var, /tmp, /srv, /opt) with tmpfs-backed upper layers.
-///
-/// This strategy provides defense-in-depth against forensic analysis by:
-/// - Storing runtime artifacts in RAM only (tmpfs)
-/// - Destroying data immediately on unmount
-/// - Preventing hidden storage capacity waste on transient files
-///
-/// # Current Support Status
-///
-/// `extended_overlays` is configuration-gated but currently rejected during
-/// preflight. The present implementation/layout is not valid for overlayfs,
-/// because overlayfs requires `upperdir` and `workdir` to reside on the same
-/// mount.
-///
-/// # Forensic Rationale (Thesis Section 4.3.6)
-///
-/// - Persistent overlays (home/etc): Data on hidden encrypted storage
-/// - Ephemeral overlays (var/tmp): Data in RAM, destroyed on unmount
-/// - Different threat models for different data types
-///
-/// # Example
-///
-/// ```rust
-/// use nails_core::config::ExtendedOverlayConfig;
-///
-/// let config = ExtendedOverlayConfig::default();
-/// assert!(!config.enabled); // Disabled by default for safety
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExtendedOverlayConfig {
-    /// Whether extended overlays are enabled
-    pub enabled: bool,
-
-    /// List of ephemeral overlay directories
-    #[serde(default)]
-    pub directories: Vec<crate::config::EphemeralOverlayDir>,
-}
-
-impl Default for ExtendedOverlayConfig {
-    /// Extended overlays disabled by default for safety
-    ///
-    /// User must explicitly opt-in via configuration.
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            directories: vec![],
-        }
-    }
 }

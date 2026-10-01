@@ -32,10 +32,10 @@ fn test_new_stores_log_path() {
 }
 
 #[test]
-fn test_new_stores_hidden_volume_path() {
+fn test_new_stores_hidden_volume_root() {
     let hidden = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
     let manager = LoggingManager::new(PathBuf::from("/mnt/hidden-volume/logs"), hidden.clone());
-    assert_eq!(manager.hidden_volume_path, hidden);
+    assert_eq!(manager.hidden_volume_root, hidden);
 }
 
 #[test]
@@ -46,7 +46,7 @@ fn test_new_is_cloneable() {
     );
     let cloned = manager.clone();
     assert_eq!(cloned.log_path, manager.log_path);
-    assert_eq!(cloned.hidden_volume_path, manager.hidden_volume_path);
+    assert_eq!(cloned.hidden_volume_root, manager.hidden_volume_root);
 }
 
 #[test]
@@ -354,7 +354,7 @@ fn test_init_graceful_degradation_returns_ok_none() {
 
 #[test]
 fn test_init_with_custom_hidden_volume_root() {
-    // AC #4: LoggingConfigBuilder receives hidden_volume_path from config
+    // AC #4: LoggingConfigBuilder receives hidden_volume_root from config
     let custom_root = PathBuf::from("/mnt/custom-secret");
     let manager = LoggingManager::new(custom_root.join("logs"), custom_root.clone());
     let fs = MockFilesystem::new();
@@ -372,7 +372,7 @@ fn test_init_with_custom_hidden_volume_root() {
 }
 
 #[test]
-fn test_init_with_realistic_custom_hidden_volume_path() {
+fn test_init_with_realistic_custom_hidden_volume_root() {
     // Realistic scenario: user configures backup hidden volume path
     let custom_root = PathBuf::from("/mnt/backup-nails");
     let manager = LoggingManager::new(custom_root.join("logs"), custom_root.clone());
@@ -392,7 +392,7 @@ fn test_init_with_realistic_custom_hidden_volume_path() {
 fn test_should_rotate_delegates_to_rotation_helper() {
     let manager = LoggingManager {
         log_path: PathBuf::from("/mnt/hidden-volume/logs"),
-        hidden_volume_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+        hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
         max_log_size_mb: 10,
         retention_days: 7,
     };
@@ -407,7 +407,7 @@ fn test_should_rotate_delegates_to_rotation_helper() {
 fn test_rotate_logs_delegates_to_rotation_helper() {
     let manager = LoggingManager {
         log_path: PathBuf::from("/mnt/hidden-volume/logs"),
-        hidden_volume_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+        hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
         max_log_size_mb: 10,
         retention_days: 3,
     };
@@ -451,7 +451,7 @@ fn test_rotate_logs_delegates_to_rotation_helper() {
 fn test_enforce_retention_delegates_to_rotation_helper() {
     let manager = LoggingManager {
         log_path: PathBuf::from("/mnt/hidden-volume/logs"),
-        hidden_volume_path: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+        hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
         max_log_size_mb: 10,
         retention_days: 7,
     };

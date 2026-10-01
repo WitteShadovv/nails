@@ -74,7 +74,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/tmp/nails-headless.toml"
     flake_ref = "/mnt/hidden-volume/nixos#dry-run-e2e"
     write_headless_config(headless_config)
 

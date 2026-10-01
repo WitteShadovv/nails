@@ -27,7 +27,7 @@ in
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
 
     print("\n=== Capturing INITIAL Snapshot ===")

@@ -29,14 +29,15 @@ in
 
     def write_overlay_compat_config(path):
         write_text_file(path, """
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: explicit
-    overlays:
-      - name: vfat-target
-        lower: /mnt/vfat-target
-        upper: /mnt/hidden-volume/vfat-target
-        work: /mnt/hidden-volume/.work/vfat-target
-        target: /mnt/vfat-target
+    hidden_volume_root = "/mnt/hidden-volume"
+    overlay_mode = "explicit"
+
+    [[overlays]]
+    name = "vfat-target"
+    lower = "/mnt/vfat-target"
+    upper = "/mnt/hidden-volume/vfat-target"
+    work = "/mnt/hidden-volume/.work/vfat-target"
+    target = "/mnt/vfat-target"
     """.strip() + "\n")
 
     machine.start()
@@ -47,10 +48,10 @@ in
         machine.succeed(
                 "bash -lc 'truncate -s 64M /tmp/vfat.img && mkfs.vfat /tmp/vfat.img && mkdir -p /mnt/vfat-target && mount -o loop /tmp/vfat.img /mnt/vfat-target && touch /mnt/vfat-target/compat-proof'"
             )
-        write_overlay_compat_config("/tmp/preflight-overlay-compat.yaml")
+        write_overlay_compat_config("/tmp/preflight-overlay-compat.toml")
         result = run_command_capture(
             "preflight-overlay-compat",
-            "nails --config /tmp/preflight-overlay-compat.yaml activate --dry-run --overlay-only --no-kill-session --plain",
+            "nails --config /tmp/preflight-overlay-compat.toml activate --dry-run --overlay-only --no-kill-session --plain",
         )
         assert_command_succeeded(result)
         assert_result_contains(result, ["overlay-compatibility", "vfat", "snapshot pivot"], stream="stdout")

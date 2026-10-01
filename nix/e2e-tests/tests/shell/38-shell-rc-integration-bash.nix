@@ -30,7 +30,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-headless.yaml"
+    config_path = "/tmp/nails-headless.toml"
     shell_path = "/run/current-system/sw/bin/bash"
     rc_path = "/home/testuser/.bashrc"
     expected_lower = "# lower bashrc\nexport LOWER_BASH_RC=1\n"

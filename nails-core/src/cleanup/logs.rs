@@ -52,7 +52,7 @@ use std::path::PathBuf;
 pub struct LogCleaner<F: Filesystem> {
     filesystem: F,
     log_path: PathBuf,
-    hidden_volume_path: PathBuf,
+    hidden_volume_root: PathBuf,
     /// Use secure deletion (overwrite before delete)
     pub(crate) secure_delete: bool,
 }
@@ -61,14 +61,14 @@ impl<F: Filesystem> LogCleaner<F> {
     /// Create a new LogCleaner with default paths
     ///
     /// Default log_path: hidden_volume_root()/logs
-    /// Default hidden_volume_path: `get_default_hidden_volume_root()`
+    /// Default hidden_volume_root: `get_default_hidden_volume_root()`
     /// Default secure_delete: false
     pub fn new(filesystem: F) -> Self {
         let hidden_volume = PathBuf::from(get_default_hidden_volume_root());
         Self {
             filesystem,
             log_path: hidden_volume.join("logs"),
-            hidden_volume_path: hidden_volume,
+            hidden_volume_root: hidden_volume,
             secure_delete: false,
         }
     }
@@ -80,8 +80,8 @@ impl<F: Filesystem> LogCleaner<F> {
     }
 
     /// Set custom hidden volume path (for testing)
-    pub fn with_hidden_volume_path(mut self, path: PathBuf) -> Self {
-        self.hidden_volume_path = path;
+    pub fn with_hidden_volume_root(mut self, path: PathBuf) -> Self {
+        self.hidden_volume_root = path;
         self
     }
 
@@ -102,9 +102,9 @@ impl<F: Filesystem> LogCleaner<F> {
     /// accidental cleanup of decoy system logs.
     fn validate_log_path(&self) -> Result<()> {
         let log_path = self.log_path.as_path();
-        let hidden_volume = self.hidden_volume_path.as_path();
+        let hidden_volume = self.hidden_volume_root.as_path();
 
-        // Check if log_path starts with hidden_volume_path
+        // Check if log_path starts with hidden_volume_root
         if !log_path.starts_with(hidden_volume) {
             return Err(NailsError::InvalidState(format!(
                 "Log path must be on hidden volume. Log path: {}, Hidden volume: {}",
@@ -243,7 +243,7 @@ mod tests {
             PathBuf::from(get_default_hidden_volume_root()).join("logs")
         );
         assert_eq!(
-            cleaner.hidden_volume_path,
+            cleaner.hidden_volume_root,
             PathBuf::from(get_default_hidden_volume_root())
         );
     }
@@ -258,19 +258,19 @@ mod tests {
     }
 
     #[test]
-    fn test_with_hidden_volume_path() {
+    fn test_with_hidden_volume_root() {
         let fs = MockFilesystem::new();
         let custom_hidden = PathBuf::from("/mnt/custom-hidden");
-        let cleaner = LogCleaner::new(fs).with_hidden_volume_path(custom_hidden.clone());
+        let cleaner = LogCleaner::new(fs).with_hidden_volume_root(custom_hidden.clone());
 
-        assert_eq!(cleaner.hidden_volume_path, custom_hidden);
+        assert_eq!(cleaner.hidden_volume_root, custom_hidden);
     }
 
     #[test]
     fn test_hidden_volume_validation_passes() {
         let fs = MockFilesystem::new();
         let cleaner = LogCleaner::new(fs)
-            .with_hidden_volume_path(PathBuf::from("/mnt/hidden"))
+            .with_hidden_volume_root(PathBuf::from("/mnt/hidden"))
             .with_log_path(PathBuf::from("/mnt/hidden/logs"));
 
         assert!(cleaner.validate_log_path().is_ok());
@@ -280,7 +280,7 @@ mod tests {
     fn test_hidden_volume_validation_passes_for_subdirectory() {
         let fs = MockFilesystem::new();
         let cleaner = LogCleaner::new(fs)
-            .with_hidden_volume_path(PathBuf::from("/mnt/hidden"))
+            .with_hidden_volume_root(PathBuf::from("/mnt/hidden"))
             .with_log_path(PathBuf::from("/mnt/hidden/nested/logs"));
 
         assert!(cleaner.validate_log_path().is_ok());
@@ -290,7 +290,7 @@ mod tests {
     fn test_hidden_volume_validation_fails_for_var_log() {
         let fs = MockFilesystem::new();
         let cleaner = LogCleaner::new(fs)
-            .with_hidden_volume_path(PathBuf::from("/mnt/hidden"))
+            .with_hidden_volume_root(PathBuf::from("/mnt/hidden"))
             .with_log_path(PathBuf::from("/var/log"));
 
         let result = cleaner.validate_log_path();
@@ -305,7 +305,7 @@ mod tests {
     fn test_hidden_volume_validation_fails_for_root() {
         let fs = MockFilesystem::new();
         let cleaner = LogCleaner::new(fs)
-            .with_hidden_volume_path(PathBuf::from("/mnt/hidden"))
+            .with_hidden_volume_root(PathBuf::from("/mnt/hidden"))
             .with_log_path(PathBuf::from("/"));
 
         let result = cleaner.validate_log_path();
@@ -316,7 +316,7 @@ mod tests {
     fn test_hidden_volume_validation_fails_for_similar_path() {
         let fs = MockFilesystem::new();
         let cleaner = LogCleaner::new(fs)
-            .with_hidden_volume_path(PathBuf::from("/mnt/hidden"))
+            .with_hidden_volume_root(PathBuf::from("/mnt/hidden"))
             .with_log_path(PathBuf::from("/mnt/hidden-fake/logs"));
 
         let result = cleaner.validate_log_path();
@@ -379,7 +379,7 @@ mod tests {
         fs.mock_set_path_exists("/var/log", true);
 
         let cleaner = LogCleaner::new(fs)
-            .with_hidden_volume_path(PathBuf::from("/mnt/hidden"))
+            .with_hidden_volume_root(PathBuf::from("/mnt/hidden"))
             .with_log_path(PathBuf::from("/var/log"));
 
         let result = cleaner.clean();

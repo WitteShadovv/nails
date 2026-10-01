@@ -1,8 +1,6 @@
 //! Tests for overlay configuration
 
-use crate::config::{
-    DEFAULT_HIDDEN_VOLUME_ROOT, EphemeralOverlayDir, ExtendedOverlayConfig, OverlayConfig,
-};
+use crate::config::{DEFAULT_HIDDEN_VOLUME_ROOT, OverlayConfig};
 use std::path::PathBuf;
 
 // ========== OverlayConfig Tests ==========
@@ -76,63 +74,4 @@ fn test_overlay_config_serialization() {
     // Deserialize back
     let deserialized: OverlayConfig = serde_json::from_str(&json).expect("Should deserialize");
     assert_eq!(deserialized, overlay);
-}
-
-// ========== ExtendedOverlayConfig Tests ==========
-
-#[test]
-fn test_extended_overlay_config_default() {
-    let config = ExtendedOverlayConfig::default();
-    assert!(!config.enabled);
-    assert!(config.directories.is_empty());
-}
-
-#[test]
-fn test_extended_overlay_config_creation() {
-    let dir1 = EphemeralOverlayDir {
-        path: PathBuf::from("/var"),
-        tmpfs_upper_size: "1G".to_string(),
-        tmpfs_work_size: "512M".to_string(),
-    };
-
-    let dir2 = EphemeralOverlayDir {
-        path: PathBuf::from("/tmp"),
-        tmpfs_upper_size: "512M".to_string(),
-        tmpfs_work_size: "256M".to_string(),
-    };
-
-    let config = ExtendedOverlayConfig {
-        enabled: true,
-        directories: vec![dir1.clone(), dir2.clone()],
-    };
-
-    assert!(config.enabled);
-    assert_eq!(config.directories.len(), 2);
-    assert_eq!(config.directories[0], dir1);
-    assert_eq!(config.directories[1], dir2);
-}
-
-#[test]
-fn test_extended_overlay_config_serialization() {
-    let dir = EphemeralOverlayDir {
-        path: PathBuf::from("/var"),
-        tmpfs_upper_size: "1G".to_string(),
-        tmpfs_work_size: "512M".to_string(),
-    };
-
-    let config = ExtendedOverlayConfig {
-        enabled: true,
-        directories: vec![dir],
-    };
-
-    // Serialize to JSON
-    let json = serde_json::to_string(&config).expect("Should serialize");
-    assert!(json.contains("\"enabled\""));
-    assert!(json.contains("true"));
-    assert!(json.contains("\"directories\""));
-
-    // Deserialize back
-    let deserialized: ExtendedOverlayConfig =
-        serde_json::from_str(&json).expect("Should deserialize");
-    assert_eq!(deserialized, config);
 }

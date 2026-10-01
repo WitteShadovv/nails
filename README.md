@@ -130,16 +130,20 @@ install -m0755 ./result/bin/nails /mnt/hidden/nails
 3. **Optionally review the generated config**.
 
    ```bash
-   $EDITOR /mnt/hidden-volume/config/nails.yaml
+   $EDITOR /mnt/hidden-volume/config/nails.toml
+   nails config validate
    ```
 
-   Minimal example:
+   The file is strict TOML: every key is optional (an empty file uses the defaults) and unknown
+   keys are rejected. Leave `hidden_volume_root` unset to derive it from the binary location.
+   Example:
 
-   ```yaml
-   hidden_volume_root: /mnt/hidden-volume
-   # Optional:
-   # nixos_flake: /mnt/hidden-volume/nixos#my-host
+   ```toml
+   nixos_flake = "/mnt/hidden-volume/nixos#my-host"
    ```
+
+   `nails config show` prints the effective configuration and where each value comes from;
+   `nails config show --example` prints every key.
 
 4. **Add or replace the hidden NixOS configuration** if you do not want the generated starter
    module.
@@ -183,6 +187,7 @@ install -m0755 ./result/bin/nails /mnt/hidden/nails
 | `nails status` | Show current state and security posture |
 | `nails verify` | Scan for known/common host artifacts after deactivation |
 | `nails notify-dispatch` | Dispatch pending desktop notifications on login |
+| `nails config path\|show\|validate` | Locate, inspect or check the configuration file |
 
 For full flag-level usage, run `nails --help` or `nails <command> --help`.
 

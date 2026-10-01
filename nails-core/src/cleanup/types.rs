@@ -68,7 +68,7 @@ pub struct CleanupConfig {
 
     /// Path to hidden volume root (for security validation)
     /// Default: HIDDEN_VOLUME_ROOT
-    pub hidden_volume_path: PathBuf,
+    pub hidden_volume_root: PathBuf,
 
     /// Config file path currently in use, if any.
     ///
@@ -121,7 +121,7 @@ impl Default for CleanupConfig {
             history_patterns: patterns::default_cleanup_patterns(),
             temp_dirs: vec![PathBuf::from("/tmp")],
             log_path: hidden_volume.join("logs"),
-            hidden_volume_path: hidden_volume,
+            hidden_volume_root: hidden_volume,
             config_file_path: None,
             sanitize_memory: false,
             secure_delete: false,

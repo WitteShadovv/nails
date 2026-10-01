@@ -43,9 +43,8 @@ in {
 
 ### `lib/test-helpers.nix`
 
-- `writeHeadlessConfigFn` → `write_headless_config(path)`
+- `writeHeadlessConfigFn` → `write_headless_config(path)` (writes a `nails.toml` with explicit overlays)
 - `writeExtendedConfigFn` → `write_extended_config(path)`
-- `writeEphemeralConfigFn` → `write_ephemeral_config(path)`
 - `runDetachedCommandFn` → `run_detached_command(unit_name, command)`
 - `readStatusJsonFn` → `read_status_json(config_path=None)`
 - `runVerifyFn` → `run_verify(args="", config_path=None)`

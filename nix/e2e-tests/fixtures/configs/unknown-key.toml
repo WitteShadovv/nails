@@ -1,0 +1,4 @@
+# A misspelt key ("nixos_flak" for "nixos_flake") must be rejected, not
+# silently ignored in favour of flake auto-discovery.
+hidden_volume_root = "/mnt/hidden-volume"
+nixos_flak = "/mnt/hidden-volume/nixos#hidden"

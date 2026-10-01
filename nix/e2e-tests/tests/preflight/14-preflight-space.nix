@@ -33,21 +33,22 @@ in
 
     def write_space_config(path):
         write_text_file(path, """
-    hidden_volume_root: /mnt/hidden-volume
-    minimum_space_mb: 500
-    overlay_mode: explicit
-    overlays:
-      - name: home
-        lower: /home
-        upper: /mnt/hidden-volume/home
-        work: /mnt/hidden-volume/.work/home
-        target: /home
+    hidden_volume_root = "/mnt/hidden-volume"
+    minimum_space_mb = 500
+    overlay_mode = "explicit"
+
+    [[overlays]]
+    name = "home"
+    lower = "/home"
+    upper = "/mnt/hidden-volume/home"
+    work = "/mnt/hidden-volume/.work/home"
+    target = "/home"
     """.strip() + "\n")
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/preflight-space.yaml"
+    config_path = "/tmp/preflight-space.toml"
     write_space_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 

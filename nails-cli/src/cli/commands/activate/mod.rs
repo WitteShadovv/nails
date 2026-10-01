@@ -16,7 +16,7 @@ use crate::cli::detach::maybe_detach_for_session_kill;
 use crate::cli::output;
 
 use nails_core::{
-    ActivateOptions, CliOverrides, Config, Filesystem, NailsManager, NixOSBuilder, PreFlightCheck,
+    ActivateOptions, CliOverrides, Filesystem, NailsManager, NixOSBuilder, PreFlightCheck,
     RealFilesystem, Verbosity,
 };
 use std::sync::{Arc, Mutex};
@@ -50,7 +50,8 @@ fn suspicious_check_name() -> String {
 /// # Returns
 ///
 /// This function never returns normally - it always exits the process with an
-/// appropriate exit code (0 for success, 1 for activation failure, 2 for errors).
+/// appropriate exit code (0 for success, 1 for activation failure, 2 for errors,
+/// 3 for a missing or invalid configuration file).
 #[allow(clippy::too_many_arguments)]
 pub fn execute(
     no_preflight: bool,
@@ -132,51 +133,18 @@ pub fn execute(
         std::process::exit(2);
     }
 
-    // Build CLI overrides from parsed arguments (Story 10.3)
+    // CLI flags override config file values
     let cli_overrides = CliOverrides {
         preflight_checks: if no_preflight { Some(false) } else { None },
         clear_history: if no_clear_history { Some(false) } else { None },
-        verbosity: if quiet {
-            Some("quiet".to_string())
-        } else if verbose >= 2 {
-            Some("debug".to_string())
-        } else if verbose == 1 {
-            Some("info".to_string()) // AC4: -v maps to "info"
-        } else {
-            None // Use config file or default
-        },
-        color_output: if no_color { Some(false) } else { None },
         nixos_flake,
-        ..Default::default()
     };
 
-    // Load config with CLI overrides (Story 10.3, updated in Story 14.1)
-    // P0-04: Fail closed on explicit --config path errors
-    let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-
-    let config = if config_override.is_some() {
-        // Explicit --config: strict load, fail on missing/unreadable
-        Config::load(&config_path).unwrap_or_else(|e| {
-            eprintln!("Error loading config from {}: {}", config_path.display(), e);
-            std::process::exit(2);
-        })
-    } else {
-        // Implicit discovery: fall back to defaults when missing
-        Config::from_file_and_cli(&config_path, &cli_overrides).unwrap_or_else(|e| {
-            eprintln!("Error loading config: {}", e);
-            std::process::exit(2);
-        })
-    };
-
-    // Apply CLI overrides for explicit --config path too
-    let mut config = {
-        let mut c = config;
-        c.apply_cli_overrides(&cli_overrides);
-        c
-    };
-    config.loaded_config_path = config_override
-        .clone()
-        .or_else(|| Some(config_path.clone()));
+    // Strict load: a missing --config file, a typo or an unknown key exits 3
+    // instead of silently activating with defaults.
+    let mut loaded = super::load_config_or_exit(config_override.as_deref());
+    loaded.apply_cli_overrides(&cli_overrides);
+    let config = loaded.into_config();
 
     // TEST SAFETY GUARD (Layer 1): Check if real operations are allowed
     if let Err(msg) = check_real_ops(&config.hidden_volume_root) {

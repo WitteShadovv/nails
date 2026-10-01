@@ -46,7 +46,7 @@ let
     pkgs:
     pkgs.writeShellScriptBin "nails-nix-daemon-overlay-lifecycle-test" ''
       set -eu
-      config_path=/tmp/nails-nix-overlay.yaml
+      config_path=/tmp/nails-nix-overlay.toml
       tmp_nix_dir=/tmp/nix-helper
       nix_bin=$tmp_nix_dir/bin/nix
       nails_bin=/tmp/nails
@@ -227,7 +227,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-nix-overlay.yaml"
+    config_path = "/tmp/nails-nix-overlay.toml"
     write_nix_overlay_config(config_path)
 
     def assert_nix_usable():

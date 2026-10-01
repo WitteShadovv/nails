@@ -25,21 +25,15 @@ const DEFAULT_MAX_SNAPSHOT_BYTES: u64 = 1_073_741_824;
 ///    activation cycle. These are auto-fixed (xattr stripped) and a warning is emitted.
 pub struct OverlayCompatibilityCheck {
     persistent_overlay_targets: Vec<PathBuf>,
-    ephemeral_overlay_targets: Vec<PathBuf>,
     hidden_volume_root: PathBuf,
     max_snapshot_bytes: u64,
 }
 
 impl OverlayCompatibilityCheck {
     /// Create a new OverlayCompatibilityCheck
-    pub fn new(
-        persistent_overlay_targets: Vec<PathBuf>,
-        ephemeral_overlay_targets: Vec<PathBuf>,
-        hidden_volume_root: PathBuf,
-    ) -> Self {
+    pub fn new(persistent_overlay_targets: Vec<PathBuf>, hidden_volume_root: PathBuf) -> Self {
         Self {
             persistent_overlay_targets,
-            ephemeral_overlay_targets,
             hidden_volume_root,
             max_snapshot_bytes: DEFAULT_MAX_SNAPSHOT_BYTES,
         }
@@ -71,23 +65,6 @@ impl<F: Filesystem> PreFlightCheck<F> for OverlayCompatibilityCheck {
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
         let mut warnings = Vec::new();
-
-        // Check 0: Extended ephemeral overlays are not currently supportable with the
-        // implementation/layout NAILS configures. overlayfs requires upperdir and workdir
-        // to reside on the same mount, but the current extended_overlays design models
-        // them as separate tmpfs-backed paths.
-        if !self.ephemeral_overlay_targets.is_empty() {
-            let targets = self
-                .ephemeral_overlay_targets
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Ok(CheckResult::Fail(format!(
-                "Extended ephemeral overlays are currently unsupported for {}: overlayfs requires upperdir and workdir to reside on the same mount, but extended_overlays uses a layout that violates that kernel constraint. Disable extended_overlays.enabled.",
-                targets
-            )));
-        }
 
         // Check 1: Overlay-incompatible filesystems (vfat, exfat, ntfs)
         for target in &self.persistent_overlay_targets {
@@ -169,7 +146,6 @@ mod tests {
 
         let check = OverlayCompatibilityCheck::new(
             vec![PathBuf::from("/home"), PathBuf::from("/etc")],
-            vec![],
             PathBuf::from("/mnt/hidden"),
         );
 
@@ -183,7 +159,6 @@ mod tests {
 
         let check = OverlayCompatibilityCheck::new(
             vec![PathBuf::from("/data")],
-            vec![],
             PathBuf::from("/mnt/hidden"),
         );
         let result = check.run(&fs).unwrap();
@@ -198,7 +173,6 @@ mod tests {
 
         let check = OverlayCompatibilityCheck::new(
             vec![PathBuf::from("/boot")],
-            vec![],
             PathBuf::from("/mnt/hidden"),
         );
         let result = check.run(&fs).unwrap();
@@ -217,7 +191,6 @@ mod tests {
 
         let check = OverlayCompatibilityCheck::new(
             vec![PathBuf::from("/boot")],
-            vec![],
             PathBuf::from("/mnt/hidden"),
         );
         let result = check.run(&fs).unwrap();
@@ -236,7 +209,6 @@ mod tests {
 
         let check = OverlayCompatibilityCheck::new(
             vec![PathBuf::from("/home"), PathBuf::from("/boot")],
-            vec![],
             PathBuf::from("/mnt/hidden"),
         );
 
@@ -247,32 +219,10 @@ mod tests {
 
     #[test]
     fn test_metadata() {
-        let check = OverlayCompatibilityCheck::new(vec![], vec![], PathBuf::from("/mnt/hidden"));
+        let check = OverlayCompatibilityCheck::new(vec![], PathBuf::from("/mnt/hidden"));
         assert_eq!(
             <OverlayCompatibilityCheck as PreFlightCheck<MockFilesystem>>::name(&check),
             "overlay-compatibility"
-        );
-    }
-
-    #[test]
-    fn test_fail_extended_ephemeral_overlays_are_unsupported() {
-        let fs = MockFilesystem::new();
-
-        let check = OverlayCompatibilityCheck::new(
-            vec![PathBuf::from("/home")],
-            vec![PathBuf::from("/var"), PathBuf::from("/tmp")],
-            PathBuf::from("/mnt/hidden"),
-        );
-
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_fail(), "Expected Fail, got: {:?}", result);
-        assert!(result.message().contains("/var, /tmp"));
-        assert!(result.message().contains("upperdir and workdir"));
-        assert!(result.message().contains("same mount"));
-        assert!(
-            result
-                .message()
-                .contains("Disable extended_overlays.enabled")
         );
     }
 }

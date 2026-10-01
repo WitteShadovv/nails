@@ -40,7 +40,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/tmp/nails-headless.toml"
     state_path = "/mnt/hidden-volume/state.json"
     backup_path = "/tmp/state-backup.json"
 

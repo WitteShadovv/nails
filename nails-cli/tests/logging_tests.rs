@@ -72,9 +72,9 @@ fn test_stdout_format_variants_are_available() {
 #[test]
 fn test_config_path_discovery() {
     let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("test-config.yaml");
+    let config_path = temp_dir.path().join("test-config.toml");
 
-    std::fs::write(&config_path, "hidden_volume_path: /tmp/test").unwrap();
+    std::fs::write(&config_path, "hidden_volume_root = \"/tmp/test\"").unwrap();
     assert!(config_path.exists());
 }
 

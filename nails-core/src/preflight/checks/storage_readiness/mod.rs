@@ -12,7 +12,7 @@ use std::path::PathBuf;
 const REQUIRED_DIRS: &[&str] = &[
     "etc",        // Upper layer for /etc overlay
     "home",       // Upper layer for /home overlay
-    "config",     // NAILS configuration (nails.yaml)
+    "config",     // NAILS configuration (nails.toml)
     "nix",        // Hidden environment Nix configuration
     ".work/etc",  // OverlayFS work directory for /etc
     ".work/home", // OverlayFS work directory for /home
@@ -40,7 +40,7 @@ const REQUIRED_DIRS: &[&str] = &[
 /// ├── etc/           # Upper layer for /etc overlay
 /// ├── home/          # Upper layer for /home overlay
 /// ├── nix/           # Upper layer for /nix overlay
-/// ├── config/        # NAILS configuration (nails.yaml)
+/// ├── config/        # NAILS configuration (nails.toml)
 /// └── .work/         # OverlayFS work directories
 ///     ├── etc/
 ///     ├── home/
@@ -67,7 +67,7 @@ const REQUIRED_DIRS: &[&str] = &[
 /// ```
 #[derive(Debug, Clone)]
 pub struct StorageReadinessCheck {
-    hidden_volume_path: PathBuf,
+    hidden_volume_root: PathBuf,
     overlays: Vec<OverlayDirs>,
 }
 
@@ -76,11 +76,11 @@ impl StorageReadinessCheck {
     ///
     /// # Arguments
     ///
-    /// * `hidden_volume_path` - Path to the hidden volume mount point
+    /// * `hidden_volume_root` - Path to the hidden volume mount point
     /// * `overlays` - Overlay directory configurations to validate
-    pub fn new(hidden_volume_path: PathBuf, overlays: Vec<OverlayDirs>) -> Self {
+    pub fn new(hidden_volume_root: PathBuf, overlays: Vec<OverlayDirs>) -> Self {
         Self {
-            hidden_volume_path,
+            hidden_volume_root,
             overlays,
         }
     }
@@ -101,7 +101,7 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
         // Phase 1: Check required directories exist on hidden volume
         let mut missing = Vec::new();
         for dir in REQUIRED_DIRS {
-            let path = self.hidden_volume_path.join(dir);
+            let path = self.hidden_volume_root.join(dir);
             if !fs.path_exists(&path)? || !fs.is_directory(&path)? {
                 missing.push(*dir);
             }
@@ -112,7 +112,7 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
             let mut created = Vec::new();
 
             for dir in &missing {
-                let path = self.hidden_volume_path.join(dir);
+                let path = self.hidden_volume_root.join(dir);
                 match fs.create_directory(&path) {
                     Ok(()) => {
                         if let Err(e) = fs.set_permissions(&path, 0o700) {
