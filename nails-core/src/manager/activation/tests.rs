@@ -1,11 +1,7 @@
 use super::gate::ActivationGateTestGuard;
 use super::maybe_block_after_activating_state_transition;
-use super::rollback::rollback_overlay_mounts_after_activation_failure;
 use super::{SessionRestartPhase, determine_session_restart_phase};
-use crate::{
-    Config, EphemeralOverlayDir, ExtendedOverlayConfig, Filesystem, MockFilesystem, NailsManager,
-    OverlayConfig, SystemState,
-};
+use crate::{Config, Filesystem, MockFilesystem, NailsManager, OverlayConfig, SystemState};
 use serial_test::serial;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -176,91 +172,6 @@ fn test_activation_gate_reports_marker_write_failures() {
     let msg = err.to_string();
 
     assert!(msg.contains("Failed to write activation test marker"));
-}
-
-#[test]
-fn test_activation_rollback_reports_ephemeral_cleanup_failures() {
-    let temp_dir = tempfile::tempdir().expect("tempdir");
-    let state_path = temp_dir.path().join("state.json");
-    let fs = MockFilesystem::new();
-
-    fs.mock_set_unmount_should_fail("/mnt/nails-pivot/tmp", true);
-
-    let manager = NailsManager::new(
-        fs,
-        Config {
-            hidden_volume_root: temp_dir.path().to_path_buf(),
-            state_file_path: state_path.clone(),
-            extended_overlays: ExtendedOverlayConfig {
-                enabled: true,
-                directories: vec![EphemeralOverlayDir {
-                    path: PathBuf::from("/tmp"),
-                    tmpfs_upper_size: "256M".to_string(),
-                    tmpfs_work_size: "128M".to_string(),
-                }],
-            },
-            ..Config::test_default()
-        },
-        state_path,
-    );
-
-    let err = rollback_overlay_mounts_after_activation_failure(&manager, &[])
-        .expect_err("ephemeral cleanup failure should be surfaced");
-
-    assert!(
-        err.to_string()
-            .contains("Activation rollback ephemeral cleanup failed"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn test_activation_rollback_unmounts_persistent_overlays_even_when_ephemeral_cleanup_fails() {
-    let temp_dir = tempfile::tempdir().expect("tempdir");
-    let state_path = temp_dir.path().join("state.json");
-    let fs = MockFilesystem::new();
-
-    fs.mock_set_unmount_should_fail("/mnt/nails-pivot/tmp", true);
-    fs.mock_set_overlay_mounted(Path::new("/home"), true);
-
-    let manager = NailsManager::new(
-        fs.clone(),
-        Config {
-            hidden_volume_root: temp_dir.path().to_path_buf(),
-            state_file_path: state_path.clone(),
-            overlays: vec![OverlayConfig {
-                name: "home".to_string(),
-                lower: PathBuf::from("/home"),
-                upper: PathBuf::from("/mnt/hidden/home"),
-                work: PathBuf::from("/mnt/hidden/.work/home"),
-                target: PathBuf::from("/home"),
-            }],
-            extended_overlays: ExtendedOverlayConfig {
-                enabled: true,
-                directories: vec![EphemeralOverlayDir {
-                    path: PathBuf::from("/tmp"),
-                    tmpfs_upper_size: "256M".to_string(),
-                    tmpfs_work_size: "128M".to_string(),
-                }],
-            },
-            ..Config::test_default()
-        },
-        state_path,
-    );
-
-    let err = rollback_overlay_mounts_after_activation_failure(&manager, &[PathBuf::from("/home")])
-        .expect_err("ephemeral cleanup failure should still be surfaced");
-
-    assert!(
-        err.to_string()
-            .contains("Activation rollback cleanup failed"),
-        "unexpected error: {err}"
-    );
-    assert!(
-        !fs.is_mounted(Path::new("/home"))
-            .expect("/home mount query should succeed"),
-        "persistent overlays should still be unmounted during rollback"
-    );
 }
 
 #[test]

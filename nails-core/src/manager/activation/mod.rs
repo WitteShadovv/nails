@@ -34,7 +34,6 @@ mod nixos_build;
 mod nixos_switch;
 mod overlay_mount;
 mod preflight;
-mod rollback;
 mod session;
 
 #[cfg(test)]
