@@ -176,7 +176,7 @@ Owns: `nails-core/src/error.rs`, `nails-core/src/filesystem/mountinfo.rs`, `nail
 
 Owns: `deny.toml`, `ci/deny_ignores.py`, `ci/tests/`
 
-- [ ] **T-009: Scope advisory gating to the shipped dependency graph so unrelated PRs and main stop going red** (high · effort S)
+- [x] **T-009: Scope advisory gating to the shipped dependency graph so unrelated PRs and main stop going red** (high · effort S)
 
   **Problem:** The `audit` job runs `cargo audit --json` and then `cargo deny check advisories licenses bans sources` over the whole lockfile on every PR, push and weekly schedule (`.github/workflows/ci.yml:80-87`). `CI Success` requires that job (`ci.yml:459-471`), and the main ruleset requires only `CI Success`. `deny.toml` sets `unmaintained = "all"` (l.30) and has no `[graph]` section. Advisories in crates that never ship (anyhow, wasm-only via getrandom -> wasip2 -> wit-bindgen; crossbeam-epoch, dev-only via criterion -> rayon; scc, dev-only via serial_test) kept main red for 10 straight scheduled runs (2026-07-12 to 09-13). They also failed Dependabot PRs and docs-only PR #53: 14 of 24 CI runs in total. cargo-audit cannot filter dev-only or target-specific crates, and it was the step that failed first. The RUSTSEC-2026-0205 ignore (`deny.toml:37-48`) exists only because of the exact 1.93.0 pin (`rust-toolchain.toml`), and its re-evaluation condition is prose with no expiry.
 
@@ -199,7 +199,7 @@ Owns: `deny.toml`, `ci/deny_ignores.py`, `ci/tests/`
 
 Owns: `nix/e2e-tests/shard-durations.json`, `nix/checks.nix`, `.github/actions/setup-nix/`
 
-- [ ] **T-010: Regenerate E2E shard weights, cap outliers, and add global and shutdown test timeouts** (high · effort M)
+- [x] **T-010: Regenerate E2E shard weights, cap outliers, and add global and shutdown test timeouts** (high · effort M)
 
   **Problem:** `nix/e2e-tests/shard-durations.json` records `preflight-state-check` at 3609 s and `status-always-exits-zero` at 3453 s — together ~40% of the 17,609 s total, against a median weight of ~109 s — for two small tests that actually run in normal time. Both values sit at the NixOS driver's default 3600 s `globalTimeout`, so they are recorded hangs: each calls `canonical_deactivate`, whose `machine.wait_for_shutdown()` (`nix/e2e-tests/lib/test-helpers.nix:150`) has no timeout. The greedy allocator in `scripts/run-e2e-tests.sh` then builds shards up to ~3.4-4.3x imbalanced, and nothing under `nix/` sets `globalTimeout`, so a real hang blocks a shard for the full hour. The file was committed once (b6094be) and nothing regenerates it.
 
@@ -216,7 +216,7 @@ Owns: `nix/e2e-tests/shard-durations.json`, `nix/checks.nix`, `.github/actions/s
   - Every test derivation evaluates with a `globalTimeout`, and the effective timeout appears in the e2e metadata.
   - An injected endless wait in `canonical_deactivate` fails within the deadline and prints diagnostics.
 
-- [ ] **T-011: Make nix flake check a fast lint gate, restrict systems to x86_64-linux, move VM tests to their own namespace, add metadata** (medium · effort M)
+- [x] **T-011: Make nix flake check a fast lint gate, restrict systems to x86_64-linux, move VM tests to their own namespace, add metadata** (medium · effort M)
 
   **Problem:** `flake.nix:217` sets `checks = ... e2eTests`, so `nix flake check` builds ~97 entries depending on all ~80 VM tests (~3 h) — there is no cheap gate and nothing runs it. `flake-utils.lib.eachDefaultSystem` (`flake.nix:18`) exposes darwin/aarch64 even though `targetTriple` is hard-coded `x86_64-unknown-linux-musl`, so `packages.aarch64-linux.nails` is an x86_64 binary and the tests pin x86_64-linux. The non-standard outputs `e2e-tests`/`e2e-test-metadata`/`forensics-eval-metadata` cause "unknown flake output" warnings. The `nails` package has no `meta`, and `rust-overlay` does not follow `nixpkgs`, so `flake.lock` carries two nixpkgs. Interactive debugging is broken: `scripts/run-e2e-tests.sh:617` and `nix/e2e-tests/default.nix:112` run `nix run ".#checks.$SYSTEM.e2e-$name" --interactive`, which Nix rejects with "unrecognised flag '--interactive'".
 
@@ -233,7 +233,7 @@ Owns: `nix/e2e-tests/shard-durations.json`, `nix/checks.nix`, `.github/actions/s
   - `nix eval .#packages.x86_64-linux.nails.meta.mainProgram` returns `"nails"`; `flake.lock` has a single nixpkgs node.
   - `nix run .#e2e.basic-workflow.driverInteractive` and `./scripts/run-e2e-tests.sh -i basic-workflow` both start the interactive driver; `nix build .#e2e.basic-workflow` and group resolution work with the new paths.
 
-- [ ] **T-012: Make the nails and E2E derivations deterministic and cacheable behind one setup-nix action and a project binary cache** (high · effort M)
+- [x] **T-012: Make the nails and E2E derivations deterministic and cacheable behind one setup-nix action and a project binary cache** (high · effort M)
 
   **Problem:** `flake.nix:25,103` injects `SOURCE_DATE_EPOCH = self.lastModified` into `nails`, so its hash changes on every commit. The source fileset (`flake.nix:49-61`) includes `./nix`, `README.md` and `LICENSE` although no Rust code reads them, so editing any test or doc rebuilds the binary and invalidates all ~80 VM-test derivations. `allowSubstitutes = false` and `preferLocalBuild` are set on both `nails` and `nails-release`. `nix/e2e-tests/lib/vm-config.nix:12` reads `NAILS_E2E_VM_CORES` via `builtins.getEnv`, forcing `--impure` (`scripts/run-e2e-tests.sh:530`), so test hashes depend on the host core count, the eval cache is disabled, and two test attributes cannot build in one pure `nix build --keep-going`. The only configured cache is the read-only nix-community Cachix (holds none of this project's paths), `install-nix-action` is pinned at two different SHAs, and cancelled runs lose all completed work.
 
@@ -442,6 +442,8 @@ Owns: `.github/workflows/`, `scripts/`, `ci/`, `rust-toolchain.toml`
 
 - [ ] **T-021: Single-source the Rust toolchain from rust-toolchain.toml and make the flake devShell the only dev environment** (medium · effort M)
 
+  _Partial (T-009): `serial_test` moved to 3.5 to drop `scc`, the RUSTSEC-2026-0205 ignore is gone, and `cargo-audit` is out of both dev shells with `just` added; the toolchain single-sourcing remains._
+
   **Problem**
   - The toolchain version `1.93.0` is hard-coded 13 times:
     - `.github/workflows/ci.yml`, 8 times (l.36, 67, 115, 159, 250, 294, 337, 380)
@@ -529,6 +531,8 @@ Owns: `.github/workflows/`, `scripts/`, `ci/`, `rust-toolchain.toml`
 
 - [ ] **T-023: Fast local loop: re-enable incremental builds, split pre-commit from pre-push, add a justfile CI also calls** (high · effort M)
 
+  _Partial (T-009): a `justfile` now exists with `deny` and `deny-full` recipes that CI also calls, and the cargo-audit pre-commit hook is gone; the incremental-build and pre-commit/pre-push split remain._
+
   **Problem**
   - `.cargo/config.toml:1-2` forces `incremental = false` for dev and test builds. A one-line nails-core edit takes 22-24 s to rebuild instead of 8-10 s. Nix builds already set `CARGO_INCREMENTAL=0` (`flake.nix:130`).
   - `.pre-commit-config.yaml` runs all of this on every commit, about 1.5-3 min in total:
@@ -569,6 +573,8 @@ Owns: `.github/workflows/`, `scripts/`, `ci/`, `rust-toolchain.toml`
   - `scripts/ci-local.sh`, `scripts/burn-in.sh` and the cargo-audit hook are gone.
 
 - [ ] **T-024: Add a scheduled maintenance workflow and a report-status action that tracks red main, nightly and release runs in an issue** (high · effort M)
+
+  _Partial (T-009): `.github/workflows/scheduled.yml` now runs the weekly full advisory scan (`just deny-full`) and the deny.toml ignore-expiry check; the report-status action and `advisory`-labelled issue reporting remain._
 
   **Problem**
   - The only schedule is the weekly cron in `ci.yml:12-14`, which just re-runs the PR jobs.
@@ -1134,6 +1140,8 @@ Owns: `Cargo.toml`, `nails-core/src/runtime_safety.rs`, `nails-core/src/deactiva
 
 - [ ] **T-052: Remove order-dependent environment races from the Rust test suites (EnvGuard now, RuntimeEnv injection next)** (medium · effort L)
 
+  _Partial (T-009): `serial_test` is on 3.5, which no longer pulls in `scc`, so the `RUSTSEC-2026-0205` ignore is gone; the environment-race rework remains._
+
   **Problem**
   The tests contain 414 `env::set_var`/`remove_var` calls (200 in `shell/tests.rs`) and 198 `#[serial]` attributes, but `#[serial]` only serializes against other serial tests. Shuffled runs fail intermittently (5/6 for nails-core, 2/10 for nails-cli). Concrete races: `manager/tests.rs:5906` and `:5973` read `HOME` without `#[serial]`, contrary to `cleanup/test_utils.rs:8`; `nixos/tests.rs:1720` sets `PATH` to a bare tempdir, breaking `du` in `filesystem/real/tests.rs:901`; `cli/safety.rs:83/99/113/144` use `.lock().unwrap()`, so one failure poisons four more tests; two different locks (`detach/tests.rs:11` `ENV_LOCK`, `safety.rs:76` `env_lock`) let `NAILS_*` vars leak into the subprocess of `deactivate/tests.rs:262`; `with_env` (`detach/tests.rs:13-22`) removes vars instead of restoring them; SAFETY comments relying on `#[serial]` (`test_utils.rs:71`) are wrong. `serial_test` 3.x pulls in `scc`, forcing the `RUSTSEC-2026-0205` ignore (`deny.toml:38-47`).
 
@@ -1205,6 +1213,8 @@ Owns: `nails-core/src/config/dynamic.rs`, `nails-core/src/preflight/checks/overl
 Owns: `.github/workflows/ci.yml`, `.config/nextest.toml`
 
 - [ ] **T-055: Rewrite ci.yml into a lean parallel PR gate with one required check, doctests, nextest profile, fork-safe coverage and least-privilege permissions** (high · effort L)
+
+  _Partial (T-009): the dependency-policy job now detects Cargo.toml/Cargo.lock/deny.toml changes and gates advisories only on those PRs, and cargo-audit no longer duplicates `cargo deny check advisories`; the full ci.yml rewrite remains._
 
   **Problem:** `.github/workflows/ci.yml` (506 lines) runs 12 jobs chained by `needs:` that pass no data between them (audit/test/geiger need lint at l.58/102/285, coverage/sbom/benchmarks need test, burn-in needs coverage at l.324). Criterion benchmarks set the critical path: 6.2 min warm and 9.6 min cold, for about 2 min of real work. Each PR compiles the workspace about 9 times across 11 rust-cache keys. Tools are built with `cargo install` (l.123/170/258/302, 777 s on a cold cache). There is no `concurrency:` and no path filter, so docs-only PRs run everything. The `dev` triggers are dead (l.7/11/327), and `toolchain: 1.93.0` repeats what rust-toolchain.toml already says. geiger ends in `|| true` (l.307), so the gate's geiger check (l.490) can never fire. cargo-audit repeats `cargo deny check advisories`. No step uses `--locked`, which is how v0.2.0 shipped a stale Cargo.lock. There is no `.config/nextest.toml`, so the failure upload of `target/nextest/**/*.xml` (l.138) is always empty. Doctests run only in burn-in (l.343), which is skipped on push to main. The sticky coverage comment needs `pull-requests: write` (l.148-150, 221-234). Fork PRs only get a read-only token, so it fails with 403 and takes `CI Success` down with it. ci.yml and e2e-tests.yml have no top-level `permissions:`. ci.yml:268 and release-core.yml:253 download cyclonedx-cli with curl and run it without a checksum.
 
