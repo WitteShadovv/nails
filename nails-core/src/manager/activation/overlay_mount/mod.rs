@@ -26,7 +26,10 @@ use std::path::{Path, PathBuf};
 impl<F: Filesystem> NailsManager<F> {
     /// Mount persistent and ephemeral overlays
     ///
-    /// Returns: (direct_mounts, pivot_mounts, pivot_targets, mounted_overlays)
+    /// Returns: (direct_mounts, pivot_mounts, leaking_targets, mounted_overlays)
+    /// where `leaking_targets` are the targets still referenced by surviving
+    /// writers after Phase 2 (the basis for the security label), independent of
+    /// which mount method was used.
     /// Note: Tracker is committed before returning, so no rollback on drop
     pub(super) fn mount_overlays(
         &self,
@@ -55,7 +58,7 @@ impl<F: Filesystem> NailsManager<F> {
         // Track mount methods for logging
         let mut direct_mounts = 0;
         let mut pivot_mounts = 0;
-        let mut pivot_targets: Vec<PathBuf> = Vec::new();
+        let mut leaking_targets: Vec<PathBuf> = Vec::new();
 
         // Step 8a: Mount persistent overlays using universal algorithm (Story 4.15)
         // Story 14.10: Use dynamic target list based on overlay_mode
@@ -67,7 +70,7 @@ impl<F: Filesystem> NailsManager<F> {
                     verbosity,
                     &mut direct_mounts,
                     &mut pivot_mounts,
-                    &mut pivot_targets,
+                    &mut leaking_targets,
                 )?;
             }
             crate::OverlayMode::Explicit => {
@@ -77,7 +80,7 @@ impl<F: Filesystem> NailsManager<F> {
                     verbosity,
                     &mut direct_mounts,
                     &mut pivot_mounts,
-                    &mut pivot_targets,
+                    &mut leaking_targets,
                 )?;
             }
         }
@@ -107,7 +110,12 @@ impl<F: Filesystem> NailsManager<F> {
         // Commit tracker before returning to prevent rollback on drop
         tracker.commit();
 
-        Ok((direct_mounts, pivot_mounts, pivot_targets, mounted_overlays))
+        Ok((
+            direct_mounts,
+            pivot_mounts,
+            leaking_targets,
+            mounted_overlays,
+        ))
     }
 
     /// Handle successful overlay mount with service restart and state tracking
@@ -120,31 +128,41 @@ impl<F: Filesystem> NailsManager<F> {
         verbosity: Verbosity,
         direct_mounts: &mut usize,
         pivot_mounts: &mut usize,
-        pivot_targets: &mut Vec<PathBuf>,
+        leaking_targets: &mut Vec<PathBuf>,
         nix_overlay_succeeded: &mut bool,
     ) -> Result<()> {
         use crate::overlay::MountMethod;
 
-        // Track mount type for logging
+        // Track the mount method for logging only. The method does not by itself
+        // determine the security posture — pre-existing processes keep referencing
+        // the decoy under both a direct and a pivot mount.
         match mount_result.method {
             MountMethod::Direct => {
                 *direct_mounts += 1;
                 if verbosity >= Verbosity::Verbose {
-                    tracing::info!(
-                        "  ✓ {} mounted (direct, optimal security)",
-                        overlay.target.display()
-                    );
+                    tracing::info!("  ✓ {} mounted (direct)", overlay.target.display());
                 }
             }
             MountMethod::Pivot => {
                 *pivot_mounts += 1;
-                pivot_targets.push(overlay.target.clone());
                 if verbosity >= Verbosity::Verbose {
-                    tracing::warn!(
-                        "  ⚠️  {} mounted (pivot, degraded security)",
-                        overlay.target.display()
-                    );
+                    tracing::info!("  ✓ {} mounted (pivot fallback)", overlay.target.display());
                 }
+            }
+        }
+
+        // The security-relevant signal: a target still referenced by surviving
+        // writers leaks hidden-session activity into the decoy lower tree, and it
+        // does so under either mount method.
+        if mount_result.surviving_writers > 0 {
+            leaking_targets.push(overlay.target.clone());
+            if verbosity >= Verbosity::Verbose {
+                tracing::warn!(
+                    writers = mount_result.surviving_writers,
+                    "  ⚠️  {} has {} surviving writer(s) leaking to the decoy",
+                    overlay.target.display(),
+                    mount_result.surviving_writers
+                );
             }
         }
 

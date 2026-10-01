@@ -99,25 +99,35 @@ impl Default for OverlayStrategyOptions {
 
 /// Method used to mount overlay filesystem
 ///
-/// Indicates which strategy was used to achieve the overlay mount.
+/// Records *how* the overlay was mounted. The method alone carries no security
+/// meaning: a process that opened the directory before the mount keeps resolving
+/// the original inode under both methods, so leakage is tracked separately via
+/// [`MountResult::surviving_writers`] rather than inferred from the method.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MountMethod {
-    /// Direct overlay mount (optimal security)
+    /// Direct overlay mount over the target directory.
     Direct,
-    /// Pivot mount fallback (degraded security with split-view)
+    /// Pivot fallback: the overlay is mounted on a staging path and then
+    /// bind-mounted over the target (used when a direct mount is rejected).
     Pivot,
 }
 
 /// Full result of universal overlay mounting algorithm
 ///
-/// Includes mount method and list of services that were stopped during Phase 2.
-/// Callers should restart these services after mount so they write to the overlay.
+/// Includes the mount method, the services stopped during Phase 2, and the count
+/// of writer processes that survived Phase 2 still referencing the target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountResult {
     /// Which mount method was used
     pub method: MountMethod,
     /// Service names that were stopped in Phase 2 (should be restarted post-mount)
     pub stopped_services: Vec<String>,
+    /// Count of write-capable processes still referencing the target after Phase 2
+    /// (processes that could not be, or were not, restarted). Such a process keeps
+    /// resolving and writing to the decoy lower tree regardless of mount method, so
+    /// a non-zero count is a leak that degrades the security posture. Read-only
+    /// ("Skip") processes are excluded because they cannot write to the decoy.
+    pub surviving_writers: usize,
 }
 
 #[cfg(test)]
@@ -162,8 +172,10 @@ mod tests {
         let result = MountResult {
             method: MountMethod::Direct,
             stopped_services: vec!["systemd-journald".to_string()],
+            surviving_writers: 0,
         };
         assert_eq!(result.method, MountMethod::Direct);
         assert_eq!(result.stopped_services.len(), 1);
+        assert_eq!(result.surviving_writers, 0);
     }
 }

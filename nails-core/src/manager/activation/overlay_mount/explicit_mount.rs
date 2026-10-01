@@ -14,7 +14,7 @@ impl<F: Filesystem> NailsManager<F> {
         verbosity: Verbosity,
         direct_mounts: &mut usize,
         pivot_mounts: &mut usize,
-        pivot_targets: &mut Vec<PathBuf>,
+        leaking_targets: &mut Vec<PathBuf>,
     ) -> Result<()> {
         // Explicit mode: use pre-configured overlays (legacy behavior)
         // Security check: fail if no overlays configured (would leave system unprotected)
@@ -138,7 +138,7 @@ impl<F: Filesystem> NailsManager<F> {
                         verbosity,
                         direct_mounts,
                         pivot_mounts,
-                        pivot_targets,
+                        leaking_targets,
                         &mut nix_overlay_succeeded,
                     )?;
                 }

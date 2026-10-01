@@ -62,6 +62,37 @@ fn determine_session_restart_phase(
     SessionRestartPhase::AfterOverlayMounts
 }
 
+/// Overlay targets where a surviving writer does not degrade the security posture.
+///
+/// `/boot` holds only the bootloader and kernels, which are integrity-verified at
+/// boot; a process still writing there cannot leak hidden-session activity into a
+/// forensically meaningful location. The exemption is justified by that integrity
+/// verification, not by how the target happened to be mounted.
+const INTEGRITY_VERIFIED_TARGETS: &[&str] = &["/boot"];
+
+/// Derive the activation security label from which overlay targets still have
+/// surviving writers referencing the decoy lower tree.
+///
+/// The label reflects leakage, not the mount method. A process that opened a
+/// target before the mount keeps resolving the original inode and keeps writing to
+/// the decoy under both a direct and a pivot mount, so the method alone carries no
+/// security meaning. A target counts against the posture only when it is leaking
+/// and is not integrity-verified.
+fn derive_security_label(
+    leaking: &[std::path::PathBuf],
+    integrity_verified: &[&str],
+) -> &'static str {
+    let has_unverified_leak = leaking
+        .iter()
+        .any(|t| !integrity_verified.iter().any(|w| t == Path::new(w)));
+
+    if has_unverified_leak {
+        "DEGRADED"
+    } else {
+        "OPTIMAL"
+    }
+}
+
 fn prepare_notification_autostart_before_session_restart<F: Filesystem>(manager: &NailsManager<F>) {
     let shell =
         crate::ShellInstrumentation::new(manager.filesystem().clone(), manager.config().clone());
@@ -290,28 +321,16 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Step 8: Mount persistent and ephemeral overlays
         let mount_timer = Stopwatch::start();
-        let (direct_mounts, pivot_mounts, pivot_targets, mounted_overlays) = {
+        let (direct_mounts, pivot_mounts, leaking_targets, mounted_overlays) = {
             let manager = manager_arc
                 .lock()
                 .map_err(|e| NailsError::LockPoisoned(e.to_string()))?;
             manager.mount_overlays(&options, verbosity)?
         };
 
-        // Paths where pivot mounts are acceptable and don't degrade security.
-        // /boot is whitelisted because it contains only the bootloader and kernels,
-        // which are integrity-verified at boot time.
-        const PIVOT_SECURITY_WHITELIST: &[&str] = &["/boot"];
-
-        let all_pivots_whitelisted = !pivot_targets.is_empty()
-            && pivot_targets
-                .iter()
-                .all(|t| PIVOT_SECURITY_WHITELIST.iter().any(|w| t == Path::new(w)));
-
-        let security_status = if pivot_mounts == 0 || all_pivots_whitelisted {
-            "OPTIMAL"
-        } else {
-            "DEGRADED"
-        };
+        // The posture depends on surviving writers that still leak to the decoy,
+        // not on whether any overlay used the pivot method.
+        let security_status = derive_security_label(&leaking_targets, INTEGRITY_VERIFIED_TARGETS);
 
         if verbosity >= Verbosity::Normal {
             tracing::info!(

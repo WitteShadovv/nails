@@ -1,6 +1,9 @@
 use super::gate::ActivationGateTestGuard;
 use super::maybe_block_after_activating_state_transition;
-use super::{SessionRestartPhase, determine_session_restart_phase};
+use super::{
+    INTEGRITY_VERIFIED_TARGETS, SessionRestartPhase, derive_security_label,
+    determine_session_restart_phase,
+};
 use crate::{Config, Filesystem, MockFilesystem, NailsManager, OverlayConfig, SystemState};
 use serial_test::serial;
 use std::ffi::OsString;
@@ -304,5 +307,58 @@ fn session_restart_phase_is_none_without_restart_plan() {
             true
         ),
         SessionRestartPhase::None
+    );
+}
+
+// Invariant: the security label is a function of surviving writers, never of the
+// mount method. `derive_security_label` takes only the leaking targets — it has no
+// Direct-vs-Pivot parameter — so the method cannot influence the posture. The
+// cases below pin that down: a direct mount that leaks is DEGRADED while a pivot
+// mount that does not leak is OPTIMAL. A surviving writer keeps writing to the
+// decoy lower tree under either method, so the mount method carries no security
+// meaning on its own.
+
+#[test]
+fn security_label_degraded_when_a_direct_mount_leaves_surviving_writers() {
+    // A direct mount contributes a target to `leaking` only when writers survived
+    // Phase 2; such a leak must read DEGRADED despite the mount being "direct".
+    let leaking = vec![PathBuf::from("/home")];
+    assert_eq!(
+        derive_security_label(&leaking, INTEGRITY_VERIFIED_TARGETS),
+        "DEGRADED"
+    );
+}
+
+#[test]
+fn security_label_optimal_when_a_pivot_mount_has_no_surviving_writers() {
+    // A pivot mount with zero survivors never enters `leaking`, so the posture is
+    // OPTIMAL even though the pivot fallback was used.
+    let leaking: Vec<PathBuf> = Vec::new();
+    assert_eq!(
+        derive_security_label(&leaking, INTEGRITY_VERIFIED_TARGETS),
+        "OPTIMAL"
+    );
+}
+
+#[test]
+fn security_label_optimal_when_only_integrity_verified_target_leaks() {
+    // A surviving writer on an integrity-verified target (/boot) is tolerated
+    // because that lower tree is verified at boot, not because of the mount method.
+    assert!(INTEGRITY_VERIFIED_TARGETS.contains(&"/boot"));
+    let leaking = vec![PathBuf::from("/boot")];
+    assert_eq!(
+        derive_security_label(&leaking, INTEGRITY_VERIFIED_TARGETS),
+        "OPTIMAL"
+    );
+}
+
+#[test]
+fn security_label_degraded_when_unverified_target_leaks_alongside_verified() {
+    // One unverified leak is enough to degrade the posture, even mixed with a
+    // whitelisted one.
+    let leaking = vec![PathBuf::from("/boot"), PathBuf::from("/etc")];
+    assert_eq!(
+        derive_security_label(&leaking, INTEGRITY_VERIFIED_TARGETS),
+        "DEGRADED"
     );
 }

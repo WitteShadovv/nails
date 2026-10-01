@@ -36,14 +36,20 @@ pub struct EphemeralMountInfo {
 ///
 /// # Pivot Mount Strategy
 ///
-/// Direct overlay mount onto `/var` fails with EINVAL because the directory
-/// is actively in use. The pivot strategy works around this:
+/// A directory being actively in use does not block an overlay mount, so the
+/// pivot is not a workaround for that. It is the fallback used when a direct
+/// mount is rejected for another reason: mount the overlay on a staging path and
+/// bind-mount it over the target.
 /// 1. Mount overlay to staging location (e.g., `/mnt/nails-pivot/var`)
 /// 2. Bind mount staging to target (e.g., `/var`)
 ///
 /// This creates a "split view":
-/// - Existing processes with open FDs see original content
-/// - New path resolutions see overlay content
+/// - Existing processes with open FDs keep reading *and writing* the original
+///   decoy content underneath the overlay — a leak, not a benefit.
+/// - New path resolutions see overlay content.
+///
+/// The same split affects pre-existing processes under a direct mount, so the
+/// method itself carries no security guarantee.
 ///
 /// # Fields
 ///

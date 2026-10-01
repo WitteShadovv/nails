@@ -16,7 +16,7 @@ impl<F: Filesystem> NailsManager<F> {
         verbosity: Verbosity,
         direct_mounts: &mut usize,
         pivot_mounts: &mut usize,
-        pivot_targets: &mut Vec<PathBuf>,
+        leaking_targets: &mut Vec<PathBuf>,
     ) -> Result<()> {
         // Auto mode: enumerate root + apply exclusions, create overlays dynamically
         let overlay_targets = build_overlay_targets(&self.filesystem, &self.config)?;
@@ -147,7 +147,7 @@ impl<F: Filesystem> NailsManager<F> {
                         verbosity,
                         direct_mounts,
                         pivot_mounts,
-                        pivot_targets,
+                        leaking_targets,
                         &mut nix_overlay_succeeded,
                     )?;
                 }

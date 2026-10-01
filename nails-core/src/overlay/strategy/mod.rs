@@ -2,9 +2,10 @@
 //!
 //! Implements a 4-phase algorithm to mount overlays intelligently:
 //! 1. Detect blocking processes
-//! 2. Classify and restart safe/risky processes
-//! 3. Attempt direct mount (optimal security)
-//! 4. Fall back to pivot mount if needed (with user consent)
+//! 2. Classify and restart safe/risky processes (the ones left running are the
+//!    security-relevant signal — they keep writing to the decoy)
+//! 3. Attempt a direct mount
+//! 4. Fall back to a pivot mount if the direct mount is rejected (with consent)
 
 use crate::{Filesystem, NailsError, Result};
 use nix::errno::Errno;
@@ -52,8 +53,8 @@ fn restart_services_after_failure(services: &[String]) {
 ///
 /// 1. **Phase 1: Detect** - Find processes using target directory
 /// 2. **Phase 2: Classify & Restart** - Classify processes and restart safe/risky ones
-/// 3. **Phase 3: Direct Mount** - Attempt optimal direct overlay mount
-/// 4. **Phase 4: Pivot Fallback** - Use pivot mount as last resort (with user consent)
+/// 3. **Phase 3: Direct Mount** - Attempt a direct overlay mount
+/// 4. **Phase 4: Pivot Fallback** - Use a pivot mount as last resort (with user consent)
 ///
 /// # Arguments
 ///
@@ -71,10 +72,15 @@ fn restart_services_after_failure(services: &[String]) {
 ///
 /// # Security Implications
 ///
-/// **Direct mount** provides optimal security - all processes see unified view.
-/// **Pivot mount** creates split-view behavior where old processes continue writing
-/// to original filesystem while new processes see overlay. User must explicitly
-/// accept this security degradation.
+/// The security posture is determined by surviving writers, not by the mount
+/// method. A process that opened the target before the mount keeps resolving the
+/// original inode and keeps writing to the decoy lower tree under **both** a
+/// direct and a pivot mount; a direct mount does not give those pre-existing
+/// processes a "unified view". The algorithm therefore minimises leakage by
+/// restarting writers in Phase 2, and reports any writer it could not restart
+/// via [`MountResult::surviving_writers`]. A pivot mount is only accepted after
+/// explicit user consent because it is the point at which a busy, still-referenced
+/// target is overlaid anyway.
 ///
 /// # Example
 ///
@@ -96,8 +102,14 @@ fn restart_services_after_failure(services: &[String]) {
 /// )?;
 ///
 /// match result.method {
-///     MountMethod::Direct => println!("✓ Optimal security: direct mount"),
-///     MountMethod::Pivot => println!("⚠️  Degraded security: pivot mount"),
+///     MountMethod::Direct => println!("Mounted directly"),
+///     MountMethod::Pivot => println!("Mounted via the pivot fallback"),
+/// }
+/// if result.surviving_writers > 0 {
+///     println!(
+///         "⚠️  {} writer(s) still reference the decoy",
+///         result.surviving_writers
+///     );
 /// }
 /// # Ok::<(), nails_core::NailsError>(())
 /// ```
@@ -154,6 +166,9 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
         return Ok(MountResult {
             method: MountMethod::Pivot,
             stopped_services: Vec::new(),
+            // Snapshot pivot is used for filesystems with no active writers, so
+            // there is nothing left referencing the target.
+            surviving_writers: 0,
         });
     }
 
@@ -166,6 +181,9 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
                 return Ok(MountResult {
                     method: MountMethod::Direct,
                     stopped_services: Vec::new(),
+                    // Process detection is skipped in this mode, so no survivors
+                    // are tracked.
+                    surviving_writers: 0,
                 });
             }
             Err(e) => {
@@ -184,6 +202,10 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
 
     let blocking = detect_processes_using(target)?;
     let mut stopped_services: Vec<String> = Vec::new();
+    // Count of write-capable processes left referencing the target after Phase 2.
+    // These keep writing to the decoy lower tree regardless of the mount method,
+    // so this — not Direct-vs-Pivot — is what degrades the security posture.
+    let mut surviving_writers = 0usize;
 
     if blocking.is_empty() {
         tracing::info!("  Found 0 processes ✓");
@@ -243,26 +265,37 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
             );
         }
 
-        // Restart Safe processes automatically
-        if !to_restart_safe.is_empty() && options.auto_restart_safe {
-            tracing::info!(
-                count = to_restart_safe.len(),
-                "  Restarting {} safe processes...",
-                to_restart_safe.len()
-            );
-            let results = restart_processes(&to_restart_safe)?;
-            for result in &results {
-                if result.stopped_successfully
-                    && let Some(ref svc) = result.info.service_name
-                {
-                    stopped_services.push(svc.clone());
+        // Restart Safe processes automatically. A safe process that is restarted
+        // stops writing to the decoy; one that fails to stop, or is left running
+        // because auto-restart is disabled, keeps writing and counts as a survivor.
+        if !to_restart_safe.is_empty() {
+            if options.auto_restart_safe {
+                tracing::info!(
+                    count = to_restart_safe.len(),
+                    "  Restarting {} safe processes...",
+                    to_restart_safe.len()
+                );
+                let results = restart_processes(&to_restart_safe)?;
+                for result in &results {
+                    if result.stopped_successfully {
+                        if let Some(ref svc) = result.info.service_name {
+                            stopped_services.push(svc.clone());
+                        }
+                    } else {
+                        surviving_writers += 1;
+                    }
                 }
+            } else {
+                surviving_writers += to_restart_safe.len();
             }
         }
 
-        // Prompt for Risky processes
-        if !to_restart_risky.is_empty() && options.prompt_for_risky {
-            if prompt_risky_process_restart(&to_restart_risky)? {
+        // Prompt for Risky processes. Declining the prompt (or disabling it) leaves
+        // the risky writers running, so they also count as survivors.
+        if !to_restart_risky.is_empty() {
+            let restart_risky =
+                options.prompt_for_risky && prompt_risky_process_restart(&to_restart_risky)?;
+            if restart_risky {
                 tracing::info!(
                     count = to_restart_risky.len(),
                     "  Restarting {} risky processes...",
@@ -270,25 +303,31 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
                 );
                 let results = restart_processes(&to_restart_risky)?;
                 for result in &results {
-                    if result.stopped_successfully
-                        && let Some(ref svc) = result.info.service_name
-                    {
-                        stopped_services.push(svc.clone());
+                    if result.stopped_successfully {
+                        if let Some(ref svc) = result.info.service_name {
+                            stopped_services.push(svc.clone());
+                        }
+                    } else {
+                        surviving_writers += 1;
                     }
                 }
             } else {
-                tracing::info!("  User declined restart, processes remain active");
+                surviving_writers += to_restart_risky.len();
+                tracing::info!("  Risky processes remain active (not restarted)");
             }
         }
 
-        // Warn about processes that cannot restart
+        // Processes that cannot be restarted at all keep writing to the decoy.
         if !cannot_restart.is_empty() {
+            surviving_writers += cannot_restart.len();
             tracing::warn!(
                 count = cannot_restart.len(),
                 "  ⚠️  {} processes cannot be restarted",
                 cannot_restart.len()
             );
-            tracing::warn!("  Direct overlay mount may fail. Pivot mount may be needed.");
+            tracing::warn!(
+                "  These writers will keep referencing the decoy lower tree after the mount."
+            );
         }
     }
 
@@ -311,6 +350,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
             return Ok(MountResult {
                 method: MountMethod::Direct,
                 stopped_services,
+                surviving_writers,
             });
         }
         Err(e) => match &e {
@@ -335,10 +375,12 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
         },
     }
 
-    // ========== Phase 4: Pivot Mount Fallback (busy directory) ==========
+    // ========== Phase 4: Pivot Mount Fallback ==========
     //
-    // Reached only when direct mount failed on a compatible filesystem (busy dir).
-    // This creates split-view behavior — respect --no-pivot and prompt user.
+    // Reached only when the direct mount was rejected on a compatible filesystem
+    // (EINVAL/EBUSY/EOPNOTSUPP). The pivot overlays the target anyway, so any
+    // pre-existing writer keeps leaking to the decoy under it — respect --no-pivot
+    // and prompt for consent.
 
     tracing::warn!("[Phase 4: Fallback] Direct mount failed, pivot mount required...");
 
@@ -392,5 +434,6 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     Ok(MountResult {
         method: MountMethod::Pivot,
         stopped_services,
+        surviving_writers,
     })
 }

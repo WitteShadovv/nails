@@ -21,16 +21,23 @@ fn cleanup_empty_directory<F: Filesystem>(fs: &F, path: &Path) {
 
 /// Mount an overlay using the pivot strategy for active directories
 ///
-/// This function enables overlaying directories like `/var` that are actively in use.
-/// Direct overlay mount fails with EINVAL, so we use a two-step approach:
+/// A busy directory does not block an overlay mount, so this is not a workaround
+/// for a mount that cannot otherwise happen. It is the fallback used when a direct
+/// mount is rejected for another reason: the overlay is mounted on a staging path
+/// and bind-mounted over the target in two steps:
 /// 1. Mount overlay to staging location (`/mnt/nails-pivot/var`)
 /// 2. Bind mount staging to target (`/var`)
 ///
 /// # Process Impact (Split View)
 ///
-/// - **Existing processes:** Keep seeing original content (forensically beneficial)
-/// - **New path resolutions:** See overlay content
-/// - This split behavior is a SECURITY FEATURE - old processes can't see hidden data
+/// - **Existing processes:** keep resolving the directory handle they opened
+///   before the mount, so they keep reading *and writing* the original decoy
+///   content underneath the overlay.
+/// - **New path resolutions:** see the overlay content.
+/// - This split view is a RISK, not a benefit: a pre-existing writer leaks hidden-
+///   session activity back into the decoy lower tree. The same split affects
+///   pre-existing processes under a direct mount too, so the mount method itself
+///   carries no security guarantee — the leak is in the surviving writers.
 ///
 /// # Arguments
 ///
