@@ -2,7 +2,11 @@
 # whole gate takes seconds on a warm store. The VM tests are deliberately not
 # here (they live under legacyPackages.x86_64-linux.e2e), and the Rust gate
 # stays cargo-native in CI.
-{ pkgs, e2eMetadata }:
+{
+  pkgs,
+  nails,
+  e2eMetadata,
+}:
 let
   inherit (pkgs) lib;
   fs = lib.fileset;
@@ -85,6 +89,19 @@ in
     tools = [ pkgs.zizmor ];
     script = "zizmor --offline --no-progress --color never .github";
   };
+
+  # The binary's source must hold only what cargo reads (sourceFiles in
+  # flake.nix): any other file would rebuild it, and rerun every VM test, on
+  # unrelated edits.
+  nails-source = pkgs.runCommandLocal "nails-source" { } ''
+    actual=$(cd ${nails.src} && LC_ALL=C ls -A)
+    expected=$(printf '%s\n' .cargo Cargo.lock Cargo.toml nails-cli nails-core rust-toolchain.toml)
+    if [ "$actual" != "$expected" ]; then
+      printf 'nails source holds:\n%s\nexpected exactly:\n%s\n' "$actual" "$expected" >&2
+      exit 1
+    fi
+    touch "$out"
+  '';
 
   # Validates the checked-in shard weights against the timeouts the test
   # derivations really use. Evaluating the metadata also runs the assertions

@@ -24,7 +24,8 @@
       pkgs = import nixpkgs { inherit system overlays; };
       inherit (pkgs) lib;
       targetTriple = "x86_64-unknown-linux-musl";
-      sourceDateEpoch = toString (self.lastModified or 1);
+      # Only the release archive records the commit time, as its file mtimes.
+      releaseSourceDateEpoch = toString (self.lastModified or 1);
       shortRev = self.shortRev or (self.dirtyShortRev or "dirty");
 
       # Native Rust toolchain pinned for local development.
@@ -48,17 +49,17 @@
         rustc = rustToolchainMusl;
       };
 
+      # Only what cargo reads. Every VM test embeds the binary, so any other
+      # file in here would rebuild the binary, and rerun every test, whenever
+      # it changed. checks.nails-source keeps it that way.
       sourceFiles = lib.fileset.toSource {
         root = ./.;
         fileset = lib.fileset.unions [
           ./Cargo.toml
           ./Cargo.lock
-          ./LICENSE
-          ./README.md
           (lib.fileset.maybeMissing ./.cargo)
           ./nails-cli
           ./nails-core
-          ./nix
           (lib.fileset.maybeMissing ./rust-toolchain.toml)
         ];
       };
@@ -116,8 +117,6 @@
 
         inherit (pkgsMusl) stdenv;
         strictDeps = true;
-        allowSubstitutes = false;
-        preferLocalBuild = true;
 
         cargoBuildFlags = [
           "--package"
@@ -130,7 +129,10 @@
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${pkgsMusl.stdenv.cc}/bin/${pkgsMusl.stdenv.cc.targetPrefix}cc";
 
         CARGO_INCREMENTAL = "0";
-        SOURCE_DATE_EPOCH = sourceDateEpoch;
+        # Nothing in the build reads it. A constant (stdenv's own fallback,
+        # 1980-01-01) keeps the derivation, and every VM test built on it,
+        # the same from one commit to the next.
+        SOURCE_DATE_EPOCH = "315532800";
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS = reproducibleRustFlags;
 
         doCheck = false;
@@ -158,7 +160,8 @@
               pkgs.gnutar
               pkgs.gzip
             ];
-            SOURCE_DATE_EPOCH = sourceDateEpoch;
+            SOURCE_DATE_EPOCH = releaseSourceDateEpoch;
+            # Assembled from the binary in seconds; fetching it saves nothing.
             allowSubstitutes = false;
             preferLocalBuild = true;
             meta = {
@@ -178,13 +181,13 @@
             mkdir -p "$stage_dir" "$out"
 
             install -m 0755 ${nails}/bin/nails "$stage_dir/nails"
-            install -m 0644 ${sourceFiles}/LICENSE "$stage_dir/LICENSE"
-            install -m 0644 ${sourceFiles}/README.md "$stage_dir/README.md"
+            install -m 0644 ${./LICENSE} "$stage_dir/LICENSE"
+            install -m 0644 ${./README.md} "$stage_dir/README.md"
 
             tar \
               --sort=name \
               --format=gnu \
-              --mtime="@${sourceDateEpoch}" \
+              --mtime="@${releaseSourceDateEpoch}" \
               --owner=0 \
               --group=0 \
               --numeric-owner \
@@ -229,7 +232,7 @@
       };
 
       checks.${system} = import ./nix/checks.nix {
-        inherit pkgs;
+        inherit pkgs nails;
         e2eMetadata = e2eTestMetadata;
       };
 
