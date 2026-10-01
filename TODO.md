@@ -258,7 +258,7 @@ Owns: `nix/e2e-tests/shard-durations.json`, `nix/checks.nix`, `.github/actions/s
 
 Owns: `Cargo.toml`, `nails-core/src/config/`, `nails-core/tests/path_properties.rs`, `nix/e2e-tests/default.nix`
 
-- [ ] **T-013: Switch configuration to strict TOML (nails.toml), remove dead knobs, add nails config path|show|validate** (high · effort L)
+- [x] **T-013: Switch configuration to strict TOML (nails.toml), remove dead knobs, add nails config path|show|validate** (high · effort L)
 
   **Problem:** `Config` (nails-core/src/config/types.rs:173) has no `deny_unknown_fields` and is parsed with pre-1.0 `serde-saphyr` 0.0.22 (Cargo.toml:31, loading.rs:132), so typos are dropped without a word. A misspelt `nixos_flake` falls back to the discovery cascade that includes /etc/nixos (activate/mod.rs:216-220). A misspelt root key falls back to the binary-derived root. `default_verbosity`, `color_output`, `milestone_tips` and `verify_on_deactivate` (types.rs:270-283, `CliOverrides` :105-119) are parsed and advertised, but nothing reads them. Preflight always rejects `extended_overlays` (overlay_compatibility.rs:75-87). The README uses `hidden_volume_root:`, but init writes an absolute `hidden_volume_path:` (init.rs:45, accepted only through the alias at types.rs:179), which breaks when the VeraCrypt mount point changes. A missing `--config` prints a stuttering error followed by a ~70-line example. `load_config_or_exit` (commands/mod.rs:40-53) exits on any parse error, so a bad config also blocks `nails emergency`. The discovery rustdoc (loading.rs:8-25) is stale.
 
@@ -287,7 +287,7 @@ Owns: `Cargo.toml`, `nails-core/src/config/`, `nails-core/tests/path_properties.
   - `nails config path|show|validate` work in human and `--json` modes (assert_cmd tests).
   - init e2e tests 45-47 pass with TOML output, and `cargo test` plus clippy are clean.
 
-- [ ] **T-014: Generated configuration reference kept in sync by a test; clean the example config text** (high · effort S)
+- [x] **T-014: Generated configuration reference kept in sync by a test; clean the example config text** (high · effort S)
 
   **Problem:** There is no configuration reference: of ~20 `Config` fields, only `hidden_volume_root` and `nixos_flake` appear in any .md file. `Config::example_config` (nails-core/src/config/loading.rs:193-262) is printed in user-facing errors and has several problems:
   - It advertises dead keys.
@@ -312,7 +312,7 @@ Owns: `Cargo.toml`, `nails-core/src/config/`, `nails-core/tests/path_properties.
   - The example config and init template parse with the strict loader.
   - `strings target/release/nails | grep -c 'Story '` prints 0.
 
-- [ ] **T-015: Reject unsafe configured paths (relative, .., symlinked root, option separators) and add property tests for containment and mountinfo parsing** (medium · effort M)
+- [x] **T-015: Reject unsafe configured paths (relative, .., symlinked root, option separators) and add property tests for containment and mountinfo parsing** (medium · effort M)
 
   **Problem:** Nothing validates configured paths. A relative root, `..` components and a symlinked hidden root are all accepted: e2e 10-permissions-security.nix:62-79 only prints "Note: ... accepted". Overlay options are joined with unescaped `,` and `:` (nails-core/src/filesystem/real/mount_ops.rs:23-34), so a path containing either character corrupts the mount options. /proc/mounts is split on whitespace without decoding octal escapes (mount_ops.rs:84-160). A root path with a space therefore reads as not mounted, and `unmount` returns Ok early (:55-58). Cargo.lock has no property-testing crate, and path and state tests are example-based only.
 
@@ -330,6 +330,8 @@ Owns: `Cargo.toml`, `nails-core/src/config/`, `nails-core/tests/path_properties.
   - The mountinfo round-trip property passes.
 
 - [ ] **T-016: Make E2E tests able to fail: fix tests that never boot, soft Note branches, and misleading self-documentation** (high · effort M)
+
+  _Status: partially done in wave 2 — the notify-dispatch tests 48, 50 and 51 are dedented so they boot the VM and exercise `nails notify-dispatch` instead of passing without running (Done-when #2). The rest needs Nix evaluation that cannot run in this sandbox and stays open under T-016: the default.nix VM-started prelude/assert (Done-when #1), the e2e soft-assertion lint, the hard-assertion rewrites of tests 03/06/09/10/33/64 (test 10 relies on the now-landed T-015 path rejection), and the Self-check/description cleanup._
 
   **Problem:**
   - **Tests that never boot:** in 48-notify-dispatch-signal-flow, 50-notify-malformed-signal and 51-notify-no-notify-send, the header sits at 4 spaces and the body at 8 (e.g. 50:20-29). Nix `''` stripping folds the body into the last interpolated helper, so `machine.start()` never runs (recorded 40/10/11 s). These are the only tests of `nails notify-dispatch`. Nothing detects a test that never starts a VM.
@@ -408,7 +410,7 @@ Owns: `nails-core/src/manager/activation/rollback.rs`, `nails-core/src/emergency
 
 Owns: `nails-core/src/filesystem/mock/operations_profiles.rs`, `nails-core/src/filesystem/real/mod.rs`, `nails-core/tests/real_filesystem.rs`
 
-- [ ] **T-019: Trim the Filesystem god-trait: delete zero-call methods, return owned types, replace the fat test fake** (medium · effort L)
+- [x] **T-019: Trim the Filesystem god-trait: delete zero-call methods, return owned types, replace the fat test fake** (medium · effort L)
 
   **Problem**
   `Filesystem` (`nails-core/src/filesystem/traits/mod.rs:32`) is a 45-method trait mixing overlay mount, swap, generic file I/O, NixOS profile build/switch, and process detection. Six methods have no production callers: `nixos_build_profile`, `nixos_switch_profile`, `nixos_get_current_profile`, `nixos_profile_exists` (its only caller is the dead `nixos_switch_profile`, `real/system_ops.rs:52`), `swap_disable`, and `read_directory`. Their real-filesystem tests shell out to the host: `swapoff -a` as root (`tests/real_filesystem.rs:208`) and `nixos-rebuild build --profile` (`tests/real_filesystem.rs:267`/`:532`, which only "pass" because `--profile` is rejected as an invalid flag). `swap_disable` having no caller means swap is detected but never disabled. `read_directory` returns `Vec<std::fs::DirEntry>` (`:225`), which is un-mockable — the mock returns "not fully implemented" (`mock/operations_files.rs:212`) — and `modified_time` leaks `chrono::DateTime` (`:231`). `status/tests.rs:11-164` is a ~150-line `FailingMountCheckFilesystem` that re-delegates all 45 methods just to override `is_mounted`.

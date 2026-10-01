@@ -25,6 +25,11 @@ during the current alpha phase.
   running fails fast with the running operation's PID.
 - A fast privileged overlay and teardown integration test tier, run in a required mount-namespace
   CI job, with a development guide for running it locally.
+- The `nails config path|show|validate` subcommands to locate, inspect and check the configuration
+  file; `show` reports the effective value and source (default/file/cli/derived) for each key in
+  human or `--json` form, and `show --example` prints every key.
+- `docs/configuration.md`, a configuration reference kept in step with the code by a test, listing
+  every key with its type, default and effect and documenting the overlay exclusion rules.
 
 ### Changed
 
@@ -60,6 +65,10 @@ during the current alpha phase.
   `systemctl`, `loginctl`, `kill` and `cp` are resolved from fixed system directories (NixOS
   profile, then `/usr/sbin`, `/usr/bin`, `/sbin`, `/bin`) instead of a hardcoded NixOS path or the
   caller's `PATH`; directory sizing and `sync` run in-process.
+- Configuration is now strict TOML (`config/nails.toml` next to the binary) instead of YAML: unknown
+  keys are rejected with a did-you-mean hint, and a missing or invalid `--config` file makes
+  `activate`, `status`, `verify` and the `config` subcommands print a single error line and exit 3,
+  while `emergency` and `deactivate` warn once and continue with binary-derived defaults.
 
 ### Removed
 
@@ -72,6 +81,10 @@ during the current alpha phase.
   advisories are now covered entirely by cargo-deny.
 - The `NAILS_E2E_SYSTEM` and `NAILS_E2E_VM_*` environment overrides, the `apps.e2e-test-interactive`
   output, the `checks.*.e2e-*` mapping, and the nix-community binary cache.
+- The `extended_overlays` and ephemeral-overlay configuration features, the `hidden_volume_path`
+  alias, the `nails config show --no-preflight` preview, and the `default_verbosity`, `color_output`,
+  `milestone_tips`, `verify_on_deactivate`, `preflight_checks`, `max_log_size_mb` and `retention_days`
+  keys (none of which had any effect); `/Downloads` is also no longer a default overlay exclusion.
 
 ### Fixed
 
@@ -89,6 +102,9 @@ during the current alpha phase.
 
 - `unmount` refuses any mount NAILS did not create, so stale state can no longer lazily force-detach
   a real `/home`, `/nix`, or `/boot`.
+- Configured paths in `nails.toml` are validated when the file is loaded: a relative or
+  non-normalized path, a `..` component, a symlinked or out-of-root hidden volume, and a `,` or `:`
+  in an overlay path are each rejected with a specific error.
 
 ## [0.2.0] - 2026-05-08
 
