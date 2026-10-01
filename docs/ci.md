@@ -9,6 +9,7 @@ This repository is public. The CI and release workflows are written for a public
 | Workflow | Purpose | Triggers |
 |---|---|---|
 | `.github/workflows/ci.yml` | Primary quality gate for Rust code, coverage, dependency policy, SBOM generation, flaky-test detection, and benchmark enforcement | Push to `main`/`dev`, PRs targeting `main`/`dev`, weekly schedule, manual dispatch |
+| `.github/workflows/scheduled.yml` | Weekly maintenance checks that never gate a merge: the full-graph dependency policy scan (`just deny-full`) and the `deny.toml` ignore expiry check | Weekly schedule, manual dispatch |
 | `.github/workflows/forensics-eval-regression.yml` | Cheap non-privileged forensics regression lane covering Python tests plus a fixture-backed smoke run | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
 | `.github/workflows/e2e-tests.yml` | Nix-based smoke validation for the fast CI E2E subset | Push/PR to `dev` with path filters, manual dispatch |
 | `.github/workflows/e2e-tests-full.yml` | Full Hetzner-backed E2E suite for trusted manual runs and PR runs gated by native GitHub environment approval | `pull_request_target` to `main` with path filters, manual dispatch |
@@ -28,7 +29,7 @@ This repository is public. The CI and release workflows are written for a public
 The main CI workflow runs these jobs:
 
 1. **Lint & Format** — `cargo fmt`, `cargo clippy`, and the Rust file length check.
-2. **Security Audit** — `cargo audit` plus `cargo deny check advisories licenses bans sources`.
+2. **Dependency Policy** — `just deny` (cargo-deny over the shipped dependency graph): bans, licenses and sources on every run; advisories and the `deny.toml` ignore expiry check only when `Cargo.toml`, `Cargo.lock` or `deny.toml` change, or on manual runs.
 3. **Tests** — `cargo nextest run` across four shards.
 4. **Coverage Enforcement** — `cargo llvm-cov` with an **85%** line-coverage threshold.
 5. **SBOM Generation** — CycloneDX 1.6 JSON via `cargo sbom`, validated with `cyclonedx-cli`.
@@ -41,6 +42,7 @@ The main CI workflow runs these jobs:
 
 - `ci-success` is the branch-protection-friendly summary job.
 - **Burn-in** and **benchmarks** are intentionally conditional. A skipped job does not fail `ci-success`; a failed conditional job does.
+- **Advisories gate dependency changes only.** A newly published RustSec advisory does not fail unrelated PRs or `main`; the weekly `just deny-full` run in `scheduled.yml` reports it, including advisories for crates that never ship (other targets, dev-dependencies). See [security-validation.md](security-validation.md#dependency-policy).
 - **E2E tests are not folded into `ci-success`.** They run in their own workflow when relevant source, Nix, or manifest files change.
 - **Nix release-path verification is also separate.** `nix-pr-verify.yml` is the dedicated check for the exact release derivation used by the release workflow.
 
@@ -203,8 +205,7 @@ GitHub artifact attestations are generated in the release workflow when reposito
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo audit
-cargo deny check advisories licenses bans sources
+just deny
 cargo nextest run --no-fail-fast --status-level all
 cargo llvm-cov --all-features --workspace --all-targets --cobertura --output-path ./coverage/cobertura.xml
 nix build -L .#nails-release -o result --option accept-flake-config false

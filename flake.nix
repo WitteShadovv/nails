@@ -233,7 +233,7 @@
             deadnix
             statix
             shellcheck
-            cargo-audit
+            just
             cargo-deny
             cargo-tarpaulin
             cargo-llvm-cov

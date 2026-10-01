@@ -4,36 +4,51 @@
 # This configuration enforces dependency policies for a security-critical,
 # GPL-3.0 licensed Rust application.
 #
-# Usage:
-#   cargo deny check         - Run all checks
-#   cargo deny check bans    - Check dependency bans only
-#   cargo deny check license - Check license compliance only
-#   cargo deny check sources - Check dependency sources only
-#   cargo deny check advisories - Check security advisories only
+# The policy is checked at two scopes, both defined in the justfile (the tools
+# come from `nix develop`):
+#
+#   just deny        The shipped graph: the x86_64 Linux release targets
+#                    without dev-dependencies. This is the merge gate in CI.
+#   just deny-full   Every target and every dev-dependency. Runs weekly in
+#                    .github/workflows/scheduled.yml and never blocks a merge.
+#
+# Both take the checks to run, e.g. `just deny advisories`. A plain
+# `cargo deny check` uses the full scope.
+#
+# The scope is chosen on the command line rather than in a [graph] section:
+# `--target` replaces a configured target list and there is no value meaning
+# "every target", so a target list here would also hide wasm-only and
+# other-platform crates from the full scan.
 
 # =============================================================================
 # ADVISORIES
 # =============================================================================
-# Checks for known security vulnerabilities in dependencies
-# Similar to cargo-audit but integrated with other checks
+# Known vulnerabilities, unmaintained crates, unsound APIs and yanked releases.
+# The advisory database is cargo-deny's default: RustSec, cloned under
+# $CARGO_HOME/advisory-dbs.
 
 [advisories]
-# The path where the advisory database is cloned/fetched into
-db-path = "~/.cargo/advisory-db"
-
-# URL(s) to the advisory database's git repository
-db-urls = ["https://github.com/rustsec/advisory-db"]
-
-# SECURITY-CRITICAL: Fail on any known vulnerability
-# Modern cargo-deny uses severity-threshold instead of individual fields
-# The unmaintained field specifies what to check for unmaintained status
+# SECURITY-CRITICAL: vulnerability advisories always fail, at any depth.
+# Unmaintained and unsound advisories fail for transitive dependencies too.
+# Crates that never ship are left out by the graph scope of `just deny`, not
+# by narrowing these settings, so `just deny-full` still reports them.
+# `unsound` needs cargo-deny 0.19 or newer.
 unmaintained = "all"
+unsound = "all"
 
 # SECURITY-CRITICAL: Fail on yanked crates (often yanked due to issues)
 yanked = "deny"
 
-# Specific advisories to ignore (use sparingly and document why)
-# Example: ignore = ["RUSTSEC-2020-0001"]
+# Advisories to ignore. Use sparingly: every entry needs a reason and a
+# "# expires: YYYY-MM-DD" line in the comment block directly above it, at most
+# 180 days ahead, so the exception is re-evaluated before it goes stale.
+# ci/deny_ignores.py enforces this. For example:
+#
+#   ignore = [
+#       # Only reachable from the benchmarks; drop once criterion updates.
+#       # expires: 2027-01-31
+#       { id = "RUSTSEC-0000-0000", reason = "dev-only, never shipped" },
+#   ]
 ignore = []
 
 # =============================================================================
@@ -119,11 +134,7 @@ external-default-features = "allow"
 
 # Allow specific duplicates that are known and acceptable
 # Document why each skip is needed
-skip = [
-    # colored uses windows-sys 0.59.0, while clap uses 0.61.2
-    # This will resolve when colored updates its dependency
-    { name = "windows-sys", version = "=0.59.0" },
-]
+skip = []
 
 # Tree of crates to skip completely (including all transitive deps)
 skip-tree = []

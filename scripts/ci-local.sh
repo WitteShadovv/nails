@@ -5,7 +5,7 @@
 #
 # Full CI stages (see .github/workflows/ci.yml):
 #   1. Lint & format (cargo fmt, clippy, 500-line check)
-#   2. Security audit (cargo audit, cargo deny)
+#   2. Dependency policy (just deny)
 #   3. Test execution (cargo nextest, sharded 4-way in CI)
 #   4. Coverage enforcement (cargo llvm-cov, 85% threshold)
 #   5. SBOM generation (cargo sbom + CycloneDX validation)
@@ -15,7 +15,7 @@
 #
 # This script runs:
 #   1. Lint & format (including 500-line check)
-#   2. Security audit (cargo audit + cargo deny)
+#   2. Dependency policy (just deny)
 #   3. Tests (cargo test, single process — no nextest sharding)
 #   4. Coverage (cargo llvm-cov, 85% threshold)
 #   5. Burn-in (3 iterations — reduced from CI's 10)
@@ -71,33 +71,23 @@ fi
 
 echo ""
 
-# Stage 2: Security Audit
+# Stage 2: Dependency Policy
 echo "================================================"
-echo "Stage 2: Security Audit"
+echo "Stage 2: Dependency Policy"
 echo "================================================"
 
-echo -e "${YELLOW}>${NC} Running cargo audit..."
-if command -v cargo-audit &> /dev/null; then
-    if cargo audit; then
-        echo -e "${GREEN}ok${NC} Security audit passed"
-    else
-        echo -e "${RED}FAIL${NC} Security audit found vulnerabilities"
-        exit 1
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC} cargo-audit not installed (cargo install cargo-audit --locked)"
-fi
-
-echo -e "${YELLOW}>${NC} Running cargo deny..."
-if command -v cargo-deny &> /dev/null; then
-    if cargo deny check advisories && cargo deny check licenses && cargo deny check bans && cargo deny check sources; then
+# Unlike CI, this always checks advisories and the deny.toml ignore expiry,
+# so a local run surfaces everything that would block a dependency change.
+echo -e "${YELLOW}>${NC} Running just deny..."
+if command -v just &> /dev/null && command -v cargo-deny &> /dev/null; then
+    if just deny && python3 ci/deny_ignores.py; then
         echo -e "${GREEN}ok${NC} Dependency policy check passed"
     else
         echo -e "${RED}FAIL${NC} Dependency policy check failed"
         exit 1
     fi
 else
-    echo -e "${YELLOW}SKIP${NC} cargo-deny not installed (cargo install cargo-deny --locked)"
+    echo -e "${YELLOW}SKIP${NC} just or cargo-deny not installed (run inside nix develop)"
 fi
 
 echo ""
@@ -208,7 +198,7 @@ echo "================================================"
 echo ""
 echo "Summary:"
 echo "  ok  Formatting & Clippy & Line Count"
-echo "  ok  Security Audit (cargo audit + cargo deny)"
+echo "  ok  Dependency Policy (just deny)"
 echo "  ok  Unit & Integration Tests"
 echo "  ok  Coverage (${COVERAGE_THRESHOLD}%)"
 echo "  ok  Burn-in (3 iterations)"

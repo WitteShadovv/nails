@@ -110,22 +110,22 @@ repos:
           - --
 
       # Rust testing and quality checks (TDD enforcement)
-      # Security auditing: Scans Cargo.lock for known vulnerabilities (AR50)
-      # Fails on high/critical severity vulnerabilities before commit
-      - id: cargo-audit
-        name: Cargo Security Audit
-        entry: cargo audit
-        language: system
-        pass_filenames: false
-
-      # Comprehensive dependency policy enforcement (AR50)
-      # Checks licenses, bans, sources, and advisories
+      # Dependency policy (advisories, bans, licenses, sources) over the
+      # shipped dependency graph: the same scope as the CI merge gate
       - id: cargo-deny
         name: Cargo Dependency Policy Check
-        entry: cargo deny check
+        entry: just deny
         language: system
         pass_filenames: false
         files: (Cargo\.toml|Cargo\.lock|deny\.toml)$
+
+      # Every deny.toml advisory ignore needs a current "# expires:" date
+      - id: deny-ignores
+        name: deny.toml ignore expiry
+        entry: python3 ci/deny_ignores.py
+        language: system
+        pass_filenames: false
+        files: ^deny\.toml$
 
       - id: check-line-count
         name: Enforce 500-line limit on Rust files

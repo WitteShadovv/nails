@@ -1,0 +1,60 @@
+name: Scheduled
+
+# Weekly maintenance checks. They watch for problems that appear without a
+# change to this repository, such as new advisories, and never affect pull
+# request checks.
+
+on:
+  schedule:
+    # Mondays at 03:00 UTC
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Full-graph scan: every target and every dev-dependency, including the
+  # crates that the merge gate in ci.yml deliberately leaves out.
+  advisories-full:
+    name: Dependency Policy (full graph)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      # cargo-deny reads the graph through `cargo metadata`; without
+      # arguments rustup installs the toolchain pinned in rust-toolchain.toml
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install policy tools
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: cargo-deny@0.19.1,just@1.49.0
+          fallback: none
+
+      - name: Check every target and dev-dependency
+        run: just deny-full
+
+  deny-ignore-expiry:
+    name: deny.toml ignore expiry
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Check that no advisory ignore has expired
+        run: python3 ci/deny_ignores.py

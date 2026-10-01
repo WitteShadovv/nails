@@ -50,16 +50,24 @@ jobs:
       - name: Enforce 500-line limit on Rust files
         run: ./scripts/check-line-count.sh
 
-  # Stage 2: Security audit for dependency vulnerabilities
+  # Stage 2: Dependency policy (cargo-deny) over the shipped dependency graph.
+  # The full graph, dev-dependencies and other targets included, is scanned
+  # weekly by scheduled.yml and never gates a merge.
   audit:
-    name: Security Audit
+    name: Dependency Policy
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: lint
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          # Full history, so a push can be diffed against its previous tip
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
@@ -71,28 +79,48 @@ jobs:
         with:
           shared-key: "audit"
 
-      - name: Install audit tools
+      - name: Install policy tools
         uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
         with:
-          tool: cargo-audit@0.22.0,cargo-deny@0.18.9
+          tool: cargo-deny@0.19.1,just@1.49.0
           fallback: none
 
-      - name: Generate audit report (JSON)
+      # Advisory results follow the RustSec database, not this repository, so
+      # only a change to the dependencies or their policy is gated on them.
+      # An unknown base (new branch, force push, manual run) counts as a
+      # change; scheduled runs leave advisories to scheduled.yml.
+      - name: Detect dependency changes
+        id: deps
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
-          mkdir -p target
-          cargo audit --json > target/audit-report.json
+          case "$EVENT_NAME" in
+            pull_request) base=HEAD^1 ;; # first parent of the PR merge commit
+            push) base=$PUSH_BEFORE ;;
+            schedule) echo "changed=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            *) base= ;;
+          esac
+          if [ -n "$base" ] && git rev-parse -q --verify "$base^{commit}" >/dev/null &&
+            git diff --quiet "$base" HEAD -- Cargo.lock deny.toml ':(glob)**/Cargo.toml'; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Run dependency policy check (cargo-deny)
-        run: |
-          cargo deny check advisories licenses bans sources
+      - name: Check bans, licenses and sources
+        run: just deny bans licenses sources
 
-      - name: Upload audit results
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: audit-report
-          path: target/audit-report.json
-          retention-days: 30
+      - name: Test the deny.toml ignore expiry check
+        run: python3 -m unittest discover -s ci/tests -t .
+
+      - name: Check advisories
+        if: steps.deps.outputs.changed == 'true'
+        run: just deny advisories
+
+      - name: Check deny.toml ignore expiry
+        if: steps.deps.outputs.changed == 'true'
+        run: python3 ci/deny_ignores.py
 
   # Stage 3: Test execution with parallel sharding
   test:
@@ -468,7 +496,7 @@ jobs:
           fi
 
           if [[ "${{ needs.audit.result }}" != "success" ]]; then
-            echo "Security audit failed"
+            echo "Dependency policy check failed"
             exit 1
           fi
 

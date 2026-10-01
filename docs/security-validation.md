@@ -2,7 +2,7 @@
 
 **Project:** NAILS (NixOS Anti-forensics Isolation & Layering System)
 
-This guide documents the security validation mechanisms that are actually in use in this public repository: SBOM generation, dependency auditing, deterministic release verification, SLSA provenance, and GitHub artifact attestations.
+This guide documents the security validation mechanisms that are actually in use in this public repository: SBOM generation, dependency policy checks, deterministic release verification, SLSA provenance, and GitHub artifact attestations.
 
 ## Validation surfaces
 
@@ -10,12 +10,18 @@ This guide documents the security validation mechanisms that are actually in use
 
 The primary CI workflow performs:
 
-- `cargo audit`
-- `cargo deny check advisories licenses bans sources`
+- the dependency policy over the shipped dependency graph (`just deny`): bans, licenses and sources on every run; RustSec advisories and the `deny.toml` ignore expiry check when `Cargo.toml`, `Cargo.lock` or `deny.toml` change
 - CycloneDX SBOM generation with `cargo sbom`
 - SBOM schema validation with `cyclonedx-cli`
 - `cargo geiger` unsafe-code reporting
 - test, coverage, and burn-in execution that support security-sensitive change control
+
+### Weekly (`.github/workflows/scheduled.yml`)
+
+The scheduled workflow never gates a merge. It runs:
+
+- the dependency policy over every target and dev-dependency (`just deny-full`)
+- the `deny.toml` ignore expiry check
 
 ### In release automation (`.github/workflows/release-core.yml`)
 
@@ -56,25 +62,42 @@ cyclonedx validate --input-file sbom.cdx.json --input-format json
 grype sbom:sbom.cdx.json
 ```
 
-## Dependency auditing
+## Dependency policy
 
-### RustSec and policy checks
+`deny.toml` holds the cargo-deny policy: RustSec advisories (vulnerabilities, unmaintained and unsound crates, yanked releases), bans, licenses and sources. The `justfile` checks it at two scopes:
 
-Install locally:
+| Recipe | Scope | Where it runs |
+|---|---|---|
+| `just deny` | The shipped graph: the x86_64 Linux release targets without dev-dependencies | Merge gate in `ci.yml`, pre-commit, `scripts/ci-local.sh` |
+| `just deny-full` | Every target and every dev-dependency | Weekly in `scheduled.yml`; never blocks a merge |
 
-```bash
-cargo install cargo-audit --locked
-cargo install cargo-deny --locked
+Both recipes take the checks to run, for example `just deny advisories`.
+
+In CI, bans, licenses and sources are checked on every run. Advisories are checked when `Cargo.toml`, `Cargo.lock` or `deny.toml` change, and on manual runs. Advisory results follow the RustSec database rather than the change under review, so a newly published advisory does not turn unrelated pull requests or `main` red; the weekly full-graph scan reports it instead. Crates that never ship, such as wasm-only crates or benchmark dependencies, are outside the merge gate and covered only by that scan.
+
+### Ignoring an advisory
+
+An ignore is a last resort. Each entry in `[advisories] ignore` needs a `reason` and a `# expires: YYYY-MM-DD` line in the comment block directly above it, at most 180 days ahead:
+
+```toml
+ignore = [
+    # Only reachable from the benchmarks; drop once criterion updates.
+    # expires: 2027-01-31
+    { id = "RUSTSEC-0000-0000", reason = "dev-only, never shipped" },
+]
 ```
 
-Run the same checks used in CI:
+`ci/deny_ignores.py` fails when an ignore has no expiry, a malformed one, or one that has passed. It runs in CI next to the advisory check, weekly in `scheduled.yml`, and as a pre-commit hook whenever `deny.toml` changes.
+
+### Run locally
+
+The tools come from the flake dev shell:
 
 ```bash
-cargo audit
-cargo deny check advisories licenses bans sources
+nix develop -c just deny        # the merge gate
+nix develop -c just deny-full   # the weekly full-graph scan
+python3 ci/deny_ignores.py
 ```
-
-These checks are merge-blocking in the main CI workflow.
 
 ## Deterministic release verification
 
@@ -150,8 +173,7 @@ Useful local commands before opening or updating a PR:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo audit
-cargo deny check advisories licenses bans sources
+just deny
 cargo nextest run --no-fail-fast --status-level all
 cargo llvm-cov --all-features --workspace --all-targets --cobertura --output-path ./coverage/cobertura.xml
 ```
