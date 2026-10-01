@@ -124,8 +124,9 @@ fn test_verify_base_config_clean_success() {
         "{ config, pkgs, ... }: { }",
     )
     .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
 
-    let is_clean = verify_base_config_clean(&fs).unwrap();
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/hidden")).unwrap();
     assert!(is_clean, "Base config should be clean");
 }
 
@@ -133,7 +134,7 @@ fn test_verify_base_config_clean_success() {
 fn test_verify_base_config_clean_missing_file_is_treated_as_clean() {
     let fs = MockFilesystem::new();
 
-    let is_clean = verify_base_config_clean(&fs).unwrap();
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/hidden")).unwrap();
     assert!(is_clean, "Missing base config should be treated as clean");
 }
 
@@ -149,8 +150,9 @@ fn test_verify_base_config_clean_suspicious_hidden_path() {
         "{ fileSystems.\"/mnt/hidden\" = { }; }",
     )
     .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
 
-    let is_clean = verify_base_config_clean(&fs).unwrap();
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/hidden")).unwrap();
     assert!(
         !is_clean,
         "Base config should not be clean with /mnt/hidden"
@@ -168,8 +170,9 @@ fn test_verify_base_config_clean_detects_relative_nails_import() {
         "{ ... }: { imports = [ ./nails/configuration.nix ]; }",
     )
     .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
 
-    let is_clean = verify_base_config_clean(&fs).unwrap();
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/hidden")).unwrap();
     assert!(
         !is_clean,
         "Base config should not be clean with relative nails import"
@@ -187,8 +190,9 @@ fn test_verify_base_config_clean_detects_nails_token_without_spaces() {
         "{ config.nails.enable = true; }",
     )
     .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
 
-    let is_clean = verify_base_config_clean(&fs).unwrap();
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/hidden")).unwrap();
     assert!(
         !is_clean,
         "Base config should not be clean with dotted nails reference"
@@ -206,8 +210,9 @@ fn test_verify_base_config_clean_ignores_embedded_non_token_nails_text() {
         "{ networking.hostName = \"snails-box\"; }",
     )
     .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
 
-    let is_clean = verify_base_config_clean(&fs).unwrap();
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/hidden")).unwrap();
     assert!(
         is_clean,
         "Base config should remain clean when 'nails' only appears inside a larger token"
@@ -225,8 +230,9 @@ fn test_verify_base_config_clean_detects_hidden_keyword_boundary() {
         "{ boot.kernelParams = [ \"hidden\" ]; }",
     )
     .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
 
-    let is_clean = verify_base_config_clean(&fs).unwrap();
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/hidden")).unwrap();
     assert!(!is_clean, "Standalone hidden token should be flagged");
 }
 
@@ -241,12 +247,166 @@ fn test_verify_base_config_clean_detects_plausible_deniability_keywords() {
         "{ assertions = [ { message = \"plausible deniability\"; } ]; }",
     )
     .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
 
-    let is_clean = verify_base_config_clean(&fs).unwrap();
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/hidden")).unwrap();
     assert!(
         !is_clean,
         "Plausible deniability keywords should be flagged"
     );
+}
+
+#[test]
+fn test_verify_base_config_clean_flags_custom_mountpoint_root() {
+    let fs = MockFilesystem::new();
+    let base_config = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
+
+    // A fileSystems entry for the configured hidden root at a non-/mnt/hidden path.
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        &base_config,
+        "{ fileSystems.\"/mnt/vault\" = { device = \"/dev/disk/by-uuid/abcd\"; }; }",
+    )
+    .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
+
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/vault")).unwrap();
+    assert!(
+        !is_clean,
+        "A fileSystems entry for the configured hidden root must be flagged regardless of mount point"
+    );
+}
+
+#[test]
+fn test_verify_base_config_clean_flags_mapper_device_from_mountinfo() {
+    let fs = MockFilesystem::new();
+    let base_config = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
+
+    // The base config references the hidden volume's backing device at an
+    // unrelated mount point; only the mount table ties it to the hidden root.
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        &base_config,
+        "{ swapDevices = [ { device = \"/dev/mapper/vault\"; } ]; }",
+    )
+    .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
+
+    // mountinfo maps the configured hidden root to /dev/mapper/vault.
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        std::path::Path::new("/proc/self/mountinfo"),
+        "36 35 254:0 / /mnt/vault rw,relatime shared:1 - ext4 /dev/mapper/vault rw\n",
+    )
+    .unwrap();
+
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/vault")).unwrap();
+    assert!(
+        !is_clean,
+        "A reference to the hidden root's backing device must be flagged"
+    );
+}
+
+#[test]
+fn test_verify_base_config_clean_scans_imported_module() {
+    let fs = MockFilesystem::new();
+    let hardware = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
+    let module = std::path::PathBuf::from("/etc/nixos/modules/extra.nix");
+
+    // hardware-configuration.nix is clean, but an imported module is dirty.
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        &hardware,
+        "{ config, pkgs, ... }: { }",
+    )
+    .unwrap();
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        &module,
+        "{ imports = [ ./nails/configuration.nix ]; }",
+    )
+    .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&hardware, &module]);
+
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/hidden")).unwrap();
+    assert!(
+        !is_clean,
+        "A dirty imported module under /etc/nixos must be flagged"
+    );
+}
+
+#[test]
+fn test_verify_base_config_clean_skips_malformed_mountinfo_line() {
+    let fs = MockFilesystem::new();
+    let base_config = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
+
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        &base_config,
+        "{ swapDevices = [ { device = \"/dev/mapper/vault\"; } ]; }",
+    )
+    .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
+
+    // First line is malformed (no " - " separator); the second resolves the root.
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        std::path::Path::new("/proc/self/mountinfo"),
+        "garbage line without separator\n36 35 254:0 / /mnt/vault rw - ext4 /dev/mapper/vault rw\n",
+    )
+    .unwrap();
+
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/vault")).unwrap();
+    assert!(
+        !is_clean,
+        "A malformed mountinfo line must be skipped while a later valid line still resolves"
+    );
+}
+
+#[test]
+fn test_verify_base_config_clean_resolves_escaped_mountpoint() {
+    let fs = MockFilesystem::new();
+    let base_config = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
+
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        &base_config,
+        "{ swapDevices = [ { device = \"/dev/mapper/vault\"; } ]; }",
+    )
+    .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
+
+    // The mount point contains a space, written by the kernel as \040.
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        std::path::Path::new("/proc/self/mountinfo"),
+        "36 35 254:0 / /mnt/my\\040vault rw - ext4 /dev/mapper/vault rw\n",
+    )
+    .unwrap();
+
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/my vault")).unwrap();
+    assert!(
+        !is_clean,
+        "An octal-escaped mount point must resolve to the hidden root and flag its device"
+    );
+}
+
+#[test]
+fn test_verify_base_config_clean_allows_unrelated_filesystem_entry() {
+    let fs = MockFilesystem::new();
+    let base_config = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
+
+    // A normal, non-hidden fileSystems entry must not be flagged.
+    <MockFilesystem as Filesystem>::write_file_content(
+        &fs,
+        &base_config,
+        "{ fileSystems.\"/\" = { device = \"/dev/sda1\"; fsType = \"ext4\"; }; }",
+    )
+    .unwrap();
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
+
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/vault")).unwrap();
+    assert!(is_clean, "An unrelated fileSystems entry must stay clean");
 }
 
 #[test]

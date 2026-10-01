@@ -29,6 +29,11 @@ fn setup_nixos_config_check(fs: &MockFilesystem, hidden_root: &Path) {
         "/etc/nixos/hardware-configuration.nix",
         "{ config, lib, pkgs, ... }:\n{ }",
     );
+    fs.mock_set_files_with_pattern(
+        "/etc/nixos",
+        ".nix",
+        &[Path::new("/etc/nixos/hardware-configuration.nix")],
+    );
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
     fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
 
@@ -5914,6 +5919,11 @@ fn test_activation_aborts_when_base_hardware_config_is_dirty() {
         "/etc/nixos/hardware-configuration.nix",
         "{ config, lib, pkgs, ... }:\n{ imports = [ /mnt/hidden/nixos/configuration.nix ]; }",
     );
+    fs.mock_set_files_with_pattern(
+        "/etc/nixos",
+        ".nix",
+        &[Path::new("/etc/nixos/hardware-configuration.nix")],
+    );
 
     fs.mock_set_path_exists("/home", true);
     let upper_home = mock_hidden_vol.join("overlays/home/upper");
@@ -5977,6 +5987,11 @@ fn test_activation_aborts_when_base_hardware_config_cannot_be_read() {
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
     fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_files_with_pattern(
+        "/etc/nixos",
+        ".nix",
+        &[Path::new("/etc/nixos/hardware-configuration.nix")],
+    );
     fs.mock_set_path_exists("/home", true);
     let upper_home = mock_hidden_vol.join("overlays/home/upper");
     let work_home = mock_hidden_vol.join("overlays/home/work");

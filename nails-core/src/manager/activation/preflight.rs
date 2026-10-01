@@ -10,8 +10,10 @@ use crate::{
 };
 
 fn suspicious_check_name<F: Filesystem>() -> String {
-    <SuspiciousNailsReferenceCheck as PreFlightCheck<F>>::name(&SuspiciousNailsReferenceCheck)
-        .to_string()
+    <SuspiciousNailsReferenceCheck as PreFlightCheck<F>>::name(
+        &SuspiciousNailsReferenceCheck::default(),
+    )
+    .to_string()
 }
 
 impl<F: Filesystem> NailsManager<F> {
@@ -85,7 +87,8 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Suspicious-reference validation must happen before ANY activation side effects,
         // including pre-activation cleanup and config symlink staging.
-        let suspicious_check = SuspiciousNailsReferenceCheck;
+        let suspicious_check =
+            SuspiciousNailsReferenceCheck::new(self.config.hidden_volume_root.clone());
         match suspicious_check.run(&self.filesystem)? {
             crate::CheckResult::Pass(_) | crate::CheckResult::Warn(_) => {}
             crate::CheckResult::Fail(message) => {

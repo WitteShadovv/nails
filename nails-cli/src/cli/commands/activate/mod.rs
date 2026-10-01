@@ -25,7 +25,7 @@ use std::time::Instant;
 fn suspicious_check_name() -> String {
     <nails_core::SuspiciousNailsReferenceCheck as nails_core::PreFlightCheck<
         nails_core::RealFilesystem,
-    >>::name(&nails_core::SuspiciousNailsReferenceCheck)
+    >>::name(&nails_core::SuspiciousNailsReferenceCheck::default())
     .to_string()
 }
 
@@ -261,7 +261,9 @@ pub fn execute(
                 std::process::exit(2);
             }
 
-            let suspicious_check = nails_core::SuspiciousNailsReferenceCheck;
+            let suspicious_check = nails_core::SuspiciousNailsReferenceCheck::new(
+                mgr.config().hidden_volume_root.clone(),
+            );
             match suspicious_check.run(mgr.filesystem()) {
                 Ok(nails_core::CheckResult::Pass(_)) | Ok(nails_core::CheckResult::Warn(_)) => {}
                 Ok(nails_core::CheckResult::Fail(message)) => {
