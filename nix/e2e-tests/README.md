@@ -94,16 +94,18 @@ Use only:
 
 ## Running tests
 
-- One test directly: `nix build .#checks.x86_64-linux.e2e-basic-workflow --no-link -L`
+- One test directly: `nix build .#e2e.basic-workflow --no-link -L`
+- One group directly: `nix build .#e2e.smoke --no-link -L`
 - Runner, one test: `./scripts/run-e2e-tests.sh basic-workflow`
 - Runner, tag group: `./scripts/run-e2e-tests.sh smoke`
 - Runner, CI subset: `NAILS_E2E_DEFAULT_TARGET=ci ./scripts/run-e2e-tests.sh`
 - Runner, all tests: `./scripts/run-e2e-tests.sh all`
 - Resolve only / dry-run: `./scripts/run-e2e-tests.sh --dry-run ci`
-- Interactive: `nix run .#apps.x86_64-linux.e2e-test-interactive`
-- Specific interactive test: `scripts/run-e2e-tests.sh --interactive basic-workflow`
+- Interactive driver: `nix run .#e2e.basic-workflow.driverInteractive`, or `./scripts/run-e2e-tests.sh -i basic-workflow`
 
-The runner expands suites/groups such as `ci`, `all`, or tag names into concrete leaf tests using Nix metadata (`_testNames` and `_groups`) and then executes those leaf tests sequentially. Duplicate tests are removed in stable first-seen order, so mixed inputs such as `ci verify smoke` still run each resolved leaf test only once.
+The tests, one link farm per group, and the metadata live under `legacyPackages.x86_64-linux` (`e2e.<name>` and `e2e-metadata`), not under `checks`, so `nix flake check` stays a fast lint gate. The short `.#e2e.<name>` form resolves on x86_64-linux hosts; elsewhere use `.#legacyPackages.x86_64-linux.e2e.<name>` with an x86_64-linux builder.
+
+The runner expands suites/groups such as `ci`, `all`, or tag names into concrete leaf tests using the `e2e-metadata` output (`leafTests` and `groups`) and then executes those leaf tests sequentially. Duplicate tests are removed in stable first-seen order, so mixed inputs such as `ci verify smoke` still run each resolved leaf test only once.
 
 When `--shard-index/--shard-count` are used, `scripts/e2e_shard_weights.py plan` assigns the resolved tests to shards deterministically, balancing the checked-in weights in `nix/e2e-tests/shard-durations.json` (see [Timeouts and shard weights](#timeouts-and-shard-weights)). If that file is absent, tests are dealt round-robin. If the weights are unusable, the run stops instead of running an empty shard.
 
@@ -117,9 +119,9 @@ Default target selection is environment-aware:
 - `CI` or `GITHUB_ACTIONS` defaults to `ci`
 - `NAILS_E2E_DEFAULT_TARGET` overrides either default
 
-CI intentionally uses the runner instead of building the aggregate `e2e-ci` link farm directly so the workflow exercises the same suite expansion logic, emits per-leaf progress, and serializes execution in a CI-safe way.
+CI intentionally uses the runner instead of building the aggregate `e2e.ci` link farm directly so the workflow exercises the same suite expansion logic, emits per-leaf progress, and serializes execution in a CI-safe way.
 
-Inside a Python `testScript`, use `breakpoint()` for interactive debugging with `--interactive`.
+The interactive driver opens a Python prompt instead of running the test: `start_all()` boots the VMs, `test_script()` runs the whole test script and returns to the prompt, and `machine.shell_interact()` opens a shell in the guest. A `breakpoint()` in a `testScript` stops there when the script runs inside the interactive driver. `-i` takes exactly one leaf test; it refuses groups.
 
 ## Timeouts and shard weights
 
@@ -131,7 +133,7 @@ Inside a Python `testScript`, use `breakpoint()` for interactive debugging with 
 To regenerate the weights, download the `e2e-durations-shard-*` artifacts of one or more full runs (for example with `gh run download RUN_ID -p 'e2e-durations-shard-*'`), then run:
 
 ```sh
-nix eval --json .#e2e-test-metadata.x86_64-linux > meta.json
+nix eval --json .#legacyPackages.x86_64-linux.e2e-metadata > meta.json
 python3 scripts/e2e_shard_weights.py regen \
   --weights nix/e2e-tests/shard-durations.json \
   --metadata meta.json e2e-durations-shard-*/shard-*.jsonl
@@ -154,7 +156,7 @@ Do not violate:
 
 1. Place it under the correct `tests/<category>/` subfolder.
 2. Preserve numeric filename form: `NN-name.nix`.
-3. Set `name` and `meta.tags`, and add an estimated weight to `shard-durations.json` (refresh it from the next full run).
+3. Set `name` (it must differ from every group and tag name) and `meta.tags`, and add an estimated weight to `shard-durations.json` (refresh it from the next full run).
 4. Import shared helpers instead of duplicating Python.
 5. Use `with subtest(...)` for each logical phase.
 6. Verify with a direct `nix build` target before sending for review.

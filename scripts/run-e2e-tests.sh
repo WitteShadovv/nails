@@ -10,6 +10,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 E2E_SHARD_DURATION_WEIGHTS_FILE="$PROJECT_ROOT/nix/e2e-tests/shard-durations.json"
 E2E_SHARD_WEIGHTS_TOOL="$SCRIPT_DIR/e2e_shard_weights.py"
+# The flake builds its VM tests for x86_64-linux only. The full attribute path
+# also works from other hosts that have an x86_64-linux builder.
+E2E_FLAKE_PREFIX=".#legacyPackages.x86_64-linux"
 
 # Colors
 BLUE='\033[0;34m'
@@ -22,7 +25,6 @@ NC='\033[0m'
 AVAILABLE_TARGETS=()
 LEAF_TESTS=()
 declare -A LEAF_TEST_NODE_COUNTS=()
-SYSTEM="${NAILS_E2E_SYSTEM:-$(nix eval --impure --raw --expr builtins.currentSystem)}"
 INTERACTIVE=false
 VERBOSE=false
 DRY_RUN=false
@@ -69,7 +71,7 @@ load_e2e_metadata() {
 
     metadata_json="$({
         cd "$PROJECT_ROOT"
-        nix eval --json ".#e2e-test-metadata.$SYSTEM"
+        nix eval --json "$E2E_FLAKE_PREFIX.e2e-metadata"
     })"
 
     mapfile -t AVAILABLE_TARGETS < <(
@@ -368,7 +370,7 @@ print_usage() {
     echo ""
     echo "Options:"
     echo "  -h, --help              Show this help message and exit"
-    echo "  -i, --interactive       Run interactive test driver for debugging"
+    echo "  -i, --interactive       Start the interactive driver of one leaf test"
     echo "  -l, --list              List available tests"
     echo "  -v, --verbose           More verbose output"
     echo "      --dry-run           Print final resolved leaf tests without running"
@@ -508,7 +510,7 @@ run_single_test() {
         return 1
     fi
 
-    target=".#checks.$SYSTEM.e2e-$test_name"
+    target="$E2E_FLAKE_PREFIX.e2e.$test_name"
     node_count="$(leaf_test_node_count "$test_name")"
     compute_vm_cpu_plan "$node_count"
 
@@ -521,8 +523,8 @@ run_single_test() {
     start_time=$(date +%s)
 
     # nix/e2e-tests/lib/vm-config.nix intentionally reads NAILS_E2E_VM_CORES
-    # via builtins.getEnv, so the flake check evaluation for the actual test
-    # build must be explicitly impure for the computed per-VM core plan to take
+    # via builtins.getEnv, so the evaluation for the actual test build must be
+    # explicitly impure for the computed per-VM core plan to take
     # effect. Scope that impurity to the per-test build only.
     local nix_args=(build "$target" --no-link --impure)
     if [ "$VERBOSE" = true ]; then
@@ -600,25 +602,28 @@ run_tests() {
 }
 
 run_interactive() {
-    local test_name="${1:-}"
+    local test_name="$1"
+    local members
+    local member_list=()
+
+    if ! leaf_test_exists "$test_name"; then
+        if members="$(resolve_targets "$test_name" 2>/dev/null)"; then
+            if [[ -n "$members" ]]; then
+                mapfile -t member_list <<<"$members"
+            fi
+            echo -e "${RED}Error: $test_name is a group of ${#member_list[@]} tests; --interactive needs one leaf test (list them with --dry-run $test_name)${NC}" >&2
+        else
+            echo -e "${RED}Unknown leaf E2E test: $test_name${NC}" >&2
+        fi
+        exit 1
+    fi
 
     print_header
-    echo -e "${YELLOW}Launching interactive test driver...${NC}"
-    echo -e "${BLUE}Use 'exit' to quit the VM${NC}\n"
+    echo -e "${YELLOW}Launching the interactive driver for $test_name...${NC}"
+    echo -e "${BLUE}start_all() boots the VMs, test_script() runs the test, Ctrl-D quits.${NC}\n"
 
     cd "$PROJECT_ROOT"
-
-    if [ -n "$test_name" ]; then
-        if ! leaf_test_exists "$test_name"; then
-            echo -e "${RED}Unknown leaf E2E test: $test_name${NC}" >&2
-            exit 1
-        fi
-        echo "Running interactive test for: $test_name"
-        nix run ".#checks.$SYSTEM.e2e-$test_name" --interactive
-    else
-        echo "Running default interactive test driver"
-        nix run ".#apps.$SYSTEM.e2e-test-interactive"
-    fi
+    exec nix run "$E2E_FLAKE_PREFIX.e2e.$test_name.driverInteractive"
 }
 
 TEST_NAMES=()
@@ -681,8 +686,11 @@ if [ "$INTERACTIVE" = true ]; then
         echo -e "${RED}Error: sharding is not supported with --interactive${NC}" >&2
         exit 1
     fi
-    run_interactive "${TEST_NAMES[0]:-}"
-    exit 0
+    if [ "${#TEST_NAMES[@]}" -ne 1 ]; then
+        echo -e "${RED}Error: --interactive takes exactly one leaf test name${NC}" >&2
+        exit 1
+    fi
+    run_interactive "${TEST_NAMES[0]}"
 fi
 
 if [ "${#TEST_NAMES[@]}" -eq 0 ]; then

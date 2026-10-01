@@ -83,7 +83,7 @@ load_forensics_metadata() {
     else
         metadata_json="$({
             cd "$PROJECT_ROOT"
-            nix eval --json "${FLAKE_REF}#forensics-eval-metadata.$(resolve_system)"
+            nix eval --json "${FLAKE_REF}#legacyPackages.$(resolve_system).forensics-eval-metadata"
         })"
     fi
 

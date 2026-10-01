@@ -429,11 +429,13 @@ class CommandLineTest(TempDirTestCase):
 
     def test_plan_refuses_a_weight_at_the_timeout(self) -> None:
         metadata = scan_nix_metadata()
-        metadata["timeouts"]["performance"] = 600
+        metadata["timeouts"]["performance-validation"] = 600
         result = self.plan(metadata, WEIGHTS_FILE, 1, 4)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
-        self.assertIn("performance: weight 684s is at or above", result.stderr)
+        self.assertIn(
+            "performance-validation: weight 684s is at or above", result.stderr
+        )
 
     def test_plan_only_warns_about_hygiene(self) -> None:
         metadata = {"leafTests": ["a", "b"], "timeouts": {"a": 900, "b": 900}}
@@ -606,14 +608,20 @@ class RunnerTest(TempDirTestCase):
             textwrap.dedent(
                 """\
                 #!/usr/bin/env bash
+                printf '%s\n' "$*" >>"$FAKE_NIX_LOG"
                 case "$1" in
-                    eval) cat "$FAKE_E2E_METADATA" ;;
+                    eval)
+                        metadata_attr=".#legacyPackages.x86_64-linux.e2e-metadata"
+                        [[ "$3" == "$metadata_attr" ]] || exit 65
+                        cat "$FAKE_E2E_METADATA"
+                        ;;
                     build)
                         failing="${FAKE_FAIL_TEST:-}"
-                        if [[ -n "$failing" && "$2" == *".e2e-$failing" ]]; then
+                        if [[ -n "$failing" && "$2" == *".e2e.$failing" ]]; then
                             exit 1
                         fi
                         ;;
+                    run) ;;
                     *) exit 64 ;;
                 esac
                 """
@@ -622,6 +630,16 @@ class RunnerTest(TempDirTestCase):
         )
         fake_nix.chmod(0o755)
         self.fake_bin = fake_bin
+        self.nix_log = self.tmp / "nix.log"
+
+    def nix_calls(self, subcommand: str) -> list[str]:
+        if not self.nix_log.exists():
+            return []
+        return [
+            line
+            for line in self.nix_log.read_text(encoding="utf-8").splitlines()
+            if line.split(" ", 1)[0] == subcommand
+        ]
 
     def run_runner(
         self, *args: str, fail_test: str = ""
@@ -637,7 +655,7 @@ class RunnerTest(TempDirTestCase):
             PATH=f"{self.fake_bin}{os.pathsep}{env.get('PATH', '')}",
             FAKE_E2E_METADATA=str(metadata_path),
             FAKE_FAIL_TEST=fail_test,
-            NAILS_E2E_SYSTEM="x86_64-linux",
+            FAKE_NIX_LOG=str(self.nix_log),
         )
         return subprocess.run(
             ["bash", str(RUNNER), *args],
@@ -659,7 +677,7 @@ class RunnerTest(TempDirTestCase):
         self.assertEqual(sorted(selected), self.metadata["leafTests"])
 
     def test_planner_failure_stops_the_run(self) -> None:
-        self.metadata["timeouts"]["performance"] = 600
+        self.metadata["timeouts"]["performance-validation"] = 600
         result = self.run_runner(
             "--dry-run", "--shard-index", "1", "--shard-count", "4", "all"
         )
@@ -696,11 +714,52 @@ class RunnerTest(TempDirTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("--durations-out requires a value", result.stderr)
 
+    def test_tests_build_from_the_e2e_namespace(self) -> None:
+        result = self.run_runner("basic-workflow")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [call.split()[1] for call in self.nix_calls("build")],
+            [".#legacyPackages.x86_64-linux.e2e.basic-workflow"],
+        )
+
+    def test_interactive_runs_the_driver_of_one_test(self) -> None:
+        result = self.run_runner("-i", "basic-workflow")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.nix_calls("run"),
+            ["run .#legacyPackages.x86_64-linux.e2e.basic-workflow.driverInteractive"],
+        )
+        self.assertEqual(self.nix_calls("build"), [])
+
+    def test_interactive_rejects_a_group(self) -> None:
+        self.metadata["groups"]["smoke"] = ["basic-workflow", "verify"]
+        self.metadata["groups"]["empty"] = []
+        for group, size in (("smoke", 2), ("empty", 0)):
+            with self.subTest(group=group):
+                result = self.run_runner("--interactive", group)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"{group} is a group of {size} tests", result.stderr)
+                self.assertEqual(self.nix_calls("run"), [])
+
+    def test_interactive_rejects_an_unknown_test(self) -> None:
+        result = self.run_runner("-i", "no-such-test")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Unknown leaf E2E test: no-such-test", result.stderr)
+        self.assertEqual(self.nix_calls("run"), [])
+
+    def test_interactive_takes_exactly_one_test(self) -> None:
+        for names in ([], ["basic-workflow", "verify"]):
+            with self.subTest(names=names):
+                result = self.run_runner("-i", *names)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("exactly one leaf test", result.stderr)
+                self.assertEqual(self.nix_calls("run"), [])
+
 
 class ScanTest(unittest.TestCase):
     def test_scan_sees_the_default_and_the_performance_override(self) -> None:
         timeouts = scan_nix_metadata()["timeouts"]
-        self.assertEqual(timeouts["performance"], 1500)
+        self.assertEqual(timeouts["performance-validation"], 1500)
         self.assertEqual(statistics.mode(timeouts.values()), 900)
 
 

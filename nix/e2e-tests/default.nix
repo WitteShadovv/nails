@@ -137,21 +137,21 @@ let
 
   groups = lib.mapAttrs linkFarmForNames groupMembers;
 
-  interactiveDriver = pkgs.writeShellScriptBin "interactive-test" ''
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    test_name="''${1:-basic-workflow}"
-    exec nix run ".#checks.${pkgs.system}.e2e-$test_name" --interactive
-  '';
+  # Tests and groups share one attribute set, and the runner resolves a name
+  # as a test before a group, so a shared name would hide one of them.
+  shadowedGroups = lib.intersectLists testNames (builtins.attrNames groupMembers);
+  _assertNoShadowedGroups = lib.assertMsg (
+    shadowedGroups == [ ]
+  ) "E2E test names must differ from group names: ${lib.concatStringsSep ", " shadowedGroups}";
 in
 builtins.seq _assertUniqueNames (
-  tests
-  // groups
-  // {
-    _interactive-driver = interactiveDriver;
-    _groups = groupMembers;
-    _meta = metadata;
-    _testNames = testNames;
-  }
+  builtins.seq _assertNoShadowedGroups (
+    tests
+    // groups
+    // {
+      _groups = groupMembers;
+      _meta = metadata;
+      _testNames = testNames;
+    }
+  )
 )

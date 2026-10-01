@@ -9,7 +9,7 @@ let
   perf = import ./../../lib/perf.nix;
 in
 {
-  name = "performance";
+  name = "performance-validation";
   # Shard weight 684 s (shard-durations.json), more than half of the default
   # 900 s timeout. The timeout keeps at least twice the measured runtime.
   globalTimeout = 1500;

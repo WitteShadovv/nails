@@ -219,14 +219,14 @@
         default = nails;
       };
 
-      apps.${system}.e2e-test-interactive = {
-        type = "app";
-        program = "${rawE2eTests._interactive-driver}/bin/interactive-test";
+      # Building every VM test takes hours, so the tests stay out of `checks`.
+      # `nix flake check` and `nix flake show` do not descend into
+      # legacyPackages, which also holds the plain-data metadata.
+      legacyPackages.${system} = {
+        e2e = e2eTests;
+        e2e-metadata = e2eTestMetadata;
+        forensics-eval-metadata = rawForensicsEval.metadata;
       };
-
-      e2e-tests.${system} = e2eTests;
-      e2e-test-metadata.${system} = e2eTestMetadata;
-      forensics-eval-metadata.${system} = rawForensicsEval.metadata;
 
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
@@ -248,7 +248,5 @@
           bc # Floating-point arithmetic for coverage threshold checks
         ];
       };
-
-      checks.${system} = lib.mapAttrs' (name: value: lib.nameValuePair "e2e-${name}" value) e2eTests;
     };
 }

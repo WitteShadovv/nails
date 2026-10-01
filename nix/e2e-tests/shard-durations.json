@@ -36,7 +36,7 @@
   "overlay-opaque-whiteouts": 100,
   "overlay-pivot-vfat-boot": 115,
   "overlay-reverse-order-unmount": 89,
-  "performance": 684,
+  "performance-validation": 684,
   "permissions-security": 60,
   "plain-rendering": 107,
   "preflight-bypass": 157,

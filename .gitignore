@@ -59,6 +59,8 @@ settings.json
 
 # Testing
 .pytest_cache/
+# REPL history of the interactive NixOS test driver
+.nixos-test-history
 .coverage
 coverage/
 htmlcov/

@@ -65,7 +65,7 @@ This split is deliberate: the repository keeps fast, broadly applicable CI in `c
 
 ### `e2e-tests.yml` behavior
 
-- The workflow runs `./scripts/run-e2e-tests.sh`, not the aggregate `e2e-ci` link-farm target directly.
+- The workflow runs `./scripts/run-e2e-tests.sh`, not the aggregate `e2e.ci` link-farm target directly.
 - In CI, the runner defaults to the `ci` suite (or can be pinned explicitly with `NAILS_E2E_DEFAULT_TARGET=ci`).
 - The runner expands suites/groups from Nix metadata into concrete leaf tests, deduplicates them in stable first-seen order, and executes them sequentially.
 - `./scripts/run-e2e-tests.sh --dry-run ci` prints the exact resolved leaf test list without executing it.
@@ -74,7 +74,7 @@ This split is deliberate: the repository keeps fast, broadly applicable CI in `c
 - Trigger scope: pushes to `dev`, PRs targeting `dev`, and manual dispatch. `main` and PRs to `main` are owned by `e2e-tests-full.yml` to avoid duplicate E2E runs.
 - Path coverage includes the E2E runner script, relevant workflow files, flake inputs, Cargo manifests, and `shell.nix` so smoke runs follow CI/E2E infrastructure changes more reliably.
 
-This keeps suite membership in one source of truth under `nix/e2e-tests/default.nix`, while making CI execution order explicit and safer for shared-host runner state than invoking the aggregate `e2e-ci` derivation as a single build target.
+This keeps suite membership in one source of truth under `nix/e2e-tests/default.nix`, while making CI execution order explicit and safer for shared-host runner state than invoking the aggregate `e2e.ci` derivation as a single build target.
 
 ### `e2e-tests-full.yml` behavior
 

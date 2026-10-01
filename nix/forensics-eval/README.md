@@ -58,7 +58,7 @@ scripts/run-forensics-eval.sh \
 
 ## Metadata-driven local sharding
 
-Local orchestration now has a metadata output at `forensics-eval-metadata.<system>`.
+Local orchestration now has a metadata output at `legacyPackages.x86_64-linux.forensics-eval-metadata`.
 It exposes ordered `leafTests`, `availableTargets`, and `groups` for scenario/profile
 execution, plus per-leaf scenario/profile mappings.
 
