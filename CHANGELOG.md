@@ -13,8 +13,29 @@ during the current alpha phase.
 
 ## [Unreleased]
 
+### Added
+
+- A configurable active-state prompt label (empty by default) and a guard that writes the shell rc
+  block and autostart entry only when the target lives on a NAILS overlay, warning and skipping
+  otherwise.
+- A single `/proc/self/mountinfo` parser with kernel octal-escape decoding and overlay-option
+  escaping, shared across the filesystem and overlay layers.
+- State file v2 with `boot_id` and `owner_pid`, a `Degraded` state for partial teardowns, and an
+  inter-process lock that serialises state-mutating commands, so a second `activate` while one is
+  running fails fast with the running operation's PID.
+- A fast privileged overlay and teardown integration test tier, run in a required mount-namespace
+  CI job, with a development guide for running it locally.
+
 ### Changed
 
+- The base-config suspicious-reference preflight now matches the configured hidden volume root and
+  its backing device (resolved from `/proc/self/mountinfo`) and scans every `.nix` under
+  `/etc/nixos` instead of only `hardware-configuration.nix`.
+- Overlay-mount and missing-config failures now carry typed error variants (mount errno, config
+  path) so the pivot and config-default fallbacks branch on the cause rather than on
+  error-message text.
+- A corrupt or unreadable state file now loads as an explicit unknown state: `status` reports it and
+  `activate` refuses, instead of silently treating it as inactive or hard-failing every command.
 - Updated hidden-storage examples to open VeraCrypt-compatible hidden containers with
   `cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden` before mounting the mapper device.
 - Clarified post-reboot verification guidance so the standard reboot path no longer asks operators
@@ -42,6 +63,8 @@ during the current alpha phase.
 
 ### Removed
 
+- The XOR string-obfuscation module and its indistinguishability claims; the obfuscated literals
+  are inlined and the binary is now described honestly as identifiable.
 - The non-functional in-memory shell-history clear (a `bash -c` subprocess that could never
   reach the parent shell) and the free `emergency_deactivate` re-export; emergency deactivation
   goes through `NailsManager::emergency_deactivate`.
@@ -52,10 +75,20 @@ during the current alpha phase.
 
 ### Fixed
 
+- Notification signal files are written atomically with a numeric collision suffix, so two
+  notifications sharing a title within the same millisecond no longer overwrite each other.
+- The activation security label is derived from writer processes still referencing the decoy after
+  mount rather than from the overlay mount method, so a direct mount that leaves surviving writers is
+  no longer mislabeled `OPTIMAL`.
 - E2E VM tests now time out after 900 s by default (1500 s for the performance test) and fail with
   diagnostics after a 300 s power-off deadline instead of hanging for the driver's full hour; shard
   weights no longer include two recorded one-hour hangs, and full-suite shards upload per-test
   durations with a non-blocking weight-drift report.
+
+### Security
+
+- `unmount` refuses any mount NAILS did not create, so stale state can no longer lazily force-detach
+  a real `/home`, `/nix`, or `/boot`.
 
 ## [0.2.0] - 2026-05-08
 

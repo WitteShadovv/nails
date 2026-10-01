@@ -20,7 +20,7 @@ Decisions that apply across items:
 
 Owns: `nails-core/src/deactivation/tests.rs`, `nails-core/src/manager/tests.rs`, `nails-core/src/notification/`, `nails-core/src/shell/prompt/tests.rs`, `nails-core/tests/real_filesystem.rs`, `nails-core/src/filesystem/real/tests.rs`, `nails-core/src/manager/helpers/service_controller.rs`, `nails-cli/src/cli/commands/activate/dry_run.rs`, `scripts/check-orphan-modules.sh`, `scripts/check-test-hermetic.sh`
 
-- [ ] **T-072: Test hygiene: stop temp-dir leaks and fixed /tmp names, run the shell syntax tests, delete the orphan module, fix notification naming** (low · effort S)
+- [x] **T-072: Test hygiene: stop temp-dir leaks and fixed /tmp names, run the shell syntax tests, delete the orphan module, fix notification naming** (low · effort S)
 
   _Status: still open after wave 0 — no changes were produced to integrate. The `wait_for_unix_socket_ready_*` tests still abort under the restricted sandbox (EPERM on `bind`) instead of skipping._
 
@@ -55,7 +55,7 @@ Owns: `nails-core/src/deactivation/tests.rs`, `nails-core/src/manager/tests.rs`,
 
 Owns: `Cargo.toml`, `nails-core/src/obfuscate/`, `nails-core/src/shell/`, `nails-core/src/nixos/config/verify.rs`
 
-- [ ] **T-001: Delete the XOR obfuscation module, inline its constants, and state honestly that the binary is identifiable** (medium · effort M)
+- [x] **T-001: Delete the XOR obfuscation module, inline its constants, and state honestly that the binary is identifiable** (medium · effort M)
 
   **Problem**
   The `nails-core/src/obfuscate/` module (438 LOC, 39 constants) is fixed-key XOR with a public key-derivation; its own doc comments admit it is "NOT encryption". It provides no real protection: the same strings leak in plaintext elsewhere (env-var and error messages, `nails-deactivate-`, shell-rc markers, tracing callsite paths like `nails_core`), and LLVM constant-folds some values into readable 16-byte prefixes. ~33 files import it (see `rg obfuscate`). The clap `about` spells out the acronym (`nails-cli/src/cli/args.rs:14`), and e2e test `73-binary-obfuscation-scan.nix` (shard id `binary-n`) checks only full strings and passes regardless.
@@ -69,7 +69,7 @@ Owns: `Cargo.toml`, `nails-core/src/obfuscate/`, `nails-core/src/shell/`, `nails
   - Test 73 removed from the tree, `default.nix`, and `shard-durations.json`.
   - `cargo test --workspace` and `cargo clippy` are clean.
 
-- [ ] **T-002: Neutral, configurable active-state indicator; write the rc block and autostart only when the target is on a NAILS overlay** (medium · effort S)
+- [x] **T-002: Neutral, configurable active-state indicator; write the rc block and autostart only when the target is on a NAILS overlay** (medium · effort S)
 
   **Problem**
   The prompt prefix is a hard-coded green `(NAILS-ACTIVE)` (`nails-core/src/shell/prompt.rs`, bash/zsh/fish generators), and the hidden terminal background defaults to `#1a1a2e` (`nails-core/src/config/colors.rs:144`) — both are shoulder-surfing/screenshot liabilities and are undocumented. The rc block marker `# >>> NAILS shell integration` and the XDG autostart `.desktop` (`Name=NAILS Notification Dispatch`) embed the product name and the resolved hidden binary path (`nails-core/src/shell/rc_integration.rs`, autostart ~149, block ~205). Nothing verifies the resolved home actually sits on an active hidden overlay, so if `/home` is excluded or omitted in explicit mode these files land on the decoy disk.
@@ -82,7 +82,7 @@ Owns: `Cargo.toml`, `nails-core/src/obfuscate/`, `nails-core/src/shell/`, `nails
   - Default prompt contains no product name; label is configurable via TOML; prompt tests updated.
   - e2e tests 38-43 pass with the new markers.
 
-- [ ] **T-003: Make the base-config suspicious-reference preflight use the configured hidden root and scan every imported .nix instead of one keyword file** (low · effort M)
+- [x] **T-003: Make the base-config suspicious-reference preflight use the configured hidden root and scan every imported .nix instead of one keyword file** (low · effort M)
 
   **Problem**
   `verify_base_config_clean` (`nails-core/src/nixos/config/verify.rs:54-98`) reads only `/etc/nixos/hardware-configuration.nix` and matches a fixed pattern set. It takes no hidden-root argument, so once the hidden root is auto-derived from the binary's parent (no longer always `/mnt/hidden*`), a `nixos-generate-config` `fileSystems` entry for the hidden device passes the check. It never scans `flake.nix`, `configuration.nix`, or imported modules, yet the doc comment claims a "Forensically Clean Base ... Indistinguishable from standard NixOS" — which a single-file keyword scan cannot establish.
@@ -102,6 +102,8 @@ Owns: `nails-core/src/error.rs`, `nails-core/src/filesystem/mountinfo.rs`, `nail
 
 - [ ] **T-004: Give NailsError structured, source-chained variants where control flow depends on the cause** (medium · effort M)
 
+  _Status: landed in wave 1b — typed `Mount { target, errno }` and `ConfigNotFound { path }` variants; the pivot fallback and the config-default fallback branch on the typed cause with no error-text matching, and wrapped io/nix errors chain `#[source]`. The 31 `LockPoisoned` closures are intentionally left for the `Arc<Mutex>` removal in T-020, so this item stays open until then._
+
   **Problem**
   Most of `NailsError` is `String`-wrapped catch-alls; only `IoError` chains a source via `#[from]` (`nails-core/src/error.rs:165`). Because errno is flattened into text, core control flow matches on message strings: the pivot fallback is chosen by substring-matching `"Invalid argument"` / `"Device or resource busy"` / `"not supported"` (`nails-core/src/overlay/strategy/mod.rs:317-319`), and `config/loading.rs:293` branches on `"Config file not found"`. `LockPoisoned(e.to_string())` is duplicated across ~31 call sites.
 
@@ -114,7 +116,7 @@ Owns: `nails-core/src/error.rs`, `nails-core/src/filesystem/mountinfo.rs`, `nail
   - Wrapped io/nix errors carry `#[source]`; the `LockPoisoned` closures are gone.
   - `cargo test` and `clippy -D warnings` pass.
 
-- [ ] **T-005: One correct mountinfo parser (octal unescape, no per-call canonicalize) and discovery of NAILS-owned mounts; unmount only what NAILS mounted** (high · effort M)
+- [x] **T-005: One correct mountinfo parser (octal unescape, no per-call canonicalize) and discovery of NAILS-owned mounts; unmount only what NAILS mounted** (high · effort M)
 
   **Problem**
   Mount-table parsing is hand-rolled and broken in five places. `is_mounted`/`get_filesystem_type`/`is_overlay_mounted`/`get_mount_info` (`nails-core/src/filesystem/real/mount_ops.rs:84-160`) split `/proc/mounts` on whitespace, never decode the kernel octal escapes `\040 \011 \012 \134`, and `canonicalize()` every mount point in the loop; `get_mount_info` uses `?`/`.ok()?` inside the loop (`:147,:152`) so one unresolvable line aborts the whole scan, and any `canonicalize` can block on a dead NFS/CIFS/FUSE mount. A hidden root at a path with a space (common for udisks automounts) therefore fails `HiddenVolumeCheck` (`preflight/checks/hidden_volume.rs`). `submount.rs:29,103`, `dir_ops.rs:214`, and `activation/overlay_mount/restore.rs:11` repeat the same parse. `unmount` (`mount_ops.rs:55-79`) only checks that *something* is mounted at the path, then the orchestrator escalates to `MNT_FORCE|MNT_DETACH` (`deactivation/orchestrator/unmount.rs:81-105`); with stale state this can lazily detach the real `/home`, `/nix`, or `/boot`, and the `/nix/store` bind unmount (`manager/deactivation.rs:451-464`) has the same flaw. Overlay options are built with an unescaped `format!` (`mount_ops.rs:29`) so a `,` or `:` in a path breaks or injects options.
@@ -132,6 +134,8 @@ Owns: `nails-core/src/error.rs`, `nails-core/src/filesystem/mountinfo.rs`, `nail
 
 - [ ] **T-006: State file v2: boot_id/owner_pid, a Degraded state, durable fsynced writes, one honest corruption policy, and an inter-process lock** (medium · effort M)
 
+  _Status: mostly landed in wave 1b — durable fsynced state v2 with `boot_id`/`owner_pid`, a `Degraded` state, one honest corruption policy (corrupt/unreadable loads as Unknown; status shows it, activate refuses), `integrity_sha256` renamed with hmac/tamper wording gone, the `Emergency` variant removed, and an inter-process lock serialising mutating commands with the fail-fast message. Remaining: on a corrupt/unknown state, emergency/recover still default to Inactive instead of tearing down NAILS-owned overlays enumerated from the live mount table; wire that fallback into the deactivation orchestrator and add the "emergency still runs on a corrupt state" subtest to 52-state-corruption.nix._
+
   **Problem**
   Durability: `save_internal` writes a `NamedTempFile` without `sync_all`, renames, and never fsyncs the parent directory (`nails-core/src/state/file.rs:255-294`), unlike the other atomic writers (`filesystem/real/file_ops.rs:136,288,326,347`). `persist_noclobber` fails `AlreadyExists` on every save after the first and then falls back to `persist`, so the no-clobber path is dead; leftover `.tmp*` files are never cleaned. Corruption policy is inconsistent: malformed JSON and non-permission read errors silently become `Inactive` via `RecoveredFromCorruption` (load path end, and `:366-379`), while a checksum mismatch is a hard error (`:399-405`) that breaks `current_state()?` for every command including emergency. The field is documented as `"HMAC checksum for tamper detection"` (`:96`) but is an unkeyed SHA-256 (`:232-246`), which detects corruption, not tampering, and a file with no checksum is accepted with only a warning. Concurrency: there is no flock/O_EXCL/lockfile; state is cached once per process (`manager/state_management.rs:49-71`); no `owner_pid` or boot identity is stored, so a running operation cannot be told from a crashed one. `SystemState::Emergency` is reachable only through `trigger_emergency` and is not written on the production emergency path.
 
@@ -145,7 +149,7 @@ Owns: `nails-core/src/error.rs`, `nails-core/src/filesystem/mountinfo.rs`, `nail
   - `nix/e2e-tests/tests/state/54-state-concurrent-invocation.nix` asserts the lock message; the renamed checksum-corruption test asserts status shows unknown and emergency still runs.
   - `cargo test` and `clippy` pass.
 
-- [ ] **T-007: Correct the wrong overlay security-model comments and derive the OPTIMAL/DEGRADED label from surviving writers** (low · effort S)
+- [x] **T-007: Correct the wrong overlay security-model comments and derive the OPTIMAL/DEGRADED label from surviving writers** (low · effort S)
 
   **Problem**
   `pivot/mod.rs:31,33` assert that pivot split-view ("existing processes keep seeing original content") is "forensically beneficial" and a "SECURITY FEATURE". Both are wrong: overlay mounts succeed over busy directories, and processes that keep seeing the original content keep *writing to the decoy* — a leak, not a benefit — which directly contradicts `strategy/mod.rs:74-76`, which correctly calls split-view a degradation. The wrong model feeds the label computation in `manager/activation/mod.rs:310-314`, so leaking states can be reported `OPTIMAL`. The Direct/Pivot method carries no security meaning on its own (both affect pre-existing references the same way).
@@ -158,7 +162,7 @@ Owns: `nails-core/src/error.rs`, `nails-core/src/filesystem/mountinfo.rs`, `nail
   - The OPTIMAL/DEGRADED label is computed from surviving-writer presence, not Direct vs Pivot, with a unit test asserting the invariant.
   - `cargo test` passes.
 
-- [ ] **T-008: Fast privileged integration tier: real overlay and teardown tests in a private mount namespace on hosted runners** (high · effort M)
+- [x] **T-008: Fast privileged integration tier: real overlay and teardown tests in a private mount namespace on hosted runners** (high · effort M)
 
   **Problem**
   The only real overlay test is `#[ignore]` (`nails-core/src/filesystem/real/tests.rs:22-23`) and no workflow or script runs ignored tests, so real mount/dir-op coverage sits at 39-54% and every change to mount, unmount, overlay, or teardown logic needs the slow VM pipeline for real feedback. The invariant that hidden-session writes never modify the lower tree has no fast test.
