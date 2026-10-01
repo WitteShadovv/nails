@@ -10,6 +10,9 @@ let
 in
 {
   name = "performance";
+  # Shard weight 684 s (shard-durations.json), more than half of the default
+  # 900 s timeout. The timeout keeps at least twice the measured runtime.
+  globalTimeout = 1500;
   meta.tags = [ "performance" ];
 
   nodes = {

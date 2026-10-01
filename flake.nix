@@ -195,6 +195,7 @@
           leafTests = rawE2eTests._testNames;
           groups = rawE2eTests._groups;
           nodeCounts = lib.mapAttrs (_: meta: meta.nodeCount) rawE2eTests._meta;
+          timeouts = lib.mapAttrs (_: meta: meta.timeout) rawE2eTests._meta;
         };
 
         rawForensicsEval = import ./nix/forensics-eval { inherit self pkgs; };
