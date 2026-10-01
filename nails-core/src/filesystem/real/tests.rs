@@ -1,106 +1,18 @@
 //! Tests for `RealFilesystem`.
 //!
-//! This module intentionally keeps one opt-in ignored integration test for a
-//! real overlay mount. It is ignored because it must run as root against a real
-//! overlayfs-capable kernel, so it is not safe or portable for normal CI.
-//! Every remaining `#[ignore]` in this workspace is expected to carry this kind
-//! of explicit environment/host constraint inline.
+//! Every test here runs unprivileged: it drives `RealFilesystem` against plain
+//! temporary directories or uses `MockFilesystem`, so the behaviour stays
+//! inspectable and runnable in the normal test suite without root.
 //!
-//! The rest of this module uses `MockFilesystem` or plain temporary
-//! directories so the behavior stays inspectable and runnable in normal tests.
+//! The privileged counterparts — real overlay mounts, bind and tmpfs submounts,
+//! and their teardown — live in `nails-core/tests/privileged_mounts.rs`, where
+//! they are `#[ignore]`d and run only by the mount-namespace CI job.
 
 use super::RealFilesystem;
 use crate::NailsError;
 use crate::filesystem::{Filesystem, MockFilesystem};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-// ========================================================================
-// Integration Tests for RealFilesystem that require root + real overlayfs
-// ========================================================================
-
-#[test]
-#[ignore = "Requires root privileges and a real overlayfs-capable kernel; excluded from normal CI runs"]
-fn test_real_overlay_mount_creates_merged_view() {
-    // AC4 Integration test: Verify actual overlay filesystem merge
-    // Ignored intentionally: this performs a real overlay mount and therefore
-    // needs root privileges, an overlayfs-capable kernel, and manual/isolated
-    // execution outside hermetic CI.
-    // Run with: cargo test test_real_overlay_mount_creates_merged_view -- --ignored
-    //
-    // Test verifies:
-    // 1. Files from lower directory are visible in target
-    // 2. Files from upper directory overlay correctly in target
-    // 3. Modifications in upper don't affect lower
-
-    use crate::filesystem::Filesystem;
-    use std::fs;
-    use std::io::Write;
-
-    let fs = RealFilesystem;
-
-    // Create test directories in a private temp dir (removed when the guard drops)
-    let test_dir_guard = tempfile::tempdir().unwrap();
-    let test_dir = test_dir_guard.path();
-
-    let lower = test_dir.join("lower");
-    let upper = test_dir.join("upper");
-    let work = test_dir.join("work");
-    let target = test_dir.join("target");
-
-    fs::create_dir_all(&lower).unwrap();
-    fs::create_dir_all(&upper).unwrap();
-    fs::create_dir_all(&work).unwrap();
-    fs::create_dir_all(&target).unwrap();
-
-    // Create test files in lower
-    let lower_file = lower.join("from_lower.txt");
-    let mut lower_fh = fs::File::create(&lower_file).unwrap();
-    lower_fh.write_all(b"content from lower layer").unwrap();
-    lower_fh.sync_all().unwrap();
-
-    // Create test files in upper
-    let upper_file = upper.join("from_upper.txt");
-    let mut upper_fh = fs::File::create(&upper_file).unwrap();
-    upper_fh.write_all(b"content from upper layer").unwrap();
-    upper_fh.sync_all().unwrap();
-
-    // Mount overlay
-    let result = fs.mount_overlay(&[lower.as_path()], &upper, &work, &target);
-    if let Err(e) = result {
-        // `test_dir_guard` removes the tree when it drops during unwinding.
-        panic!("Overlay mount failed: {:?}", e);
-    }
-
-    // Verify merged view: both files should be visible in target
-    let target_lower_file = target.join("from_lower.txt");
-    let target_upper_file = target.join("from_upper.txt");
-
-    assert!(
-        target_lower_file.exists(),
-        "File from lower layer should be visible in target"
-    );
-    assert!(
-        target_upper_file.exists(),
-        "File from upper layer should be visible in target"
-    );
-
-    // Verify content is correct
-    let content_from_lower = fs::read_to_string(&target_lower_file).unwrap();
-    let content_from_upper = fs::read_to_string(&target_upper_file).unwrap();
-
-    assert_eq!(
-        content_from_lower, "content from lower layer",
-        "Lower layer content should be readable"
-    );
-    assert_eq!(
-        content_from_upper, "content from upper layer",
-        "Upper layer content should be readable"
-    );
-
-    // Unmount
-    fs.unmount(&target, false).unwrap();
-}
 
 // ========================================================================
 // Tests for Story 4.11: Tmpfs Operations for Extended Overlays
