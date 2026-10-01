@@ -222,7 +222,7 @@ fn execute_status_permission_denied_reports_unknown_not_inactive() {
 }
 
 #[test]
-fn execute_status_no_color_verbose_reports_migrated_load_outcome() {
+fn execute_status_no_color_verbose_reports_loaded_outcome() {
     use nails_core::{StateFile, SystemState};
     use std::io::Write;
 
@@ -231,12 +231,15 @@ fn execute_status_no_color_verbose_reports_migrated_load_outcome() {
     let state_path = hidden_root.join("state.json");
     std::fs::create_dir_all(&hidden_root).unwrap();
 
+    // Write a sealed state file (valid integrity digest) so it loads cleanly.
     let state = StateFile {
         version: "0.0.5".to_string(),
         state: SystemState::Inactive,
         ..StateFile::default()
     };
-    std::fs::write(&state_path, serde_json::to_string(&state).unwrap()).unwrap();
+    state
+        .save_with_custom_root(&state_path, &hidden_root)
+        .unwrap();
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(
@@ -253,14 +256,14 @@ fn execute_status_no_color_verbose_reports_migrated_load_outcome() {
     assert!(output.status.success(), "stdout={stdout}");
     assert!(stdout.contains("Verbose Details:"), "stdout={stdout}");
     assert!(
-        stdout.contains("State loaded:       migrated from v0.0.5"),
+        stdout.contains("State loaded:       normal"),
         "stdout={stdout}"
     );
     assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
 }
 
 #[test]
-fn execute_status_no_color_verbose_reports_recovered_from_corruption() {
+fn execute_status_no_color_verbose_reports_corrupt_state() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -284,7 +287,7 @@ fn execute_status_no_color_verbose_reports_recovered_from_corruption() {
     assert!(output.status.success(), "stdout={stdout}");
     assert!(stdout.contains("Verbose Details:"), "stdout={stdout}");
     assert!(
-        stdout.contains("State loaded:       recovered from corruption (using defaults)"),
+        stdout.contains("State loaded:       corrupt (state unknown, using defaults)"),
         "stdout={stdout}"
     );
     assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
@@ -325,7 +328,9 @@ fn execute_status_no_color_verbose_active_shows_overlay_details_and_logs() {
         overlay_status,
         ..StateFile::default()
     };
-    std::fs::write(&state_path, serde_json::to_string(&state).unwrap()).unwrap();
+    state
+        .save_with_custom_root(&state_path, &hidden_root)
+        .unwrap();
 
     let mut log_file = std::fs::File::create(log_dir.join("nails.log")).unwrap();
     writeln!(

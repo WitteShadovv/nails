@@ -67,6 +67,9 @@ pub fn execute(
     }
 
     let state_path = config.state_file_path.clone();
+    // Retained for the state lock, since `config` and the clone above are moved
+    // into the manager below.
+    let lock_state_path = state_path.clone();
 
     // Create manager
     let filesystem = RealFilesystem;
@@ -75,6 +78,10 @@ pub fn execute(
     )));
     super::lock_manager_or_exit(&manager, "setting emergency deactivation verbosity")
         .set_verbosity(verbosity);
+
+    // Try to take the state lock, but never let a crashed or unresponsive holder
+    // block an emergency teardown: proceed without it after a short timeout.
+    let _state_lock = super::acquire_state_lock_for_emergency(&lock_state_path);
 
     // Countdown before emergency deactivation (skip if --no-countdown, --quiet, or --json)
     if !no_countdown && !quiet && !json {

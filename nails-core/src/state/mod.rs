@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! Inactive → Activating → Active → Deactivating → Inactive
-//! Any State → Emergency
+//! Active/Deactivating → Degraded (partial teardown) → Inactive (recover)
 //! ```
 //!
 //! ## Example
@@ -45,13 +45,15 @@ pub(crate) use std::sync::{Arc, Mutex};
 
 mod file;
 mod guard;
+mod lock;
 #[cfg(test)]
 mod tests;
 mod transitions;
 
-// Re-export all public items for backward compatibility
+// Re-export all public items.
 pub use file::{LoadOutcome, LoadResult, StateFile};
 pub use guard::StateGuard;
+pub use lock::{EMERGENCY_LOCK_TIMEOUT, StateLock};
 
 /// Check if a path is within the hidden volume
 ///
@@ -219,10 +221,19 @@ pub enum SystemState {
         started_at: DateTime<Utc>,
     },
 
-    /// Emergency shutdown triggered
-    Emergency {
-        /// When emergency was triggered
-        triggered_at: DateTime<Utc>,
+    /// Teardown or rollback left the system partly dismantled.
+    ///
+    /// Reached when a deactivation, rollback, or emergency teardown could not
+    /// unmount every overlay. The system is neither cleanly active nor cleanly
+    /// inactive: some overlays listed in `remaining_mounts` may still be live,
+    /// so the operator must recover (retry teardown) before activating again.
+    Degraded {
+        /// When the system entered the degraded state.
+        since: DateTime<Utc>,
+        /// Why teardown could not complete, for operator diagnosis.
+        reason: String,
+        /// Mount points that may still be live and need manual attention.
+        remaining_mounts: Vec<PathBuf>,
     },
 }
 

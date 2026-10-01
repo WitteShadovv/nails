@@ -647,7 +647,11 @@ fn test_status_command_verbose_active_shows_overlay_details() {
 }}"#,
         hidden = hidden_root.display(),
     );
-    std::fs::write(&state_path, state_json).unwrap();
+    // Seal through the durable save path so the file carries a valid digest.
+    let state: nails_core::StateFile = serde_json::from_str(&state_json).unwrap();
+    state
+        .save_with_custom_root(&state_path, &hidden_root)
+        .unwrap();
 
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
@@ -687,7 +691,7 @@ fn test_status_command_verbose_active_shows_overlay_details() {
 }
 
 #[test]
-fn test_status_command_no_color_verbose_reports_recovered_state_load() {
+fn test_status_command_no_color_verbose_reports_corrupt_state_load() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -715,17 +719,17 @@ fn test_status_command_no_color_verbose_reports_recovered_state_load() {
             "--no-color",
         ])
         .output()
-        .expect("failed to run recovered status");
+        .expect("failed to run corrupt-state status");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "stdout={stdout}");
-    assert!(stdout.contains("State loaded:       recovered from corruption (using defaults)"));
+    assert!(stdout.contains("State loaded:       corrupt (state unknown, using defaults)"));
     assert!(stdout.contains("Verbose Details:"));
     assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
 }
 
 #[test]
-fn test_status_command_no_color_verbose_reports_migrated_state_load() {
+fn test_status_command_no_color_verbose_reports_loaded_state() {
     use nails_core::{StateFile, SystemState};
     use std::io::Write;
 
@@ -735,12 +739,15 @@ fn test_status_command_no_color_verbose_reports_migrated_state_load() {
     let config_path = temp_dir.path().join("nails.yaml");
     std::fs::create_dir_all(&hidden_root).unwrap();
 
+    // Save through the durable path so the file carries a valid integrity digest.
     let state = StateFile {
         version: "0.0.5".to_string(),
         state: SystemState::Inactive,
         ..StateFile::default()
     };
-    std::fs::write(&state_path, serde_json::to_string(&state).unwrap()).unwrap();
+    state
+        .save_with_custom_root(&state_path, &hidden_root)
+        .unwrap();
 
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
@@ -760,11 +767,11 @@ fn test_status_command_no_color_verbose_reports_migrated_state_load() {
             "--no-color",
         ])
         .output()
-        .expect("failed to run migrated status");
+        .expect("failed to run loaded status");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "stdout={stdout}");
-    assert!(stdout.contains("State loaded:       migrated from v0.0.5"));
+    assert!(stdout.contains("State loaded:       normal"));
     assert!(stdout.contains("Verbose Details:"));
     assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
 }

@@ -67,7 +67,7 @@ fn test_complete_deactivation_from_deactivating_returns_inactive() {
 }
 
 #[test]
-fn test_trigger_emergency_from_any_state_returns_emergency() {
+fn test_trigger_emergency_from_any_state_targets_inactive() {
     let states = vec![
         SystemState::Inactive,
         SystemState::Activating {
@@ -80,18 +80,18 @@ fn test_trigger_emergency_from_any_state_returns_emergency() {
         SystemState::Deactivating {
             started_at: chrono::Utc::now(),
         },
-        SystemState::Emergency {
-            triggered_at: chrono::Utc::now(),
+        SystemState::Degraded {
+            since: chrono::Utc::now(),
+            reason: "prior partial teardown".into(),
+            remaining_mounts: vec![],
         },
     ];
 
     for state in states {
         let result = state.trigger_emergency();
         assert!(result.is_ok());
-        match result.unwrap() {
-            SystemState::Emergency { .. } => {} // Expected
-            _ => panic!("Expected Emergency state"),
-        }
+        // A successful emergency teardown drives the system back to Inactive.
+        assert!(result.unwrap().is_inactive());
     }
 }
 
@@ -216,8 +216,10 @@ fn test_is_active_returns_false_for_non_active_states() {
         SystemState::Deactivating {
             started_at: chrono::Utc::now(),
         },
-        SystemState::Emergency {
-            triggered_at: chrono::Utc::now(),
+        SystemState::Degraded {
+            since: chrono::Utc::now(),
+            reason: "unmount failed".into(),
+            remaining_mounts: vec![],
         },
     ];
 
@@ -245,8 +247,10 @@ fn test_is_inactive_returns_false_for_non_inactive_states() {
         SystemState::Deactivating {
             started_at: chrono::Utc::now(),
         },
-        SystemState::Emergency {
-            triggered_at: chrono::Utc::now(),
+        SystemState::Degraded {
+            since: chrono::Utc::now(),
+            reason: "unmount failed".into(),
+            remaining_mounts: vec![],
         },
     ];
 
@@ -274,8 +278,10 @@ fn test_can_deactivate_returns_false_for_non_active_states() {
         SystemState::Deactivating {
             started_at: chrono::Utc::now(),
         },
-        SystemState::Emergency {
-            triggered_at: chrono::Utc::now(),
+        SystemState::Degraded {
+            since: chrono::Utc::now(),
+            reason: "unmount failed".into(),
+            remaining_mounts: vec![],
         },
     ];
 
@@ -351,19 +357,22 @@ fn test_all_invalid_transitions_from_deactivating() {
 }
 
 #[test]
-fn test_all_invalid_transitions_from_emergency() {
-    let state = SystemState::Emergency {
-        triggered_at: chrono::Utc::now(),
+fn test_all_invalid_transitions_from_degraded() {
+    let state = SystemState::Degraded {
+        since: chrono::Utc::now(),
+        reason: "unmount failed".into(),
+        remaining_mounts: vec![],
     };
 
-    // All transitions should fail except emergency (which is idempotent)
+    // The normal lifecycle transitions are all refused from Degraded.
     assert!(state.begin_activation().is_err());
     assert!(state.complete_activation(vec![]).is_err());
     assert!(state.begin_deactivation().is_err());
     assert!(state.complete_deactivation().is_err());
 
-    // Emergency is idempotent
-    assert!(state.trigger_emergency().is_ok());
+    // Recovery and emergency teardown are always allowed, and both reach Inactive.
+    assert!(state.recover().unwrap().is_inactive());
+    assert!(state.trigger_emergency().unwrap().is_inactive());
 }
 
 #[test]
@@ -399,10 +408,10 @@ fn test_emergency_from_active_state() {
         overlays: vec![PathBuf::from("/test1"), PathBuf::from("/test2")],
     };
 
-    let emergency = state
+    let after = state
         .trigger_emergency()
         .expect("Emergency should always work");
-    assert!(matches!(emergency, SystemState::Emergency { .. }));
+    assert!(after.is_inactive());
 }
 
 #[test]
@@ -457,13 +466,15 @@ fn test_complete_activation_from_deactivating_returns_err() {
 }
 
 #[test]
-fn test_complete_activation_from_emergency_returns_err() {
-    let state = SystemState::Emergency {
-        triggered_at: chrono::Utc::now(),
+fn test_complete_activation_from_degraded_returns_err() {
+    let state = SystemState::Degraded {
+        since: chrono::Utc::now(),
+        reason: "unmount failed".into(),
+        remaining_mounts: vec![],
     };
     let result = state.complete_activation(vec![]);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("emergency state"));
+    assert!(result.unwrap_err().to_string().contains("degraded"));
 }
 
 #[test]
@@ -491,11 +502,13 @@ fn test_complete_deactivation_from_active_returns_err() {
 }
 
 #[test]
-fn test_complete_deactivation_from_emergency_returns_err() {
-    let state = SystemState::Emergency {
-        triggered_at: chrono::Utc::now(),
+fn test_complete_deactivation_from_degraded_returns_err() {
+    let state = SystemState::Degraded {
+        since: chrono::Utc::now(),
+        reason: "unmount failed".into(),
+        remaining_mounts: vec![],
     };
     let result = state.complete_deactivation();
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("emergency state"));
+    assert!(result.unwrap_err().to_string().contains("degraded"));
 }

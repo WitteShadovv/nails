@@ -121,8 +121,14 @@ pub fn print_status_ascii(
     println!("=======================================");
     println!();
 
-    // Format state without ASCII indicator (AC1: indicator only on Security Posture line)
-    println!("State:              {:?}", report.state);
+    // Format state without ASCII indicator (AC1: indicator only on Security Posture line).
+    // Report "Unknown" when the state file could not be read or trusted.
+    let state_text = if report.load_outcome.is_unknown() {
+        "Unknown".to_string()
+    } else {
+        format!("{:?}", report.state)
+    };
+    println!("State:              {}", state_text);
 
     // Format security posture with to_plain()
     let posture = report.security_posture();
@@ -201,13 +207,13 @@ pub fn print_status_ascii(
         println!("  State file:         {}", state_path.display());
         println!("  Log path:           {}", log_path.display());
         match &report.load_outcome {
-            LoadOutcome::FreshDefault => println!("  State loaded:       fresh default (no file)"),
-            LoadOutcome::Normal => println!("  State loaded:       normal"),
-            LoadOutcome::Migrated { from_version } => {
-                println!("  State loaded:       migrated from v{}", from_version)
+            LoadOutcome::Loaded => println!("  State loaded:       normal"),
+            LoadOutcome::Missing => println!("  State loaded:       fresh default (no file)"),
+            LoadOutcome::Unreadable => {
+                println!("  State loaded:       unreadable (state unknown, using defaults)")
             }
-            LoadOutcome::RecoveredFromCorruption => {
-                println!("  State loaded:       recovered from corruption (using defaults)")
+            LoadOutcome::Corrupt => {
+                println!("  State loaded:       corrupt (state unknown, using defaults)")
             }
         }
     }

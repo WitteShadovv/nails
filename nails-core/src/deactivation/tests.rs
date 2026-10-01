@@ -802,7 +802,9 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: chrono::Utc::now(),
-        checksum: None,
+        boot_id: None,
+        owner_pid: 0,
+        integrity_sha256: None,
     };
     state_file
         .save_with_custom_root(&state_path, mock_hidden_vol)

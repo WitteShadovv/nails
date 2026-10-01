@@ -60,3 +60,49 @@ pub(crate) fn lock_manager_or_exit<'a, F: nails_core::Filesystem>(
         .lock()
         .unwrap_or_else(|error| exit_lock_error(context, error))
 }
+
+/// Directory holding the state file (and its `.lock`) on the hidden volume.
+fn state_lock_dir(state_file_path: &Path) -> &Path {
+    state_file_path.parent().unwrap_or_else(|| Path::new("."))
+}
+
+/// Take the exclusive state lock for an ordinary mutating command, or exit.
+///
+/// A concurrent `nails` operation holds this lock, so a second one fails fast
+/// with a message naming the holder PID rather than racing it over the mounts
+/// and the state file. The returned guard must be kept alive for the whole
+/// operation; dropping it (on exit) releases the lock.
+#[must_use = "the returned guard releases the lock when dropped"]
+pub(crate) fn acquire_state_lock_or_exit(state_file_path: &Path) -> nails_core::StateLock {
+    nails_core::StateLock::try_acquire(state_lock_dir(state_file_path)).unwrap_or_else(|error| {
+        eprintln!("Error: {error}");
+        std::process::exit(2);
+    })
+}
+
+/// Take the state lock for emergency teardown, proceeding without it on timeout.
+///
+/// Emergency must never be blocked by a crashed or unresponsive holder, so after
+/// a short wait it continues without the lock. The returned guard (when present)
+/// must be kept alive for the duration of the teardown.
+#[must_use = "the returned guard releases the lock when dropped"]
+pub(crate) fn acquire_state_lock_for_emergency(
+    state_file_path: &Path,
+) -> Option<nails_core::StateLock> {
+    match nails_core::StateLock::acquire_with_timeout(
+        state_lock_dir(state_file_path),
+        nails_core::EMERGENCY_LOCK_TIMEOUT,
+    ) {
+        Ok(Some(lock)) => Some(lock),
+        Ok(None) => {
+            tracing::warn!(
+                "Proceeding with emergency teardown without the state lock (acquire timed out)"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(%error, "Could not open the state lock; proceeding with emergency teardown");
+            None
+        }
+    }
+}

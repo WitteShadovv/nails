@@ -1,6 +1,6 @@
 //! # State File Persistence
 //!
-//! `StateFile` struct and its save/load/checksum logic for persisting
+//! `StateFile` struct and its save/load/integrity logic for persisting
 //! system state to the hidden volume.
 
 #[cfg(not(test))]
@@ -16,18 +16,51 @@ use std::path::{Path, PathBuf};
 
 use super::OverlayInfo;
 
-/// Describes HOW a state file was loaded, enabling callers to surface
-/// diagnostics without inspecting the file themselves.
-#[derive(Debug, Clone, PartialEq)]
+/// Path to the kernel's per-boot identifier.
+///
+/// Read at save time so a state file written before a reboot can be told apart
+/// from one written during the current boot. The read is fallible on purpose:
+/// restricted environments expose the file but return an empty body.
+const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
+
+/// Minimum age before a leftover `.tmp*` sibling is swept on load.
+///
+/// A durable save takes milliseconds, so any temp file this old is a leftover
+/// from a crashed save, never one a concurrent save is still writing. Keeping a
+/// margin means a read (which does not hold the state lock) never deletes the
+/// temp file a concurrent, locked save is about to rename into place.
+const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Describes HOW a state file was loaded, so callers can surface diagnostics
+/// without re-inspecting the file themselves.
+///
+/// There is exactly one load policy: a missing file means the system is
+/// inactive, while a file that cannot be read or trusted collapses to the safe
+/// default *and* reports the problem so callers can treat the real state as
+/// unknown rather than silently assume inactive.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadOutcome {
-    /// No file existed — returned `StateFile::default()`
-    FreshDefault,
-    /// Loaded successfully, same version
-    Normal,
-    /// Loaded and migrated from an older (but compatible) version
-    Migrated { from_version: String },
-    /// File existed but was unreadable/malformed — returned `StateFile::default()`
-    RecoveredFromCorruption,
+    /// File existed, parsed, and passed the integrity check.
+    Loaded,
+    /// No file existed — returned `StateFile::default()` (effectively inactive).
+    Missing,
+    /// File existed but could not be read (I/O error) — returned the safe
+    /// default; the real state is unknown.
+    Unreadable,
+    /// File existed but was malformed, failed its integrity check, carried no
+    /// integrity digest, or was written by an incompatible version — returned
+    /// the safe default; the real state is unknown.
+    Corrupt,
+}
+
+impl LoadOutcome {
+    /// Whether this outcome means the on-disk state could not be trusted, so
+    /// the returned [`StateFile`] is a safe default rather than the real state.
+    ///
+    /// `Missing` is *not* unknown: no file legitimately means inactive.
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, LoadOutcome::Unreadable | LoadOutcome::Corrupt)
+    }
 }
 
 /// Result of `StateFile::load_with_outcome()`.
@@ -48,32 +81,21 @@ pub struct LoadResult {
 /// **NEVER** at: /home/user/state.json, /etc/nails/state.json, or ANY path
 /// outside the hidden volume.
 ///
-/// Writing state to the decoy system would leak forensic evidence of hidden
+/// Writing state to the decoy system would leak evidence of hidden
 /// environment usage, defeating NAILS' plausible deniability.
-///
-/// # Requirements
-///
-/// - FR24: Persist state to {hidden_volume}/state.json
-/// - FR25: Never write state file to decoy system
-/// - FR27: Track timestamp for state changes
-/// - FR28: Track overlay status
-/// - FR29: Serialize state to JSON format
-/// - AR24: State file on hidden volume only
-/// - AR25: State file contents (state, activated_at, overlay status, nixos_generation)
-/// - NFR13: Atomic operations
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateFile {
-    /// Schema version for backward compatibility (uses semver from Cargo.toml)
-    /// Format: "major.minor.patch" (e.g., "0.2.0")
+    /// Schema version for the on-disk format (uses semver from Cargo.toml).
+    /// Format: "major.minor.patch" (e.g., "0.2.0").
     pub version: String,
 
-    /// Current system state (Inactive, Activating, Active, Deactivating, Emergency)
+    /// Current system state (Inactive, Activating, Active, Deactivating, Degraded)
     pub state: SystemState,
 
     /// NixOS generation hash when last activated (for profile rebuild detection)
     pub nixos_generation: Option<String>,
 
-    /// Config fingerprint after last successful activation (Story 15.4)
+    /// Config fingerprint after last successful activation.
     ///
     /// 16-char hex FNV-1a hash of hardware-configuration.nix + configuration.nix content.
     /// Used by the fast-path activation logic to skip rebuilds when the config has not changed.
@@ -84,7 +106,7 @@ pub struct StateFile {
     /// Currently mounted overlays with their configuration
     pub overlay_status: HashMap<PathBuf, OverlayInfo>,
 
-    /// Overlays that failed to mount during last activation (Story 14.10, AC9)
+    /// Overlays that failed to mount during last activation
     ///
     /// Used for status reporting and debugging. Cleared on successful deactivation.
     #[serde(default)]
@@ -93,16 +115,37 @@ pub struct StateFile {
     /// Timestamp of last state modification
     pub last_modified: DateTime<Utc>,
 
-    /// HMAC checksum for tamper detection (optional)
+    /// Kernel boot identifier captured at write time.
+    ///
+    /// Read from `/proc/sys/kernel/random/boot_id`. `None` when the kernel does
+    /// not expose it (for example in a restricted container). Lets a reader tell
+    /// a state file written during the current boot from a stale one left behind
+    /// by a crash before a reboot.
+    #[serde(default)]
+    pub boot_id: Option<String>,
+
+    /// PID of the process that last wrote this file.
+    ///
+    /// Together with the inter-process lock this distinguishes a live operation
+    /// from a crashed one. Set from `std::process::id()` at write time.
+    #[serde(default)]
+    pub owner_pid: u32,
+
+    /// SHA-256 integrity digest over the rest of the file.
+    ///
+    /// This detects *corruption* (truncation, partial writes, bit rot), not
+    /// malicious modification: it is an unkeyed hash, so anyone who can write the
+    /// file can recompute it. A file that arrives without this digest is treated
+    /// as corrupt rather than trusted.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub checksum: Option<String>,
+    pub integrity_sha256: Option<String>,
 }
 
 impl Default for StateFile {
-    /// Create default StateFile with Inactive state
+    /// Create default StateFile with Inactive state.
     ///
-    /// Used when state file is missing or malformed (AR27, AR53).
-    /// Safe default assumes system is INACTIVE (no hidden environment).
+    /// Used when the state file is missing, unreadable, or corrupt. The safe
+    /// default assumes the system is INACTIVE (no hidden environment).
     fn default() -> Self {
         Self {
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -112,41 +155,32 @@ impl Default for StateFile {
             overlay_status: HashMap::new(),
             failed_overlays: Vec::new(),
             last_modified: Utc::now(),
-            checksum: None,
+            boot_id: None,
+            owner_pid: 0,
+            integrity_sha256: None,
         }
     }
 }
 
 impl StateFile {
-    /// Save state file to disk with atomic write
+    /// Save state file to disk with a durable atomic write.
     ///
-    /// # Atomicity Guarantee (NFR13)
+    /// # Durability & Atomicity
     ///
-    /// Uses tempfile + rename pattern to ensure the state file is never
-    /// partially written. Either the old file exists OR the new file exists,
-    /// never a corrupted partial file.
+    /// Writes to a temp file in the same directory, `fsync`s it, renames it over
+    /// the target (a single atomic syscall on POSIX), then `fsync`s the parent
+    /// directory so the rename itself survives a crash. Either the old file or
+    /// the complete new file exists, never a partial one.
     ///
-    /// # Hidden Volume Validation (AR26)
+    /// # Hidden Volume Validation
     ///
-    /// **CRITICAL**: State file MUST be on hidden volume. This method will
-    /// return an error if the path is outside the configured hidden_volume_root.
+    /// **CRITICAL**: the state file MUST be on the hidden volume. This method
+    /// returns an error if the path is outside the configured hidden_volume_root.
     ///
     /// # Security
     ///
-    /// - File permissions set to 0600 (user-only read/write)
+    /// - File permissions set to 0600 (owner read/write only)
     /// - Parent directories created if needed
-    /// - Atomic rename ensures no partial writes
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Path to write state file (must be on hidden volume)
-    /// * `hidden_volume_root` - Root path of hidden volume for validation
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` - State saved successfully
-    /// * `Err(NailsError::InvalidState)` - Path not on hidden volume
-    /// * `Err(NailsError::IoError)` - I/O error during write
     ///
     /// # Example
     ///
@@ -157,7 +191,6 @@ impl StateFile {
     ///
     /// let config = Config::default();
     /// let state = StateFile::default();
-    /// // Pass hidden_volume_root from config to ensure validation uses correct path
     /// let root = config.hidden_volume_root.to_string_lossy();
     /// state.save(Path::new("/mnt/hidden-volume/state.json"), &root)?;
     /// # Ok::<(), nails_core::NailsError>(())
@@ -166,15 +199,10 @@ impl StateFile {
         self.save_with_root(path, hidden_volume_root)
     }
 
-    /// Save state file with custom hidden volume root path
+    /// Save state file with a custom hidden volume root path.
     ///
-    /// This method allows specifying a custom hidden volume root path for validation.
-    /// Used by NailsManager to validate paths against the configured hidden volume root.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Path where state file should be saved
-    /// * `hidden_volume_root` - Root path of hidden volume (e.g., from Config)
+    /// Used by NailsManager to validate paths against the configured hidden
+    /// volume root.
     ///
     /// # Example
     ///
@@ -199,7 +227,6 @@ impl StateFile {
     /// Save state file with custom hidden volume root (for testing)
     #[cfg(test)]
     pub(crate) fn save_with_root(&self, path: &Path, hidden_volume_root: &str) -> Result<()> {
-        // 1. Validate path is on hidden volume (AR26)
         if !is_on_hidden_volume_internal(path, hidden_volume_root) {
             return Err(NailsError::InvalidState(format!(
                 "State file must be on hidden volume ({}), but attempted to write to: {}",
@@ -214,7 +241,6 @@ impl StateFile {
     /// Save state file with default hidden volume root (production)
     #[cfg(not(test))]
     fn save_with_root(&self, path: &Path, hidden_volume_root: &str) -> Result<()> {
-        // In production, use the configured hidden_volume_root from Config
         if !is_on_hidden_volume(path, hidden_volume_root) {
             return Err(NailsError::InvalidState(format!(
                 "State file must be on hidden volume ({}), but attempted to write to: {}",
@@ -226,40 +252,32 @@ impl StateFile {
         self.save_internal(path)
     }
 
-    /// Internal save implementation (shared by test and production)
+    /// Internal save implementation (shared by test and production).
     fn save_internal(&self, path: &Path) -> Result<()> {
-        // 1. Compute checksum over state with checksum=None for deterministic hashing
-        let mut for_hash = self.clone();
-        for_hash.checksum = None;
-        let hash_value = serde_json::to_value(&for_hash).map_err(|e| {
-            NailsError::ConfigError(format!("Failed to serialize state for checksum: {}", e))
-        })?;
-        let hash_json = hash_value.to_string();
-
-        use sha2::Digest;
-        let hash = sha2::Sha256::digest(hash_json.as_bytes());
-        let hex_hash = hex::encode(hash);
-
-        // 2. Create final version with checksum populated
+        // 1. Stamp write-time provenance onto a working copy.
         let mut final_state = self.clone();
-        final_state.checksum = Some(hex_hash);
+        final_state.boot_id = read_boot_id();
+        final_state.owner_pid = std::process::id();
+
+        // 2. Compute the integrity digest over the state with the digest field
+        //    cleared, so the hash is deterministic and self-verifying on load.
+        final_state.integrity_sha256 = None;
+        let digest = compute_integrity(&final_state)?;
+        final_state.integrity_sha256 = Some(digest);
 
         let json = serde_json::to_string_pretty(&final_state)
             .map_err(|e| NailsError::ConfigError(format!("Failed to serialize state: {}", e)))?;
 
-        // 3. Create parent directory if needed
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // 4. Write to temp file in same directory (ensures same filesystem for atomic rename)
+        // 3. Create parent directory if needed.
         let dir = path.parent().unwrap_or(Path::new("."));
-        let temp = tempfile::NamedTempFile::new_in(dir)?;
+        std::fs::create_dir_all(dir)?;
 
-        // Write JSON content
+        // 4. Write to a temp file in the same directory (same filesystem so the
+        //    rename is atomic), then make the bytes durable before the rename.
+        let temp = tempfile::NamedTempFile::new_in(dir)?;
         std::io::Write::write_all(&mut temp.as_file(), json.as_bytes())?;
 
-        // 5. Set permissions to 0600 (owner read/write only)
+        // 5. Permissions 0600 (owner read/write only).
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -268,80 +286,58 @@ impl StateFile {
             std::fs::set_permissions(temp.path(), perms)?;
         }
 
-        // 6. Atomic rename (single syscall on POSIX)
-        match temp.persist_noclobber(path) {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                if e.error.kind() == std::io::ErrorKind::AlreadyExists {
-                    tracing::info!("State file already exists during atomic write, overwriting");
-                    e.file.persist(path).map_err(|e| {
-                        std::io::Error::other(format!(
-                            "Failed to persist after race condition: {}",
-                            e
-                        ))
-                    })?;
-                    Ok(())
-                } else {
-                    Err(
-                        std::io::Error::other(format!("Failed to persist state file: {}", e.error))
-                            .into(),
-                    )
-                }
-            }
-        }
+        // 6. fsync the temp file so its data reaches disk before the rename.
+        temp.as_file().sync_all()?;
+        #[cfg(test)]
+        sync_probe::record_file_sync();
+
+        // 7. Atomic rename over the target (overwrites any existing file).
+        temp.persist(path).map_err(|e| {
+            std::io::Error::other(format!("Failed to persist state file: {}", e.error))
+        })?;
+
+        // 8. fsync the directory so the rename itself is durable across a crash.
+        sync_dir(dir)?;
+
+        Ok(())
     }
 
-    /// Load state file from disk with graceful error handling
+    /// Load state file from disk, discarding the load outcome metadata.
     ///
-    /// # Graceful Degradation (AR27, AR53)
-    ///
-    /// This method follows a "safe default" philosophy:
-    /// - **Missing file**: Returns `Ok(StateFile::default())` with Inactive state
-    /// - **Malformed JSON**: Returns `Ok(StateFile::default())` with Inactive state
-    /// - **I/O error**: Returns `Ok(StateFile::default())` with Inactive state
-    ///
-    /// This ensures the system never crashes due to state file issues and
-    /// always assumes the safest state (INACTIVE) when uncertain.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Path to load state file from
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(StateFile)` - State loaded successfully OR safe default on error
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use nails_core::StateFile;
-    /// use std::path::Path;
-    ///
-    /// let state = StateFile::load(Path::new("/mnt/hidden-volume/state.json"))?;
-    /// # Ok::<(), nails_core::NailsError>(())
-    /// ```
-    /// Load state file, discarding the load outcome metadata.
-    ///
-    /// This is the original convenience API. For callers that need to know
-    /// *how* the file was loaded (e.g. status display, diagnostics), use
-    /// [`load_with_outcome`](Self::load_with_outcome) instead.
+    /// Never returns a corruption error: a missing, unreadable, or corrupt file
+    /// collapses to the safe inactive default. Only a hard permission error
+    /// propagates, because that is an operator problem, not a state problem.
     pub fn load(path: &Path) -> Result<StateFile> {
         Ok(Self::load_with_outcome(path)?.state_file)
     }
 
     /// Load state file from disk with structured outcome metadata.
     ///
-    /// Behaves identically to [`load`](Self::load) but additionally returns a
-    /// [`LoadOutcome`] that describes *how* the state was obtained (fresh
-    /// default, normal load, version migration, or corruption recovery).
+    /// One load policy:
+    /// - **Missing file** → `Ok(LoadResult { outcome: Missing, .. })`, inactive.
+    /// - **Unreadable (I/O error)** → `Ok(LoadResult { outcome: Unreadable, .. })`.
+    /// - **Malformed / failed integrity / no digest / incompatible version** →
+    ///   `Ok(LoadResult { outcome: Corrupt, .. })`.
+    /// - **Loaded and verified** → `Ok(LoadResult { outcome: Loaded, .. })`.
     ///
-    /// # Graceful Degradation (AR27, AR53)
-    ///
-    /// - **Missing file** → `Ok(LoadResult { outcome: FreshDefault, .. })`
-    /// - **Malformed JSON** → `Ok(LoadResult { outcome: RecoveredFromCorruption, .. })`
-    /// - **I/O error** → `Ok(LoadResult { outcome: RecoveredFromCorruption, .. })`
+    /// Only a permission error returns `Err`; every other problem is reported
+    /// through the outcome so no command (including emergency) is broken by a
+    /// damaged state file.
     pub fn load_with_outcome(path: &Path) -> Result<LoadResult> {
-        // Check if file exists
+        // Opportunistically sweep stale temp files left by an interrupted save.
+        //
+        // Skip this when the state file itself is a `.tmp*` path: that is never
+        // the real layout (the production state file is `state.json`), and a
+        // `.tmp*` target would otherwise match the sweep and delete itself.
+        let target_is_temp = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".tmp"));
+        if !target_is_temp && let Some(dir) = path.parent() {
+            remove_stale_temp_files(dir);
+        }
+
+        // Missing file is a legitimate "inactive" signal, not corruption.
         if !path.exists() {
             tracing::warn!(
                 "State file not found at {}, assuming INACTIVE",
@@ -349,11 +345,11 @@ impl StateFile {
             );
             return Ok(LoadResult {
                 state_file: StateFile::default(),
-                outcome: LoadOutcome::FreshDefault,
+                outcome: LoadOutcome::Missing,
             });
         }
 
-        // Read file contents
+        // Read file contents.
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
@@ -366,113 +362,189 @@ impl StateFile {
                 }
 
                 tracing::warn!(
-                    "State file unreadable at {}: {}, assuming INACTIVE",
+                    "State file unreadable at {}: {}, treating state as unknown",
                     path.display(),
                     e
                 );
                 return Ok(LoadResult {
                     state_file: StateFile::default(),
-                    outcome: LoadOutcome::RecoveredFromCorruption,
+                    outcome: LoadOutcome::Unreadable,
                 });
             }
         };
 
-        // Parse JSON
-        match serde_json::from_str::<StateFile>(&contents) {
-            Ok(mut state_file) => {
-                // Corruption-detection checksum verification BEFORE version migration.
-                // The checksum was computed with the original version string during save,
-                // so we must verify it before changing the version field.
-                match &state_file.checksum {
-                    Some(stored_checksum) => {
-                        let mut for_hash = state_file.clone();
-                        for_hash.checksum = None;
-                        let hash_value = serde_json::to_value(&for_hash).map_err(|e| {
-                            NailsError::ConfigError(format!(
-                                "Failed to serialize state for checksum verification: {}",
-                                e
-                            ))
-                        })?;
-                        let hash_json = hash_value.to_string();
-
-                        use sha2::Digest;
-                        let computed = hex::encode(sha2::Sha256::digest(hash_json.as_bytes()));
-
-                        if &computed != stored_checksum {
-                            return Err(NailsError::ChecksumMismatch(format!(
-                                "State file at {} may be corrupted (expected checksum {}, computed {})",
-                                path.display(),
-                                stored_checksum,
-                                computed
-                            )));
-                        }
-                    }
-                    None => {
-                        tracing::warn!(
-                            path = %path.display(),
-                            "State file has no checksum (migration from older version) - accepting without verification"
-                        );
-                    }
-                }
-
-                // Version compatibility check (after checksum verification)
-                let current_version = env!("CARGO_PKG_VERSION");
-                let stored_version = state_file.version.clone();
-
-                let current_major = current_version
-                    .split('.')
-                    .next()
-                    .and_then(|v| v.parse::<u32>().ok())
-                    .unwrap_or(0);
-                let stored_major = stored_version
-                    .split('.')
-                    .next()
-                    .and_then(|v| v.parse::<u32>().ok())
-                    .unwrap_or(0);
-
-                if stored_major > current_major {
-                    tracing::error!(
-                        current_version = %current_version,
-                        stored_version = %stored_version,
-                        path = %path.display(),
-                        "State file version is from a future major version - cannot load"
-                    );
-                    return Err(NailsError::InvalidState(format!(
-                        "State file version {} is incompatible with current version {} (stored version is from a future major version)",
-                        stored_version, current_version
-                    )));
-                }
-
-                let outcome = if stored_version != current_version {
-                    tracing::info!(
-                        current_version = %current_version,
-                        stored_version = %stored_version,
-                        "State file version differs from current version (loading anyway - compatible)"
-                    );
-                    state_file.version = current_version.to_string();
-                    LoadOutcome::Migrated {
-                        from_version: stored_version,
-                    }
-                } else {
-                    LoadOutcome::Normal
-                };
-
-                Ok(LoadResult {
-                    state_file,
-                    outcome,
-                })
-            }
+        // Parse JSON.
+        let state_file = match serde_json::from_str::<StateFile>(&contents) {
+            Ok(sf) => sf,
             Err(e) => {
                 tracing::warn!(
-                    "State file malformed at {}: {}, assuming INACTIVE",
+                    "State file malformed at {}: {}, treating state as unknown",
                     path.display(),
                     e
                 );
-                Ok(LoadResult {
-                    state_file: StateFile::default(),
-                    outcome: LoadOutcome::RecoveredFromCorruption,
-                })
+                return Ok(corrupt_result());
+            }
+        };
+
+        // Integrity: a trustworthy file carries a digest that matches its body.
+        // A file with no digest is treated as corrupt, never silently accepted.
+        match &state_file.integrity_sha256 {
+            Some(stored) => {
+                let mut for_hash = state_file.clone();
+                for_hash.integrity_sha256 = None;
+                let computed = compute_integrity(&for_hash)?;
+                if &computed != stored {
+                    tracing::warn!(
+                        path = %path.display(),
+                        "State file integrity digest mismatch, treating state as unknown"
+                    );
+                    return Ok(corrupt_result());
+                }
+            }
+            None => {
+                tracing::warn!(
+                    path = %path.display(),
+                    "State file has no integrity digest, treating state as unknown"
+                );
+                return Ok(corrupt_result());
             }
         }
+
+        // Reject files from an incompatible (newer major) schema version. With
+        // no backwards-compatibility guarantee we do not migrate; an unreadable
+        // schema is reported as corrupt (effectively unknown), not a hard error.
+        let current_major = major_version(env!("CARGO_PKG_VERSION"));
+        let stored_major = major_version(&state_file.version);
+        if stored_major > current_major {
+            tracing::warn!(
+                current_version = %env!("CARGO_PKG_VERSION"),
+                stored_version = %state_file.version,
+                path = %path.display(),
+                "State file was written by a newer major version, treating state as unknown"
+            );
+            return Ok(corrupt_result());
+        }
+
+        Ok(LoadResult {
+            state_file,
+            outcome: LoadOutcome::Loaded,
+        })
+    }
+}
+
+/// Build the safe-default result used for every corruption case.
+fn corrupt_result() -> LoadResult {
+    LoadResult {
+        state_file: StateFile::default(),
+        outcome: LoadOutcome::Corrupt,
+    }
+}
+
+/// Compute the SHA-256 integrity digest over a state file.
+///
+/// The caller is responsible for clearing `integrity_sha256` first so the digest
+/// is computed over a deterministic body.
+fn compute_integrity(state: &StateFile) -> Result<String> {
+    use sha2::Digest;
+    let value = serde_json::to_value(state).map_err(|e| {
+        NailsError::ConfigError(format!(
+            "Failed to serialize state for integrity digest: {}",
+            e
+        ))
+    })?;
+    let json = value.to_string();
+    Ok(hex::encode(sha2::Sha256::digest(json.as_bytes())))
+}
+
+/// Parse the major component of a semver string, defaulting to 0.
+fn major_version(version: &str) -> u32 {
+    version
+        .split('.')
+        .next()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+/// Read the kernel boot id, returning `None` when it is unavailable or empty.
+fn read_boot_id() -> Option<String> {
+    match std::fs::read_to_string(BOOT_ID_PATH) {
+        Ok(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+/// Remove stale temp siblings left by an interrupted atomic write.
+///
+/// `tempfile::NamedTempFile` names its files with a `.tmp` prefix; if a save
+/// crashed between creating the temp file and the rename, the leftover would
+/// otherwise accumulate on the hidden volume forever.
+fn remove_stale_temp_files(dir: &Path) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let is_temp = name.to_str().is_some_and(|name| name.starts_with(".tmp"));
+        if !is_temp {
+            continue;
+        }
+        // Only sweep temps old enough to be leftovers from a crashed save, never
+        // one a concurrent (lock-holding) save is still writing.
+        let stale = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|mtime| now.duration_since(mtime).ok())
+            .is_some_and(|age| age >= STALE_TEMP_AGE);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// fsync a directory so a rename into it is durable across a crash.
+fn sync_dir(dir: &Path) -> Result<()> {
+    let handle = std::fs::File::open(dir)?;
+    handle.sync_all()?;
+    #[cfg(test)]
+    sync_probe::record_dir_sync();
+    Ok(())
+}
+
+/// Test-only observation seam for the durability fsyncs.
+///
+/// Compiled only under `cfg(test)`, so the production save path always performs
+/// the real `fsync` and records nothing; the counters merely let tests assert
+/// that the file and directory syncs actually ran.
+#[cfg(test)]
+pub(crate) mod sync_probe {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static FILE_SYNCS: AtomicUsize = AtomicUsize::new(0);
+    static DIR_SYNCS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn record_file_sync() {
+        FILE_SYNCS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn record_dir_sync() {
+        DIR_SYNCS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn file_syncs() -> usize {
+        FILE_SYNCS.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn dir_syncs() -> usize {
+        DIR_SYNCS.load(Ordering::SeqCst)
     }
 }

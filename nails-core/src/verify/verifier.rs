@@ -417,14 +417,21 @@ impl<F: Filesystem> Verifier<F> {
                     .with_fix_guidance("Run 'nails deactivate --force' to complete deactivation"),
                 );
             }
-            crate::SystemState::Emergency { .. } => {
+            crate::SystemState::Degraded {
+                remaining_mounts, ..
+            } => {
                 findings.push(
                     Finding::new(
                         Severity::Critical,
                         "state",
-                        "State file indicates EMERGENCY state — system may have residual artifacts",
+                        format!(
+                            "State file indicates DEGRADED state — {} mount(s) may still be live",
+                            remaining_mounts.len()
+                        ),
                     )
-                    .with_fix_guidance("Run 'nails verify --deep' after manual cleanup"),
+                    .with_fix_guidance(
+                        "Run 'nails recover' to finish teardown, then 'nails verify --deep'",
+                    ),
                 );
             }
             crate::SystemState::Inactive => {

@@ -1,5 +1,5 @@
 # Test 09: State File Integrity
-# Tests state file existence, permissions, tampering detection, and persistence
+# Tests state file existence, permissions, corruption detection, and persistence
 
 { self, ... }:
 let

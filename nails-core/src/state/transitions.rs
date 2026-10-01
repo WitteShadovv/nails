@@ -2,16 +2,12 @@
 //!
 //! Type-safe state transition functions for the NAILS state machine.
 //!
-//! ## Overview
-//!
-//! This module implements the transition logic for `SystemState`, ensuring
-//! that only valid state transitions can occur at compile time.
-//!
 //! ## Valid State Transitions
 //!
 //! ```text
 //! Inactive → Activating → Active → Deactivating → Inactive
-//! Any State → Emergency
+//! Active/Activating/Deactivating → Degraded (partial teardown)
+//! Degraded → Inactive (recover / completed emergency teardown)
 //! ```
 
 use super::SystemState;
@@ -24,12 +20,6 @@ impl SystemState {
     ///
     /// # Valid From States
     /// - `Inactive`
-    ///
-    /// # Invalid From States
-    /// - `Activating` - Already activating
-    /// - `Active` - Already active
-    /// - `Deactivating` - Must complete deactivation first
-    /// - `Emergency` - Cannot activate from emergency state
     ///
     /// # Returns
     /// - `Ok(SystemState::Activating)` - Transition successful
@@ -56,8 +46,8 @@ impl SystemState {
             SystemState::Deactivating { .. } => Err(NailsError::InvalidState(
                 "Cannot activate: deactivation in progress".into(),
             )),
-            SystemState::Emergency { .. } => Err(NailsError::InvalidState(
-                "Cannot activate: system in emergency state".into(),
+            SystemState::Degraded { .. } => Err(NailsError::InvalidState(
+                "Cannot activate: system is degraded (run recover first)".into(),
             )),
         }
     }
@@ -69,12 +59,6 @@ impl SystemState {
     ///
     /// # Valid From States
     /// - `Activating`
-    ///
-    /// # Invalid From States
-    /// - `Inactive` - Must call begin_activation first
-    /// - `Active` - Already active
-    /// - `Deactivating` - Cannot activate while deactivating
-    /// - `Emergency` - Cannot activate from emergency state
     ///
     /// # Returns
     /// - `Ok(SystemState::Active)` - Transition successful
@@ -95,8 +79,8 @@ impl SystemState {
             SystemState::Deactivating { .. } => Err(NailsError::InvalidState(
                 "Cannot complete activation: deactivation in progress".into(),
             )),
-            SystemState::Emergency { .. } => Err(NailsError::InvalidState(
-                "Cannot complete activation: system in emergency state".into(),
+            SystemState::Degraded { .. } => Err(NailsError::InvalidState(
+                "Cannot complete activation: system is degraded (run recover first)".into(),
             )),
         }
     }
@@ -105,12 +89,6 @@ impl SystemState {
     ///
     /// # Valid From States
     /// - `Active`
-    ///
-    /// # Invalid From States
-    /// - `Inactive` - Nothing to deactivate
-    /// - `Activating` - Must complete or rollback activation first
-    /// - `Deactivating` - Already deactivating
-    /// - `Emergency` - Use emergency shutdown instead
     ///
     /// # Returns
     /// - `Ok(SystemState::Deactivating)` - Transition successful
@@ -129,8 +107,8 @@ impl SystemState {
             SystemState::Deactivating { .. } => Err(NailsError::InvalidState(
                 "Cannot deactivate: deactivation already in progress".into(),
             )),
-            SystemState::Emergency { .. } => Err(NailsError::InvalidState(
-                "Cannot deactivate: system in emergency state".into(),
+            SystemState::Degraded { .. } => Err(NailsError::InvalidState(
+                "Cannot deactivate: system is degraded (run recover to finish teardown)".into(),
             )),
         }
     }
@@ -139,12 +117,6 @@ impl SystemState {
     ///
     /// # Valid From States
     /// - `Deactivating`
-    ///
-    /// # Invalid From States
-    /// - `Inactive` - Already inactive
-    /// - `Activating` - Must complete or rollback activation first
-    /// - `Active` - Must call begin_deactivation first
-    /// - `Emergency` - Cannot complete deactivation from emergency state
     ///
     /// # Returns
     /// - `Ok(SystemState::Inactive)` - Transition successful
@@ -162,22 +134,17 @@ impl SystemState {
                 "Cannot complete deactivation: not in deactivating state (call begin_deactivation first)"
                     .into(),
             )),
-            SystemState::Emergency { .. } => Err(NailsError::InvalidState(
-                "Cannot complete deactivation: system in emergency state".into(),
+            SystemState::Degraded { .. } => Err(NailsError::InvalidState(
+                "Cannot complete deactivation: system is degraded (run recover instead)".into(),
             )),
         }
     }
 
-    /// Trigger emergency shutdown from any state
+    /// Enter the degraded state after a partial teardown or rollback.
     ///
-    /// # Valid From States
-    /// - **Any state** (including Emergency - idempotent)
-    ///
-    /// Emergency transitions are always allowed regardless of current state,
-    /// as they represent a critical security response to forensic threats.
-    ///
-    /// # Returns
-    /// - `Ok(SystemState::Emergency)` - Always succeeds
+    /// Allowed from any state: a teardown can leave overlays behind no matter
+    /// where it started. `remaining_mounts` records the mount points that may
+    /// still be live so the operator can finish the job.
     ///
     /// # Example
     /// ```
@@ -187,36 +154,73 @@ impl SystemState {
     ///     activated_at: chrono::Utc::now(),
     ///     overlays: vec![],
     /// };
-    /// let emergency = state.trigger_emergency().expect("Emergency always succeeds");
+    /// let degraded = state.enter_degraded("unmount of /home failed".into(), vec![]);
+    /// assert!(degraded.is_degraded());
+    /// ```
+    pub fn enter_degraded(&self, reason: String, remaining_mounts: Vec<PathBuf>) -> SystemState {
+        SystemState::Degraded {
+            since: Utc::now(),
+            reason,
+            remaining_mounts,
+        }
+    }
+
+    /// Recover from the degraded state back to Inactive.
+    ///
+    /// # Valid From States
+    /// - `Degraded` - teardown has since completed
+    /// - `Inactive` - idempotent no-op
+    ///
+    /// # Returns
+    /// - `Ok(SystemState::Inactive)` - Recovery successful
+    /// - `Err(NailsError::InvalidState)` - Nothing to recover from
+    pub fn recover(&self) -> Result<SystemState> {
+        match self {
+            SystemState::Degraded { .. } | SystemState::Inactive => Ok(SystemState::Inactive),
+            other => Err(NailsError::InvalidState(format!(
+                "Cannot recover: system is not degraded (current state: {other:?})"
+            ))),
+        }
+    }
+
+    /// Drive the system to Inactive as the target of an emergency teardown.
+    ///
+    /// Always allowed from any state: emergency teardown is a critical security
+    /// response that must never be blocked by the current state. A *successful*
+    /// emergency teardown ends Inactive; a teardown that leaves overlays behind
+    /// is recorded with [`enter_degraded`](Self::enter_degraded) instead.
+    ///
+    /// # Example
+    /// ```
+    /// use nails_core::SystemState;
+    ///
+    /// let state = SystemState::Active {
+    ///     activated_at: chrono::Utc::now(),
+    ///     overlays: vec![],
+    /// };
+    /// let after = state.trigger_emergency().expect("Emergency always succeeds");
+    /// assert!(after.is_inactive());
     /// ```
     pub fn trigger_emergency(&self) -> Result<SystemState> {
-        // Emergency transition is always allowed from any state
-        Ok(SystemState::Emergency {
-            triggered_at: Utc::now(),
-        })
+        Ok(SystemState::Inactive)
     }
 
     /// Check if system is in Active state
-    ///
-    /// # Returns
-    /// - `true` if state is `Active`
-    /// - `false` otherwise
     pub fn is_active(&self) -> bool {
         matches!(self, SystemState::Active { .. })
     }
 
     /// Check if system is in Inactive state
-    ///
-    /// # Returns
-    /// - `true` if state is `Inactive`
-    /// - `false` otherwise
     pub fn is_inactive(&self) -> bool {
         matches!(self, SystemState::Inactive)
     }
 
+    /// Check if system is in the Degraded state
+    pub fn is_degraded(&self) -> bool {
+        matches!(self, SystemState::Degraded { .. })
+    }
+
     /// Check if system can be deactivated
-    ///
-    /// Returns true if the system is in a state where deactivation is valid.
     ///
     /// # Returns
     /// - `true` if state is `Active` (can call begin_deactivation)

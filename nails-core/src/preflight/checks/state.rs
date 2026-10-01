@@ -88,8 +88,9 @@ impl<F: Filesystem> PreFlightCheck<F> for StateCheck {
             SystemState::Deactivating { .. } => Ok(CheckResult::Fail(
                 "System is currently deactivating. Wait for completion or reboot if stuck.".into(),
             )),
-            SystemState::Emergency { .. } => Ok(CheckResult::Fail(
-                "System is in emergency state. Reboot to reset state.".into(),
+            SystemState::Degraded { .. } => Ok(CheckResult::Fail(
+                "System is degraded after a partial teardown. Run 'nails recover' before activating."
+                    .into(),
             )),
         }
     }
@@ -189,18 +190,20 @@ mod tests {
     }
 
     #[test]
-    fn test_state_check_emergency_state_fail() {
-        // AC 6: Given current state is Emergency, When StateCheck runs, Then returns Fail with reboot guidance
+    fn test_state_check_degraded_state_fail() {
+        // Given current state is Degraded, StateCheck returns Fail with recovery guidance.
         let fs = MockFilesystem::new();
-        let check = StateCheck::new(SystemState::Emergency {
-            triggered_at: Utc::now(),
+        let check = StateCheck::new(SystemState::Degraded {
+            since: Utc::now(),
+            reason: "unmount failed".into(),
+            remaining_mounts: vec![],
         });
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
         assert_eq!(
             result.message(),
-            "System is in emergency state. Reboot to reset state."
+            "System is degraded after a partial teardown. Run 'nails recover' before activating."
         );
     }
 
@@ -232,11 +235,13 @@ mod tests {
         });
         assert!(check_deactivating.run(&fs).unwrap().is_fail());
 
-        // Emergency -> Fail
-        let check_emergency = StateCheck::new(SystemState::Emergency {
-            triggered_at: Utc::now(),
+        // Degraded -> Fail
+        let check_degraded = StateCheck::new(SystemState::Degraded {
+            since: Utc::now(),
+            reason: "unmount failed".into(),
+            remaining_mounts: vec![],
         });
-        assert!(check_emergency.run(&fs).unwrap().is_fail());
+        assert!(check_degraded.run(&fs).unwrap().is_fail());
     }
 
     #[test]

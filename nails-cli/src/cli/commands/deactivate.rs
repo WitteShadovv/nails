@@ -73,6 +73,9 @@ pub fn execute(
     }
 
     let state_path = config.state_file_path.clone();
+    // Retained for the state lock after detach, since `config` and the clone
+    // above are moved into the manager below.
+    let lock_state_path = state_path.clone();
 
     // Create manager
     let filesystem = RealFilesystem;
@@ -90,6 +93,10 @@ pub fn execute(
         }
         std::process::exit(2);
     }
+
+    // Take the exclusive state lock after any detach, so a concurrent operation
+    // fails fast instead of racing this teardown.
+    let _state_lock = super::acquire_state_lock_or_exit(&lock_state_path);
 
     // Run quick deactivation (restore symlink + reboot)
     match NailsManager::deactivate(Arc::clone(&manager)) {

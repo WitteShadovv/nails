@@ -154,6 +154,10 @@ fn create_dir_0700(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 fn create_initial_state_file(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let state_path = base.join("state.json");
 
+    // Hold the exclusive state lock while touching the state file, so init cannot
+    // race a concurrent activate/deactivate over the same hidden volume.
+    let _state_lock = nails_core::StateLock::try_acquire(base).map_err(|e| e.to_string())?;
+
     if state_path.exists() {
         if !state_path.is_file() {
             return Err(format!(

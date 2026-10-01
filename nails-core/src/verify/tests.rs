@@ -1092,15 +1092,18 @@ fn test_verify_state_inactive_no_state_findings() {
 }
 
 #[test]
-fn test_verify_state_emergency_is_critical() {
+fn test_verify_state_degraded_is_critical() {
     use crate::SystemState;
     use crate::state::StateFile;
     use chrono::Utc;
+    use std::path::PathBuf;
 
     let fs = MockFilesystem::new();
     let state = StateFile {
-        state: SystemState::Emergency {
-            triggered_at: Utc::now(),
+        state: SystemState::Degraded {
+            since: Utc::now(),
+            reason: "unmount of /home failed".into(),
+            remaining_mounts: vec![PathBuf::from("/home")],
         },
         ..StateFile::default()
     };
@@ -1109,13 +1112,13 @@ fn test_verify_state_emergency_is_critical() {
     let verifier = Verifier::with_config(fs, config, Some(state), StateFileStatus::NotChecked);
     let result = verifier.run(false).unwrap();
 
-    let emergency_findings: Vec<_> = result
+    let degraded_findings: Vec<_> = result
         .findings
         .iter()
-        .filter(|f| f.category == "state" && f.message.contains("EMERGENCY"))
+        .filter(|f| f.category == "state" && f.message.contains("DEGRADED"))
         .collect();
-    assert_eq!(emergency_findings.len(), 1);
-    assert_eq!(emergency_findings[0].severity, Severity::Critical);
+    assert_eq!(degraded_findings.len(), 1);
+    assert_eq!(degraded_findings[0].severity, Severity::Critical);
 }
 
 #[test]

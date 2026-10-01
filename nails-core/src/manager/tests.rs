@@ -389,8 +389,9 @@ fn test_verify_overlay_status_active_with_mounted_overlays_ok() {
     };
 
     // Save manually
-    let json = serde_json::to_string_pretty(&state_file).unwrap();
-    std::fs::write(&state_path, json).unwrap();
+    state_file
+        .save_with_custom_root(&state_path, temp_dir.path())
+        .unwrap();
 
     // Verify should succeed
     let result = manager.verify_overlay_status();
@@ -431,8 +432,9 @@ fn test_verify_overlay_status_active_with_missing_overlay_error() {
     };
 
     // Save manually
-    let json = serde_json::to_string_pretty(&state_file).unwrap();
-    std::fs::write(&state_path, json).unwrap();
+    state_file
+        .save_with_custom_root(&state_path, temp_dir.path())
+        .unwrap();
 
     // Verify should fail (state claims mounted but it's not)
     let result = manager.verify_overlay_status();
@@ -523,8 +525,9 @@ fn test_activate_from_non_inactive_returns_error() {
         },
         ..StateFile::default()
     };
-    let json = serde_json::to_string_pretty(&state_file).unwrap();
-    std::fs::write(&state_path, json).unwrap();
+    state_file
+        .save_with_custom_root(&state_path, temp_dir.path())
+        .unwrap();
 
     // Force manager to reload state from disk
     *manager.lock().unwrap().cached_state.lock().unwrap() = None;
@@ -3092,8 +3095,9 @@ fn test_verify_overlay_status_inactive_with_mounted_overlay_error() {
     };
 
     // Save manually
-    let json = serde_json::to_string_pretty(&state_file).unwrap();
-    std::fs::write(&state_path, json).unwrap();
+    state_file
+        .save_with_custom_root(&state_path, temp_dir.path())
+        .unwrap();
 
     // Verify should fail (state claims Inactive but overlay is mounted)
     let result = manager.verify_overlay_status();
@@ -3136,8 +3140,9 @@ fn test_verify_overlay_status_transitional_state_skipped() {
     };
 
     // Save manually
-    let json = serde_json::to_string_pretty(&state_file).unwrap();
-    std::fs::write(&state_path, json).unwrap();
+    state_file
+        .save_with_custom_root(&state_path, temp_dir.path())
+        .unwrap();
 
     // Verify should succeed (transitional states are skipped - line 751)
     let result = manager.verify_overlay_status();
@@ -7393,7 +7398,9 @@ fn test_config_fingerprint_field_persistence() {
         overlay_status: HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
-        checksum: None,
+        boot_id: None,
+        owner_pid: 0,
+        integrity_sha256: None,
     };
     let state_json = serde_json::to_string_pretty(&initial_state).unwrap();
     std::fs::write(&state_path, state_json).unwrap();

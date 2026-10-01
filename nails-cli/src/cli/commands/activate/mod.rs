@@ -190,6 +190,9 @@ pub fn execute(
     }
 
     let state_path = config.state_file_path.clone();
+    // Retained for taking the inter-process state lock after any detach, since
+    // `config` (and the clone above) are moved into the manager below.
+    let lock_state_path = state_path.clone();
 
     // Create NailsManager with real filesystem (enable NixOS switching when flake is present)
     let filesystem = RealFilesystem;
@@ -361,6 +364,26 @@ pub fn execute(
     if let Err(e) = maybe_detach_for_session_kill(kill_session, &argv, session_ctx.as_ref()) {
         eprintln!("Error: {}", e);
         std::process::exit(2);
+    }
+
+    // Take the exclusive state lock (after any detach, so only the process that
+    // performs the activation holds it). A concurrent operation fails fast here.
+    let _state_lock = super::acquire_state_lock_or_exit(&lock_state_path);
+
+    // Refuse to activate over a state file we cannot trust: a corrupt or unreadable
+    // file means the real state is unknown, and mounting on top of it could leak.
+    {
+        let mgr = super::lock_manager_or_exit(&manager, "reading state before activation");
+        if let Ok((_, outcome)) = mgr.current_state_with_outcome()
+            && outcome.is_unknown()
+        {
+            drop(mgr);
+            eprintln!(
+                "Error: refusing to activate: the state file is corrupt or unreadable, so the \
+                 current state is unknown. Run 'nails verify' and recover the hidden volume first."
+            );
+            std::process::exit(1);
+        }
     }
 
     // Run activation with options and measure duration

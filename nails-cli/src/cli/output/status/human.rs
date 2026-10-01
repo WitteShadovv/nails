@@ -2,6 +2,16 @@ use nails_core::SystemState;
 
 use super::read_recent_logs;
 
+/// Human-readable state label, reporting "Unknown" when the state file could not
+/// be read or trusted rather than claiming the safe default is the real state.
+fn state_label(report: &nails_core::status::StatusReport) -> String {
+    if report.load_outcome.is_unknown() {
+        "Unknown".to_string()
+    } else {
+        format!("{:?}", report.state)
+    }
+}
+
 pub fn print_status_human(
     report: &nails_core::status::StatusReport,
     verbose: bool,
@@ -27,7 +37,7 @@ pub fn print_status_human(
     println!("╰─────────────────────────────────────╯");
     println!();
 
-    println!("State:              {:?}", report.state);
+    println!("State:              {}", state_label(report));
 
     let posture = report.security_posture();
     println!("Security Posture:   {}", posture);
@@ -99,13 +109,13 @@ pub fn print_status_human(
         println!("  State file:         {}", state_path.display());
         println!("  Log path:           {}", log_path.display());
         match &report.load_outcome {
-            LoadOutcome::FreshDefault => println!("  State loaded:       fresh default (no file)"),
-            LoadOutcome::Normal => println!("  State loaded:       normal"),
-            LoadOutcome::Migrated { from_version } => {
-                println!("  State loaded:       migrated from v{}", from_version)
+            LoadOutcome::Loaded => println!("  State loaded:       normal"),
+            LoadOutcome::Missing => println!("  State loaded:       fresh default (no file)"),
+            LoadOutcome::Unreadable => {
+                println!("  State loaded:       unreadable (state unknown, using defaults)")
             }
-            LoadOutcome::RecoveredFromCorruption => {
-                println!("  State loaded:       recovered from corruption (using defaults)")
+            LoadOutcome::Corrupt => {
+                println!("  State loaded:       corrupt (state unknown, using defaults)")
             }
         }
     }
@@ -139,7 +149,7 @@ fn print_status_no_color(
     println!("╰─────────────────────────────────────╯");
     println!();
 
-    println!("State:              {:?}", report.state);
+    println!("State:              {}", state_label(report));
 
     let posture = report.security_posture();
     println!(
@@ -233,13 +243,13 @@ fn print_status_no_color(
         println!("  State file:         {}", state_path.display());
         println!("  Log path:           {}", log_path.display());
         match &report.load_outcome {
-            LoadOutcome::FreshDefault => println!("  State loaded:       fresh default (no file)"),
-            LoadOutcome::Normal => println!("  State loaded:       normal"),
-            LoadOutcome::Migrated { from_version } => {
-                println!("  State loaded:       migrated from v{}", from_version)
+            LoadOutcome::Loaded => println!("  State loaded:       normal"),
+            LoadOutcome::Missing => println!("  State loaded:       fresh default (no file)"),
+            LoadOutcome::Unreadable => {
+                println!("  State loaded:       unreadable (state unknown, using defaults)")
             }
-            LoadOutcome::RecoveredFromCorruption => {
-                println!("  State loaded:       recovered from corruption (using defaults)")
+            LoadOutcome::Corrupt => {
+                println!("  State loaded:       corrupt (state unknown, using defaults)")
             }
         }
     }

@@ -172,8 +172,16 @@ fn logs_contain(s: &str) -> bool {
 
 /// Helper to create a temporary state file
 fn create_temp_state_file(state_file: &StateFile) -> NamedTempFile {
+    // Seal with the same integrity digest the production save path writes, so the
+    // loader accepts the file instead of treating it as corrupt.
+    let mut sealed = state_file.clone();
+    sealed.integrity_sha256 = None;
+    let hash_input = serde_json::to_value(&sealed).unwrap().to_string();
+    use sha2::Digest;
+    sealed.integrity_sha256 = Some(hex::encode(sha2::Sha256::digest(hash_input.as_bytes())));
+
     let mut temp_file = NamedTempFile::new().unwrap();
-    let json = serde_json::to_string_pretty(state_file).unwrap();
+    let json = serde_json::to_string_pretty(&sealed).unwrap();
     temp_file.write_all(json.as_bytes()).unwrap();
     temp_file.flush().unwrap();
     temp_file
@@ -389,13 +397,16 @@ fn test_status_command_deactivating() {
 }
 
 #[test]
-fn test_status_command_emergency() {
+fn test_status_command_degraded() {
     let fs = MockFilesystem::new();
     let config = Config::default();
-    let triggered_at = Utc::now();
 
     let state_file = StateFile {
-        state: SystemState::Emergency { triggered_at },
+        state: SystemState::Degraded {
+            since: Utc::now(),
+            reason: "unmount of /home failed".into(),
+            remaining_mounts: vec![],
+        },
         ..StateFile::default()
     };
     let temp_file = create_temp_state_file(&state_file);
@@ -403,7 +414,7 @@ fn test_status_command_emergency() {
     let cmd = StatusCommand::new(fs, config, temp_file.path().to_path_buf());
     let report = cmd.run().unwrap();
 
-    assert!(matches!(report.state, SystemState::Emergency { .. }));
+    assert!(matches!(report.state, SystemState::Degraded { .. }));
     assert!(report.overlays.is_empty());
     assert_eq!(report.overlay_verification, VerificationStatus::Skipped);
     assert!(report.uptime.is_none());
@@ -532,7 +543,7 @@ fn test_status_report_serialization() {
         opsec_reminders: vec![],
         overlay_details: None,
         overlay_mount_statuses: vec![],
-        load_outcome: crate::LoadOutcome::FreshDefault,
+        load_outcome: crate::LoadOutcome::Missing,
     };
 
     let json = serde_json::to_string(&report).unwrap();
@@ -679,10 +690,12 @@ fn test_security_posture_inactive() {
 }
 
 #[test]
-fn test_security_posture_emergency() {
+fn test_security_posture_degraded() {
     let report = StatusReport {
-        state: SystemState::Emergency {
-            triggered_at: Utc::now(),
+        state: SystemState::Degraded {
+            since: Utc::now(),
+            reason: "unmount of /home failed".into(),
+            remaining_mounts: vec![],
         },
         overlay_verification: VerificationStatus::Skipped,
         ..Default::default()
@@ -1275,7 +1288,7 @@ fn test_verification_detects_overlay_status_not_in_active_overlays() {
 }
 
 #[test]
-fn test_status_command_surfaces_load_outcome_for_missing_and_migrated_files() {
+fn test_status_command_surfaces_load_outcome_for_missing_and_loaded_files() {
     let temp_dir = tempfile::tempdir().unwrap();
     let missing_path = temp_dir.path().join("missing-state.json");
 
@@ -1286,18 +1299,16 @@ fn test_status_command_surfaces_load_outcome_for_missing_and_migrated_files() {
     )
     .run()
     .unwrap();
-    assert_eq!(
-        missing_report.load_outcome,
-        crate::LoadOutcome::FreshDefault
-    );
+    assert_eq!(missing_report.load_outcome, crate::LoadOutcome::Missing);
 
+    // A compatible (same-major) version loads cleanly; there is no migration.
     let state_file = StateFile {
         version: "0.0.5".to_string(),
         state: SystemState::Inactive,
         ..StateFile::default()
     };
     let temp_file = create_temp_state_file(&state_file);
-    let migrated_report = StatusCommand::new(
+    let loaded_report = StatusCommand::new(
         MockFilesystem::new(),
         Config::default(),
         temp_file.path().to_path_buf(),
@@ -1305,12 +1316,7 @@ fn test_status_command_surfaces_load_outcome_for_missing_and_migrated_files() {
     .run()
     .unwrap();
 
-    assert_eq!(
-        migrated_report.load_outcome,
-        crate::LoadOutcome::Migrated {
-            from_version: "0.0.5".to_string()
-        }
-    );
+    assert_eq!(loaded_report.load_outcome, crate::LoadOutcome::Loaded);
 }
 
 #[test]
@@ -1327,10 +1333,7 @@ fn test_status_command_recovers_from_corrupt_state_file() {
     .unwrap();
 
     assert_eq!(report.state, SystemState::Inactive);
-    assert_eq!(
-        report.load_outcome,
-        crate::LoadOutcome::RecoveredFromCorruption
-    );
+    assert_eq!(report.load_outcome, crate::LoadOutcome::Corrupt);
     assert_eq!(
         report.overlay_verification,
         VerificationStatus::NotApplicable

@@ -77,16 +77,16 @@ in
         wait_for_status_state("Activating", config_path=headless_config, timeout=180)
         assert_status_state("Activating", config_path=headless_config)
 
-    with subtest("second invocation fails while first activation is in progress"):
+    with subtest("second invocation fails fast on the inter-process lock"):
         rc, stdout, stderr = capture_command(
             "state-concurrent-secondary",
             f"nails --config {headless_config} activate --overlay-only --no-kill-session -y",
         )
-        assert rc == 1, f"Expected second activation to fail, got rc={rc}, stdout={stdout!r}, stderr={stderr!r}"
+        assert rc != 0, f"Expected second activation to fail, got rc={rc}, stdout={stdout!r}, stderr={stderr!r}"
         combined = (stdout + stderr).lower()
         assert (
-            "activating" in combined or "in progress" in combined or "wait for completion" in combined
-        ), f"Expected in-progress refusal, got stdout={stdout!r}, stderr={stderr!r}"
+            "another nails operation is running" in combined
+        ), f"Expected lock refusal naming the holder, got stdout={stdout!r}, stderr={stderr!r}"
 
     with subtest("release primary activation and confirm only one succeeds"):
         machine.succeed(f"rm -f {gate_path}")

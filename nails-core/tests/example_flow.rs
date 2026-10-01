@@ -232,16 +232,18 @@ fn test_emergency_deactivation() {
     let (arc, _fs, _config, _state_path, _tmp) = make_manager();
     force_active(&arc);
 
-    // Emergency transition is always valid from any state
+    // A partial emergency teardown can degrade from any live state.
     {
         let mut m = arc.lock().unwrap();
-        m.update_state(SystemState::Emergency {
-            triggered_at: chrono::Utc::now(),
+        m.update_state(SystemState::Degraded {
+            since: chrono::Utc::now(),
+            reason: "emergency teardown left mounts".into(),
+            remaining_mounts: vec![],
         })
         .unwrap();
         assert!(matches!(
             m.current_state().unwrap(),
-            SystemState::Emergency { .. }
+            SystemState::Degraded { .. }
         ));
     }
 }
@@ -286,15 +288,17 @@ fn test_status_from_various_states() {
         assert!(state.is_active());
     }
 
-    // Emergency
+    // Degraded
     {
         let mut m = arc.lock().unwrap();
-        m.force_state(SystemState::Emergency {
-            triggered_at: chrono::Utc::now(),
+        m.force_state(SystemState::Degraded {
+            since: chrono::Utc::now(),
+            reason: "unmount failed".into(),
+            remaining_mounts: vec![],
         })
         .unwrap();
         let state = m.current_state().unwrap();
-        assert!(matches!(state, SystemState::Emergency { .. }));
+        assert!(matches!(state, SystemState::Degraded { .. }));
         assert!(!state.is_active());
     }
 

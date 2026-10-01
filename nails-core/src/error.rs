@@ -174,9 +174,14 @@ pub enum NailsError {
     #[error("Cleanup failed: {0}")]
     CleanupError(String),
 
-    /// Checksum mismatch detected in state file (tamper detection)
-    #[error("Checksum mismatch: {0}")]
-    ChecksumMismatch(String),
+    /// Another nails process already holds the state lock.
+    ///
+    /// Every state-mutating command takes an exclusive lock on the hidden
+    /// volume's state directory before touching mounts or the state file, so a
+    /// second invocation fails fast instead of racing the first. The PID is the
+    /// one the current holder recorded in the lock file (`0` if unknown).
+    #[error("another nails operation is running (pid {pid})")]
+    OperationInProgress { pid: u32 },
 
     /// Fork operation failed during emergency deactivation
     ///
@@ -299,6 +304,12 @@ mod tests {
             path: std::path::PathBuf::from("/home"),
         };
         assert_eq!(err.to_string(), "Refused to unmount unmanaged mount: /home");
+
+        let err = NailsError::OperationInProgress { pid: 4242 };
+        assert_eq!(
+            err.to_string(),
+            "another nails operation is running (pid 4242)"
+        );
     }
 
     #[test]
@@ -406,6 +417,7 @@ mod tests {
         let _err20 = NailsError::RefusedUnmanagedUnmount {
             path: PathBuf::from("/test"),
         };
+        let _err21 = NailsError::OperationInProgress { pid: 1234 };
     }
 
     #[test]

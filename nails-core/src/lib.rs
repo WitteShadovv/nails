@@ -102,7 +102,10 @@ pub use manager::{
 };
 
 // State management exports
-pub use state::{FailedOverlayInfo, LoadOutcome, LoadResult, OverlayInfo, StateFile, SystemState};
+pub use state::{
+    EMERGENCY_LOCK_TIMEOUT, FailedOverlayInfo, LoadOutcome, LoadResult, OverlayInfo, StateFile,
+    StateLock, SystemState,
+};
 
 // Pre-flight validation exports
 pub use preflight::{

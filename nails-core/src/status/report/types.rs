@@ -207,7 +207,7 @@ pub struct StatusReport {
 }
 
 fn default_load_outcome() -> LoadOutcome {
-    LoadOutcome::FreshDefault
+    LoadOutcome::Missing
 }
 
 impl StatusReport {
@@ -218,7 +218,7 @@ impl StatusReport {
     /// - **Secure**: Active state with verified overlays
     /// - **Warning**: Active state with mismatched overlays, or transitional state
     /// - **Decoy**: Inactive state (normal decoy environment)
-    /// - **Critical**: Emergency state requiring immediate attention
+    /// - **Critical**: Degraded state requiring immediate attention
     pub fn security_posture(&self) -> SecurityPosture {
         match (&self.state, &self.overlay_verification) {
             (SystemState::Active { .. }, VerificationStatus::Verified) => SecurityPosture::Secure,
@@ -228,7 +228,7 @@ impl StatusReport {
             (SystemState::Activating { .. }, _) => SecurityPosture::Warning,
             (SystemState::Deactivating { .. }, _) => SecurityPosture::Warning,
             (SystemState::Inactive, _) => SecurityPosture::Decoy,
-            (SystemState::Emergency { .. }, _) => SecurityPosture::Critical,
+            (SystemState::Degraded { .. }, _) => SecurityPosture::Critical,
             // Fallback for edge cases (e.g., Active with Skipped/NotApplicable verification)
             _ => SecurityPosture::Warning,
         }

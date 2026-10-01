@@ -70,6 +70,19 @@ impl<F: Filesystem> NailsManager<F> {
         Ok(state)
     }
 
+    /// Load the current state together with how it was obtained, bypassing the cache.
+    ///
+    /// Unlike [`current_state`](Self::current_state) this does not hide a damaged
+    /// file behind the safe default: when the outcome
+    /// [`is_unknown`](crate::LoadOutcome::is_unknown) the caller can refuse to
+    /// mutate, or fall back to the live mount table, instead of trusting a state
+    /// that could not be read. Intended for mutating commands that have just
+    /// taken the inter-process lock and need the freshest, most honest state.
+    pub fn current_state_with_outcome(&self) -> Result<(SystemState, crate::LoadOutcome)> {
+        let result = StateFile::load_with_outcome(&self.state_file_path)?;
+        Ok((result.state_file.state.clone(), result.outcome))
+    }
+
     /// Force state transition without validation (for rollback use only)
     ///
     /// **⚠️ WARNING: This method bypasses ALL state transition validation.**
@@ -259,8 +272,17 @@ impl<F: Filesystem> NailsManager<F> {
             (SystemState::Activating { .. }, SystemState::Active { .. }) => true,
             (SystemState::Active { .. }, SystemState::Deactivating { .. }) => true,
             (SystemState::Deactivating { .. }, SystemState::Inactive) => true,
-            (_, SystemState::Emergency { .. }) => true, // Emergency always allowed
-            _ if current == new_state => true,          // Same state is allowed (idempotent)
+            // Partial teardown/rollback can degrade from any live state.
+            (
+                SystemState::Activating { .. }
+                | SystemState::Active { .. }
+                | SystemState::Deactivating { .. }
+                | SystemState::Degraded { .. },
+                SystemState::Degraded { .. },
+            ) => true,
+            // Recovery (or a completed emergency teardown) returns to Inactive.
+            (SystemState::Degraded { .. }, SystemState::Inactive) => true,
+            _ if current == new_state => true, // Same state is allowed (idempotent)
             _ => false,
         };
 
@@ -401,11 +423,11 @@ impl<F: Filesystem> NailsManager<F> {
                     }
                 }
                 _ => {
-                    // Transitional states (Activating, Deactivating, Emergency) are skipped
+                    // Transitional states (Activating, Deactivating, Degraded) are skipped
                     // because:
                     // - Activating: Overlays are being mounted, partial state is expected
                     // - Deactivating: Overlays are being unmounted, partial state is expected
-                    // - Emergency: System may be in inconsistent state by definition
+                    // - Degraded: System is partly torn down by definition
                     //
                     // These states are short-lived and verification is meaningless during
                     // the transition. Verification is only useful for stable states

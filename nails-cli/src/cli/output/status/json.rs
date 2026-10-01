@@ -3,8 +3,12 @@
 /// JSON output structure for status command (AC5)
 #[derive(serde::Serialize)]
 struct StatusJsonOutput {
-    /// System state (ACTIVE, INACTIVE, etc.)
+    /// System state (Active, Inactive, Degraded, or Unknown when the state file
+    /// could not be trusted).
     state: String,
+    /// Why the state is unknown (only present when `state` is "Unknown").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
     /// Security posture level (secure, warning, critical)
     security_posture: String,
     /// When the system was activated (ISO 8601)
@@ -60,10 +64,29 @@ struct OpSecReminderJson {
 ///
 /// * `report` - Status report from StatusCommand
 pub fn print_status_json(report: &nails_core::status::StatusReport) {
+    use nails_core::LoadOutcome;
     use nails_core::status::*;
 
+    // A state file that could not be read or trusted collapses to a safe default,
+    // but we report the real state as "Unknown" rather than claim it is Inactive.
+    let (state, error) = match report.load_outcome {
+        LoadOutcome::Corrupt => (
+            "Unknown".to_string(),
+            Some(
+                "state file is corrupt or has no integrity digest; the real state is unknown"
+                    .to_string(),
+            ),
+        ),
+        LoadOutcome::Unreadable => (
+            "Unknown".to_string(),
+            Some("state file could not be read; the real state is unknown".to_string()),
+        ),
+        LoadOutcome::Loaded | LoadOutcome::Missing => (format!("{:?}", report.state), None),
+    };
+
     let output = StatusJsonOutput {
-        state: format!("{:?}", report.state),
+        state,
+        error,
         security_posture: match report.security_posture() {
             SecurityPosture::Secure => "secure".to_string(),
             SecurityPosture::Warning => "warning".to_string(),

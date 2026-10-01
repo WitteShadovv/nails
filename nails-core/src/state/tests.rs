@@ -53,7 +53,7 @@ fn test_state_file_default() {
     assert_eq!(state_file.state, SystemState::Inactive);
     assert_eq!(state_file.nixos_generation, None);
     assert!(state_file.overlay_status.is_empty());
-    assert_eq!(state_file.checksum, None);
+    assert_eq!(state_file.integrity_sha256, None);
     // Just verify last_modified exists (can't test exact time)
     assert!(state_file.last_modified <= Utc::now());
 }
@@ -88,7 +88,9 @@ fn test_state_file_serialization() {
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:01Z")
             .unwrap()
             .with_timezone(&Utc),
-        checksum: None,
+        boot_id: None,
+        owner_pid: 0,
+        integrity_sha256: None,
         config_fingerprint: None,
     };
 
@@ -298,17 +300,23 @@ fn test_save_load_round_trip_with_inactive_state() {
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
             .unwrap()
             .with_timezone(&Utc),
-        checksum: None,
+        boot_id: None,
+        owner_pid: 0,
+        integrity_sha256: None,
         config_fingerprint: None,
     };
 
-    // Serialize to JSON manually (since we can't use save with temp dir)
-    let json = serde_json::to_string_pretty(&original).expect("Should serialize");
-    std::fs::write(&state_path, json).expect("Should write");
+    // Save through the real durable path so the file carries a valid digest.
+    original
+        .save_with_root(&state_path, state_dir.to_str().unwrap())
+        .expect("Should save");
 
-    // Load and verify
+    // Load and verify the persisted fields (save also stamps owner_pid/digest).
     let loaded = StateFile::load(&state_path).expect("Should load");
-    assert_eq!(loaded, original);
+    assert_eq!(loaded.state, original.state);
+    assert_eq!(loaded.version, original.version);
+    assert_eq!(loaded.nixos_generation, original.nixos_generation);
+    assert_eq!(loaded.last_modified, original.last_modified);
 }
 
 #[test]
@@ -345,13 +353,16 @@ fn test_save_load_round_trip_with_active_state() {
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:01Z")
             .unwrap()
             .with_timezone(&Utc),
-        checksum: None,
+        boot_id: None,
+        owner_pid: 0,
+        integrity_sha256: None,
         config_fingerprint: None,
     };
 
-    // Serialize manually
-    let json = serde_json::to_string_pretty(&original).expect("Should serialize");
-    std::fs::write(&state_path, json).expect("Should write");
+    // Save through the real durable path so the file carries a valid digest.
+    original
+        .save_with_root(&state_path, state_dir.to_str().unwrap())
+        .expect("Should save");
 
     // Load and verify
     let loaded = StateFile::load(&state_path).expect("Should load");
@@ -397,13 +408,16 @@ fn test_save_load_multiple_overlays() {
         overlay_status,
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
-        checksum: None,
+        boot_id: None,
+        owner_pid: 0,
+        integrity_sha256: None,
         config_fingerprint: None,
     };
 
-    // Serialize manually
-    let json = serde_json::to_string_pretty(&original).expect("Should serialize");
-    std::fs::write(&state_path, json).expect("Should write");
+    // Save through the real durable path so the file carries a valid digest.
+    original
+        .save_with_root(&state_path, state_dir.to_str().unwrap())
+        .expect("Should save");
 
     // Load and verify
     let loaded = StateFile::load(&state_path).expect("Should load");
@@ -427,22 +441,24 @@ fn test_version_field_serializes() {
 #[test]
 fn test_checksum_field_optional() {
     let state = StateFile::default();
-    assert_eq!(state.checksum, None);
+    assert_eq!(state.integrity_sha256, None);
 
     let json = serde_json::to_string(&state).expect("Should serialize");
-    // Checksum should not appear in JSON when None (skip_serializing_if)
-    assert!(!json.contains("\"checksum\""));
+    // Integrity digest should not appear in JSON when None (skip_serializing_if)
+    assert!(!json.contains("\"integrity_sha256\""));
 }
 
 #[test]
 fn test_checksum_field_present_when_set() {
     let state = StateFile {
-        checksum: Some("abc123".to_string()),
+        boot_id: None,
+        owner_pid: 0,
+        integrity_sha256: Some("abc123".to_string()),
         ..StateFile::default()
     };
 
     let json = serde_json::to_string(&state).expect("Should serialize");
-    assert!(json.contains("\"checksum\""));
+    assert!(json.contains("\"integrity_sha256\""));
     assert!(json.contains("\"abc123\""));
 }
 
@@ -544,7 +560,9 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
-        checksum: None,
+        boot_id: None,
+        owner_pid: 0,
+        integrity_sha256: None,
         config_fingerprint: None,
     };
 
@@ -623,7 +641,9 @@ fn test_persist_race_condition_handling() {
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
-        checksum: None,
+        boot_id: None,
+        owner_pid: 0,
+        integrity_sha256: None,
         config_fingerprint: None,
     };
 
@@ -667,11 +687,15 @@ fn create_test_manager_with_state(
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
-        checksum: None,
+        boot_id: None,
+        owner_pid: 0,
+        integrity_sha256: None,
         config_fingerprint: None,
     };
-    let json = serde_json::to_string_pretty(&state_file).unwrap();
-    std::fs::write(&state_path, json).unwrap();
+    // Save through the durable path so the file carries a valid integrity digest.
+    state_file
+        .save_with_custom_root(&state_path, mock_hidden_vol)
+        .unwrap();
 
     let fs = MockFilesystem::new();
     let config = Config {
@@ -1493,7 +1517,9 @@ fn test_state_file_permissions_are_0600() {
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
-        checksum: None,
+        boot_id: None,
+        owner_pid: 0,
+        integrity_sha256: None,
         config_fingerprint: None,
     };
     state
@@ -1510,7 +1536,7 @@ fn test_state_file_permissions_are_0600() {
     );
 }
 
-// ========== Checksum Verification Tests ==========
+// ========== Integrity (corruption-detection) Tests ==========
 
 #[test]
 fn test_checksum_round_trip_save_load() {
@@ -1527,7 +1553,9 @@ fn test_checksum_round_trip_save_load() {
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
             .unwrap()
             .with_timezone(&Utc),
-        checksum: None,
+        boot_id: None,
+        owner_pid: 0,
+        integrity_sha256: None,
         config_fingerprint: None,
     };
 
@@ -1540,7 +1568,7 @@ fn test_checksum_round_trip_save_load() {
 }
 
 #[test]
-fn test_checksum_tamper_detection() {
+fn test_integrity_mismatch_maps_to_unknown() {
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
     let mock_root = temp_dir.path().to_str().unwrap();
     let state_path = temp_dir.path().join("state.json");
@@ -1550,28 +1578,49 @@ fn test_checksum_tamper_detection() {
         .save_with_root(&state_path, mock_root)
         .expect("Should save");
 
-    // Tamper with the file: change a field but keep checksum
+    // Corrupt the file: change a field but keep the stale integrity digest.
     let mut raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
-    raw["nixos_generation"] = serde_json::Value::String("TAMPERED".to_string());
+    raw["nixos_generation"] = serde_json::Value::String("CORRUPTED".to_string());
     std::fs::write(&state_path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
 
-    let result = StateFile::load(&state_path);
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        NailsError::ChecksumMismatch(msg) => {
-            assert!(msg.contains("corrupted"));
-        }
-        other => panic!("Expected ChecksumMismatch, got: {:?}", other),
-    }
+    // A digest mismatch is never a hard error: it collapses to the safe default
+    // and reports the state as unknown so even emergency can still run.
+    let result = StateFile::load_with_outcome(&state_path).expect("Should not hard-error");
+    assert_eq!(result.outcome, LoadOutcome::Corrupt);
+    assert!(result.outcome.is_unknown());
+    assert_eq!(result.state_file.state, SystemState::Inactive);
+
+    // The convenience loader also returns Ok with the safe default.
+    let loaded = StateFile::load(&state_path).expect("Should not hard-error");
+    assert_eq!(loaded.state, SystemState::Inactive);
 }
 
 #[test]
-fn test_checksum_missing_migration_accepted() {
+fn test_truncated_file_maps_to_unknown() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let mock_root = temp_dir.path().to_str().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+
+    StateFile::default()
+        .save_with_root(&state_path, mock_root)
+        .expect("Should save");
+
+    // Truncate mid-file so the JSON no longer parses.
+    let contents = std::fs::read_to_string(&state_path).unwrap();
+    std::fs::write(&state_path, &contents[..contents.len() / 2]).unwrap();
+
+    let result = StateFile::load_with_outcome(&state_path).expect("Should not hard-error");
+    assert_eq!(result.outcome, LoadOutcome::Corrupt);
+    assert_eq!(result.state_file.state, SystemState::Inactive);
+}
+
+#[test]
+fn test_missing_integrity_digest_rejected() {
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
     let state_path = temp_dir.path().join("state.json");
 
-    // Write a valid state file WITHOUT checksum (simulates old version)
+    // Write a well-formed state file WITHOUT an integrity digest.
     let json = serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "state": "Inactive",
@@ -1582,9 +1631,10 @@ fn test_checksum_missing_migration_accepted() {
     });
     std::fs::write(&state_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
 
-    let loaded = StateFile::load(&state_path).expect("Should load without checksum (migration)");
-    assert_eq!(loaded.state, SystemState::Inactive);
-    assert_eq!(loaded.checksum, None);
+    // No digest means the file cannot be trusted: treated as corrupt, not accepted.
+    let result = StateFile::load_with_outcome(&state_path).expect("Should not hard-error");
+    assert_eq!(result.outcome, LoadOutcome::Corrupt);
+    assert_eq!(result.state_file.state, SystemState::Inactive);
 }
 
 #[test]
@@ -1600,7 +1650,7 @@ fn test_checksum_populated_after_save() {
 
     let raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
-    let checksum = raw["checksum"]
+    let checksum = raw["integrity_sha256"]
         .as_str()
         .expect("checksum should be present");
     assert_eq!(checksum.len(), 64, "SHA-256 hex should be 64 chars");
@@ -1725,14 +1775,14 @@ fn rewrite_version_and_recompute_checksum(state_path: &Path, new_version: &str) 
     let raw_json = std::fs::read_to_string(state_path).unwrap();
     let mut state_file: StateFile = serde_json::from_str(&raw_json).unwrap();
     state_file.version = new_version.to_string();
-    state_file.checksum = None;
+    state_file.integrity_sha256 = None;
 
     // Compute checksum the same way save_internal does
     let hash_value = serde_json::to_value(&state_file).unwrap();
     let hash_json = hash_value.to_string();
     use sha2::Digest;
     let computed = hex::encode(sha2::Sha256::digest(hash_json.as_bytes()));
-    state_file.checksum = Some(computed);
+    state_file.integrity_sha256 = Some(computed);
 
     let json = serde_json::to_string_pretty(&state_file).unwrap();
     std::fs::write(state_path, json).unwrap();
@@ -1763,15 +1813,16 @@ fn test_compatible_version_load_with_checksum() {
     rewrite_version_and_recompute_checksum(&state_path, "0.99.99");
 
     let loaded = StateFile::load(&state_path).expect(
-        "Should load state file with different compatible version without checksum failure",
+        "Should load state file with a different but compatible version without integrity failure",
     );
     assert_eq!(loaded.state, SystemState::Inactive);
     assert_eq!(loaded.nixos_generation, Some("gen-abc".to_string()));
-    assert_eq!(loaded.version, env!("CARGO_PKG_VERSION"));
+    // With no migration, the stored version is preserved verbatim.
+    assert_eq!(loaded.version, "0.99.99");
 }
 
 #[test]
-fn test_tampered_compatible_version_failure() {
+fn test_corrupt_compatible_version_maps_to_unknown() {
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
     let mock_root = temp_dir.path().to_str().unwrap();
     let state_path = temp_dir.path().join("state.json");
@@ -1781,25 +1832,20 @@ fn test_tampered_compatible_version_failure() {
         .save_with_root(&state_path, mock_root)
         .expect("Should save");
 
-    // Change version AND data but keep the OLD checksum
+    // Change version AND data but keep the OLD integrity digest.
     let mut raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
     raw["version"] = serde_json::Value::String("0.99.99".to_string());
-    raw["nixos_generation"] = serde_json::Value::String("TAMPERED".to_string());
+    raw["nixos_generation"] = serde_json::Value::String("CORRUPTED".to_string());
     std::fs::write(&state_path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
 
-    let result = StateFile::load(&state_path);
-    assert!(result.is_err(), "Tampered file should fail checksum");
-    match result.unwrap_err() {
-        NailsError::ChecksumMismatch(msg) => {
-            assert!(msg.contains("corrupted"));
-        }
-        other => panic!("Expected ChecksumMismatch, got: {:?}", other),
-    }
+    let result = StateFile::load_with_outcome(&state_path).expect("Should not hard-error");
+    assert_eq!(result.outcome, LoadOutcome::Corrupt);
+    assert_eq!(result.state_file.state, SystemState::Inactive);
 }
 
 #[test]
-fn test_future_major_version_rejection() {
+fn test_future_major_version_maps_to_unknown() {
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
     let mock_root = temp_dir.path().to_str().unwrap();
     let state_path = temp_dir.path().join("state.json");
@@ -1809,18 +1855,13 @@ fn test_future_major_version_rejection() {
         .save_with_root(&state_path, mock_root)
         .expect("Should save");
 
-    // Change to future major version and recompute checksum
+    // A newer major version is incompatible; re-seal it so the digest is valid.
     rewrite_version_and_recompute_checksum(&state_path, "999.0.0");
 
-    let result = StateFile::load(&state_path);
-    assert!(result.is_err(), "Future major version should be rejected");
-    match result.unwrap_err() {
-        NailsError::InvalidState(msg) => {
-            assert!(msg.contains("999.0.0"));
-            assert!(msg.contains("future major version"));
-        }
-        other => panic!("Expected InvalidState, got: {:?}", other),
-    }
+    // Incompatible schema is reported as unknown, never a hard error.
+    let result = StateFile::load_with_outcome(&state_path).expect("Should not hard-error");
+    assert_eq!(result.outcome, LoadOutcome::Corrupt);
+    assert_eq!(result.state_file.state, SystemState::Inactive);
 }
 
 #[test]
@@ -1870,12 +1911,13 @@ fn test_version_migration_preserves_data() {
         .save_with_root(&state_path, mock_root)
         .expect("Should save");
 
-    // Change version and recompute checksum
+    // Change version and re-seal the integrity digest.
     rewrite_version_and_recompute_checksum(&state_path, "0.50.0");
 
-    let loaded = StateFile::load(&state_path).expect("Should load with version migration");
+    let loaded = StateFile::load(&state_path).expect("Should load a compatible-version file");
 
-    assert_eq!(loaded.version, env!("CARGO_PKG_VERSION"));
+    // No migration: the stored version is preserved and the data is intact.
+    assert_eq!(loaded.version, "0.50.0");
     assert!(matches!(loaded.state, SystemState::Active { .. }));
     assert_eq!(loaded.nixos_generation, Some("gen-xyz".to_string()));
     assert_eq!(
@@ -1886,4 +1928,134 @@ fn test_version_migration_preserves_data() {
     assert!(loaded.overlay_status.contains_key(&PathBuf::from("/home")));
     assert_eq!(loaded.failed_overlays.len(), 1);
     assert_eq!(loaded.failed_overlays[0].target, PathBuf::from("/var"));
+}
+
+// ========== T-006: durability, provenance, Degraded ==========
+
+#[test]
+fn test_save_fsyncs_file_and_directory() {
+    use super::file::sync_probe;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_root = temp_dir.path().to_str().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+
+    let files_before = sync_probe::file_syncs();
+    let dirs_before = sync_probe::dir_syncs();
+
+    StateFile::default()
+        .save_with_root(&state_path, mock_root)
+        .unwrap();
+
+    assert!(
+        sync_probe::file_syncs() > files_before,
+        "temp file must be fsynced before the rename"
+    );
+    assert!(
+        sync_probe::dir_syncs() > dirs_before,
+        "parent directory must be fsynced after the rename"
+    );
+}
+
+#[test]
+fn test_stale_temp_files_removed_on_load() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_root = temp_dir.path().to_str().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+    StateFile::default()
+        .save_with_root(&state_path, mock_root)
+        .unwrap();
+
+    // Simulate interrupted saves that left temp siblings behind, backdated so the
+    // age guard treats them as crashed-save leftovers rather than an in-flight save.
+    let stale1 = temp_dir.path().join(".tmpABCDEF");
+    let stale2 = temp_dir.path().join(".tmp123456");
+    std::fs::write(&stale1, b"junk").unwrap();
+    std::fs::write(&stale2, b"junk").unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    let times = std::fs::FileTimes::new().set_modified(old);
+    for path in [&stale1, &stale2] {
+        let handle = std::fs::File::options().write(true).open(path).unwrap();
+        handle.set_times(times).unwrap();
+    }
+    assert!(stale1.exists() && stale2.exists());
+
+    let _ = StateFile::load(&state_path).unwrap();
+
+    assert!(!stale1.exists(), "stale temp file should be swept on load");
+    assert!(!stale2.exists(), "stale temp file should be swept on load");
+    assert!(
+        state_path.exists(),
+        "the real state file must survive the sweep"
+    );
+}
+
+#[test]
+fn test_saved_state_carries_boot_id_and_owner_pid() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_root = temp_dir.path().to_str().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+    StateFile::default()
+        .save_with_root(&state_path, mock_root)
+        .unwrap();
+
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    // Both keys are always present; boot_id may be null in restricted environments.
+    assert!(raw.as_object().unwrap().contains_key("boot_id"));
+    assert_eq!(
+        raw["owner_pid"].as_u64().unwrap() as u32,
+        std::process::id()
+    );
+
+    let loaded = StateFile::load(&state_path).unwrap();
+    assert_eq!(loaded.owner_pid, std::process::id());
+}
+
+#[test]
+fn test_missing_file_is_missing_not_unknown() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let state_path = temp_dir.path().join("does-not-exist.json");
+    let result = StateFile::load_with_outcome(&state_path).unwrap();
+    assert_eq!(result.outcome, LoadOutcome::Missing);
+    assert!(!result.outcome.is_unknown());
+    assert_eq!(result.state_file.state, SystemState::Inactive);
+}
+
+#[test]
+fn test_degraded_state_round_trips_through_save_load() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_root = temp_dir.path().to_str().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+
+    let degraded = SystemState::Degraded {
+        since: DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
+        reason: "unmount of /home failed".to_string(),
+        remaining_mounts: vec![PathBuf::from("/home"), PathBuf::from("/var")],
+    };
+    let state = StateFile {
+        state: degraded.clone(),
+        ..StateFile::default()
+    };
+    state.save_with_root(&state_path, mock_root).unwrap();
+
+    let result = StateFile::load_with_outcome(&state_path).unwrap();
+    assert_eq!(result.outcome, LoadOutcome::Loaded);
+    assert_eq!(result.state_file.state, degraded);
+}
+
+#[test]
+fn test_emergency_transition_targets_inactive_and_degraded_recovers() {
+    let after = SystemState::Active {
+        activated_at: Utc::now(),
+        overlays: vec![],
+    }
+    .trigger_emergency()
+    .unwrap();
+    assert!(after.is_inactive());
+
+    let degraded = SystemState::Inactive.enter_degraded("boom".into(), vec![]);
+    assert!(degraded.is_degraded());
+    assert!(degraded.recover().unwrap().is_inactive());
 }

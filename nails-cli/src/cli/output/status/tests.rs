@@ -17,7 +17,7 @@ fn inactive_report() -> StatusReport {
         opsec_reminders: vec![],
         overlay_details: None,
         overlay_mount_statuses: vec![],
-        load_outcome: LoadOutcome::FreshDefault,
+        load_outcome: LoadOutcome::Missing,
     }
 }
 
@@ -48,7 +48,7 @@ fn active_report() -> StatusReport {
                 actually_mounted: false,
             },
         ],
-        load_outcome: LoadOutcome::Normal,
+        load_outcome: LoadOutcome::Loaded,
     }
 }
 
@@ -83,7 +83,7 @@ fn active_report_with_overlay_details() -> StatusReport {
             expected_mounted: true,
             actually_mounted: true,
         }],
-        load_outcome: LoadOutcome::Normal,
+        load_outcome: LoadOutcome::Loaded,
     }
 }
 
@@ -118,14 +118,17 @@ fn active_report_with_reminders() -> StatusReport {
         ],
         overlay_details: None,
         overlay_mount_statuses: vec![],
-        load_outcome: LoadOutcome::Normal,
+        load_outcome: LoadOutcome::Loaded,
     }
 }
 
-fn emergency_report() -> StatusReport {
-    let now = chrono::Utc::now();
+fn degraded_report() -> StatusReport {
     StatusReport {
-        state: SystemState::Emergency { triggered_at: now },
+        state: SystemState::Degraded {
+            since: chrono::Utc::now(),
+            reason: "unmount failed".to_string(),
+            remaining_mounts: vec![],
+        },
         overlays: vec![],
         overlay_verification: VerificationStatus::Skipped,
         nixos_generation: None,
@@ -135,7 +138,7 @@ fn emergency_report() -> StatusReport {
         opsec_reminders: vec![],
         overlay_details: None,
         overlay_mount_statuses: vec![],
-        load_outcome: LoadOutcome::FreshDefault,
+        load_outcome: LoadOutcome::Missing,
     }
 }
 
@@ -164,8 +167,8 @@ fn test_print_status_json_with_reminders() {
 }
 
 #[test]
-fn test_print_status_json_emergency() {
-    print_status_json(&emergency_report());
+fn test_print_status_json_degraded() {
+    print_status_json(&degraded_report());
 }
 
 // ── print_status_human ─────────────────────────────────────────────────────

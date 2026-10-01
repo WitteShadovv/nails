@@ -170,7 +170,7 @@ impl<F: Filesystem> StatusCommand<F> {
             } => (overlays.clone(), Some(*activated_at)),
             SystemState::Activating { .. }
             | SystemState::Deactivating { .. }
-            | SystemState::Emergency { .. } => (vec![], None),
+            | SystemState::Degraded { .. } => (vec![], None),
         };
 
         // Calculate uptime if active
@@ -358,7 +358,7 @@ impl<F: Filesystem> StatusCommand<F> {
             SystemState::Inactive => Ok(VerificationStatus::NotApplicable),
             SystemState::Activating { .. }
             | SystemState::Deactivating { .. }
-            | SystemState::Emergency { .. } => Ok(VerificationStatus::Skipped),
+            | SystemState::Degraded { .. } => Ok(VerificationStatus::Skipped),
         }
     }
 }
@@ -376,7 +376,7 @@ impl Default for StatusReport {
             opsec_reminders: vec![],
             overlay_details: None,
             overlay_mount_statuses: vec![],
-            load_outcome: LoadOutcome::FreshDefault,
+            load_outcome: LoadOutcome::Missing,
         }
     }
 }
