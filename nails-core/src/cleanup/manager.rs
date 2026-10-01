@@ -257,12 +257,8 @@ impl<F: Filesystem> CleanupManager<F> {
     }
 
     fn sanitize_memory(&self, report: &mut CleanupReport) {
-        if let Err(e) = self.sync_filesystems() {
-            let msg = format!("Memory sanitization: sync failed: {}", e);
-            output::warn(&msg);
-            report.add_error(msg);
-            return;
-        }
+        // Flush dirty pages first: drop_caches only releases clean ones.
+        nix::unistd::sync();
 
         let drop_caches_path = Path::new("/proc/sys/vm/drop_caches");
 
@@ -277,20 +273,6 @@ impl<F: Filesystem> CleanupManager<F> {
                 report.add_error(msg);
             }
         }
-    }
-
-    fn sync_filesystems(&self) -> Result<()> {
-        let status = std::process::Command::new("sync")
-            .status()
-            .map_err(crate::NailsError::IoError)?;
-
-        if !status.success() {
-            return Err(crate::NailsError::InvalidState(format!(
-                "sync command failed with exit code: {:?}",
-                status.code()
-            )));
-        }
-        Ok(())
     }
 
     pub fn config(&self) -> &CleanupConfig {
