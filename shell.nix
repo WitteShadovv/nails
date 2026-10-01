@@ -39,6 +39,7 @@ pkgs.mkShell {
     statix
     shellcheck
     just
+    python3 # ci/*.py checks; tomllib needs Python 3.11 or newer
     cargo-deny
     cargo-tarpaulin
     cargo-llvm-cov
