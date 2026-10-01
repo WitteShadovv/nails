@@ -35,9 +35,16 @@ during the current alpha phase.
   `SOURCE_DATE_EPOCH`, cargo-only source, fixed 2-core VMs), and CI sets up Nix through one
   `.github/actions/setup-nix` action with an optional project binary cache.
 - Updated `serial_test` to 3.5, which no longer pulls in the `scc` dependency.
+- External commands start through one `ProcessRunner`, which applies the test-safety guard;
+  `systemctl`, `loginctl`, `kill` and `cp` are resolved from fixed system directories (NixOS
+  profile, then `/usr/sbin`, `/usr/bin`, `/sbin`, `/bin`) instead of a hardcoded NixOS path or the
+  caller's `PATH`; directory sizing and `sync` run in-process.
 
 ### Removed
 
+- The non-functional in-memory shell-history clear (a `bash -c` subprocess that could never
+  reach the parent shell) and the free `emergency_deactivate` re-export; emergency deactivation
+  goes through `NailsManager::emergency_deactivate`.
 - `cargo-audit` from CI, pre-commit, both dev shells, and `scripts/ci-local.sh`; dependency
   advisories are now covered entirely by cargo-deny.
 - The `NAILS_E2E_SYSTEM` and `NAILS_E2E_VM_*` environment overrides, the `apps.e2e-test-interactive`
