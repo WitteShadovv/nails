@@ -70,9 +70,6 @@ pub mod cleanup;
 // Deactivation orchestrator module (Story 5.5: DeactivationOrchestrator with Cleanup + Unmount + Rollback)
 pub mod deactivation;
 
-// Emergency deactivation module (Story 6.1: Emergency Countdown with Ctrl+C Abort)
-pub mod emergency;
-
 // Status command module (Story 7.1: State Query with Overlay Verification)
 pub mod status;
 
@@ -184,9 +181,6 @@ pub use cleanup::{
 pub use deactivation::{
     DeactivationMode, DeactivationOrchestrator, DeactivationReport, PostUnmountCleanupReport,
 };
-
-// Emergency deactivation (thorough cleanup without reboot)
-pub use emergency::emergency_deactivate;
 
 // Status command exports (Story 7.1: State Query with Overlay Verification)
 pub use status::{

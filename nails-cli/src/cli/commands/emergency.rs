@@ -30,7 +30,7 @@ pub fn execute(
     plain: bool,
     check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
 ) -> ! {
-    use nails_core::{NailsManager, RealFilesystem, Verbosity, emergency_deactivate};
+    use nails_core::{NailsManager, RealFilesystem, Verbosity};
     use std::sync::{Arc, Mutex};
 
     // Configure color output
@@ -89,7 +89,7 @@ pub fn execute(
     }
 
     // Run emergency deactivation
-    match emergency_deactivate(Arc::clone(&manager)) {
+    match NailsManager::emergency_deactivate(Arc::clone(&manager)) {
         Ok(()) => {
             if !json {
                 let success_prefix = if plain { "[PASS]" } else { "✓" };
