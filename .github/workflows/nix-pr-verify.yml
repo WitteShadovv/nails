@@ -31,12 +31,12 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
         with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            accept-flake-config = false
+          # Fork pull requests receive no secrets, and the action pushes only
+          # for trusted events, so the token needs no environment.
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
 
       - name: Build canonical release artifact
         run: nix build -L .#nails-release -o result --option accept-flake-config false

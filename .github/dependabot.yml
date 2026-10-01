@@ -111,7 +111,11 @@ updates:
   # - cachix/cachix-action
   #
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # "/" covers only .github/workflows; the composite actions that pin
+    # third-party actions live in their own directories.
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
       day: "monday"

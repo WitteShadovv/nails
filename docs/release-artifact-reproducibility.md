@@ -11,6 +11,7 @@ NAILS currently verifies deterministic release artifacts for one canonical targe
 For each release workflow run that builds the canonical bundle, CI:
 
 - builds the canonical release bundle with Nix
+- builds with the project binary cache disabled, so the `nails` binary is compiled from source in every job instead of being fetched
 - runs `nix-store --realise --check` against the release derivation
 - rebuilds the same artifact in two independent GitHub Actions jobs
 - compares the canonical bundle, checksums, metadata, and binary hash byte-for-byte

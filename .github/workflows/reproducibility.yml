@@ -83,12 +83,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f
+      # Without the project cache, nails is compiled from source here.
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
         with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            accept-flake-config = false
+          cache: 'false'
 
       - name: Build release artifact bundle
         run: nix build -L "$FLAKE_ATTR" -o result --option accept-flake-config false

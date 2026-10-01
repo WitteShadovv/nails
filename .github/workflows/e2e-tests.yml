@@ -48,19 +48,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
         with:
-          extra_nix_config: |
-            system-features = nixos-test benchmark big-parallel kvm
-            accept-flake-config = false
-            max-jobs = auto
-
-      - name: Setup Cachix
-        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c
-        with:
-          name: nix-community
-          skipPush: true
+          # Fork pull requests receive no secrets, and the action pushes only
+          # for trusted events, so the token needs no environment.
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
 
       - name: Run CI critical E2E suite
         env:

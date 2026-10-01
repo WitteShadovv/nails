@@ -622,17 +622,9 @@ jobs:
           ls -ld "$HOME"
           echo "::endgroup::"
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f
-        with:
-          enable_kvm: true
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            system-features = nixos-test benchmark big-parallel kvm
-            max-jobs = auto
-            cores = 0
-            sandbox = true
-            accept-flake-config = false
+      # No cache token: this job runs the code of the pull request under test.
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Verify normalized runner environment and Nix installation
         run: |
@@ -729,12 +721,6 @@ jobs:
             echo "::error::Less than 60 seconds remain for the full E2E command after reserving time for timeout termination, artifact upload, and Hetzner cleanup. Refusing to start the suite so deletion can still proceed."
             exit 1
           fi
-
-      - name: Setup Cachix
-        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c
-        with:
-          name: nix-community
-          skipPush: true
 
       - name: Record shard test selection
         run: |

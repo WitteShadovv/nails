@@ -130,6 +130,35 @@ Create a repository environment named `hetzner-pr` and configure it with:
 
 The environment job is approval-only; it does not need environment secrets. Repository secrets remain explicitly mapped into the reusable Hetzner workflows after approval.
 
+## Nix setup and binary cache
+
+Every workflow that needs Nix uses the composite action `.github/actions/setup-nix`. The installer (`cachix/install-nix-action`) is pinned there once, Dependabot keeps that pin current, and every job gets the same `nix.conf`: KVM, `system-features = nixos-test benchmark big-parallel kvm`, `always-allow-substitutes = true` and `accept-flake-config = false`.
+
+The action also connects the project's public Cachix cache:
+
+- **Reads.** The cache is added as an extra substituter next to cache.nixos.org. Its signing key is pinned in `action.yml`, so no substitute is trusted on first use. Every job reads it unless it sets `cache: 'false'`, including fork pull requests and the Hetzner lanes.
+- **Pushes.** A job pushes only when it runs for a trusted event and receives `CACHIX_AUTH_TOKEN`. The trusted events are pushes to `main`, scheduled runs, manual dispatches and pull requests from a branch of this repository. Fork pull requests, `pull_request_target` and every other event stay read-only. The decision lives in `.github/actions/setup-nix/cache_plan.py` and is tested in `scripts/tests/test_setup_nix_cache_plan.py`.
+- **What is pushed.** The cachix daemon uploads each path as soon as Nix builds it, so a cancelled run keeps its finished work. A push filter limits uploads to three name prefixes:
+  - `nails-*`: the binary that every VM test embeds;
+  - `rust-default-*`: the Rust toolchain, whose closure holds its components;
+  - `vm-test-run-*`: passed VM tests, which later runs fetch instead of booting the test again.
+
+  `nails-release-*` is never pushed. Each path goes up with its closure, except what cache.nixos.org already serves. To push more, add a prefix to `PUSH_ALLOW` in `cache_plan.py`.
+- **Who gets the token.** Only `e2e-tests.yml` and `nix-pr-verify.yml` pass it. GitHub withholds secrets from fork pull requests and Dependabot runs, so those stay read-only too. The Hetzner shard workflows never receive the token because they run the code of the pull request under test.
+- **Release builds.** `release-core.yml` and `reproducibility.yml` set `cache: 'false'` and never read the project cache. `nails` is therefore compiled from source in every release and rebuild job, and nothing from the cache can end up in a release.
+
+Workflows load the action from the checked-out tree, so the Hetzner lanes and the release workflows need a revision that already contains it; rebase older pull requests before running them there.
+
+Anyone who can push a branch to this repository can push to the cache: once a run has configured the token, the code under test can read it. Write access already implies that trust, and release artifacts never come from the cache.
+
+### Setting up the cache
+
+Until the cache name and key are filled in, the action logs `no project cache is configured` and jobs use cache.nixos.org only. To set the cache up:
+
+1. Create a public cache on cachix.org.
+2. In `.github/actions/setup-nix/action.yml`, set `CACHIX_NAME` to the cache's name and `CACHIX_PUBLIC_KEY` to its public signing key (`<name>.cachix.org-1:...`). Append `# pragma: allowlist secret` to the key line so the secret scanner accepts it.
+3. Create an auth token with write access to that cache and store it as the Actions repository secret `CACHIX_AUTH_TOKEN`. Do not add it as a Dependabot secret.
+
 ## Release policy
 
 ### Release trigger behavior
@@ -215,6 +244,7 @@ nix build -L .#nails-release -o result --option accept-flake-config false
 ## Secrets and permissions
 
 - `CODECOV_TOKEN` is optional and only affects Codecov upload from `main` pushes.
+- `CACHIX_AUTH_TOKEN` is optional. With it, `e2e-tests.yml` and `nix-pr-verify.yml` push build results to the project binary cache for trusted events (see [Nix setup and binary cache](#nix-setup-and-binary-cache)). Store it as an Actions secret only.
 - Full Hetzner-backed E2E runs require explicitly mapped reusable-workflow secrets for `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID` (the SSH key ID may still be sourced from a repository variable inside the shard workflow).
 - Full Hetzner-backed forensics-eval runs require the same explicitly mapped `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID` contract.
 - Release provenance and GitHub attestations use GitHub OIDC permissions; no long-lived signing secret is required.
