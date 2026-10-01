@@ -25,57 +25,57 @@ in
     ${notificationHelpers.runCommandCaptureFn}
     ${notificationHelpers.readStubCallsFn}
 
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
-        machine.wait_for_unit("display-manager.service")
+    machine.start()
+    machine.wait_for_unit("multi-user.target")
+    machine.wait_for_unit("display-manager.service")
 
-        config_path = "/tmp/nails-notify.toml"
-        stub_dir = "/tmp/notify-stub/bin"
-        stub_log = "/tmp/notify-send.log"
-        signal_path = "/mnt/hidden-volume/notifications/20260101T000000000_flow.json"
-        testuser_group = machine.succeed("id -gn testuser").strip()
+    config_path = "/tmp/nails-notify.toml"
+    stub_dir = "/tmp/notify-stub/bin"
+    stub_log = "/tmp/notify-send.log"
+    signal_path = "/mnt/hidden-volume/notifications/20260101T000000000_flow.json"
+    testuser_group = machine.succeed("id -gn testuser").strip()
 
-        with subtest("prepare notification runtime with safe stub"):
-            machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-            write_notification_config(config_path)
-            install_notify_send_stub(stub_dir, stub_log)
-            machine.succeed(f"chown -R testuser:{testuser_group} {stub_dir.rsplit('/', 1)[0]} {stub_log}")
+    with subtest("prepare notification runtime with safe stub"):
+        machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+        write_notification_config(config_path)
+        install_notify_send_stub(stub_dir, stub_log)
+        machine.succeed(f"chown -R testuser:{testuser_group} {stub_dir.rsplit('/', 1)[0]} {stub_log}")
 
-        with subtest("stage one valid notification signal"):
-            write_notification_signal(
-                signal_path,
-                title="Overlay Active",
-                body="Flow reached desktop",
-                urgency="critical",
-                icon="security-high",
-            )
-            machine.succeed(f"chown testuser:{testuser_group} /mnt/hidden-volume/notifications")
-            machine.succeed(f"chown testuser:{testuser_group} {signal_path}")
-            machine.succeed(f"test -f {signal_path}")
+    with subtest("stage one valid notification signal"):
+        write_notification_signal(
+            signal_path,
+            title="Overlay Active",
+            body="Flow reached desktop",
+            urgency="critical",
+            icon="security-high",
+        )
+        machine.succeed(f"chown testuser:{testuser_group} /mnt/hidden-volume/notifications")
+        machine.succeed(f"chown testuser:{testuser_group} {signal_path}")
+        machine.succeed(f"test -f {signal_path}")
 
-        with subtest("dispatch signal through notify-send stub and clear queue"):
-            result = run_command_capture(
-                f'su - testuser -c "PATH={stub_dir}:$PATH nails --no-logs --config {config_path} notify-dispatch --json"',
-                "/tmp/notify-flow",
-            )
-            assert result["rc"] == 0, result
+    with subtest("dispatch signal through notify-send stub and clear queue"):
+        result = run_command_capture(
+            f'su - testuser -c "PATH={stub_dir}:$PATH nails --no-logs --config {config_path} notify-dispatch --json"',
+            "/tmp/notify-flow",
+        )
+        assert result["rc"] == 0, result
 
-            payload = json.loads(result["stdout"].strip())
-            assert payload == {"dispatched": 1, "status": "ok"}, payload
+        payload = json.loads(result["stdout"].strip())
+        assert payload == {"dispatched": 1, "status": "ok"}, payload
 
-            calls = read_stub_calls(stub_log)
-            assert calls == [[
-                "--urgency",
-                "critical",
-                "--app-name",
-                "NAILS",
-                "--icon",
-                "security-high",
-                "Overlay Active",
-                "Flow reached desktop",
-            ]], calls
+        calls = read_stub_calls(stub_log)
+        assert calls == [[
+            "--urgency",
+            "critical",
+            "--app-name",
+            "NAILS",
+            "--icon",
+            "security-high",
+            "Overlay Active",
+            "Flow reached desktop",
+        ]], calls
 
-            machine.fail(f"test -f {signal_path}")
-            machine.succeed("test -z \"$(ls -A /mnt/hidden-volume/notifications)\"")
+        machine.fail(f"test -f {signal_path}")
+        machine.succeed("test -z \"$(ls -A /mnt/hidden-volume/notifications)\"")
   '';
 }
