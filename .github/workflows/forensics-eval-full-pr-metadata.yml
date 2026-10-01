@@ -36,6 +36,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Record metadata-only PR context
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           {
             cat <<'EOF'
@@ -47,8 +52,8 @@ jobs:
           | Property | Value |
           |---|---|
           EOF
-            printf '| PR | `#%s` |\n' '${{ github.event.pull_request.number }}'
-            printf '| Head repository | `%s` |\n' '${{ github.event.pull_request.head.repo.full_name }}'
-            printf '| Head SHA | `%s` |\n' '${{ github.event.pull_request.head.sha }}'
-            printf '| Base branch | `%s` |\n' '${{ github.event.pull_request.base.ref }}'
+            printf "| PR | \`#%s\` |\n" "$PR_NUMBER"
+            printf "| Head repository | \`%s\` |\n" "$HEAD_REPOSITORY"
+            printf "| Head SHA | \`%s\` |\n" "$HEAD_SHA"
+            printf "| Base branch | \`%s\` |\n" "$BASE_REF"
           } >> "$GITHUB_STEP_SUMMARY"

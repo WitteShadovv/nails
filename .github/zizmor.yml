@@ -1,0 +1,46 @@
+# zizmor configuration, read by `zizmor .github` and by the zizmor check in
+# nix/checks.nix.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # The SLSA generator must be referenced by its release tag: it
+        # verifies that ref when it generates provenance.
+        slsa-framework/slsa-github-generator/*: ref-pin
+        "*": hash-pin
+
+  # Findings that predate the zizmor check, ignored per file because these
+  # workflows are being rewritten. Delete an entry once its file is fixed or
+  # gone; never add one for new code.
+  artipacked:
+    ignore:
+      - ci.yml
+      - e2e-tests.yml
+      - forensics-eval-regression.yml
+  dangerous-triggers:
+    ignore:
+      - e2e-tests-full.yml
+      - forensics-eval-full-pr-metadata.yml
+  dependabot-cooldown:
+    ignore:
+      - dependabot.yml
+  excessive-permissions:
+    ignore:
+      - ci.yml
+      - e2e-tests.yml
+  secrets-outside-env:
+    ignore:
+      - e2e-tests-full-shard.yml
+      - forensics-eval-full-shard.yml
+  superfluous-actions:
+    ignore:
+      - ci.yml
+      - release-core.yml
+  template-injection:
+    ignore:
+      - ci.yml
+      - e2e-tests-full-shard.yml
+      - e2e-tests-full.yml
+      - forensics-eval-full-shard.yml
+      - forensics-eval-full.yml
+      - release-core.yml

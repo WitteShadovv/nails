@@ -228,6 +228,11 @@
         forensics-eval-metadata = rawForensicsEval.metadata;
       };
 
+      checks.${system} = import ./nix/checks.nix {
+        inherit pkgs;
+        e2eMetadata = e2eTestMetadata;
+      };
+
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
           rustToolchain

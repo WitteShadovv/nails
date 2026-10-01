@@ -53,6 +53,7 @@ pre-commit install
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
+nix flake check   # Nix, shell and workflow linters; builds no VM test
 ```
 
 If you are not using the Nix development environment, make sure your local toolchain is compatible with the repository before opening a PR.
