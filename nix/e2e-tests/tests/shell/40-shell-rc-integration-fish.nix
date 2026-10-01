@@ -51,7 +51,7 @@ in
     with subtest("activation injects fish integration block into overlaid config"):
         rc_contents = machine.succeed("cat " + rc_path)
         assert expected_lower in rc_contents, rc_contents
-        assert "# >>> NAILS shell integration" in rc_contents, rc_contents
+        assert "# >>> managed shell integration" in rc_contents, rc_contents
         assert "source /mnt/hidden-volume/scripts/nails_prompt.fish" in rc_contents, rc_contents
         assert "source /mnt/hidden-volume/scripts/nails_alias.fish" in rc_contents, rc_contents
 

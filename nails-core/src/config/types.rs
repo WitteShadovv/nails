@@ -286,6 +286,16 @@ pub struct Config {
     #[serde(default)]
     pub color_scheme: ColorSchemeConfig,
 
+    /// Neutral active-state indicator prepended to the shell prompt while the
+    /// hidden environment is active.
+    ///
+    /// Empty (the default) shows no indicator. Any on-screen indicator is a
+    /// shoulder-surfing and screenshot liability, so it is opt-in: set it only
+    /// if you accept that the hidden session becomes visible on screen and in
+    /// screen recordings.
+    #[serde(default)]
+    pub prompt_label: String,
+
     /// NixOS flake reference (optional, auto-detected if not set)
     ///
     /// When set, this value is passed directly to `nixos-rebuild --flake <value>`

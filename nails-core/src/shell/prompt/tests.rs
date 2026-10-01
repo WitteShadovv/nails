@@ -1,26 +1,60 @@
 use super::*;
 
+const SAMPLE_LABEL: &str = "ctx";
+
+// ---------------------------------------------------------------------------
+// Empty label: the generated scripts are harmless no-ops.
+// ---------------------------------------------------------------------------
+
 #[test]
-fn test_bash_script_contains_idempotency_check() {
-    let script = generate_bash_prompt_script();
-    assert!(script.contains(r#"if [[ "$PS1" == *"NAILS-ACTIVE"* ]]"#));
+fn test_bash_empty_label_is_noop() {
+    let script = generate_bash_prompt_script("");
+    assert!(script.starts_with("#!/usr/bin/env bash"));
+    assert!(!script.contains("PS1="));
+    assert!(!script.contains("_NAILS_ORIG_PS1"));
+}
+
+#[test]
+fn test_zsh_empty_label_is_noop() {
+    let script = generate_zsh_prompt_script("");
+    assert!(script.starts_with("#!/usr/bin/env zsh"));
+    assert!(!script.contains("PROMPT="));
+    assert!(!script.contains("_NAILS_ORIG_PROMPT"));
+}
+
+#[test]
+fn test_fish_empty_label_is_noop() {
+    let script = generate_fish_prompt_script("");
+    assert!(script.starts_with("#!/usr/bin/env fish"));
+    assert!(!script.contains("function fish_prompt"));
+    assert!(!script.contains("set_color"));
+}
+
+// ---------------------------------------------------------------------------
+// Non-empty label: content, color codes, and sentinel-based guard.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_bash_script_guard_keys_on_saved_original_sentinel() {
+    let script = generate_bash_prompt_script(SAMPLE_LABEL);
+    assert!(script.contains(r#"if [ -n "${_NAILS_ORIG_PS1+x}" ]"#));
 }
 
 #[test]
 fn test_bash_script_contains_no_color_check() {
-    let script = generate_bash_prompt_script();
+    let script = generate_bash_prompt_script(SAMPLE_LABEL);
     assert!(script.contains(r#"if [ -z "${NO_COLOR+x}" ]"#));
 }
 
 #[test]
-fn test_bash_script_contains_color_codes() {
-    let script = generate_bash_prompt_script();
-    assert!(script.contains(r#"\[\033[32m\](NAILS-ACTIVE)\[\033[0m\]"#));
+fn test_bash_script_contains_label_with_color_codes() {
+    let script = generate_bash_prompt_script(SAMPLE_LABEL);
+    assert!(script.contains(r#"\[\033[32m\]ctx\[\033[0m\]"#));
 }
 
 #[test]
 fn test_bash_script_saves_original_ps1() {
-    let script = generate_bash_prompt_script();
+    let script = generate_bash_prompt_script(SAMPLE_LABEL);
     assert!(script.contains("export _NAILS_ORIG_PS1="));
 }
 
@@ -32,26 +66,26 @@ fn test_bash_cleanup_restores_ps1() {
 }
 
 #[test]
-fn test_zsh_script_contains_idempotency_check() {
-    let script = generate_zsh_prompt_script();
-    assert!(script.contains(r#"if [[ "$PROMPT" == *"NAILS-ACTIVE"* ]]"#));
+fn test_zsh_script_guard_keys_on_saved_original_sentinel() {
+    let script = generate_zsh_prompt_script(SAMPLE_LABEL);
+    assert!(script.contains(r#"if [ -n "${_NAILS_ORIG_PROMPT+x}" ]"#));
 }
 
 #[test]
 fn test_zsh_script_contains_no_color_check() {
-    let script = generate_zsh_prompt_script();
+    let script = generate_zsh_prompt_script(SAMPLE_LABEL);
     assert!(script.contains(r#"if [ -z "${NO_COLOR+x}" ]"#));
 }
 
 #[test]
-fn test_zsh_script_contains_color_codes() {
-    let script = generate_zsh_prompt_script();
-    assert!(script.contains(r#"%F{green}(NAILS-ACTIVE)%f"#));
+fn test_zsh_script_contains_label_with_color_codes() {
+    let script = generate_zsh_prompt_script(SAMPLE_LABEL);
+    assert!(script.contains(r#"%F{green}ctx%f"#));
 }
 
 #[test]
 fn test_zsh_script_saves_original_prompt() {
-    let script = generate_zsh_prompt_script();
+    let script = generate_zsh_prompt_script(SAMPLE_LABEL);
     assert!(script.contains("export _NAILS_ORIG_PROMPT="));
 }
 
@@ -63,27 +97,28 @@ fn test_zsh_cleanup_restores_prompt() {
 }
 
 #[test]
-fn test_fish_script_contains_idempotency_check() {
-    let script = generate_fish_prompt_script();
+fn test_fish_script_guard_keys_on_saved_original_sentinel() {
+    let script = generate_fish_prompt_script(SAMPLE_LABEL);
     assert!(script.contains("if functions -q _nails_orig_prompt"));
 }
 
 #[test]
 fn test_fish_script_contains_no_color_check() {
-    let script = generate_fish_prompt_script();
+    let script = generate_fish_prompt_script(SAMPLE_LABEL);
     assert!(script.contains("if set -q NO_COLOR"));
 }
 
 #[test]
-fn test_fish_script_contains_color_command() {
-    let script = generate_fish_prompt_script();
+fn test_fish_script_contains_label_and_color_command() {
+    let script = generate_fish_prompt_script(SAMPLE_LABEL);
     assert!(script.contains("set_color green"));
     assert!(script.contains("set_color normal"));
+    assert!(script.contains(r#"echo -n "ctx ""#));
 }
 
 #[test]
 fn test_fish_script_saves_original_function() {
-    let script = generate_fish_prompt_script();
+    let script = generate_fish_prompt_script(SAMPLE_LABEL);
     assert!(script.contains("functions -c fish_prompt _nails_orig_prompt"));
 }
 
@@ -92,6 +127,33 @@ fn test_fish_cleanup_restores_function() {
     let cleanup = generate_fish_prompt_cleanup();
     assert!(cleanup.contains("functions -c _nails_orig_prompt fish_prompt"));
     assert!(cleanup.contains("functions -e _nails_orig_prompt"));
+}
+
+// ---------------------------------------------------------------------------
+// Escaping: a label with shell-special characters cannot break out of the
+// quoting context it is interpolated into.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_bash_label_special_chars_are_escaped() {
+    // backslash, double-quote, dollar, backtick
+    let script = generate_bash_prompt_script("a\"b\\c$d`e");
+    assert!(script.contains(r#"a\"b\\c\$d\`e"#));
+    // No raw unescaped double-quote from the label sits inside the PS1 assignment.
+    assert!(!script.contains(r#"a"b"#));
+}
+
+#[test]
+fn test_zsh_label_special_chars_and_percent_are_escaped() {
+    let script = generate_zsh_prompt_script("a\"b\\c$d%e");
+    assert!(script.contains(r#"a\"b\\c\$d%%e"#));
+}
+
+#[test]
+fn test_fish_label_special_chars_are_escaped() {
+    // fish treats backtick as ordinary inside double quotes; escape \ " $ only.
+    let script = generate_fish_prompt_script("a\"b\\c$d");
+    assert!(script.contains(r#"a\"b\\c\$d"#));
 }
 
 // These syntax-validation tests shell out to real bash/zsh/fish binaries. They
@@ -134,7 +196,7 @@ fn run_shell_syntax_check(
 
 #[test]
 fn test_bash_script_syntax_valid() {
-    let script = generate_bash_prompt_script();
+    let script = generate_bash_prompt_script(SAMPLE_LABEL);
     let Some(output) = run_shell_syntax_check("bash", &["-n"], &script, "bash") else {
         return;
     };
@@ -148,7 +210,7 @@ fn test_bash_script_syntax_valid() {
 
 #[test]
 fn test_zsh_script_syntax_valid() {
-    let script = generate_zsh_prompt_script();
+    let script = generate_zsh_prompt_script(SAMPLE_LABEL);
     let Some(output) = run_shell_syntax_check("zsh", &["-n"], &script, "zsh") else {
         return;
     };
@@ -162,7 +224,7 @@ fn test_zsh_script_syntax_valid() {
 
 #[test]
 fn test_fish_script_syntax_valid() {
-    let script = generate_fish_prompt_script();
+    let script = generate_fish_prompt_script(SAMPLE_LABEL);
     let Some(output) = run_shell_syntax_check("fish", &["--no-execute"], &script, "fish") else {
         return;
     };

@@ -33,7 +33,10 @@ in
 
     config_path = "/tmp/nails-headless.yaml"
     shell_path = "/run/current-system/sw/bin/bash"
+    prompt_label = "ctx"
     write_headless_config(config_path)
+    # Opt into a neutral active-state indicator (empty by default).
+    machine.succeed("printf 'prompt_label: \"%s\"\\n' " + prompt_label + " >> " + config_path)
 
     prompt_command = (
         "sudo -u testuser env HOME=/home/testuser "
@@ -47,14 +50,14 @@ in
         machine.succeed("chown testuser:users /home/testuser/.bashrc")
         before = run_command_capture("prompt-before", prompt_command)
         assert before["rc"] == 0, before
-        assert "NAILS-ACTIVE" not in before["stdout"], before
+        assert prompt_label not in before["stdout"], before
 
     with subtest("prompt gains active indicator while overlays are mounted"):
         activate_for_user(config_path, shell_path)
         assert_status_state("active", config_path=config_path)
         active = run_command_capture("prompt-active", prompt_command)
         assert active["rc"] == 0, active
-        assert "NAILS-ACTIVE" in active["stdout"], active
+        assert prompt_label in active["stdout"], active
 
     with subtest("prompt indicator disappears after deactivation"):
         canonical_deactivate_for_user(
@@ -64,7 +67,7 @@ in
         )
         after = run_command_capture("prompt-after", prompt_command)
         assert after["rc"] == 0, after
-        assert "NAILS-ACTIVE" not in after["stdout"], after
+        assert prompt_label not in after["stdout"], after
         assert_status_state("inactive", config_path=config_path)
   '';
 }

@@ -36,6 +36,7 @@ This guide provides essential security information for NAILS users. Read this do
 - [Best Practices](#best-practices)
   - [Pre-Activation Checklist](#pre-activation-checklist)
   - [During Hidden Session](#during-hidden-session)
+  - [On-Screen Visibility Trade-offs](#on-screen-visibility-trade-offs)
   - [Post-Deactivation Verification](#post-deactivation-verification)
 - [Troubleshooting Common Issues](#troubleshooting-common-issues)
   - [What to Do If Deactivation Fails](#what-to-do-if-deactivation-fails)
@@ -446,6 +447,28 @@ While operating in the hidden environment:
     sudo nails emergency
 [ ] Know your physical emergency procedure (power button hold)
 ```
+
+### On-Screen Visibility Trade-offs
+
+Any on-screen indication that you are in the hidden environment is a
+shoulder-surfing and screenshot/screen-recording liability. NAILS keeps these
+tells off by default:
+
+- **Prompt label** (`prompt_label`): empty by default, so the shell prompt is
+  unchanged while the hidden environment is active. Setting it to a non-empty
+  string prepends that label to your prompt in every new shell. It makes the
+  hidden session convenient to spot — but equally visible to anyone looking at
+  your screen or to any recording. Enable it only if you accept that exposure.
+- **Terminal color scheme** (`color_scheme.enabled`): when enabled, the hidden
+  session repaints the terminal background (default `#1a1a2e`) so you can tell
+  the two environments apart at a glance. That distinct color is itself a visual
+  tell. Set `color_scheme.enabled = false` if you prefer no color change, or
+  keep it for the convenience of an obvious indicator.
+
+Neither tell is written to the decoy disk: the prompt and color scripts live on
+the hidden volume and the shell integration is written only into the overlaid
+home, so it disappears when the overlays are unmounted. The visibility concern
+is purely what is shown on your screen during the session.
 
 ### Post-Deactivation Verification
 

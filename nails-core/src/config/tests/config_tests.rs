@@ -1532,3 +1532,22 @@ fn test_load_with_empty_hidden_volume_root_derives_from_binary() {
         "hidden_volume_root should be auto-derived when empty in config"
     );
 }
+
+#[test]
+fn test_config_prompt_label_defaults_empty() {
+    let config = Config::default();
+    assert!(config.prompt_label.is_empty());
+}
+
+#[test]
+fn test_config_prompt_label_round_trips_from_config_format() {
+    // Explicit value is preserved.
+    let yaml = "hidden_volume_root: /mnt/hidden-volume\nprompt_label: \"ctx\"\n";
+    let parsed: Config = serde_saphyr::from_str(yaml).unwrap();
+    assert_eq!(parsed.prompt_label, "ctx");
+
+    // Omitted key falls back to the empty default.
+    let yaml_without = "hidden_volume_root: /mnt/hidden-volume\n";
+    let parsed_without: Config = serde_saphyr::from_str(yaml_without).unwrap();
+    assert!(parsed_without.prompt_label.is_empty());
+}

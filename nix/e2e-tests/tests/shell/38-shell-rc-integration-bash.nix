@@ -46,7 +46,7 @@ in
     with subtest("activation injects bash integration block into overlaid rc file"):
         rc_contents = machine.succeed("cat " + rc_path)
         assert expected_lower in rc_contents, rc_contents
-        assert "# >>> NAILS shell integration" in rc_contents, rc_contents
+        assert "# >>> managed shell integration" in rc_contents, rc_contents
         assert "source /mnt/hidden-volume/scripts/nails_prompt.bash" in rc_contents, rc_contents
         assert "source /mnt/hidden-volume/scripts/nails_alias.sh" in rc_contents, rc_contents
 

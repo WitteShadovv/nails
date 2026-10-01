@@ -269,6 +269,7 @@ impl ConfigBuilder {
             max_log_size_mb,
             retention_days,
             color_scheme,
+            prompt_label: String::new(),
             nixos_flake: None,
         })
     }

@@ -1077,7 +1077,7 @@ fn test_shell_setup_without_shell_env_still_sets_up_persistent_integration_for_t
 
     let bashrc_path = PathBuf::from("/home/amnesia/.bashrc");
     let content = fs.read_file_content(&bashrc_path).unwrap();
-    assert!(content.contains("# >>> NAILS shell integration"));
+    assert!(content.contains("# >>> managed shell integration"));
 }
 
 #[test]
@@ -1703,11 +1703,11 @@ fn test_inject_rc_integration_bash_creates_bashrc() {
     let bashrc_path = PathBuf::from("/home/testuser/.bashrc");
     let content = fs.read_file_content(&bashrc_path).unwrap();
 
-    assert!(content.contains("# >>> NAILS shell integration"));
+    assert!(content.contains("# >>> managed shell integration"));
     assert!(content.contains("source /mnt/hidden-volume/scripts/nails_prompt.bash"));
     assert!(content.contains("source /mnt/hidden-volume/scripts/nails_alias.sh"));
     assert!(content.contains("printf '\\e]11;#1a1a2e\\a\\e]10;#e0e0e0\\a'"));
-    assert!(content.contains("# <<< NAILS shell integration <<<"));
+    assert!(content.contains("# <<< managed shell integration <<<"));
 }
 
 #[test]
@@ -1741,7 +1741,7 @@ fn test_inject_rc_integration_zsh_creates_zshrc() {
     let zshrc_path = PathBuf::from("/home/testuser/.zshrc");
     let content = fs.read_file_content(&zshrc_path).unwrap();
 
-    assert!(content.contains("# >>> NAILS shell integration"));
+    assert!(content.contains("# >>> managed shell integration"));
     assert!(content.contains("source /mnt/hidden-volume/scripts/nails_prompt.zsh"));
     assert!(content.contains("source /mnt/hidden-volume/scripts/nails_alias.sh"));
 }
@@ -1777,7 +1777,7 @@ fn test_inject_rc_integration_fish_creates_config_fish() {
     let fish_config_path = PathBuf::from("/home/testuser/.config/fish/config.fish");
     let content = fs.read_file_content(&fish_config_path).unwrap();
 
-    assert!(content.contains("# >>> NAILS shell integration"));
+    assert!(content.contains("# >>> managed shell integration"));
     assert!(content.contains("source /mnt/hidden-volume/scripts/nails_prompt.fish"));
     assert!(content.contains("source /mnt/hidden-volume/scripts/nails_alias.fish"));
 }
@@ -1813,7 +1813,7 @@ fn test_inject_rc_integration_idempotent() {
     let bashrc_path = PathBuf::from("/home/testuser/.bashrc");
     let content = fs.read_file_content(&bashrc_path).unwrap();
 
-    let marker_count = content.matches("# >>> NAILS shell integration").count();
+    let marker_count = content.matches("# >>> managed shell integration").count();
     assert_eq!(marker_count, 1, "Should only have one integration block");
 }
 
@@ -1855,7 +1855,7 @@ fn test_inject_rc_integration_appends_to_existing_bashrc() {
     assert!(content.contains("export PATH=/usr/bin:$PATH"));
 
     // Should append NAILS integration
-    assert!(content.contains("# >>> NAILS shell integration"));
+    assert!(content.contains("# >>> managed shell integration"));
 }
 
 #[test]
@@ -1991,7 +1991,7 @@ fn test_write_xdg_autostart_entry_creates_desktop_file() {
 
     assert!(content.contains("[Desktop Entry]"));
     assert!(content.contains("Type=Application"));
-    assert!(content.contains("Name=NAILS Notification Dispatch"));
+    assert!(content.contains("Name=Notification dispatch"));
     assert!(content.contains("notify-dispatch"));
     assert!(!content.contains("Exec=nails notify-dispatch"));
     assert!(content.contains("Terminal=false"));
@@ -2220,7 +2220,7 @@ fn test_write_xdg_autostart_desktop_file_content_format() {
 
     // Verify exact desktop entry format (each field on its own line)
     assert!(content.starts_with("[Desktop Entry]\n"));
-    assert!(content.contains("Comment=Dispatches pending NAILS notifications on login\n"));
+    assert!(content.contains("Comment=Dispatches pending desktop notifications on login\n"));
     assert!(content.contains(&format!(
         "Exec={} notify-dispatch\n",
         std::env::current_exe().unwrap().display()
@@ -2259,4 +2259,135 @@ fn test_shell_setup_writes_xdg_autostart_entry() {
     let content = fs.read_file_content(&desktop_path).unwrap();
     assert!(content.contains("notify-dispatch"));
     assert!(!content.contains("Exec=nails notify-dispatch"));
+}
+
+// ============================================================================
+// Overlay gate tests (rc/autostart writes are skipped off a hidden overlay)
+// ============================================================================
+
+fn gate_config() -> Config {
+    Config {
+        hidden_volume_root: "/mnt/hidden-volume".into(),
+        ..Default::default()
+    }
+}
+
+const HOME_ON_HIDDEN_OVERLAY: &str = "36 1 0:40 / /home rw,relatime - overlay overlay \
+     rw,lowerdir=/home,upperdir=/mnt/hidden-volume/home,workdir=/mnt/hidden-volume/.work/home";
+
+const HOME_ON_DECOY_DISK: &str = "36 1 8:2 / /home rw,relatime - ext4 /dev/sda2 rw";
+
+#[test]
+#[serial]
+fn test_inject_rc_integration_skipped_when_home_not_on_hidden_overlay() {
+    let fs = MockFilesystem::new();
+    let config = gate_config();
+
+    fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_path_exists("/home/testuser", true);
+
+    unsafe {
+        std::env::set_var("SUDO_USER", "testuser");
+    }
+
+    let shell = ShellInstrumentation::new(fs.clone(), config);
+    shell.set_mountinfo_override(HOME_ON_DECOY_DISK);
+    let result = shell.inject_rc_integration(ShellType::Bash);
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+    }
+
+    // Gate returns Ok(false) and writes nothing.
+    assert!(matches!(result, Ok(false)));
+    let bashrc_path = PathBuf::from("/home/testuser/.bashrc");
+    assert!(fs.read_file_content(&bashrc_path).is_err());
+}
+
+#[test]
+#[serial]
+fn test_write_xdg_autostart_entry_skipped_when_home_not_on_hidden_overlay() {
+    let fs = MockFilesystem::new();
+    let config = gate_config();
+
+    fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_path_exists("/home/testuser", true);
+
+    unsafe {
+        std::env::set_var("SUDO_USER", "testuser");
+    }
+
+    let shell = ShellInstrumentation::new(fs.clone(), config);
+    shell.set_mountinfo_override(HOME_ON_DECOY_DISK);
+    let result = shell.write_xdg_autostart_entry();
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+    }
+
+    assert!(matches!(result, Ok(false)));
+    let desktop_path = PathBuf::from("/home/testuser/.config/autostart/nails-notify.desktop");
+    assert!(fs.read_file_content(&desktop_path).is_err());
+}
+
+#[test]
+#[serial]
+fn test_inject_rc_integration_writes_when_home_on_hidden_overlay() {
+    let fs = MockFilesystem::new();
+    let config = gate_config();
+
+    fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_path_exists("/home/testuser", true);
+
+    unsafe {
+        std::env::set_var("SUDO_USER", "testuser");
+    }
+
+    let shell = ShellInstrumentation::new(fs.clone(), config);
+    shell.set_mountinfo_override(HOME_ON_HIDDEN_OVERLAY);
+    let result = shell.inject_rc_integration(ShellType::Bash);
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+    }
+
+    assert!(matches!(result, Ok(true)));
+    let bashrc_path = PathBuf::from("/home/testuser/.bashrc");
+    let content = fs.read_file_content(&bashrc_path).unwrap();
+    assert!(content.contains("# >>> managed shell integration"));
+    assert!(content.contains("# <<< managed shell integration <<<"));
+    assert!(!content.contains("NAILS"));
+}
+
+#[test]
+#[serial]
+fn test_write_xdg_autostart_entry_writes_neutral_name_when_home_on_hidden_overlay() {
+    let fs = MockFilesystem::new();
+    let config = gate_config();
+
+    fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_path_exists("/home/testuser", true);
+
+    unsafe {
+        std::env::set_var("SUDO_USER", "testuser");
+    }
+
+    let shell = ShellInstrumentation::new(fs.clone(), config);
+    shell.set_mountinfo_override(HOME_ON_HIDDEN_OVERLAY);
+    let result = shell.write_xdg_autostart_entry();
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+    }
+
+    assert!(matches!(result, Ok(true)));
+    let desktop_path = PathBuf::from("/home/testuser/.config/autostart/nails-notify.desktop");
+    let content = fs.read_file_content(&desktop_path).unwrap();
+    assert!(content.contains("Name=Notification dispatch"));
+    assert!(!content.contains("NAILS"));
+    assert!(content.contains("notify-dispatch"));
 }

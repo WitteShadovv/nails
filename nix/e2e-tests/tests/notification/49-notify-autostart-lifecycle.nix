@@ -95,8 +95,8 @@ in
         for expected in [
             "[Desktop Entry]",
             "Type=Application",
-            "Name=NAILS Notification Dispatch",
-            "Comment=Dispatches pending NAILS notifications on login",
+            "Name=Notification dispatch",
+            "Comment=Dispatches pending desktop notifications on login",
             "Terminal=false",
             "NoDisplay=true",
             "X-GNOME-Autostart-enabled=true",

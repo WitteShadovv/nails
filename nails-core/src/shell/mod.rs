@@ -1,8 +1,8 @@
 //! Shell instrumentation and prompt management
 //!
-//! This module provides shell prompt instrumentation scripts that add a
-//! "(NAILS-ACTIVE)" prefix to shell prompts when the hidden environment is active,
-//! and alias management for the 'nails' command.
+//! This module provides shell prompt instrumentation scripts that optionally
+//! prepend a configurable label to shell prompts when the hidden environment is
+//! active, and alias management for the 'nails' command.
 //!
 //! # Features
 //!
@@ -39,13 +39,14 @@
 
 pub mod alias;
 pub mod color_scheme;
+mod overlay_guard;
 pub mod prompt;
 mod rc_integration;
 mod setup;
 
 use crate::constants::ENV_TARGET_USER;
 use crate::{Config, Filesystem, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // Re-export ShellType from cleanup module for backward compatibility
 pub use crate::cleanup::history::ShellType;
@@ -104,12 +105,69 @@ pub struct ShellCleanupResult {
 pub struct ShellInstrumentation<F: Filesystem> {
     filesystem: F,
     config: Config,
+    /// Test-only override for the `/proc/self/mountinfo` snapshot consulted by
+    /// the overlay guard, so unit tests can exercise the gate without a real
+    /// overlay. `None` means "assume the home is on a hidden overlay" so that
+    /// existing rc/autostart tests keep passing unchanged.
+    #[cfg(test)]
+    mountinfo_override: std::cell::RefCell<Option<String>>,
 }
 
 impl<F: Filesystem> ShellInstrumentation<F> {
     /// Create a new ShellInstrumentation instance
     pub fn new(filesystem: F, config: Config) -> Self {
-        Self { filesystem, config }
+        Self {
+            filesystem,
+            config,
+            #[cfg(test)]
+            mountinfo_override: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// Set the mountinfo snapshot the overlay guard will parse (tests only).
+    #[cfg(test)]
+    pub(crate) fn set_mountinfo_override(&self, content: impl Into<String>) {
+        *self.mountinfo_override.borrow_mut() = Some(content.into());
+    }
+
+    /// Confirm the target home sits on a NAILS overlay before the shell
+    /// integration writes files into it.
+    ///
+    /// In non-test builds this reads `/proc/self/mountinfo` in the same process
+    /// that performs the write, so it predicts the write destination in whatever
+    /// mount namespace that process runs in. A read error is treated as "not on
+    /// an overlay" so the integration fails safe (skips the decoy disk).
+    #[cfg(not(test))]
+    pub(crate) fn target_home_on_hidden_overlay(&self, home: &Path) -> bool {
+        match std::fs::read_to_string("/proc/self/mountinfo") {
+            Ok(content) => overlay_guard::path_on_hidden_overlay(
+                &content,
+                home,
+                &self.config.hidden_volume_root,
+            ),
+            Err(e) => {
+                tracing::warn!(
+                    "Could not read /proc/self/mountinfo to confirm overlay for {}: {}",
+                    home.display(),
+                    e
+                );
+                false
+            }
+        }
+    }
+
+    /// Test build: consult the injected mountinfo override, defaulting to
+    /// "on a hidden overlay" when no override is set.
+    #[cfg(test)]
+    pub(crate) fn target_home_on_hidden_overlay(&self, home: &Path) -> bool {
+        match self.mountinfo_override.borrow().as_deref() {
+            Some(content) => overlay_guard::path_on_hidden_overlay(
+                content,
+                home,
+                &self.config.hidden_volume_root,
+            ),
+            None => true,
+        }
     }
 
     pub(crate) fn resolve_target_username(&self) -> Result<String> {
@@ -259,8 +317,10 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             self.filesystem.create_directory(&scripts_dir)?;
         }
 
+        let label = self.config.prompt_label.as_str();
+
         // Write bash scripts
-        let bash_script = prompt::generate_bash_prompt_script();
+        let bash_script = prompt::generate_bash_prompt_script(label);
         let bash_cleanup = prompt::generate_bash_prompt_cleanup();
         self.filesystem
             .write_file_content(&scripts_dir.join("nails_prompt.bash"), &bash_script)?;
@@ -270,7 +330,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         )?;
 
         // Write zsh scripts
-        let zsh_script = prompt::generate_zsh_prompt_script();
+        let zsh_script = prompt::generate_zsh_prompt_script(label);
         let zsh_cleanup = prompt::generate_zsh_prompt_cleanup();
         self.filesystem
             .write_file_content(&scripts_dir.join("nails_prompt.zsh"), &zsh_script)?;
@@ -278,7 +338,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             .write_file_content(&scripts_dir.join("nails_prompt_cleanup.zsh"), &zsh_cleanup)?;
 
         // Write fish scripts
-        let fish_script = prompt::generate_fish_prompt_script();
+        let fish_script = prompt::generate_fish_prompt_script(label);
         let fish_cleanup = prompt::generate_fish_prompt_cleanup();
         self.filesystem
             .write_file_content(&scripts_dir.join("nails_prompt.fish"), &fish_script)?;
