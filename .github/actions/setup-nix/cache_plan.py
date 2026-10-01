@@ -115,8 +115,8 @@ def may_push(event: str, ref: str, head_repository: str, repository: str) -> boo
 
     Only people with write access can push to main, schedule or dispatch a
     workflow, or open a pull request from a branch of this repository. A
-    fork's pull request runs code nobody vetted; pull_request_target and
-    events added later stay read-only until someone decides otherwise.
+    fork's pull request runs code nobody vetted; every other event, including
+    any added later, stays read-only until someone decides otherwise.
     """
     if event == "push":
         return ref == "refs/heads/main"

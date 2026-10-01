@@ -95,30 +95,24 @@ Use only:
 
 - One test directly: `nix build .#e2e.basic-workflow --no-link -L`
 - One group directly: `nix build .#e2e.smoke --no-link -L`
-- Runner, one test: `./scripts/run-e2e-tests.sh basic-workflow`
-- Runner, tag group: `./scripts/run-e2e-tests.sh smoke`
-- Runner, CI subset: `NAILS_E2E_DEFAULT_TARGET=ci ./scripts/run-e2e-tests.sh`
+- Runner, the `ci` group: `./scripts/run-e2e-tests.sh`
+- Runner, one test or group: `./scripts/run-e2e-tests.sh basic-workflow`, `./scripts/run-e2e-tests.sh smoke`
 - Runner, all tests: `./scripts/run-e2e-tests.sh all`
-- Resolve only / dry-run: `./scripts/run-e2e-tests.sh --dry-run ci`
+- Resolve only: `python3 -m ci.e2e resolve ci`, or `python3 -m ci.e2e resolve --affected origin/main`
 - Interactive driver: `nix run .#e2e.basic-workflow.driverInteractive`, or `./scripts/run-e2e-tests.sh -i basic-workflow`
 
 The tests, one link farm per group, and the metadata live under `legacyPackages.x86_64-linux` (`e2e.<name>` and `e2e-metadata`), not under `checks`, so `nix flake check` stays a fast lint gate. The short `.#e2e.<name>` form resolves on x86_64-linux hosts; elsewhere use `.#legacyPackages.x86_64-linux.e2e.<name>` with an x86_64-linux builder.
 
-The runner expands suites/groups such as `ci`, `all`, or tag names into concrete leaf tests using the `e2e-metadata` output (`leafTests` and `groups`) and then executes those leaf tests sequentially. Duplicate tests are removed in stable first-seen order, so mixed inputs such as `ci verify smoke` still run each resolved leaf test only once.
+`scripts/run-e2e-tests.sh` wraps `python3 -m ci.e2e` (see `--help`). It expands groups such as `ci`, `all`, or tag names into leaf tests using the `e2e-metadata` output, removes duplicates in first-seen order, and builds every resolved test in one `nix build --keep-going`, so independent VMs run in parallel and one failure does not stop the rest. Without a target it runs the `ci` group; `NAILS_E2E_DEFAULT_TARGET` names a different default. `--exclude TARGET` leaves out the tests of a test or group.
 
-When `--shard-index/--shard-count` are used, `scripts/e2e_shard_weights.py plan` assigns the resolved tests to shards deterministically, balancing the checked-in weights in `nix/e2e-tests/shard-durations.json` (see [Timeouts and shard weights](#timeouts-and-shard-weights)). If that file is absent, tests are dealt round-robin. If the weights are unusable, the run stops instead of running an empty shard.
+- `--shard i/N` runs one of N weighted shards (see [Timeouts and shard weights](#timeouts-and-shard-weights)); `python3 -m ci.e2e plan` prints the split.
+- `--retries 1` runs failed tests once more and reports a pass on that retry as FLAKY.
+- `--execute` runs each test's driver directly instead of building the test, so a cached result does not count.
+- `--durations-out FILE` writes one JSON line per test (`test`, `result`, `seconds`); `--log-dir DIR` keeps the log of every failed test.
 
-`--durations-out FILE` writes one JSON line per test (`test`, `result`, `seconds`) as soon as each test finishes, so the record survives a shard that is later killed.
+Every VM gets 2 cores and 2 GB of memory, graphical nodes 4 GB (`lib/vm-config.nix`, `lib/graphical-vm-config.nix`). The size is fixed rather than derived from the host, so a test evaluates to the same derivation everywhere: the runner builds without `--impure`, the evaluation cache works, and a test that passed once can be fetched from a binary cache instead of being run again.
 
-Every VM gets 2 cores and 4 GB of memory (`lib/vm-config.nix`). The size is fixed rather than derived from the host, so a test evaluates to the same derivation everywhere: the runner builds without `--impure`, the evaluation cache works, and a test that passed once can be fetched from a binary cache instead of being run again.
-
-Default target selection is environment-aware:
-
-- local shells default to `all`
-- `CI` or `GITHUB_ACTIONS` defaults to `ci`
-- `NAILS_E2E_DEFAULT_TARGET` overrides either default
-
-CI intentionally uses the runner instead of building the aggregate `e2e.ci` link farm directly so the workflow exercises the same suite expansion logic, emits per-leaf progress, and serializes execution in a CI-safe way.
+CI runs the suite through `.github/workflows/e2e.yml`, described in [docs/ci.md](../../docs/ci.md#e2eyml-behavior).
 
 The interactive driver opens a Python prompt instead of running the test: `start_all()` boots the VMs, `test_script()` runs the whole test script and returns to the prompt, and `machine.shell_interact()` opens a shell in the guest. A `breakpoint()` in a `testScript` stops there when the script runs inside the interactive driver. `-i` takes exactly one leaf test; it refuses groups.
 
@@ -126,16 +120,13 @@ The interactive driver opens a Python prompt instead of running the test: `start
 
 - Every test runs with a driver `globalTimeout` of 900 s (`defaultGlobalTimeout` in `default.nix`). A test that needs longer sets a top-level `globalTimeout` next to its `name`, with a comment giving its measured runtime (see `tests/performance/07-performance.nix`). `meta.timeout` is derived as `globalTimeout + 60` and must not be set by a test. The effective value of each test is published as `timeouts` in the E2E metadata.
 - `canonical_deactivate` waits at most `shutdown_timeout` seconds (300 by default) for the VM to power off. On timeout it fails with the unit status, the unit and boot journals, pending systemd jobs and the process list, or with the serial console tail if the guest shell no longer answers.
-- `shard-durations.json` holds one weight in seconds per leaf test, and every weight must satisfy `30 <= weight <= timeout / 2`. A weight at or above the test's timeout is a recorded hang: the planner refuses to use it. The remaining rules are enforced by `python3 scripts/e2e_shard_weights.py check --weights nix/e2e-tests/shard-durations.json --metadata meta.json` and by the unit tests in `scripts/tests/` (`python3 -m unittest discover -s scripts/tests`), which CI runs on every PR.
-- Each full E2E shard uploads its per-test durations as the `e2e-durations-shard-N` artifact and adds a drift report to its step summary: tests more than 25% off their weight after allowing for the runner's overall speed. The report never fails the job.
+- `shard-durations.json` holds one weight in seconds per leaf test, and every weight must satisfy `30 <= weight <= timeout / 2`. A weight at or above the test's timeout is a recorded hang: the planner refuses to use it. The remaining rules are enforced by `nix eval --json .#legacyPackages.x86_64-linux.e2e-metadata | python3 -m ci.e2e check --metadata -` and by the unit tests in `ci/tests/` (`python3 -m unittest discover -s ci/tests -t .`), which CI runs on every PR.
+- Each E2E shard uploads its per-test durations as the `e2e-durations-shard-N` artifact and adds a drift report to its step summary: tests more than 25% off their weight after allowing for the runner's overall speed. The report never fails the job.
 
-To regenerate the weights, download the `e2e-durations-shard-*` artifacts of one or more full runs (for example with `gh run download RUN_ID -p 'e2e-durations-shard-*'`), then run:
+The nightly E2E run regenerates the weights from its own durations and uploads the result as the `shard-durations` artifact. To regenerate them by hand, download the `e2e-durations-*` artifacts of one or more runs (for example with `gh run download RUN_ID -p 'e2e-durations-*'`), then run:
 
 ```sh
-nix eval --json .#legacyPackages.x86_64-linux.e2e-metadata > meta.json
-python3 scripts/e2e_shard_weights.py regen \
-  --weights nix/e2e-tests/shard-durations.json \
-  --metadata meta.json e2e-durations-shard-*/shard-*.jsonl
+python3 -m ci.e2e regen-weights e2e-durations-*/*.jsonl
 ```
 
 `regen` takes the median of each test's passing runs of at least 30 s (a shorter pass was served from the Nix store without booting a VM), clamps it to half the test's timeout and reports every clamp, keeps the weights of tests without samples, and drops tests that no longer exist. Raise a test's `globalTimeout` instead of accepting a clamp.

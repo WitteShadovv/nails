@@ -6,11 +6,12 @@
 {
   # Virtual hardware configuration
   virtualisation = {
-    memorySize = 4096; # 4GB RAM
     # Fixed rather than sized to the host, so that a test's derivation, and
     # the cached result of a passed test, is the same on every machine and
-    # no build needs --impure. Two cores also let the two-node test fit a
-    # four-vCPU hosted runner.
+    # no build needs --impure. Two cores and 2 GB let two VMs share a
+    # four-vCPU, 16 GB hosted runner; graphical nodes get 4 GB in
+    # graphical-vm-config.nix.
+    memorySize = 2048;
     cores = 2;
     diskSize = 20480; # 20GB primary disk
 

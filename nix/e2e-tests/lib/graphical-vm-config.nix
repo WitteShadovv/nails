@@ -5,6 +5,8 @@
   swapDevices = lib.mkForce [ ];
 
   virtualisation.emptyDiskImages = lib.mkForce [ 2048 ];
+  # The X server and the desktop session need more than the 2 GB base size.
+  virtualisation.memorySize = lib.mkForce 4096;
 
   services = {
     xserver = {

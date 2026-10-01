@@ -13,11 +13,8 @@ This repository is public. The CI and release workflows are written for a public
 | `.github/workflows/pr-title.yml` | Holds the pull request title to the same Conventional Commits grammar as the commit-msg hook, so a squash merge lands a valid subject on `main` | Pull request opened, edited, synchronized or reopened |
 | `.github/workflows/update-flake-lock.yml` | Monthly refresh of the version sources Dependabot has no ecosystem for: `flake.lock` (`nix flake update`) and the pre-commit hook revisions (`pre-commit autoupdate`), each opening its own pull request | Monthly schedule, manual dispatch |
 | `.github/workflows/forensics-eval-regression.yml` | Cheap non-privileged forensics regression lane covering Python tests plus a fixture-backed smoke run | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
-| `.github/workflows/e2e-tests.yml` | Nix-based smoke validation for the fast CI E2E subset | Push/PR to `dev` with path filters, manual dispatch |
-| `.github/workflows/e2e-tests-full.yml` | Full Hetzner-backed E2E suite for trusted manual runs and PR runs gated by native GitHub environment approval | `pull_request_target` to `main` with path filters, manual dispatch |
+| `.github/workflows/e2e.yml` | The NixOS VM suite on GitHub-hosted runners: affected tests per pull request, the whole suite per push to `main`, every test driver nightly; runner-parameterised, so the same workflow runs on a self-hosted label | PRs targeting `main` (one path filter), push to `main`, nightly schedule, manual dispatch, `workflow_call` |
 | `.github/workflows/forensics-eval-fast.yml` | GitHub-hosted fast `forensics-eval` unittest lane for lightweight evaluator coverage under `nix/forensics-eval/tests` | Push/PR with path filters covering fast tests, related evaluator code, selected docs, and manual dispatch |
-| `.github/workflows/forensics-eval-full.yml` | Full Hetzner-backed forensics-eval suite, executed as a single live-target job on trusted manual runs | Manual dispatch |
-| `.github/workflows/forensics-eval-full-pr-metadata.yml` | Metadata-only `pull_request_target` companion for full forensics eval PR visibility without calling the privileged reusable shard | `pull_request_target` to `main` with path filters |
 | `.github/workflows/nix-pr-verify.yml` | Verifies the canonical `.#nails-release` derivation on pushes and PRs | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
 | `.github/workflows/release.yml` | Tag-driven release entrypoint: exact stable tags are verification-only, while suffixed prerelease tags publish immutable GitHub prereleases | Push of `v*` tags |
 | `.github/workflows/publish-release.yml` | Deliberate manual stable-release publisher that requires an exact stable tag input and creates the GitHub release once in final form | Manual dispatch |
@@ -45,14 +42,14 @@ The main CI workflow runs these jobs:
 - `ci-success` is the branch-protection-friendly summary job.
 - **Burn-in** and **benchmarks** are intentionally conditional. A skipped job does not fail `ci-success`; a failed conditional job does.
 - **Advisories gate dependency changes only.** A newly published RustSec advisory does not fail unrelated PRs or `main`; the weekly `just deny-full` run in `scheduled.yml` reports it, including advisories for crates that never ship (other targets, dev-dependencies). See [security-validation.md](security-validation.md#dependency-policy).
-- **E2E tests are not folded into `ci-success`.** They run in their own workflow when relevant source, Nix, or manifest files change.
+- **E2E tests are not folded into `ci-success`.** They run in `e2e.yml`, whose `e2e-result` job is the status to require.
 - **Nix release-path verification is also separate.** `nix-pr-verify.yml` is the dedicated check for the exact release derivation used by the release workflow.
 
 This split is deliberate: the repository keeps fast, broadly applicable CI in `ci.yml` while preserving deeper release-path and NixOS validation in dedicated workflows.
 
 ### Tracking issues for unattended runs
 
-Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `scheduled.yml`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
+Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `e2e.yml` on pushes to `main` and nightly, `scheduled.yml`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
 
 - A failed or cancelled job opens the issue (label `ci-red`, title `CI red: <workflow>`; `CI red: main` for `ci.yml`), or comments on it with the run link and the red jobs when it is already open.
 - A run in which every reported job passed closes the issue. A run that skipped some jobs without a failure (for example a manual dispatch of a single `scheduled.yml` task) leaves it as it is.
@@ -75,55 +72,31 @@ Only the reporting jobs get `issues: write`. The rules live in `report_status.py
 - `forensics-eval` owns staged evidence export, baseline-aware analysis, report generation, and campaign-style forensic evaluation.
 - `forensics-eval` should not duplicate normal E2E coverage. If a check is mainly about product correctness rather than exported evidence and forensic comparisons, it belongs in normal E2E.
 
-### `e2e-tests.yml` behavior
+### `e2e.yml` behavior
 
-- The workflow runs `./scripts/run-e2e-tests.sh`, not the aggregate `e2e.ci` link-farm target directly.
-- In CI, the runner defaults to the `ci` suite (or can be pinned explicitly with `NAILS_E2E_DEFAULT_TARGET=ci`).
-- The runner expands suites/groups from Nix metadata into concrete leaf tests, deduplicates them in stable first-seen order, and executes them sequentially.
-- `./scripts/run-e2e-tests.sh --dry-run ci` prints the exact resolved leaf test list without executing it.
-- The workflow is explicitly positioned as the **smoke** E2E lane, while `e2e-tests-full.yml` remains the comprehensive gated suite.
-- Workflow concurrency is branch/PR-aware with `cancel-in-progress: true`, so superseded smoke runs are cancelled automatically.
-- Trigger scope: pushes to `dev`, PRs targeting `dev`, and manual dispatch. `main` and PRs to `main` are owned by `e2e-tests-full.yml` to avoid duplicate E2E runs.
-- Path coverage includes the E2E runner script, relevant workflow files, the `setup-nix` action, flake inputs, and Cargo manifests so smoke runs follow CI/E2E infrastructure changes more reliably.
+One workflow runs the NixOS VM suite in every lane. A `plan` job decides what runs, a matrix of `shard` jobs runs it, and `e2e-result` reports the outcome:
 
-This keeps suite membership in one source of truth under `nix/e2e-tests/default.nix`, while making CI execution order explicit and safer for shared-host runner state than invoking the aggregate `e2e.ci` derivation as a single build target.
+| Trigger | Mode | Selection |
+|---|---|---|
+| Pull request to `main` | `affected` | The `ci` group plus every test whose derivation differs from the base branch (`python3 -m ci.e2e plan --affected`). A test file change adds that test; a change to `nails` changes every test. |
+| Pull request with the `full-e2e` label | `all` | Every test. |
+| Push to `main` | `all` | Every test; a test whose derivation already passed is substituted from the binary cache instead of booting again. |
+| Nightly schedule | `execute` | Every test driver runs directly (`run --execute`), so cached results do not count. The performance tests run in an informational job that never fails the run. |
+| Manual dispatch or `workflow_call` | input | `mode` (`affected`, `ci`, `all`, `execute`), `runner` and `max-shards`. |
 
-### `e2e-tests-full.yml` behavior
+- **One path filter.** The `plan` job compares the change with its base. When nothing under `nails-core/`, `nails-cli/`, `nix/`, `ci/e2e/`, the setup-nix action, this workflow, the flake, the Cargo manifests or `rust-toolchain.toml` changed, no VM boots and `e2e-result` passes. A docs-only pull request therefore costs one short job.
+- **No secrets for untrusted code.** There is no `pull_request_target` and no approval environment. Fork and Dependabot pull requests run like any other and read the binary cache without being able to write to it.
+- **Sharding.** `python3 -m ci.e2e plan --max-shards N --format github-matrix` balances the selected tests over as many shards as hold about 900 weighted seconds each (`SHARD_SECONDS` in `ci/e2e/plan.py`), never more than `max-shards` (10 by default) and never an empty one. Each shard's job timeout is 1.5 times its weighted load plus a 15-minute setup allowance (at least 30 minutes).
+- **Runner.** `runner` is the `runs-on` value as JSON and applies to the shards; `plan`, `e2e-result` and the reporting jobs always run on `ubuntu-24.04`. Hosted runners get KVM from setup-nix; a self-hosted runner must provide `/dev/kvm`. A single-use self-hosted runner can serve one job only, so dispatch with `max-shards: 1` for it.
+- **Execution.** Each shard runs its tests with `python3 -m ci.e2e run --retries 1`: one `nix build --keep-going` over all of them (or, in `execute` mode, one driver after another). A test whose output is missing after the build failed. Failed tests run once more; a pass on that retry is listed as FLAKY in the step summary and raises a warning annotation, and the shard stays green. A test that fails twice fails the shard.
+- **Artifacts.** Each shard uploads its per-test durations (`e2e-durations-shard-N`, kept 90 days) and, only when it failed, the logs of its failed tests (`e2e-logs-shard-N`, kept 14 days). Nothing else from the runner is uploaded.
+- **Weights.** Every shard appends a weight-drift report to its summary. The nightly run regenerates `nix/e2e-tests/shard-durations.json` from its durations and offers the result as the `shard-durations` artifact with a diff in the summary; committing it is a deliberate change.
+- **Unattended runs.** Pushes to `main` and nightly runs end in `report-status`, which keeps the `CI red: E2E` issue in step with the latest run (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)).
+- **Concurrency.** A newer push to a pull request cancels its older run; runs on `main` always finish, because each one fills the cache for the next.
 
-- The workflow runs `./scripts/run-e2e-tests.sh all` on an ephemeral Hetzner self-hosted runner.
-- Public PR approval now uses the workflow's own `pull_request_target` trigger plus a metadata-only job bound to the GitHub environment `hetzner-pr`.
-- That approval job performs no checkout and executes no PR code, so GitHub's native **Review deployments** flow gates runner provisioning directly.
-- After approval, the trusted GitHub-hosted resolver job fetches the current PR head repository/ref/SHA from the GitHub API and passes that exact target into the reusable Hetzner worker.
-- Workflow concurrency is PR-aware and uses `cancel-in-progress: true`, so a newer push to the same PR cancels older waiting/running privileged runs.
-- The shard workflow checks out the exact approved SHA with `persist-credentials: false` and verifies that `HEAD` matches before executing PR code.
-- The workflow provisions the runner on a GitHub-hosted job, runs the suite on the returned self-hosted label, and always attempts teardown afterward.
-- Full-E2E shard selection is deterministic but runtime-aware: `./scripts/run-e2e-tests.sh` uses checked-in historical leaf durations from `nix/e2e-tests/shard-durations.json` to greedily balance shard load instead of plain round-robin, and refuses to run when a weight is at or above its test's timeout.
-- Each shard records per-test durations, uploads them as the `e2e-durations-shard-N` artifact (kept 90 days) and appends a weight-drift report with `::warning::` annotations to its step summary. The report never fails the job; regenerating the weights is described in `nix/e2e-tests/README.md`.
-- Every test VM gets 2 cores and 4 GB of memory (`nix/e2e-tests/lib/vm-config.nix`). The size is fixed rather than derived from the runner, so a test evaluates to the same derivation on every host and no build needs `--impure`.
-- The reusable shard workflow now uses an explicit minimal secret contract instead of `secrets: inherit`: `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID`.
-- Required repository configuration: `PERSONAL_ACCESS_TOKEN` for self-hosted runner registration, `HCLOUD_TOKEN` for Hetzner API create/delete, and `HCLOUD_SSH_KEY_ID` as a repository secret or repository variable for SSH bootstrap.
-- Broad log and metrics artifact uploads were removed from this workflow to avoid collecting blanket runner output from privileged Hetzner runs.
+Every test VM gets 2 cores and 2 GB of memory, 4 GB for graphical nodes (`nix/e2e-tests/lib/vm-config.nix`, `graphical-vm-config.nix`). The size is fixed rather than derived from the runner, so a test evaluates to the same derivation on every host, no build needs `--impure`, and two VMs fit a four-vCPU hosted runner. Every test runs with a 900 s driver timeout unless it declares a longer `globalTimeout`.
 
-### `forensics-eval-full.yml` behavior
-
-- The workflow is the privileged live-evaluation lane, not a replacement for normal E2E or the older VM-internal forensic spot checks.
-- The workflow runs a single Hetzner-backed job through `.github/workflows/forensics-eval-full-shard.yml` on one ephemeral self-hosted runner.
-- That reusable workflow now invokes `./scripts/run-forensics-eval-tests.sh live` with no sharding.
-- The `live` target is the metadata-defined built-in live-supported group, which currently resolves to the single built-in path `direct-baseline/direct-headless`.
-- A hosted preflight now checks out the exact approved SHA, validates iterations, resolves `live` from current metadata, and fails closed unless it remains exactly `direct-baseline/direct-headless`.
-- That fail-closed guard is deliberate: unsupported leaves such as `graphical` and `vfat-boot` are not treated as built-in live-supported.
-- Built-in live support should not be described more broadly than that single path until additional combinations are explicitly supported.
-- `.github/workflows/forensics-eval-full.yml` is now `workflow_dispatch`-only so the workflow that calls `.github/workflows/forensics-eval-full-shard.yml` is never triggered by `pull_request_target`.
-- `.github/workflows/forensics-eval-full-pr-metadata.yml` preserves the prior PR visibility as a metadata-only companion workflow and does not call the reusable shard, provision runners, or execute repository code.
-- Manual runs still resolve a trusted checkout target on GitHub-hosted infrastructure and then pass that exact target into the reusable Hetzner worker.
-- Manual workflow concurrency remains branch-aware and uses `cancel-in-progress: true`, so superseded trusted runs cancel older waiting/running privileged runs.
-- The reusable worker checks out the exact approved SHA with `persist-credentials: false` and verifies that `HEAD` matches before executing PR code.
-- The reusable shard workflow now uses an explicit minimal secret contract instead of `secrets: inherit`: `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID`.
-- Before upload, the privileged run now builds a bounded review bundle manifest, fails if required review artifacts are missing, and sanitizes copied review-bundle analyzer evidence/snippet content without mutating the source campaign outputs in `tmp/`.
-- The uploaded `full-forensics-eval-results` bundle is intentionally limited to campaign summaries, per-run manifests/summaries/reports/scenario JSON, compare summaries and findings diffs, baseline-vs-stage JSON diffs, stage-hash JSON, analyzer JSON outputs, live stage metadata JSON, and command return-code files.
-- The review-bundle manifest now records whether sanitization was applied and which copied files were redacted.
-- Current limitation: the artifact bundle still does not upload raw stage trees, disk images, blanket runner logs, or command stdout/stderr, so it is useful for review and triage but not a complete offline-forensics evidence package.
-- Required repository configuration matches the full E2E workflow: `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID` (the SSH key ID may be stored as a repository variable instead of a secret).
+The target is that `mode=all` finishes in at most 10 shards and about 20 minutes on hosted runners. Record the measured shard count and wall-clock time of a full hosted run here once one has completed.
 
 ### `forensics-eval-fast.yml` behavior
 
@@ -133,33 +106,24 @@ This keeps suite membership in one source of truth under `nix/e2e-tests/default.
 - Path filters cover the fast tests plus closely related evaluator code and workflow/docs inputs: `nix/forensics-eval/tests/**`, `nix/forensics-eval/analyzers/**`, `nix/forensics-eval/runners/**`, `nix/forensics-eval/fixtures/**`, `scripts/run-forensics-eval-tests.sh`, `.github/workflows/forensics-eval-fast.yml`, `nix/forensics-eval/README.md`, and `docs/ci.md`.
 - It is the right place for parser, schema, planner, report, and similar fast analysis tests that fit the unittest lane, but not for duplicating normal E2E behavior coverage or implying full live-suite coverage.
 
-### Required GitHub environment configuration for privileged PR runs
-
-Create a repository environment named `hetzner-pr` and configure it with:
-
-- **Required reviewers**: the maintainers who are allowed to approve privileged Hetzner-backed PR runs.
-- Optional **deployment branch policy** restricted to `main` if you want the approval gate limited to the default-branch workflow context.
-
-The environment job is approval-only; it does not need environment secrets. Repository secrets remain explicitly mapped into the reusable Hetzner workflows after approval.
-
 ## Nix setup and binary cache
 
 Every workflow that needs Nix uses the composite action `.github/actions/setup-nix`. The installer (`cachix/install-nix-action`) is pinned there once, Dependabot keeps that pin current, and every job gets the same `nix.conf`: KVM, `system-features = nixos-test benchmark big-parallel kvm`, `always-allow-substitutes = true` and `accept-flake-config = false`.
 
 The action also connects the project's public Cachix cache:
 
-- **Reads.** The cache is added as an extra substituter next to cache.nixos.org. Its signing key is pinned in `action.yml`, so no substitute is trusted on first use. Every job reads it unless it sets `cache: 'false'`, including fork pull requests and the Hetzner lanes.
-- **Pushes.** A job pushes only when it runs for a trusted event and receives `CACHIX_AUTH_TOKEN`. The trusted events are pushes to `main`, scheduled runs, manual dispatches and pull requests from a branch of this repository. Fork pull requests, `pull_request_target` and every other event stay read-only. The decision lives in `.github/actions/setup-nix/cache_plan.py` and is tested in `scripts/tests/test_setup_nix_cache_plan.py`.
+- **Reads.** The cache is added as an extra substituter next to cache.nixos.org. Its signing key is pinned in `action.yml`, so no substitute is trusted on first use. Every job reads it unless it sets `cache: 'false'`, including fork pull requests.
+- **Pushes.** A job pushes only when it runs for a trusted event and receives `CACHIX_AUTH_TOKEN`. The trusted events are pushes to `main`, scheduled runs, manual dispatches and pull requests from a branch of this repository. Fork pull requests and every other event stay read-only. The decision lives in `.github/actions/setup-nix/cache_plan.py` and is tested in `scripts/tests/test_setup_nix_cache_plan.py`.
 - **What is pushed.** The cachix daemon uploads each path as soon as Nix builds it, so a cancelled run keeps its finished work. A push filter limits uploads to three name prefixes:
   - `nails-*`: the binary that every VM test embeds;
   - `rust-default-*`: the Rust toolchain, whose closure holds its components;
   - `vm-test-run-*`: passed VM tests, which later runs fetch instead of booting the test again.
 
   `nails-release-*` is never pushed. Each path goes up with its closure, except what cache.nixos.org already serves. To push more, add a prefix to `PUSH_ALLOW` in `cache_plan.py`.
-- **Who gets the token.** Only `e2e-tests.yml` and `nix-pr-verify.yml` pass it. GitHub withholds secrets from fork pull requests and Dependabot runs, so those stay read-only too. The Hetzner shard workflows never receive the token because they run the code of the pull request under test.
+- **Who gets the token.** Only `e2e.yml` and `nix-pr-verify.yml` pass it. GitHub withholds secrets from fork pull requests and Dependabot runs, so those stay read-only too.
 - **Release builds.** `release-core.yml` and `reproducibility.yml` set `cache: 'false'` and never read the project cache. `nails` is therefore compiled from source in every release and rebuild job, and nothing from the cache can end up in a release.
 
-Workflows load the action from the checked-out tree, so the Hetzner lanes and the release workflows need a revision that already contains it; rebase older pull requests before running them there.
+Workflows load the action from the checked-out tree, so a run needs a revision that already contains it; rebase older pull requests before running them.
 
 Anyone who can push a branch to this repository can push to the cache: once a run has configured the token, the code under test can read it. Write access already implies that trust, and release artifacts never come from the cache.
 
@@ -261,9 +225,8 @@ A commit runs only the fast, offline pre-commit hooks (formatting, file and secr
 ## Secrets and permissions
 
 - `CODECOV_TOKEN` is optional and only affects Codecov upload from `main` pushes.
-- `CACHIX_AUTH_TOKEN` is optional. With it, `e2e-tests.yml` and `nix-pr-verify.yml` push build results to the project binary cache for trusted events (see [Nix setup and binary cache](#nix-setup-and-binary-cache)). Store it as an Actions secret only.
-- Full Hetzner-backed E2E runs require explicitly mapped reusable-workflow secrets for `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID` (the SSH key ID may still be sourced from a repository variable inside the shard workflow).
-- Full Hetzner-backed forensics-eval runs require the same explicitly mapped `PERSONAL_ACCESS_TOKEN`, `HCLOUD_TOKEN`, and `HCLOUD_SSH_KEY_ID` contract.
+- `CACHIX_AUTH_TOKEN` is optional. With it, `e2e.yml` and `nix-pr-verify.yml` push build results to the project binary cache for trusted events (see [Nix setup and binary cache](#nix-setup-and-binary-cache)). Store it as an Actions secret only.
+- No E2E lane needs any other secret. Nothing uses the `hetzner-pr` approval environment any more; it can be deleted.
 - Release provenance and GitHub attestations use GitHub OIDC permissions; no long-lived signing secret is required.
 
 ## Operational caveats
@@ -273,8 +236,7 @@ A commit runs only the fast, offline pre-commit hooks (formatting, file and secr
 - Stable publication requires `publish-release.yml` and an exact stable tag that matches `Cargo.toml`.
 - Automatic prerelease publication is reserved for validated suffixed tags that match the current `Cargo.toml` version.
 - E2E validation and Nix release-path verification are separate workflows and should be treated as part of the overall release posture even though they are not aggregated into `ci-success`.
-- Ordinary forensics CI is fixture-backed; the privileged live workflow is fail-closed to `direct-baseline/direct-headless` until built-in live support expands.
-- The pinned `Cyclenerd/hcloud-github-runner` action still embeds the GitHub runner registration token into Hetzner cloud-init/user-data during runner creation. This patch prevents PR-context provisioning and narrows data handling, but the upstream bootstrap-token exposure remains a caveat until the action design changes.
+- Ordinary forensics CI is fixture-backed; there is no live forensics lane.
 
 ## Related documents
 
