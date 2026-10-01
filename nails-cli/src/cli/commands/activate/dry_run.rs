@@ -3,18 +3,20 @@
 use nails_core::output::{Mark, Style};
 use nails_core::{Config, RealFilesystem, build_overlay_targets};
 
+use crate::cli::output::ExitStatus;
+
 /// Execute dry-run mode: preview activation steps without making changes
 ///
 /// Loads config, runs preflight checks, computes overlay targets, detects
 /// active sessions, and prints what would happen — without modifying the
-/// filesystem or creating a NailsManager.
+/// filesystem or creating a NailsManager. Always returns [`ExitStatus::Ok`].
 pub(super) fn execute_dry_run(
     config: &Config,
     no_preflight: bool,
     overlay_only: bool,
     no_kill_session: bool,
     style: Style,
-) -> ! {
+) -> ExitStatus {
     use nails_core::preflight::CheckResult;
 
     let pass = style.mark(Mark::Pass);
@@ -145,7 +147,7 @@ pub(super) fn execute_dry_run(
     println!();
 
     println!("=== Dry-run complete. No changes were made. ===");
-    std::process::exit(0);
+    ExitStatus::Ok
 }
 
 /// Build a preflight check registry from config (mirrors NailsManager::run_preflight_checks)
@@ -285,19 +287,16 @@ mod tests {
             ..Config::default()
         };
 
-        match case.as_str() {
-            "skip-preflight-overlay-only" => {
-                execute_dry_run(&config, true, true, true, ASCII);
-            }
-            "run-preflight" => {
-                execute_dry_run(&config, false, false, true, ASCII);
-            }
+        let status = match case.as_str() {
+            "skip-preflight-overlay-only" => execute_dry_run(&config, true, true, true, ASCII),
+            "run-preflight" => execute_dry_run(&config, false, false, true, ASCII),
             "flake-session-check" => {
                 config.nixos_flake = Some("/etc/nixos#test-host".to_string());
-                execute_dry_run(&config, true, false, false, ASCII);
+                execute_dry_run(&config, true, false, false, ASCII)
             }
             other => panic!("unknown dry-run subprocess case: {other}"),
-        }
+        };
+        crate::cli::detach::exit_process(status.code());
     }
 
     #[test]

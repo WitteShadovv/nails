@@ -201,6 +201,10 @@ pub struct StatusArgs {
     /// Show resolved paths and overlay mount details
     #[arg(long)]
     pub details: bool,
+
+    /// Reflect the security posture in the exit code instead of always exiting 0
+    #[arg(long)]
+    pub exit_status: bool,
 }
 
 /// `nails verify` arguments
@@ -329,14 +333,14 @@ mod tests {
         let cli = parse(&["status", "--details"]).unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Status(StatusArgs { details: true })
+            Commands::Status(StatusArgs { details: true, .. })
         ));
         // -v on status is verbosity, not details.
         let cli = parse(&["status", "-v"]).unwrap();
         assert_eq!(cli.global.verbose, 1);
         assert!(matches!(
             cli.command,
-            Commands::Status(StatusArgs { details: false })
+            Commands::Status(StatusArgs { details: false, .. })
         ));
     }
 

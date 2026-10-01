@@ -3,6 +3,10 @@
     def _normalize_status_state(value):
         import re
 
+        # The envelope renders state as a tagged object {"kind": ...}; older
+        # callers may still pass a bare string.
+        if isinstance(value, dict):
+            value = value.get("kind", "")
         if isinstance(value, str):
             match = re.match(r"([A-Za-z]+)", value)
             return match.group(1).lower() if match else value.lower()

@@ -1,7 +1,107 @@
 //! Output formatting for the verify command
 
 use nails_core::output::{Mark, Style, Tone};
-use nails_core::{StateFileStatus, VerifyResult};
+use nails_core::{ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
+use serde::Serialize;
+
+use crate::cli::output::envelope::Envelope;
+use crate::cli::output::exit::ExitStatus;
+
+/// The `data` payload for `verify --json`.
+///
+/// Separate from `nails_core::VerifyResult` so the wire enums render in
+/// `snake_case` (`secure`, `warn`, `deep`) rather than the library's internal
+/// `PascalCase`.
+#[derive(Debug, Serialize)]
+pub struct VerifyData {
+    status: VerifyStatusJson,
+    findings: Vec<FindingJson>,
+    scan_depth: ScanDepthJson,
+    config_aware: bool,
+    config_paths_checked: usize,
+    state_file_status: StateFileStatus,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum VerifyStatusJson {
+    Secure,
+    Warning,
+    Critical,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ScanDepthJson {
+    Standard,
+    Deep,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SeverityJson {
+    Info,
+    Warn,
+    Critical,
+}
+
+#[derive(Debug, Serialize)]
+struct FindingJson {
+    severity: SeverityJson,
+    category: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fix_guidance: Option<String>,
+}
+
+impl VerifyData {
+    /// Build the wire payload from a verification result.
+    pub fn from_result(result: &VerifyResult) -> Self {
+        Self {
+            status: match result.status {
+                VerifyStatus::Secure => VerifyStatusJson::Secure,
+                VerifyStatus::Warning => VerifyStatusJson::Warning,
+                VerifyStatus::Critical => VerifyStatusJson::Critical,
+            },
+            findings: result
+                .findings
+                .iter()
+                .map(|finding| FindingJson {
+                    severity: match finding.severity {
+                        Severity::Info => SeverityJson::Info,
+                        Severity::Warn => SeverityJson::Warn,
+                        Severity::Critical => SeverityJson::Critical,
+                    },
+                    category: finding.category.clone(),
+                    message: finding.message.clone(),
+                    fix_guidance: finding.fix_guidance.clone(),
+                })
+                .collect(),
+            scan_depth: match result.scan_depth {
+                ScanDepth::Standard => ScanDepthJson::Standard,
+                ScanDepth::Deep => ScanDepthJson::Deep,
+            },
+            config_aware: result.config_aware,
+            config_paths_checked: result.config_paths_checked,
+            state_file_status: result.state_file_status.clone(),
+        }
+    }
+}
+
+/// Print the verification result as one envelope on stdout.
+pub fn print_verify_json(result: &VerifyResult) {
+    Envelope::success("verify", VerifyData::from_result(result)).print();
+}
+
+/// The exit status for a verification outcome: a warning and a critical finding
+/// are distinguishable from each other and from an ordinary failure.
+pub fn verify_exit_status(status: VerifyStatus) -> ExitStatus {
+    match status {
+        VerifyStatus::Secure => ExitStatus::Ok,
+        VerifyStatus::Warning => ExitStatus::VerifyWarning,
+        VerifyStatus::Critical => ExitStatus::VerifyCritical,
+    }
+}
 
 /// Print verification results in human-readable format
 ///

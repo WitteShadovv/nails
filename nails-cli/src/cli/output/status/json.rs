@@ -1,98 +1,74 @@
-//! JSON output formatting for the status command
+//! JSON output formatting for the status command.
+//!
+//! The report is rendered into typed DTOs and wrapped in the shared envelope, so
+//! `state` and `overlay_verification` are tagged objects rather than Rust
+//! `Debug` strings.
 
-/// JSON output structure for status command (AC5)
-#[derive(serde::Serialize)]
-struct StatusJsonOutput {
-    /// System state (Active, Inactive, Degraded, or Unknown when the state file
-    /// could not be trusted).
-    state: String,
-    /// Why the state is unknown (only present when `state` is "Unknown").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-    /// Security posture level (secure, warning, critical)
-    security_posture: String,
-    /// When the system was activated (ISO 8601)
+use serde::Serialize;
+
+use crate::cli::output::dto::{StateJson, VerificationJson};
+use crate::cli::output::envelope::Envelope;
+
+/// The `data` payload for `status --json`.
+#[derive(Debug, Serialize)]
+pub struct StatusData {
+    /// System state as a tagged object.
+    state: StateJson,
+    /// Security posture level (secure, warning, critical, decoy).
+    security_posture: &'static str,
+    /// When the system was activated (ISO 8601).
     #[serde(skip_serializing_if = "Option::is_none")]
     activated_at: Option<String>,
-    /// Uptime in seconds
+    /// Uptime in seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     uptime_seconds: Option<i64>,
-    /// Human-readable uptime string
+    /// Human-readable uptime string.
     #[serde(skip_serializing_if = "Option::is_none")]
     uptime_formatted: Option<String>,
-    /// Overlay list with status
+    /// Overlay list with mount status.
     overlays: Vec<OverlayJsonEntry>,
-    /// Overlay verification result
-    overlay_verification: String,
-    /// NixOS generation (if available)
+    /// Overlay verification result as a tagged object.
+    overlay_verification: VerificationJson,
+    /// NixOS generation (if available).
     #[serde(skip_serializing_if = "Option::is_none")]
     nixos_generation: Option<String>,
-    /// OpSec reminders
+    /// OpSec reminders.
     opsec_reminders: Vec<OpSecReminderJson>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, Serialize)]
 struct OverlayJsonEntry {
-    /// Overlay mount path
+    /// Overlay mount path.
     path: String,
-    /// Mount status
-    status: String,
+    /// Mount status.
+    status: &'static str,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, Serialize)]
 struct OpSecReminderJson {
-    /// Reminder severity
-    severity: String,
-    /// Reminder message
+    /// Reminder severity (info, warning, critical).
+    severity: &'static str,
+    /// Reminder message.
     message: String,
 }
 
-/// Print status result in JSON format (AC5)
-///
-/// Outputs a JSON object with all status fields including:
-/// - state (system state)
-/// - security_posture (secure/warning/critical)
-/// - activated_at (ISO 8601 timestamp)
-/// - uptime_seconds (duration in seconds)
-/// - uptime_formatted (human-readable uptime)
-/// - overlays (array of overlay paths with status)
-/// - overlay_verification (verification result)
-/// - nixos_generation (current generation if available)
-/// - opsec_reminders (array of reminders with severity and message)
-///
-/// # Arguments
-///
-/// * `report` - Status report from StatusCommand
-pub fn print_status_json(report: &nails_core::status::StatusReport) {
-    use nails_core::LoadOutcome;
-    use nails_core::status::*;
+fn posture_label(posture: nails_core::status::SecurityPosture) -> &'static str {
+    use nails_core::status::SecurityPosture;
+    match posture {
+        SecurityPosture::Secure => "secure",
+        SecurityPosture::Warning => "warning",
+        SecurityPosture::Decoy => "decoy",
+        SecurityPosture::Critical => "critical",
+    }
+}
 
-    // A state file that could not be read or trusted collapses to a safe default,
-    // but we report the real state as "Unknown" rather than claim it is Inactive.
-    let (state, error) = match report.load_outcome {
-        LoadOutcome::Corrupt => (
-            "Unknown".to_string(),
-            Some(
-                "state file is corrupt or has no integrity digest; the real state is unknown"
-                    .to_string(),
-            ),
-        ),
-        LoadOutcome::Unreadable => (
-            "Unknown".to_string(),
-            Some("state file could not be read; the real state is unknown".to_string()),
-        ),
-        LoadOutcome::Loaded | LoadOutcome::Missing => (format!("{:?}", report.state), None),
-    };
+/// Build the `data` payload from a status report.
+pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusData {
+    use nails_core::status::ReminderSeverity;
 
-    let output = StatusJsonOutput {
-        state,
-        error,
-        security_posture: match report.security_posture() {
-            SecurityPosture::Secure => "secure".to_string(),
-            SecurityPosture::Warning => "warning".to_string(),
-            SecurityPosture::Critical => "critical".to_string(),
-            SecurityPosture::Decoy => "decoy".to_string(),
-        },
+    StatusData {
+        state: StateJson::from_report(&report.state, &report.load_outcome),
+        security_posture: posture_label(report.security_posture()),
         activated_at: report.activated_at.map(|dt| dt.to_rfc3339()),
         uptime_seconds: report.uptime.map(|d| d.num_seconds()),
         uptime_formatted: if report.formatted_uptime.is_empty() {
@@ -106,26 +82,51 @@ pub fn print_status_json(report: &nails_core::status::StatusReport) {
             .map(|status| OverlayJsonEntry {
                 path: status.path.display().to_string(),
                 status: if status.actually_mounted {
-                    "mounted".to_string()
+                    "mounted"
                 } else {
-                    "not_mounted".to_string()
+                    "not_mounted"
                 },
             })
             .collect(),
-        overlay_verification: format!("{:?}", report.overlay_verification),
+        overlay_verification: VerificationJson::from(&report.overlay_verification),
         nixos_generation: report.nixos_generation.clone(),
         opsec_reminders: report
             .opsec_reminders
             .iter()
             .map(|reminder| OpSecReminderJson {
-                severity: format!("{:?}", reminder.severity).to_lowercase(),
+                severity: match reminder.severity {
+                    ReminderSeverity::Info => "info",
+                    ReminderSeverity::Warning => "warning",
+                    ReminderSeverity::Critical => "critical",
+                },
                 message: reminder.message.clone(),
             })
             .collect(),
-    };
+    }
+}
 
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&output).expect("Failed to serialize JSON")
-    );
+/// Build the `data` payload for a status run whose state file could not be read
+/// or trusted: the state is `unknown` and carries the reason.
+pub fn build_status_data_unknown(reason: String) -> StatusData {
+    StatusData {
+        state: StateJson::Unknown { reason },
+        security_posture: "warning",
+        activated_at: None,
+        uptime_seconds: None,
+        uptime_formatted: None,
+        overlays: Vec::new(),
+        overlay_verification: VerificationJson::NotApplicable,
+        nixos_generation: None,
+        opsec_reminders: Vec::new(),
+    }
+}
+
+/// Print the status report as one envelope on stdout.
+pub fn print_status_json(report: &nails_core::status::StatusReport) {
+    Envelope::success("status", build_status_data(report)).print();
+}
+
+/// Print an envelope for a status run whose state could not be trusted.
+pub fn print_status_json_unknown(reason: String) {
+    Envelope::success("status", build_status_data_unknown(reason)).print();
 }

@@ -47,7 +47,7 @@ fn subprocess_activate_entrypoint() {
         ..guarded.clone()
     };
 
-    match case.as_str() {
+    let status = match case.as_str() {
         "interactive-requires-yes" => execute(
             &OutputSettings::default(),
             &ActivateArgs {
@@ -90,7 +90,8 @@ fn subprocess_activate_entrypoint() {
             Err("activate guard blocked".to_string())
         }),
         other => panic!("unknown activate subprocess case: {other}"),
-    }
+    };
+    crate::cli::detach::exit_process(status.code());
 }
 
 #[test]
@@ -151,7 +152,7 @@ fn execute_exits_3_with_one_line_for_missing_explicit_config() {
     assert_eq!(
         stderr.trim(),
         format!(
-            "Error: config file not found: {} (run `nails init <root>` or pass --config)",
+            "error: config file not found: {} (run `nails init <root>` or pass --config)",
             missing.display()
         )
     );
@@ -171,7 +172,7 @@ fn execute_honors_safety_guard_after_loading_config() {
     let output = run_subprocess("safety-guard", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert_eq!(output.status.code(), Some(5), "stderr={stderr}");
     assert!(stderr.contains("activate guard blocked"));
 }
 
@@ -229,7 +230,7 @@ fn execute_ascii_uses_ascii_for_failures() {
     let output = run_subprocess("safety-guard-plain", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert_eq!(output.status.code(), Some(5), "stderr={stderr}");
     assert!(stderr.is_ascii(), "stderr={stderr}");
     assert!(!stderr.contains("✗"), "stderr={stderr}");
 }

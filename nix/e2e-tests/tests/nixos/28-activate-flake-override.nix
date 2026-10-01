@@ -33,11 +33,11 @@ in
     import json
 
     def read_status_json_local(config_path):
-        return json.loads(machine.succeed(f"nails --config {config_path} status --json"))
+        return json.loads(machine.succeed(f"nails --config {config_path} status --json"))["data"]
 
     def assert_status_state_local(expected, config_path):
         payload = read_status_json_local(config_path)
-        actual = str(payload["state"]).lower()
+        actual = str(payload["state"]["kind"])
         assert actual.startswith(expected.lower()), f"Expected {expected!r}, got: {payload}"
 
     def assert_overlay_mounted_local(path):

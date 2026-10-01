@@ -76,7 +76,7 @@ in
             )
         machine.succeed(f"test -f {entered_path}")
         machine.wait_until_succeeds(
-            f"nails --config {headless_config} status --json | grep -F 'Activating'",
+            f"nails --config {headless_config} status --json | grep -F '\"kind\":\"activating\"'",
             timeout=180,
         )
         status = read_status_json(config_path=headless_config)
@@ -107,7 +107,7 @@ in
         rc, stdout, stderr = wait_for_captured_command("emergency-activating-primary", timeout=240)
         assert rc == 0, f"Expected activation success, got rc={rc}, stdout={stdout!r}, stderr={stderr!r}"
         status = read_status_json(config_path=headless_config)
-        assert status["state"].startswith("Active"), status
+        assert status["state"]["kind"] == "active", status
         assert_status_overlays(expected_overlays, status)
         assert_expected_overlays(expected_overlays)
 

@@ -46,9 +46,10 @@ in
             "verify-schema-baseline",
             f"nails --config {shlex.quote(headless_config)} verify --json",
         )
-        assert baseline["rc"] in (0, 1), baseline
+        # secure => 0, warning => 10, critical => 11, run error => 1.
+        assert baseline["rc"] in (0, 1, 10, 11), baseline
         assert_json_schema_valid(verify_schema, baseline["stdout_path"], "baseline verify JSON")
-        baseline_payload = json.loads(baseline["stdout"])
+        baseline_payload = json.loads(baseline["stdout"])["data"]
         assert "status" in baseline_payload and "findings" in baseline_payload, baseline_payload
 
     with subtest("active verify output matches schema"):
@@ -59,9 +60,10 @@ in
             "verify-schema-active",
             f"nails --config {shlex.quote(headless_config)} verify --deep --json",
         )
-        assert active["rc"] == 1, active
+        # Active overlays make verify report findings: warning => 10, critical => 11.
+        assert active["rc"] in (10, 11), active
         assert_json_schema_valid(verify_schema, active["stdout_path"], "active verify JSON")
-        active_payload = json.loads(active["stdout"])
+        active_payload = json.loads(active["stdout"])["data"]
         assert active_payload["findings"], active_payload
         assert any(
             finding["category"] == "mount"

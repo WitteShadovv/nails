@@ -116,8 +116,8 @@ in
 
     print("✓ VM rebooted to decoy state")
 
-    status = json.loads(machine.succeed("nails status --json"))
-    assert status["state"] == "Inactive", f"Expected Inactive status after reboot, got: {status}"
+    status = json.loads(machine.succeed("nails status --json"))["data"]
+    assert status["state"]["kind"] == "inactive", f"Expected inactive status after reboot, got: {status}"
     print("✓ NAILS status reports Inactive")
 
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")

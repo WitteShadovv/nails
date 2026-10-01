@@ -48,10 +48,12 @@ in
 
     print("\n=== Test 2: Status --json output ===")
     status_json_raw = machine.succeed("nails status --json")
-    status_json = json.loads(status_json_raw)
-    assert "state" in status_json, f"Expected 'state' field in JSON, got: {status_json}"
-    assert status_json["state"] == "Inactive", f"Expected Inactive, got: {status_json}"
-    print(f"✓ Status --json returns valid JSON with state={status_json['state']}")
+    status_envelope = json.loads(status_json_raw)
+    assert status_envelope["schema_version"] == 1, status_envelope
+    status_json = status_envelope["data"]
+    assert "state" in status_json, f"Expected 'state' field in data, got: {status_envelope}"
+    assert status_json["state"]["kind"] == "inactive", f"Expected inactive, got: {status_json}"
+    print(f"✓ Status --json returns valid JSON with state={status_json['state']['kind']}")
 
     print("\n=== Test 3: Status --details exposes real diagnostics ===")
     verbose_result = run_command_capture(
@@ -67,7 +69,7 @@ in
     print("\n=== Test 4: Verify detects planted artifacts ===")
     machine.succeed("touch /tmp/nails.log")
     verify_rc, verify_json = run_verify()
-    assert verify_rc != 0 or verify_json.get("status") in ("Warning", "Critical"), \
+    assert verify_rc != 0 or verify_json.get("status") in ("warning", "critical"), \
         f"Expected verify to detect artifact, got: {verify_json}"
     print("✓ Verify detects planted artifacts")
     machine.succeed("rm -f /tmp/nails.log")
@@ -82,10 +84,10 @@ in
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
 
-    status_json = json.loads(machine.succeed("nails status --json"))
-    assert status_json["state"].startswith("Active"), \
-        f"Expected Active state, got: {status_json}"
-    print(f"✓ Status shows {status_json['state']} after activation")
+    status_json = json.loads(machine.succeed("nails status --json"))["data"]
+    assert status_json["state"]["kind"] == "active", \
+        f"Expected active state, got: {status_json}"
+    print(f"✓ Status shows {status_json['state']['kind']} after activation")
 
     print("\n=== Test 7: Default hidden logs are created and surfaced ===")
     machine.succeed("test -d /mnt/hidden-volume/logs")
@@ -108,12 +110,13 @@ in
         + shlex.quote(f"nails --config {headless_config} status --json"),
     )
     assert non_root["rc"] == 0, non_root
-    non_root_payload = json.loads(non_root["stdout"])
-    assert non_root_payload["state"] == "UNKNOWN", non_root_payload
+    non_root_payload = json.loads(non_root["stdout"])["data"]
+    state = non_root_payload["state"]
+    assert state["kind"] == "unknown", non_root_payload
     assert non_root_payload["security_posture"] == "warning", non_root_payload
-    assert "error" in non_root_payload, non_root_payload
-    assert "Permission denied" in non_root_payload["error"], non_root_payload
-    assert "/mnt/hidden-volume/state.json" in non_root_payload["error"], non_root_payload
+    # The untrusted-load reason carries the specific failure.
+    assert "Permission denied" in state["reason"], non_root_payload
+    assert "/mnt/hidden-volume/state.json" in state["reason"], non_root_payload
     assert_status_state("Active", config_path=headless_config)
     print("✓ Non-root status exits zero but reports permission failure explicitly")
 
@@ -122,9 +125,9 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    status_json = json.loads(machine.succeed("nails status --json"))
-    assert status_json["state"] == "Inactive", \
-        f"Expected Inactive after deactivation, got: {status_json}"
+    status_json = json.loads(machine.succeed("nails status --json"))["data"]
+    assert status_json["state"]["kind"] == "inactive", \
+        f"Expected inactive after deactivation, got: {status_json}"
     print("✓ Status shows Inactive after deactivation")
 
     print("\n=== All Status/Verify Tests Passed ===")

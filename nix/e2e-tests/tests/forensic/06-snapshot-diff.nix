@@ -54,8 +54,8 @@ in
     print("✓ Created executable shell script")
     canonical_deactivate(headless_config, unit_name="nails-deactivate-snapshot-diff")
     print("✓ NAILS rebooted back to decoy state")
-    status = json.loads(machine.succeed("nails status --json"))
-    assert status["state"] == "Inactive", f"Expected Inactive status after reboot, got: {status}"
+    status = json.loads(machine.succeed("nails status --json"))["data"]
+    assert status["state"]["kind"] == "inactive", f"Expected inactive status after reboot, got: {status}"
     print("✓ NAILS status reports Inactive after reboot")
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
     print("✓ Hidden volume unmounted")

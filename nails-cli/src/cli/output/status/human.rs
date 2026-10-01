@@ -2,14 +2,15 @@ use nails_core::SystemState;
 use nails_core::output::{Mark, Style};
 
 use super::{config_file_label, read_recent_logs};
+use crate::cli::output::dto::system_state_label;
 
 /// Human-readable state label, reporting "Unknown" when the state file could not
 /// be read or trusted rather than claiming the safe default is the real state.
-fn state_label(report: &nails_core::status::StatusReport) -> String {
+fn state_label(report: &nails_core::status::StatusReport) -> &'static str {
     if report.load_outcome.is_unknown() {
-        "Unknown".to_string()
+        "Unknown"
     } else {
-        format!("{:?}", report.state)
+        system_state_label(&report.state)
     }
 }
 

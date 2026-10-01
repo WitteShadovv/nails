@@ -550,6 +550,22 @@ fn test_status_command_json_output() {
 }
 
 #[test]
+fn test_status_exit_status_flag_stays_zero_for_a_decoy_system() {
+    // --exit-status reflects the posture; a decoy (inactive) system is a success,
+    // and plain status always exits 0.
+    let (_dir, config) = isolated_status_config();
+    let config = config.to_str().unwrap();
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["--config", config, "status"]).assert().success();
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["--config", config, "status", "--exit-status"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn test_status_command_ascii_output() {
     let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
         .args(["status", "--ascii"])
@@ -822,9 +838,9 @@ fn test_verify_command_json_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let code = output.status.code();
 
-    // Exit code 0 = Secure, 1 = Warning/Critical, 2 = error
+    // Exit code 0 = Secure, 10 = Warning, 11 = Critical
     assert!(
-        code == Some(0) || code == Some(1),
+        code == Some(0) || code == Some(10) || code == Some(11),
         "unexpected exit code: {:?}",
         code
     );
@@ -836,6 +852,10 @@ fn test_verify_command_json_output() {
         stdout.contains("\"findings\""),
         "missing \"findings\" in output"
     );
+    // The machine interface is one enveloped document.
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(parsed["schema_version"], 1, "{parsed}");
+    assert_eq!(parsed["command"], "verify", "{parsed}");
 }
 
 #[test]
@@ -849,12 +869,17 @@ fn test_verify_command_deep_json_output() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     match output.status.code() {
-        Some(1) => {
+        Some(0) | Some(10) | Some(11) => {
             assert!(stdout.contains("\"scan_depth\""));
-            assert!(stdout.contains("Deep"));
+            // Depth renders in snake_case now.
+            assert!(stdout.contains("\"deep\""), "stdout={stdout}");
         }
-        Some(2) => {
-            assert!(stderr.contains("Error running verification:"));
+        Some(1) => {
+            // A verify run error is one failure envelope on stdout under --json.
+            assert!(
+                stdout.contains("\"ok\":false") && stdout.contains("Error running verification:"),
+                "stdout={stdout}\nstderr={stderr}"
+            );
         }
         other => panic!("unexpected exit code: {other:?}\nstdout={stdout}\nstderr={stderr}"),
     }
@@ -893,7 +918,7 @@ fn test_verify_command_human_output_reports_config_paths_and_missing_state_file(
     let code = output.status.code();
 
     assert!(
-        code == Some(0) || code == Some(1),
+        code == Some(0) || code == Some(10) || code == Some(11),
         "unexpected exit code: {:?}\nstdout={}\nstderr={}",
         code,
         stdout,
@@ -952,16 +977,22 @@ fn test_verify_command_json_output_reports_present_state_file_status() {
     let code = output.status.code();
 
     assert!(
-        code == Some(0) || code == Some(1),
+        code == Some(0) || code == Some(10) || code == Some(11),
         "unexpected exit code: {:?}\nstdout={}\nstderr={}",
         code,
         stdout,
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stdout.contains("\"state_file_status\""));
-    assert!(stdout.contains("\"kind\": \"present\""));
-    assert!(stdout.contains(&format!("\"path\": \"{}\"", state_path.display())));
-    assert!(stdout.contains("\"state\": \"INACTIVE\""));
+    // The envelope is one compact document; the state renders in snake_case.
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let state_file_status = &parsed["data"]["state_file_status"];
+    assert_eq!(state_file_status["kind"], "present", "{parsed}");
+    assert_eq!(
+        state_file_status["path"],
+        state_path.display().to_string(),
+        "{parsed}"
+    );
+    assert_eq!(state_file_status["state"], "inactive", "{parsed}");
 }
 
 #[test]
@@ -990,7 +1021,7 @@ fn test_activate_with_build_dir_config_hits_safety_guard() {
     ])
     .assert()
     .failure()
-    .code(2)
+    .code(5)
     .stderr(predicates::str::contains("TEST SAFETY GUARD"));
 }
 
@@ -1139,7 +1170,7 @@ fn test_activate_kill_session_surfaces_systemd_run_failures() {
         .expect("failed to run activate detach failure test");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
     assert!(stderr.contains("systemd-run failed"), "stderr={stderr}");
     assert!(stderr.contains("mock detach failure"), "stderr={stderr}");
 }
@@ -1177,7 +1208,7 @@ fn test_activate_kill_session_refuses_real_transient_units_in_test_runtime() {
         .expect("failed to run activate detach safety test");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
     assert!(stderr.contains("Refusing to start transient systemd units"));
 }
 
@@ -1193,7 +1224,7 @@ fn test_deactivate_with_build_dir_config_hits_safety_guard() {
     ])
     .assert()
     .failure()
-    .code(2)
+    .code(5)
     .stderr(predicates::str::contains("TEST SAFETY GUARD"));
 }
 
@@ -1440,7 +1471,7 @@ fn test_activate_kill_session_fails_before_detach_on_flake_lock_preflight_error(
         .expect("failed to run activate kill-session preflight test");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert_eq!(output.status.code(), Some(4), "stderr={stderr}");
     assert!(stderr.contains("flake lock"), "stderr={stderr}");
     assert!(
         stderr.contains("does not run 'nix flake update' automatically"),
@@ -1487,7 +1518,7 @@ fn test_emergency_with_build_dir_config_hits_safety_guard() {
     ])
     .assert()
     .failure()
-    .code(2)
+    .code(5)
     .stderr(predicates::str::contains("TEST SAFETY GUARD"));
 }
 
@@ -1812,7 +1843,7 @@ fn test_explicit_config_missing_fails() {
     assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
     assert_eq!(
         stderr.trim(),
-        "Error: config file not found: /nonexistent/path/nails.toml \
+        "error: config file not found: /nonexistent/path/nails.toml \
          (run `nails init <root>` or pass --config)",
         "exactly one error line"
     );
@@ -1976,7 +2007,9 @@ fn test_global_flags_behave_identically_before_and_after_the_subcommand() {
 
     let json = run_nails(&["-c", config, "status", "--json"], &[]);
     let parsed: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
-    assert!(parsed.get("state").is_some(), "{parsed}");
+    assert_eq!(parsed["schema_version"], 1, "{parsed}");
+    assert_eq!(parsed["command"], "status", "{parsed}");
+    assert!(parsed["data"]["state"]["kind"].is_string(), "{parsed}");
 }
 
 #[test]

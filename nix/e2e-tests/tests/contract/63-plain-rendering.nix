@@ -46,8 +46,8 @@ in
             f"nails --config {headless_config} status --json",
         )
         assert active_status["rc"] == 0, active_status
-        active_payload = json.loads(active_status["stdout"])
-        assert active_payload["state"].startswith("Active"), active_payload
+        active_payload = json.loads(active_status["stdout"])["data"]
+        assert active_payload["state"]["kind"] == "active", active_payload
 
     with subtest("piped status output has no escapes and falls back to ASCII"):
         regular = run_command_capture(

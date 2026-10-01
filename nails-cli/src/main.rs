@@ -16,7 +16,7 @@ fn stdout_format_for(command: &Commands, settings: &OutputSettings) -> StdoutFor
     }
 }
 
-fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+fn main() -> std::process::ExitCode {
     let cli = Cli::parse_checked();
 
     // Resolve verbosity, colour and ASCII once, before anything prints.
@@ -30,7 +30,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         stdout_format_for(&cli.command, &settings),
     );
 
-    execute_command(cli, &settings)
+    execute_command(cli, &settings).to_exit_code()
 }
 
 #[cfg(test)]

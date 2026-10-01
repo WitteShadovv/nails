@@ -17,6 +17,17 @@ const SYSTEMD_RUN_OVERRIDE_ENV: &str = "NAILS_SYSTEMD_RUN_PATH";
 const DEACTIVATE_UNIT_NAME_OVERRIDE_ENV: &str = "NAILS_DEACTIVATE_UNIT_NAME";
 const SHELL_CLEANUP_PROTECTED_PIDS_ENV: &str = "NAILS_SHELL_CLEANUP_PROTECTED_PIDS";
 
+/// The process-exit chokepoint.
+///
+/// `main` turns a handler's [`crate::cli::output::ExitStatus`] into a
+/// [`std::process::ExitCode`] and returns it, so this is the only place in the
+/// binary that exits the process directly: the detach parent below hands off to
+/// a transient service and leaves, and the test-harness subprocess entrypoints
+/// reuse it to terminate the child with a handler's code.
+pub(crate) fn exit_process(code: u8) -> ! {
+    std::process::exit(i32::from(code));
+}
+
 fn maybe_exit_after_detach(mut cmd: Command, success_message: &[&str]) -> Result<(), NailsError> {
     let output = cmd
         .output()
@@ -33,7 +44,7 @@ fn maybe_exit_after_detach(mut cmd: Command, success_message: &[&str]) -> Result
         eprintln!("{line}");
     }
 
-    std::process::exit(0);
+    exit_process(0);
 }
 
 fn should_skip_detach() -> bool {

@@ -1,15 +1,17 @@
 //! Verify command handler
 
 use crate::cli::args::VerifyArgs;
-use crate::cli::output::{self, OutputSettings};
+use crate::cli::output::dto::system_state_kind;
+use crate::cli::output::envelope::{ErrorBody, report_error};
+use crate::cli::output::verify::{print_verify_json, verify_exit_status};
+use crate::cli::output::{self, ExitStatus, OutputSettings};
 use std::io::Write;
 use std::path::Path;
 
-/// Execute the verify command
+/// Execute the verify command.
 ///
-/// Verifies that the system is clean of NAILS artifacts.
-/// Uses the resolved CLI config (or defaults when no config file exists)
-/// to perform config-aware verification of config-specific paths.
+/// Verifies that the system is clean of NAILS artifacts, using the resolved CLI
+/// config (or defaults when no config file exists) for config-aware checks.
 ///
 /// # Arguments
 ///
@@ -19,18 +21,26 @@ use std::path::Path;
 ///
 /// # Returns
 ///
-/// Never returns - exits with appropriate exit code:
-/// - 0: System is secure
-/// - 1: Warning or critical issues found
-/// - 2: Error running verification
-pub fn execute(settings: &OutputSettings, args: &VerifyArgs, config_override: Option<&Path>) -> ! {
+/// - [`ExitStatus::Ok`] when the system is secure
+/// - [`ExitStatus::VerifyWarning`] / [`ExitStatus::VerifyCritical`] for findings
+/// - [`ExitStatus::Config`] when the config file could not be loaded
+/// - [`ExitStatus::Failed`] when the verification itself could not run
+pub fn execute(
+    settings: &OutputSettings,
+    args: &VerifyArgs,
+    config_override: Option<&Path>,
+) -> ExitStatus {
     use nails_core::{RealFilesystem, StateFile, StateFileStatus, Verifier};
 
-    // Create verifier with real filesystem
+    let json = settings.is_json();
     let filesystem = RealFilesystem;
 
-    // Load config fail-closed for malformed or unreadable files; missing config still uses defaults.
-    let config = super::load_config_or_exit(config_override).into_config();
+    // Load config fail-closed for malformed or unreadable files; missing config
+    // still uses defaults.
+    let config = match super::load_config_or_report(config_override, "verify", json) {
+        Ok(loaded) => loaded.into_config(),
+        Err(status) => return status,
+    };
 
     // Load state file status explicitly for verify reporting.
     let state_path = config.state_file_path.clone();
@@ -44,7 +54,7 @@ pub fn execute(settings: &OutputSettings, args: &VerifyArgs, config_override: Op
     } else {
         match StateFile::load(&state_path) {
             Ok(loaded_state) => {
-                let state_name = format!("{:?}", loaded_state.state).to_uppercase();
+                let state_name = system_state_kind(&loaded_state.state).to_string();
                 (
                     Some(loaded_state),
                     StateFileStatus::Present {
@@ -65,32 +75,24 @@ pub fn execute(settings: &OutputSettings, args: &VerifyArgs, config_override: Op
 
     let verifier = Verifier::with_config(filesystem, config, state, state_file_status);
 
-    // Run verification
     let result = match verifier.run(args.deep) {
         Ok(result) => result,
         Err(e) => {
-            eprintln!("Error running verification: {}", e);
-            std::process::exit(2); // Exit code 2 for verify command errors
+            return report_error(
+                json,
+                "verify",
+                ExitStatus::Failed,
+                ErrorBody::new("verify_error", format!("Error running verification: {e}")),
+            );
         }
     };
 
-    // Output results
-    if settings.is_json() {
-        // JSON output
-        let json_output =
-            serde_json::to_string_pretty(&result).expect("Failed to serialize verification result");
-        println!("{}", json_output);
+    if json {
+        print_verify_json(&result);
     } else {
-        // Human-readable output
         output::print_verify_result(&result, settings.stdout_style());
     }
 
-    // Set exit code based on status
     let _ = std::io::stdout().flush();
-    match result.status {
-        nails_core::VerifyStatus::Secure => std::process::exit(0),
-        nails_core::VerifyStatus::Warning | nails_core::VerifyStatus::Critical => {
-            std::process::exit(1)
-        }
-    }
+    verify_exit_status(result.status)
 }

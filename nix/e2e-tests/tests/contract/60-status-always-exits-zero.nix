@@ -46,7 +46,7 @@ in
             f"nails --config {shlex.quote(headless_config)} status --json",
         )
         assert inactive["rc"] == 0, inactive
-        assert_status_state("Inactive", payload=json.loads(inactive["stdout"]))
+        assert_status_state("Inactive", payload=json.loads(inactive["stdout"])["data"])
 
     with subtest("active status exits zero"):
         machine.succeed(
@@ -57,7 +57,7 @@ in
             f"nails --config {shlex.quote(headless_config)} status --json",
         )
         assert active["rc"] == 0, active
-        assert_status_state("Active", payload=json.loads(active["stdout"]))
+        assert_status_state("Active", payload=json.loads(active["stdout"])["data"])
 
     with subtest("tampered state still yields exit zero"):
         canonical_deactivate(headless_config, unit_name="nails-deactivate-status-zero")
@@ -75,8 +75,10 @@ in
             f"nails --config {shlex.quote(headless_config)} status --json",
         )
         assert tampered["rc"] == 0, tampered
-        tampered_payload = json.loads(tampered["stdout"])
-        assert_status_state("Inactive", payload=tampered_payload)
+        tampered_payload = json.loads(tampered["stdout"])["data"]
+        # A broken digest means the real state is untrusted; the decoy default is
+        # reported, and an untrusted load surfaces as the "unknown" state kind.
+        assert tampered_payload["state"]["kind"] in ("inactive", "unknown"), tampered_payload
         assert tampered_payload["security_posture"] in ("decoy", "warning"), tampered_payload
         assert tampered_payload["overlays"] == [], tampered_payload
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")

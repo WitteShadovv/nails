@@ -1,16 +1,33 @@
 //! Output formatting for the activate command
 
 use nails_core::output::{Mark, Tone};
+use serde::Serialize;
 
 use super::OutputSettings;
+use crate::cli::output::dto::StateJson;
+use crate::cli::output::envelope::SCHEMA_VERSION;
 
-/// JSON output structure for activate command
-#[derive(Debug, serde::Serialize)]
-struct ActivateResult {
-    event: &'static str,
-    status: String,
+/// A streamed progress line for `activate --json`.
+#[derive(Debug, Serialize)]
+struct ActivateProgressEvent {
+    schema_version: u32,
+    command: &'static str,
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    phase: &'static str,
+}
+
+/// The final NDJSON line for `activate --json`.
+#[derive(Debug, Serialize)]
+struct ActivateResultEvent {
+    schema_version: u32,
+    command: &'static str,
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    ok: bool,
+    status: &'static str,
     duration: f64,
-    state: String,
+    state: StateJson,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     failed_checks: Option<Vec<FailedCheckJson>>,
@@ -18,7 +35,7 @@ struct ActivateResult {
     shell_instructions: Option<ShellInstructionsJson>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ShellInstructionsJson {
     pub shell_type: String,
     pub prompt_script: String,
@@ -26,7 +43,7 @@ pub struct ShellInstructionsJson {
     pub instructions: Vec<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Serialize)]
 struct FailedCheckJson {
     name: String,
     reason: String,
@@ -34,17 +51,42 @@ struct FailedCheckJson {
     fix: Option<String>,
 }
 
-fn manager_state_debug<F: nails_core::Filesystem>(
+fn manager_state_label<F: nails_core::Filesystem>(
     manager: &nails_core::NailsManager<F>,
-) -> Option<String> {
+) -> Option<&'static str> {
     manager
         .current_state()
         .ok()
-        .map(|state| format!("{:?}", state))
+        .map(|state| crate::cli::output::dto::system_state_label(&state))
 }
 
-/// Print activation result in JSON format
-pub fn print_activate_json<F: nails_core::Filesystem>(
+fn manager_state_json<F: nails_core::Filesystem>(
+    manager: &nails_core::NailsManager<F>,
+) -> StateJson {
+    match manager.current_state() {
+        Ok(state) => StateJson::from_state(&state),
+        Err(_) => StateJson::Unknown {
+            reason: "state could not be read after activation".to_string(),
+        },
+    }
+}
+
+/// Emit a progress event on stdout, ahead of the final result line.
+pub fn print_activate_progress(phase: &'static str) {
+    let event = ActivateProgressEvent {
+        schema_version: SCHEMA_VERSION,
+        command: "activate",
+        event_type: "progress",
+        phase,
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&event).expect("activate progress serialization cannot fail")
+    );
+}
+
+/// Print the final activation result line in NDJSON.
+pub fn print_activate_json_result<F: nails_core::Filesystem>(
     result: &Result<(), nails_core::NailsError>,
     duration: f64,
     manager: &nails_core::NailsManager<F>,
@@ -63,10 +105,10 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
     duration: f64,
     manager: &nails_core::NailsManager<F>,
     shell_setup: Option<&nails_core::ShellSetupResult>,
-) -> ActivateResult {
+) -> ActivateResultEvent {
     use nails_core::NailsError;
 
-    let state = manager_state_debug(manager).unwrap_or_else(|| "UNKNOWN".to_string());
+    let state = manager_state_json(manager);
 
     // Convert shell setup result to JSON structure
     let shell_instructions_json = shell_setup.map(|setup| ShellInstructionsJson {
@@ -77,9 +119,12 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
     });
 
     match result {
-        Ok(_) => ActivateResult {
-            event: "result",
-            status: "success".to_string(),
+        Ok(_) => ActivateResultEvent {
+            schema_version: SCHEMA_VERSION,
+            command: "activate",
+            event_type: "result",
+            ok: true,
+            status: "success",
             duration,
             state,
             message: format!("Activation complete in {:.1}s", duration),
@@ -87,11 +132,14 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
             shell_instructions: shell_instructions_json,
         },
         Err(e) => match e {
-            NailsError::PreFlightCheckFailed(failures) => ActivateResult {
-                event: "result",
-                status: "error".to_string(),
+            NailsError::PreFlightCheckFailed(failures) => ActivateResultEvent {
+                schema_version: SCHEMA_VERSION,
+                command: "activate",
+                event_type: "result",
+                ok: false,
+                status: "error",
                 duration,
-                state: state.clone(),
+                state,
                 message: "Pre-flight checks failed".to_string(),
                 failed_checks: Some(
                     failures
@@ -108,9 +156,12 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
                 ),
                 shell_instructions: None,
             },
-            _ => ActivateResult {
-                event: "result",
-                status: "error".to_string(),
+            _ => ActivateResultEvent {
+                schema_version: SCHEMA_VERSION,
+                command: "activate",
+                event_type: "result",
+                ok: false,
+                status: "error",
                 duration,
                 state,
                 message: format!("Activation failed: {}", e),
@@ -251,7 +302,7 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
                 "  {}",
                 err.paint("Automatic rollback completed.", Tone::Dim)
             );
-            if let Some(state) = manager_state_debug(manager) {
+            if let Some(state) = manager_state_label(manager) {
                 eprintln!("  {}: {}", err.paint("Current state", Tone::Dim), state);
             }
         }
@@ -320,10 +371,15 @@ mod tests {
         let manager = make_manager();
         let output = build_activate_json_output(&Ok(()), 1.5, &manager, None);
         let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(output.event, "result");
+        assert_eq!(output.event_type, "result");
         assert_eq!(output.status, "success");
+        assert!(output.ok);
         assert_eq!(output.message, "Activation complete in 1.5s");
-        assert_eq!(json.get("event").and_then(|v| v.as_str()), Some("result"));
+        assert_eq!(json["type"].as_str(), Some("result"));
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "activate");
+        // State is a tagged object, never a Debug string.
+        assert!(json["state"]["kind"].is_string());
     }
 
     #[test]
@@ -331,7 +387,7 @@ mod tests {
         let manager = make_manager();
         let setup = make_shell_setup_rc_modified();
         let output = build_activate_json_output(&Ok(()), 2.3, &manager, Some(&setup));
-        assert_eq!(output.event, "result");
+        assert_eq!(output.event_type, "result");
         assert_eq!(output.status, "success");
         assert!(output.shell_instructions.is_some());
     }
@@ -345,11 +401,12 @@ mod tests {
         ]);
         let output = build_activate_json_output(&Err(err), 0.1, &manager, None);
         let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(output.event, "result");
+        assert_eq!(output.event_type, "result");
         assert_eq!(output.status, "error");
+        assert!(!output.ok);
         assert_eq!(output.message, "Pre-flight checks failed");
         assert_eq!(output.failed_checks.as_ref().map(Vec::len), Some(2));
-        assert_eq!(json.get("event").and_then(|v| v.as_str()), Some("result"));
+        assert_eq!(json["type"].as_str(), Some("result"));
     }
 
     #[test]
@@ -357,12 +414,18 @@ mod tests {
         let manager = make_manager();
         let err = NailsError::InvalidState("unexpected state".to_string());
         let output = build_activate_json_output(&Err(err), 0.5, &manager, None);
-        assert_eq!(output.event, "result");
+        assert_eq!(output.event_type, "result");
         assert_eq!(output.status, "error");
         assert_eq!(
             output.message,
             "Activation failed: Invalid state: unexpected state"
         );
+    }
+
+    #[test]
+    fn test_progress_event_is_typed_ndjson() {
+        // Smoke: the progress line serializes without panicking.
+        print_activate_progress("activating");
     }
 
     // ── print_activate_human ───────────────────────────────────────────────────

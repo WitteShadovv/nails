@@ -63,8 +63,8 @@ in
         return "PATH=/tmp/nails-wrapper/bin:$PATH"
 
     def assert_inactive_status_local(config_path):
-        payload = json.loads(machine.succeed(f"nails --config {config_path} status --json"))
-        assert str(payload["state"]).lower() == "inactive", f"Expected inactive state, got: {payload}"
+        payload = json.loads(machine.succeed(f"nails --config {config_path} status --json"))["data"]
+        assert str(payload["state"]["kind"]) == "inactive", f"Expected inactive state, got: {payload}"
 
     def assert_no_overlays_local(paths):
         for path in paths:

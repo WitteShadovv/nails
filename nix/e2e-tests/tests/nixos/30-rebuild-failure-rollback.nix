@@ -76,8 +76,8 @@ in
         return payload
 
     def assert_active_status_local(config_path):
-        payload = json.loads(machine.succeed(f"nails --config {config_path} status --json"))
-        assert str(payload["state"]).lower().startswith("active"), f"Expected active state, got: {payload}"
+        payload = json.loads(machine.succeed(f"nails --config {config_path} status --json"))["data"]
+        assert str(payload["state"]["kind"]).startswith("active"), f"Expected active state, got: {payload}"
 
     def path_exists(path):
         rc, _stdout, _stderr = run_command_capture(

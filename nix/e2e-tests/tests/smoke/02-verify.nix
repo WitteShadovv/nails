@@ -29,7 +29,7 @@ in
     machine.wait_for_unit("multi-user.target")
 
     baseline_status, baseline_payload = run_verify()
-    assert baseline_status in (0, 1), f"Unexpected baseline verify exit {baseline_status}: {baseline_payload}"
+    assert baseline_status in (0, 10, 11), f"Unexpected baseline verify exit {baseline_status}: {baseline_payload}"
     baseline_messages = [finding["message"] for finding in baseline_payload["findings"]]
     assert not any("Artifact file found" in message for message in baseline_messages), \
         f"Baseline verify should not report artifact files, got: {baseline_payload}"
@@ -42,8 +42,8 @@ in
     print("\n=== Verifying artifact detection ===")
     machine.succeed("touch /tmp/nails.log")
     status, payload = run_verify()
-    assert status == 1, f"Expected artifact verify exit 1, got {status}"
-    assert payload["status"] in ("Warning", "Critical"), \
+    assert status in (10, 11), f"Expected artifact verify exit 10/11, got {status}"
+    assert payload["status"] in ("warning", "critical"), \
         f"Expected Warning or Critical verify result, got: {payload}"
     assert any("/tmp/nails.log" in finding["message"] for finding in payload["findings"]), \
         f"Expected /tmp/nails.log finding, got: {payload}"
@@ -58,8 +58,8 @@ in
     )
 
     status, payload = run_verify("--deep")
-    assert status == 1, f"Expected active verify exit 1, got {status}"
-    assert payload["status"] == "Critical", f"Expected Critical verify result, got: {payload}"
+    assert status == 11, f"Expected active verify exit 11, got {status}"
+    assert payload["status"] == "critical", f"Expected critical verify result, got: {payload}"
     assert any("Overlay mount found" in finding["message"] for finding in payload["findings"]), \
         f"Expected overlay finding, got: {payload}"
     print("✓ Verify reports active overlays as Critical")

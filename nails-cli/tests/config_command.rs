@@ -187,7 +187,7 @@ fn missing_explicit_config_prints_one_line_and_exits_3() {
         assert_eq!(
             stderr.trim_end(),
             format!(
-                "Error: config file not found: {} (run `nails init <root>` or pass --config)",
+                "error: config file not found: {} (run `nails init <root>` or pass --config)",
                 missing.display()
             ),
             "{command:?}"

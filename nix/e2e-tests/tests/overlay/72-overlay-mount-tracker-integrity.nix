@@ -37,7 +37,7 @@ in
 
     with subtest("phase 1: inactive state has no tracked or mounted overlays"):
         status = read_status_json(config_path=config_path)
-        assert status["state"] == "Inactive", status
+        assert status["state"]["kind"] == "inactive", status
         assert status["overlays"] == [], status
         machine.fail("mount | grep 'overlay on /home'")
         machine.fail("mount | grep 'overlay on /etc'")
@@ -62,7 +62,7 @@ in
         machine.succeed(f"nails --config {config_path} emergency")
         assert_no_overlays(["/home", "/etc", "/srv"])
         status = read_status_json(config_path=config_path)
-        assert status["state"] == "Inactive", status
+        assert status["state"]["kind"] == "inactive", status
         assert status["overlays"] == [], status
         state_json = read_hidden_state_json()
         assert state_json["overlay_status"] == {}, state_json

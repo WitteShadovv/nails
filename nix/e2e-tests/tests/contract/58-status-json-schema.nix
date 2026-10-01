@@ -48,8 +48,8 @@ in
         )
         assert inactive["rc"] == 0, inactive
         assert_json_schema_valid(status_schema, inactive["stdout_path"], "inactive status JSON")
-        inactive_payload = json.loads(inactive["stdout"])
-        assert inactive_payload["state"] == "Inactive", inactive_payload
+        inactive_payload = json.loads(inactive["stdout"])["data"]
+        assert inactive_payload["state"]["kind"] == "inactive", inactive_payload
 
     with subtest("active status matches schema"):
         machine.succeed(
@@ -61,8 +61,8 @@ in
         )
         assert active["rc"] == 0, active
         assert_json_schema_valid(status_schema, active["stdout_path"], "active status JSON")
-        active_payload = json.loads(active["stdout"])
-        assert active_payload["state"].startswith("Active"), active_payload
+        active_payload = json.loads(active["stdout"])["data"]
+        assert active_payload["state"]["kind"] == "active", active_payload
         active_paths = {overlay["path"] for overlay in active_payload["overlays"]}
         assert "/etc" in active_paths and "/home" in active_paths, active_payload
 
@@ -74,7 +74,7 @@ in
         )
         assert post["rc"] == 0, post
         assert_json_schema_valid(status_schema, post["stdout_path"], "post-deactivation status JSON")
-        post_payload = json.loads(post["stdout"])
-        assert post_payload["state"] == "Inactive", post_payload
+        post_payload = json.loads(post["stdout"])["data"]
+        assert post_payload["state"]["kind"] == "inactive", post_payload
   '';
 }

@@ -1,30 +1,57 @@
 //! Status command handler
 
 use crate::cli::args::StatusArgs;
-use crate::cli::output::{self, OutputSettings};
+use crate::cli::output::status::print_status_json_unknown;
+use crate::cli::output::{self, ExitStatus, OutputSettings};
+use nails_core::status::SecurityPosture;
 use std::io::Write;
 use std::path::Path;
 
-/// Execute the status command
+/// The exit status a status run reports.
 ///
-/// Shows current system status and uptime.
+/// Without `--exit-status`, status always exits 0 once it produced a report. With
+/// `--exit-status`, the exit code reflects the security posture so scripts can
+/// branch on it: a transitional/inconsistent posture is a failure, a degraded
+/// system asks for a reboot, and the normal decoy or a verified-active system is
+/// a success.
+fn status_exit_code(posture: SecurityPosture, degraded: bool, exit_status: bool) -> ExitStatus {
+    if !exit_status {
+        return ExitStatus::Ok;
+    }
+    match posture {
+        SecurityPosture::Secure | SecurityPosture::Decoy => ExitStatus::Ok,
+        SecurityPosture::Warning => ExitStatus::Failed,
+        SecurityPosture::Critical if degraded => ExitStatus::DegradedReboot,
+        SecurityPosture::Critical => ExitStatus::Failed,
+    }
+}
+
+/// Execute the status command.
+///
+/// Shows current system status and uptime. Status always reports an exit status
+/// of [`ExitStatus::Ok`] once it has produced a report (even for an unreadable
+/// state file), and [`ExitStatus::Config`] when the configuration file itself
+/// could not be loaded.
 ///
 /// # Arguments
 ///
 /// * `settings` - Output settings resolved once from the global flags
 /// * `args` - The `status` arguments (`--details`)
 /// * `config_override` - Optional config file path override
-///
-/// # Returns
-///
-/// Never returns - exits with code 0 for status results, 3 for config load failures
-pub fn execute(settings: &OutputSettings, args: &StatusArgs, config_override: Option<&Path>) -> ! {
-    use nails_core::{NailsError, RealFilesystem, StatusCommand, status::SecurityPosture};
+pub fn execute(
+    settings: &OutputSettings,
+    args: &StatusArgs,
+    config_override: Option<&Path>,
+) -> ExitStatus {
+    use nails_core::{NailsError, RealFilesystem, StatusCommand};
 
     let json = settings.is_json();
     let style = settings.stdout_style();
 
-    let loaded = super::load_config_or_exit(config_override);
+    let loaded = match super::load_config_or_report(config_override, "status", json) {
+        Ok(loaded) => loaded,
+        Err(status) => return status,
+    };
     let config_path = loaded.path.clone();
     let config = loaded.into_config();
 
@@ -36,13 +63,12 @@ pub fn execute(settings: &OutputSettings, args: &StatusArgs, config_override: Op
     let filesystem = RealFilesystem;
     let command = StatusCommand::new(filesystem, config, state_path.clone());
 
-    // Preserve FR63 for status collection/runtime failures after config is loaded.
+    // Status collection/runtime failures after config is loaded still exit 0.
     let report = match command.run_truthful() {
         Ok(report) => report,
-        // FIX #4 & #7: Better error context with specific messages
         Err(e) => {
-            // State file error - show INACTIVE status with error details
-            // FR63: Status always succeeds (exit code 0)
+            // State file error - report an UNKNOWN status with error details.
+            // Status always succeeds (exit code 0) once it produced a report.
             let error_msg = match e {
                 NailsError::IoError(ref io_err) => {
                     if io_err.kind() == std::io::ErrorKind::NotFound {
@@ -74,25 +100,23 @@ pub fn execute(settings: &OutputSettings, args: &StatusArgs, config_override: Op
                 }
             };
 
-            // FIX #5: Use SecurityPosture constant instead of duplicated strings
-            let posture = SecurityPosture::Warning;
-
             if json {
-                println!(
-                    "{{\"state\":\"UNKNOWN\",\"security_posture\":\"warning\",\"error\":\"{}\"}}",
-                    error_msg.replace('"', "\\\"")
-                );
+                print_status_json_unknown(error_msg);
             } else {
                 output::print_status_header(style);
                 println!("State:              UNKNOWN");
-                println!("Security Posture:   {}", posture.render(style));
+                println!(
+                    "Security Posture:   {}",
+                    SecurityPosture::Warning.render(style)
+                );
                 println!();
                 println!("Error: {}", error_msg);
                 println!();
                 println!("Run status with sufficient privileges or fix state file access");
             }
             let _ = std::io::stdout().flush();
-            std::process::exit(0); // Status always exits 0 once it produced a report
+            // An untrusted state file is a Warning posture, not Degraded.
+            return status_exit_code(SecurityPosture::Warning, false, args.exit_status);
         }
     };
 
@@ -110,9 +134,14 @@ pub fn execute(settings: &OutputSettings, args: &StatusArgs, config_override: Op
         );
     }
 
-    // Status always succeeds (exit code 0) once it produced a report.
+    // Status exits 0 once it produced a report, unless --exit-status asks for the
+    // posture to be reflected in the exit code.
     let _ = std::io::stdout().flush();
-    std::process::exit(0);
+    status_exit_code(
+        report.security_posture(),
+        matches!(report.state, nails_core::SystemState::Degraded { .. }),
+        args.exit_status,
+    )
 }
 
 #[cfg(test)]

@@ -14,7 +14,8 @@ mod dry_run;
 
 use crate::cli::args::ActivateArgs;
 use crate::cli::detach::maybe_detach_for_session_kill;
-use crate::cli::output::{self, OutputSettings};
+use crate::cli::output::envelope::{ErrorBody, report_error};
+use crate::cli::output::{self, ExitStatus, OutputSettings};
 
 use nails_core::{
     ActivateOptions, CliOverrides, Filesystem, NailsManager, NixOSBuilder, PreFlightCheck,
@@ -40,15 +41,19 @@ fn suspicious_check_name() -> String {
 ///
 /// # Returns
 ///
-/// This function never returns normally - it always exits the process with an
-/// appropriate exit code (0 for success, 1 for activation failure, 2 for errors,
-/// 3 for a missing or invalid configuration file).
+/// An [`ExitStatus`] describing the outcome: [`ExitStatus::Ok`] on success,
+/// [`ExitStatus::PreflightRefused`] when a pre-flight check refuses the
+/// operation, [`ExitStatus::Failed`] for an activation failure,
+/// [`ExitStatus::Usage`] for conflicting flags, [`ExitStatus::NeedsRoot`] when
+/// the safety guard blocks real operations, [`ExitStatus::InvalidState`] when the
+/// state file cannot be trusted, and [`ExitStatus::Config`] for a missing or
+/// invalid configuration file.
 pub fn execute(
     settings: &OutputSettings,
     args: &ActivateArgs,
     config_override: Option<&std::path::Path>,
     check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
-) -> ! {
+) -> ExitStatus {
     let ActivateArgs {
         no_preflight,
         no_clear_history,
@@ -93,21 +98,37 @@ pub fn execute(
 
     if options.kill_session {
         if !options.yes {
-            eprintln!("Error: --kill-session is non-interactive after detach; use --yes");
-            std::process::exit(2);
+            return report_error(
+                json,
+                "activate",
+                ExitStatus::Usage,
+                ErrorBody::new(
+                    "usage",
+                    "--kill-session is non-interactive after detach; use --yes",
+                ),
+            );
         }
         if !options.accept_pivot_risks && !options.no_pivot {
-            eprintln!(
-                "Error: --kill-session requires --accept-pivot-risks or --no-pivot to avoid prompts"
+            return report_error(
+                json,
+                "activate",
+                ExitStatus::Usage,
+                ErrorBody::new(
+                    "usage",
+                    "--kill-session requires --accept-pivot-risks or --no-pivot to avoid prompts",
+                ),
             );
-            std::process::exit(2);
         }
     }
 
     // Validate options (check for conflicting flags)
     if let Err(e) = options.validate() {
-        eprintln!("Error: {}", e);
-        std::process::exit(2);
+        return report_error(
+            json,
+            "activate",
+            ExitStatus::Usage,
+            ErrorBody::new("usage", e.to_string()),
+        );
     }
 
     // CLI flags override config file values
@@ -116,21 +137,28 @@ pub fn execute(
         nixos_flake: nixos_flake.clone(),
     };
 
-    // Strict load: a missing --config file, a typo or an unknown key exits 3
-    // instead of silently activating with defaults.
-    let mut loaded = super::load_config_or_exit(config_override);
+    // Strict load: a missing --config file, a typo or an unknown key exits with
+    // Config instead of silently activating with defaults.
+    let mut loaded = match super::load_config_or_report(config_override, "activate", json) {
+        Ok(loaded) => loaded,
+        Err(status) => return status,
+    };
     loaded.apply_cli_overrides(&cli_overrides);
     let config = loaded.into_config();
 
     // TEST SAFETY GUARD (Layer 1): Check if real operations are allowed
     if let Err(msg) = check_real_ops(&config.hidden_volume_root) {
-        eprintln!("{}", msg);
-        std::process::exit(2);
+        return report_error(
+            json,
+            "activate",
+            ExitStatus::NeedsRoot,
+            ErrorBody::new("safety_guard", msg),
+        );
     }
 
     // --dry-run: preview activation steps without making changes
     if dry_run {
-        dry_run::execute_dry_run(
+        return dry_run::execute_dry_run(
             &config,
             no_preflight,
             overlay_only,
@@ -195,8 +223,12 @@ pub fn execute(
         {
             let mgr = &manager;
             if let Err(e) = mgr.run_read_only_nixos_preflight(overlay_only) {
-                eprintln!("Error: {}", e);
-                std::process::exit(2);
+                return report_error(
+                    json,
+                    "activate",
+                    ExitStatus::PreflightRefused,
+                    ErrorBody::new("preflight", e.to_string()),
+                );
             }
 
             let suspicious_check = nails_core::SuspiciousNailsReferenceCheck::new(
@@ -205,18 +237,27 @@ pub fn execute(
             match suspicious_check.run(mgr.filesystem()) {
                 Ok(nails_core::CheckResult::Pass(_)) | Ok(nails_core::CheckResult::Warn(_)) => {}
                 Ok(nails_core::CheckResult::Fail(message)) => {
-                    eprintln!(
-                        "Error: {}",
-                        nails_core::NailsError::PreFlightCheckFailed(vec![(
-                            suspicious_check_name(),
-                            message,
-                        )])
+                    return report_error(
+                        json,
+                        "activate",
+                        ExitStatus::PreflightRefused,
+                        ErrorBody::new(
+                            "preflight",
+                            nails_core::NailsError::PreFlightCheckFailed(vec![(
+                                suspicious_check_name(),
+                                message,
+                            )])
+                            .to_string(),
+                        ),
                     );
-                    std::process::exit(2);
                 }
                 Err(e) => {
-                    eprintln!("Error: {}", e);
-                    std::process::exit(2);
+                    return report_error(
+                        json,
+                        "activate",
+                        ExitStatus::PreflightRefused,
+                        ErrorBody::new("preflight", e.to_string()),
+                    );
                 }
             }
         }
@@ -235,8 +276,12 @@ pub fn execute(
                          FAT32 and exFAT do not support symlinks.",
                         mgr.config().hidden_volume_root.display()
                     );
-                    eprintln!("Error: {}", msg);
-                    std::process::exit(2);
+                    return report_error(
+                        json,
+                        "activate",
+                        ExitStatus::PreflightRefused,
+                        ErrorBody::new("preflight", msg),
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Could not probe symlink support; continuing");
@@ -255,16 +300,24 @@ pub fn execute(
                     error = %e,
                     "Failed to stage hidden config symlink before detach-safe pre-flight checks"
                 );
-                eprintln!("Error: {}", e);
-                std::process::exit(2);
+                return report_error(
+                    json,
+                    "activate",
+                    ExitStatus::Failed,
+                    ErrorBody::new("staging", e.to_string()),
+                );
             }
         }
 
         {
             let mgr = &manager;
             if let Err(e) = mgr.run_preflight_checks(overlay_only) {
-                eprintln!("Error: {}", e);
-                std::process::exit(2);
+                return report_error(
+                    json,
+                    "activate",
+                    ExitStatus::PreflightRefused,
+                    ErrorBody::new("preflight", e.to_string()),
+                );
             }
         }
 
@@ -286,20 +339,32 @@ pub fn execute(
         && let Some(ref ctx) = session_ctx
     {
         if let Err(e) = nails_core::prompt_session_kill_confirmation(ctx, options.yes) {
-            eprintln!("Error: {}", e);
-            std::process::exit(2);
+            return report_error(
+                json,
+                "activate",
+                ExitStatus::Failed,
+                ErrorBody::new("session", e.to_string()),
+            );
         }
         options.session_kill_confirmed = true;
     }
 
     if let Err(e) = maybe_detach_for_session_kill(kill_session, &argv, session_ctx.as_ref()) {
-        eprintln!("Error: {}", e);
-        std::process::exit(2);
+        return report_error(
+            json,
+            "activate",
+            ExitStatus::Failed,
+            ErrorBody::new("detach", e.to_string()),
+        );
     }
 
     // Take the exclusive state lock (after any detach, so only the process that
     // performs the activation holds it). A concurrent operation fails fast here.
-    let _state_lock = super::acquire_state_lock_or_exit(&lock_state_path);
+    let _state_lock = match super::acquire_state_lock_or_report(&lock_state_path, "activate", json)
+    {
+        Ok(lock) => lock,
+        Err(status) => return status,
+    };
 
     // Refuse to activate over a state file we cannot trust: a corrupt or unreadable
     // file means the real state is unknown, and mounting on top of it could leak.
@@ -308,15 +373,24 @@ pub fn execute(
         if let Ok((_, outcome)) = mgr.current_state_with_outcome()
             && outcome.is_unknown()
         {
-            eprintln!(
-                "Error: refusing to activate: the state file is corrupt or unreadable, so the \
-                 current state is unknown. Run 'nails verify' and recover the hidden volume first."
+            return report_error(
+                json,
+                "activate",
+                ExitStatus::InvalidState,
+                ErrorBody::new(
+                    "invalid_state",
+                    "refusing to activate: the state file is corrupt or unreadable, so the \
+                     current state is unknown. Run 'nails verify' and recover the hidden volume first.",
+                ),
             );
-            std::process::exit(1);
         }
     }
 
-    // Run activation with options and measure duration
+    // Run activation with options and measure duration. Under --json the stream
+    // is NDJSON: a progress line now, the result line below.
+    if json {
+        output::print_activate_progress("activating");
+    }
     let start = Instant::now();
     let result = manager.activate_with_options(options, skip_preflight);
     let duration = start.elapsed().as_secs_f64();
@@ -333,7 +407,12 @@ pub fn execute(
 
     // Output results based on flags
     if json {
-        output::print_activate_json(&result, duration, &manager, shell_setup_result.as_ref());
+        output::print_activate_json_result(
+            &result,
+            duration,
+            &manager,
+            shell_setup_result.as_ref(),
+        );
     } else {
         output::print_activate_human(
             &result,
@@ -344,10 +423,12 @@ pub fn execute(
         );
     }
 
-    // Return appropriate exit code
+    // Return the appropriate exit status: a pre-flight refusal from the attached
+    // path is distinguished from an ordinary activation failure.
     match result {
-        Ok(_) => std::process::exit(0),
-        Err(_) => std::process::exit(1),
+        Ok(_) => ExitStatus::Ok,
+        Err(nails_core::NailsError::PreFlightCheckFailed(_)) => ExitStatus::PreflightRefused,
+        Err(_) => ExitStatus::Failed,
     }
 }
 

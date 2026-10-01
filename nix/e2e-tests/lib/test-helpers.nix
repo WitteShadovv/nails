@@ -85,7 +85,9 @@
                 + " > /tmp/nails-status.stdout 2>/tmp/nails-status.stderr"
             )
         )
-        return json.loads(machine.succeed("cat /tmp/nails-status.stdout"))
+        payload = json.loads(machine.succeed("cat /tmp/nails-status.stdout"))
+        # status --json is an envelope: callers work against its typed `data`.
+        return payload.get("data", payload)
   '';
 
   waitForStatusStateFn = ''
@@ -101,7 +103,9 @@
             try:
                 payload = read_status_json(config_path=config_path)
                 last_payload = payload
-                actual = str(payload.get("state", "")).lower()
+                state = payload.get("state", "")
+                kind = state.get("kind", "") if isinstance(state, dict) else str(state)
+                actual = kind.lower()
                 if actual.startswith(expected_prefix):
                     return payload
             except Exception as exc:
@@ -139,7 +143,9 @@
         )
         status = int(machine.succeed("cat /tmp/verify.rc"))
         output = machine.succeed("cat /tmp/verify.stdout")
-        return status, json.loads(output)
+        payload = json.loads(output)
+        # verify --json is an envelope: callers work against its typed `data`.
+        return status, payload.get("data", payload)
   '';
 
   # Deactivation powers the VM off. The driver's wait_for_shutdown() waits on

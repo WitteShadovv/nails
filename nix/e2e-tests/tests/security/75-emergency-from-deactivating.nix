@@ -59,7 +59,7 @@ in
     with subtest("prepare active session before real deactivation gate"):
         machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
         status = read_status_json(config_path=headless_config)
-        assert status["state"].startswith("Active"), status
+        assert status["state"]["kind"] == "active", status
         assert_status_overlays(expected_overlays, status)
         assert_expected_overlays(expected_overlays)
 
@@ -74,7 +74,7 @@ in
         )
         machine.succeed(f"test -f {entered_path}")
         machine.wait_until_succeeds(
-            f"nails --config {headless_config} status --json | grep -F 'Deactivating'",
+            f"nails --config {headless_config} status --json | grep -F '\"kind\":\"deactivating\"'",
             timeout=180,
         )
         status = read_status_json(config_path=headless_config)

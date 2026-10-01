@@ -6,20 +6,26 @@
 
 use std::path::Path;
 
-use crate::cli::output::OutputSettings;
+use crate::cli::output::envelope::Envelope;
+use crate::cli::output::{ExitStatus, OutputSettings};
 
-/// Execute the notify-dispatch command
+/// Execute the notify-dispatch command.
 ///
-/// Reads all pending notification files, sends them via `notify-send`,
-/// and deletes successfully dispatched files.
+/// Reads all pending notification files, sends them via `notify-send`, and
+/// deletes successfully dispatched files. Runs from XDG autostart, so a dispatch
+/// failure is reported but still exits [`ExitStatus::Ok`]; only a config load
+/// failure exits [`ExitStatus::Config`].
 ///
 /// # Arguments
 ///
 /// * `settings` - Output settings resolved once from the global flags
 /// * `config_override` - Optional config file path override
-pub fn execute(settings: &OutputSettings, config_override: Option<&Path>) -> ! {
+pub fn execute(settings: &OutputSettings, config_override: Option<&Path>) -> ExitStatus {
     let json = settings.is_json();
-    let config = super::load_config_or_exit(config_override).into_config();
+    let config = match super::load_config_or_report(config_override, "notify-dispatch", json) {
+        Ok(loaded) => loaded.into_config(),
+        Err(status) => return status,
+    };
 
     match nails_core::notification::dispatch_all(&config.hidden_volume_root) {
         Ok(initial_count) => {
@@ -52,27 +58,29 @@ pub fn execute(settings: &OutputSettings, config_override: Option<&Path>) -> ! {
                 }
             }
             if json {
-                println!(
-                    "{}",
-                    serde_json::json!({"dispatched": total, "status": "ok"})
-                );
+                Envelope::success(
+                    "notify-dispatch",
+                    serde_json::json!({"dispatched": total, "status": "ok"}),
+                )
+                .print();
             } else if total > 0 {
                 tracing::debug!(count = total, "Dispatched desktop notifications");
             }
-            std::process::exit(0);
+            ExitStatus::Ok
         }
         Err(e) => {
             if json {
-                println!(
-                    "{}",
-                    serde_json::json!({"dispatched": 0, "status": "error", "error": e.to_string()})
-                );
+                Envelope::success(
+                    "notify-dispatch",
+                    serde_json::json!({"dispatched": 0, "status": "error", "error": e.to_string()}),
+                )
+                .print();
             } else {
                 tracing::warn!(error = %e, "Failed to dispatch notifications");
             }
             // Exit 0 even on error — this runs from autostart; we don't want
             // error dialogs bothering the user for a non-critical feature.
-            std::process::exit(0);
+            ExitStatus::Ok
         }
     }
 }
@@ -110,7 +118,7 @@ mod tests {
         let config_override =
             std::env::var_os("NAILS_NOTIFY_DISPATCH_SUBPROCESS_CONFIG").map(PathBuf::from);
 
-        match case.as_str() {
+        let status = match case.as_str() {
             "json" => execute(
                 &OutputSettings {
                     mode: OutputMode::Json,
@@ -120,7 +128,8 @@ mod tests {
             ),
             "invalid-config" => execute(&OutputSettings::default(), config_override.as_deref()),
             other => panic!("unknown notify-dispatch subprocess case: {other}"),
-        }
+        };
+        crate::cli::detach::exit_process(status.code());
     }
 
     #[test]

@@ -1,254 +1,59 @@
-use super::{print_deactivate_human, print_deactivate_json};
-use nails_core::{
-    CleanupMode, CleanupReport, DeactivationReport, NailsError, ShellCleanupResult, SystemState,
-    Verbosity,
-};
+use super::{DEACTIVATE_RECOVERY_GUIDANCE, deactivate_error_body, print_deactivate_json};
+use nails_core::NailsError;
 use std::path::PathBuf;
-use std::time::Duration;
 
-fn make_cleanup_report() -> CleanupReport {
-    CleanupReport {
-        cleaned_items: vec!["bash history".to_string(), "/tmp/nails-*".to_string()],
-        errors: vec![],
-        duration: Duration::from_millis(50),
-        mode: CleanupMode::Fast,
-        verification_passed: Some(true),
-        memory_sanitized: false,
-        canary_findings_count: 0,
-    }
-}
-
-fn make_success_report() -> DeactivationReport {
-    DeactivationReport {
-        cleanup_report: make_cleanup_report(),
-        unmounted_overlays: vec!["/home".to_string(), "/etc".to_string()],
-        duration: Duration::from_millis(1234),
-        final_state: SystemState::Inactive,
-        was_already_inactive: false,
-        post_unmount_cleanup: nails_core::PostUnmountCleanupReport::default(),
-    }
-}
-
-fn make_already_inactive_report() -> DeactivationReport {
-    DeactivationReport {
-        cleanup_report: make_cleanup_report(),
-        unmounted_overlays: vec![],
-        duration: Duration::from_millis(5),
-        final_state: SystemState::Inactive,
-        was_already_inactive: true,
-        post_unmount_cleanup: nails_core::PostUnmountCleanupReport::default(),
-    }
-}
-
-fn make_manager() -> nails_core::NailsManager<nails_core::MockFilesystem> {
-    let fs = nails_core::MockFilesystem::new();
-    let config = nails_core::Config::default();
-    nails_core::NailsManager::new(fs, config, PathBuf::from("/tmp/test-state.json"))
+#[test]
+fn success_json_prints_one_parseable_envelope() {
+    // Smoke test: the renderer prints to stdout without panicking and the shape
+    // is exercised by the envelope's own serialization tests.
+    print_deactivate_json();
 }
 
 #[test]
-fn test_human_success_normal_verbosity() {
-    let report = make_success_report();
-    print_deactivate_human(&Ok(report), Verbosity::Normal, false, None, false);
+fn recovery_guidance_lists_the_dismount_and_reboot_steps() {
+    let combined = DEACTIVATE_RECOVERY_GUIDANCE.join("\n");
+    assert!(combined.contains("dismounted"), "{combined}");
+    assert!(combined.contains("rebooted"), "{combined}");
 }
 
 #[test]
-fn test_human_success_no_color() {
-    let report = make_success_report();
-    print_deactivate_human(&Ok(report), Verbosity::Normal, true, None, false);
-}
-
-#[test]
-fn test_human_success_debug_verbosity() {
-    let report = make_success_report();
-    print_deactivate_human(&Ok(report), Verbosity::Debug, false, None, false);
-}
-
-#[test]
-fn test_human_success_quiet_mode() {
-    let report = make_success_report();
-    print_deactivate_human(&Ok(report), Verbosity::Normal, false, None, true);
-}
-
-#[test]
-fn test_human_already_inactive() {
-    let report = make_already_inactive_report();
-    print_deactivate_human(&Ok(report), Verbosity::Normal, false, None, false);
-}
-
-#[test]
-fn test_human_already_inactive_no_color() {
-    let report = make_already_inactive_report();
-    print_deactivate_human(&Ok(report), Verbosity::Normal, true, None, false);
-}
-
-#[test]
-fn test_human_with_shell_cleanup_color() {
-    use nails_core::shell::ShellType;
-
-    let report = make_success_report();
-    let shell_cleanup = ShellCleanupResult {
-        shell_type: Some(ShellType::Bash),
-        instructions: vec!["source /tmp/cleanup.sh".to_string()],
-        message: None,
-    };
-
-    print_deactivate_human(
-        &Ok(report),
-        Verbosity::Normal,
-        false,
-        Some(&shell_cleanup),
-        false,
-    );
-}
-
-#[test]
-fn test_human_with_shell_cleanup_no_color() {
-    use nails_core::shell::ShellType;
-
-    let report = make_success_report();
-    let shell_cleanup = ShellCleanupResult {
-        shell_type: Some(ShellType::Bash),
-        instructions: vec!["unset NAILS_ACTIVE".to_string()],
-        message: None,
-    };
-
-    print_deactivate_human(
-        &Ok(report),
-        Verbosity::Normal,
-        true,
-        Some(&shell_cleanup),
-        false,
-    );
-}
-
-#[test]
-fn test_human_with_shell_cleanup_no_shell_type() {
-    let report = make_success_report();
-    let shell_cleanup = ShellCleanupResult {
-        shell_type: None,
-        instructions: vec![],
-        message: None,
-    };
-
-    print_deactivate_human(
-        &Ok(report),
-        Verbosity::Normal,
-        false,
-        Some(&shell_cleanup),
-        false,
-    );
-}
-
-#[test]
-fn test_human_error_permission_denied() {
-    let err = NailsError::PermissionDenied("cannot remove /etc".to_string());
-    print_deactivate_human(&Err(err), Verbosity::Normal, false, None, false);
-}
-
-#[test]
-fn test_human_error_permission_denied_no_color() {
-    let err = NailsError::PermissionDenied("cannot remove /etc".to_string());
-    print_deactivate_human(&Err(err), Verbosity::Normal, true, None, false);
-}
-
-#[test]
-fn test_human_error_mount_busy() {
-    let err = NailsError::MountBusy {
+fn mount_busy_error_keeps_the_suggestion_as_a_hint_and_drops_the_newline() {
+    let error = NailsError::MountBusy {
         path: PathBuf::from("/home"),
         suggestion: "Close your browser".to_string(),
     };
-    print_deactivate_human(&Err(err), Verbosity::Normal, false, None, false);
+    let body = deactivate_error_body(&error);
+    assert_eq!(body.code, "mount_busy");
+    assert!(!body.message.contains('\n'), "message={}", body.message);
+    assert!(body.message.contains("/home"));
+    assert_eq!(body.hint.as_deref(), Some("Close your browser"));
 }
 
 #[test]
-fn test_human_error_unmount_error() {
-    let err = NailsError::UnmountError {
+fn unmount_error_maps_to_a_hinted_structured_error() {
+    let error = NailsError::UnmountError {
         path: PathBuf::from("/etc"),
         reason: "device busy".to_string(),
     };
-    print_deactivate_human(&Err(err), Verbosity::Normal, false, None, false);
+    let body = deactivate_error_body(&error);
+    assert_eq!(body.code, "unmount_error");
+    assert!(!body.message.contains('\n'), "message={}", body.message);
+    assert!(body.message.contains("/etc"));
+    assert!(body.message.contains("device busy"));
+    assert!(body.hint.is_some());
 }
 
 #[test]
-fn test_human_error_invalid_state() {
-    let err = NailsError::InvalidState("no active session".to_string());
-    print_deactivate_human(&Err(err), Verbosity::Normal, false, None, false);
+fn permission_denied_and_invalid_state_map_to_their_own_codes() {
+    let perm = deactivate_error_body(&NailsError::PermissionDenied("cannot remove /etc".into()));
+    assert_eq!(perm.code, "permission_denied");
+
+    let state = deactivate_error_body(&NailsError::InvalidState("no active session".into()));
+    assert_eq!(state.code, "invalid_state");
 }
 
 #[test]
-fn test_human_error_other() {
-    let err = NailsError::IoError(std::io::Error::other("unexpected"));
-    print_deactivate_human(&Err(err), Verbosity::Normal, false, None, false);
-}
-
-#[test]
-fn test_human_success_empty_cleanup_and_overlays() {
-    let report = DeactivationReport {
-        cleanup_report: CleanupReport {
-            cleaned_items: vec![],
-            errors: vec![],
-            duration: Duration::from_millis(0),
-            mode: CleanupMode::Fast,
-            verification_passed: None,
-            memory_sanitized: false,
-            canary_findings_count: 0,
-        },
-        unmounted_overlays: vec![],
-        duration: Duration::from_millis(100),
-        final_state: SystemState::Inactive,
-        was_already_inactive: false,
-        post_unmount_cleanup: nails_core::PostUnmountCleanupReport::default(),
-    };
-
-    print_deactivate_human(&Ok(report), Verbosity::Normal, false, None, false);
-}
-
-#[test]
-fn test_json_success() {
-    let manager = make_manager();
-    let report = make_success_report();
-    print_deactivate_json(&Ok(report), &manager, None);
-}
-
-#[test]
-fn test_json_already_inactive() {
-    let manager = make_manager();
-    let report = make_already_inactive_report();
-    print_deactivate_json(&Ok(report), &manager, None);
-}
-
-#[test]
-fn test_json_with_shell_cleanup() {
-    use nails_core::shell::ShellType;
-
-    let manager = make_manager();
-    let report = make_success_report();
-    let shell_cleanup = ShellCleanupResult {
-        shell_type: Some(ShellType::Bash),
-        instructions: vec!["source /tmp/cleanup.sh".to_string()],
-        message: None,
-    };
-
-    print_deactivate_json(&Ok(report), &manager, Some(&shell_cleanup));
-}
-
-#[test]
-fn test_json_with_shell_cleanup_no_type() {
-    let manager = make_manager();
-    let report = make_success_report();
-    let shell_cleanup = ShellCleanupResult {
-        shell_type: None,
-        instructions: vec![],
-        message: None,
-    };
-
-    print_deactivate_json(&Ok(report), &manager, Some(&shell_cleanup));
-}
-
-#[test]
-fn test_json_error() {
-    let manager = make_manager();
-    let err = NailsError::InvalidState("failed".to_string());
-    print_deactivate_json(&Err(err), &manager, None);
+fn other_errors_map_to_a_generic_deactivation_failure() {
+    let body = deactivate_error_body(&NailsError::IoError(std::io::Error::other("unexpected")));
+    assert_eq!(body.code, "deactivation_failed");
 }

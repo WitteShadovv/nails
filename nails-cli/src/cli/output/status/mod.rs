@@ -4,7 +4,7 @@ mod human;
 mod json;
 
 pub use human::{print_status_header, print_status_human};
-pub use json::print_status_json;
+pub use json::{print_status_json, print_status_json_unknown};
 
 /// The config file path as shown by `status --details`, noting when it is absent.
 pub(super) fn config_file_label(config_path: &std::path::Path) -> String {

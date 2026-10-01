@@ -1,7 +1,7 @@
 //! Argument parsing tests for emergency, status, and verify commands
 //!
-//! The handlers call `std::process::exit()`, so only parsing is tested here;
-//! the CLI integration tests cover execution.
+//! Only parsing is tested here; the CLI integration tests cover execution and
+//! the exit statuses the handlers return.
 
 use super::args::{EmergencyArgs, StatusArgs, VerifyArgs};
 use super::*;

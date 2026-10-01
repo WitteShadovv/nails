@@ -1,7 +1,6 @@
-use super::{
-    DEACTIVATE_RECOVERY_GUIDANCE, deactivate_recovery_guidance, deactivate_success_json, execute,
-};
+use super::{deactivate_recovery_guidance, execute};
 use crate::cli::args::DeactivateArgs;
+use crate::cli::output::deactivate::DEACTIVATE_RECOVERY_GUIDANCE;
 use crate::cli::output::{OutputMode, OutputSettings};
 use nails_core::Verbosity;
 use nails_core::constants::{ENV_FORCE_DETACH, ENV_SKIP_DETACH};
@@ -111,7 +110,7 @@ fn subprocess_deactivate_entrypoint() {
     };
     let config = config_override.as_deref();
 
-    match case.as_str() {
+    let status = match case.as_str() {
         "invalid-config" => execute(
             &OutputSettings::default(),
             &DeactivateArgs::default(),
@@ -146,7 +145,8 @@ fn subprocess_deactivate_entrypoint() {
             reject_real_ops,
         ),
         other => panic!("unknown deactivate subprocess case: {other}"),
-    }
+    };
+    crate::cli::detach::exit_process(status.code());
 }
 
 #[test]
@@ -163,9 +163,9 @@ fn execute_deactivate_warns_and_proceeds_with_defaults_for_invalid_config() {
     let output = run_subprocess("invalid-config", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Exit 2 comes from the safety guard, which runs only after config loading
+    // Exit 5 comes from the safety guard, which runs only after config loading
     // has fallen back to defaults instead of refusing.
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert_eq!(output.status.code(), Some(5), "stderr={stderr}");
     assert!(stderr.contains("did you mean `nixos_flake`?"), "{stderr}");
     assert!(stderr.contains("continuing with defaults"), "{stderr}");
     let derived = nails_core::config::derive_hidden_volume_root();
@@ -188,7 +188,7 @@ fn execute_deactivate_warns_and_proceeds_when_explicit_config_is_missing() {
     let output = run_subprocess("invalid-config", Some(&missing));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert_eq!(output.status.code(), Some(5), "stderr={stderr}");
     assert!(stderr.contains("config file not found"), "{stderr}");
     assert!(stderr.contains("guard saw root"), "{stderr}");
 }
@@ -210,10 +210,15 @@ fn execute_deactivate_reports_inactive_error_path() {
     .unwrap();
 
     let output = run_subprocess("inactive-error", Some(config.path()));
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
-    assert!(stderr.contains("status") || stderr.contains("error") || stderr.contains("failed"));
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout={stdout} stderr={stderr}"
+    );
+    assert!(stdout.contains("\"ok\":false"), "stdout={stdout}");
 }
 
 #[test]
@@ -267,11 +272,16 @@ fn execute_deactivate_reports_detach_error_as_json() {
         .output()
         .expect("failed to run deactivate subprocess test");
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
 
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-    assert!(stderr.contains("\"status\":\"error\""));
-    assert!(stderr.contains("Refusing to start transient systemd units"));
+    // The envelope for a --json failure is one document on stdout.
+    assert_eq!(output.status.code(), Some(1), "stdout={stdout}");
+    assert!(stdout.contains("\"ok\":false"), "stdout={stdout}");
+    assert!(stdout.contains("\"code\":\"detach\""), "stdout={stdout}");
+    assert!(
+        stdout.contains("Refusing to start transient systemd units"),
+        "stdout={stdout}"
+    );
 }
 
 #[test]
@@ -301,8 +311,8 @@ fn execute_deactivate_reports_detach_error_in_human_output() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-    assert!(stderr.contains("Error: Invalid state: Refusing to start transient systemd units"));
+    assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
+    assert!(stderr.contains("error: Invalid state: Refusing to start transient systemd units"));
 }
 
 #[test]
@@ -331,7 +341,7 @@ fn execute_deactivate_blocks_disallowed_real_operations_before_manager_creation(
 
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
+    assert_eq!(output.status.code(), Some(5), "stderr={stderr}");
     assert!(stderr.contains("real operations blocked for test"));
 }
 
@@ -359,7 +369,7 @@ fn execute_deactivate_blocks_disallowed_real_operations_in_quiet_mode() {
         .output()
         .expect("failed to run deactivate subprocess test");
 
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(5));
 }
 
 #[test]
@@ -389,7 +399,7 @@ fn execute_deactivate_blocks_disallowed_real_operations_with_verbose_mode() {
         .output()
         .expect("failed to run deactivate subprocess test");
 
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(5));
 }
 
 #[test]
@@ -402,17 +412,6 @@ fn deactivate_ascii_recovery_guidance_is_ascii_only() {
 
     assert!(combined.is_ascii(), "guidance={combined}");
     assert!(combined.contains("[WARN]"));
-}
-
-#[test]
-fn deactivate_success_json_contains_recovery_guidance() {
-    let json_str = deactivate_success_json();
-    let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-    assert_eq!(parsed["status"], "success");
-    let guidance = parsed["recovery_guidance"].as_array().unwrap();
-    assert_eq!(guidance.len(), 2);
-    assert!(guidance[0].as_str().unwrap().contains("Dismount"));
-    assert!(guidance[1].as_str().unwrap().contains("Reboot"));
 }
 
 #[test]

@@ -9,12 +9,16 @@ use std::path::Path;
 use nails_core::{CliOverrides, Config, LoadedConfig};
 use serde_json::json;
 
-use super::{EXIT_CONFIG_ERROR, config_error_line, resolve_config};
+use super::{config_error_line, resolve_config};
 use crate::cli::args::ConfigCommand;
-use crate::cli::output::OutputSettings;
+use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// Exit code for a command-line usage error.
 const EXIT_USAGE: i32 = 2;
+
+/// Exit code for a configuration file that is missing (when required),
+/// unreadable or invalid.
+const EXIT_CONFIG_ERROR: i32 = 3;
 
 /// What a config subcommand prints and how it exits.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -35,26 +39,30 @@ impl Outcome {
     fn config_error(line: &str) -> Self {
         Self {
             code: EXIT_CONFIG_ERROR,
-            stderr: format!("Error: {line}\n"),
+            stderr: format!("error: {line}\n"),
             ..Self::default()
         }
     }
 }
 
-/// Execute a `nails config` subcommand
+/// Execute a `nails config` subcommand.
 ///
-/// Never returns: exits 0 on success, 2 for `show --example --json`, and 3
-/// when the configuration file is missing (where one is required), unreadable
-/// or invalid.
+/// Returns [`ExitStatus::Ok`] on success, [`ExitStatus::Usage`] for
+/// `show --example --json`, and [`ExitStatus::Config`] when the configuration
+/// file is missing (where one is required), unreadable or invalid.
 pub fn execute(
     settings: &OutputSettings,
     config_override: Option<&Path>,
     command: &ConfigCommand,
-) -> ! {
+) -> ExitStatus {
     let outcome = run(config_override, command, settings.is_json());
     print!("{}", outcome.stdout);
     eprint!("{}", outcome.stderr);
-    std::process::exit(outcome.code);
+    match outcome.code {
+        0 => ExitStatus::Ok,
+        EXIT_USAGE => ExitStatus::Usage,
+        _ => ExitStatus::Config,
+    }
 }
 
 fn run(config_override: Option<&Path>, command: &ConfigCommand, json: bool) -> Outcome {
@@ -62,7 +70,7 @@ fn run(config_override: Option<&Path>, command: &ConfigCommand, json: bool) -> O
         ConfigCommand::Path => path(config_override, json),
         ConfigCommand::Show { example: true, .. } if json => Outcome {
             code: EXIT_USAGE,
-            stderr: "Error: --example prints commented TOML and cannot be combined with --json\n"
+            stderr: "error: --example prints commented TOML and cannot be combined with --json\n"
                 .to_string(),
             ..Outcome::default()
         },
@@ -298,7 +306,7 @@ mod tests {
         );
 
         assert_eq!(outcome.code, EXIT_CONFIG_ERROR);
-        assert!(outcome.stderr.starts_with("Error: invalid config "));
+        assert!(outcome.stderr.starts_with("error: invalid config "));
         assert!(outcome.stderr.contains("did you mean `nixos_flake`?"));
         assert_eq!(outcome.stderr.lines().count(), 1);
     }
@@ -351,7 +359,7 @@ mod tests {
         assert_eq!(
             outcome.stderr,
             format!(
-                "Error: config file not found: {} (run `nails init <root>` or pass --config)\n",
+                "error: config file not found: {} (run `nails init <root>` or pass --config)\n",
                 missing.display()
             )
         );

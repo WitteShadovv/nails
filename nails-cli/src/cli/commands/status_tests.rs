@@ -1,7 +1,45 @@
-use super::execute;
+use super::{execute, status_exit_code};
 use crate::cli::args::StatusArgs;
-use crate::cli::output::{OutputMode, OutputSettings};
+use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
+use nails_core::status::SecurityPosture;
 use std::path::PathBuf;
+
+#[test]
+fn status_exit_code_is_always_ok_without_the_flag() {
+    for posture in [
+        SecurityPosture::Secure,
+        SecurityPosture::Decoy,
+        SecurityPosture::Warning,
+        SecurityPosture::Critical,
+    ] {
+        assert_eq!(status_exit_code(posture, false, false), ExitStatus::Ok);
+        assert_eq!(status_exit_code(posture, true, false), ExitStatus::Ok);
+    }
+}
+
+#[test]
+fn status_exit_code_reflects_posture_with_the_flag() {
+    assert_eq!(
+        status_exit_code(SecurityPosture::Secure, false, true),
+        ExitStatus::Ok
+    );
+    assert_eq!(
+        status_exit_code(SecurityPosture::Decoy, false, true),
+        ExitStatus::Ok
+    );
+    assert_eq!(
+        status_exit_code(SecurityPosture::Warning, false, true),
+        ExitStatus::Failed
+    );
+    assert_eq!(
+        status_exit_code(SecurityPosture::Critical, false, true),
+        ExitStatus::Failed
+    );
+    assert_eq!(
+        status_exit_code(SecurityPosture::Critical, true, true),
+        ExitStatus::DegradedReboot
+    );
+}
 
 const SUBPROCESS_TEST_NAME: &str = "cli::commands::status::tests::subprocess_status_entrypoint";
 
@@ -29,8 +67,11 @@ fn subprocess_status_entrypoint() {
     let config_override = std::env::var_os("NAILS_STATUS_SUBPROCESS_CONFIG").map(PathBuf::from);
 
     let config = config_override.as_deref();
-    let details = StatusArgs { details: true };
-    match case.as_str() {
+    let details = StatusArgs {
+        details: true,
+        ..StatusArgs::default()
+    };
+    let status = match case.as_str() {
         "ascii" => execute(
             &OutputSettings {
                 ascii: true,
@@ -50,7 +91,8 @@ fn subprocess_status_entrypoint() {
         "no-color" => execute(&OutputSettings::default(), &details, config),
         "invalid-config" => execute(&OutputSettings::default(), &StatusArgs::default(), config),
         other => panic!("unknown status subprocess case: {other}"),
-    }
+    };
+    crate::cli::detach::exit_process(status.code());
 }
 
 #[test]
