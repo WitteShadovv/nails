@@ -18,6 +18,7 @@ on:
       - '.github/workflows/e2e-tests.yml'
       - '.github/workflows/e2e-tests-full.yml'
       - '.github/workflows/e2e-tests-full-shard.yml'
+      - '.github/actions/setup-nix/**'
       - 'flake.nix'
       - 'flake.lock'
       - 'Cargo.toml'
