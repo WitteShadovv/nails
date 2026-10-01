@@ -17,6 +17,8 @@
 //! - **Classification** (`classification.rs`): Classify processes by restart safety
 //! - **Restart** (`restart.rs`): Stop and restart processes using systemd or signals
 //! - **Session** (`session.rs`): Detect and manage graphical sessions for `--kill-session` flag
+//! - **Run** (`run.rs`): [`ProcessRunner`], which starts external programs and owns binary
+//!   resolution and the test-runtime guard
 //!
 //! # Example
 //!
@@ -43,6 +45,7 @@
 pub mod classification;
 pub mod detection;
 pub mod restart;
+pub mod run;
 pub mod session;
 pub mod shell_cleanup;
 
@@ -50,6 +53,7 @@ pub mod shell_cleanup;
 pub use classification::{RestartStrategy, classify_process};
 pub use detection::{ProcessInfo, detect_processes_using};
 pub use restart::{RestartMethod, RestartedProcess, restart_processes};
+pub use run::{ProcessCommand, ProcessRunner, Program, RealProcessRunner};
 pub use session::{
     RealSessionCommandExecutor, SessionCommandExecutor, SessionContext, SessionKillResult,
     SessionKind, SessionRestartPlan, detect_session_context, detect_session_context_with_executor,

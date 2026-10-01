@@ -12,28 +12,27 @@
 
 use super::NixOSBuilder;
 use crate::error::Result;
+use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-fn run_command(
-    program: &str,
+/// `nix` or `nixos-rebuild` with `args`, taken from the caller's `PATH`.
+///
+/// Allowed in test runtimes because the builder tests drive both through stub
+/// binaries. `clear_nix_path` drops `NIX_PATH`; flake builds request it so the
+/// caller's channel search path cannot influence evaluation.
+fn nix_toolchain_command(
+    program: &'static str,
     args: &[&str],
     clear_nix_path: bool,
-) -> Result<(bool, String, String)> {
-    let mut command = Command::new(program);
-    command.args(args);
-
+) -> ProcessCommand {
+    let command = ProcessCommand::caller_path(program)
+        .args(args)
+        .allow_in_test_runtime();
     if clear_nix_path {
-        command.env_remove("NIX_PATH");
+        command.env_remove("NIX_PATH")
+    } else {
+        command
     }
-
-    let output = command.output()?;
-
-    let success = output.status.success();
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    Ok((success, stdout, stderr))
 }
 
 /// Trait for executing commands (for testability)
@@ -83,6 +82,8 @@ pub(crate) struct FlakePreflightSummary {
 }
 
 /// Real command executor for production use
+///
+/// A thin wrapper over [`RealProcessRunner`].
 pub struct RealCommandExecutor;
 
 impl CommandExecutor for RealCommandExecutor {
@@ -91,25 +92,29 @@ impl CommandExecutor for RealCommandExecutor {
         args: &[&str],
         clear_nix_path: bool,
     ) -> Result<(bool, String, String)> {
-        run_command("nixos-rebuild", args, clear_nix_path)
+        RealProcessRunner.run_text(&nix_toolchain_command(
+            "nixos-rebuild",
+            args,
+            clear_nix_path,
+        ))
     }
 
     fn execute_nix(&self, args: &[&str], clear_nix_path: bool) -> Result<(bool, String, String)> {
-        run_command("nix", args, clear_nix_path)
+        RealProcessRunner.run_text(&nix_toolchain_command("nix", args, clear_nix_path))
     }
 
+    /// Runs the generation's own script; allowed in test runtimes because the
+    /// switch tests point it at stub scripts.
     fn execute_switch_to_configuration(
         &self,
         script_path: &Path,
         args: &[&str],
     ) -> Result<(bool, String, String)> {
-        let output = Command::new(script_path).args(args).output()?;
-
-        let success = output.status.success();
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        Ok((success, stdout, stderr))
+        RealProcessRunner.run_text(
+            &ProcessCommand::exact(script_path)
+                .args(args)
+                .allow_in_test_runtime(),
+        )
     }
 }
 

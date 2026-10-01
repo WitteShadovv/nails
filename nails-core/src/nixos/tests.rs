@@ -1759,3 +1759,37 @@ fn test_real_command_executor_execute_switch_to_configuration_runs_exact_script_
         (true, "mode=switch\n".to_string(), "note\n".to_string())
     );
 }
+
+#[test]
+#[serial]
+fn test_real_command_executor_execute_nix_drops_nix_path_only_when_asked() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    write_executable_script(
+        &temp_dir.path().join("nix"),
+        "#!/usr/bin/env bash\nprintf '%s' \"${NIX_PATH-unset}\"\n",
+    );
+
+    let old_path = std::env::var_os("PATH");
+    let old_nix_path = std::env::var_os("NIX_PATH");
+    prepend_path(temp_dir.path(), &old_path);
+    unsafe {
+        std::env::set_var("NIX_PATH", "nixpkgs=/caller/channel");
+    }
+
+    let kept = RealCommandExecutor.execute_nix(&["eval"], false);
+    let cleared = RealCommandExecutor.execute_nix(&["eval"], true);
+
+    unsafe {
+        match old_path {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+        match old_nix_path {
+            Some(nix_path) => std::env::set_var("NIX_PATH", nix_path),
+            None => std::env::remove_var("NIX_PATH"),
+        }
+    }
+
+    assert_eq!(kept.unwrap().1, "nixpkgs=/caller/channel");
+    assert_eq!(cleared.unwrap().1, "unset");
+}

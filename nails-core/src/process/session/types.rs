@@ -1,6 +1,9 @@
 //! Session types and context structs
 
 use crate::Result;
+use crate::process::run::{
+    ProcessCommand, ProcessRunner, RealProcessRunner, signal_command, systemctl_command,
+};
 use std::time::Duration;
 
 /// Kind of session currently running
@@ -81,6 +84,9 @@ impl Default for SessionKillResult {
 }
 
 /// Command executor for session operations
+///
+/// Tests script this seam to drive session detection and termination
+/// without a process runner.
 pub trait SessionCommandExecutor {
     /// Execute systemctl command
     fn execute_systemctl(&self, args: &[&str]) -> Result<(bool, String, String)>;
@@ -96,102 +102,67 @@ pub trait SessionCommandExecutor {
 }
 
 /// Real command executor using system commands
+///
+/// A thin wrapper over [`RealProcessRunner`], which resolves `systemctl`,
+/// `loginctl` and `kill` from the system tool directories and refuses them in
+/// test runtimes.
 pub struct RealSessionCommandExecutor;
 
 impl SessionCommandExecutor for RealSessionCommandExecutor {
-    #[cfg(not(test))]
     fn execute_systemctl(&self, args: &[&str]) -> Result<(bool, String, String)> {
-        use std::process::Command;
-        if crate::runtime_safety::should_skip_host_interaction() {
-            return Err(crate::NailsError::InvalidState(
-                "Refusing to execute systemctl from test/test-like runtime context; use a mock session executor instead".into(),
-            ));
-        }
-        let output = Command::new("/run/current-system/sw/bin/systemctl")
-            .args(args)
-            .output()?;
-
-        let success = output.status.success();
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        Ok((success, stdout, stderr))
+        RealProcessRunner.run_text(&systemctl_command(args))
     }
 
-    #[cfg(test)]
-    fn execute_systemctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
-        panic!(
-            "RealSessionCommandExecutor::execute_systemctl called in test context - use a mock executor instead"
-        )
-    }
-
-    #[cfg(not(test))]
     fn execute_loginctl(&self, args: &[&str]) -> Result<(bool, String, String)> {
-        use std::process::Command;
-        if crate::runtime_safety::should_skip_host_interaction() {
-            return Err(crate::NailsError::InvalidState(
-                "Refusing to execute loginctl from test/test-like runtime context; use a mock session executor instead".into(),
-            ));
-        }
-        let output = Command::new("loginctl").args(args).output()?;
-
-        let success = output.status.success();
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        Ok((success, stdout, stderr))
+        RealProcessRunner.run_text(&ProcessCommand::tool("loginctl").args(args))
     }
 
-    #[cfg(test)]
-    fn execute_loginctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
-        panic!(
-            "RealSessionCommandExecutor::execute_loginctl called in test context - use a mock executor instead"
-        )
-    }
-
-    #[cfg(not(test))]
     fn execute_kill(&self, pid: u32, signal: &str) -> Result<bool> {
-        use std::process::Command;
-        if crate::runtime_safety::should_skip_host_interaction() {
-            return Err(crate::NailsError::InvalidState(
-                "Refusing to execute kill from test/test-like runtime context; use a mock session executor instead".into(),
-            ));
-        }
-        Command::new("kill")
-            .arg(format!("-{}", signal))
-            .arg(pid.to_string())
-            .status()
-            .map(|s| s.success())
-            .map_err(|e| e.into())
+        Ok(RealProcessRunner
+            .run(&signal_command(pid, signal))?
+            .status
+            .success())
     }
 
-    #[cfg(test)]
-    fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
-        panic!(
-            "RealSessionCommandExecutor::execute_kill called in test context - use a mock executor instead"
-        )
-    }
-
-    #[cfg(not(test))]
+    /// True when `loginctl` could be started; its exit status does not matter.
     fn loginctl_available(&self) -> bool {
-        use std::process::Command;
-        if crate::runtime_safety::should_skip_host_interaction() {
-            return false;
-        }
-        Command::new("loginctl").arg("--version").output().is_ok()
-    }
-
-    #[cfg(test)]
-    fn loginctl_available(&self) -> bool {
-        panic!(
-            "RealSessionCommandExecutor::loginctl_available called in test context - use a mock executor instead"
-        )
+        RealProcessRunner
+            .run(&ProcessCommand::tool("loginctl").arg("--version"))
+            .is_ok()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_refused_in_test_runtime<T: std::fmt::Debug>(result: Result<T>, program: &str) {
+        match result {
+            Err(crate::NailsError::InvalidState(message)) => {
+                assert!(
+                    message.contains(&format!("Refusing to run {program}")),
+                    "{message}"
+                );
+            }
+            other => panic!("expected the runtime guard to refuse {program}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn real_session_executor_is_refused_by_the_runtime_guard_in_tests() {
+        let executor = RealSessionCommandExecutor;
+
+        assert_refused_in_test_runtime(
+            executor.execute_systemctl(&["stop", "display-manager"]),
+            "systemctl",
+        );
+        assert_refused_in_test_runtime(
+            executor.execute_loginctl(&["terminate-user", "1000"]),
+            "loginctl",
+        );
+        assert_refused_in_test_runtime(executor.execute_kill(4242, "KILL"), "kill");
+        assert!(!executor.loginctl_available());
+    }
 
     #[test]
     fn session_kind_variants_compare_as_expected() {

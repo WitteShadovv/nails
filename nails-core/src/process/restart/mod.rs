@@ -35,8 +35,7 @@
 
 use crate::error::Result;
 use crate::process::detection::ProcessInfo;
-#[cfg(not(test))]
-use std::process::Command;
+use crate::process::run::{ProcessRunner, RealProcessRunner, signal_command, systemctl_command};
 
 /// Method used to restart a process
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,10 +57,10 @@ pub struct RestartedProcess {
     pub stopped_successfully: bool,
 }
 
-/// Trait for executing commands (for testability)
+/// The commands process restarts need.
 ///
-/// This trait is intentionally kept separate from the CommandExecutor in nixos.rs
-/// to avoid circular dependencies and maintain module independence.
+/// Tests script this seam to drive the stop sequencing (socket before
+/// service, SIGTERM before SIGKILL) without a process runner.
 pub trait CommandExecutor {
     /// Execute systemctl command
     fn execute_systemctl(&self, args: &[&str]) -> Result<(bool, String, String)>;
@@ -71,54 +70,21 @@ pub trait CommandExecutor {
 }
 
 /// Real command executor for production use
+///
+/// A thin wrapper over [`RealProcessRunner`], which resolves `systemctl` and
+/// `kill` from the system tool directories and refuses both in test runtimes.
 pub struct RealCommandExecutor;
 
 impl CommandExecutor for RealCommandExecutor {
-    #[cfg(not(test))]
     fn execute_systemctl(&self, args: &[&str]) -> Result<(bool, String, String)> {
-        if crate::runtime_safety::should_skip_host_interaction() {
-            return Err(crate::NailsError::InvalidState(
-                "Refusing to execute systemctl from test/test-like runtime context; use restart_processes_with_executor() with a mock executor instead".into(),
-            ));
-        }
-        let output = Command::new("/run/current-system/sw/bin/systemctl")
-            .args(args)
-            .output()?;
-
-        let success = output.status.success();
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        Ok((success, stdout, stderr))
+        RealProcessRunner.run_text(&systemctl_command(args))
     }
 
-    #[cfg(test)]
-    fn execute_systemctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
-        panic!(
-            "RealCommandExecutor::execute_systemctl called in test context - use restart_processes_with_executor() with a mock executor instead"
-        )
-    }
-
-    #[cfg(not(test))]
     fn execute_kill(&self, pid: u32, signal: &str) -> Result<bool> {
-        if crate::runtime_safety::should_skip_host_interaction() {
-            return Err(crate::NailsError::InvalidState(
-                "Refusing to execute kill from test/test-like runtime context; use restart_processes_with_executor() with a mock executor instead".into(),
-            ));
-        }
-        let output = Command::new("kill")
-            .arg(format!("-{}", signal))
-            .arg(pid.to_string())
-            .output()?;
-
-        Ok(output.status.success())
-    }
-
-    #[cfg(test)]
-    fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
-        panic!(
-            "RealCommandExecutor::execute_kill called in test context - use restart_processes_with_executor() with a mock executor instead"
-        )
+        Ok(RealProcessRunner
+            .run(&signal_command(pid, signal))?
+            .status
+            .success())
     }
 }
 

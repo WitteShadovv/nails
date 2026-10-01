@@ -1,0 +1,65 @@
+//! Recording [`ProcessRunner`] for unit tests.
+
+use super::{ProcessCommand, ProcessRunner};
+use crate::Result;
+use std::collections::VecDeque;
+use std::os::unix::process::ExitStatusExt;
+use std::process::{ExitStatus, Output};
+use std::sync::Mutex;
+
+/// Records every command and answers from a queue of scripted results.
+///
+/// Once the queue is empty, commands exit 0 with no output.
+pub(crate) struct MockProcessRunner {
+    calls: Mutex<Vec<ProcessCommand>>,
+    responses: Mutex<VecDeque<Result<Output>>>,
+}
+
+impl MockProcessRunner {
+    pub(crate) fn new() -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    /// Queues the result of the next command that has no answer yet.
+    pub(crate) fn with_response(self, response: Result<Output>) -> Self {
+        self.responses
+            .lock()
+            .expect("mock runner mutex poisoned")
+            .push_back(response);
+        self
+    }
+
+    /// Commands run so far, oldest first.
+    pub(crate) fn calls(&self) -> Vec<ProcessCommand> {
+        self.calls
+            .lock()
+            .expect("mock runner mutex poisoned")
+            .clone()
+    }
+}
+
+impl ProcessRunner for MockProcessRunner {
+    fn run(&self, command: &ProcessCommand) -> Result<Output> {
+        self.calls
+            .lock()
+            .expect("mock runner mutex poisoned")
+            .push(command.clone());
+        self.responses
+            .lock()
+            .expect("mock runner mutex poisoned")
+            .pop_front()
+            .unwrap_or_else(|| Ok(exited(0, "", "")))
+    }
+}
+
+/// The output of a command that exited with `code`.
+pub(crate) fn exited(code: i32, stdout: &str, stderr: &str) -> Output {
+    Output {
+        status: ExitStatus::from_raw(code << 8),
+        stdout: stdout.as_bytes().to_vec(),
+        stderr: stderr.as_bytes().to_vec(),
+    }
+}
