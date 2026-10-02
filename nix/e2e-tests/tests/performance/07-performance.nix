@@ -129,7 +129,7 @@ in
 
     with subtest("default activation"):
         reopen_hidden_volume()
-        machine.succeed("""cat > /mnt/hidden-volume/config/nixos/configuration.nix <<'EOF'
+        machine.succeed("""cat > /mnt/data/config/nixos/configuration.nix <<'EOF'
     { ... }: {
       documentation.nixos.enable = false;
     }

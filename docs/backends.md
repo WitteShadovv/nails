@@ -7,8 +7,10 @@ changes what an adversary with one or more disk images can learn, so this page
 lists what has been tested, what every backend must provide, and the
 deniability trade-offs of each supported backend.
 
-The examples use the mapping name `hidden` and the default hidden root
-`/mnt/hidden-volume`. Substitute your own.
+The examples use the neutral mapping name `data` and the hidden root
+`/mnt/data`. Substitute your own, and keep the mapping name, mount point and
+filesystem label free of anything that hints at hidden storage: they surface in
+`/dev/mapper`, `/dev/disk/by-label`, generated mount unit names and the journal.
 
 ## Support matrix
 
@@ -69,7 +71,7 @@ mount point is skipped; the `hidden-volume` check fails it.
 
 | | VeraCrypt file container | VeraCrypt device | LUKS2 |
 |---|---|---|---|
-| **Unlock** | `cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden <file> hidden` | `cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden /dev/sdX2 hidden` | `cryptsetup open /dev/sdX2 hidden` |
+| **Unlock** | `cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden <file> data` | `cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden /dev/sdX2 data` | `cryptsetup open /dev/sdX2 data` |
 | **Discards** | Never. Destroys or exposes the hidden volume | Never. Destroys or exposes the hidden volume | Keep off. Leaks the used/free layout; check that no persistent flag is stored |
 | **Timestamps** | mtime and ctime change every read-write session; ctime cannot be restored | No decoy-side file timestamps | No decoy-side file timestamps |
 | **Host traces** | Loop device, container timestamps, plus the common traces | Device-mapper device, plus the common traces | A visible LUKS2 header unless the header is detached, plus the common traces |
@@ -83,8 +85,8 @@ behind it, which is what the session requirement above needs.
 
 ```bash
 sudo cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden \
-  /path/to/container hidden
-sudo mount /dev/mapper/hidden /mnt/hidden-volume
+  /path/to/container data
+sudo mount /dev/mapper/data /mnt/data
 ```
 
 cryptsetup attaches the container to a free loop device itself.
@@ -99,8 +101,8 @@ cryptsetup attaches the container to a free loop device itself.
 - **Host traces:** the common traces below, a loop device bound to the
   container while it is open, and the container's timestamps. Opening the
   container from a file manager can add it to the desktop's recent-files list.
-- **Lock sequence:** `sudo umount /mnt/hidden-volume`, then
-  `sudo cryptsetup close hidden`. Closing also detaches the loop device
+- **Lock sequence:** `sudo umount /mnt/data`, then
+  `sudo cryptsetup close data`. Closing also detaches the loop device
   cryptsetup attached; one you attached yourself with `losetup` needs
   `sudo losetup -d /dev/loopN`. `losetup -a` must not list the container
   afterwards.
@@ -108,8 +110,8 @@ cryptsetup attaches the container to a free loop device itself.
 ### VeraCrypt hidden volume on a whole device
 
 ```bash
-sudo cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden /dev/sdX2 hidden
-sudo mount /dev/mapper/hidden /mnt/hidden-volume
+sudo cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden /dev/sdX2 data
+sudo mount /dev/mapper/data /mnt/data
 ```
 
 A partition or a whole disk created by VeraCrypt holds the outer and hidden
@@ -123,8 +125,8 @@ timestamps change.
   after unlocking.
 - **Host traces:** the common traces below. The partition shows up as random
   data, which the outer volume is there to explain.
-- **Lock sequence:** `sudo umount /mnt/hidden-volume`, then
-  `sudo cryptsetup close hidden`.
+- **Lock sequence:** `sudo umount /mnt/data`, then
+  `sudo cryptsetup close data`.
 
 Both VeraCrypt layouts: cryptsetup cannot open an outer volume with
 VeraCrypt's hidden-volume protection, so writing to an outer volume opened by
@@ -135,8 +137,8 @@ outer volume with the VeraCrypt application and its hidden-volume protection.
 ### LUKS2
 
 ```bash
-sudo cryptsetup open /dev/sdX2 hidden
-sudo mount /dev/mapper/hidden /mnt/hidden-volume
+sudo cryptsetup open /dev/sdX2 data
+sudo mount /dev/mapper/data /mnt/data
 ```
 
 This is the backend the E2E suite runs on.
@@ -157,8 +159,8 @@ This is the backend the E2E suite runs on.
   to `open` with `--header`) leaves the device without a signature; fill the
   device with random data before formatting so that used and unused areas
   look alike.
-- **Lock sequence:** `sudo umount /mnt/hidden-volume`, then
-  `sudo cryptsetup close hidden`.
+- **Lock sequence:** `sudo umount /mnt/data`, then
+  `sudo cryptsetup close data`.
 
 ### Common host traces
 
@@ -202,7 +204,7 @@ setting for a volume that contains a hidden volume:
 cryptsetup-open(8) documents both options involved: `--allow-discards` with
 its warning that discards make filesystem-level operations visible on the
 physical device, and `--tcrypt-hidden` for opening the hidden volume. To check
-a mapping, `cryptsetup status hidden` lists `discards` under `flags` when they
+a mapping, `cryptsetup status data` lists `discards` under `flags` when they
 are enabled, and `lsblk --discard` shows a non-zero `DISC-MAX`.
 
 ### Timestamps

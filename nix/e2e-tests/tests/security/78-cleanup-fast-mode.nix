@@ -37,11 +37,11 @@ in
 
     with subtest("plant representative cleanup targets"):
         machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
-        machine.succeed("mkdir -p /mnt/hidden-volume/logs")
-        machine.succeed("printf 'fast-mode-log\n' > /mnt/hidden-volume/logs/nails.log")
+        machine.succeed("mkdir -p /mnt/data/logs")
+        machine.succeed("printf 'fast-mode-log\n' > /mnt/data/logs/nails.log")
         machine.succeed("printf 'nails fast mode history\n' >> /home/testuser/.bash_history")
         machine.succeed("printf 'nails temp\n' > /tmp/nails-fast-mode-artifact")
-        machine.succeed("test -f /mnt/hidden-volume/logs/nails.log")
+        machine.succeed("test -f /mnt/data/logs/nails.log")
         machine.succeed("test -f /tmp/nails-fast-mode-artifact")
 
     with subtest("emergency path uses fast cleanup semantics"):
@@ -70,7 +70,7 @@ in
 
     with subtest("fast cleanup still removes key artifacts and leaves inactive state"):
         machine.fail("test -f /tmp/nails-fast-mode-artifact")
-        machine.fail("test -f /mnt/hidden-volume/logs/nails.log")
+        machine.fail("test -f /mnt/data/logs/nails.log")
         history_after = machine.succeed("cat /home/testuser/.bash_history 2>/dev/null || true")
         assert "nails fast mode history" not in history_after, history_after
         assert_no_overlays(["/home", "/etc"])

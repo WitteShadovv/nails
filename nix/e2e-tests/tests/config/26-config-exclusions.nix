@@ -31,7 +31,7 @@ in
     def write_exclusions_config(path, allow_leaky=True):
         allow = 'allow_leaky_exclusions = ["/opt", "/nix", "/var", "/tmp"]' if allow_leaky else ""
         write_text_file(path, f"""
-    hidden_volume_root = "/mnt/hidden-volume"
+    hidden_volume_root = "/mnt/data"
     overlay_mode = "auto"
     risky_services = "skip"
     overlay_exclusions = ["/opt", "/nix", "/var", "/tmp"]
@@ -62,7 +62,7 @@ in
         assert_no_overlays(["/etc", "/home", "/srv"])
 
     with subtest("a hidden volume under /media is refused before any mount or session kill"):
-        machine.succeed("mkdir -p /media/veracrypt1 && mount --bind /mnt/hidden-volume /media/veracrypt1")
+        machine.succeed("mkdir -p /media/veracrypt1 && mount --bind /mnt/data /media/veracrypt1")
         write_media_config("/tmp/media.toml")
         result = run_command_capture(
             "media-hidden-root",

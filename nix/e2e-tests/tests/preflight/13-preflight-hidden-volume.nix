@@ -87,26 +87,26 @@ in
 
     with subtest("read-only hidden volume is rejected"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed("mount -o remount,ro /mnt/hidden-volume")
-        write_hidden_volume_config("/tmp/preflight-readonly.toml", "/mnt/hidden-volume")
+        machine.succeed("mount -o remount,ro /mnt/data")
+        write_hidden_volume_config("/tmp/preflight-readonly.toml", "/mnt/data")
         result = run_command_capture(
             "preflight-hidden-readonly",
             "nails --config /tmp/preflight-readonly.toml activate --dry-run --overlay-only --session keep --ascii",
         )
         assert_command_succeeded(result)
-        assert_result_contains(result, ["hidden-volume", "/mnt/hidden-volume", "not writable"], stream="stdout")
-        machine.succeed("mount -o remount,rw /mnt/hidden-volume")
+        assert_result_contains(result, ["hidden-volume", "/mnt/data", "not writable"], stream="stdout")
+        machine.succeed("mount -o remount,rw /mnt/data")
 
     with subtest("immutable hidden volume root is treated as non-writable"):
         machine.succeed("command -v chattr >/dev/null")
-        machine.succeed("chattr +i /mnt/hidden-volume")
+        machine.succeed("chattr +i /mnt/data")
         result = run_command_capture(
             "preflight-hidden-immutable",
             "nails --config /tmp/preflight-readonly.toml activate --dry-run --overlay-only --session keep --ascii",
         )
         assert_command_succeeded(result)
-        assert_result_contains(result, ["hidden-volume", "/mnt/hidden-volume", "not writable"], stream="stdout")
-        machine.succeed("chattr -i /mnt/hidden-volume")
+        assert_result_contains(result, ["hidden-volume", "/mnt/data", "not writable"], stream="stdout")
+        machine.succeed("chattr -i /mnt/data")
 
     with subtest("log files on an attached hidden volume are mode 0600"):
         # A writing command on a positively attached, writable volume creates its
@@ -116,8 +116,8 @@ in
             "preflight-hidden-log-mode",
             "nails --config /tmp/preflight-readonly.toml activate --dry-run --overlay-only --session keep --ascii",
         )
-        machine.succeed("test -f /mnt/hidden-volume/logs/nails.log")
-        log_mode = machine.succeed("stat -c %a /mnt/hidden-volume/logs/nails.log").strip()
+        machine.succeed("test -f /mnt/data/logs/nails.log")
+        log_mode = machine.succeed("stat -c %a /mnt/data/logs/nails.log").strip()
         assert log_mode == "600", f"log file mode is {log_mode}, expected 600"
 
     with subtest("status remains inactive after all hidden volume failures"):

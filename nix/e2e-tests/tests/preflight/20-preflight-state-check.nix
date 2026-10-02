@@ -51,7 +51,7 @@ in
             "python3 - <<'PY'\n"
             "import json\n"
             "from pathlib import Path\n"
-            "path = Path('/mnt/hidden-volume/state.json')\n"
+            "path = Path('/mnt/data/state.json')\n"
             "payload = json.loads(path.read_text())\n"
             "payload['version'] = payload['version'] + '-tampered'\n"
             "path.write_text(json.dumps(payload, indent=2))\n"

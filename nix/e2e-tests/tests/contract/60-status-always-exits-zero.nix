@@ -65,7 +65,7 @@ in
         machine.succeed(
             "python3 - <<'PY'\n"
             "from pathlib import Path\n"
-            "path = Path('/mnt/hidden-volume/state.json')\n"
+            "path = Path('/mnt/data/state.json')\n"
             "data = path.read_text()\n"
             "path.write_text(data[:-1] + 'X')\n"
             "PY"

@@ -50,7 +50,7 @@ in
     machine.succeed("su - testuser -c 'test -f ~/reactivation-test.txt'")
     print("✓ Created data during first activation")
 
-    machine.succeed("test -f /mnt/hidden-volume/home/testuser/reactivation-test.txt")
+    machine.succeed("test -f /mnt/data/home/testuser/reactivation-test.txt")
     print("✓ Data stored in hidden volume overlay")
 
     print("\n=== Phase 2: Deactivate ===")
@@ -65,8 +65,8 @@ in
     print("\n=== Phase 3: Re-activation ===")
     machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
 
-    machine.succeed("test -f /mnt/hidden-volume/home/testuser/reactivation-test.txt")
-    content = machine.succeed("cat /mnt/hidden-volume/home/testuser/reactivation-test.txt").strip()
+    machine.succeed("test -f /mnt/data/home/testuser/reactivation-test.txt")
+    content = machine.succeed("cat /mnt/data/home/testuser/reactivation-test.txt").strip()
     assert "REACTIVATION_DATA_1" in content, f"Expected data in hidden volume, got: {content}"
     print("✓ Data persists in hidden volume after deactivation")
 

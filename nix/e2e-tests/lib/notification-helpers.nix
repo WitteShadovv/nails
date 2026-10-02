@@ -1,6 +1,6 @@
 {
   writeNotificationConfigFn = ''
-    def write_notification_config(path, hidden_volume_root="/mnt/hidden-volume"):
+    def write_notification_config(path, hidden_volume_root="/mnt/data"):
         machine.succeed(
             """cat > %s <<'EOF'
     hidden_volume_root = "%s"

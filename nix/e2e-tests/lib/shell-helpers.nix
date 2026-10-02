@@ -85,15 +85,15 @@
     def write_nix_overlay_config(path):
         machine.succeed(
             """cat > %s <<'EOF'
-    hidden_volume_root = "/mnt/hidden-volume"
+    hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
     risky_services = "skip"
 
     [[overlays]]
     name = "nix"
     lower = "/nix"
-    upper = "/mnt/hidden-volume/nix"
-    work = "/mnt/hidden-volume/.work/nix"
+    upper = "/mnt/data/nix"
+    work = "/mnt/data/.work/nix"
     target = "/nix"
     EOF""" % path
         )

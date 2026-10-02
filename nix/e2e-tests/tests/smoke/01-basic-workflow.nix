@@ -43,10 +43,10 @@ in
 
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    machine.succeed("test -d /mnt/hidden-volume")
-    machine.succeed("test -d /mnt/hidden-volume/home")
-    machine.succeed("test -d /mnt/hidden-volume/.work/home")
-    print("✓ Hidden volume is mounted at /mnt/hidden-volume")
+    machine.succeed("test -d /mnt/data")
+    machine.succeed("test -d /mnt/data/home")
+    machine.succeed("test -d /mnt/data/.work/home")
+    print("✓ Hidden volume is mounted at /mnt/data")
 
     machine.fail("mount | grep 'overlay on /home'")
     machine.fail("mount | grep 'overlay on /etc'")
@@ -70,8 +70,8 @@ in
     etc_mount = machine.succeed("mount | grep 'overlay on /etc' || true")
     assert "overlay" in home_mount, "Overlay not mounted on /home"
     assert "overlay" in etc_mount, "Overlay not mounted on /etc"
-    assert "/mnt/hidden-volume/home" in home_mount, "Overlay upperdir not pointing to hidden volume"
-    assert "/mnt/hidden-volume/etc" in etc_mount, "Overlay upperdir not pointing to hidden volume"
+    assert "/mnt/data/home" in home_mount, "Overlay upperdir not pointing to hidden volume"
+    assert "/mnt/data/etc" in etc_mount, "Overlay upperdir not pointing to hidden volume"
     print("✓ Overlays mounted on /home and /etc with correct upperdir")
 
     machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
@@ -108,8 +108,8 @@ in
     assert "secret document" in content, "File content doesn't match"
     print("✓ Files persist during active session")
 
-    machine.succeed("test -f /mnt/hidden-volume/home/testuser/secret-document.txt")
-    machine.succeed("test -d /mnt/hidden-volume/home/testuser/hidden-project")
+    machine.succeed("test -f /mnt/data/home/testuser/secret-document.txt")
+    machine.succeed("test -d /mnt/data/home/testuser/hidden-project")
     print("✓ Files stored in hidden volume overlay")
 
     print("\n=== Testing Deactivation ===")
@@ -135,8 +135,8 @@ in
     print("✓ User files are no longer visible in home directory")
 
     machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
-    machine.succeed("test -f /mnt/hidden-volume/home/testuser/secret-document.txt")
-    machine.succeed("test -d /mnt/hidden-volume/home/testuser/hidden-project")
+    machine.succeed("test -f /mnt/data/home/testuser/secret-document.txt")
+    machine.succeed("test -d /mnt/data/home/testuser/hidden-project")
     print("✓ Data preserved in hidden volume")
 
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")

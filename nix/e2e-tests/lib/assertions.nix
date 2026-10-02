@@ -63,7 +63,7 @@
         import shlex
 
         relative_path = path[1:] if path.startswith("/") else path
-        full_path = os.path.join("/mnt/hidden-volume", relative_path)
+        full_path = os.path.join("/mnt/data", relative_path)
         machine.succeed(f"test -e {shlex.quote(full_path)}")
         return full_path
   '';

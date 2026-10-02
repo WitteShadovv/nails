@@ -99,13 +99,13 @@ in
     nix_store = machine.succeed("nix eval --raw --expr builtins.storeDir").strip()
 
     headless_config = "/tmp/nails-headless.toml"
-    flake_ref = "/mnt/hidden-volume/nixos#nails-e2e"
+    flake_ref = "/mnt/data/nixos#nails-e2e"
     write_headless_config(headless_config)
 
     with subtest("prepare hidden flake override"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed("mkdir -p /mnt/hidden-volume/nixos")
-        machine.succeed("""cat > /mnt/hidden-volume/nixos/flake.nix <<'EOF'
+        machine.succeed("mkdir -p /mnt/data/nixos")
+        machine.succeed("""cat > /mnt/data/nixos/flake.nix <<'EOF'
     {
       # NAILS_HIDDEN_FLAKE_CANARY_f067 — forensic canary; see test script.
       description = "NAILS flake override E2E";
@@ -124,7 +124,7 @@ in
       };
     }
     EOF""")
-        machine.succeed("nix flake lock --offline /mnt/hidden-volume/nixos")
+        machine.succeed("nix flake lock --offline /mnt/data/nixos")
         wrapper_env = install_nixos_rebuild_wrapper(
             "/tmp/nixos-rebuild-flake.log",
             "/etc/nails-flake-marker",

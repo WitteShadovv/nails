@@ -219,7 +219,7 @@ let
         *) echo "unexpected hidden store path: $hidden_store_path" >&2; exit 1 ;;
       esac
       hidden_store_basename=''${hidden_store_path##*/}
-      if [ ! -e "/mnt/hidden-volume${nixStorePrefix}$hidden_store_basename" ]; then
+      if [ ! -e "/mnt/data${nixStorePrefix}$hidden_store_basename" ]; then
         echo "hidden-session store path did not land in the hidden upper: $hidden_store_path" >&2
         exit 1
       fi

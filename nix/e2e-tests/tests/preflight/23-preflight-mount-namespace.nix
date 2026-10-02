@@ -29,14 +29,14 @@ in
 
     def write_hidden_config(path):
         write_text_file(path, """
-    hidden_volume_root = "/mnt/hidden"
+    hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
 
     [[overlays]]
     name = "home"
     lower = "/home"
-    upper = "/mnt/hidden/home"
-    work = "/mnt/hidden/.work/home"
+    upper = "/mnt/data/home"
+    work = "/mnt/data/.work/home"
     target = "/home"
     """.strip() + "\n")
 
@@ -47,7 +47,7 @@ in
         # A real ext4 hidden volume so the namespace check is the decisive
         # failure rather than an unrelated storage check.
         machine.succeed(
-                "bash -lc 'truncate -s 128M /tmp/hidden.img && mkfs.ext4 -q /tmp/hidden.img && mkdir -p /mnt/hidden && mount -o loop /tmp/hidden.img /mnt/hidden'"
+                "bash -lc 'truncate -s 128M /tmp/hidden.img && mkfs.ext4 -q /tmp/hidden.img && mkdir -p /mnt/data && mount -o loop /tmp/hidden.img /mnt/data'"
             )
         write_hidden_config("/tmp/preflight-mount-namespace.toml")
 
@@ -65,6 +65,6 @@ in
         # Preflight failed, so no overlay was stacked on the decoy /home.
         machine.fail("findmnt --noheadings --types overlay /home")
 
-        machine.succeed("umount /mnt/hidden")
+        machine.succeed("umount /mnt/data")
   '';
 }

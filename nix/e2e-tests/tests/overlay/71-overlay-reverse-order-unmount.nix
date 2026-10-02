@@ -32,7 +32,7 @@ in
     config_path = "/tmp/nails-overlay-order.toml"
     write_ordered_overlay_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed("mkdir -p /mnt/hidden-volume/srv /mnt/hidden-volume/.work/srv")
+    machine.succeed("mkdir -p /mnt/data/srv /mnt/data/.work/srv")
 
     with subtest("phase 1: activate overlays in a known order"):
         machine.succeed(

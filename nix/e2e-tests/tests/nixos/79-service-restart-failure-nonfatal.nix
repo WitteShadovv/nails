@@ -60,7 +60,7 @@ in
 
     with subtest("prepare hidden config and non-fatal rebuild wrapper"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed("""cat > /mnt/hidden-volume/config/nixos/configuration.nix <<'EOF'
+        machine.succeed("""cat > /mnt/data/config/nixos/configuration.nix <<'EOF'
     { ... }: {
       documentation.nixos.enable = false;
       environment.etc."nails-nonfatal-marker".text = "service-restart-warning";

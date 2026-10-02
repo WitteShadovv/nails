@@ -137,7 +137,7 @@ Do not violate:
 
 - `swapDevices = lib.mkForce [ ]`
 - static musl `self.packages.x86_64-linux.nails` in test VMs
-- hidden root at `/mnt/hidden-volume`
+- hidden root at `/mnt/data`
 - hidden backing disk at `/dev/vdb`
 - non-root `testuser`
 - no softened assertions

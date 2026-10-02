@@ -33,7 +33,7 @@ in
     config_path = "/tmp/nails-boot-pivot.toml"
     write_boot_only_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed("mkdir -p /mnt/hidden-volume/boot /mnt/hidden-volume/.work/boot")
+    machine.succeed("mkdir -p /mnt/data/boot /mnt/data/.work/boot")
 
     with subtest("phase 1: confirm the decoy boot filesystem is VFAT"):
         machine.succeed("findmnt -n -o FSTYPE /boot | grep -qx vfat")
@@ -49,7 +49,7 @@ in
         machine.succeed("mountpoint -q /mnt/nails-pivot/boot")
         machine.succeed("test -f /mnt/nails-pivot/boot-snapshot/decoy-boot.txt")
         machine.succeed("printf %s hidden-boot > /boot/hidden-boot.txt")
-        machine.succeed("test -f /mnt/hidden-volume/boot/hidden-boot.txt")
+        machine.succeed("test -f /mnt/data/boot/hidden-boot.txt")
 
     with subtest("phase 3: deactivation restores the original VFAT boot view"):
         canonical_deactivate(config_path, unit_name="nails-deactivate-overlay-boot-pivot")
@@ -58,7 +58,7 @@ in
         machine.succeed("test -f /boot/decoy-boot.txt")
         machine.fail("test -e /boot/hidden-boot.txt")
         machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
-        machine.succeed("test -f /mnt/hidden-volume/boot/hidden-boot.txt")
+        machine.succeed("test -f /mnt/data/boot/hidden-boot.txt")
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';
 }

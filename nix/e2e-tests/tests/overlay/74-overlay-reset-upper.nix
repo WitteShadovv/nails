@@ -54,7 +54,7 @@ in
             "su - testuser -c 'printf %s hidden-data > ~/reset-target.txt'"
         )
         machine.succeed("su - testuser -c 'printf %s secret > ~/hidden-only.txt'")
-        machine.succeed("test -f /mnt/hidden-volume/home/testuser/hidden-only.txt")
+        machine.succeed("test -f /mnt/data/home/testuser/hidden-only.txt")
 
     with subtest("phase 2: deactivate, reopen the volume, and reset the /home upper"):
         canonical_deactivate(config_path, unit_name="nails-deactivate-reset-upper")
@@ -64,13 +64,13 @@ in
         assert_status_state("Inactive", config_path=config_path)
 
         # The upper carries the hidden changes until reset.
-        machine.succeed("test -f /mnt/hidden-volume/home/testuser/hidden-only.txt")
+        machine.succeed("test -f /mnt/data/home/testuser/hidden-only.txt")
 
         machine.succeed(f"nails --config {config_path} reset-upper /home -y")
 
         # The upper and its work directory are gone after the reset.
-        machine.fail("test -e /mnt/hidden-volume/home")
-        machine.fail("test -e /mnt/hidden-volume/.work/home")
+        machine.fail("test -e /mnt/data/home")
+        machine.fail("test -e /mnt/data/.work/home")
 
     with subtest("phase 3: the decoy home shows through on the next activation"):
         machine.succeed(

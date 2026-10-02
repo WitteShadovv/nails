@@ -47,7 +47,7 @@ in
     # The dispatcher only needs the hidden root; keep its config to that.
     notify_config = "/tmp/nails-notify.toml"
     shell_path = "/run/current-system/sw/bin/bash"
-    queue_dir = "/mnt/hidden-volume/notifications"
+    queue_dir = "/mnt/data/notifications"
     # Outside every overlay the headless config mounts, so the stub and its log
     # are the same files before and after activation.
     stub_dir = "/var/lib/notify-stub/bin"

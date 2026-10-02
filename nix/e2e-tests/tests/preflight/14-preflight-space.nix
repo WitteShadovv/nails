@@ -33,7 +33,7 @@ in
 
     def write_space_config(path):
         write_text_file(path, """
-    hidden_volume_root = "/mnt/hidden-volume"
+    hidden_volume_root = "/mnt/data"
     minimum_space_mb = 500
     overlay_mode = "explicit"
     risky_services = "skip"
@@ -41,8 +41,8 @@ in
     [[overlays]]
     name = "home"
     lower = "/home"
-    upper = "/mnt/hidden-volume/home"
-    work = "/mnt/hidden-volume/.work/home"
+    upper = "/mnt/data/home"
+    work = "/mnt/data/.work/home"
     target = "/home"
     """.strip() + "\n")
 
@@ -57,10 +57,10 @@ in
         machine.succeed(
                 "python3 - <<'PY'\n"
                 "import subprocess\n"
-                "avail = int(\"\".join(ch for ch in subprocess.check_output(['df', '--output=avail', '-BM', '/mnt/hidden-volume'], text=True).splitlines()[-1] if ch.isdigit()))\n"
+                "avail = int(\"\".join(ch for ch in subprocess.check_output(['df', '--output=avail', '-BM', '/mnt/data'], text=True).splitlines()[-1] if ch.isdigit()))\n"
                 "fill = avail - 150\n"
                 "assert fill > 0, fill\n"
-                "subprocess.check_call(['fallocate', '-l', str(fill) + 'M', '/mnt/hidden-volume/filler.bin'])\n"
+                "subprocess.check_call(['fallocate', '-l', str(fill) + 'M', '/mnt/data/filler.bin'])\n"
                 "subprocess.check_call(['sync'])\n"
                 "PY"
             )
@@ -73,7 +73,7 @@ in
         assert_status_state("inactive")
 
     with subtest("freeing space restores a clean activation path"):
-        machine.succeed("rm -f /mnt/hidden-volume/filler.bin")
+        machine.succeed("rm -f /mnt/data/filler.bin")
         machine.succeed("sync")
         machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
         assert_status_state("active")

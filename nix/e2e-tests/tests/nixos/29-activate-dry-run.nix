@@ -75,13 +75,13 @@ in
     machine.wait_for_unit("multi-user.target")
 
     headless_config = "/tmp/nails-headless.toml"
-    flake_ref = "/mnt/hidden-volume/nixos#dry-run-e2e"
+    flake_ref = "/mnt/data/nixos#dry-run-e2e"
     write_headless_config(headless_config)
 
     with subtest("prepare hidden flake and rebuild wrapper"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed("mkdir -p /mnt/hidden-volume/nixos")
-        machine.succeed("""cat > /mnt/hidden-volume/nixos/flake.nix <<'EOF'
+        machine.succeed("mkdir -p /mnt/data/nixos")
+        machine.succeed("""cat > /mnt/data/nixos/flake.nix <<'EOF'
     {
       description = "NAILS dry-run flake E2E";
       inputs.nixpkgs.url = "path:${nixpkgsPath}";
@@ -94,7 +94,7 @@ in
     }
     EOF""")
         wrapper_env = install_nixos_rebuild_wrapper("/tmp/nixos-rebuild-dry-run.log")
-        machine.fail("test -e /mnt/hidden-volume/state.json")
+        machine.fail("test -e /mnt/data/state.json")
 
     with subtest("check reports readiness without mutating anything"):
         check_rc, check_stdout, check_stderr = run_command_capture(
@@ -122,10 +122,10 @@ in
     with subtest("state and filesystem remain untouched"):
         assert_inactive_status_local(headless_config)
         assert_no_overlays_local(["/etc", "/home", "/root", "/srv", "/tmp"])
-        machine.fail("test -e /mnt/hidden-volume/state.json")
-        machine.fail("test -e /mnt/hidden-volume/config/nixos/configuration.nix")
-        machine.fail("test -e /mnt/hidden-volume/etc/nixos/nails/configuration.nix")
-        machine.fail("test -e /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
+        machine.fail("test -e /mnt/data/state.json")
+        machine.fail("test -e /mnt/data/config/nixos/configuration.nix")
+        machine.fail("test -e /mnt/data/etc/nixos/nails/configuration.nix")
+        machine.fail("test -e /mnt/data/etc/nixos/hardware-configuration.nix")
         machine.fail("test -e /etc/nixos/nails/configuration.nix")
   '';
 }

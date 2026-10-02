@@ -168,9 +168,9 @@ impl Config {
     /// # use std::io::Write;
     /// # use tempfile::NamedTempFile;
     /// # let mut file = NamedTempFile::new().unwrap();
-    /// # writeln!(file, "hidden_volume_root = \"/mnt/hidden-volume\"").unwrap();
+    /// # writeln!(file, "hidden_volume_root = \"/mnt/data\"").unwrap();
     /// let config = Config::load(file.path()).expect("Failed to load config");
-    /// assert_eq!(config.state_file_path.to_str(), Some("/mnt/hidden-volume/state.json"));
+    /// assert_eq!(config.state_file_path.to_str(), Some("/mnt/data/state.json"));
     /// ```
     pub fn load(path: &Path) -> Result<Self> {
         LoadedConfig::load(path).map(LoadedConfig::into_config)

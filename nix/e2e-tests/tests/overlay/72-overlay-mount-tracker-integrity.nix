@@ -33,7 +33,7 @@ in
     expected_paths = {"/home", "/etc", "/srv"}
     write_ordered_overlay_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed("mkdir -p /mnt/hidden-volume/srv /mnt/hidden-volume/.work/srv")
+    machine.succeed("mkdir -p /mnt/data/srv /mnt/data/.work/srv")
 
     with subtest("phase 1: inactive state has no tracked or mounted overlays"):
         status = read_status_json(config_path=config_path)

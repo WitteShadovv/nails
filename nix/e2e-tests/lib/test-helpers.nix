@@ -13,43 +13,43 @@
         machine.succeed("mkdir -p " + shlex.quote(parent_dir))
         machine.succeed(
             """cat > %s <<'EOF'
-    hidden_volume_root = "/mnt/hidden-volume"
+    hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
     risky_services = "skip"
 
     [[overlays]]
     name = "etc"
     lower = "/etc"
-    upper = "/mnt/hidden-volume/etc"
-    work = "/mnt/hidden-volume/.work/etc"
+    upper = "/mnt/data/etc"
+    work = "/mnt/data/.work/etc"
     target = "/etc"
 
     [[overlays]]
     name = "home"
     lower = "/home"
-    upper = "/mnt/hidden-volume/home"
-    work = "/mnt/hidden-volume/.work/home"
+    upper = "/mnt/data/home"
+    work = "/mnt/data/.work/home"
     target = "/home"
 
     [[overlays]]
     name = "root"
     lower = "/root"
-    upper = "/mnt/hidden-volume/root"
-    work = "/mnt/hidden-volume/.work/root"
+    upper = "/mnt/data/root"
+    work = "/mnt/data/.work/root"
     target = "/root"
 
     [[overlays]]
     name = "srv"
     lower = "/srv"
-    upper = "/mnt/hidden-volume/srv"
-    work = "/mnt/hidden-volume/.work/srv"
+    upper = "/mnt/data/srv"
+    work = "/mnt/data/.work/srv"
     target = "/srv"
 
     [[overlays]]
     name = "tmp"
     lower = "/tmp"
-    upper = "/mnt/hidden-volume/tmp"
-    work = "/mnt/hidden-volume/.work/tmp"
+    upper = "/mnt/data/tmp"
+    work = "/mnt/data/.work/tmp"
     target = "/tmp"
     EOF""" % path
         )
@@ -248,57 +248,57 @@
     def write_extended_config(path):
         machine.succeed(
             """cat > %s <<'EOF'
-    hidden_volume_root = "/mnt/hidden-volume"
+    hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
     risky_services = "skip"
 
     [[overlays]]
     name = "etc"
     lower = "/etc"
-    upper = "/mnt/hidden-volume/etc"
-    work = "/mnt/hidden-volume/.work/etc"
+    upper = "/mnt/data/etc"
+    work = "/mnt/data/.work/etc"
     target = "/etc"
 
     [[overlays]]
     name = "home"
     lower = "/home"
-    upper = "/mnt/hidden-volume/home"
-    work = "/mnt/hidden-volume/.work/home"
+    upper = "/mnt/data/home"
+    work = "/mnt/data/.work/home"
     target = "/home"
 
     [[overlays]]
     name = "root"
     lower = "/root"
-    upper = "/mnt/hidden-volume/root"
-    work = "/mnt/hidden-volume/.work/root"
+    upper = "/mnt/data/root"
+    work = "/mnt/data/.work/root"
     target = "/root"
 
     [[overlays]]
     name = "var"
     lower = "/var"
-    upper = "/mnt/hidden-volume/var"
-    work = "/mnt/hidden-volume/.work/var"
+    upper = "/mnt/data/var"
+    work = "/mnt/data/.work/var"
     target = "/var"
 
     [[overlays]]
     name = "tmp"
     lower = "/tmp"
-    upper = "/mnt/hidden-volume/tmp"
-    work = "/mnt/hidden-volume/.work/tmp"
+    upper = "/mnt/data/tmp"
+    work = "/mnt/data/.work/tmp"
     target = "/tmp"
 
     [[overlays]]
     name = "srv"
     lower = "/srv"
-    upper = "/mnt/hidden-volume/srv"
-    work = "/mnt/hidden-volume/.work/srv"
+    upper = "/mnt/data/srv"
+    work = "/mnt/data/.work/srv"
     target = "/srv"
 
     [[overlays]]
     name = "opt"
     lower = "/opt"
-    upper = "/mnt/hidden-volume/opt"
-    work = "/mnt/hidden-volume/.work/opt"
+    upper = "/mnt/data/opt"
+    work = "/mnt/data/.work/opt"
     target = "/opt"
     EOF""" % path
         )

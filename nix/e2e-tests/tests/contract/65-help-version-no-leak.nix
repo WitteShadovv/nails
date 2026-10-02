@@ -24,9 +24,9 @@ in
     ${contractHelpers.assertNoBlockedSubstringsFn}
 
     blocked_paths = [
-        "/mnt/hidden-volume",
-        "/mnt/hidden-volume/logs",
-        "/mnt/hidden-volume/state.json",
+        "/mnt/data",
+        "/mnt/data/logs",
+        "/mnt/data/state.json",
         "/var/log/nails",
         "/etc/nixos/nails",
     ]

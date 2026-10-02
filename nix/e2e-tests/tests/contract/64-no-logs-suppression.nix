@@ -31,7 +31,7 @@ in
         return int(
             machine.succeed(
                 "bash -lc '"
-                + "if [ -f /mnt/hidden-volume/logs/nails.log ]; then stat -c %s /mnt/hidden-volume/logs/nails.log; else echo 0; fi'"
+                + "if [ -f /mnt/data/logs/nails.log ]; then stat -c %s /mnt/data/logs/nails.log; else echo 0; fi'"
             ).strip()
         )
 

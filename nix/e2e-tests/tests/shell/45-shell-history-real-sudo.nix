@@ -57,7 +57,7 @@ in
             "sudo -u testuser tee /home/testuser/.bash_history >/dev/null <<'EOF'\n"
             "ls -la\n"
             "nails activate --overlay-only\n"
-            "cryptsetup luksOpen /dev/vdb hidden-volume\n"
+            "cryptsetup luksOpen /dev/vdb data\n"
             "echo harmless\n"
             "EOF"
         )
@@ -77,7 +77,7 @@ in
     with subtest("active session records sensitive commands in the overlaid history"):
         machine.succeed(
             "sudo -u testuser bash -lc "
-            + "\"printf 'nails deactivate\\ncryptsetup luksClose hidden-volume\\n' "
+            + "\"printf 'nails deactivate\\ncryptsetup luksClose data\\n' "
             + ">> ~/.bash_history\""
         )
 

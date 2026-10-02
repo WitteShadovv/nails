@@ -56,8 +56,8 @@ in
     with subtest("activation creates the zsh rc file with the integration block"):
         rc_contents = machine.succeed("cat " + rc_path)
         assert rc_contents.startswith("# >>> managed shell integration"), rc_contents
-        assert "source /mnt/hidden-volume/scripts/nails_prompt.zsh" in rc_contents, rc_contents
-        assert "source /mnt/hidden-volume/scripts/nails_alias.sh" in rc_contents, rc_contents
+        assert "source /mnt/data/scripts/nails_prompt.zsh" in rc_contents, rc_contents
+        assert "source /mnt/data/scripts/nails_alias.sh" in rc_contents, rc_contents
 
     with subtest("files and directories nails creates belong to the operator"):
         assert_owned_by(rc_path, "testuser:users", "644")

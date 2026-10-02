@@ -94,8 +94,8 @@ in
 
     with subtest("first activation generates a valid wrapper from a no-imports hardware file"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.fail("test -e /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
-        machine.succeed("""cat > /mnt/hidden-volume/config/nixos/configuration.nix <<'EOF'
+        machine.fail("test -e /mnt/data/etc/nixos/hardware-configuration.nix")
+        machine.succeed("""cat > /mnt/data/config/nixos/configuration.nix <<'EOF'
     { ... }: {
       documentation.nixos.enable = false;
     }
@@ -106,12 +106,12 @@ in
 
         # The hidden hardware config is the fixed wrapper; the original is preserved
         # verbatim as the base file.
-        hidden_wrapper = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
+        hidden_wrapper = machine.succeed("cat /mnt/data/etc/nixos/hardware-configuration.nix")
         assert hidden_wrapper.count("./nails/configuration.nix") == 1, \
             f"wrapper should import the hidden module exactly once, got: {hidden_wrapper!r}"
         assert "./hardware-configuration.base.nix" in hidden_wrapper, \
             f"wrapper should import the preserved base, got: {hidden_wrapper!r}"
-        hidden_base = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.base.nix")
+        hidden_base = machine.succeed("cat /mnt/data/etc/nixos/hardware-configuration.base.nix")
         assert "boot.loader.grub.enable = false;" in hidden_base, \
             f"base should preserve the original hardware config, got: {hidden_base!r}"
         assert "imports" not in hidden_base, \
@@ -119,8 +119,8 @@ in
 
         # The composed files are valid Nix (this is what the preflight parse gate
         # checks; `--parse` only lexes/parses, it does not evaluate or realise).
-        machine.succeed("nix-instantiate --parse /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
-        machine.succeed("nix-instantiate --parse /mnt/hidden-volume/etc/nixos/hardware-configuration.base.nix")
+        machine.succeed("nix-instantiate --parse /mnt/data/etc/nixos/hardware-configuration.nix")
+        machine.succeed("nix-instantiate --parse /mnt/data/etc/nixos/hardware-configuration.base.nix")
 
         # The overlayed /etc/nixos shows the same wrapper + base, and the staged
         # nails symlink resolves.
@@ -130,7 +130,7 @@ in
         assert "./hardware-configuration.base.nix" in live_wrapper, \
             f"overlayed hardware config should import the base, got: {live_wrapper!r}"
         machine.succeed("test -e /etc/nixos/hardware-configuration.base.nix")
-        machine.succeed("test -L /mnt/hidden-volume/etc/nixos/nails/configuration.nix")
+        machine.succeed("test -L /mnt/data/etc/nixos/nails/configuration.nix")
         machine.succeed("test -L /etc/nixos/nails/configuration.nix")
 
         # The hidden config is applied: the rebuild ran against it.
@@ -142,12 +142,12 @@ in
         assert_status_state_local("Inactive", headless_config)
         assert_no_overlays_local(["/etc", "/home", "/root", "/srv", "/tmp"])
         machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
-        before = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
-        before_base = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.base.nix")
+        before = machine.succeed("cat /mnt/data/etc/nixos/hardware-configuration.nix")
+        before_base = machine.succeed("cat /mnt/data/etc/nixos/hardware-configuration.base.nix")
         machine.succeed(f"{wrapper_env} nails --config {headless_config} activate --session keep -y")
         assert_status_state_local("Active", headless_config)
-        after = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
-        after_base = machine.succeed("cat /mnt/hidden-volume/etc/nixos/hardware-configuration.base.nix")
+        after = machine.succeed("cat /mnt/data/etc/nixos/hardware-configuration.nix")
+        after_base = machine.succeed("cat /mnt/data/etc/nixos/hardware-configuration.base.nix")
         assert after == before, "hidden wrapper changed on second activation (not idempotent)"
         assert after_base == before_base, "preserved base changed on second activation (not idempotent)"
 

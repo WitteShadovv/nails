@@ -83,7 +83,7 @@ in
 
     with subtest("prepare hidden module and capture decoy baseline"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed("""cat > /mnt/hidden-volume/config/nixos/configuration.nix <<'EOF'
+        machine.succeed("""cat > /mnt/data/config/nixos/configuration.nix <<'EOF'
     { ... }: {
       documentation.nixos.enable = false;
       environment.etc."nails-hidden-marker".text = "legacy-rebuild-active";
@@ -114,7 +114,7 @@ in
         assert_overlay_mounted_local("/home")
         machine.succeed("test -L /etc/nixos/nails/configuration.nix")
         symlink_target = machine.succeed("readlink -f /etc/nixos/nails/configuration.nix").strip()
-        assert symlink_target == "/mnt/hidden-volume/config/nixos/configuration.nix", \
+        assert symlink_target == "/mnt/data/config/nixos/configuration.nix", \
             f"Unexpected hidden config symlink target: {symlink_target!r}"
         machine.succeed("grep -Fx 'legacy-rebuild-active' /etc/nails-hidden-marker")
         active_generation_now, active_generation_target = current_system_generation()

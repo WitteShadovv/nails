@@ -33,7 +33,7 @@ in
     def write_fresh_home_config(path):
         machine.succeed(
             """cat > %s <<'EOF'
-    hidden_volume_root = "/mnt/hidden-volume"
+    hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
     risky_services = "skip"
 
@@ -43,8 +43,8 @@ in
     [[overlays]]
     name = "home"
     lower = "/home"
-    upper = "/mnt/hidden-volume/home"
-    work = "/mnt/hidden-volume/.work/home"
+    upper = "/mnt/data/home"
+    work = "/mnt/data/.work/home"
     target = "/home"
     EOF""" % path
         )
@@ -72,9 +72,9 @@ in
 
     with subtest("phase 3: hidden-session writes land on the hidden volume persona home"):
         machine.succeed("printf %s hidden-note > /home/testuser/hidden-note.txt")
-        machine.succeed("test -f /mnt/hidden-volume/persona/home/hidden-note.txt")
+        machine.succeed("test -f /mnt/data/persona/home/hidden-note.txt")
         # The decoy home is untouched by the hidden session's writes.
-        machine.fail("test -e /mnt/hidden-volume/home/hidden-note.txt")
+        machine.fail("test -e /mnt/data/home/hidden-note.txt")
 
     with subtest("phase 4: deactivation restores the decoy home"):
         machine.succeed(f"nails --config {config_path} emergency")

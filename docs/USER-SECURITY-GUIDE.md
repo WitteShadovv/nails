@@ -18,6 +18,7 @@ This guide provides essential security information for NAILS users. Read this do
   - [Why This Matters](#why-this-matters)
   - [Trusted Computing Base](#trusted-computing-base)
   - [Updating NAILS](#updating-nails)
+  - [Pre-Activation Residue](#pre-activation-residue)
 - [Standard vs Emergency Deactivation](#standard-vs-emergency-deactivation)
   - [When to Use Each](#when-to-use-each)
   - [Cleanup Comparison](#cleanup-comparison)
@@ -89,8 +90,8 @@ NAILS assumes the following adversary model:
 
 Correct setup:
 ```
-/mnt/hidden/nails              # Correct - binary on hidden volume
-/mnt/hidden/src/nails/         # Correct - source on hidden volume
+/mnt/data/nails              # Correct - binary on hidden volume
+/mnt/data/src/nails/         # Correct - source on hidden volume
 ```
 
 Incorrect (DANGEROUS) setup:
@@ -104,7 +105,7 @@ Incorrect (DANGEROUS) setup:
 
 The NAILS binary contains identifiable strings that reveal its purpose:
 
-- Path references: `/mnt/hidden`, `/tmp/nails.log`, `/var/log/nails.log`
+- Path references: `/mnt/data`, `/tmp/nails.log`, `/var/log/nails.log`
 - Status messages: `Run 'nails deactivate' to unmount overlays`
 - Environment variables: `NAILS_SKIP_DETACH`, `NAILS_DETACHED`
 - Process detection strings: `NAILS-related process is currently running`
@@ -118,7 +119,7 @@ The NAILS binary contains identifiable strings that reveal its purpose:
 
 **Correct workflow:**
 1. Open and mount the hidden volume first ([backends.md](./backends.md) lists the commands for each backend)
-2. Run the binary directly from the hidden volume: `sudo /mnt/hidden/nails activate`
+2. Run the binary directly from the hidden volume: `sudo /mnt/data/nails activate`
 3. Never copy the binary to the decoy filesystem
 
 ### Trusted Computing Base
@@ -175,6 +176,45 @@ disk:
    update as much as to a first install.
 4. **Re-read this guide after a version change**, since operational requirements
    can change between releases.
+
+### Pre-Activation Residue
+
+Unlocking and mounting the hidden volume happens **before** NAILS runs, so NAILS
+cannot clean up after it. The `cryptsetup` and `mount` commands you type, and the
+kernel work they trigger, leave traces on the decoy side regardless of how
+cleanly the session later deactivates. Treat these as your responsibility.
+
+First, **choose neutral names.** The device-mapper mapping name, the mount point
+and the filesystem label must not hint at hidden storage — use something like
+`data` and `/mnt/data`, never `hidden`, `veracrypt`, `tcrypt`, `decoy` or
+`nails`. Those strings surface in several places the overlay never touches, and
+the `hidden-volume` preflight check warns at activation when it finds one. The
+residue to account for:
+
+- **sudo command logging.** sudo records a `COMMAND=` line in the journal for
+  every privileged command, including the full `cryptsetup open …` and
+  `mount …` lines with the mapping name, label and container or device path.
+- **Kernel ring-buffer messages.** Opening a dm-crypt mapping and mounting the
+  filesystem emit kernel log lines (device-mapper table loads, the ext4 mount
+  banner) that name the mapping and the device; these reach the journal too.
+- **Generated systemd units.** systemd synthesises `.device` and `.mount` units
+  named after the mapping and the mount point (for example `mnt-data.mount`).
+  A telling mount point therefore becomes a telling unit name in
+  `systemctl list-units` and the journal.
+- **by-label and by-uuid symlinks.** udev creates `/dev/disk/by-label/<label>`
+  (and `/dev/mapper/<name>`) while the volume is open. A label such as
+  `hidden` is visible there to anyone listing the directory.
+- **Shell history.** The unlock and mount commands name the tool, the mapping
+  and the container path. Type them in a shell with history disabled, or scrub
+  them yourself; see [Shell History Protection](#shell-history-protection).
+
+For the journal and kernel-message residue, the fix is to keep the journal off
+persistent disk rather than to scrub it afterwards: configure journald with
+`Storage=volatile` (or put the journal on impermanent storage) so these lines
+never land on the decoy disk in the first place. See the "Common host traces"
+guidance in [backends.md](./backends.md). Do not rely on NAILS deactivation or
+cleanup to remove pre-activation journal entries — by design it does not touch
+them.
 
 ---
 
@@ -283,7 +323,7 @@ After deactivation, manually verify:
 
 ```bash
 # 1. Check no overlays are mounted
-findmnt | grep -E "overlay|/mnt/hidden"
+findmnt | grep -E "overlay|/mnt/data"
 
 # 2. Check shell history is clean
 cat ~/.bash_history  # Should be empty or contain only decoy commands
@@ -293,8 +333,8 @@ cat /root/.bash_history
 pgrep -f nails
 
 # 4. Check hidden volume is not mounted or open
-findmnt /mnt/hidden  # Should fail or print nothing
-test ! -e /dev/mapper/veracrypt-hidden
+findmnt /mnt/data  # Should fail or print nothing
+test ! -e /dev/mapper/data
 
 # 5. Check recently-used files (GNOME)
 cat ~/.local/share/recently-used.xbel | grep -i hidden
@@ -650,7 +690,7 @@ After deactivation completes:
 [ ] Manually check: cat ~/.bash_history
 [ ] Manually check: findmnt | grep overlay
 [ ] If using emergency/no-reboot cleanup and the backend is still mounted:
-    sudo umount /mnt/hidden && sudo cryptsetup close veracrypt-hidden
+    sudo umount /mnt/data && sudo cryptsetup close data
 [ ] Verify hidden backend is not mounted or open
 [ ] Check recently-used.xbel if using GNOME
 [ ] Review last hour of journal: journalctl --since "1 hour ago"
@@ -703,11 +743,11 @@ nails status
 
 ```bash
 # Check state file
-cat /mnt/hidden-volume/state.json
+cat /mnt/data/state.json
 
 # Force state reset (DANGEROUS - verify overlays are down first)
 findmnt | grep overlay  # Must be empty
-sudo rm /mnt/hidden-volume/state.json
+sudo rm /mnt/data/state.json
 
 # Re-run status
 nails status  # Should show INACTIVE
@@ -721,8 +761,8 @@ If you suspect incomplete cleanup occurred:
 
 ```bash
 # Unmount and close hidden volume immediately
-sudo umount /mnt/hidden
-sudo cryptsetup close veracrypt-hidden
+sudo umount /mnt/data
+sudo cryptsetup close data
 ```
 
 **2. Clean Residual Artifacts**
@@ -753,7 +793,7 @@ sudo systemctl reboot
 # After reboot, verify
 nails verify --deep
 cat ~/.bash_history  # Should be empty
-findmnt /mnt/hidden  # Should fail or print nothing
+findmnt /mnt/data  # Should fail or print nothing
 ```
 
 **4. Consider Reboot Cycle**

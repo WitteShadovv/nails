@@ -31,8 +31,8 @@ in
     config_path = "/tmp/nails-notify.toml"
     stub_dir = "/tmp/notify-stub/bin"
     stub_log = "/tmp/notify-send.log"
-    bad_path = "/mnt/hidden-volume/notifications/20260101T000000000_bad.json"
-    good_path = "/mnt/hidden-volume/notifications/20260101T000000001_good.json"
+    bad_path = "/mnt/data/notifications/20260101T000000000_bad.json"
+    good_path = "/mnt/data/notifications/20260101T000000001_good.json"
 
     with subtest("prepare signals and safe notify-send stub"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")

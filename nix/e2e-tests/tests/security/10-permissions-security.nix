@@ -35,7 +35,7 @@ in
     machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
     log_files = machine.succeed(
-      "find /var/log /mnt/hidden-volume/logs -type f "
+      "find /var/log /mnt/data/logs -type f "
       "\\( -name 'nails.log' -o -name 'nails*.log' \\) 2>/dev/null || true"
     ).strip()
 
@@ -54,7 +54,7 @@ in
 
     print("\n=== Test 2: Symlink rejection ===")
     machine.succeed("nails emergency")
-    machine.succeed("ln -sfn /mnt/hidden-volume /tmp/symlink-to-hidden")
+    machine.succeed("ln -sfn /mnt/data /tmp/symlink-to-hidden")
     machine.succeed("cp ${symlinkFixture} /tmp/symlink-config.toml")
 
     result = machine.execute("nails --config /tmp/symlink-config.toml activate --overlay-only --session keep -y 2>&1")

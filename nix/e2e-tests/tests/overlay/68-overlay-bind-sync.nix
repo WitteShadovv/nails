@@ -29,7 +29,7 @@ in
     config_path = "/tmp/nails-bind-sync.toml"
     write_srv_only_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed("mkdir -p /mnt/hidden-volume/srv /mnt/hidden-volume/.work/srv")
+    machine.succeed("mkdir -p /mnt/data/srv /mnt/data/.work/srv")
 
     with subtest("phase 1: create a bind-mounted subtree under the overlay target"):
         machine.succeed("mkdir -p /persist/srv/bind-source /srv/bind-source")
@@ -47,7 +47,7 @@ in
 
     with subtest("phase 3: current implementation writes into overlay upper, not the bind source"):
         machine.succeed("printf %s overlay-write > /srv/bind-source/overlay-write.txt")
-        machine.succeed("test -f /mnt/hidden-volume/srv/bind-source/overlay-write.txt")
+        machine.succeed("test -f /mnt/data/srv/bind-source/overlay-write.txt")
         machine.fail("test -e /persist/srv/bind-source/overlay-write.txt")
 
     with subtest("phase 4: emergency cleanup removes the overlay cleanly"):

@@ -31,15 +31,15 @@ in
 
     def write_build_target_config(path):
         write_text_file(path, """
-    hidden_volume_root = "/mnt/hidden-volume"
+    hidden_volume_root = "/mnt/data"
     nixos_flake = "relative/flake#test-host"
     overlay_mode = "explicit"
 
     [[overlays]]
     name = "home"
     lower = "/home"
-    upper = "/mnt/hidden-volume/home"
-    work = "/mnt/hidden-volume/.work/home"
+    upper = "/mnt/data/home"
+    work = "/mnt/data/.work/home"
     target = "/home"
     """.strip() + "\n")
 
@@ -61,9 +61,9 @@ in
         )
         assert_status_state("Inactive", config_path="/tmp/preflight-build-target.toml")
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
-        machine.fail("test -e /mnt/hidden-volume/home/testuser/.config/autostart/nails-notify.desktop")
-        machine.fail("test -e /mnt/hidden-volume/state.json")
-        machine.fail("test -e /mnt/hidden-volume/state")
+        machine.fail("test -e /mnt/data/home/testuser/.config/autostart/nails-notify.desktop")
+        machine.fail("test -e /mnt/data/state.json")
+        machine.fail("test -e /mnt/data/state")
 
     with subtest("a local flake without a committed flake.lock is rejected before any activation side effects"):
         # T-067: the pre-overlay flake preflight is static only and never invokes
@@ -75,14 +75,14 @@ in
         machine.succeed("mkdir -p /tmp/flake-target")
         machine.succeed("cat > /tmp/flake-target/flake.nix <<'EOF'\n{\n  outputs = _: {\n    nixosConfigurations.other-host = { };\n  };\n}\nEOF")
         write_text_file("/tmp/preflight-build-target.toml", "\n".join([
-            'hidden_volume_root = "/mnt/hidden-volume"',
+            'hidden_volume_root = "/mnt/data"',
             'nixos_flake = "/tmp/flake-target#test-host"',
             'overlay_mode = "explicit"',
             "[[overlays]]",
             'name = "home"',
             'lower = "/home"',
-            'upper = "/mnt/hidden-volume/home"',
-            'work = "/mnt/hidden-volume/.work/home"',
+            'upper = "/mnt/data/home"',
+            'work = "/mnt/data/.work/home"',
             'target = "/home"',
         ]) + "\n")
         result = run_command_capture(
@@ -96,7 +96,7 @@ in
             f"Expected a committed-flake.lock rejection in stderr, got: {stderr!r}"
         assert_status_state("Inactive", config_path="/tmp/preflight-build-target.toml")
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
-        machine.fail("test -e /mnt/hidden-volume/state")
+        machine.fail("test -e /mnt/data/state")
 
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';

@@ -104,11 +104,11 @@ Each release is built from an annotated version tag; `-rc.N` versions are marked
 ```bash
 # Open and mount hidden storage first
 sudo cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden \
-  "$HOME/Downloads/family_photos" veracrypt-hidden
-sudo mount /dev/mapper/veracrypt-hidden /mnt/hidden-volume
+  "$HOME/Downloads/family_photos" data
+sudo mount /dev/mapper/data /mnt/data
 
 # Install the release binary onto hidden storage
-install -m0755 /path/to/downloaded/nails /mnt/hidden-volume/nails
+install -m0755 /path/to/downloaded/nails /mnt/data/nails
 ```
 
 Verify the download before first use, as [`docs/verify-release.md`](docs/verify-release.md) describes: the checksum, the build provenance, and where to do it without leaving a trace on the decoy system. For higher assurance, rebuild the published source revision and compare it against the bundle using the reproducibility guidance in
@@ -121,17 +121,17 @@ The builds below are for upgrading an existing install, not for a first install.
 From source:
 
 ```bash
-git clone https://github.com/WitteShadovv/nails /mnt/hidden-volume/src/nails
-cd /mnt/hidden-volume/src/nails
+git clone https://github.com/WitteShadovv/nails /mnt/data/src/nails
+cd /mnt/data/src/nails
 cargo build --release
-install -m0755 ./target/release/nails /mnt/hidden-volume/nails
+install -m0755 ./target/release/nails /mnt/data/nails
 ```
 
 With Nix:
 
 ```bash
 nix build .#nails
-install -m0755 ./result/bin/nails /mnt/hidden-volume/nails
+install -m0755 ./result/bin/nails /mnt/data/nails
 ```
 
 > [!NOTE]
@@ -144,18 +144,23 @@ install -m0755 ./result/bin/nails /mnt/hidden-volume/nails
 
    ```bash
    sudo cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden \
-     "$HOME/Downloads/family_photos" veracrypt-hidden
-   sudo mount /dev/mapper/veracrypt-hidden /mnt/hidden-volume
+     "$HOME/Downloads/family_photos" data
+   sudo mount /dev/mapper/data /mnt/data
    ```
 
    This opens a VeraCrypt hidden volume stored in a file container. [docs/backends.md](docs/backends.md)
    has the commands for a whole-device VeraCrypt volume and for LUKS2, and the discard and
    timestamp hazards of each; never add `--allow-discards`.
 
+   Keep the mapping name, the mount point and the filesystem label neutral (the examples use
+   `data` and `/mnt/data`). None of them may hint at hidden storage: they surface in
+   `/dev/mapper`, `/dev/disk/by-label`, generated mount unit names and the journal, and NAILS
+   warns at activation when any of them contains a telling word.
+
 2. **Bootstrap the hidden layout** on the mounted backend.
 
    ```bash
-   nails init /mnt/hidden-volume
+   nails init /mnt/data
    ```
 
    `init` checks the target before writing anything and refuses a directory that is not a
@@ -168,7 +173,7 @@ install -m0755 ./result/bin/nails /mnt/hidden-volume/nails
 3. **Optionally review the generated config**.
 
    ```bash
-   $EDITOR /mnt/hidden-volume/config/nails.toml
+   $EDITOR /mnt/data/config/nails.toml
    nails config validate
    ```
 
@@ -177,7 +182,7 @@ install -m0755 ./result/bin/nails /mnt/hidden-volume/nails
    Example:
 
    ```toml
-   nixos_flake = "/mnt/hidden-volume/nixos#my-host"
+   nixos_flake = "/mnt/data/nixos#my-host"
    ```
 
    `nails config show` prints the effective configuration and where each value comes from;
@@ -188,7 +193,7 @@ install -m0755 ./result/bin/nails /mnt/hidden-volume/nails
    module.
 
    ```bash
-   $EDITOR /mnt/hidden-volume/config/nixos/configuration.nix
+   $EDITOR /mnt/data/config/nixos/configuration.nix
    ```
 
 5. **Activate the hidden environment**.

@@ -94,8 +94,8 @@ in
     print(f"✓ Status shows {status_json['state']['kind']} after activation")
 
     print("\n=== Test 7: Default hidden logs are created and surfaced ===")
-    machine.succeed("test -d /mnt/hidden-volume/logs")
-    machine.succeed("test -f /mnt/hidden-volume/logs/nails.log")
+    machine.succeed("test -d /mnt/data/logs")
+    machine.succeed("test -f /mnt/data/logs/nails.log")
     active_verbose = run_command_capture(
         "status-verify-active-verbose",
         f"nails --config {shlex.quote(headless_config)} status --details",
@@ -106,8 +106,8 @@ in
     print("✓ Default hidden log directory/file are created and visible via status --details")
 
     print("\n=== Test 8: Non-root status stays truthful on unreadable state ===")
-    machine.succeed("chown root:root /mnt/hidden-volume/state.json")
-    machine.succeed("chmod 600 /mnt/hidden-volume/state.json")
+    machine.succeed("chown root:root /mnt/data/state.json")
+    machine.succeed("chmod 600 /mnt/data/state.json")
     non_root = run_command_capture(
         "status-verify-non-root",
         "su - testuser -c "
@@ -120,7 +120,7 @@ in
     assert non_root_payload["security_posture"] == "warning", non_root_payload
     # The untrusted-load reason carries the specific failure.
     assert "Permission denied" in state["reason"], non_root_payload
-    assert "/mnt/hidden-volume/state.json" in state["reason"], non_root_payload
+    assert "/mnt/data/state.json" in state["reason"], non_root_payload
     assert_status_state("Active", config_path=headless_config)
     print("✓ Non-root status exits zero but reports permission failure explicitly")
 

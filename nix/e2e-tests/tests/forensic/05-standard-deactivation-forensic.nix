@@ -248,7 +248,7 @@ in
 
     print("\n--- Test 4.10: NAILS-related Mount Verification ---")
     mount_check = machine.succeed(
-        "mount | grep -E '(/mnt/hidden-volume|/mnt/nails-pivot|hidden-volume)' || echo 'CLEAN'"
+        "mount | grep -E '(/mnt/data|/mnt/nails-pivot|hidden-volume)' || echo 'CLEAN'"
     )
 
     if "CLEAN" not in mount_check:

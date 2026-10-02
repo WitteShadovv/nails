@@ -97,7 +97,7 @@ in
 
     with subtest("prepare hidden volume and capture baseline service timestamps"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed("""cat > /mnt/hidden-volume/config/nixos/configuration.nix <<'EOF'
+        machine.succeed("""cat > /mnt/data/config/nixos/configuration.nix <<'EOF'
     { ... }: {
       documentation.nixos.enable = false;
       environment.etc."nails-graphical-marker".text = "graphical-rebuild-active";

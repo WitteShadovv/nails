@@ -29,14 +29,14 @@ in
 
     def write_overlay_compat_config(path):
         write_text_file(path, """
-    hidden_volume_root = "/mnt/hidden-volume"
+    hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
 
     [[overlays]]
     name = "vfat-target"
     lower = "/mnt/vfat-target"
-    upper = "/mnt/hidden-volume/vfat-target"
-    work = "/mnt/hidden-volume/.work/vfat-target"
+    upper = "/mnt/data/vfat-target"
+    work = "/mnt/data/.work/vfat-target"
     target = "/mnt/vfat-target"
     """.strip() + "\n")
 

@@ -105,7 +105,7 @@ in
 
     with subtest("prepare broken hidden configuration"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed("""cat > /mnt/hidden-volume/config/nixos/configuration.nix <<'EOF'
+        machine.succeed("""cat > /mnt/data/config/nixos/configuration.nix <<'EOF'
     { ... }: {
       environment.etc."nails-broken-marker".text = ;
     }
@@ -139,9 +139,9 @@ in
         restored_run_current = run_current_system_target()
         assert restored_run_current == baseline_run_current, \
             f"Expected failed test rebuild to preserve decoy /run/current-system {baseline_run_current!r}, got {restored_run_current!r}"
-        state_payload = assert_active_state_file("/mnt/hidden-volume/state.json")
+        state_payload = assert_active_state_file("/mnt/data/state.json")
         assert state_payload.get("failed_overlays", []) == [], \
             f"Expected preserved activation to leave no failed overlay residue, got: {state_payload}"
-        machine.succeed("grep -R \"NixOS Rebuild Failed\" /mnt/hidden-volume/notifications")
+        machine.succeed("grep -R \"NixOS Rebuild Failed\" /mnt/data/notifications")
   '';
 }

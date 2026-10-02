@@ -49,22 +49,22 @@ in
     def write_partial_failure_config(path):
         machine.succeed(
             """cat > %s <<'EOF'
-    hidden_volume_root = "/mnt/hidden-volume"
+    hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
     risky_services = "skip"
 
     [[overlays]]
     name = "home"
     lower = "/home"
-    upper = "/mnt/hidden-volume/home"
-    work = "/mnt/hidden-volume/.work/home"
+    upper = "/mnt/data/home"
+    work = "/mnt/data/.work/home"
     target = "/home"
 
     [[overlays]]
     name = "doomed"
     lower = "/etc"
-    upper = "/mnt/hidden-volume/doomed"
-    work = "/mnt/hidden-volume/.work/doomed"
+    upper = "/mnt/data/doomed"
+    work = "/mnt/data/.work/doomed"
     target = "/state-rollback-missing-target"
     EOF"""
             % path
@@ -74,11 +74,11 @@ in
     machine.wait_for_unit("multi-user.target")
 
     config_path = "/tmp/state-guard-rollback.toml"
-    state_path = "/mnt/hidden-volume/state.json"
+    state_path = "/mnt/data/state.json"
 
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     write_partial_failure_config(config_path)
-    machine.succeed("mkdir -p /mnt/hidden-volume/doomed /mnt/hidden-volume/.work/doomed")
+    machine.succeed("mkdir -p /mnt/data/doomed /mnt/data/.work/doomed")
 
     with subtest("prepare deterministic mount failure after state transition"):
         machine.fail("test -e /state-rollback-missing-target")
@@ -112,22 +112,22 @@ in
     def write_post_mount_config(path):
         graphical.succeed(
             """cat > %s <<'EOF'
-    hidden_volume_root = "/mnt/hidden-volume"
+    hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
     risky_services = "skip"
 
     [[overlays]]
     name = "home"
     lower = "/home"
-    upper = "/mnt/hidden-volume/home"
-    work = "/mnt/hidden-volume/.work/home"
+    upper = "/mnt/data/home"
+    work = "/mnt/data/.work/home"
     target = "/home"
 
     [[overlays]]
     name = "etc"
     lower = "/etc"
-    upper = "/mnt/hidden-volume/etc"
-    work = "/mnt/hidden-volume/.work/etc"
+    upper = "/mnt/data/etc"
+    work = "/mnt/data/.work/etc"
     target = "/etc"
     EOF"""
             % path
@@ -155,7 +155,7 @@ in
 
         # The rollback persists Inactive once every overlay is unmounted.
         graphical.wait_until_succeeds(
-            "grep -q '\"state\": \"Inactive\"' /mnt/hidden-volume/state.json"
+            "grep -q '\"state\": \"Inactive\"' /mnt/data/state.json"
         )
 
         for path in ["/home", "/etc"]:
@@ -167,7 +167,7 @@ in
             )
 
         graphical_state = json.loads(
-            graphical.succeed("cat /mnt/hidden-volume/state.json")
+            graphical.succeed("cat /mnt/data/state.json")
         )
         assert graphical_state["state"] == "Inactive", (
             f"Expected decoy state after post-mount rollback, got: {graphical_state}"

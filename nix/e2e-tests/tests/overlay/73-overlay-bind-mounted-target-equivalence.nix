@@ -27,7 +27,7 @@ in
     config_path = "/tmp/nails-bind-mounted-target-equivalence.toml"
     write_srv_only_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed("mkdir -p /mnt/hidden-volume/srv /mnt/hidden-volume/.work/srv")
+    machine.succeed("mkdir -p /mnt/data/srv /mnt/data/.work/srv")
 
     with subtest("phase 1: create a bind-mounted target with a nested bind-mounted subtree"):
         machine.succeed("mkdir -p /persist/srv-real/store /srv/store")

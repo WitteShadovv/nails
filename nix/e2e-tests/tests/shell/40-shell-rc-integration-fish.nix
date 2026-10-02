@@ -58,8 +58,8 @@ in
         rc_contents = machine.succeed("cat " + rc_path)
         assert expected_lower in rc_contents, rc_contents
         assert "# >>> managed shell integration" in rc_contents, rc_contents
-        assert "source /mnt/hidden-volume/scripts/nails_prompt.fish" in rc_contents, rc_contents
-        assert "source /mnt/hidden-volume/scripts/nails_alias.fish" in rc_contents, rc_contents
+        assert "source /mnt/data/scripts/nails_prompt.fish" in rc_contents, rc_contents
+        assert "source /mnt/data/scripts/nails_alias.fish" in rc_contents, rc_contents
 
     with subtest("files written into the overlaid home belong to the operator"):
         assert_owned_by(rc_path, "testuser:users", "644")

@@ -99,7 +99,7 @@ in
 
     print("\n=== Comparing Mount States ===")
     mount_check = machine.succeed(
-        "grep -E '(/mnt/hidden-volume|/mnt/nails-pivot|overlay on /(etc|home|root|srv|tmp|var|opt|boot)( |$)|hidden-volume)' /tmp/mounts-final.txt || echo 'CLEAN'"
+        "grep -E '(/mnt/data|/mnt/nails-pivot|overlay on /(etc|home|root|srv|tmp|var|opt|boot)( |$)|hidden-volume)' /tmp/mounts-final.txt || echo 'CLEAN'"
     )
 
     if "CLEAN" not in mount_check:

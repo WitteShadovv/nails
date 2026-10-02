@@ -52,9 +52,9 @@ in
 
     print("\n=== Verifying active overlay detection ===")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed("mkdir -p /mnt/hidden-volume/home /mnt/hidden-volume/.work/home")
+    machine.succeed("mkdir -p /mnt/data/home /mnt/data/.work/home")
     machine.succeed(
-        "mount -t overlay overlay -o lowerdir=/home,upperdir=/mnt/hidden-volume/home,workdir=/mnt/hidden-volume/.work/home /home"
+        "mount -t overlay overlay -o lowerdir=/home,upperdir=/mnt/data/home,workdir=/mnt/data/.work/home /home"
     )
 
     status, payload = run_verify("--deep")
@@ -67,7 +67,7 @@ in
     print("\n=== Verifying post-overlay cleanup ===")
     machine.succeed("umount /home")
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
-    machine.succeed("rm -rf /mnt/hidden-volume")
+    machine.succeed("rm -rf /mnt/data")
 
     status, payload = run_verify("--deep")
     post_messages = [finding["message"] for finding in payload["findings"]]

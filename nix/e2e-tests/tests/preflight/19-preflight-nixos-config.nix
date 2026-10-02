@@ -28,14 +28,14 @@ in
 
     def write_nixos_config(path):
         write_text_file(path, """
-    hidden_volume_root = "/mnt/hidden-volume"
+    hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
 
     [[overlays]]
     name = "home"
     lower = "/home"
-    upper = "/mnt/hidden-volume/home"
-    work = "/mnt/hidden-volume/.work/home"
+    upper = "/mnt/data/home"
+    work = "/mnt/data/.work/home"
     target = "/home"
     """.strip() + "\n")
 
@@ -47,7 +47,7 @@ in
 
     with subtest("broken hidden hardware configuration import blocks activation"):
         write_text_file(
-            "/mnt/hidden-volume/etc/nixos/hardware-configuration.nix",
+            "/mnt/data/etc/nixos/hardware-configuration.nix",
             "{ config, pkgs, ... }: { boot.loader.grub.enable = false; }\n",
         )
         result = run_command_capture(
@@ -57,8 +57,8 @@ in
         assert_command_failed(result)
         assert_status_state("inactive", config_path=config_path)
         assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
-        machine.succeed("test -e /mnt/hidden-volume/config/nixos/configuration.nix")
-        machine.fail("grep -F './nails/configuration.nix' /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
+        machine.succeed("test -e /mnt/data/config/nixos/configuration.nix")
+        machine.fail("grep -F './nails/configuration.nix' /mnt/data/etc/nixos/hardware-configuration.nix")
 
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';

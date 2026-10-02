@@ -34,7 +34,7 @@ in
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     machine.succeed("mkdir -p /opt")
     machine.succeed(
-        "mkdir -p /mnt/hidden-volume/{root,tmp,srv,opt} /mnt/hidden-volume/.work/{root,tmp,srv,opt}"
+        "mkdir -p /mnt/data/{root,tmp,srv,opt} /mnt/data/.work/{root,tmp,srv,opt}"
     )
 
     with subtest("phase 1: activate all extended targets"):
@@ -52,10 +52,10 @@ in
         machine.succeed("printf %s tmp > /tmp/nails-tmp-marker")
         machine.succeed("printf %s srv > /srv/nails-srv-marker")
         machine.succeed("mkdir -p /opt/nails-test && printf %s opt > /opt/nails-test/marker")
-        machine.succeed("test -f /mnt/hidden-volume/var/nails-var-marker")
-        machine.succeed("test -f /mnt/hidden-volume/tmp/nails-tmp-marker")
-        machine.succeed("test -f /mnt/hidden-volume/srv/nails-srv-marker")
-        machine.succeed("test -f /mnt/hidden-volume/opt/nails-test/marker")
+        machine.succeed("test -f /mnt/data/var/nails-var-marker")
+        machine.succeed("test -f /mnt/data/tmp/nails-tmp-marker")
+        machine.succeed("test -f /mnt/data/srv/nails-srv-marker")
+        machine.succeed("test -f /mnt/data/opt/nails-test/marker")
 
     with subtest("phase 3: emergency cleanup unmounts every extended target"):
         machine.succeed(f"nails --config {config_path} emergency")

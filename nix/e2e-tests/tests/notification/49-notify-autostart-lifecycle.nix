@@ -64,9 +64,9 @@ in
     headless_config = "/tmp/nails-headless.toml"
     autostart_dir = "/home/testuser/.config/autostart"
     desktop_path = f"{autostart_dir}/nails-notify.desktop"
-    hidden_desktop_path = "/mnt/hidden-volume/home/testuser/.config/autostart/nails-notify.desktop"
-    hidden_nails = "/mnt/hidden-volume/nails"
-    queue_dir = "/mnt/hidden-volume/notifications"
+    hidden_desktop_path = "/mnt/data/home/testuser/.config/autostart/nails-notify.desktop"
+    hidden_nails = "/mnt/data/nails"
+    queue_dir = "/mnt/data/notifications"
     # Outside every overlay the headless config mounts, so the stub and its log
     # are the same files before and after activation.
     stub_dir = "/var/lib/notify-stub/bin"
