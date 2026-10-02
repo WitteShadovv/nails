@@ -36,6 +36,7 @@ in
     hidden_volume_root = "/mnt/hidden-volume"
     minimum_space_mb = 500
     overlay_mode = "explicit"
+    risky_services = "skip"
 
     [[overlays]]
     name = "home"

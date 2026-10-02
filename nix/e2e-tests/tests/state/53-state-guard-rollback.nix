@@ -40,6 +40,7 @@ in
             """cat > %s <<'EOF'
     hidden_volume_root = "/mnt/hidden-volume"
     overlay_mode = "explicit"
+    risky_services = "skip"
 
     [[overlays]]
     name = "home"

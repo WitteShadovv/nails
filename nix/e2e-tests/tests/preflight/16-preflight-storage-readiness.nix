@@ -32,6 +32,7 @@ in
         write_text_file(path, """
     hidden_volume_root = "/mnt/hidden-volume"
     overlay_mode = "explicit"
+    risky_services = "skip"
 
     [[overlays]]
     name = "home"

@@ -5,6 +5,7 @@
             """cat > %s <<'EOF'
     hidden_volume_root = "/mnt/hidden-volume"
     overlay_mode = "explicit"
+    risky_services = "skip"
 
     [[overlays]]
     name = "boot"
@@ -22,6 +23,7 @@
             """cat > %s <<'EOF'
     hidden_volume_root = "/mnt/hidden-volume"
     overlay_mode = "explicit"
+    risky_services = "skip"
 
     [[overlays]]
     name = "home"
@@ -53,6 +55,7 @@
             """cat > %s <<'EOF'
     hidden_volume_root = "/mnt/hidden-volume"
     overlay_mode = "explicit"
+    risky_services = "skip"
 
     [[overlays]]
     name = "srv"

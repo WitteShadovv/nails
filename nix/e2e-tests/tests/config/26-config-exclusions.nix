@@ -30,6 +30,7 @@ in
         write_text_file(path, """
     hidden_volume_root = "/mnt/hidden-volume"
     overlay_mode = "auto"
+    risky_services = "skip"
     overlay_exclusions = ["/opt", "/nix", "/var", "/tmp"]
     """.strip() + "\n")
 
