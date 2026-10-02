@@ -14,6 +14,8 @@ use super::overlay::{OverlayConfig, OverlayMode};
 use super::types::{Config, DEFAULT_HIDDEN_VOLUME_ROOT};
 use crate::filesystem::{MockFilesystem, PathKind};
 use crate::manager::NailsManager;
+use crate::nixos::NixOSBuilder;
+use crate::state::{StateFile, SystemState};
 
 impl Config {
     /// Create a deterministic test configuration
@@ -97,6 +99,9 @@ impl Config {
 pub struct TestWorld {
     fs: MockFilesystem,
     config: Option<Config>,
+    root: Option<PathBuf>,
+    nixos: Option<NixOSBuilder>,
+    state: Option<StateFile>,
     files: Vec<(String, String)>,
     dirs: Vec<String>,
     symlinks: Vec<String>,
@@ -108,10 +113,51 @@ impl TestWorld {
         Self {
             fs: MockFilesystem::new(),
             config: None,
+            root: None,
+            nixos: None,
+            state: None,
             files: Vec::new(),
             dirs: Vec::new(),
             symlinks: Vec::new(),
         }
+    }
+
+    /// Use a pre-built [`MockFilesystem`] instead of the empty one, for tests
+    /// that configure the mock before the manager exists.
+    pub fn with_filesystem(mut self, fs: MockFilesystem) -> Self {
+        self.fs = fs;
+        self
+    }
+
+    /// Root the default [`Config`] at a caller-owned directory instead of a
+    /// fresh temporary one. Ignored when [`with_config`](TestWorld::with_config)
+    /// supplies a full config.
+    pub fn with_hidden_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.root = Some(root.into());
+        self
+    }
+
+    /// Build the manager with a [`NixOSBuilder`] attached
+    /// (`NailsManager::with_nixos`) rather than the plain constructor.
+    pub fn with_nixos(mut self, builder: NixOSBuilder) -> Self {
+        self.nixos = Some(builder);
+        self
+    }
+
+    /// Seed the manager's cached state so a method under test sees a known
+    /// state without a state file being staged on disk.
+    pub fn with_state(mut self, state: StateFile) -> Self {
+        self.state = Some(state);
+        self
+    }
+
+    /// Seed the cached state as [`SystemState::Inactive`], the common starting
+    /// point for tests that drive a single transition.
+    pub fn inactive(self) -> Self {
+        self.with_state(StateFile {
+            state: SystemState::Inactive,
+            ..StateFile::default()
+        })
     }
 
     /// Stage a readable file with the given contents.
@@ -156,7 +202,10 @@ impl TestWorld {
         let tempdir = tempfile::tempdir().expect("create tempdir for TestWorld");
 
         let config = self.config.unwrap_or_else(|| {
-            let hidden_root = tempdir.path().to_path_buf();
+            let hidden_root = self
+                .root
+                .clone()
+                .unwrap_or_else(|| tempdir.path().to_path_buf());
             Config {
                 hidden_volume_root: hidden_root.clone(),
                 state_file_path: hidden_root.join("state.json"),
@@ -177,7 +226,13 @@ impl TestWorld {
         }
 
         let state_path = config.state_file_path.clone();
-        let manager = NailsManager::new(self.fs, config, state_path);
+        let manager = match self.nixos {
+            Some(builder) => NailsManager::with_nixos(self.fs, config, state_path, builder),
+            None => NailsManager::new(self.fs, config, state_path),
+        };
+        if let Some(state) = self.state {
+            manager.seed_cached_state(state);
+        }
         (manager, tempdir)
     }
 }
@@ -185,5 +240,55 @@ impl TestWorld {
 impl Default for TestWorld {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::filesystem::Filesystem;
+    use std::path::Path;
+
+    #[test]
+    fn with_hidden_root_roots_the_config_at_a_caller_owned_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, _tmp) = TestWorld::new().with_hidden_root(dir.path()).manager();
+        assert_eq!(manager.config().hidden_volume_root, dir.path());
+        assert_eq!(
+            manager.config().state_file_path,
+            dir.path().join("state.json")
+        );
+    }
+
+    #[test]
+    fn with_filesystem_keeps_a_prebuilt_mock() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_type("/srv/staged", PathKind::Dir);
+        let (manager, _tmp) = TestWorld::new().with_filesystem(fs).manager();
+        assert!(
+            manager
+                .filesystem()
+                .is_directory(Path::new("/srv/staged"))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn with_nixos_attaches_a_builder() {
+        let builder = NixOSBuilder::new(
+            PathBuf::from("/mnt/hidden/config"),
+            PathBuf::from("/mnt/hidden/nails-system"),
+        );
+        let (manager, _tmp) = TestWorld::new().with_nixos(builder).manager();
+        // The Debug output names the builder field only when one is attached.
+        assert!(format!("{manager:?}").contains("nixos_builder"));
+    }
+
+    #[test]
+    fn inactive_seeds_the_cached_state_without_a_state_file() {
+        let (manager, tmp) = TestWorld::new().inactive().manager();
+        // No state file was staged, yet the cached state reads back as Inactive.
+        assert!(!tmp.path().join("state.json").exists());
+        assert_eq!(manager.current_state().unwrap(), SystemState::Inactive);
     }
 }

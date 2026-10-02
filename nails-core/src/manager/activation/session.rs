@@ -143,9 +143,8 @@ impl<F: Filesystem> NailsManager<F> {
 mod tests {
     use super::*;
     use crate::process::session::tests_common::cleared_session_env;
-    use crate::{ActivateOptions, Config, MockFilesystem, process::SessionCommandExecutor};
+    use crate::{ActivateOptions, MockFilesystem, process::SessionCommandExecutor};
     use serial_test::serial;
-    use std::path::PathBuf;
 
     /// Mock executor that always returns false for loginctl_available
     /// The session context is determined by environment variables in these tests
@@ -169,17 +168,8 @@ mod tests {
         }
     }
 
-    fn make_manager() -> NailsManager<MockFilesystem> {
-        NailsManager::new(
-            MockFilesystem::new(),
-            Config::test_default(),
-            PathBuf::from("/tmp/nails-session-state.json"),
-        )
-    }
-
     #[test]
     fn handle_session_kill_returns_default_plan_when_disabled() {
-        let _manager = make_manager();
         let options = ActivateOptions::default();
         let executor = MockSessionCommandExecutor;
 

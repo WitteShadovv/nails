@@ -233,6 +233,17 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
+    /// Seed the in-memory cached state without writing a state file to disk.
+    ///
+    /// Test-support only. It lets a fixture put the manager into a known state
+    /// (for example [`SystemState::Inactive`](crate::SystemState::Inactive))
+    /// before exercising a method that reads or mutates the cache, without
+    /// having to stage a real state file first.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_cached_state(&self, state: crate::StateFile) {
+        *self.cached_state.borrow_mut() = Some(state);
+    }
+
     /// Set verbosity level for progress output
     ///
     /// Controls the amount of detail in progress messages during operations.

@@ -151,7 +151,7 @@ mod tests {
     use crate::filesystem::PathKind;
     use crate::nixos::{NixOSBuilder, RealCommandExecutor};
     use crate::test_support::EnvGuard;
-    use crate::{Config, MockFilesystem, StateFile, SystemState};
+    use crate::{MockFilesystem, StateFile, TestWorld};
     use serial_test::serial;
     use std::fs;
     use std::os::unix::fs::{PermissionsExt, symlink};
@@ -167,30 +167,6 @@ mod tests {
             "script should be executable: {}",
             path.display()
         );
-    }
-
-    fn make_manager(
-        fs: MockFilesystem,
-        hidden_root: &std::path::Path,
-        builder: NixOSBuilder,
-    ) -> NailsManager<MockFilesystem> {
-        let state_path = hidden_root.join("state.json");
-        let manager = NailsManager::with_nixos(
-            fs,
-            Config {
-                hidden_volume_root: hidden_root.to_path_buf(),
-                state_file_path: state_path.clone(),
-                overlays: vec![],
-                ..Config::test_default()
-            },
-            state_path,
-            builder,
-        );
-        *manager.cached_state.borrow_mut() = Some(StateFile {
-            state: SystemState::Inactive,
-            ..StateFile::default()
-        });
-        manager
     }
 
     #[test]
@@ -216,7 +192,12 @@ mod tests {
 
         let builder =
             NixOSBuilder::new(hidden_root.join("config"), hidden_root.join("nails-system"));
-        let manager = make_manager(fs, hidden_root, builder);
+        let (manager, _tempdir) = TestWorld::new()
+            .with_filesystem(fs)
+            .with_hidden_root(hidden_root)
+            .with_nixos(builder)
+            .inactive()
+            .manager();
 
         let err = manager
             .switch_nixos_profile(
@@ -272,7 +253,12 @@ mod tests {
         let builder =
             NixOSBuilder::new(hidden_root.join("config"), hidden_root.join("nails-system"))
                 .with_executor(Box::new(RealCommandExecutor::with_search_path(&bin_dir)));
-        let manager = make_manager(fs.clone(), hidden_root, builder);
+        let (manager, _tempdir) = TestWorld::new()
+            .with_filesystem(fs.clone())
+            .with_hidden_root(hidden_root)
+            .with_nixos(builder)
+            .inactive()
+            .manager();
 
         manager
             .switch_nixos_profile(
@@ -312,7 +298,12 @@ mod tests {
         let builder =
             NixOSBuilder::new(hidden_root.join("config"), hidden_root.join("nails-system"))
                 .with_executor(Box::new(RealCommandExecutor::with_search_path(&bin_dir)));
-        let manager = make_manager(MockFilesystem::new(), hidden_root, builder);
+        let (manager, _tempdir) = TestWorld::new()
+            .with_filesystem(MockFilesystem::new())
+            .with_hidden_root(hidden_root)
+            .with_nixos(builder)
+            .inactive()
+            .manager();
 
         let err = manager
             .switch_nixos_profile(&None, &Some("fp".to_string()), Verbosity::Quiet)

@@ -315,7 +315,7 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nails_core::{Config, MockFilesystem, NailsError, NailsManager, ShellSetupResult};
+    use nails_core::{NailsError, ShellSetupResult, TestWorld};
     use std::path::PathBuf;
 
     fn quiet_settings() -> OutputSettings {
@@ -323,12 +323,6 @@ mod tests {
             verbosity: nails_core::Verbosity::Quiet,
             ..OutputSettings::default()
         }
-    }
-
-    fn make_manager() -> NailsManager<MockFilesystem> {
-        let fs = MockFilesystem::new();
-        let config = Config::test_default();
-        NailsManager::new(fs, config, PathBuf::from("/tmp/test-state.json"))
     }
 
     fn make_shell_setup_rc_modified() -> ShellSetupResult {
@@ -371,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_json_success_no_shell() {
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         let output = build_activate_json_output(&Ok(()), 1.5, &manager, None);
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(output.event_type, "result");
@@ -387,7 +381,7 @@ mod tests {
 
     #[test]
     fn test_json_success_with_shell() {
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_rc_modified();
         let output = build_activate_json_output(&Ok(()), 2.3, &manager, Some(&setup));
         assert_eq!(output.event_type, "result");
@@ -397,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_json_preflight_failure() {
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         let err = NailsError::PreFlightCheckFailed(vec![
             ("hidden_volume".to_string(), "not mounted".to_string()),
             ("swap".to_string(), "swap enabled".to_string()),
@@ -417,7 +411,7 @@ mod tests {
         // A flake.lock problem is a pre-flight failure that has nothing to do
         // with mounting the hidden volume, so the remediation hint must not
         // claim it does; the specific guidance lives in the per-check reason.
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         let err = NailsError::PreFlightCheckFailed(vec![(
             "nixos-build-target".to_string(),
             "flake.lock not found in '/tmp/flake-target'. Activation does not run \
@@ -439,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_json_other_error() {
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         let err = NailsError::InvalidState("unexpected state".to_string());
         let output = build_activate_json_output(&Err(err), 0.5, &manager, None);
         assert_eq!(output.event_type, "result");
@@ -460,19 +454,19 @@ mod tests {
 
     #[test]
     fn test_human_success_no_shell() {
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         print_activate_human(&Ok(()), 1.5, &manager, None, &OutputSettings::default());
     }
 
     #[test]
     fn test_human_success_quiet() {
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         print_activate_human(&Ok(()), 1.5, &manager, None, &quiet_settings());
     }
 
     #[test]
     fn test_human_success_shell_rc_modified() {
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_rc_modified();
         print_activate_human(
             &Ok(()),
@@ -485,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_human_success_shell_no_rc() {
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_no_rc();
         print_activate_human(
             &Ok(()),
@@ -498,7 +492,7 @@ mod tests {
 
     #[test]
     fn test_human_success_shell_with_warning() {
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_with_warning();
         print_activate_human(
             &Ok(()),
@@ -511,14 +505,14 @@ mod tests {
 
     #[test]
     fn test_human_success_shell_quiet_suppresses_instructions() {
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_rc_modified();
         print_activate_human(&Ok(()), 1.0, &manager, Some(&setup), &quiet_settings());
     }
 
     #[test]
     fn test_human_preflight_failure() {
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         let err = NailsError::PreFlightCheckFailed(vec![(
             "hidden_volume".to_string(),
             "not mounted".to_string(),
@@ -528,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_human_other_error() {
-        let manager = make_manager();
+        let (manager, _tempdir) = TestWorld::new().manager();
         let err = NailsError::InvalidState("bad state".to_string());
         print_activate_human(&Err(err), 0.3, &manager, None, &OutputSettings::default());
     }
