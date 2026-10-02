@@ -37,6 +37,7 @@ This guide provides essential security information for NAILS users. Read this do
 - [Best Practices](#best-practices)
   - [Pre-Activation Checklist](#pre-activation-checklist)
   - [During Hidden Session](#during-hidden-session)
+  - [Overlay Copy-Up Cost and Upper Growth](#overlay-copy-up-cost-and-upper-growth)
   - [On-Screen Visibility Trade-offs](#on-screen-visibility-trade-offs)
   - [Post-Deactivation Verification](#post-deactivation-verification)
 - [Troubleshooting Common Issues](#troubleshooting-common-issues)
@@ -473,6 +474,51 @@ While operating in the hidden environment:
     sudo nails emergency
 [ ] Know your physical emergency procedure (power button hold)
 ```
+
+### Overlay Copy-Up Cost and Upper Growth
+
+Each overlaid directory gets a writable *upper* on the hidden volume. OverlayFS
+copies a lower file into that upper **in full** the first time you open it for
+writing, truncate it, or change its mode or owner — even a one-byte edit of a
+multi-gigabyte file copies the whole file. On a slow USB stick or an encrypted
+(VeraCrypt/LUKS) backend this copy-up can stall the program for seconds or
+minutes with no progress indication. Plan for it:
+
+- **Expect the first write to be slow** for large files (Nix database, browser
+  profiles, VM disk images). Subsequent writes hit the upper directly and are
+  fast.
+- **The upper only grows.** Every copied-up file and every deletion (stored as a
+  whiteout) stays on the hidden volume across sessions; deactivation does not
+  reclaim it. Watch the space with `nails status`, which now shows the hidden
+  volume's total, used and free space without scanning it.
+
+To keep the upper small and activation quick:
+
+- **Exclude bulky directories you do not need hidden.** List them under
+  `overlay_exclusions` in `nails.toml` so they are never overlaid and never
+  copied up. VM-image and large data directories are the usual candidates.
+- **Put caches on ephemeral tmpfs overlays.** Add directories such as
+  `~/.cache` to `extended_overlays` as tmpfs-backed layers: they live in RAM
+  during the session and vanish on deactivation, so cache churn never grows the
+  hidden volume and leaves no trace.
+- **Run maintenance inside the hidden session, not on the decoy.** Reclaim Nix
+  store space with `nix-collect-garbage -d` and clear application caches from
+  within the hidden environment; the freed space returns to the hidden volume.
+
+If a target's upper has accumulated cruft or you want it to fall back to the
+decoy lower, reset it **while deactivated**:
+
+```bash
+# The system must be Inactive and the target unmounted.
+sudo nails reset-upper /home
+```
+
+`reset-upper` lists what it will delete and asks for confirmation (`-y` skips
+the prompt). It deletes only that target's upper and work directories; it prunes
+no whiteouts automatically (that would resurrect files you deleted in earlier
+sessions) and never relocates `/nix/var` to tmpfs (that holds the hidden Nix
+database). Resetting `/nix` drops the hidden Nix store and database entirely, so
+`reset-upper` warns before doing it.
 
 ### On-Screen Visibility Trade-offs
 

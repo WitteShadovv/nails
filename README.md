@@ -71,6 +71,26 @@ NAILS is designed for a narrow threat model and operational style.
 - Your backend must remain mounted for the full hidden session and through deactivation.
 - A clean `nails verify` result is evidence for known/common artifacts, **not proof** that no trace remains.
 
+### Hidden-volume space and overlay copy-up
+
+OverlayFS copies a lower file into the hidden upper **in full** the first time it
+is written, truncated, or re-chmod/chowned, so the first write to a large file
+(Nix database, browser profile, VM image) can stall on a slow or encrypted
+backend, and the upper only grows across sessions — deactivation never reclaims
+it. To keep activation fast and the volume small:
+
+- watch usage with `nails status`, which reports the hidden volume's total, used
+  and free space without scanning it;
+- keep bulky directories out of the overlay with `overlay_exclusions`, and put
+  caches on RAM-backed `extended_overlays` tmpfs layers;
+- run `nix-collect-garbage -d` and clear caches **inside** the hidden session;
+- while deactivated, roll a target back to its decoy lower with
+  `sudo nails reset-upper <TARGET>` (it confirms first, prunes no whiteouts
+  automatically, and warns that resetting `/nix` drops the hidden Nix store).
+
+See [docs/USER-SECURITY-GUIDE.md](docs/USER-SECURITY-GUIDE.md) for the full
+maintenance guidance.
+
 ## Installation
 
 ### Option 1: Use the latest published GitHub release bundle
@@ -189,8 +209,9 @@ install -m0755 ./result/bin/nails /mnt/hidden/nails
 | `sudo nails activate` | Activate the hidden environment |
 | `sudo nails deactivate` | Return to decoy state and reboot |
 | `sudo nails emergency` | Remove overlays without waiting for a reboot |
-| `nails status` | Show current state and security posture |
+| `nails status` | Show current state, security posture, and hidden-volume disk usage |
 | `nails verify` | Scan for known/common host artifacts after deactivation |
+| `sudo nails reset-upper <TARGET>` | Delete a target's persistent overlay upper (while deactivated) |
 | `nails notify-dispatch` | Dispatch pending desktop notifications on login |
 | `nails config path\|show\|validate` | Locate, inspect or check the configuration file |
 
