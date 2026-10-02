@@ -330,6 +330,44 @@ impl<F: Filesystem> NailsManager<F> {
             .map(crate::platform::platform_for::<F>)
     }
 
+    /// The declarative hidden-config layer for this host, if it has one.
+    ///
+    /// Mirrors [`Platform::config_layer`](crate::platform::Platform::config_layer)
+    /// — `Some` only on NixOS — without constructing a backend, so it stays free
+    /// of the `'static` bound the boxed trait object needs and can be called on
+    /// every activation path. When no host profile has been detected (unit tests,
+    /// or a caller that skips detection) it assumes the NixOS seam, preserving the
+    /// historical behaviour where a configured builder meant NixOS work.
+    ///
+    /// The staging, fingerprint, `/etc` import, build and switch steps all run
+    /// through the returned layer and are skipped entirely when it is `None`, so a
+    /// Debian/Ubuntu (or any FHS) host never touches `/etc/nixos`, `nixos-rebuild`
+    /// or `switch-to-configuration`.
+    pub(crate) fn config_layer(&self) -> Option<crate::platform::NixOsConfigLayer> {
+        let has_layer = match self.host_profile.as_ref() {
+            Some(profile) => profile.has_config_layer(),
+            None => true,
+        };
+        has_layer.then_some(crate::platform::NixOsConfigLayer)
+    }
+
+    /// Stage the complete hidden declarative config through the platform config
+    /// layer.
+    ///
+    /// The CLI calls this before the session kill and detach so staging output
+    /// stays visible on the terminal; the detached worker re-stages through the
+    /// same layer in its pre-flight phase, so both processes take the identical
+    /// gate. A no-op when the host has no config layer (FHS / Debian) or in
+    /// overlay-only mode — both are "no layer", so the hidden `/etc/nixos` tree is
+    /// never touched there.
+    pub fn stage_hidden_config(&self, overlay_only: bool) -> Result<()> {
+        use crate::platform::ConfigLayer;
+        if let Some(layer) = self.config_layer().filter(|_| !overlay_only) {
+            layer.stage(&self.filesystem, &self.config.hidden_volume_root, false)?;
+        }
+        Ok(())
+    }
+
     /// Unmount overlays in reverse order (LIFO)
     ///
     /// Unmounts overlays in reverse of mount order to respect dependencies.

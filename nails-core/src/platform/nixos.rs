@@ -4,14 +4,11 @@
 //! deactivation path. For now it owns the base-system restore step; the overlay
 //! mount hooks and build-target selection move behind it in their owning chunks.
 
-use std::path::Path;
-
-use super::{OverlayPolicy, Platform, PlatformKind, RestoreOutcome};
+use super::config_layer::restore_decoy_system;
+use super::{ConfigLayer, NixOsConfigLayer, OverlayPolicy, Platform, PlatformKind, RestoreOutcome};
+use crate::Result;
 use crate::filesystem::Filesystem;
-use crate::manager::{ensure_run_current_system_symlink, select_system_profile};
-use crate::nixos::SwitchAction;
-use crate::process::{ProcessCommand, ProcessRunner};
-use crate::{NailsError, Result};
+use crate::process::ProcessRunner;
 
 /// Directories NixOS exposes host tools under.
 const NIXOS_COMMAND_DIRS: &[&str] = &["/run/current-system/sw/bin", "/run/wrappers/bin"];
@@ -31,6 +28,13 @@ impl<F: Filesystem> Platform<F> for NixOsPlatform {
 
     fn host_command_dirs(&self) -> &'static [&'static str] {
         NIXOS_COMMAND_DIRS
+    }
+
+    fn config_layer(&self) -> Option<Box<dyn ConfigLayer<F>>>
+    where
+        F: 'static,
+    {
+        Some(Box::new(NixOsConfigLayer))
     }
 
     /// Return the host to the decoy generation on deactivation.
@@ -58,75 +62,16 @@ impl<F: Filesystem> Platform<F> for NixOsPlatform {
         reboot_follows: bool,
         dispatch_reboot: &dyn Fn() -> Result<()>,
     ) -> Result<RestoreOutcome> {
-        let system_profile = select_system_profile(fs)?.ok_or_else(|| {
-            NailsError::NixOSError("No system profile available for decoy restore".into())
-        })?;
-
-        tracing::info!("Restoring /run/current-system to the decoy profile...");
-        ensure_run_current_system_symlink(fs, &system_profile).map_err(|e| {
-            NailsError::NixOSError(format!(
-                "Failed to restore /run/current-system to the decoy profile: {e}"
-            ))
-        })?;
-
-        if !reboot_follows {
-            return Ok(RestoreOutcome::SymlinkRestored);
-        }
-
-        match dispatch_reboot() {
-            Ok(()) => Ok(RestoreOutcome::SymlinkRestored),
-            Err(reboot_error) => {
-                tracing::warn!(
-                    error = %reboot_error,
-                    "Reboot command failed; restoring the decoy for the running session with switch-to-configuration test"
-                );
-                switch_to_decoy_for_session(fs, runner, &system_profile)?;
-                Ok(RestoreOutcome::FellBackToSessionSwitch)
-            }
-        }
-    }
-}
-
-/// Run the decoy generation's `switch-to-configuration test` through the shared
-/// process runner (reboot fallback only).
-fn switch_to_decoy_for_session<F: Filesystem>(
-    fs: &F,
-    runner: &dyn ProcessRunner,
-    system_profile: &Path,
-) -> Result<()> {
-    let switch_script = system_profile.join("bin/switch-to-configuration");
-    if !fs.path_exists(&switch_script)? {
-        return Err(NailsError::NixOSError(format!(
-            "System profile switch script missing: {}",
-            switch_script.display()
-        )));
-    }
-
-    // No deadline and a progress heartbeat: a `switch-to-configuration` must run
-    // to completion, never be killed part-way.
-    let command = ProcessCommand::exact(&switch_script).arg(SwitchAction::Test.as_arg());
-    let (succeeded, _stdout, stderr) = runner.run_streaming_text(
-        &command,
-        crate::process::run::BUILD_PROGRESS_INTERVAL,
-        &mut |elapsed| {
-            tracing::info!(
-                "still restoring the decoy configuration, {}",
-                crate::process::run::format_elapsed(elapsed)
-            );
-        },
-    )?;
-    if succeeded {
-        Ok(())
-    } else {
-        Err(NailsError::NixOSError(format!(
-            "Decoy session switch failed: {stderr}"
-        )))
+        // The decoy restore is the config layer's `restore`; the platform and the
+        // layer share one implementation so they can never diverge.
+        restore_decoy_system(fs, runner, reboot_follows, dispatch_reboot)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NailsError;
     use crate::filesystem::{MockFilesystem, PathKind};
     use crate::process::run::{MockProcessRunner, exited};
     use crate::test_support::EnvGuard;

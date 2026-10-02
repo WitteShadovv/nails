@@ -4,7 +4,7 @@
 //! standing up os-release fixtures or a real backend, so manager, overlay and
 //! state tests can run against a platform directly.
 
-use super::{OverlayPolicy, Platform, PlatformKind, RestoreOutcome};
+use super::{ConfigLayer, NixOsConfigLayer, OverlayPolicy, Platform, PlatformKind, RestoreOutcome};
 use crate::Result;
 use crate::filesystem::Filesystem;
 use crate::process::ProcessRunner;
@@ -15,6 +15,7 @@ pub struct FakePlatform {
     kind: PlatformKind,
     overlay_policy: OverlayPolicy,
     restore_outcome: RestoreOutcome,
+    has_config_layer: bool,
 }
 
 impl Default for FakePlatform {
@@ -23,6 +24,7 @@ impl Default for FakePlatform {
             kind: PlatformKind::Fhs,
             overlay_policy: OverlayPolicy::Fhs,
             restore_outcome: RestoreOutcome::NotRequired,
+            has_config_layer: false,
         }
     }
 }
@@ -39,6 +41,8 @@ impl FakePlatform {
             kind,
             overlay_policy,
             restore_outcome: RestoreOutcome::NotRequired,
+            // Only NixOS carries a declarative config layer by default.
+            has_config_layer: kind == PlatformKind::NixOs,
         }
     }
 
@@ -64,6 +68,12 @@ impl FakePlatform {
         self.restore_outcome = outcome;
         self
     }
+
+    /// Override whether the fake reports a declarative config layer.
+    pub fn with_config_layer(mut self, has_config_layer: bool) -> Self {
+        self.has_config_layer = has_config_layer;
+        self
+    }
 }
 
 impl<F: Filesystem> Platform<F> for FakePlatform {
@@ -77,6 +87,14 @@ impl<F: Filesystem> Platform<F> for FakePlatform {
 
     fn host_command_dirs(&self) -> &'static [&'static str] {
         &["/usr/bin", "/bin"]
+    }
+
+    fn config_layer(&self) -> Option<Box<dyn ConfigLayer<F>>>
+    where
+        F: 'static,
+    {
+        self.has_config_layer
+            .then(|| Box::new(NixOsConfigLayer) as Box<dyn ConfigLayer<F>>)
     }
 
     fn restore_base_system(

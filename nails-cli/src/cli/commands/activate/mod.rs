@@ -287,11 +287,10 @@ pub fn execute(
 
         {
             let mgr = &manager;
-            if let Err(e) = nails_core::stage_hidden_nixos_config(
-                mgr.filesystem(),
-                &mgr.config().hidden_volume_root,
-                overlay_only,
-            ) {
+            // Route staging through the platform config layer so a host without one
+            // (FHS / Debian) and an overlay-only run stage nothing: the hidden
+            // `/etc/nixos` tree is only touched on a host that has a config layer.
+            if let Err(e) = mgr.stage_hidden_config(overlay_only) {
                 tracing::error!(
                     error = %e,
                     "Failed to stage hidden NixOS config before detach-safe pre-flight checks"

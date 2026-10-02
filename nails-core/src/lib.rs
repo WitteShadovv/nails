@@ -137,8 +137,8 @@ pub use manager::{
 pub use manager::{SimulatedHostEffects, SimulatedReboot};
 // Platform seam exports
 pub use platform::{
-    HostProfile, HostTarget, OverlayPolicy, Platform, PlatformKind, RestoreOutcome, detect,
-    detect_platform, discover_host_target, platform_for,
+    ConfigLayer, ConfigPlan, HostProfile, HostTarget, NixOsConfigLayer, OverlayPolicy, Platform,
+    PlatformKind, RestoreOutcome, detect, detect_platform, discover_host_target, platform_for,
 };
 pub use target_user::TargetUser;
 

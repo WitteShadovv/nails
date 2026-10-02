@@ -17,9 +17,9 @@ use super::{
     MountInfo, MountTracker, MountType, build_overlay_targets, clean_stale_network_config,
     create_overlay_config, start_service_and_socket,
 };
+use crate::platform::ConfigLayer;
 use crate::{
     FailedOverlayInfo, Filesystem, NailsError, NailsManager, OverlayInfo, Result, Verbosity,
-    inject_import_block,
 };
 use chrono::Utc;
 use std::path::{Path, PathBuf};
@@ -202,11 +202,14 @@ impl<F: Filesystem> NailsManager<F> {
 
         tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
 
-        // After /etc overlay is mounted, inject the
-        // NAILS import block into the overlayed hardware-configuration.nix.
-        // Writes land in the upper layer — the base underlay is untouched.
+        // After /etc overlay is mounted, inject the NAILS import block into the
+        // overlayed hardware-configuration.nix. Writes land in the upper layer —
+        // the base underlay is untouched. The injection is a declarative-config
+        // step, so it runs through the platform config layer and is skipped on a
+        // host without one (FHS / Debian), where there is no hidden NixOS config.
         if overlay.target == Path::new("/etc")
-            && let Err(e) = inject_import_block(&self.filesystem)
+            && let Some(layer) = self.config_layer()
+            && let Err(e) = layer.inject_import(&self.filesystem)
         {
             tracing::error!(
                 error = %e,

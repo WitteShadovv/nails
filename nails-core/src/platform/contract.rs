@@ -15,7 +15,7 @@ use crate::process::run::MockProcessRunner;
 use crate::test_support::EnvGuard;
 
 /// Assert the invariants that hold for every backend.
-fn assert_contract<F: Filesystem, P: Platform<F>>(platform: &P, fs: &F) {
+fn assert_contract<F: Filesystem + 'static, P: Platform<F>>(platform: &P, fs: &F) {
     // `restore_base_system` resolves the decoy system profile through the
     // process environment (`NAILS_SYSTEM_PROFILE_PATH`), so take the environment
     // lock with that override cleared. Otherwise a deactivation test elsewhere
@@ -38,6 +38,13 @@ fn assert_contract<F: Filesystem, P: Platform<F>>(platform: &P, fs: &F) {
     assert_eq!(
         platform.host_command_dirs().is_empty(),
         kind == PlatformKind::Unsupported,
+    );
+
+    // Only NixOS carries a declarative config layer; FHS and refused hosts have
+    // none, so "overlay-only" is "no layer" rather than a parallel code path.
+    assert_eq!(
+        platform.config_layer().is_some(),
+        kind == PlatformKind::NixOs,
     );
 
     // Restoring the base system after a dispatched reboot shells out to nothing.

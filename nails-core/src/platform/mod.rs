@@ -34,6 +34,7 @@ use crate::Result;
 use crate::filesystem::Filesystem;
 use crate::process::ProcessRunner;
 
+mod config_layer;
 mod detect;
 mod discover;
 mod fhs;
@@ -46,6 +47,7 @@ mod fake;
 #[cfg(test)]
 mod contract;
 
+pub use config_layer::{ConfigLayer, ConfigPlan, NixOsConfigLayer};
 pub use detect::detect;
 pub use discover::{HostTarget, discover_host_target};
 pub use fhs::FhsPlatform;
@@ -152,6 +154,17 @@ impl HostProfile {
         let id_is_debian = matches!(self.id.as_deref(), Some("debian") | Some("ubuntu"));
         id_is_debian || self.id_like.iter().any(|token| token == "debian")
     }
+
+    /// Whether this host carries a declarative [`ConfigLayer`].
+    ///
+    /// Only NixOS does; FHS / `DebianFamily` and refused hosts have no
+    /// `nixos-rebuild`, `switch-to-configuration` or `/run/current-system` to
+    /// drive one. This is the fact [`Platform::config_layer`] turns into a backend
+    /// object, exposed on the profile so the manager can take the same decision
+    /// without constructing a backend.
+    pub fn has_config_layer(&self) -> bool {
+        self.kind == PlatformKind::NixOs
+    }
 }
 
 /// Host-specific decisions, chosen once per run.
@@ -169,6 +182,20 @@ pub trait Platform<F: Filesystem>: std::fmt::Debug + Send + Sync {
 
     /// Directories searched, in order, for host tools on this platform.
     fn host_command_dirs(&self) -> &'static [&'static str];
+
+    /// The declarative hidden-config layer for this host, if it has one.
+    ///
+    /// Returns `Some` only on NixOS; FHS / `DebianFamily` and refused hosts have
+    /// no `nixos-rebuild`, `switch-to-configuration` or `/run/current-system`, so
+    /// they return `None` and the manager skips hidden-config staging,
+    /// fingerprinting, the `/etc` import, the build and the switch entirely.
+    /// "Overlay-only" is therefore "no layer", not a parallel code path.
+    fn config_layer(&self) -> Option<Box<dyn ConfigLayer<F>>>
+    where
+        F: 'static,
+    {
+        None
+    }
 
     /// Restore the base (decoy) system during deactivation.
     ///

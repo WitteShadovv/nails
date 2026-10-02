@@ -10,27 +10,30 @@
 //! 3. Persist the resulting generation and fingerprint.
 
 use super::{ensure_run_current_system_symlink, select_system_profile};
-use crate::nixos::SwitchAction;
-use crate::{
-    Filesystem, NailsError, NailsManager, Result, Stopwatch, Verbosity,
-    classify_nixos_failure_category, format_classified_nixos_failure,
-};
+use crate::platform::ConfigLayer;
+use crate::{Filesystem, NailsError, NailsManager, Result, Verbosity};
 
 impl<F: Filesystem> NailsManager<F> {
     /// Switch NixOS profile — unified for flake and legacy (Step 9).
+    ///
+    /// The build and switch themselves run through the platform
+    /// [`ConfigLayer`](crate::platform::ConfigLayer): a host without a layer (FHS /
+    /// Debian, or an overlay-only run) skips them entirely, so `nixos-rebuild` and
+    /// `switch-to-configuration` never run there. The manager keeps ownership of
+    /// the `/run/current-system` preparation and of persisting the resulting
+    /// generation + fingerprint into its state cache.
     pub(super) fn switch_nixos_profile(
         &self,
         generation: &Option<String>,
         new_fingerprint: &Option<String>,
         verbosity: Verbosity,
     ) -> Result<()> {
-        if self.nixos_builder.is_none() {
+        let Some(layer) = self.config_layer() else {
             return Ok(());
-        }
-
-        if verbosity >= Verbosity::Normal {
-            tracing::info!("Switching to hidden NixOS configuration...");
-        }
+        };
+        let Some(builder) = self.nixos_builder.as_ref() else {
+            return Ok(());
+        };
 
         // Ensure /run/current-system points at the right profile.
         if let Some(system_profile) = select_system_profile(&self.filesystem)? {
@@ -42,86 +45,9 @@ impl<F: Filesystem> NailsManager<F> {
             })?;
         }
 
-        let step_timer = Stopwatch::start();
-        let builder = self.nixos_builder.as_ref().unwrap();
-
-        // --- Fast path: try switching to cached generation directly -------
-        // Both flake and legacy slow-paths use `nixos-rebuild test` which
-        // writes to the system profile, so the cached generation ID is always
-        // a system generation number.
-        let mut switched = false;
-        if let Some(generation_id) = generation {
-            if verbosity >= Verbosity::Normal {
-                tracing::info!(
-                    generation = %generation_id,
-                    "Attempting fast-path switch-to-configuration"
-                );
-            }
-
-            match builder.switch_system_generation(generation_id, SwitchAction::Test) {
-                Ok(()) => {
-                    switched = true;
-                    if verbosity >= Verbosity::Normal {
-                        tracing::info!(
-                            step = "nixos_switch",
-                            duration_ms = step_timer.elapsed().as_millis() as u64,
-                            "NixOS switch complete via fast path ({})",
-                            step_timer
-                        );
-                    }
-                }
-                Err(e) => {
-                    if verbosity >= Verbosity::Normal {
-                        tracing::warn!(
-                            error = %e,
-                            "Fast-path switch failed, falling back to nixos-rebuild"
-                        );
-                    }
-                }
-            }
-        }
-
-        // --- Slow path: nixos-rebuild test (build + switch) ---------------
-        if !switched {
-            builder.build_and_switch().map_err(|e| {
-                let error_msg = match &e {
-                    NailsError::NixOSError(message) => {
-                        let category = classify_nixos_failure_category(message, "");
-                        format!(
-                            "NixOS build+switch failed: [{}] {}",
-                            category,
-                            format_classified_nixos_failure(
-                                "nixos-rebuild test failed",
-                                message,
-                                ""
-                            )
-                        )
-                    }
-                    other => format!("NixOS build+switch failed: {}", other),
-                };
-
-                tracing::error!(
-                    error = %e,
-                    phase = "nixos_switch",
-                    rollback = true,
-                    "NixOS build+switch failed"
-                );
-
-                match e {
-                    NailsError::NixOSError(_) => NailsError::NixOSError(error_msg),
-                    other => other,
-                }
-            })?;
-
-            if verbosity >= Verbosity::Normal {
-                tracing::info!(
-                    step = "nixos_switch",
-                    duration_ms = step_timer.elapsed().as_millis() as u64,
-                    "NixOS build+switch complete ({})",
-                    step_timer
-                );
-            }
-        }
+        // Build and switch to the hidden configuration through the config layer.
+        // `apply` takes no filesystem argument, so name the layer's `F` explicitly.
+        ConfigLayer::<F>::apply(&layer, builder, generation.as_deref(), verbosity)?;
 
         // --- Persist generation + fingerprint -----------------------------
         let mut cached = self.cached_state.borrow_mut();

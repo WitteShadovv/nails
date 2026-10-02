@@ -4,6 +4,7 @@
 
 use crate::cleanup::history::HistoryCleaner;
 use crate::cleanup::patterns;
+use crate::platform::ConfigLayer;
 use crate::preflight::OverlayTargetsCheck;
 use crate::{
     AttachState, Filesystem, HiddenRoot, NailsError, NailsManager, PreFlightCheck, Result,
@@ -72,34 +73,38 @@ impl<F: Filesystem> NailsManager<F> {
             // exact harm this chunk exists to prevent. Honour the gate here too,
             // as a best-effort skip (every step in this branch is best-effort):
             // stage only when the hidden root is positively attached, otherwise
-            // warn and leave the directory untouched.
-            match HiddenRoot::verify_attached(
-                &self.filesystem,
-                &self.config.hidden_volume_root,
-                false,
-            ) {
-                Ok(AttachState::Attached) => {
-                    if let Err(e) = crate::stage_hidden_config_symlink(
-                        &self.filesystem,
-                        &self.config.hidden_volume_root,
-                    ) {
+            // warn and leave the directory untouched. The staging itself is a
+            // declarative-config step: it runs through the platform config layer
+            // and is skipped on a host without one (FHS / Debian) and in
+            // overlay-only mode, which is "no layer" rather than a parallel path.
+            if let Some(layer) = self.config_layer().filter(|_| !overlay_only) {
+                match HiddenRoot::verify_attached(
+                    &self.filesystem,
+                    &self.config.hidden_volume_root,
+                    false,
+                ) {
+                    Ok(AttachState::Attached) => {
+                        if let Err(e) =
+                            layer.stage_symlink(&self.filesystem, &self.config.hidden_volume_root)
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "Skipping staged config failure due to --no-preflight (activation may not use hidden config)"
+                            );
+                        }
+                    }
+                    Ok(AttachState::Unattached(reason)) => {
                         tracing::warn!(
-                            error = %e,
-                            "Skipping staged config failure due to --no-preflight (activation may not use hidden config)"
+                            %reason,
+                            "Hidden root is not attached; skipping config staging (--no-preflight)"
                         );
                     }
-                }
-                Ok(AttachState::Unattached(reason)) => {
-                    tracing::warn!(
-                        %reason,
-                        "Hidden root is not attached; skipping config staging (--no-preflight)"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Could not verify hidden-root attach state; skipping config staging (--no-preflight)"
-                    );
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "Could not verify hidden-root attach state; skipping config staging (--no-preflight)"
+                        );
+                    }
                 }
             }
 
@@ -159,12 +164,13 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Stage the hidden NixOS layout (module symlink plus the hardware
         // wrapper) before the read-only pre-flight checks run. The checks no
-        // longer create these files, so staging must produce them here.
-        if let Err(e) = crate::stage_hidden_nixos_config(
-            &self.filesystem,
-            &self.config.hidden_volume_root,
-            overlay_only,
-        ) {
+        // longer create these files, so staging must produce them here. Staging
+        // is a declarative-config step, so it runs through the platform config
+        // layer and is skipped on a host without one (FHS / Debian) and in
+        // overlay-only mode, which is "no layer" rather than a parallel path.
+        if let Some(layer) = self.config_layer().filter(|_| !overlay_only)
+            && let Err(e) = layer.stage(&self.filesystem, &self.config.hidden_volume_root, false)
+        {
             tracing::error!(
                 error = %e,
                 "Failed to stage hidden NixOS config after early pre-flight checks"
@@ -443,7 +449,10 @@ mod tests {
 
     /// With `--no-preflight` and an attached root, staging proceeds: the gate's
     /// positive branch is reached and the hidden config symlink is created. This
-    /// proves the skip above is the gate acting, not staging failing anyway.
+    /// proves the skip above is the gate acting, not staging failing anyway. The
+    /// run is not overlay-only, because overlay-only is "no config layer" and so
+    /// stages nothing; with no detected host profile the manager assumes the NixOS
+    /// seam, so a config layer is present.
     #[test]
     fn preflight_phase_stages_for_attached_root_under_no_preflight() {
         use crate::filesystem::PathKind;
@@ -461,12 +470,150 @@ mod tests {
 
         let staged = root.join("etc/nixos/nails/configuration.nix");
         manager
-            .run_preflight_phase(true, true, Verbosity::Normal, false)
+            .run_preflight_phase(true, false, Verbosity::Normal, false)
             .expect("an attached root passes the preflight phase");
 
         assert!(
             fs.is_symlink(&staged).unwrap(),
             "an attached root must be staged under --no-preflight"
+        );
+    }
+
+    /// Overlay-only activation is "no config layer", so the `--no-preflight` path
+    /// stages nothing even when the hidden root is attached: no `/etc/nixos`
+    /// symlink is created.
+    #[test]
+    fn preflight_phase_overlay_only_stages_nothing_under_no_preflight() {
+        let root = std::path::PathBuf::from("/mnt/data");
+        let (manager, fs) = attach_gate_manager(&root, 42, 7);
+        let staged = root.join("etc/nixos/nails/configuration.nix");
+
+        manager
+            .run_preflight_phase(true, true, Verbosity::Normal, false)
+            .expect("overlay-only --no-preflight passes the preflight phase");
+
+        assert!(
+            !fs.is_symlink(&staged).unwrap(),
+            "overlay-only is no config layer, so nothing may be staged"
+        );
+    }
+
+    /// A Debian/FHS host has no config layer, so even a full (not overlay-only)
+    /// `--no-preflight` run stages nothing: no `/etc/nixos` symlink is created on
+    /// the attached hidden root.
+    #[test]
+    fn preflight_phase_fhs_host_stages_nothing() {
+        let root = std::path::PathBuf::from("/mnt/data");
+        let (mut manager, fs) = attach_gate_manager(&root, 42, 7);
+        manager.set_host_profile(crate::platform::HostProfile {
+            kind: crate::platform::PlatformKind::Fhs,
+            id: Some("debian".to_string()),
+            id_like: vec![],
+            version_id: Some("12".to_string()),
+            is_systemd: true,
+            is_ostree: false,
+            has_current_system: false,
+            unsupported_reason: None,
+        });
+        let staged = root.join("etc/nixos/nails/configuration.nix");
+
+        manager
+            .run_preflight_phase(true, false, Verbosity::Normal, false)
+            .expect("an FHS host passes the preflight phase");
+
+        assert!(
+            !fs.is_symlink(&staged).unwrap(),
+            "an FHS host has no config layer, so nothing may be staged"
+        );
+    }
+
+    /// The public pre-detach staging entry point stages through the config layer:
+    /// on the default NixOS seam (no detected profile) with an attached root it
+    /// creates the `/etc/nixos` symlink, matching the pre-flight phase's own gate.
+    #[test]
+    fn stage_hidden_config_stages_on_nixos_seam() {
+        use crate::filesystem::PathKind;
+
+        let root = std::path::PathBuf::from("/mnt/data");
+        let (manager, fs) = attach_gate_manager(&root, 42, 7);
+        for dir in [
+            "/mnt/data/config/nixos",
+            "/mnt/data/etc/nixos",
+            "/mnt/data/etc/nixos/nails",
+        ] {
+            fs.mock_set_path_exists(dir, true);
+            fs.mock_set_path_type(dir, PathKind::Dir);
+            fs.mock_set_writable(dir, true);
+        }
+        // Full staging (overlay_only = false) also seeds the hardware wrapper from
+        // the decoy hardware config, so it must be readable.
+        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
+        fs.mock_set_file_content(
+            "/etc/nixos/hardware-configuration.nix",
+            "{ config, lib, pkgs, ... }:\n{ }",
+        );
+        let staged = root.join("etc/nixos/nails/configuration.nix");
+
+        manager
+            .stage_hidden_config(false)
+            .expect("staging succeeds on the NixOS seam");
+
+        assert!(
+            fs.is_symlink(&staged).unwrap(),
+            "the NixOS seam stages the hidden config symlink"
+        );
+        assert!(
+            fs.path_exists(&root.join("etc/nixos/hardware-configuration.nix"))
+                .unwrap(),
+            "the NixOS seam stages the hardware wrapper"
+        );
+    }
+
+    /// The pre-detach staging entry point skips entirely in overlay-only mode:
+    /// overlay-only is "no config layer", so nothing is written to `/etc/nixos`.
+    #[test]
+    fn stage_hidden_config_skips_overlay_only() {
+        let root = std::path::PathBuf::from("/mnt/data");
+        let (manager, fs) = attach_gate_manager(&root, 42, 7);
+        let staged = root.join("etc/nixos/nails/configuration.nix");
+
+        manager
+            .stage_hidden_config(true)
+            .expect("overlay-only staging is a no-op that succeeds");
+
+        assert!(
+            !fs.is_symlink(&staged).unwrap(),
+            "overlay-only is no config layer, so nothing may be staged"
+        );
+    }
+
+    /// The pre-detach staging entry point skips on a Debian/FHS host: with no
+    /// config layer the hidden `/etc/nixos` tree is never touched, so the CLI
+    /// parent process stages nothing before detaching.
+    #[test]
+    fn stage_hidden_config_skips_on_fhs_host() {
+        let root = std::path::PathBuf::from("/mnt/data");
+        let (mut manager, fs) = attach_gate_manager(&root, 42, 7);
+        manager.set_host_profile(crate::platform::HostProfile {
+            kind: crate::platform::PlatformKind::Fhs,
+            id: Some("debian".to_string()),
+            id_like: vec![],
+            version_id: Some("12".to_string()),
+            is_systemd: true,
+            is_ostree: false,
+            has_current_system: false,
+            unsupported_reason: None,
+        });
+        let staged = root.join("etc/nixos/nails/configuration.nix");
+
+        manager
+            .stage_hidden_config(false)
+            .expect("an FHS host stages nothing and succeeds");
+
+        assert!(
+            !fs.is_symlink(&staged).unwrap(),
+            "an FHS host has no config layer, so nothing may be staged"
         );
     }
 
