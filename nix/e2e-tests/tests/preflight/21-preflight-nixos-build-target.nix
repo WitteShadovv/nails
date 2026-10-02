@@ -65,7 +65,13 @@ in
         machine.fail("test -e /mnt/hidden-volume/state.json")
         machine.fail("test -e /mnt/hidden-volume/state")
 
-    with subtest("missing explicit flake attrs are rejected before any activation side effects"):
+    with subtest("a local flake without a committed flake.lock is rejected before any activation side effects"):
+        # T-067: the pre-overlay flake preflight is static only and never invokes
+        # nix (a nix call would copy the hidden flake onto the decoy store before
+        # the overlays hide it). A local flake that carries no committed
+        # flake.lock is therefore rejected here, before any detach, overlay mount
+        # or state write. The real attribute/eval validation is deferred to the
+        # post-overlay phase, so it can no longer run before side effects.
         machine.succeed("mkdir -p /tmp/flake-target")
         machine.succeed("cat > /tmp/flake-target/flake.nix <<'EOF'\n{\n  outputs = _: {\n    nixosConfigurations.other-host = { };\n  };\n}\nEOF")
         write_text_file("/tmp/preflight-build-target.toml", "\n".join([
@@ -80,14 +86,14 @@ in
             'target = "/home"',
         ]) + "\n")
         result = run_command_capture(
-            "preflight-build-target-explicit-attr-missing",
+            "preflight-build-target-missing-flake-lock",
             "nails --config /tmp/preflight-build-target.toml activate --session keep -y",
         )
         assert_command_failed(result)
         stderr = result["stderr"]
         assert "nixos-build-target" in stderr, f"Expected 'nixos-build-target' in stderr, got: {stderr!r}"
-        assert ("does not provide" in stderr or "nix-command" in stderr or "experimental" in stderr), \
-            f"Expected flake attr rejection or nix-command error in stderr, got: {stderr!r}"
+        assert "flake.lock not found" in stderr, \
+            f"Expected a committed-flake.lock rejection in stderr, got: {stderr!r}"
         assert_status_state("Inactive", config_path="/tmp/preflight-build-target.toml")
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
         machine.fail("test -e /mnt/hidden-volume/state")
