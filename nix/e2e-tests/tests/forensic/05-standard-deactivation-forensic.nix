@@ -257,38 +257,32 @@ in
     print("✓ No NAILS-related mounts found")
 
     print("\n" + "=" * 70)
-    print("PHASE 5: STATISTICAL VALIDATION (5 cycles)")
+    print("PHASE 5: REPEAT CYCLE")
     print("=" * 70)
 
-    for cycle in range(1, 6):
-        print(f"\n--- Cycle {cycle}/5 ---")
-        machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
+    # One more activation and teardown on the same machine must be just as
+    # clean. The flow is deterministic, so further repeats add runtime and
+    # reboots but no evidence.
+    machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
-        cycle_canary = f"NAILS_CANARY_CYCLE{cycle}_2026"
-        machine.succeed(f"su - testuser -c 'echo {cycle_canary} > ~/cycle-canary.txt'")
-        machine.succeed(f"echo {cycle_canary} > /tmp/cycle-canary-temp")
-        machine.succeed(f"su - testuser -c 'grep {cycle_canary} ~/cycle-canary.txt'")
-        print(f"  ✓ Planted {cycle_canary}")
+    cycle_canary = "NAILS_CANARY_CYCLE_2026"
+    machine.succeed(f"su - testuser -c 'echo {cycle_canary} > ~/cycle-canary.txt'")
+    machine.succeed(f"echo {cycle_canary} > /tmp/cycle-canary-temp")
+    machine.succeed(f"su - testuser -c 'grep {cycle_canary} ~/cycle-canary.txt'")
+    print(f"✓ Planted {cycle_canary}")
 
-        canonical_deactivate(
-            headless_config,
-            unit_name=f"nails-deactivate-standard-forensic-cycle-{cycle}",
-        )
-        print("  ✓ Rebooted to decoy state")
+    canonical_deactivate(headless_config, unit_name="nails-deactivate-standard-forensic-cycle")
+    print("✓ Rebooted to decoy state")
 
-        machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
+    machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
 
-        assert_grep_pattern_absent(
-            cycle_canary,
-            ["/home", "/tmp", "/var", "/etc"],
-            f"cycle {cycle} canary",
-        )
-        print(f"  ✓ {cycle_canary} not found after deactivation")
+    assert_grep_pattern_absent(cycle_canary, ["/home", "/tmp", "/var", "/etc"], "repeat cycle canary")
+    print(f"✓ {cycle_canary} not found after deactivation")
 
-        machine.fail("su - testuser -c 'test -f ~/cycle-canary.txt'")
-        machine.fail("test -f /tmp/cycle-canary-temp")
-        print(f"  ✓ Cycle {cycle} canary files do not exist")
+    machine.fail("su - testuser -c 'test -f ~/cycle-canary.txt'")
+    machine.fail("test -f /tmp/cycle-canary-temp")
+    print("✓ Repeat cycle canary files do not exist")
 
     print("\n" + "=" * 70)
     print("ALL STANDARD DEACTIVATION FORENSIC TESTS PASSED")
@@ -305,7 +299,7 @@ in
       ✓ No sensitive filenames found via find
       ✓ All overlay mounts removed
       ✓ No NAILS-related mounts present
-      ✓ Statistical validation (5 cycles) passed
+      ✓ Repeat activation/deactivation cycle passed
     """)
   '';
 }

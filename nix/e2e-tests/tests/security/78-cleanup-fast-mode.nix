@@ -7,6 +7,7 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   securityHelpers = import ./../../lib/security-helpers.nix;
+  perf = import ./../../lib/perf.nix;
 in
 {
   name = "cleanup-fast-mode";
@@ -20,16 +21,12 @@ in
     };
 
   testScript = _: ''
-    def now():
-        import time
-
-        return time.time()
-
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.readStatusJsonFn}
     ${assertions.assertStatusStateFn}
     ${assertions.assertNoOverlaysFn}
     ${securityHelpers.capturedCommandFns}
+    ${perf.nailsDurationFns}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -50,14 +47,12 @@ in
     with subtest("emergency path uses fast cleanup semantics"):
         unit_name = "nails-emergency-fast-mode"
         prefix = "/run/nails-tests/emergency-fast-mode"
-        started_at = now()
         result = run_shellless_transient_command(
             prefix,
             ["nails", "--config", headless_config, "emergency", "--no-countdown", "-vv"],
             unit_name=unit_name,
             timeout=45,
         )
-        elapsed = now() - started_at
         combined_output = result["stdout"] + "\n" + result["stderr"]
 
         assert result["rc"] == 0, result
@@ -67,7 +62,11 @@ in
         assert "Emergency cleanup complete (best-effort)" in combined_output, combined_output
         assert "Starting Phase 2 cleanup on real disk" not in combined_output, combined_output
         assert "Phase 2 cleanup complete" not in combined_output, combined_output
-        assert elapsed < 12.0, f"Fast-mode emergency took too long: {elapsed:.3f}s"
+        # nails' own measurement of the teardown, so a stall of the host or
+        # of the driver polling the unit cannot fail the check.
+        elapsed_ms = deactivation_duration_ms(result["stderr"])
+        assert elapsed_ms is not None, combined_output
+        assert elapsed_ms < 12000, f"Fast-mode emergency took too long: {elapsed_ms} ms"
 
     with subtest("fast cleanup still removes key artifacts and leaves inactive state"):
         machine.fail("test -f /tmp/nails-fast-mode-artifact")

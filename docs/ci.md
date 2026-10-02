@@ -46,7 +46,7 @@ Every work job runs in parallel. None waits for another; each is gated only on t
 - **Fork-safe.** No job in `ci.yml` writes to the pull request, so a fork pull request and any other run with a read-only token pass the gate. Only `report-status` has a write permission (`issues: write`), and it runs only on pushes to `main`.
 - **Advisories gate dependency changes only.** A newly published RustSec advisory does not fail unrelated PRs or `main`; the weekly `just deny-full` run in `scheduled.yml` reports it, including advisories for crates that never ship (other targets, dev-dependencies). See [security-validation.md](security-validation.md#dependency-policy).
 - **E2E tests are not folded into `gate`.** They run in `e2e.yml`, whose `e2e-result` job is the status to require.
-- **Off the pull request path.** The SBOM is generated only by the release workflow; the benchmarks run weekly in `scheduled.yml` (see [Benchmarks](#benchmarks)) and never gate.
+- **Off the pull request path.** The SBOM is generated only by the release workflow; the benchmarks run weekly in `scheduled.yml` (see [Benchmarks](#benchmarks)) and the E2E performance tests nightly in `e2e.yml`. No pull request job checks a timing budget.
 
 ### Lint policy
 
@@ -96,15 +96,16 @@ One workflow runs the NixOS VM suite in every lane. A `plan` job decides what ru
 
 | Trigger | Mode | Selection |
 |---|---|---|
-| Pull request to `main` | `affected` | The `ci` group plus every test whose derivation differs from the base branch (`python3 -m ci.e2e plan --affected`). A test file change adds that test; a change to `nails` changes every test. |
-| Pull request with the `full-e2e` label | `all` | Every test. |
-| Push to `main` | `all` | Every test; a test whose derivation already passed is substituted from the binary cache instead of booting again. |
-| Nightly schedule | `execute` | Every test driver runs directly (`run --execute`), so cached results do not count. The performance tests run in an informational job that never fails the run. |
+| Pull request to `main` | `affected` | The `ci` group plus every test whose derivation differs from the base branch (`python3 -m ci.e2e plan --affected`). A test file change adds that test; a change to `nails` changes every test. The `performance` group is always left out. |
+| Pull request with the `full-e2e` label | `all` | Every test except the `performance` group. |
+| Push to `main` | `all` | Every test except the `performance` group; a test whose derivation already passed is substituted from the binary cache instead of booting again. |
+| Nightly schedule | `execute` | Every test driver runs directly (`run --execute`), so cached results do not count. The performance tests run here only, in an informational job of their own that never fails the run. |
 | Manual dispatch or `workflow_call` | input | `mode` (`affected`, `ci`, `all`, `execute`), `runner` and `max-shards`. |
 
 - **One path filter.** The `plan` job compares the change with its base. When nothing under `nails-core/`, `nails-cli/`, `nix/`, `ci/e2e/`, the setup-nix action, this workflow, the flake, the Cargo manifests or `rust-toolchain.toml` changed, no VM boots and `e2e-result` passes. A docs-only pull request therefore costs one short job.
 - **No secrets for untrusted code.** There is no `pull_request_target` and no approval environment. Fork and Dependabot pull requests run like any other and read the binary cache without being able to write to it.
 - **Sharding.** `python3 -m ci.e2e plan --max-shards N --format github-matrix` balances the selected tests over as many shards as hold about 900 weighted seconds each (`SHARD_SECONDS` in `ci/e2e/plan.py`), never more than `max-shards` (10 by default) and never an empty one. Each shard's job timeout is 1.5 times its weighted load plus a 15-minute setup allowance (at least 30 minutes).
+- **Performance tests.** Wall-clock budgets on shared runners cannot gate a merge, so the shards of every mode exclude the `performance` group, and the `performance` job runs it on the selected runner in `execute` mode only. `07-performance.nix` times each sample inside the guest, from the `duration_ms` that nails logs for an activation (`activate --json`) or a teardown and with the guest clock for `status`, and holds the slowest of a few samples to its budget. It times status, overlay-only activation, emergency and one default activation, with `nixos-rebuild` stubbed so the external build stays out of the budget.
 - **Runner.** `runner` is the `runs-on` value as JSON and applies to the shards; `plan`, `e2e-result` and the reporting jobs always run on `ubuntu-24.04`. Hosted runners get KVM from setup-nix; a self-hosted runner must provide `/dev/kvm`. A single-use self-hosted runner can serve one job only, so dispatch with `max-shards: 1` for it.
 - **Execution.** Each shard runs its tests with `python3 -m ci.e2e run --retries 1`: one `nix build --keep-going` over all of them (or, in `execute` mode, one driver after another). A test whose output is missing after the build failed. Failed tests run once more; a pass on that retry is listed as FLAKY in the step summary and raises a warning annotation, and the shard stays green. A test that fails twice fails the shard.
 - **Artifacts.** Each shard uploads its per-test durations (`e2e-durations-shard-N`, kept 90 days) and, only when it failed, the logs of its failed tests (`e2e-logs-shard-N`, kept 14 days). Nothing else from the runner is uploaded.

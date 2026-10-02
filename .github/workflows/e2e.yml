@@ -10,6 +10,9 @@ name: E2E
 #   nightly schedule      execute: every test driver runs, cache or not,
 #                         durations are refreshed, the performance tests run
 #                         without blocking and red runs open an issue
+#
+# Only the nightly (or a dispatched 'execute') run times anything: every other
+# lane leaves the performance group out.
 #   dispatch or call      any mode on any runner (`runner` is runs-on JSON)
 #
 # No secret reaches code that nobody vetted: fork and Dependabot pull requests
@@ -185,10 +188,12 @@ jobs:
           case "$MODE" in
             affected) targets=(--affected "$BASE") ;;
             ci) targets=(ci) ;;
-            all) targets=(all) ;;
-            # The performance tests run in their own, non-blocking job.
-            execute) targets=(all --exclude performance) ;;
+            all | execute) targets=(all) ;;
           esac
+          # Timing budgets on shared runners cannot gate a merge, so the
+          # performance tests never run in a shard, not even when a pull
+          # request changes them; the nightly performance job runs them.
+          targets+=(--exclude performance)
           matrix=$(python3 -m ci.e2e plan "${targets[@]}" --max-shards "$MAX_SHARDS" --format github-matrix)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           {
