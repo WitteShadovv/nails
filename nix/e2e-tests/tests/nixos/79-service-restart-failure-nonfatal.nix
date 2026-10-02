@@ -65,7 +65,7 @@ in
       documentation.nixos.enable = false;
       environment.etc."nails-nonfatal-marker".text = "service-restart-warning";
     }
-        EOF""")
+    EOF""")
         machine.succeed("""mkdir -p /tmp/nails-wrapper/bin
     cat > /tmp/nails-wrapper/bin/nixos-rebuild <<'EOF'
     #!/bin/sh

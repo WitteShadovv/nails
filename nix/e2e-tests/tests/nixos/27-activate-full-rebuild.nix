@@ -88,7 +88,7 @@ in
       documentation.nixos.enable = false;
       environment.etc."nails-hidden-marker".text = "legacy-rebuild-active";
     }
-        EOF""")
+    EOF""")
         assert_status_state_local("Inactive", headless_config)
         baseline_generation, baseline_generation_target = current_system_generation()
         wrapper_env = install_nixos_rebuild_wrapper(

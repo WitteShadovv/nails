@@ -100,7 +100,7 @@ in
       documentation.nixos.enable = false;
       environment.etc."nails-graphical-marker".text = "graphical-rebuild-active";
     }
-        EOF""")
+    EOF""")
         machine.succeed("cat > /home/testuser/.bashrc <<'EOF'\nexport PS1=\"decoy$ \"\nEOF")
         machine.succeed("chown testuser:users /home/testuser/.bashrc")
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
