@@ -4,7 +4,7 @@ use crate::Result;
 use crate::constants::{
     ENV_DISPLAY_MANAGER, ENV_LOGIND_AVAILABLE, ENV_SESSION_ID, ENV_TARGET_UID, ENV_TARGET_USER,
 };
-use nix::unistd::{Uid, User, getuid};
+use nix::unistd::{User, getuid};
 use std::env;
 
 #[cfg(not(test))]
@@ -98,8 +98,7 @@ pub fn detect_session_context_with_executor<E: SessionCommandExecutor>(
         _ => has_display || has_wayland,
     };
 
-    let target_uid = resolve_target_uid();
-    let target_user = resolve_target_user(target_uid);
+    let (target_uid, target_user) = resolve_target_identity();
 
     if !is_graphical {
         return Ok(SessionContext {
@@ -130,36 +129,26 @@ pub fn detect_session_context_with_executor<E: SessionCommandExecutor>(
     })
 }
 
-fn resolve_target_uid() -> Option<u32> {
+/// Resolve the operator this session acts on behalf of.
+///
+/// Prefers the shared [`crate::TargetUser`] resolver so detection agrees with
+/// every other subsystem on who the operator is and honours the full precedence
+/// of escalation variables. When no escalation context identifies an operator,
+/// NAILS is running directly as the user: fall back to the current account,
+/// treating root as "no target user" so a root session is never reported as a
+/// graphical user.
+fn resolve_target_identity() -> (Option<u32>, Option<String>) {
+    if let Ok(user) = crate::TargetUser::resolve() {
+        return (Some(user.uid), Some(user.name));
+    }
+
     let uid = getuid();
-
     if uid.is_root() {
-        if let Ok(val) = env::var("SUDO_UID")
-            && let Ok(parsed) = val.parse::<u32>()
-        {
-            return Some(parsed);
-        }
-        if let Ok(val) = env::var("PKEXEC_UID")
-            && let Ok(parsed) = val.parse::<u32>()
-        {
-            return Some(parsed);
-        }
-        None
+        (None, None)
     } else {
-        Some(uid.as_raw())
+        let name = User::from_uid(uid).ok().flatten().map(|u| u.name);
+        (Some(uid.as_raw()), name)
     }
-}
-
-fn resolve_target_user(uid: Option<u32>) -> Option<String> {
-    if let Ok(user) = env::var("SUDO_USER") {
-        return Some(user);
-    }
-
-    let uid = uid?;
-    User::from_uid(Uid::from_raw(uid))
-        .ok()
-        .flatten()
-        .map(|u| u.name.to_string())
 }
 
 /// Detect which display manager is currently active
@@ -309,10 +298,11 @@ mod tests {
     #[test]
     #[serial]
     fn detect_session_context_detects_graphical_user_and_display_manager() {
+        // Drive the shared resolver through SUDO_UID pointing at a real passwd
+        // entry — the current account — so the test is hermetic across hosts.
+        let me = current_user();
         let mut env = cleared_session_env();
-        env.set("DISPLAY", ":0")
-            .set("SUDO_UID", "1000")
-            .set("SUDO_USER", "alice");
+        env.set("DISPLAY", ":0").set("SUDO_UID", &me.uid);
 
         let exec = ScriptedSessionCommandExecutor::new(
             vec![Ok((true, "active".to_string(), String::new()))],
@@ -324,7 +314,8 @@ mod tests {
 
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.display_manager, Some("display-manager".to_string()));
-        assert!(ctx.target_uid.is_some());
+        assert_eq!(ctx.target_uid, Some(me.uid.parse::<u32>().unwrap()));
+        assert_eq!(ctx.target_user, Some(me.name));
     }
 
     #[test]
@@ -435,10 +426,10 @@ mod tests {
     #[test]
     #[serial]
     fn detect_session_context_uses_wayland_display_when_session_type_unset() {
+        let me = current_user();
         let mut env = cleared_session_env();
         env.set("WAYLAND_DISPLAY", "wayland-0")
-            .set("SUDO_UID", "1000")
-            .set("SUDO_USER", "alice");
+            .set("SUDO_UID", &me.uid);
 
         let exec = ScriptedSessionCommandExecutor::new(
             vec![Ok((true, "active".to_string(), String::new()))],
@@ -450,6 +441,26 @@ mod tests {
 
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.display_manager, Some("display-manager".to_string()));
-        assert_eq!(ctx.target_user, Some("alice".to_string()));
+        assert_eq!(ctx.target_user, Some(me.name));
+    }
+
+    /// The account running the test suite, as a (uid-string, name) pair, used to
+    /// drive the shared resolver against a passwd entry that is guaranteed to
+    /// exist on whatever host the tests run on.
+    struct CurrentUser {
+        uid: String,
+        name: String,
+    }
+
+    fn current_user() -> CurrentUser {
+        let uid = getuid();
+        let entry = User::from_uid(uid)
+            .ok()
+            .flatten()
+            .expect("the account running the tests must have a passwd entry");
+        CurrentUser {
+            uid: uid.as_raw().to_string(),
+            name: entry.name,
+        }
     }
 }

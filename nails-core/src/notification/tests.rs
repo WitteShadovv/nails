@@ -590,3 +590,42 @@ fn test_notification_file_has_mode_0o600() {
         mode
     );
 }
+
+#[test]
+fn runtime_environment_derives_xdg_runtime_dir_from_uid() {
+    let env = build_runtime_environment(Some(1000), None, None);
+
+    assert!(
+        env.contains(&("XDG_RUNTIME_DIR", "/run/user/1000".to_string())),
+        "expected XDG_RUNTIME_DIR for the resolved uid, got {env:?}"
+    );
+    assert!(
+        env.contains(&(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=/run/user/1000/bus".to_string()
+        )),
+        "expected a session bus address derived from the uid, got {env:?}"
+    );
+}
+
+#[test]
+fn runtime_environment_omits_runtime_dir_without_a_uid() {
+    let env = build_runtime_environment(None, Some(":0".to_string()), None);
+
+    assert!(
+        !env.iter().any(|(key, _)| *key == "XDG_RUNTIME_DIR"),
+        "no uid means no XDG_RUNTIME_DIR, got {env:?}"
+    );
+    assert!(
+        env.contains(&("DISPLAY", ":0".to_string())),
+        "display passthrough should be preserved, got {env:?}"
+    );
+}
+
+#[test]
+fn runtime_environment_forwards_wayland_display() {
+    let env = build_runtime_environment(Some(1001), None, Some("wayland-0".to_string()));
+
+    assert!(env.contains(&("WAYLAND_DISPLAY", "wayland-0".to_string())));
+    assert!(env.contains(&("XDG_RUNTIME_DIR", "/run/user/1001".to_string())));
+}

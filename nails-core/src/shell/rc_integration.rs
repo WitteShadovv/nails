@@ -34,7 +34,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     ///
     /// # Behavior
     ///
-    /// - Determines real user from `SUDO_USER`, `NAILS_TARGET_USER`, or `USER` env var
+    /// - Resolves the operator through the shared target-user resolver
     /// - Finds home directory: `/home/{user}` (now overlaid)
     /// - Creates rc file if it doesn't exist (with parent dirs for Fish)
     /// - Checks for existing integration marker before appending (idempotent)
@@ -144,7 +144,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     ///
     /// # Behavior
     ///
-    /// - Determines real user from `SUDO_USER`, `NAILS_TARGET_USER`, or `USER` env var
+    /// - Resolves the operator through the shared target-user resolver
     /// - Creates `~/.config/autostart/` directory if it doesn't exist
     /// - Writes a `.desktop` file that runs `nails notify-dispatch`
     /// - Idempotent: overwrites the file if it already exists

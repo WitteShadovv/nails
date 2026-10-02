@@ -5,7 +5,6 @@
 //! write their in-memory history to disk — defeating cleanup. SIGKILL
 //! terminates them immediately without triggering any signal handlers.
 
-use crate::constants::ENV_TARGET_UID;
 #[cfg(not(test))]
 use std::fs;
 #[cfg(not(test))]
@@ -67,16 +66,24 @@ impl ShellKillReport {
     }
 }
 
+/// The uid whose shells deactivation must kill: the operator resolved once
+/// through [`crate::TargetUser`], never root. When no operator can be resolved —
+/// an unprivileged or test run with no escalation context — fall back to the
+/// current effective uid, again excluding root so cleanup never targets root's
+/// shells.
+#[cfg(not(test))]
 fn shell_cleanup_target_uid() -> Option<u32> {
-    std::env::var(ENV_TARGET_UID)
+    crate::TargetUser::resolve()
         .ok()
-        .or_else(|| std::env::var("SUDO_UID").ok())
-        .and_then(|value| value.parse::<u32>().ok())
+        .map(|user| user.uid)
         .filter(|uid| *uid != 0)
-        .or_else(|| {
-            let uid = nix::unistd::geteuid().as_raw();
-            if uid == 0 { None } else { Some(uid) }
-        })
+        .or_else(non_root_self_uid)
+}
+
+/// The current effective uid, unless it is root.
+fn non_root_self_uid() -> Option<u32> {
+    let uid = nix::unistd::geteuid().as_raw();
+    (uid != 0).then_some(uid)
 }
 
 fn should_kill_shell_process(shell_uid: u32, target_uid: Option<u32>) -> bool {
@@ -257,8 +264,6 @@ pub fn kill_user_shells(protected_pids: &[u32]) -> ShellKillReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::EnvGuard;
-    use serial_test::serial;
 
     #[test]
     fn test_shell_names_contains_common_shells() {
@@ -299,21 +304,12 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    fn shell_cleanup_target_uid_prefers_explicit_target_uid() {
-        let mut env = EnvGuard::lock();
-        env.set(ENV_TARGET_UID, "1001").set("SUDO_UID", "1000");
-
-        assert_eq!(shell_cleanup_target_uid(), Some(1001));
-    }
-
-    #[test]
-    #[serial]
-    fn shell_cleanup_target_uid_uses_sudo_uid_when_present() {
-        let mut env = EnvGuard::lock();
-        env.remove(ENV_TARGET_UID).set("SUDO_UID", "1000");
-
-        assert_eq!(shell_cleanup_target_uid(), Some(1000));
+    fn non_root_self_uid_never_returns_root() {
+        // The fallback must never hand root's uid to the kill scan, whatever the
+        // current euid is. Resolution precedence itself is covered by the
+        // target-user resolver's own tests.
+        let fallback = non_root_self_uid();
+        assert_ne!(fallback, Some(0));
     }
 
     #[test]

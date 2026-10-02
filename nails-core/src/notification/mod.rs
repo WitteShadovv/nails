@@ -20,13 +20,18 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-#[cfg(not(test))]
-pub fn notification_runtime_environment() -> Vec<(&'static str, String)> {
+/// Build the environment overrides handed to `notify-send` so it reaches the
+/// operator's session bus. Split from [`notification_runtime_environment`] as a
+/// pure function of the operator's uid and the current display variables, so it
+/// can be unit-tested without a real passwd or privilege-escalation environment.
+fn build_runtime_environment(
+    uid: Option<u32>,
+    display: Option<String>,
+    wayland_display: Option<String>,
+) -> Vec<(&'static str, String)> {
     let mut env = Vec::new();
 
-    if let Ok(uid) =
-        std::env::var(crate::constants::ENV_TARGET_UID).or_else(|_| std::env::var("SUDO_UID"))
-    {
+    if let Some(uid) = uid {
         let runtime_dir = format!("/run/user/{}", uid);
         env.push(("XDG_RUNTIME_DIR", runtime_dir.clone()));
         env.push((
@@ -35,15 +40,32 @@ pub fn notification_runtime_environment() -> Vec<(&'static str, String)> {
         ));
     }
 
-    if let Ok(display) = std::env::var("DISPLAY") {
+    if let Some(display) = display {
         env.push(("DISPLAY", display));
     }
 
-    if let Ok(wayland_display) = std::env::var("WAYLAND_DISPLAY") {
+    if let Some(wayland_display) = wayland_display {
         env.push(("WAYLAND_DISPLAY", wayland_display));
     }
 
     env
+}
+
+/// Environment overrides for the detached `notify-send` invocation.
+///
+/// `XDG_RUNTIME_DIR` (and the derived bus address) are built from the uid of the
+/// operator resolved through [`crate::TargetUser`], so this agrees with every
+/// other subsystem on who the operator is instead of re-reading the escalation
+/// environment directly. The display variables are forwarded from the current
+/// environment so the notification reaches the right display server.
+#[cfg(not(test))]
+pub fn notification_runtime_environment() -> Vec<(&'static str, String)> {
+    let uid = crate::TargetUser::resolve().ok().map(|user| user.uid);
+    build_runtime_environment(
+        uid,
+        std::env::var("DISPLAY").ok(),
+        std::env::var("WAYLAND_DISPLAY").ok(),
+    )
 }
 
 /// A desktop notification payload stored as a JSON signal file.

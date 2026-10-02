@@ -166,32 +166,42 @@ fn maybe_detach_for_session_kill_skips_when_already_detached_without_skip_env() 
     assert!(result.is_ok());
 }
 
-#[test]
-fn set_target_identity_from_environment_prefers_explicit_target_values() {
-    let mut env = EnvGuard::lock();
-    env.set(ENV_TARGET_UID, "1001")
-        .set("SUDO_UID", "1000")
-        .set(ENV_TARGET_USER, "target-user")
-        .set("SUDO_USER", "sudo-user");
-    let mut command = Command::new("true");
+/// The account running the tests, as a (uid-string, name) pair. Used to drive
+/// the shared resolver against a passwd entry guaranteed to exist on the host.
+struct TestUser {
+    uid: String,
+    name: String,
+}
 
-    set_target_identity_from_environment(&mut command);
+fn current_test_user() -> TestUser {
+    let uid = nix::unistd::getuid();
+    let entry = nix::unistd::User::from_uid(uid)
+        .ok()
+        .flatten()
+        .expect("the account running the tests must have a passwd entry");
+    TestUser {
+        uid: uid.as_raw().to_string(),
+        name: entry.name,
+    }
+}
 
-    let args: Vec<_> = command
-        .get_args()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
-    assert!(args.contains(&format!("--setenv={}={}", ENV_TARGET_UID, "1001")));
-    assert!(args.contains(&format!("--setenv={}={}", ENV_TARGET_USER, "target-user")));
+/// Remove every variable the target-user resolver consults, so a test starts
+/// from a known-empty escalation context.
+fn clear_identity_env(env: &mut EnvGuard) {
+    env.remove(ENV_TARGET_UID).remove(ENV_TARGET_USER);
+    for key in nails_core::target_user::PRIVILEGE_ENV_VARS {
+        env.remove(key);
+    }
 }
 
 #[test]
-fn set_target_identity_from_environment_falls_back_to_sudo_values() {
+fn set_target_identity_from_environment_forwards_resolved_operator() {
+    let me = current_test_user();
     let mut env = EnvGuard::lock();
-    env.remove(ENV_TARGET_UID)
-        .set("SUDO_UID", "1000")
-        .remove(ENV_TARGET_USER)
-        .set("SUDO_USER", "sudo-user");
+    // Drive the shared resolver via NAILS_TARGET_UID pointing at a real passwd
+    // entry so the forwarded identity is deterministic across hosts.
+    clear_identity_env(&mut env);
+    env.set(ENV_TARGET_UID, &me.uid);
     let mut command = Command::new("true");
 
     set_target_identity_from_environment(&mut command);
@@ -200,8 +210,26 @@ fn set_target_identity_from_environment_falls_back_to_sudo_values() {
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    assert!(args.contains(&format!("--setenv={}={}", ENV_TARGET_UID, "1000")));
-    assert!(args.contains(&format!("--setenv={}={}", ENV_TARGET_USER, "sudo-user")));
+    assert!(args.contains(&format!("--setenv={}={}", ENV_TARGET_UID, me.uid)));
+    assert!(args.contains(&format!("--setenv={}={}", ENV_TARGET_USER, me.name)));
+}
+
+#[test]
+fn set_target_identity_from_environment_is_noop_without_an_operator() {
+    let mut env = EnvGuard::lock();
+    clear_identity_env(&mut env);
+    let mut command = Command::new("true");
+
+    set_target_identity_from_environment(&mut command);
+
+    let args: Vec<_> = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let uid_prefix = format!("--setenv={}=", ENV_TARGET_UID);
+    let user_prefix = format!("--setenv={}=", ENV_TARGET_USER);
+    assert!(!args.iter().any(|arg| arg.starts_with(&uid_prefix)));
+    assert!(!args.iter().any(|arg| arg.starts_with(&user_prefix)));
 }
 
 #[test]
@@ -475,12 +503,15 @@ fn deactivation_detach_uses_explicit_systemd_run_override() {
     );
     assert!(fake_systemd_run.exists(), "fake systemd-run script missing");
 
+    // Seed the detached worker's identity via NAILS_TARGET_UID pointing at a
+    // real passwd entry (the test account) so the forwarded uid and name are
+    // deterministic on whatever host runs the suite.
+    let me = current_test_user();
     let output = run_entrypoint("allow-override", |command| {
         command
             .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
             .env(ENV_FORCE_DETACH, "1")
-            .env("SUDO_UID", "1000")
-            .env("SUDO_USER", "alice")
+            .env(ENV_TARGET_UID, &me.uid)
             .env_remove(DETACH_DEBUG_JOURNAL_ENV)
             .env_remove(ENV_SKIP_DETACH)
             .env_remove(ENV_DETACHED);
@@ -493,8 +524,8 @@ fn deactivation_detach_uses_explicit_systemd_run_override() {
     let logged_args = fs::read_to_string(log).expect("fake systemd-run log");
     assert_neutral_unit_argv(&logged_args);
     assert!(logged_args.contains("--working-directory=/"));
-    assert!(logged_args.contains("--setenv=NAILS_TARGET_UID=1000"));
-    assert!(logged_args.contains("--setenv=NAILS_TARGET_USER=alice"));
+    assert!(logged_args.contains(&format!("--setenv=NAILS_TARGET_UID={}", me.uid)));
+    assert!(logged_args.contains(&format!("--setenv=NAILS_TARGET_USER={}", me.name)));
     assert!(logged_args.contains("--setenv=PATH="));
     assert!(logged_args.contains("/run/current-system/sw/bin"));
 }
@@ -515,12 +546,12 @@ fn deactivation_detach_propagates_protected_shell_cleanup_pids() {
         ),
     );
 
+    let me = current_test_user();
     let output = run_entrypoint("allow-override", |command| {
         command
             .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
             .env(ENV_FORCE_DETACH, "1")
-            .env("SUDO_UID", "1000")
-            .env("SUDO_USER", "alice")
+            .env(ENV_TARGET_UID, &me.uid)
             .env(SHELL_CLEANUP_PROTECTED_PIDS_ENV, "101,202")
             .env_remove(DETACH_DEBUG_JOURNAL_ENV)
             .env_remove(ENV_SKIP_DETACH)

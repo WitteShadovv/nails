@@ -1,14 +1,13 @@
 //! Registry of known history file locations and query functions
 
-use std::path::PathBuf;
-
 use super::{HistoryCategory, HistoryFile, HistoryFormat, HistoryPath};
 
 /// Complete registry of known history file locations
 ///
 /// This const array contains all known history file locations organized by category.
-/// Use helper functions like `get_by_category()`, `get_common()`, and `get_existing()`
-/// for filtered access.
+/// Use helper functions like `get_by_category()` and `get_common()` for filtered
+/// access, resolving each file against an explicit home with
+/// [`HistoryFile::resolve_path_for_home`].
 pub const ALL_HISTORY_FILES: &[HistoryFile] = &[
     // ===== Shell History Files =====
     // Bash - most common Unix shell
@@ -297,39 +296,4 @@ pub fn get_by_category(category: HistoryCategory) -> Vec<&'static HistoryFile> {
 /// ```
 pub fn get_common() -> Vec<&'static HistoryFile> {
     ALL_HISTORY_FILES.iter().filter(|f| f.common).collect()
-}
-
-/// Get all history files that exist on the current system
-///
-/// Resolves paths and checks filesystem existence for each known
-/// history file location. Only returns files that actually exist.
-///
-/// # Returns
-///
-/// Vector of tuples containing:
-/// - Reference to the HistoryFile definition
-/// - Resolved PathBuf to the existing file
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use nails_core::cleanup::history_files::get_existing;
-///
-/// let existing = get_existing();
-/// for (file, path) in existing {
-///     println!("{} ({:?}): {}", file.name, file.format, path.display());
-/// }
-/// ```
-pub fn get_existing() -> Vec<(&'static HistoryFile, PathBuf)> {
-    ALL_HISTORY_FILES
-        .iter()
-        .filter_map(|file| {
-            let path = file.resolve_path()?;
-            if path.exists() {
-                Some((file, path))
-            } else {
-                None
-            }
-        })
-        .collect()
 }

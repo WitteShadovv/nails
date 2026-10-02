@@ -23,8 +23,9 @@
 //!
 //! ```rust,ignore
 //! use nails_core::cleanup::history_files::{
-//!     ALL_HISTORY_FILES, HistoryCategory, get_by_category, get_common, get_existing
+//!     ALL_HISTORY_FILES, HistoryCategory, get_by_category, get_common
 //! };
+//! use std::path::Path;
 //!
 //! // Get all shell history files
 //! let shell_files = get_by_category(HistoryCategory::Shell);
@@ -32,9 +33,9 @@
 //! // Get only common history files (fast cleanup)
 //! let common_files = get_common();
 //!
-//! // Get files that exist on the current system
-//! let existing_files = get_existing();
-//! for (file, path) in existing_files {
+//! // Resolve a file against the operator's home.
+//! for file in common_files {
+//!     let path = file.resolve_path_for_home(Path::new("/home/operator"));
 //!     println!("{}: {}", file.name, path.display());
 //! }
 //! ```
@@ -44,7 +45,7 @@ mod registry;
 #[cfg(test)]
 mod tests;
 
-pub use registry::{ALL_HISTORY_FILES, get_by_category, get_common, get_existing};
+pub use registry::{ALL_HISTORY_FILES, get_by_category, get_common};
 
 use std::path::PathBuf;
 
@@ -186,59 +187,6 @@ impl HistoryPath {
             Self::Absolute(path) => PathBuf::from(path),
         }
     }
-
-    /// Resolve the path to an absolute PathBuf
-    ///
-    /// Uses XDG base directory specification with fallbacks to standard defaults:
-    /// - $XDG_DATA_HOME defaults to ~/.local/share
-    /// - $XDG_CONFIG_HOME defaults to ~/.config
-    /// - $XDG_STATE_HOME defaults to ~/.local/state
-    ///
-    /// # Returns
-    ///
-    /// Some(PathBuf) if the path can be resolved, None if $HOME is not set.
-    pub fn resolve(&self) -> Option<PathBuf> {
-        match self {
-            Self::HomeRelative(path) => {
-                let home = std::env::var("HOME").ok()?;
-                Some(PathBuf::from(home).join(path))
-            }
-            Self::XdgData(path) => {
-                let base = std::env::var("XDG_DATA_HOME").ok().unwrap_or_else(|| {
-                    std::env::var("HOME")
-                        .map(|h| format!("{}/.local/share", h))
-                        .unwrap_or_default()
-                });
-                if base.is_empty() {
-                    return None;
-                }
-                Some(PathBuf::from(base).join(path))
-            }
-            Self::XdgConfig(path) => {
-                let base = std::env::var("XDG_CONFIG_HOME").ok().unwrap_or_else(|| {
-                    std::env::var("HOME")
-                        .map(|h| format!("{}/.config", h))
-                        .unwrap_or_default()
-                });
-                if base.is_empty() {
-                    return None;
-                }
-                Some(PathBuf::from(base).join(path))
-            }
-            Self::XdgState(path) => {
-                let base = std::env::var("XDG_STATE_HOME").ok().unwrap_or_else(|| {
-                    std::env::var("HOME")
-                        .map(|h| format!("{}/.local/state", h))
-                        .unwrap_or_default()
-                });
-                if base.is_empty() {
-                    return None;
-                }
-                Some(PathBuf::from(base).join(path))
-            }
-            Self::Absolute(path) => Some(PathBuf::from(path)),
-        }
-    }
 }
 
 /// Definition of a known history file location
@@ -291,15 +239,5 @@ impl HistoryFile {
     /// PathBuf for the resolved path.
     pub fn resolve_path_for_home(&self, home: &std::path::Path) -> PathBuf {
         self.path.resolve_with_home(home, None, None, None)
-    }
-
-    /// Resolve the path to this history file
-    ///
-    /// # Returns
-    ///
-    /// Some(PathBuf) if the path can be resolved, None if required
-    /// environment variables (e.g., $HOME) are not set.
-    pub fn resolve_path(&self) -> Option<PathBuf> {
-        self.path.resolve()
     }
 }

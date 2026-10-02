@@ -44,6 +44,7 @@ pub mod prompt;
 mod rc_integration;
 mod setup;
 
+#[cfg(test)]
 use crate::constants::ENV_TARGET_USER;
 use crate::target_user::TargetUser;
 use crate::{Config, Filesystem, Result};
@@ -206,7 +207,19 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         }
     }
 
+    /// The operator's login name, for the test-only home reconstruction below.
+    ///
+    /// Production resolves the operator once (via [`TargetUser::resolve`]) and
+    /// attaches it with [`Self::with_target_user`], then reads the name straight
+    /// off that attached operator, so this env-based path exists only to keep the
+    /// hermetic unit tests — which inject identity through environment variables —
+    /// exercising the integration without a real passwd entry.
+    #[cfg(test)]
     pub(crate) fn resolve_target_username(&self) -> Result<String> {
+        if let Some(user) = self.target_user.as_ref() {
+            return Ok(user.name.clone());
+        }
+
         std::env::var("SUDO_USER")
             .or_else(|_| std::env::var(ENV_TARGET_USER))
             .or_else(|_| std::env::var("USER"))
@@ -218,32 +231,32 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             })
     }
 
-    fn has_explicit_target_user_context() -> bool {
-        std::env::var("SUDO_USER").is_ok() || std::env::var(ENV_TARGET_USER).is_ok()
+    /// The operator's home directory.
+    ///
+    /// Production uses the attached [`TargetUser`]'s home, which already honours
+    /// the opt-in persona home; without an attached operator it errors.
+    #[cfg(not(test))]
+    pub(crate) fn resolve_target_home_dir(&self) -> Result<PathBuf> {
+        self.target_user
+            .as_ref()
+            .map(|user| user.home().to_path_buf())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Could not determine the target home directory for shell integration",
+                )
+                .into()
+            })
     }
 
-    fn home_matches_username(home: &std::path::Path, username: &str) -> bool {
-        home.file_name().and_then(|component| component.to_str()) == Some(username)
-    }
-
-    fn resolve_home_from_current_environment(target_username: Option<&str>) -> Option<PathBuf> {
-        if Self::has_explicit_target_user_context() {
-            return None;
-        }
-
-        let home = PathBuf::from(std::env::var_os("HOME")?);
-
-        if let Some(username) = target_username
-            && !Self::home_matches_username(&home, username)
-        {
-            return None;
-        }
-
-        Some(home)
-    }
-
+    /// Test build: prefer an attached operator's home, otherwise reconstruct it
+    /// from the injected environment exactly as the historical resolver did.
     #[cfg(test)]
     pub(crate) fn resolve_target_home_dir(&self) -> Result<PathBuf> {
+        if let Some(user) = self.target_user.as_ref() {
+            return Ok(user.home().to_path_buf());
+        }
+
         let username = self.resolve_target_username().ok();
 
         if let Some(home) = Self::resolve_home_from_current_environment(username.as_deref()) {
@@ -259,33 +272,41 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         Ok(PathBuf::from(format!("/home/{}", username)))
     }
 
+    /// Whether the integration knows which operator it is acting for.
+    ///
+    /// Production answers from the attached operator (checked by the caller). In
+    /// test builds the historical environment heuristic is also consulted so the
+    /// env-driven unit tests keep exercising the shell-detection fallbacks.
     #[cfg(not(test))]
-    pub(crate) fn resolve_target_home_dir(&self) -> Result<PathBuf> {
-        let username = self.resolve_target_username().ok();
+    fn has_explicit_target_user_context() -> bool {
+        false
+    }
 
-        if let Some(home) = Self::resolve_home_from_current_environment(username.as_deref()) {
-            return Ok(home);
+    #[cfg(test)]
+    fn has_explicit_target_user_context() -> bool {
+        std::env::var("SUDO_USER").is_ok() || std::env::var(ENV_TARGET_USER).is_ok()
+    }
+
+    #[cfg(test)]
+    fn home_matches_username(home: &std::path::Path, username: &str) -> bool {
+        home.file_name().and_then(|component| component.to_str()) == Some(username)
+    }
+
+    #[cfg(test)]
+    fn resolve_home_from_current_environment(target_username: Option<&str>) -> Option<PathBuf> {
+        if Self::has_explicit_target_user_context() {
+            return None;
         }
 
-        let username = username.ok_or_else(|| {
-            std::io::Error::other(
-                "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)",
-            )
-        })?;
+        let home = PathBuf::from(std::env::var_os("HOME")?);
 
-        match nix::unistd::User::from_name(&username).map_err(|e| {
-            std::io::Error::other(format!(
-                "Failed to resolve home directory for user {}: {}",
-                username, e
-            ))
-        })? {
-            Some(user) => Ok(user.dir),
-            None => Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Could not determine home directory for user {}", username),
-            )
-            .into()),
+        if let Some(username) = target_username
+            && !Self::home_matches_username(&home, username)
+        {
+            return None;
         }
+
+        Some(home)
     }
 
     pub(crate) fn resolve_binary_path(&self) -> PathBuf {
@@ -327,7 +348,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             .unwrap_or(false)
         {
             Some(ShellType::Fish)
-        } else if Self::has_explicit_target_user_context() {
+        } else if self.target_user.is_some() || Self::has_explicit_target_user_context() {
             Some(ShellType::Bash)
         } else {
             None

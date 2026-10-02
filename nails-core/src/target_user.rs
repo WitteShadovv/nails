@@ -57,6 +57,19 @@ const UID_ENV_SOURCES: &[&str] = &[ENV_TARGET_UID, ENV_SUDO_UID, ENV_PKEXEC_UID,
 /// Username environment sources, highest priority first.
 const NAME_ENV_SOURCES: &[&str] = &[ENV_TARGET_USER, ENV_SUDO_USER, ENV_DOAS_USER];
 
+/// The environment variables a privilege-escalation tool (`sudo`, `pkexec`,
+/// `doas`) sets to identify the operator. Centralised here so code that must
+/// clear or forward the escalation context — notably the session-detection test
+/// harness — reuses this list instead of re-spelling the literals, keeping this
+/// module the single place those variable names appear.
+pub const PRIVILEGE_ENV_VARS: &[&str] = &[
+    ENV_SUDO_UID,
+    ENV_PKEXEC_UID,
+    ENV_DOAS_UID,
+    ENV_SUDO_USER,
+    ENV_DOAS_USER,
+];
+
 /// The unprivileged user a privileged NAILS run is acting on behalf of.
 ///
 /// Construct one with [`TargetUser::resolve`] in production, or

@@ -167,13 +167,22 @@ fn systemd_run_program() -> Result<OsString, NailsError> {
     Ok(OsString::from("systemd-run"))
 }
 
+/// Forward the operator's identity across the `systemd-run` boundary so the
+/// detached worker acts for the same account this invocation did.
+///
+/// This is the one place that turns the raw escalation environment into NAILS's
+/// own identity variables: it resolves the operator once through
+/// [`nails_core::TargetUser`] — the single source of truth for who NAILS acts on
+/// behalf of — and forwards the resolved numeric uid and login name as
+/// `NAILS_TARGET_UID` / `NAILS_TARGET_USER`. The detached worker then reads only
+/// those; the escalation variables themselves are not preserved across the
+/// transient-unit boundary. When no operator can be resolved (detach may run
+/// before any escalation context is established) nothing is forwarded and the
+/// worker resolves for itself.
 fn set_target_identity_from_environment(cmd: &mut Command) {
-    if let Ok(uid) = env::var(ENV_TARGET_UID).or_else(|_| env::var("SUDO_UID")) {
-        cmd.arg(format!("--setenv={}={}", ENV_TARGET_UID, uid));
-    }
-
-    if let Ok(user) = env::var(ENV_TARGET_USER).or_else(|_| env::var("SUDO_USER")) {
-        cmd.arg(format!("--setenv={}={}", ENV_TARGET_USER, user));
+    if let Ok(user) = nails_core::TargetUser::resolve() {
+        cmd.arg(format!("--setenv={}={}", ENV_TARGET_UID, user.uid));
+        cmd.arg(format!("--setenv={}={}", ENV_TARGET_USER, user.name));
     }
 }
 

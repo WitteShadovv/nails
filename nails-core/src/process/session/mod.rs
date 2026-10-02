@@ -247,10 +247,12 @@ pub(crate) mod tests_common {
             "XDG_SESSION_TYPE",
             "DISPLAY",
             "WAYLAND_DISPLAY",
-            "SUDO_UID",
-            "SUDO_USER",
-            "PKEXEC_UID",
         ] {
+            env.remove(key);
+        }
+        // The privilege-escalation variables live in one list in `target_user`;
+        // reuse it so detection tests clear the full escalation context.
+        for key in crate::target_user::PRIVILEGE_ENV_VARS {
             env.remove(key);
         }
         env

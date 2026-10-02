@@ -1,6 +1,6 @@
 //! Tests for history file registry and types
 
-use super::registry::{ALL_HISTORY_FILES, get_by_category, get_common, get_existing};
+use super::registry::{ALL_HISTORY_FILES, get_by_category, get_common};
 use super::*;
 
 /// Test home directory path - safe for tests, doesn't exist on real filesystem
@@ -359,23 +359,6 @@ fn test_history_file_resolve_path_for_home_nvim() {
         resolved,
         PathBuf::from("/home/testuser/.local/state/nvim/shada/main.shada")
     );
-}
-
-#[test]
-fn test_get_existing_returns_only_existing_files() {
-    // This test verifies the function signature and that it doesn't panic
-    // Actual file existence depends on the test environment
-    let existing = get_existing();
-
-    // All returned paths should exist
-    for (file, path) in &existing {
-        assert!(
-            path.exists(),
-            "File {} at {} should exist",
-            file.name,
-            path.display()
-        );
-    }
 }
 
 #[test]

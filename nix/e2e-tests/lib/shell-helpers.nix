@@ -24,20 +24,26 @@
         }
   '';
 
+  # NAILS runs as root and resolves the operator it acts for from the
+  # privilege-escalation environment (SUDO_UID/SUDO_USER), never from HOME/USER.
+  # These helpers therefore inject the escalation identity for `user` instead of
+  # faking a login environment: HOME under a real `sudo` is /root, so the old
+  # HOME/USER injection described a context the real invocation never produces.
+  # The genuine end-to-end `sudo nails` path (no injected variables at all) is
+  # covered by tests/shell/45-shell-history-real-sudo.nix.
   activateForUserFn = ''
     def activate_for_user(
         config_path,
         shell_path,
         extra_args="--overlay-only --session keep -y",
         user="testuser",
-        home="/home/testuser",
     ):
         import shlex
 
         command = (
-            "env HOME="
-            + shlex.quote(home)
-            + " USER="
+            "env SUDO_UID=$(id -u "
+            + shlex.quote(user)
+            + ") SUDO_USER="
             + shlex.quote(user)
             + " SHELL="
             + shlex.quote(shell_path)
@@ -54,15 +60,14 @@
         config_path,
         shell_path,
         user="testuser",
-        home="/home/testuser",
         unit_name="nails-deactivate-user",
     ):
         import shlex
 
         command = (
-            "env HOME="
-            + shlex.quote(home)
-            + " USER="
+            "env SUDO_UID=$(id -u "
+            + shlex.quote(user)
+            + ") SUDO_USER="
             + shlex.quote(user)
             + " SHELL="
             + shlex.quote(shell_path)
