@@ -75,6 +75,7 @@
   "status-always-exits-zero": 150,
   "status-json-schema": 247,
   "status-verify": 103,
+  "uefi-esp-nvram-invariant": 300,
   "verify": 120,
   "verbosity-flags": 381,
   "verify-base-config-clean": 64,
