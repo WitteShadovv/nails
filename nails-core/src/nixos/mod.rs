@@ -189,7 +189,6 @@ impl NixOSBuilder {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     fn new_legacy_with_executor(
         config_path: PathBuf,
         profile_path: PathBuf,

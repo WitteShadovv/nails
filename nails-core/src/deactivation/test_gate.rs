@@ -94,13 +94,11 @@ pub(crate) fn maybe_block_after_deactivating_state_transition() -> Result<()> {
 /// with the gate armed). In this crate's own tests, and in shipped builds, it is
 /// always false and reads no environment.
 #[cfg(all(not(test), feature = "test-hooks"))]
-#[allow(dead_code)]
 pub(crate) fn should_skip_shell_cleanup_before_deactivation_gate() -> bool {
     std::env::var_os("NAILS_TEST_DEACTIVATING_GATE_PATH").is_some()
 }
 
-#[cfg(not(all(not(test), feature = "test-hooks")))]
-#[allow(dead_code)]
+#[cfg(all(not(test), not(feature = "test-hooks")))]
 pub(crate) fn should_skip_shell_cleanup_before_deactivation_gate() -> bool {
     false
 }

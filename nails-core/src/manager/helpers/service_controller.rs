@@ -316,13 +316,6 @@ impl ServiceController {
         Ok(())
     }
 
-    /// Start nix-daemon: start socket (which activates service on demand),
-    /// then start the service directly as well. Best-effort.
-    #[allow(dead_code)]
-    pub fn start_nix_daemon() {
-        Self::start_service_and_socket("nix-daemon");
-    }
-
     pub fn start_nix_daemon_and_wait() -> std::result::Result<(), std::io::Error> {
         if Self::should_skip() {
             return Ok(());
@@ -375,13 +368,6 @@ impl ServiceController {
         .map_err(|err| io_context_error("waiting for manual nix-daemon startup", err))?;
 
         Ok(())
-    }
-
-    /// Restart nix-daemon: stop then start.
-    #[allow(dead_code)]
-    pub fn restart_nix_daemon() {
-        let _ = Self::stop_nix_daemon();
-        Self::start_nix_daemon();
     }
 
     /// Start a systemd service and its socket (socket first), best-effort.

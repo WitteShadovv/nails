@@ -20,12 +20,6 @@ use crate::process::RiskyServicePolicy;
 /// must never trip that warning.
 pub const DEFAULT_HIDDEN_VOLUME_ROOT: &str = "/mnt/data";
 
-/// Default hidden volume root path as an owned `String`.
-#[allow(dead_code)]
-pub fn default_hidden_volume_root() -> String {
-    DEFAULT_HIDDEN_VOLUME_ROOT.to_string()
-}
-
 /// Get the default hidden volume root path.
 pub fn get_default_hidden_volume_root() -> String {
     DEFAULT_HIDDEN_VOLUME_ROOT.to_string()
@@ -97,16 +91,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_hidden_volume_root_returns_nonempty_string() {
-        let root = default_hidden_volume_root();
+    fn test_get_default_hidden_volume_root_returns_nonempty_string() {
+        let root = get_default_hidden_volume_root();
         assert!(!root.is_empty());
-    }
-
-    #[test]
-    fn test_get_default_hidden_volume_root_returns_same_as_default() {
-        let root1 = default_hidden_volume_root();
-        let root2 = get_default_hidden_volume_root();
-        assert_eq!(root1, root2);
     }
 
     #[test]
