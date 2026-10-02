@@ -10,6 +10,7 @@ use crate::deactivation::test_gate::maybe_block_after_deactivating_state_transit
 #[cfg(not(test))]
 use crate::deactivation::test_gate::should_skip_shell_cleanup_before_deactivation_gate;
 use crate::deactivation::{DeactivationReport, PostUnmountCleanupReport};
+use crate::nixos::SwitchAction;
 #[cfg(not(test))]
 use crate::process::kill_user_shells;
 use crate::{
@@ -171,6 +172,79 @@ fn request_reboot() -> Result<()> {
     }
 
     dispatch_reboot_candidates(reboot_candidates())
+}
+
+/// What the post-deactivation reboot step ended up doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostDeactivationReboot {
+    /// A reboot command was dispatched; the host restarts and boots the decoy.
+    Dispatched,
+    /// The reboot command failed, so a non-installing `switch-to-configuration
+    /// test` restored the decoy for the running session instead.
+    FellBackToTest,
+}
+
+/// Request a reboot and, if the reboot command fails, fall back to a
+/// non-installing `switch-to-configuration test`.
+///
+/// A failed reboot must never leave the hidden generation active, but the
+/// fallback must also never reinstall the bootloader or write EFI NVRAM, so it
+/// uses [`SwitchAction::Test`] (the only action the type can express). The
+/// decision is kept in a small, closure-driven function so the fallback path is
+/// unit-testable without dispatching a real reboot.
+fn reboot_then_restore_decoy_on_failure(
+    reboot: impl FnOnce() -> Result<()>,
+    restore_decoy: impl FnOnce() -> Result<()>,
+) -> Result<PostDeactivationReboot> {
+    match reboot() {
+        Ok(()) => Ok(PostDeactivationReboot::Dispatched),
+        Err(reboot_error) => {
+            tracing::warn!(
+                error = %reboot_error,
+                "Reboot command failed; falling back to switch-to-configuration test to restore the decoy for this session"
+            );
+            restore_decoy()?;
+            Ok(PostDeactivationReboot::FellBackToTest)
+        }
+    }
+}
+
+/// Run the decoy generation's `switch-to-configuration test` for the running
+/// session (reboot fallback only).
+///
+/// This re-points the live system at the decoy without reinstalling the
+/// bootloader or writing the ESP / EFI NVRAM. The action is built from
+/// [`SwitchAction`], so it can only ever be `test`, never `switch`/`boot`.
+fn switch_to_decoy_for_session<F: Filesystem>(filesystem: &F) -> Result<()> {
+    let Some(system_profile) = select_system_profile(filesystem)? else {
+        return Err(NailsError::NixOSError(
+            "No system profile available for decoy restore".into(),
+        ));
+    };
+
+    let switch_script = system_profile.join("bin/switch-to-configuration");
+    if !filesystem.path_exists(&switch_script)? {
+        return Err(NailsError::NixOSError(format!(
+            "System profile switch script missing: {}",
+            switch_script.display()
+        )));
+    }
+
+    let output = std::process::Command::new(&switch_script)
+        .arg(SwitchAction::Test.as_arg())
+        .output()
+        .map_err(|e| {
+            NailsError::NixOSError(format!("Decoy session switch failed to start: {}", e))
+        })?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(NailsError::NixOSError(format!(
+            "Decoy session switch failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )))
+    }
 }
 
 /// Merge this process's ancestry with any PIDs handed across the `systemd-run`
@@ -437,7 +511,6 @@ impl<F: Filesystem> NailsManager<F> {
         let restore_decoy_profile = requires_decoy_restore(self)?;
         let orchestrator = DeactivationOrchestrator::new(cleanup_config)
             .with_mode(kind.orchestrator_mode())
-            .with_switch_script_execution(kind == ManagerDeactivationKind::Normal)
             .with_decoy_profile_restore(restore_decoy_profile);
 
         let result = orchestrator.run(self);
@@ -477,7 +550,9 @@ impl<F: Filesystem> NailsManager<F> {
             }
 
             if !crate::runtime_safety::should_skip_host_interaction() {
-                request_reboot()?;
+                reboot_then_restore_decoy_on_failure(request_reboot, || {
+                    switch_to_decoy_for_session(self.filesystem())
+                })?;
             }
         }
 
@@ -566,7 +641,9 @@ fn remaining_nails_mounts<F: Filesystem>(
 /// 2. Artifact cleanup (history, temp files, logs).
 /// 3. Overlay unmounting in reverse LIFO order — every target is attempted.
 /// 4. State transition DEACTIVATING -> INACTIVE.
-/// 5. Decoy system-profile switch.
+/// 5. Decoy restore: re-point /run/current-system at the decoy profile (symlink
+///    swap only — no `switch-to-configuration switch`, so the bootloader, ESP
+///    and EFI NVRAM are never touched).
 ///
 /// A failure in steps 1-2 (before any overlay is detached) rolls the state back
 /// to ACTIVE on drop. Once step 3 has detached any overlay the teardown never
@@ -576,7 +653,6 @@ fn remaining_nails_mounts<F: Filesystem>(
 pub struct DeactivationOrchestrator {
     cleanup_config: CleanupConfig,
     mode: DeactivationMode,
-    execute_switch_script: bool,
     restore_decoy_profile: bool,
 }
 
@@ -586,7 +662,6 @@ impl DeactivationOrchestrator {
         Self {
             cleanup_config,
             mode: DeactivationMode::Normal,
-            execute_switch_script: true,
             restore_decoy_profile: true,
         }
     }
@@ -594,12 +669,6 @@ impl DeactivationOrchestrator {
     /// Set the deactivation mode (builder pattern).
     pub fn with_mode(mut self, mode: DeactivationMode) -> Self {
         self.mode = mode;
-        self
-    }
-
-    /// Control whether the decoy switch script is executed after symlink preparation.
-    pub(crate) fn with_switch_script_execution(mut self, execute_switch_script: bool) -> Self {
-        self.execute_switch_script = execute_switch_script;
         self
     }
 
@@ -613,7 +682,7 @@ impl DeactivationOrchestrator {
     ///
     /// Returns a [`DeactivationReport`] on success. On failure the state is
     /// either rolled back to ACTIVE (cleanup failed before any unmount), left
-    /// INACTIVE (only the decoy switch failed), or recorded as DEGRADED with
+    /// INACTIVE (only the decoy restore failed), or recorded as DEGRADED with
     /// [`NailsError::DeactivationIncomplete`] (some overlays could not be
     /// unmounted) — never ACTIVE once any overlay has been detached.
     pub fn run<F: Filesystem>(&self, manager: &mut NailsManager<F>) -> Result<DeactivationReport> {
@@ -776,61 +845,35 @@ impl DeactivationOrchestrator {
         let inactive_state = guard.current_state()?.complete_deactivation()?;
         guard.update_state(inactive_state)?;
 
-        // Step 5: Switch to the newest available base system generation (decoy).
-        let switch_error = if !self.restore_decoy_profile {
+        // Step 5: Point /run/current-system back at the decoy system profile.
+        //
+        // We never run `switch-to-configuration switch` here. The reboot that
+        // follows a Normal deactivation boots the decoy from the bootloader
+        // default (activation only ever used `test`), so a real switch would be
+        // pure redundancy — and it would reinstall the bootloader, write the ESP
+        // and rewrite EFI NVRAM and /var/lib/nixos, leaving evidence that the
+        // hidden mode existed. Swapping only the live /run/current-system symlink
+        // restores the decoy for any caller that does not reboot (emergency)
+        // without touching the bootloader, ESP or NVRAM.
+        let restore_error = if !self.restore_decoy_profile {
             None
         } else if let Some(system_profile) = select_system_profile(guard.filesystem())? {
-            tracing::info!("Switching to decoy NixOS configuration...");
-
-            if let Err(e) = ensure_run_current_system_symlink(guard.filesystem(), &system_profile) {
-                Some(NailsError::NixOSError(format!(
-                    "Failed to prepare /run/current-system for NixOS switch: {}",
-                    e
-                )))
-            } else if !self.execute_switch_script {
-                None
-            } else {
-                let switch_script = system_profile.join("bin/switch-to-configuration");
-                match guard.filesystem().path_exists(&switch_script) {
-                    Ok(true) => {
-                        if crate::runtime_safety::should_skip_host_interaction() {
-                            None
-                        } else {
-                            match std::process::Command::new(&switch_script)
-                                .arg("switch")
-                                .output()
-                            {
-                                Ok(output) => {
-                                    if output.status.success() {
-                                        None
-                                    } else {
-                                        Some(NailsError::NixOSError(format!(
-                                            "System profile switch failed: {}",
-                                            String::from_utf8_lossy(&output.stderr)
-                                        )))
-                                    }
-                                }
-                                Err(e) => Some(NailsError::NixOSError(format!(
-                                    "System profile switch failed: {}",
-                                    e
-                                ))),
-                            }
-                        }
-                    }
-                    Ok(false) => Some(NailsError::NixOSError(format!(
-                        "System profile switch script missing: {}",
-                        switch_script.display()
-                    ))),
-                    Err(e) => Some(e),
-                }
-            }
+            tracing::info!("Restoring /run/current-system to the decoy profile...");
+            ensure_run_current_system_symlink(guard.filesystem(), &system_profile)
+                .err()
+                .map(|e| {
+                    NailsError::NixOSError(format!(
+                        "Failed to restore /run/current-system to the decoy profile: {}",
+                        e
+                    ))
+                })
         } else {
             Some(NailsError::NixOSError(
-                "No system profile available for decoy switch".into(),
+                "No system profile available for decoy restore".into(),
             ))
         };
 
-        if let Some(err) = switch_error {
+        if let Some(err) = restore_error {
             // State is already INACTIVE; keep it (do not roll back to ACTIVE).
             guard.commit();
             return Err(err);

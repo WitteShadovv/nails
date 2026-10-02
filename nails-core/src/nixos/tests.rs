@@ -68,7 +68,7 @@ impl CommandExecutorTrait for MockCommandExecutor {
     fn execute_switch_to_configuration(
         &self,
         _script_path: &std::path::Path,
-        _args: &[&str],
+        _action: SwitchAction,
     ) -> Result<(bool, String, String)> {
         // For build tests, we don't actually call switch-to-configuration
         // Return success by default
@@ -151,14 +151,14 @@ impl CommandExecutorTrait for RecordingCommandExecutor {
     fn execute_switch_to_configuration(
         &self,
         script_path: &std::path::Path,
-        args: &[&str],
+        action: SwitchAction,
     ) -> Result<(bool, String, String)> {
         self.calls
             .lock()
             .unwrap()
             .push(RecordedCall::SwitchToConfiguration {
                 script_path: script_path.to_path_buf(),
-                args: args.iter().map(|arg| arg.to_string()).collect(),
+                args: vec![action.as_arg().to_string()],
             });
         self.switch_results
             .lock()
@@ -217,7 +217,7 @@ impl CommandExecutorTrait for PreflightExecutor {
     fn execute_switch_to_configuration(
         &self,
         _script_path: &Path,
-        _args: &[&str],
+        _action: SwitchAction,
     ) -> Result<(bool, String, String)> {
         panic!("execute_switch_to_configuration should not be called in flake preflight tests")
     }
@@ -1368,7 +1368,9 @@ fn test_switch_profile_returns_error_when_profile_generation_missing() {
         Box::new(RecordingCommandExecutor::new(vec![], vec![])),
     );
 
-    let err = builder.switch_profile("123", "switch").unwrap_err();
+    let err = builder
+        .switch_profile("123", SwitchAction::Test)
+        .unwrap_err();
     assert!(
         err.to_string()
             .contains("Profile not found: 123. Run 'nails activate' to rebuild.")
@@ -1391,13 +1393,13 @@ fn test_switch_profile_uses_generation_specific_switch_script_on_success() {
         Box::new(executor),
     );
 
-    assert!(builder.switch_profile("123", "boot").is_ok());
+    assert!(builder.switch_profile("123", SwitchAction::Test).is_ok());
 
     assert_eq!(
         calls.lock().unwrap().clone(),
         vec![RecordedCall::SwitchToConfiguration {
             script_path: generation_dir.join("bin/switch-to-configuration"),
-            args: vec!["boot".to_string()],
+            args: vec!["test".to_string()],
         }]
     );
 }
@@ -1432,9 +1434,23 @@ fn test_switch_profile_rolls_back_to_current_system_generation_when_switch_fails
         Box::new(executor),
     );
 
-    let err = builder.switch_profile("123", "switch").unwrap_err();
+    let err = builder
+        .switch_profile("123", SwitchAction::Test)
+        .unwrap_err();
     assert!(err.to_string().contains("Switch failed: primary failed"));
-    assert_eq!(calls.lock().unwrap().len(), 2);
+
+    // The rollback must use the non-installing `test` action against the current
+    // system generation: it must never reinstall the bootloader or write EFI
+    // NVRAM while recovering from a failed switch.
+    let recorded = calls.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(
+        recorded[1],
+        RecordedCall::SwitchToConfiguration {
+            script_path: current_generation.join("bin/switch-to-configuration"),
+            args: vec!["test".to_string()],
+        }
+    );
 
     clear_system_profile_env();
 }
@@ -1469,7 +1485,9 @@ fn test_switch_profile_returns_original_error_when_rollback_fails() {
         Box::new(executor),
     );
 
-    let err = builder.switch_profile("123", "switch").unwrap_err();
+    let err = builder
+        .switch_profile("123", SwitchAction::Test)
+        .unwrap_err();
     assert!(err.to_string().contains("Switch failed: primary failed"));
     assert_eq!(calls.lock().unwrap().len(), 2);
 
@@ -1499,7 +1517,9 @@ fn test_switch_profile_skips_rollback_when_current_system_generation_unavailable
         Box::new(executor),
     );
 
-    let err = builder.switch_profile("123", "switch").unwrap_err();
+    let err = builder
+        .switch_profile("123", SwitchAction::Test)
+        .unwrap_err();
     assert!(err.to_string().contains("Switch failed: primary failed"));
     assert_eq!(calls.lock().unwrap().len(), 1);
 
@@ -1524,7 +1544,7 @@ fn test_switch_system_generation_returns_error_when_generation_missing() {
     );
 
     let err = builder
-        .switch_system_generation("99", "switch")
+        .switch_system_generation("99", SwitchAction::Test)
         .unwrap_err();
     assert!(err.to_string().contains("System generation not found: 99"));
 
@@ -1583,60 +1603,6 @@ fn test_current_system_generation_returns_none_for_unparseable_system_target() {
     );
 
     assert_eq!(builder.current_system_generation().unwrap(), None);
-
-    clear_system_profile_env();
-}
-
-#[test]
-#[cfg(unix)]
-#[serial]
-fn test_switch_to_system_profile_returns_ok_when_system_profile_missing() {
-    clear_system_profile_env();
-    let temp_dir = tempfile::tempdir().unwrap();
-    let system_profile = temp_dir.path().join("profiles/system");
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-    }
-
-    let builder = NixOSBuilder::new_with_executor(
-        temp_dir.path().join("config"),
-        temp_dir.path().join("nails-system"),
-        Box::new(RecordingCommandExecutor::new(vec![], vec![])),
-    );
-
-    assert!(builder.switch_to_system_profile().is_ok());
-
-    clear_system_profile_env();
-}
-
-#[test]
-#[cfg(unix)]
-#[serial]
-fn test_switch_to_system_profile_returns_stderr_when_switch_fails() {
-    clear_system_profile_env();
-    let temp_dir = tempfile::tempdir().unwrap();
-    let profiles_dir = temp_dir.path().join("profiles");
-    std::fs::create_dir_all(&profiles_dir).unwrap();
-    let system_profile = profiles_dir.join("system");
-    std::fs::create_dir_all(system_profile.join("bin")).unwrap();
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-    }
-
-    let builder = NixOSBuilder::new_with_executor(
-        temp_dir.path().join("config"),
-        temp_dir.path().join("nails-system"),
-        Box::new(RecordingCommandExecutor::new(
-            vec![],
-            vec![Ok((false, String::new(), "denied".to_string()))],
-        )),
-    );
-
-    let err = builder.switch_to_system_profile().unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("System profile switch failed: denied")
-    );
 
     clear_system_profile_env();
 }
@@ -1751,12 +1717,12 @@ fn test_real_command_executor_execute_switch_to_configuration_runs_exact_script_
     );
 
     let result = RealCommandExecutor
-        .execute_switch_to_configuration(&script, &["switch"])
+        .execute_switch_to_configuration(&script, SwitchAction::Test)
         .unwrap();
 
     assert_eq!(
         result,
-        (true, "mode=switch\n".to_string(), "note\n".to_string())
+        (true, "mode=test\n".to_string(), "note\n".to_string())
     );
 }
 

@@ -48,7 +48,7 @@ pub mod config;
 pub mod fingerprint;
 
 // Re-exports for public API
-pub use command::{CommandExecutor, RealCommandExecutor};
+pub use command::{CommandExecutor, RealCommandExecutor, SwitchAction};
 pub use config::{
     NixOSConfigInfo, NixParser, RealNixParser, contains_nails_import,
     ensure_hidden_configuration_module, ensure_hidden_hardware_configuration, inject_import_block,

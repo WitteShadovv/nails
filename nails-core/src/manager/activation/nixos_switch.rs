@@ -10,6 +10,7 @@
 //! 3. Persist the resulting generation and fingerprint.
 
 use super::{ensure_run_current_system_symlink, select_system_profile};
+use crate::nixos::SwitchAction;
 use crate::{
     Filesystem, NailsError, NailsManager, Result, Stopwatch, Verbosity,
     classify_nixos_failure_category, format_classified_nixos_failure,
@@ -57,7 +58,7 @@ impl<F: Filesystem> NailsManager<F> {
                 );
             }
 
-            match builder.switch_system_generation(generation_id, "test") {
+            match builder.switch_system_generation(generation_id, SwitchAction::Test) {
                 Ok(()) => {
                     switched = true;
                     if verbosity >= Verbosity::Normal {

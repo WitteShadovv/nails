@@ -3,7 +3,7 @@
 use super::{system_profile_path, system_profiles_dir};
 use crate::error::{NailsError, Result};
 use crate::nixos::is_non_fatal_switch_failure;
-use crate::nixos::{NixOSBuildMode, NixOSBuilder};
+use crate::nixos::{NixOSBuildMode, NixOSBuilder, SwitchAction};
 use std::path::PathBuf;
 
 fn prefer_stderr(stderr: &str, stdout: &str) -> String {
@@ -27,7 +27,7 @@ impl NixOSBuilder {
     /// - Profile existence validation before switch
     /// - Automatic rollback on failure
     /// - Detailed error messages with stderr capture
-    pub fn switch_profile(&self, generation: &str, action: &str) -> Result<()> {
+    pub fn switch_profile(&self, generation: &str, action: SwitchAction) -> Result<()> {
         // Validate profile exists before attempting switch
         if !self.profile_exists(generation)? {
             return Err(NailsError::NixOSError(format!(
@@ -43,7 +43,7 @@ impl NixOSBuilder {
         tracing::info!(
             "Switching to NixOS profile: generation {} (action: {})",
             generation,
-            action
+            action.as_arg()
         );
 
         // Construct path to the profile's activation script
@@ -58,13 +58,15 @@ impl NixOSBuilder {
 
         let (success, _stdout, stderr) = self
             .executor
-            .execute_switch_to_configuration(&switch_script, &[action])?;
+            .execute_switch_to_configuration(&switch_script, action)?;
 
         if !success {
-            // Attempt rollback to previous generation
+            // Attempt rollback to previous generation. The rollback uses the
+            // same non-installing action: it must never reinstall the bootloader
+            // or write EFI NVRAM while recovering.
             if let Some(prev) = previous_gen {
                 tracing::warn!("Switch failed, attempting rollback to generation {}", prev);
-                if let Err(e) = self.switch_to_generation(&prev, "switch") {
+                if let Err(e) = self.switch_to_generation(&prev, SwitchAction::Test) {
                     tracing::error!("Rollback failed: {}", e);
                 }
             }
@@ -80,7 +82,7 @@ impl NixOSBuilder {
     }
 
     /// Switch to a specific system generation (non-flake fast path).
-    pub fn switch_system_generation(&self, generation: &str, action: &str) -> Result<()> {
+    pub fn switch_system_generation(&self, generation: &str, action: SwitchAction) -> Result<()> {
         if !self.system_generation_exists(generation)? {
             return Err(NailsError::NixOSError(format!(
                 "System generation not found: {}",
@@ -135,7 +137,7 @@ impl NixOSBuilder {
     }
 
     /// Switch to specific generation (internal use for rollback)
-    fn switch_to_generation(&self, generation: &str, action: &str) -> Result<()> {
+    fn switch_to_generation(&self, generation: &str, action: SwitchAction) -> Result<()> {
         // Construct path to the profile's activation script for rollback
         // This uses the system profile path, not our custom nails profile
         let system_profile_path = system_profiles_dir().join(format!("system-{}-link", generation));
@@ -144,35 +146,12 @@ impl NixOSBuilder {
 
         let (success, _stdout, _stderr) = self
             .executor
-            .execute_switch_to_configuration(&switch_script, &[action])?;
-
-        if !success {
-            return Err(NailsError::NixOSError(format!("NixOS {} failed", action)));
-        }
-
-        Ok(())
-    }
-
-    /// Switch back to the current system profile (decoy) generation.
-    ///
-    /// Uses the system profile's switch-to-configuration script directly.
-    pub fn switch_to_system_profile(&self) -> Result<()> {
-        let system_profile = system_profile_path();
-
-        if !system_profile.exists() {
-            return Ok(());
-        }
-
-        let switch_script = system_profile.join("bin/switch-to-configuration");
-
-        let (success, _stdout, stderr) = self
-            .executor
-            .execute_switch_to_configuration(&switch_script, &["switch"])?;
+            .execute_switch_to_configuration(&switch_script, action)?;
 
         if !success {
             return Err(NailsError::NixOSError(format!(
-                "System profile switch failed: {}",
-                stderr
+                "NixOS {} failed",
+                action.as_arg()
             )));
         }
 

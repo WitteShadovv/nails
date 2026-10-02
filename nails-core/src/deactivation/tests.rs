@@ -678,7 +678,12 @@ fn test_deactivation_skips_decoy_restore_when_disabled() {
 
 #[test]
 #[serial]
-fn test_deactivation_skips_switch_script_execution_when_disabled() {
+fn test_deactivation_restores_decoy_by_symlink_without_running_switch() {
+    // Normal deactivation must restore the decoy by swapping the
+    // /run/current-system symlink only. It must never run
+    // `switch-to-configuration switch`, which would reinstall the bootloader and
+    // write the ESP / EFI NVRAM. A missing switch-to-configuration script is
+    // therefore no longer an error.
     let manager = setup_active_manager();
 
     {
@@ -687,18 +692,24 @@ fn test_deactivation_skips_switch_script_execution_when_disabled() {
         m.filesystem().mock_set_mounted(Path::new("/etc"), true);
     }
 
-    let orchestrator =
-        DeactivationOrchestrator::new(CleanupConfig::default()).with_switch_script_execution(false);
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
     let report = orchestrator
         .run(&mut manager.lock().unwrap())
-        .expect("deactivation should succeed without executing switch-to-configuration");
+        .expect("deactivation should succeed via the symlink-only decoy restore");
 
     assert_eq!(report.final_state, SystemState::Inactive);
-    assert_eq!(
-        manager.lock().unwrap().current_state().unwrap(),
-        SystemState::Inactive
+
+    let guard = manager.lock().unwrap();
+    assert_eq!(guard.current_state().unwrap(), SystemState::Inactive);
+    // The decoy was restored by re-pointing /run/current-system, not by a switch.
+    assert!(
+        guard
+            .filesystem()
+            .is_symlink(Path::new("/run/current-system"))
+            .unwrap()
     );
+    drop(guard);
 
     clear_system_profile_env();
 }
@@ -723,57 +734,12 @@ fn test_deactivation_returns_error_when_no_decoy_profile_is_available() {
 
     assert!(
         err.to_string()
-            .contains("No system profile available for decoy switch")
+            .contains("No system profile available for decoy restore")
     );
     assert_eq!(
         manager.lock().unwrap().current_state().unwrap(),
         SystemState::Inactive
     );
-}
-
-#[test]
-#[serial]
-fn test_deactivation_returns_error_when_switch_script_is_missing() {
-    clear_system_profile_env();
-
-    let manager = setup_active_manager();
-    let hidden_root = manager.lock().unwrap().config().hidden_volume_root.clone();
-    let system_profile = hidden_root.join("profiles/system");
-    let profiles_dir = system_profile.parent().unwrap().to_path_buf();
-    let generation_dir = profiles_dir.join("system-1-link");
-    std::fs::create_dir_all(&generation_dir).unwrap();
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-    }
-
-    {
-        let m = manager.lock().unwrap();
-        m.filesystem()
-            .mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
-        m.filesystem()
-            .mock_set_path_type(profiles_dir.to_str().unwrap(), PathKind::Dir);
-        m.filesystem()
-            .mock_set_directory_contents(&profiles_dir, vec![generation_dir.clone()]);
-        m.filesystem().mock_set_mounted(Path::new("/home"), true);
-        m.filesystem().mock_set_mounted(Path::new("/etc"), true);
-    }
-
-    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
-
-    let err = orchestrator
-        .run(&mut manager.lock().unwrap())
-        .expect_err("deactivation should fail when switch-to-configuration is missing");
-
-    assert!(
-        err.to_string()
-            .contains("System profile switch script missing")
-    );
-    assert_eq!(
-        manager.lock().unwrap().current_state().unwrap(),
-        SystemState::Inactive
-    );
-
-    clear_system_profile_env();
 }
 
 #[test]
@@ -1439,7 +1405,7 @@ fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
         .expect_err("normal deactivation should fail when no decoy profile is available");
     let err_text = err.to_string();
     assert!(
-        err_text.contains("No system profile available for decoy switch")
+        err_text.contains("No system profile available for decoy restore")
             || err_text.contains("No system profile found. Cannot restore decoy configuration."),
         "unexpected error: {err_text}"
     );
@@ -1633,7 +1599,6 @@ fn test_deactivate_uses_overlay_metadata_when_active_overlay_list_is_incomplete(
 
     let report = DeactivationOrchestrator::new(CleanupConfig::default())
         .with_decoy_profile_restore(false)
-        .with_switch_script_execution(false)
         .run(&mut manager.lock().unwrap())
         .expect("deactivation should use tracked overlay metadata");
 

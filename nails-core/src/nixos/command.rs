@@ -37,6 +37,29 @@ fn nix_toolchain_command(
     }
 }
 
+/// Non-installing action for `switch-to-configuration` / `nixos-rebuild`.
+///
+/// Activating or restoring a generation must never reinstall the bootloader or
+/// write EFI NVRAM: a boot entry, ESP file or NVRAM variable that enables the
+/// hidden mode is itself evidence. This type can only express `test`, so no
+/// caller can smuggle a `switch` or `boot` action through
+/// [`CommandExecutor::execute_switch_to_configuration`] or into `nixos-rebuild`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchAction {
+    /// `switch-to-configuration test`: activate the generation for the running
+    /// session only, leaving the bootloader, ESP and EFI NVRAM untouched.
+    Test,
+}
+
+impl SwitchAction {
+    /// The literal argument this action passes to `switch-to-configuration`.
+    pub fn as_arg(self) -> &'static str {
+        match self {
+            SwitchAction::Test => "test",
+        }
+    }
+}
+
 /// Trait for executing commands (for testability)
 ///
 /// Abstracts command execution to allow mocking in tests.
@@ -65,7 +88,8 @@ pub trait CommandExecutor {
     /// # Arguments
     ///
     /// - `script_path`: Full path to switch-to-configuration script
-    /// - `args`: Arguments to pass to the script (e.g., ["switch"])
+    /// - `action`: the non-installing action to run; only `test` is expressible,
+    ///   so this can never reinstall the bootloader or write EFI NVRAM
     ///
     /// # Returns
     ///
@@ -73,7 +97,7 @@ pub trait CommandExecutor {
     fn execute_switch_to_configuration(
         &self,
         script_path: &Path,
-        args: &[&str],
+        action: SwitchAction,
     ) -> Result<(bool, String, String)>;
 }
 
@@ -110,11 +134,11 @@ impl CommandExecutor for RealCommandExecutor {
     fn execute_switch_to_configuration(
         &self,
         script_path: &Path,
-        args: &[&str],
+        action: SwitchAction,
     ) -> Result<(bool, String, String)> {
         RealProcessRunner.run_text(
             &ProcessCommand::exact(script_path)
-                .args(args)
+                .args([action.as_arg()])
                 .allow_in_test_runtime(),
         )
     }
