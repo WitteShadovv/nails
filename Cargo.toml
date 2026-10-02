@@ -56,6 +56,19 @@ assert_cmd = "2.2.1"
 predicates = "3.1.3"
 # Property tests. Only `std`: the fork and timeout features add crates unused here
 proptest = { version = "1.11", default-features = false, features = ["std"] }
+# Snapshot testing for the CLI contract. `insta` captures help/version and the
+# human renderings; `insta-cmd` snapshots a whole command invocation (stdout,
+# stderr and exit code) in one assertion. Dev-only, so none of this reaches the
+# shipped binary. `json`/`redactions` back `assert_json_snapshot!`; `filters`
+# strips the trailing whitespace clap emits in help text so the committed
+# snapshots survive the trailing-whitespace lint.
+insta = { version = "1.48.0", features = ["json", "redactions", "filters"] }
+insta-cmd = "0.7.0"
+# JSON Schema validation for the machine-readable (`--json`) contract: the same
+# fixtures the E2E suite uses are enforced here against real command output.
+# `default-features = false` drops the HTTP/file `$ref` resolvers and the format
+# assertions the fixtures do not rely on.
+jsonschema = { version = "0.58.4", default-features = false }
 
 # Compile-time code policy shared by every crate and target. `unsafe_code` is
 # denied: each production unsafe site opts in with a scoped

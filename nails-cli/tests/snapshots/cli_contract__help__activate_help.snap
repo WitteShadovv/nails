@@ -1,0 +1,100 @@
+---
+source: nails-cli/tests/cli_contract.rs
+info:
+  program: nails
+  args:
+    - activate
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Activate the hidden NixOS environment (mount overlayfs + switch profiles)
+
+Usage: nails activate [OPTIONS]
+
+Options:
+  -c, --config <PATH>
+          Path to the configuration file (overrides binary-relative discovery)
+
+      --no-preflight
+          Skip pre-flight checks (DANGEROUS - expert use only)
+
+      --session <POLICY>
+          What to do with the graphical session (default: kill)
+
+          Possible values:
+          - kill: Terminate the graphical session before mounting (the secure default)
+          - keep: Keep the current session running (mounts only what can be overlaid live)
+
+          [default: kill]
+
+  -v, --verbose...
+          More diagnostics on stderr: -v for debug, -vv for trace
+
+      --pivot <POLICY>
+          How to handle a volume that needs a pivot mount (default: refuse)
+
+          Possible values:
+          - refuse: Abort rather than fall back to a pivot mount (the secure default)
+          - allow:  Fall back to a pivot mount without asking (degraded security)
+          - ask:    Prompt on a terminal before falling back to a pivot mount; refuse without one
+
+          [default: refuse]
+
+  -q, --quiet
+          Print only errors and the final result
+
+      --color <WHEN>
+          When to use colour
+
+          Possible values:
+          - auto:   Colour a stream only when it is a terminal, TERM is not `dumb` and NO_COLOR is unset or empty
+          - always: Always colour, even when piped
+          - never:  Never colour
+
+          [default: auto]
+
+  -y, --yes
+          Proceed without confirmation prompts
+
+          Without this flag activation prompts on a terminal and refuses to run without one, so it never ends a graphical session unattended.
+
+      --ascii
+          Use ASCII markers instead of Unicode symbols and box drawing
+
+      --flake <FLAKE_REF>
+          NixOS flake reference (e.g., /etc/nixos#hostname)
+
+          When set, this value is passed directly to `nixos-rebuild --flake` instead of auto-detecting the flake path. Supports attribute selection (e.g., /etc/nixos#amnesia-virtualbox).
+
+      --dry-run
+          Preview activation steps without making changes
+
+      --json
+          Print machine-readable JSON on stdout
+
+      --no-log-file
+          Do not write the log file on the hidden volume (diagnostics still go to stderr)
+
+      --overlay-only
+          Mount overlays only, skip NixOS profile switch
+
+      --risky-services <POLICY>
+          What to do with risky services still referencing a target (overrides the `risky_services` config key)
+
+          Unset: restart when the session is killed, prompt on a terminal otherwise, and refuse a non-interactive run that keeps the session.
+
+          Possible values:
+          - restart: Restart them so they no longer reference the decoy
+          - skip:    Leave them running; they are reported as surviving writers
+
+      --terminate-interactive
+          Force-terminate interactive user programs (shells, editors, `tail -f`) holding a target instead of aborting
+
+          Off by default: activation refuses to SIGKILL a program a user is working in and aborts before mounting. This flag ends them anyway.
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+----- stderr -----

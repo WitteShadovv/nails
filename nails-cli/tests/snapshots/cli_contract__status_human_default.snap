@@ -1,0 +1,14 @@
+---
+source: nails-cli/tests/cli_contract.rs
+expression: redact_volume_line(&stdout)
+---
+=======================================
+  NAILS Status Report
+=======================================
+
+State:              Inactive
+Security Posture:   [DECOY] Decoy system - no sensitive data accessible
+
+Run 'nails activate' to mount hidden environment
+
+Hidden volume: [SIZE]

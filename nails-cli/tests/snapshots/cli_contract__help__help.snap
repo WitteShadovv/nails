@@ -1,0 +1,63 @@
+---
+source: nails-cli/tests/cli_contract.rs
+info:
+  program: nails
+  args:
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Overlay environment manager for NixOS
+
+Usage: nails [OPTIONS] <COMMAND>
+
+Commands:
+  activate         Activate the hidden NixOS environment (mount overlayfs + switch profiles)
+  deactivate       Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
+  emergency        Emergency mode: rapid deactivation with countdown
+  status           Show current status and uptime
+  verify           Verify system is clean of NAILS artifacts
+  check            Check readiness to activate without making any changes (alias: doctor)
+  init             Initialize NAILS directory structure on a hidden volume
+  reset-upper      Delete a target's persistent overlay upper on the hidden volume
+  config           Inspect and check the configuration file (nails.toml)
+  notify-dispatch  Dispatch pending desktop notifications (called by XDG autostart on login)
+  help             Print this message or the help of the given subcommand(s)
+
+Options:
+  -c, --config <PATH>
+          Path to the configuration file (overrides binary-relative discovery)
+
+  -v, --verbose...
+          More diagnostics on stderr: -v for debug, -vv for trace
+
+  -q, --quiet
+          Print only errors and the final result
+
+      --color <WHEN>
+          When to use colour
+
+          Possible values:
+          - auto:   Colour a stream only when it is a terminal, TERM is not `dumb` and NO_COLOR is unset or empty
+          - always: Always colour, even when piped
+          - never:  Never colour
+
+          [default: auto]
+
+      --ascii
+          Use ASCII markers instead of Unicode symbols and box drawing
+
+      --json
+          Print machine-readable JSON on stdout
+
+      --no-log-file
+          Do not write the log file on the hidden volume (diagnostics still go to stderr)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+----- stderr -----

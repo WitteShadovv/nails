@@ -1,0 +1,620 @@
+//! CLI contract tests: help/version snapshots, the machine-readable (`--json`)
+//! envelope against the committed JSON Schemas, the colour/ASCII rendering
+//! matrix, the error envelope, and one case per documented exit code.
+//!
+//! Everything here runs with no root and no VM. Each case drives the real binary
+//! through a temporary hidden root, a hand-written `state.json` and `--config`,
+//! so inactive, active, degraded and tampered states are all reachable without a
+//! real activation. Snapshots are committed under `tests/snapshots/`; regenerate
+//! them with `INSTA_UPDATE=always cargo test -p nails-cli --test cli_contract`
+//! and review the diff before committing.
+//!
+//! Scope note: the ticket also asks for colour snapshots of `--plain`/`--no-color`.
+//! Those flags were removed in favour of `--color`/`--ascii`/`NO_COLOR`, and in a
+//! piped (non-TTY) harness stdout is ASCII with colour off, so the human status
+//! renderings coincide. The colour *contract* is still enforced here through
+//! `verify` (whose header paints regardless of ASCII) and through the assertion
+//! that `--json` never carries ANSI. True PTY colour stays in the VM tier.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use chrono::{DateTime, TimeZone, Utc};
+use insta_cmd::assert_cmd_snapshot;
+use nails_core::{OverlayInfo, StateFile, SystemState};
+use serde_json::Value;
+
+/// A fixed overlay target used by the active/degraded fixtures. It is an
+/// absolute path that is never a real mount point, so `is_mounted` reports it
+/// unmounted deterministically and nothing temporary leaks into a snapshot.
+const CONTRACT_TARGET: &str = "/opt/nails-contract-home";
+
+/// Substrings that must never appear in user-facing help or version text: the
+/// old acronym expansion would identify the tool's purpose on a decoy system,
+/// and default hidden-storage paths would point an examiner at the backend.
+const BLOCKED_SUBSTRINGS: &[&str] = &[
+    "Anti-forensics",
+    "anti-forensic",
+    "Isolation & Layering",
+    "/mnt/hidden",
+    "hidden-volume",
+];
+
+/// Every `--help` surface plus `--version`, as argument lists.
+const HELP_INVOCATIONS: &[&[&str]] = &[
+    &["--help"],
+    &["--version"],
+    &["activate", "--help"],
+    &["deactivate", "--help"],
+    &["emergency", "--help"],
+    &["status", "--help"],
+    &["verify", "--help"],
+    &["check", "--help"],
+    &["init", "--help"],
+    &["reset-upper", "--help"],
+    &["config", "--help"],
+    &["notify-dispatch", "--help"],
+];
+
+/// A fresh `nails` command with the colour-affecting environment cleared, so a
+/// test decides rendering through explicit flags and env rather than inheriting
+/// the runner's terminal.
+fn nails() -> Command {
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.env_remove("NO_COLOR")
+        .env_remove("CLICOLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("TERM");
+    cmd
+}
+
+/// A fixed activation instant so active-state output is deterministic.
+fn fixed_instant() -> DateTime<Utc> {
+    Utc.timestamp_opt(1_700_000_000, 0).unwrap()
+}
+
+/// An isolated hidden root plus a strict `nails.toml` pointing at it.
+struct Harness {
+    _dir: tempfile::TempDir,
+    config: PathBuf,
+    hidden_root: PathBuf,
+    state_path: PathBuf,
+    log_path: PathBuf,
+}
+
+impl Harness {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let hidden_root = dir.path().join("hidden-volume");
+        std::fs::create_dir_all(&hidden_root).unwrap();
+        let state_path = hidden_root.join("state.json");
+        let log_path = hidden_root.join("logs");
+        let config = dir.path().join("nails.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "hidden_volume_root = {root:?}\n\
+                 state_file_path = {state:?}\n\
+                 log_path = {log:?}\n\
+                 show_opsec_reminders = false\n\
+                 overlays = []\n",
+                root = hidden_root.display().to_string(),
+                state = state_path.display().to_string(),
+                log = log_path.display().to_string(),
+            ),
+        )
+        .unwrap();
+        Self {
+            _dir: dir,
+            config,
+            hidden_root,
+            state_path,
+            log_path,
+        }
+    }
+
+    /// Write `state` as a valid, integrity-stamped state file on the hidden root.
+    fn write_state(&self, state: SystemState) {
+        let file = StateFile {
+            state,
+            ..StateFile::default()
+        };
+        file.save(&self.state_path, self.hidden_root.to_str().unwrap())
+            .expect("save state file on the hidden root");
+    }
+
+    /// Write a valid active state, then corrupt its integrity digest so the file
+    /// loads as untrusted (`unknown`) rather than as a confident claim.
+    fn write_tampered_state(&self) {
+        self.write_state(active_state());
+        let text = std::fs::read_to_string(&self.state_path).unwrap();
+        let mut value: Value = serde_json::from_str(&text).unwrap();
+        value["integrity_sha256"] = Value::String("0".repeat(64));
+        std::fs::write(&self.state_path, value.to_string()).unwrap();
+    }
+}
+
+/// An active state with one overlay that is never actually mounted (so overlay
+/// verification reports a mismatch — a Warning posture).
+fn active_state() -> SystemState {
+    SystemState::Active {
+        activated_at: fixed_instant(),
+        overlays: vec![PathBuf::from(CONTRACT_TARGET)],
+    }
+}
+
+/// Build the matching `overlay_status` entry for [`active_state`] and persist it.
+fn write_active_harness() -> Harness {
+    let harness = Harness::new();
+    let mut overlay_status = HashMap::new();
+    overlay_status.insert(
+        PathBuf::from(CONTRACT_TARGET),
+        OverlayInfo {
+            mount_path: PathBuf::from(CONTRACT_TARGET),
+            lower_dir: PathBuf::from(CONTRACT_TARGET),
+            upper_dir: harness.hidden_root.join("upper/home"),
+            work_dir: harness.hidden_root.join("work/home"),
+            mounted_at: fixed_instant(),
+        },
+    );
+    let file = StateFile {
+        state: active_state(),
+        overlay_status,
+        ..StateFile::default()
+    };
+    file.save(&harness.state_path, harness.hidden_root.to_str().unwrap())
+        .expect("save active state");
+    harness
+}
+
+/// Load a committed JSON Schema fixture (shared with the E2E suite).
+fn load_schema(name: &str) -> Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../nix/e2e-tests/fixtures/schemas")
+        .join(name);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {name}: {e}"));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {name}: {e}"))
+}
+
+/// Validate `instance` against `schema`, failing with every error at once.
+fn assert_matches_schema(schema: &Value, instance: &Value) {
+    let validator = jsonschema::validator_for(schema).expect("compile fixture schema");
+    let errors: Vec<String> = validator
+        .iter_errors(instance)
+        .map(|error| error.to_string())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "schema violations: {errors:#?}\ninstance: {instance:#}"
+    );
+}
+
+/// Run `nails` and capture the completed output.
+fn run(config: &Path, envs: &[(&str, &str)], args: &[&str]) -> Output {
+    let mut cmd = nails();
+    cmd.arg("--no-log-file").arg("--config").arg(config);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    cmd.args(args);
+    cmd.output().expect("run nails")
+}
+
+/// Run a `--json` command and return (exit code, the single parsed document).
+fn run_json(config: &Path, args: &[&str]) -> (i32, Value) {
+    let output = run(config, &[], &{
+        let mut v = args.to_vec();
+        v.push("--json");
+        v
+    });
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let last = stdout.trim().lines().next_back().unwrap_or("");
+    let value: Value = serde_json::from_str(last)
+        .unwrap_or_else(|e| panic!("stdout is not one JSON document ({e}): {stdout}"));
+    (output.status.code().unwrap_or(-1), value)
+}
+
+// ---------------------------------------------------------------------------
+// Help and version
+// ---------------------------------------------------------------------------
+
+#[test]
+fn help_and_version_snapshots() {
+    // clap pads blank continuation lines with spaces; strip that trailing
+    // whitespace so the committed snapshot survives the trailing-whitespace lint
+    // and still round-trips (the filter runs on every capture and comparison).
+    insta::with_settings!({filters => vec![(r"[ \t]+\n", "\n")]}, {
+        for args in HELP_INVOCATIONS {
+            let name = format!("help__{}", args.join("_").replace("--", ""));
+            assert_cmd_snapshot!(name, nails().args(*args));
+        }
+    });
+}
+
+#[test]
+fn help_and_version_carry_no_blocked_substrings() {
+    for args in HELP_INVOCATIONS {
+        let output = nails().args(*args).output().expect("run help");
+        assert!(output.status.success(), "{args:?} should exit 0");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for blocked in BLOCKED_SUBSTRINGS {
+            assert!(
+                !text.contains(blocked),
+                "{args:?} output contains blocked substring {blocked:?}"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// status --json: schema + snapshot for each state shape
+// ---------------------------------------------------------------------------
+
+/// Replace the volatile parts of a status envelope (live disk figures and a
+/// wall-clock uptime) with fixed placeholders, leaving the contract-bearing
+/// structure deterministic for snapshotting.
+fn redact_status(mut value: Value) -> Value {
+    if let Some(data) = value.get_mut("data").and_then(Value::as_object_mut) {
+        for key in [
+            "hidden_root_total_bytes",
+            "hidden_root_used_bytes",
+            "hidden_root_available_bytes",
+        ] {
+            if data.contains_key(key) {
+                data[key] = Value::String("[bytes]".to_string());
+            }
+        }
+        if data.contains_key("uptime_seconds") {
+            data["uptime_seconds"] = Value::String("[uptime_s]".to_string());
+        }
+        if data.contains_key("uptime_formatted") {
+            data["uptime_formatted"] = Value::String("[uptime]".to_string());
+        }
+    }
+    value
+}
+
+#[test]
+fn status_json_missing_state_matches_schema_and_snapshot() {
+    let harness = Harness::new(); // no state file written
+    let (code, value) = run_json(&harness.config, &["status"]);
+    assert_eq!(code, 0, "status always exits 0: {value}");
+    assert_matches_schema(&load_schema("status.json"), &value);
+    assert_eq!(value["data"]["state"]["kind"], "inactive");
+    insta::assert_json_snapshot!("status_json_missing", redact_status(value));
+}
+
+#[test]
+fn status_json_inactive_matches_schema_and_snapshot() {
+    let harness = Harness::new();
+    harness.write_state(SystemState::Inactive);
+    let (code, value) = run_json(&harness.config, &["status"]);
+    assert_eq!(code, 0);
+    assert_matches_schema(&load_schema("status.json"), &value);
+    assert_eq!(value["data"]["state"]["kind"], "inactive");
+    insta::assert_json_snapshot!("status_json_inactive", redact_status(value));
+}
+
+#[test]
+fn status_json_active_matches_schema_and_snapshot() {
+    let harness = write_active_harness();
+    let (code, value) = run_json(&harness.config, &["status"]);
+    assert_eq!(code, 0);
+    assert_matches_schema(&load_schema("status.json"), &value);
+    assert_eq!(value["data"]["state"]["kind"], "active");
+    assert_eq!(value["data"]["overlays"][0]["status"], "not_mounted");
+    insta::assert_json_snapshot!("status_json_active", redact_status(value));
+}
+
+#[test]
+fn status_json_tampered_state_is_unknown_and_matches_schema() {
+    let harness = Harness::new();
+    harness.write_tampered_state();
+    let (code, value) = run_json(&harness.config, &["status"]);
+    assert_eq!(code, 0, "status still exits 0 on an untrusted state file");
+    assert_matches_schema(&load_schema("status.json"), &value);
+    assert_eq!(value["data"]["state"]["kind"], "unknown");
+    insta::assert_json_snapshot!("status_json_tampered", redact_status(value));
+}
+
+#[test]
+fn status_json_degraded_matches_schema_and_snapshot() {
+    let harness = Harness::new();
+    harness.write_state(SystemState::Degraded {
+        since: fixed_instant(),
+        reason: "teardown left overlays mounted".to_string(),
+        remaining_mounts: vec![PathBuf::from(CONTRACT_TARGET)],
+    });
+    let (code, value) = run_json(&harness.config, &["status"]);
+    assert_eq!(code, 0);
+    assert_matches_schema(&load_schema("status.json"), &value);
+    assert_eq!(value["data"]["state"]["kind"], "degraded");
+    insta::assert_json_snapshot!("status_json_degraded", redact_status(value));
+}
+
+// ---------------------------------------------------------------------------
+// verify --json: schema + snapshot
+// ---------------------------------------------------------------------------
+
+#[test]
+fn verify_json_matches_schema_and_snapshot() {
+    let harness = Harness::new();
+    let (code, value) = run_json(&harness.config, &["verify"]);
+    // Verify scans the live system, so the headline status and the findings are
+    // environment-dependent (a secure run exits 0, a warning 10, a critical 11).
+    // The schema is enforced over the whole document; only the stable structural
+    // envelope is snapshotted.
+    assert!(matches!(code, 0 | 10 | 11), "unexpected verify exit {code}");
+    assert_matches_schema(&load_schema("verify.json"), &value);
+    assert_eq!(value["command"], "verify");
+    assert_eq!(value["data"]["config_aware"], true);
+    let projection = serde_json::json!({
+        "schema_version": value["schema_version"],
+        "command": value["command"],
+        "ok": value["ok"],
+        "data": {
+            "config_aware": value["data"]["config_aware"],
+            "scan_depth": value["data"]["scan_depth"],
+            "config_paths_checked": value["data"]["config_paths_checked"],
+            "state_file_status_kind": value["data"]["state_file_status"]["kind"],
+        }
+    });
+    insta::assert_json_snapshot!("verify_json_envelope", projection);
+}
+
+// ---------------------------------------------------------------------------
+// Error envelope
+// ---------------------------------------------------------------------------
+
+#[test]
+fn config_failure_is_one_error_envelope_on_stdout() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.toml");
+    let (code, value) = run_json(&missing, &["status"]);
+    assert_eq!(code, 3, "a missing explicit config exits Config(3)");
+    assert_matches_schema(&load_schema("status.json"), &value);
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], "config");
+    insta::assert_json_snapshot!("error_envelope_config", value, {
+        ".error.message" => "[message]",
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Rendering matrix: human, ASCII, colour toggles, non-TTY
+// ---------------------------------------------------------------------------
+
+#[test]
+fn status_human_default_rendering_snapshot() {
+    let harness = Harness::new();
+    harness.write_state(SystemState::Inactive);
+    let stdout = String::from_utf8(run(&harness.config, &[], &["status"]).stdout).unwrap();
+    insta::assert_snapshot!("status_human_default", redact_volume_line(&stdout));
+}
+
+/// Replace the live hidden-volume usage line (byte figures vary per filesystem)
+/// with a fixed placeholder so the rendering snapshot stays deterministic.
+fn redact_volume_line(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            if line.starts_with("Hidden volume:") {
+                "Hidden volume: [SIZE]".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn colour_and_ascii_toggles_do_not_change_inactive_status() {
+    // In a piped run stdout is ASCII with colour off; `--color never`, `--ascii`,
+    // `NO_COLOR` and `TERM=dumb` must all land on exactly that same output and
+    // never emit an ANSI escape.
+    let harness = Harness::new();
+    harness.write_state(SystemState::Inactive);
+    let baseline = run(&harness.config, &[], &["status"]).stdout;
+
+    let check = |envs: &[(&str, &str)], args: &[&str]| {
+        let out = run(&harness.config, envs, args).stdout;
+        assert_eq!(
+            out, baseline,
+            "{args:?} with {envs:?} drifted from baseline"
+        );
+        assert!(
+            !out.contains(&0x1b),
+            "{args:?} with {envs:?} emitted an ANSI escape"
+        );
+    };
+
+    check(&[], &["status", "--color", "never"]);
+    check(&[], &["status", "--ascii"]);
+    check(&[("NO_COLOR", "1")], &["status"]);
+    check(&[("TERM", "dumb")], &["status"]);
+}
+
+#[test]
+fn colour_contract_is_honoured_for_human_and_suppressed_for_json() {
+    // `verify`'s header paints even in ASCII mode, so it is the vehicle for the
+    // colour toggle in a non-TTY harness.
+    let harness = Harness::new();
+    let coloured = run(&harness.config, &[], &["verify", "--color", "always"]).stdout;
+    assert!(
+        coloured.contains(&0x1b),
+        "--color always should emit ANSI on human output"
+    );
+    let plain = run(&harness.config, &[], &["verify", "--color", "never"]).stdout;
+    assert!(!plain.contains(&0x1b), "--color never must not emit ANSI");
+    // JSON stays machine-parseable regardless of the colour request.
+    let json = run(
+        &harness.config,
+        &[],
+        &["verify", "--color", "always", "--json"],
+    )
+    .stdout;
+    assert!(
+        !json.contains(&0x1b),
+        "--json must never carry ANSI, even with --color always"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Exit-code table: one case per documented code, all without root or a VM
+// ---------------------------------------------------------------------------
+
+#[test]
+fn exit_code_0_ok_on_status() {
+    let harness = Harness::new();
+    harness.write_state(SystemState::Inactive);
+    let code = run(&harness.config, &[], &["status"]).status.code();
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn exit_code_1_failed_on_warning_posture() {
+    // An active state whose overlays are not mounted is a Warning posture, which
+    // `status --exit-status` reports as a plain failure.
+    let harness = write_active_harness();
+    let code = run(&harness.config, &[], &["status", "--exit-status"])
+        .status
+        .code();
+    assert_eq!(code, Some(1));
+}
+
+#[test]
+fn exit_code_2_usage_on_unknown_flag() {
+    let code = nails()
+        .arg("--definitely-not-a-flag")
+        .output()
+        .unwrap()
+        .status
+        .code();
+    assert_eq!(code, Some(2));
+}
+
+#[test]
+fn exit_code_3_config_on_missing_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.toml");
+    let code = run(&missing, &[], &["status"]).status.code();
+    assert_eq!(code, Some(3));
+}
+
+#[test]
+fn exit_code_4_preflight_refused_on_check() {
+    // `check` runs the activation pre-flights read-only; in this unprivileged,
+    // non-mounted sandbox they cannot all pass, so it refuses with code 4.
+    let harness = Harness::new();
+    let code = run(&harness.config, &[], &["check"]).status.code();
+    assert_eq!(code, Some(4));
+}
+
+#[test]
+fn exit_code_5_needs_root_on_safety_guard() {
+    // A hidden root under a build directory trips the test safety guard before
+    // any real operation, which reports NeedsRoot.
+    let dir = tempfile::tempdir().unwrap();
+    let hidden_root = dir.path().join("target/debug/fake-hidden");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+    let config = dir.path().join("nails.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "hidden_volume_root = {:?}\n",
+            hidden_root.display().to_string()
+        ),
+    )
+    .unwrap();
+    let (code, value) = run_json(&config, &["activate", "--no-preflight", "--overlay-only"]);
+    assert_eq!(code, 5);
+    assert_eq!(value["error"]["code"], "safety_guard");
+}
+
+#[test]
+fn exit_code_6_invalid_state_on_reset_upper_while_active() {
+    // reset-upper refuses when the system is not Inactive, before touching data.
+    let harness = write_active_harness();
+    let (code, value) = run_json(&harness.config, &["reset-upper", CONTRACT_TARGET, "-y"]);
+    assert_eq!(code, 6);
+    assert_eq!(value["command"], "reset-upper");
+    assert_eq!(value["ok"], false);
+}
+
+#[test]
+fn exit_code_7_degraded_reboot_on_status() {
+    let harness = Harness::new();
+    harness.write_state(SystemState::Degraded {
+        since: fixed_instant(),
+        reason: "teardown left overlays mounted".to_string(),
+        remaining_mounts: vec![PathBuf::from(CONTRACT_TARGET)],
+    });
+    let code = run(&harness.config, &[], &["status", "--exit-status"])
+        .status
+        .code();
+    assert_eq!(code, Some(7));
+}
+
+#[test]
+#[ignore = "verify exits 10 only when the live scan finds a warning and no \
+            critical; under `cargo test` a concurrent process whose argv \
+            contains the project path trips the process check (critical), so a \
+            clean warning is not deterministic here. The severity->exit mapping \
+            is covered by the verify.rs unit tests; the critical path is \
+            exercised by exit_code_11_verify_critical_on_active_state."]
+fn exit_code_10_verify_warning() {
+    let harness = Harness::new();
+    let (code, value) = run_json(&harness.config, &["verify"]);
+    assert_eq!(code, 10);
+    assert_eq!(value["data"]["status"], "warning");
+}
+
+#[test]
+fn exit_code_11_verify_critical_on_active_state() {
+    // A state file still claiming the system is active is a critical verify
+    // finding (the hidden environment was not torn down).
+    let harness = write_active_harness();
+    let (code, value) = run_json(&harness.config, &["verify"]);
+    assert_eq!(code, 11);
+    assert_eq!(value["data"]["status"], "critical");
+}
+
+// ---------------------------------------------------------------------------
+// Logging is off: no log file is written
+// ---------------------------------------------------------------------------
+
+#[test]
+fn no_log_file_is_written_when_logging_is_off() {
+    let harness = Harness::new();
+    harness.write_state(SystemState::Inactive);
+    // reset-upper is a writing command; with --no-log-file it must leave no log.
+    let _ = run(
+        &harness.config,
+        &[],
+        &["reset-upper", CONTRACT_TARGET, "-y"],
+    );
+    let mut found = Vec::new();
+    collect_logs(&harness.hidden_root, &mut found);
+    collect_logs(&harness.log_path, &mut found);
+    assert!(found.is_empty(), "no log file expected, found: {found:?}");
+}
+
+/// Collect any `nails.log` under `dir` (recursively), ignoring a missing dir.
+fn collect_logs(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_logs(&path, out);
+        } else if path.file_name().and_then(|n| n.to_str()) == Some("nails.log") {
+            out.push(path);
+        }
+    }
+}

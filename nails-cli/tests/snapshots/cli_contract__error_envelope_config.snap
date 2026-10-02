@@ -1,0 +1,13 @@
+---
+source: nails-cli/tests/cli_contract.rs
+expression: value
+---
+{
+  "command": "status",
+  "error": {
+    "code": "config",
+    "message": "[message]"
+  },
+  "ok": false,
+  "schema_version": 1
+}

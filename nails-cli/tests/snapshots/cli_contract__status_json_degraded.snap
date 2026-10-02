@@ -1,0 +1,27 @@
+---
+source: nails-cli/tests/cli_contract.rs
+expression: redact_status(value)
+---
+{
+  "command": "status",
+  "data": {
+    "hidden_root_available_bytes": "[bytes]",
+    "hidden_root_total_bytes": "[bytes]",
+    "hidden_root_used_bytes": "[bytes]",
+    "opsec_reminders": [],
+    "overlay_verification": {
+      "kind": "skipped"
+    },
+    "overlays": [],
+    "security_posture": "critical",
+    "state": {
+      "kind": "degraded",
+      "reason": "teardown left overlays mounted",
+      "remaining_mounts": [
+        "/opt/nails-contract-home"
+      ]
+    }
+  },
+  "ok": true,
+  "schema_version": 1
+}

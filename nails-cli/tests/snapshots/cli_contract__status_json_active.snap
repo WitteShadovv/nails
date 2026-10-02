@@ -1,0 +1,34 @@
+---
+source: nails-cli/tests/cli_contract.rs
+expression: redact_status(value)
+---
+{
+  "command": "status",
+  "data": {
+    "activated_at": "2023-11-14T22:13:20+00:00",
+    "hidden_root_available_bytes": "[bytes]",
+    "hidden_root_total_bytes": "[bytes]",
+    "hidden_root_used_bytes": "[bytes]",
+    "opsec_reminders": [],
+    "overlay_verification": {
+      "errors": [
+        "/opt/nails-contract-home should be mounted but is not"
+      ],
+      "kind": "mismatch"
+    },
+    "overlays": [
+      {
+        "path": "/opt/nails-contract-home",
+        "status": "not_mounted"
+      }
+    ],
+    "security_posture": "warning",
+    "state": {
+      "kind": "active"
+    },
+    "uptime_formatted": "[uptime]",
+    "uptime_seconds": "[uptime_s]"
+  },
+  "ok": true,
+  "schema_version": 1
+}

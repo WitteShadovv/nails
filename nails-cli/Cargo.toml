@@ -68,3 +68,7 @@ nails-core = { path = "../nails-core", features = [
 # `assert_cmd` drives. Dev-dependencies never reach `cargo build`, so the shipped
 # binary stays hook-free.
 nails-cli = { path = ".", features = ["test-hooks"] }
+# CLI contract tests (snapshots + JSON Schema): see the workspace dependency table.
+insta = { workspace = true }
+insta-cmd = { workspace = true }
+jsonschema = { workspace = true }

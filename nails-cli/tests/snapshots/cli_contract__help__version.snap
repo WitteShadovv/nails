@@ -1,0 +1,13 @@
+---
+source: nails-cli/tests/cli_contract.rs
+info:
+  program: nails
+  args:
+    - "--version"
+---
+success: true
+exit_code: 0
+----- stdout -----
+nails 0.2.0
+
+----- stderr -----

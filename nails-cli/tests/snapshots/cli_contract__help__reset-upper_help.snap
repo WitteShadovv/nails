@@ -1,0 +1,57 @@
+---
+source: nails-cli/tests/cli_contract.rs
+info:
+  program: nails
+  args:
+    - reset-upper
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Delete a target's persistent overlay upper on the hidden volume
+
+Usage: nails reset-upper [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>
+          Overlay target whose persistent upper to delete (e.g. /home, /etc, /nix)
+
+Options:
+  -c, --config <PATH>
+          Path to the configuration file (overrides binary-relative discovery)
+
+  -y, --yes
+          Proceed without the confirmation prompt
+
+          Without this flag reset-upper lists what it would delete and confirms on a terminal, refusing to run without one.
+
+  -v, --verbose...
+          More diagnostics on stderr: -v for debug, -vv for trace
+
+  -q, --quiet
+          Print only errors and the final result
+
+      --color <WHEN>
+          When to use colour
+
+          Possible values:
+          - auto:   Colour a stream only when it is a terminal, TERM is not `dumb` and NO_COLOR is unset or empty
+          - always: Always colour, even when piped
+          - never:  Never colour
+
+          [default: auto]
+
+      --ascii
+          Use ASCII markers instead of Unicode symbols and box drawing
+
+      --json
+          Print machine-readable JSON on stdout
+
+      --no-log-file
+          Do not write the log file on the hidden volume (diagnostics still go to stderr)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+----- stderr -----
