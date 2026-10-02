@@ -2,6 +2,7 @@ use super::*;
 use crate::test_support::EnvGuard;
 use serial_test::serial;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Component;
 
 fn write_file(path: &Path, body: &str, mode: u32) {

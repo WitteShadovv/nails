@@ -47,9 +47,25 @@ impl CachedCommand {
 }
 
 pub(super) fn systemctl_command() -> CachedCommand {
-    super::SYSTEMCTL_COMMAND.get().cloned().unwrap_or_else(|| {
-        CachedCommand::Direct(PathBuf::from("/run/current-system/sw/bin/systemctl"))
-    })
+    super::SYSTEMCTL_COMMAND
+        .get()
+        .cloned()
+        .unwrap_or_else(|| CachedCommand::Direct(nixos_tool_path("systemctl")))
+}
+
+/// Resolve a NixOS host tool by name from the NixOS command directories.
+///
+/// The `/nix` runtime-command cache resolves `systemctl`, `nix` and `nix-daemon`
+/// through this before the overlay is applied, so the paths it records point at
+/// the real, pre-overlay system profile. Resolution runs through
+/// [`HostCommands`](crate::platform::HostCommands) — root-owned, trust-checked
+/// when nails runs as root — and falls back to the system-profile binary
+/// directory only when nothing resolves, so no caller spells the store path
+/// itself.
+pub(super) fn nixos_tool_path(name: &str) -> PathBuf {
+    crate::platform::HostCommands::new(crate::platform::NIXOS_COMMAND_DIRS.iter().copied())
+        .resolve(name)
+        .unwrap_or_else(|_| PathBuf::from(crate::platform::NIXOS_SYSTEM_PROFILE_BIN).join(name))
 }
 
 const NIX_STORE_PREFIX: &str = "/nix/store";

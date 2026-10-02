@@ -10,12 +10,10 @@ use nails_core::constants::{
 use nails_core::process::SYSTEM_TOOL_DIRS;
 use nails_core::{NailsError, SessionContext, SessionKind, detect_session_context};
 
-/// Fallback `PATH` for the detached worker if `env::join_paths` ever fails.
-///
-/// The members are all static, colon- and NUL-free paths, so the join cannot
-/// fail in practice; this keeps the result total without an `unwrap`.
-const DETACHED_PATH_FALLBACK: &str =
-    "/run/wrappers/bin:/run/current-system/sw/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+/// The NixOS setuid-wrapper directory, prepended to the detached worker's search
+/// path ahead of [`SYSTEM_TOOL_DIRS`]. Not part of [`SYSTEM_TOOL_DIRS`] because
+/// the process runner resolves its own tools without the wrappers.
+const WRAPPERS_BIN: &str = "/run/wrappers/bin";
 
 /// Description applied to every detached transient unit.
 ///
@@ -221,10 +219,20 @@ fn is_already_detached() -> bool {
 /// runner itself resolves [`nails_core::process::Program::Tool`] from.
 fn detached_path_env() -> OsString {
     let mut dirs: Vec<PathBuf> = Vec::with_capacity(SYSTEM_TOOL_DIRS.len() + 1);
-    dirs.push(PathBuf::from("/run/wrappers/bin"));
+    dirs.push(PathBuf::from(WRAPPERS_BIN));
     dirs.extend(SYSTEM_TOOL_DIRS.iter().map(PathBuf::from));
 
-    env::join_paths(dirs).unwrap_or_else(|_| OsString::from(DETACHED_PATH_FALLBACK))
+    env::join_paths(&dirs).unwrap_or_else(|_| {
+        // Every member is a static, colon- and NUL-free path, so `join_paths`
+        // cannot fail in practice; joining the same dirs by hand keeps the result
+        // total without re-spelling the search path as a literal.
+        OsString::from(
+            dirs.iter()
+                .map(|dir| dir.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(":"),
+        )
+    })
 }
 
 /// Detach using systemd-run to create a transient service in system.slice.

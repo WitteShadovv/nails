@@ -63,10 +63,11 @@ pub fn build_registry<F: Filesystem>(
     inputs: &RegistryInputs,
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
-        BackendDetectCheck, BinaryLocationCheck, HiddenVolumeCheck, InheritedAutostartCheck,
-        MountNamespaceCheck, NixOSBuildTargetCheck, NixOSConfigCheck, OverlayCompatibilityCheck,
-        OverlayTargetsCheck, SnapshotMemoryCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
-        SuspiciousNailsReferenceCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
+        BackendDetectCheck, BinaryLocationCheck, HiddenVolumeCheck, HostToolsCheck,
+        InheritedAutostartCheck, MountNamespaceCheck, NixOSBuildTargetCheck, NixOSConfigCheck,
+        OverlayCompatibilityCheck, OverlayTargetsCheck, SnapshotMemoryCheck, SpaceCheck,
+        StateCheck, StorageReadinessCheck, SuspiciousNailsReferenceCheck, SwapCheck,
+        SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
 
     let mut registry = PreFlightRegistry::new();
@@ -83,6 +84,11 @@ pub fn build_registry<F: Filesystem>(
     // Runs before the session kill so a private mount namespace or a non-shared
     // root is caught while the decoy session is still intact.
     registry.add_check(Box::new(MountNamespaceCheck::new()));
+
+    // Resolves every host tool nails spawns from the detected platform's search
+    // list before any state is written, so a missing tool fails early with a
+    // tool-to-package table instead of a late ENOENT after the session is gone.
+    registry.add_check(Box::new(HostToolsCheck::new()));
 
     registry.add_check(Box::new(SymlinkSupportCheck::new(
         config.hidden_volume_root.clone(),

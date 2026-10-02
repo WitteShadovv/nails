@@ -546,12 +546,17 @@ impl<F: Filesystem> NailsManager<F> {
                 "No cached current system profile was available before nix-daemon restart"
             );
         }
+        let nix_daemon_probe = format!("{}/nix-daemon", crate::platform::NIXOS_SYSTEM_PROFILE_BIN);
+        let proc_nix_daemon_probe = format!(
+            "/proc/1/root{}/nix-daemon",
+            crate::platform::NIXOS_SYSTEM_PROFILE_BIN
+        );
         for probe in [
             "/run/current-system",
             "/run/current-system/systemd/lib/systemd/systemd-executor",
             "/proc/1/root/run/current-system/systemd/lib/systemd/systemd-executor",
-            "/run/current-system/sw/bin/nix-daemon",
-            "/proc/1/root/run/current-system/sw/bin/nix-daemon",
+            nix_daemon_probe.as_str(),
+            proc_nix_daemon_probe.as_str(),
             "/nix/store",
             "/proc/1/root/nix/store",
         ] {

@@ -2,7 +2,6 @@ use super::command_cache::{command_failed_error, runner_error_to_io, systemctl_c
 use crate::process::run::{
     NIX_STORE_PING_BUDGET, ProcessCommand, ProcessRunner, RealProcessRunner, systemctl_budget,
 };
-use std::path::PathBuf;
 
 #[cfg(test)]
 use std::path::Path;
@@ -69,7 +68,7 @@ fn nix_command(args: &[&str]) -> ProcessCommand {
     let path = super::NIX_COMMAND_PATH
         .get()
         .cloned()
-        .unwrap_or_else(|| PathBuf::from("/run/current-system/sw/bin/nix"));
+        .unwrap_or_else(|| super::command_cache::nixos_tool_path("nix"));
     ProcessCommand::exact(path).args(args)
 }
 
@@ -79,7 +78,7 @@ fn run_nix_daemon(args: &[&str]) -> std::result::Result<std::process::Output, st
     let path = super::NIX_DAEMON_PATH
         .get()
         .cloned()
-        .unwrap_or_else(|| PathBuf::from("/run/current-system/sw/bin/nix-daemon"));
+        .unwrap_or_else(|| super::command_cache::nixos_tool_path("nix-daemon"));
     run_command(&ProcessCommand::exact(path).args(args))
 }
 
@@ -370,24 +369,36 @@ impl ServiceController {
         Ok(())
     }
 
-    /// Start a systemd service and its socket (socket first), best-effort.
-    pub fn start_service_and_socket(service: &str) {
+    /// Start a systemd service and its socket.
+    ///
+    /// The socket is started first so socket activation can bring the service up;
+    /// a service with no `.socket` unit is expected and does not fail the call. A
+    /// failure to start the *service* is returned rather than discarded, so a
+    /// caller that cannot tolerate a dead service surfaces it; the best-effort
+    /// recovery wrappers below log it and carry on.
+    pub fn start_service_and_socket(service: &str) -> std::result::Result<(), std::io::Error> {
         if Self::should_skip() {
             #[cfg(test)]
             recorder::record(format!("start:{service}"));
-            return;
+            return Ok(());
         }
 
-        tracing::debug!(service, "Starting {}.socket", service);
-        let socket_name = format!("{}.socket", service);
-        let _ = run_systemctl(&["start", socket_name.as_str()]);
+        let socket_name = format!("{service}.socket");
+        tracing::debug!(service, "Starting {socket_name}");
+        if let Err(err) = ensure_systemctl_success(&["start", socket_name.as_str()]) {
+            // Not every service has a socket unit; a missing socket is normal and
+            // only noted, since the service start below is what matters.
+            tracing::debug!(service, %err, "socket start failed (service may have no socket unit)");
+        }
 
-        tracing::debug!(service, "Starting {}", service);
-        let _ = run_systemctl(&["start", service]);
+        tracing::debug!(service, "Starting {service}");
+        ensure_systemctl_success(&["start", service])
+            .map_err(|err| io_context_error(&format!("starting {service}"), err))
     }
 
     /// Best-effort restart of services that were stopped during overlay mounting
-    /// when the mount ultimately fails. Starts both socket and service for each.
+    /// when the mount ultimately fails. Starts both socket and service for each,
+    /// logging — never propagating — a failure so teardown always completes.
     pub fn restart_services_after_failure(services: &[String]) {
         if Self::should_skip() {
             tracing::debug!(
@@ -397,14 +408,22 @@ impl ServiceController {
         }
 
         for service in services {
-            Self::start_service_and_socket(service);
+            if let Err(err) = Self::start_service_and_socket(service) {
+                tracing::warn!(service, %err, "failed to restart service after overlay failure");
+            }
         }
     }
 }
 
-/// Legacy wrapper — delegates to [`ServiceController::start_service_and_socket`].
+/// Best-effort wrapper around [`ServiceController::start_service_and_socket`].
+///
+/// The recovery and teardown call sites must always run to completion, so this
+/// logs a failed start instead of propagating it — the error is surfaced, not
+/// silently dropped as it was before.
 pub(crate) fn start_service_and_socket(service: &str) {
-    ServiceController::start_service_and_socket(service);
+    if let Err(err) = ServiceController::start_service_and_socket(service) {
+        tracing::warn!(service, %err, "failed to start service");
+    }
 }
 
 #[cfg(test)]

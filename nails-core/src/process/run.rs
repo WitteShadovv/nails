@@ -62,7 +62,6 @@ use crate::{NailsError, Result};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -75,7 +74,7 @@ use std::time::{Duration, Instant};
 /// Debian, Ubuntu and most other distributions. All of them are root-owned on
 /// a sane host.
 pub const SYSTEM_TOOL_DIRS: &[&str] = &[
-    "/run/current-system/sw/bin",
+    crate::platform::NIXOS_SYSTEM_PROFILE_BIN,
     "/usr/sbin",
     "/usr/bin",
     "/sbin",
@@ -629,14 +628,23 @@ fn resolve(program: &Program, search_path: Option<&OsStr>) -> Result<PathBuf> {
     }
 }
 
-/// First `dir/name` that is a regular file with an execute bit set.
+/// First `dir/name` that is an executable file nails is willing to run.
+///
+/// A candidate must be a regular file with an execute bit set; when nails runs as
+/// root the candidate must additionally pass the root-trust check
+/// ([`is_trusted_executable`](crate::platform::host_commands::is_trusted_executable)),
+/// so a tampered binary on the search path is never spawned with full privilege.
+/// The trust check shares one implementation with [`HostCommands`](crate::platform::HostCommands).
 fn find_executable<'a>(name: &str, dirs: impl IntoIterator<Item = &'a Path>) -> Option<PathBuf> {
+    use crate::platform::host_commands::{
+        is_executable_file, is_trusted_executable, running_as_root,
+    };
+
+    let enforce_trust = running_as_root();
     dirs.into_iter()
         .map(|dir| dir.join(name))
         .find(|candidate| {
-            std::fs::metadata(candidate).is_ok_and(|metadata| {
-                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-            })
+            is_executable_file(candidate) && (!enforce_trust || is_trusted_executable(candidate))
         })
 }
 

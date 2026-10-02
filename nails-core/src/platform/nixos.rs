@@ -10,8 +10,15 @@ use crate::Result;
 use crate::filesystem::Filesystem;
 use crate::process::ProcessRunner;
 
+/// The NixOS system profile's binary directory.
+///
+/// The one place this store path is written as a literal; every other site that
+/// needs it (the process runner's search list, the runtime-command cache) refers
+/// to this constant.
+pub(crate) const NIXOS_SYSTEM_PROFILE_BIN: &str = "/run/current-system/sw/bin";
+
 /// Directories NixOS exposes host tools under.
-const NIXOS_COMMAND_DIRS: &[&str] = &["/run/current-system/sw/bin", "/run/wrappers/bin"];
+pub(crate) const NIXOS_COMMAND_DIRS: &[&str] = &[NIXOS_SYSTEM_PROFILE_BIN, "/run/wrappers/bin"];
 
 /// First-class NixOS backend.
 #[derive(Debug, Clone, Copy, Default)]

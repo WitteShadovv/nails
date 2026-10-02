@@ -1,4 +1,4 @@
-use super::command_cache::build_cached_command;
+use super::command_cache::{build_cached_command, nixos_tool_path};
 use std::path::{Path, PathBuf};
 
 fn original_nix_store_bind_source_path() -> PathBuf {
@@ -86,13 +86,13 @@ pub(crate) fn cache_nix_overlay_runtime_commands() -> std::io::Result<PathBuf> {
     // command is resolved against it, so no store bytes are copied.
     let original_nix_store_bind_source = cache_original_nix_store_bind_source()?;
     let systemctl = build_cached_command(
-        Path::new("/run/current-system/sw/bin/systemctl"),
+        &nixos_tool_path("systemctl"),
         &original_nix_store_bind_source,
     )?;
-    let nix_daemon = std::fs::canonicalize("/run/current-system/sw/bin/nix-daemon")
-        .unwrap_or_else(|_| PathBuf::from("/run/current-system/sw/bin/nix-daemon"));
-    let nix = std::fs::canonicalize("/run/current-system/sw/bin/nix")
-        .unwrap_or_else(|_| PathBuf::from("/run/current-system/sw/bin/nix"));
+    let nix_daemon_path = nixos_tool_path("nix-daemon");
+    let nix_daemon = std::fs::canonicalize(&nix_daemon_path).unwrap_or(nix_daemon_path);
+    let nix_path = nixos_tool_path("nix");
+    let nix = std::fs::canonicalize(&nix_path).unwrap_or(nix_path);
     let current_system_profile = resolve_current_system_profile();
 
     let display_path = systemctl.display_path().to_path_buf();

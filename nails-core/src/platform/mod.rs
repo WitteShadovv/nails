@@ -38,6 +38,7 @@ mod config_layer;
 mod detect;
 mod discover;
 mod fhs;
+pub mod host_commands;
 mod nixos;
 mod unsupported;
 
@@ -51,8 +52,15 @@ pub use config_layer::{ConfigLayer, ConfigPlan, NixOsConfigLayer};
 pub use detect::detect;
 pub use discover::{HostTarget, discover_host_target};
 pub use fhs::FhsPlatform;
+pub use host_commands::HostCommands;
 pub use nixos::NixOsPlatform;
 pub use unsupported::UnsupportedPlatform;
+
+/// The single literal for the NixOS system-profile binary directory, and the
+/// NixOS host-command search list built from it. Re-exported so the process
+/// runner and the manager's runtime-command cache reference them instead of
+/// re-spelling the store path.
+pub(crate) use nixos::{NIXOS_COMMAND_DIRS, NIXOS_SYSTEM_PROFILE_BIN};
 
 #[cfg(any(test, feature = "test-support"))]
 pub use fake::FakePlatform;
