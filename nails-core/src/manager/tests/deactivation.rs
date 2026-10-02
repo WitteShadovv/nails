@@ -416,6 +416,160 @@ fn test_deactivate_does_not_request_reboot_after_failed_teardown() {
     assert!(fs.is_mounted(Path::new("/home")).unwrap());
 }
 
+/// Build a manager in `Active` state whose teardown succeeds, so a normal
+/// `deactivate()` reaches the post-teardown reboot step. Mirrors the fixture used
+/// by `test_deactivate_requests_reboot_only_after_successful_teardown` above.
+fn manager_ready_for_reboot_step() -> (
+    Arc<Mutex<NailsManager<MockFilesystem>>>,
+    MockFilesystem,
+    tempfile::TempDir,
+) {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let hidden_root = temp_dir.path();
+    std::fs::create_dir_all(hidden_root).unwrap();
+    let state_path = hidden_root.join("state.json");
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+    fs.mock_set_path_exists(
+        "/nix/var/nix/profiles/system/bin/switch-to-configuration",
+        true,
+    );
+    fs.mock_set_path_exists("/", true);
+
+    let upper_dir = hidden_root.join("overlays/home/upper");
+    let work_dir = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+    fs.mock_set_mounted(Path::new("/home"), true);
+
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
+        overlay_mode: OverlayMode::Explicit,
+        overlays: vec![OverlayConfig {
+            name: "home".to_string(),
+            lower: PathBuf::from("/"),
+            upper: upper_dir.clone(),
+            work: work_dir.clone(),
+            target: PathBuf::from("/home"),
+        }],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path.clone(),
+    )));
+
+    let mut overlay_status = HashMap::new();
+    overlay_status.insert(
+        PathBuf::from("/home"),
+        OverlayInfo {
+            mount_path: PathBuf::from("/home"),
+            lower_dir: PathBuf::from("/"),
+            upper_dir: upper_dir.clone(),
+            work_dir: work_dir.clone(),
+            mounted_at: Utc::now(),
+        },
+    );
+    manager
+        .lock()
+        .unwrap()
+        .force_state(SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+        })
+        .unwrap();
+    {
+        let mgr = manager.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
+        if let Some(ref mut state_file) = *cached {
+            state_file.overlay_status = overlay_status;
+        }
+    }
+
+    (manager, fs, temp_dir)
+}
+
+#[test]
+#[serial]
+fn deactivate_requests_reboot_through_injected_dispatcher_even_in_test_runtime() {
+    // The post-teardown reboot used to be wrapped in
+    // `!should_skip_host_interaction()`, so `NAILS_TEST_RUNTIME` (and this crate's
+    // own test build) silently suppressed it. The dispatcher now owns that
+    // decision, so an injected `Simulated` records the request even with
+    // `NAILS_TEST_RUNTIME` set.
+    let (manager, fs, _temp) = manager_ready_for_reboot_step();
+
+    let recorder = SimulatedHostEffects::new(SimulatedReboot::Dispatched);
+    manager
+        .lock()
+        .unwrap()
+        .set_host_effects(HostEffects::Simulated(recorder.clone()));
+
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
+    env.set("NAILS_TEST_RUNTIME", "1");
+    let result = manager.lock().unwrap().deactivate();
+    drop(env);
+
+    assert!(
+        result.is_ok(),
+        "deactivation should succeed when the reboot dispatcher reports success: {result:?}"
+    );
+    assert_eq!(
+        recorder.reboot_requests(),
+        1,
+        "the reboot must be requested through the dispatcher, not silently skipped"
+    );
+    assert_eq!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive
+    );
+    assert!(!fs.is_mounted(Path::new("/home")).unwrap());
+}
+
+#[test]
+#[serial]
+fn deactivate_surfaces_a_refusing_reboot_guard_as_an_error() {
+    // A guard that refuses the destructive reboot step must surface as an error,
+    // never a silent `Ok`: the dispatcher records the attempt and returns the
+    // failure, which `deactivate()` propagates.
+    let (manager, _fs, _temp) = manager_ready_for_reboot_step();
+
+    let recorder = SimulatedHostEffects::new(SimulatedReboot::Refuse(
+        "refusing to reboot (forced guard)".to_string(),
+    ));
+    manager
+        .lock()
+        .unwrap()
+        .set_host_effects(HostEffects::Simulated(recorder.clone()));
+
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
+    let err = manager
+        .lock()
+        .unwrap()
+        .deactivate()
+        .expect_err("a refusing reboot guard must surface as an error");
+    drop(env);
+
+    assert!(
+        err.to_string().contains("forced guard"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        recorder.reboot_requests(),
+        1,
+        "the reboot must be attempted and the refusal surfaced, not silently skipped"
+    );
+}
+
 #[test]
 fn test_deactivate_from_non_active_returns_error() {
     // Create mock hidden volume structure in temp dir

@@ -167,12 +167,17 @@ pub(super) fn request_reboot() -> Result<()> {
 
 /// What the post-deactivation reboot step ended up doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PostDeactivationReboot {
+pub(crate) enum PostDeactivationReboot {
     /// A reboot command was dispatched; the host restarts and boots the decoy.
     Dispatched,
     /// The reboot command failed, so a non-installing `switch-to-configuration
     /// test` restored the decoy for the running session instead.
     FellBackToTest,
+    /// Runtime-safety mode was active, so no reboot was dispatched and the decoy
+    /// was not switched. A compile-time-impossible outcome in shipped builds,
+    /// where [`should_skip_host_interaction`](crate::runtime_safety::should_skip_host_interaction)
+    /// is `false`.
+    Skipped,
 }
 
 /// Request a reboot and, if the reboot command fails, fall back to a
@@ -247,5 +252,109 @@ pub(super) fn switch_to_decoy_for_session<F: Filesystem>(filesystem: &F) -> Resu
             "Decoy session switch failed: {}",
             stderr
         )))
+    }
+}
+
+/// How a deactivation performs the post-teardown reboot into the decoy.
+///
+/// Production always uses [`HostEffects::Real`], which dispatches the real reboot
+/// commands and falls back to a non-installing `switch-to-configuration test`
+/// when none can be dispatched. The seam exists so the reboot step is always
+/// *reached* by `run_deactivation` — the per-site runtime-safety skip now lives
+/// inside [`HostEffects::Real`] rather than wrapping the call — and so tests can
+/// inject [`HostEffects::Simulated`] to observe the reboot request. That is the
+/// only way to exercise the dispatch under this crate's own `cfg(test)` builds,
+/// where [`should_skip_host_interaction`](crate::runtime_safety::should_skip_host_interaction)
+/// is unconditionally `true`.
+#[derive(Debug, Clone, Default)]
+pub enum HostEffects {
+    /// Dispatch the real reboot commands, skipping only while runtime-safety mode
+    /// is active (a compile-time `false` in shipped builds).
+    #[default]
+    Real,
+    /// Record the reboot request instead of touching the host (tests, dry runs).
+    #[cfg(any(test, feature = "test-hooks"))]
+    Simulated(std::sync::Arc<SimulatedHostEffects>),
+}
+
+impl HostEffects {
+    /// Perform the post-deactivation reboot into the decoy.
+    ///
+    /// [`HostEffects::Real`] keeps the per-site runtime-safety skip: shipped
+    /// builds compile it to `false` and always dispatch, while this crate's own
+    /// tests (and a `NAILS_TEST_RUNTIME` nails-e2e run) skip the real reboot.
+    /// A [`HostEffects::Simulated`] dispatcher records the request regardless and
+    /// reports back whatever it was configured with.
+    pub(crate) fn reboot_into_decoy<F: Filesystem>(
+        &self,
+        filesystem: &F,
+    ) -> Result<PostDeactivationReboot> {
+        match self {
+            Self::Real => {
+                if crate::runtime_safety::should_skip_host_interaction() {
+                    tracing::info!("Skipping reboot dispatch: runtime-safety mode is active");
+                    return Ok(PostDeactivationReboot::Skipped);
+                }
+
+                reboot_then_restore_decoy_on_failure(request_reboot, || {
+                    switch_to_decoy_for_session(filesystem)
+                })
+            }
+            #[cfg(any(test, feature = "test-hooks"))]
+            Self::Simulated(simulated) => simulated.record_reboot_request(),
+        }
+    }
+}
+
+/// A recording stand-in for [`HostEffects::Real`] used by tests and dry runs.
+///
+/// It never touches the host: every reboot request is counted, and the
+/// configured [`SimulatedReboot`] decides what the dispatch reports back. This
+/// makes the post-deactivation reboot observable even though
+/// [`should_skip_host_interaction`](crate::runtime_safety::should_skip_host_interaction)
+/// is unconditionally `true` in this crate's own test builds.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Debug)]
+pub struct SimulatedHostEffects {
+    reboot_requests: std::sync::atomic::AtomicUsize,
+    outcome: SimulatedReboot,
+}
+
+/// What an injected [`SimulatedHostEffects`] reports for a reboot request.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Debug, Clone)]
+pub enum SimulatedReboot {
+    /// Record the request and report the reboot as dispatched.
+    Dispatched,
+    /// Record the request and then refuse with an error, standing in for a guard
+    /// that still skips the destructive step — surfaced instead of swallowed.
+    Refuse(String),
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl SimulatedHostEffects {
+    /// Build a recorder wrapped in the [`std::sync::Arc`] that
+    /// [`HostEffects::Simulated`] holds, so a caller can keep a handle to inspect
+    /// it after the deactivation runs.
+    pub fn new(outcome: SimulatedReboot) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            reboot_requests: std::sync::atomic::AtomicUsize::new(0),
+            outcome,
+        })
+    }
+
+    /// How many reboot requests the dispatcher has recorded.
+    pub fn reboot_requests(&self) -> usize {
+        self.reboot_requests
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn record_reboot_request(&self) -> Result<PostDeactivationReboot> {
+        self.reboot_requests
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        match &self.outcome {
+            SimulatedReboot::Dispatched => Ok(PostDeactivationReboot::Dispatched),
+            SimulatedReboot::Refuse(message) => Err(NailsError::NixOSError(message.clone())),
+        }
     }
 }

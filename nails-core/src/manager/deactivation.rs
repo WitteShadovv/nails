@@ -17,11 +17,14 @@ use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError, Result,
     StateGuard, SystemState,
 };
-use reboot::{reboot_then_restore_decoy_on_failure, request_reboot, switch_to_decoy_for_session};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 mod reboot;
+
+pub use reboot::HostEffects;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use reboot::{SimulatedHostEffects, SimulatedReboot};
 
 // The protected-PID handoff is a test-only injection point; nothing sets it in
 // production, so it is compiled in only alongside the other hooks.
@@ -402,11 +405,13 @@ impl<F: Filesystem> NailsManager<F> {
                 tracing::info!("Rebooting system...");
             }
 
-            if !crate::runtime_safety::should_skip_host_interaction() {
-                reboot_then_restore_decoy_on_failure(request_reboot, || {
-                    switch_to_decoy_for_session(self.filesystem())
-                })?;
-            }
+            // The reboot step is always reached: the runtime-safety skip now lives
+            // inside `HostEffects::Real` (a compile-time `false` in shipped builds)
+            // rather than wrapping this call, so a `Simulated` dispatcher can
+            // observe the request and a guard that refuses surfaces as an error
+            // here instead of being silently swallowed.
+            let host_effects = self.host_effects.clone();
+            let _outcome = host_effects.reboot_into_decoy(self.filesystem())?;
         }
 
         Ok(())

@@ -55,6 +55,9 @@ pub mod state_management;
 mod tests;
 
 // Re-export key types for convenience
+pub use deactivation::HostEffects;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use deactivation::{SimulatedHostEffects, SimulatedReboot};
 pub use mount_tracker::{MountInfo, MountTracker, MountType};
 pub use state_management::ResetUpperPlan;
 
@@ -120,6 +123,15 @@ pub struct NailsManager<F: Filesystem> {
     /// seam.
     host_profile: Option<crate::platform::HostProfile>,
 
+    /// How the post-deactivation reboot touches the host.
+    ///
+    /// [`HostEffects::Real`] in every constructor, which dispatches the real
+    /// reboot commands (skipping only while runtime-safety mode is active). A
+    /// test injects [`HostEffects::Simulated`] through
+    /// [`set_host_effects`](NailsManager::set_host_effects) to observe the reboot
+    /// request without rebooting the machine.
+    host_effects: HostEffects,
+
     /// Verbosity level for progress output
     verbosity: crate::verbosity::Verbosity,
 }
@@ -140,6 +152,7 @@ impl<F: Filesystem> std::fmt::Debug for NailsManager<F> {
                 "host_profile",
                 &self.host_profile.as_ref().map(|profile| profile.kind),
             )
+            .field("host_effects", &self.host_effects)
             .field("verbosity", &self.verbosity)
             .finish()
     }
@@ -180,6 +193,7 @@ impl<F: Filesystem> NailsManager<F> {
             cached_state: RefCell::new(None),
             nixos_builder: None,
             host_profile: None,
+            host_effects: HostEffects::Real,
             verbosity: crate::verbosity::Verbosity::default(),
         }
     }
@@ -229,6 +243,7 @@ impl<F: Filesystem> NailsManager<F> {
             cached_state: RefCell::new(None),
             nixos_builder: Some(nixos_builder),
             host_profile: None,
+            host_effects: HostEffects::Real,
             verbosity: crate::verbosity::Verbosity::default(),
         }
     }
@@ -242,6 +257,16 @@ impl<F: Filesystem> NailsManager<F> {
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_cached_state(&self, state: crate::StateFile) {
         *self.cached_state.borrow_mut() = Some(state);
+    }
+
+    /// Replace the post-deactivation reboot dispatcher.
+    ///
+    /// Test-support only. It lets a test inject a [`HostEffects::Simulated`]
+    /// recorder so the post-teardown reboot can be observed without rebooting the
+    /// machine; production always keeps the default [`HostEffects::Real`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_host_effects(&mut self, host_effects: HostEffects) {
+        self.host_effects = host_effects;
     }
 
     /// Set verbosity level for progress output
