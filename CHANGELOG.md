@@ -188,6 +188,14 @@ during the current alpha phase.
   files are written through a symlink-safe open (`openat2` with `RESOLVE_NO_SYMLINKS`/`RESOLVE_BENEATH`
   and an `O_EXCL`/`O_NOFOLLOW` temporary) and owned by the operator with the correct numeric gid,
   closing a symlink-redirect (CWE-59) write as root.
+- Logs and staged configuration are written only when the hidden root is a positively attached
+  volume: the logging layer now verifies the root's device differs from `/` (not merely that the
+  path exists) and falls back to stderr otherwise, read-only subcommands never create log
+  directories or files, and log files are created mode 0600.
+- Commands spawned through the process runner start from a cleared environment rebuilt from an
+  allowlist — a fixed, root-owned PATH plus `LANG`/`LC_*`/`TERM` — so a caller's PATH or `NIX_*`
+  can no longer steer which binaries a root child runs; `NIX_PATH` is passed through only for
+  channel-based `nixos-rebuild`.
 
 ## [0.2.0] - 2026-05-08
 

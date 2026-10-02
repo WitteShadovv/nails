@@ -1088,6 +1088,8 @@ Owns: `nails-core/src/hidden_root.rs`, `nails-cli/src/cli/logging.rs`, `nails-cl
 
   **Done when:** Copying the built binary into an empty temp dir and running `verify`, `status`, or `notify-dispatch` creates no files there (unit test). `LoggingManager::init` returns stderr-only when the path exists but shares a device with `/` (unit test). E2E (`nix/e2e-tests/tests/preflight/13-preflight-hidden-volume.nix`): with the root dir present but nothing mounted, `status`, `verify`, `activate --dry-run` and a refused `activate` leave the dir byte-for-byte empty. Log files are mode 0600 on an attached root (E2E assertion). No `/mnt/hidden-volume` default remains in `nails-core/src/config/defaults.rs`.
 
+  _Status: Partial in W6-C1. Core attach gate landed — new `nails-core/src/hidden_root.rs` with `HiddenRoot::verify_attached` (existence + `st_dev` differs from `/` + optional NAILS marker), `Filesystem::device_id`, `LoggingManager::init` now gates on the device check (stderr-only when the root shares `/`'s device), `command_writes_logs()` keeps read-only subcommands from creating log dirs/files, and log files are created 0600; the two unit-test done-when bullets and the no-`/mnt/hidden-volume`-default bullet pass. Remaining: exclude the active log dir from `verify` findings (`verify/verifier.rs`), move config staging + pre-activation cleanup after the hidden-volume check (`manager/activation/preflight.rs`), drop the build/store-path heuristics in `derive_hidden_volume_root`, and the E2E assertions in `nix/e2e-tests/tests/preflight/13-preflight-hidden-volume.nix` (not evaluable here)._
+
 ### W6-C2: Fresh-home persona mode
 
 Owns: `nails-core/src/manager/helpers.rs`, `nails-core/src/nixos/config/mod.rs`, `nails-cli/src/cli/commands/init.rs`
@@ -1110,6 +1112,8 @@ Owns: `nails-core/src/manager/helpers.rs`, `nails-core/src/nixos/config/mod.rs`,
   - `README.md` and `docs/USER-SECURITY-GUIDE.md` document the shared-account model and each mode.
   - An E2E test (Debian/Ubuntu overlay-only plus the NixOS VM suite) shows that in `fresh-home` mode decoy home contents are not visible in the hidden session; `separate-user` is left as a documented TODO.
 
+  _Status: Not started. W6-C2 produced no commits — the three owned files (`manager/helpers.rs`, `nixos/config/mod.rs`, `cli/commands/init.rs`) cannot carry the feature, which needs new config schema (`config/types.rs`, a `PersonaMode` enum, the init template in `config/loading.rs`), activation bind-mount wiring (`manager/activation/mod.rs`), bind-sync/opaque exclusions, status/dry-run reporting, docs and E2E. Needs a resequenced chunk with wider owned paths. Groundwork already present: `TargetUser::with_persona_home`/`home`/`passwd_home` and `Filesystem::bind_mount`; config is already strict TOML._
+
 ### W6-C3: Command timeouts & child-env hygiene
 
 Owns: `Cargo.toml`, `nails-core/src/process/run.rs`, `nails-core/src/cleanup/manager.rs`
@@ -1129,6 +1133,8 @@ Owns: `Cargo.toml`, `nails-core/src/process/run.rs`, `nails-core/src/cleanup/man
   - Outside tests, `rg 'Command::new' nails-core/src nails-cli/src` matches only `process/run.rs`.
   - A long build prints progress. `cargo test` and clippy pass with zero warnings.
 
+  _Status: Partial in W6-C3. `process/run.rs` now has `ProcessCommand::deadline(budget)` — child in its own process group, stdin closed, stdout/stderr drained on reader threads, `try_wait` poll, whole-group SIGKILL via `nix::killpg` on expiry — returning a typed `NailsError::Timeout { command, budget }`; named budget constants and the whole-group-kill unit test are in. A dependency-free poll was used instead of `wait-timeout` (no Cargo.toml change). Remaining: migrate the ~12 remaining external spawns onto `.deadline(...)` so `rg 'Command::new'` matches only `process/run.rs`, add build heartbeat streaming, and convert `restore.rs` `waitpid` to a WNOHANG deadline poll (picked up by T-082)._
+
 - [ ] **T-048: Root child processes get fixed tool resolution, a cleared environment with an allowlist, and no caller PATH or NIX_* passthrough** (medium · effort M)
 
   **Problem:** Root code paths start tools by bare name, so the caller's PATH decides which binary runs. Affected tools: chown (`notification/mod.rs:109,169`), setfattr/find/getfattr (`overlay/opaque.rs:37,60,77`), cp/du (`filesystem/real/dir_ops.rs:142,179`), swapoff/nixos-rebuild (`filesystem/real/system_ops.rs:19,33,58`), loginctl/kill (`process/session/types.rs:136,160,181`; `process/restart/mod.rs:109`), sync (`cleanup/manager.rs:283`) and the shell (`cleanup/history/cleaner.rs:286`). Other paths hardcode `/run/current-system/sw/bin`. The detached root unit also puts the caller's PATH first (`nails-cli/src/cli/detach.rs:101-130`, used at :199-203 and :287) and copies in every `NIX_*` variable (:205-211). As a result, the binaries that run as root and the behaviour of `nixos-rebuild --impure` depend on the user's profile directories and Nix configuration.
@@ -1147,6 +1153,8 @@ Owns: `Cargo.toml`, `nails-core/src/process/run.rs`, `nails-core/src/cleanup/man
   - A unit test through `process::run` shows that a child sees only allowlisted variables.
   - The security guide documents the trusted-computing-base requirement and the update procedure. `cargo test` and clippy pass with zero warnings.
 
+  _Status: Partial in W6-C3. `process/run.rs` now starts every child from `env_clear()` and rebuilds a fixed PATH from `SYSTEM_TOOL_DIRS` plus a `LANG`/`LC_*`/`TERM` allowlist, with an opt-in `ProcessCommand::allow_env` that cannot override PATH; `nixos/command.rs` opts `NIX_PATH` in only for channel-based `nixos-rebuild`. A unit test proves a child sees only allowlisted vars. Remaining: the bare-name/embedded-store-path spawn sweep across the other modules, the detached-unit fixed PATH + `NIX_*` drop in `detach.rs`, gating the `NAILS_*` tool-path override vars behind the test-hooks feature, and the `docs/USER-SECURITY-GUIDE.md` TCB statement._
+
 ### W6-C4: Test-support builder
 
 Owns: `nails-core/src/config/testing.rs`, `nails-core/src/filesystem/mock/setup_state.rs`, `nails-core/src/manager/tests.rs`
@@ -1162,6 +1170,8 @@ Owns: `nails-core/src/config/testing.rs`, `nails-core/src/filesystem/mock/setup_
   - Split `manager/tests.rs` by behaviour: preflight, overlay mount, rollback, logging, nixos build. Split `shell/tests.rs` and `deactivation/tests.rs` the same way. Use one naming convention, e.g. `<module>/tests/<behaviour>.rs`, and document it in CONTRIBUTING.
 
   **Done when:** `TestWorld` and `PathKind` exist and the existing tests use them. `rg 'fn make_manager'` finds no copies outside test-support. `nails-cli` and `tests/` build against the shared `test_default`. No test file is larger than about 1,500 lines, and all of them follow the one naming convention. `nix develop -c cargo test --workspace` passes, clippy reports zero warnings, and the coverage gate still holds.
+
+  _Status: Partial in W6-C4. `PathKind` enum (`File`/`Dir`/`Symlink`/`Missing`) replaces the string arg of `mock_set_path_type`, `mock_add_file` added, and the `TestWorld` builder + `Config::test_default` now live behind a non-default `test-support` feature (`cfg(any(test, feature = "test-support"))`); all call sites migrated and 3 of 4 `make_manager` config-duplication copies removed. Remaining: split the monolithic `manager/tests.rs` (~7.6k lines), `shell/tests.rs`, and `deactivation/tests.rs` by behaviour under one `<module>/tests/<behaviour>.rs` convention, document it in CONTRIBUTING, and remove the last thin `make_manager` wrappers (blocked on a shared test-support crate or T-052)._
 
 ## Wave 7: Test-hooks removal + overlay safety floor/init + PR gate
 
