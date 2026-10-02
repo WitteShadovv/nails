@@ -101,6 +101,32 @@ pub struct PersonaConfig {
     /// unless the operator opts into `fresh-home`.
     #[serde(default)]
     pub mode: PersonaMode,
+
+    /// Inherited decoy autostart entries and user units to mask for the hidden
+    /// session.
+    ///
+    /// Each value is an entry name as the persona inventory reports it: the
+    /// `.desktop` stem for an autostart entry, or the full unit name (with its
+    /// suffix) for a user unit. The single element `"*"` masks every maskable
+    /// inherited entry. Masking happens after the overlays are mounted and before
+    /// the session restarts: a `Hidden=true` autostart override or a `/dev/null`
+    /// user-unit mask is written through the merged home, so it lands only in the
+    /// hidden overlay and is gone when the overlay is torn down. Lingering and
+    /// autologin are reported but cannot be masked this way. Empty by default.
+    #[serde(default)]
+    pub mask_inherited: Vec<String>,
+}
+
+impl PersonaConfig {
+    /// Whether the mask list requests masking every maskable inherited entry.
+    pub fn masks_all_inherited(&self) -> bool {
+        self.mask_inherited.iter().any(|name| name == "*")
+    }
+
+    /// Whether an inherited entry named `name` should be masked.
+    pub fn masks_inherited(&self, name: &str) -> bool {
+        self.masks_all_inherited() || self.mask_inherited.iter().any(|entry| entry == name)
+    }
 }
 
 #[cfg(test)]
@@ -146,5 +172,48 @@ mod tests {
 
         assert!(toml::from_str::<PersonaConfig>("mode = \"bogus\"").is_err());
         assert!(toml::from_str::<PersonaConfig>("other = 1").is_err());
+    }
+
+    #[test]
+    fn mask_inherited_defaults_to_empty() {
+        assert!(PersonaConfig::default().mask_inherited.is_empty());
+        assert!(!PersonaConfig::default().masks_all_inherited());
+    }
+
+    #[test]
+    fn parses_mask_inherited_list() {
+        let config: PersonaConfig =
+            toml::from_str("mask_inherited = [\"dropbox\", \"syncthing.service\"]").unwrap();
+        assert_eq!(
+            config.mask_inherited,
+            vec!["dropbox".to_string(), "syncthing.service".to_string()]
+        );
+        assert!(!config.masks_all_inherited());
+        assert!(config.masks_inherited("dropbox"));
+        assert!(config.masks_inherited("syncthing.service"));
+        assert!(!config.masks_inherited("telegram"));
+    }
+
+    #[test]
+    fn mask_all_sentinel_matches_everything() {
+        let config: PersonaConfig = toml::from_str("mask_inherited = [\"*\"]").unwrap();
+        assert!(config.masks_all_inherited());
+        assert!(config.masks_inherited("anything"));
+    }
+
+    #[test]
+    fn mask_inherited_roundtrips_with_mode() {
+        let config = PersonaConfig {
+            mode: PersonaMode::FreshHome,
+            mask_inherited: vec!["dropbox".to_string()],
+        };
+        let serialized = toml::to_string(&config).unwrap();
+        let parsed: PersonaConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn unknown_key_is_still_rejected_alongside_mask_inherited() {
+        assert!(toml::from_str::<PersonaConfig>("mask_inherited = [\"x\"]\nbogus = 1").is_err());
     }
 }

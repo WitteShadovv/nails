@@ -101,6 +101,10 @@ pub mod hidden_root;
 // Platform seam: host detection and per-platform behaviour (NixOS / FHS / refused).
 pub mod platform;
 
+// Persona inventory: the decoy autostart/user-unit/linger/autologin state the
+// hidden session would inherit from the decoy account.
+pub mod persona;
+
 mod runtime_safety;
 
 // Test helpers shared across modules and with downstream test code (the
@@ -131,6 +135,9 @@ pub use platform::{
     detect_platform, discover_host_target, platform_for,
 };
 pub use target_user::TargetUser;
+
+// Persona inventory exports
+pub use persona::{InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona};
 
 // State management exports
 pub use state::{

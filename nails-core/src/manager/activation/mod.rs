@@ -129,6 +129,26 @@ fn prepare_notification_autostart_before_session_restart<F: Filesystem>(manager:
             );
         }
     }
+
+    // Mask the inherited decoy autostart entries and user units the operator
+    // opted to hide. The overlays are mounted and the session has not restarted
+    // yet, so the masks land in the hidden upper and take effect for the hidden
+    // session only.
+    match shell.write_persona_masks() {
+        Ok(0) => {}
+        Ok(count) => {
+            tracing::info!(
+                count,
+                "Masked inherited decoy entries before session restart"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "Failed to mask inherited decoy entries before session restart (best-effort)"
+            );
+        }
+    }
 }
 
 #[cfg(not(test))]

@@ -1,5 +1,9 @@
 //! RC file integration and XDG autostart entry management
 
+use std::path::Path;
+
+use crate::config::PersonaMode;
+use crate::persona::collect_inherited_persona;
 use crate::{Filesystem, Result};
 
 use super::{ShellInstrumentation, ShellType, color_scheme};
@@ -162,7 +166,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         }
 
         let autostart_dir = home_dir.join(".config/autostart");
-        let desktop_file_path = autostart_dir.join("nails-notify.desktop");
+        let desktop_file_path = autostart_dir.join(super::NOTIFY_AUTOSTART_FILE);
 
         // Create autostart directory if it doesn't exist. When an operator is
         // attached the owner-aware write creates and chowns the directory chain
@@ -205,6 +209,144 @@ impl<F: Filesystem> ShellInstrumentation<F> {
                     e
                 );
                 Ok(false)
+            }
+        }
+    }
+
+    /// Mask the inherited decoy autostart entries and user units the operator
+    /// listed in `[persona] mask_inherited`.
+    ///
+    /// Runs after the overlays are mounted and before the session restarts. For
+    /// each inherited entry whose name is in the mask list (or when the list is
+    /// the single sentinel `"*"`), it writes a `Hidden=true` autostart override
+    /// or a `/dev/null` user-unit mask **through the merged home**, so the mask
+    /// lands in the hidden overlay's upper layer and shadows the lower-layer decoy
+    /// entry only while the hidden environment is active. It never touches an
+    /// upper directory directly, and lingering and autologin are left untouched.
+    ///
+    /// Returns the number of entries masked. Best-effort: a single failed mask is
+    /// logged and skipped rather than aborting the rest.
+    pub fn write_persona_masks(&self) -> Result<usize> {
+        if self.config.persona.mask_inherited.is_empty() {
+            return Ok(0);
+        }
+
+        let home_dir = self.resolve_target_home_dir()?;
+        if !self.target_home_on_hidden_overlay(&home_dir) {
+            tracing::warn!(
+                "Skipping persona masks: {} is not on a hidden overlay",
+                home_dir.display()
+            );
+            return Ok(0);
+        }
+
+        let user_name = self
+            .target_user
+            .as_ref()
+            .map(|user| user.name.clone())
+            .unwrap_or_default();
+        let fresh_home = self.config.persona.mode == PersonaMode::FreshHome;
+        let inventory =
+            collect_inherited_persona(&self.filesystem, &home_dir, &user_name, fresh_home);
+
+        let mut masked = 0usize;
+        for entry in inventory.maskable() {
+            if !self.config.persona.masks_inherited(&entry.name) {
+                continue;
+            }
+
+            let wrote = if entry.source.is_autostart() {
+                self.write_autostart_mask(&home_dir, &entry.name)
+            } else {
+                self.write_unit_mask(&home_dir, &entry.name)
+            };
+
+            if wrote {
+                masked += 1;
+            }
+        }
+
+        if masked > 0 {
+            tracing::info!(
+                count = masked,
+                "Masked inherited decoy entries for the hidden session"
+            );
+        }
+        Ok(masked)
+    }
+
+    /// Write a `Hidden=true` autostart override for `name` into the merged home.
+    ///
+    /// A user `~/.config/autostart/<name>.desktop` entry takes precedence over a
+    /// matching `/etc/xdg/autostart` entry, so this masks both user and global
+    /// autostart entries of the same name.
+    fn write_autostart_mask(&self, home_dir: &Path, name: &str) -> bool {
+        let path = home_dir
+            .join(".config/autostart")
+            .join(format!("{name}.desktop"));
+        let content = "[Desktop Entry]\n\
+            Type=Application\n\
+            Hidden=true\n";
+
+        match self.write_home_file(&path, content, 0o644) {
+            Ok(()) => {
+                tracing::info!("Masked inherited autostart entry {}", path.display());
+                true
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to mask inherited autostart entry {}: {}",
+                    path.display(),
+                    e
+                );
+                false
+            }
+        }
+    }
+
+    /// Mask a user unit by symlinking `~/.config/systemd/user/<unit>` to
+    /// `/dev/null` through the merged home.
+    ///
+    /// A `/dev/null` symlink in the user unit directory masks both user-enabled
+    /// units and units shipped in `/etc/systemd/user` for that user's manager.
+    /// The symlink's own ownership is irrelevant — systemd follows it regardless
+    /// — and it vanishes with the overlay on deactivation.
+    fn write_unit_mask(&self, home_dir: &Path, unit: &str) -> bool {
+        let dir = home_dir.join(".config/systemd/user");
+        let link = dir.join(unit);
+
+        if !self.filesystem.path_exists(&dir).unwrap_or(false)
+            && let Err(e) = self.filesystem.create_directory(&dir)
+        {
+            tracing::warn!(
+                "Failed to create user unit directory {} for masking: {}",
+                dir.display(),
+                e
+            );
+            return false;
+        }
+
+        // Replace any inherited entry at this path so the mask symlink can take
+        // its place; through the overlay this records a whiteout in the upper.
+        if self.filesystem.path_exists(&link).unwrap_or(false) {
+            let _ = self.filesystem.remove_file(&link);
+        }
+
+        match self
+            .filesystem
+            .create_symlink(Path::new("/dev/null"), &link)
+        {
+            Ok(()) => {
+                tracing::info!("Masked inherited user unit {}", link.display());
+                true
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to mask inherited user unit {}: {}",
+                    link.display(),
+                    e
+                );
+                false
             }
         }
     }

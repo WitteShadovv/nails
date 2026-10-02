@@ -449,6 +449,8 @@ Hidden commands now exist on decoy disk
 | **Pre-installed hardware implants** | Keyloggers, firmware backdoors operate below OS level |
 | **Electromagnetic side-channels** | CPU emissions can leak encryption keys |
 | **Network traffic analysis** | Hidden sessions may be detectable via timing/volume patterns |
+| **Shared network identifiers** | Machine-id, hostname, MAC addresses and NetworkManager profiles (including VPN autoconnect) are shared between the decoy and the hidden session; correlation through them is out of scope for the overlay (see [Shared Decoy Account and Persona Modes](#shared-decoy-account-and-persona-modes)) |
+| **Inherited remote and account state** | Accounts, tokens and sync history the hidden session uses from the decoy are shared and are never rolled back on deactivation |
 | **Legal compulsion with forensic expertise** | Deniability is not immunity; sophisticated analysis may detect anomalies |
 
 ### Shared Decoy Account and Persona Modes
@@ -481,6 +483,57 @@ not an accepted value yet.
 **Recommendation:** for sensitive work, set `persona.mode = "fresh-home"` and sign in to the hidden
 session's accounts from the clean home rather than reusing the decoy's. Treat `shared-home` as an
 explicit, informed choice — the activation warning is there to make that choice visible.
+
+#### Inherited autostart, services and autologin
+
+In `shared-home` mode the hidden session also inherits what the decoy account starts automatically:
+
+- autostart entries in `~/.config/autostart` and `/etc/xdg/autostart`
+- enabled systemd **user** services and timers
+- lingering (`loginctl enable-linger`), which runs the user manager without a login
+- display-manager autologin (GDM, SDDM, LightDM)
+
+Sync, cloud, messaging and account clients (Dropbox, Nextcloud, Syncthing, Telegram, Signal,
+Thunderbird, online-account daemons, …) therefore run under the decoy identity in the hidden session
+and can contact remote servers and your other devices.
+
+`nails check` and the activation confirmation list this inherited state and flag names that look like
+remote-linked clients. The flag is a **name-only** heuristic: it tells you a name looks like a client
+that talks to remote servers, not that it is signed in or active.
+
+To hide specific entries from the hidden session, list them under `[persona]`:
+
+```toml
+[persona]
+mask_inherited = ["dropbox", "syncthing.service"]   # or ["*"] to mask all maskable entries
+```
+
+Autostart entries are masked with a `Hidden=true` override and user services with a `/dev/null` mask,
+both written through the merged home after the overlays mount and before the session restarts, so they
+take effect only in the hidden session and disappear on deactivation. **Lingering and autologin are
+reported but not masked** — disable those on the decoy itself if they matter.
+
+Masking changes what *runs* in the hidden session. It does **not** roll back remote or account state:
+anything the hidden session did through a shared account, token or sync client stays on the decoy's
+online services and is never undone.
+
+#### Shared network identifiers
+
+The overlay shares the host's network identity between the decoy and the hidden session.
+`clean_stale_network_config` preserves **only** DNS (`resolv.conf`, `nsswitch.conf`); it does not
+change the machine-id, hostname, MAC addresses or NetworkManager profiles (including VPN autoconnect).
+Correlation through these identifiers is **out of scope** for the overlay.
+
+If your threat model needs the hidden session to present a different network identity, apply it in the
+hidden NixOS generation (so it switches before the session restarts) or as a NetworkManager drop-in on
+an FHS host. NAILS ships an optional snippet for both:
+
+- NixOS: `nix/modules/hidden-network-identity.nix` (random Wi-Fi/Ethernet MAC, a distinct
+  `networking.hostName`, VPN autoconnect off)
+- FHS/NetworkManager: `nix/modules/network-identity/00-hidden-identity.conf`
+
+These take effect only once the hidden switch runs before the session restarts; the overlay alone
+cannot change them.
 
 ### SSD Wear-Leveling Limitations
 
@@ -584,6 +637,12 @@ Before activating the hidden environment:
     (see backends.md)
 [ ] NAILS binary exists ONLY on hidden volume
 [ ] No copies of NAILS binary on decoy filesystem
+[ ] Reviewed the inherited decoy state in `nails check` (autostart,
+    user services, lingering, autologin); masked or accepted the
+    remote-linked clients via [persona] mask_inherited
+[ ] Accepted that shared accounts and network identifiers (machine-id,
+    hostname, MAC, NetworkManager/VPN profiles) are not isolated by the
+    overlay, or applied the hidden network-identity snippet
 [ ] Decoy system has plausible recent activity
 [ ] All unsaved work is saved (activation may kill session)
 [ ] No other users logged in who might observe

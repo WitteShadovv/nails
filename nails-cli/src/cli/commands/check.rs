@@ -17,8 +17,8 @@ use nails_core::{
 
 use crate::cli::args::CheckArgs;
 use crate::cli::output::check::{
-    CheckReport, CheckRow, ConfigSummary, ProfileSummary, SessionSummary, print_check_human,
-    print_check_json,
+    CheckReport, CheckRow, ConfigSummary, InheritedSummary, ProfileSummary, SessionSummary,
+    print_check_human, print_check_json,
 };
 use crate::cli::output::envelope::{ErrorBody, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
@@ -103,8 +103,16 @@ pub fn execute(
 
     let session = session_summary();
     let profile = profile_summary(overlay_only, config, manager.filesystem());
+    let inherited = inherited_summary(config, manager.filesystem());
 
-    let report = CheckReport::finalize(checks, config_summary, overlay_targets, session, profile);
+    let report = CheckReport::finalize(
+        checks,
+        config_summary,
+        overlay_targets,
+        session,
+        profile,
+        inherited,
+    );
 
     if json {
         print_check_json(&report);
@@ -191,6 +199,25 @@ fn profile_summary<F: Filesystem>(overlay_only: bool, config: &Config, fs: &F) -
             detail: None,
         },
     }
+}
+
+/// Collect the decoy persona state the hidden session would inherit.
+///
+/// The check runs non-interactively and often without privileges, so when the
+/// target user cannot be resolved the inventory is reported as "not inspected"
+/// rather than surfaced as an error. In fresh-home mode only system-level
+/// inherited state is listed, matching what that mode actually carries over.
+fn inherited_summary<F: Filesystem>(config: &Config, fs: &F) -> InheritedSummary {
+    use nails_core::config::PersonaMode;
+    use nails_core::{TargetUser, collect_inherited_persona};
+
+    let Ok(user) = TargetUser::resolve() else {
+        return InheritedSummary::not_inspected();
+    };
+
+    let fresh_home = config.persona.mode == PersonaMode::FreshHome;
+    let inventory = collect_inherited_persona(fs, user.home(), &user.name, fresh_home);
+    InheritedSummary::from_inventory(&inventory)
 }
 
 #[cfg(test)]

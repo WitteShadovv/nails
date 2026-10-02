@@ -87,6 +87,7 @@ is the `name` key of each `[[overlays]]` table.
 | `color_scheme.enabled` | boolean | `true` | Change the terminal colours while the hidden environment is active. Like `prompt_label`, the change is visible on screen and in screenshots. |
 | `color_scheme.hidden.background` | string (colour) | `"#1a1a2e"` | Terminal background while the hidden environment is active, as an OSC colour such as `#rrggbb`. Not validated; terminals ignore values they do not understand. |
 | `color_scheme.hidden.foreground` | string (colour) | `"#e0e0e0"` | Terminal foreground while the hidden environment is active, in the same format as `background`. |
+| `persona.mask_inherited` | list of entry names, or `["*"]` | `[]` | Inherited decoy autostart entries and user units to hide from the hidden session. Each value is a name as `nails check` lists it: the `.desktop` stem for an autostart entry, or the full unit name for a user unit. `["*"]` masks every maskable inherited entry. Masks are written after the overlays mount and before the session restarts, so they take effect for the hidden session only and vanish on deactivation. Lingering and autologin are reported but not masked. See [Inherited decoy state](#inherited-decoy-state). |
 | `persona.mode` | `"shared-home"` or `"fresh-home"` | `"shared-home"` | How the hidden session relates to the decoy account. `shared-home` runs it in the decoy home (merged read-write through the `/home` overlay), so the decoy's accounts, keys and app profiles are live; activation warns while it is in effect. `fresh-home` bind-mounts a clean, empty home from the hidden volume over the operator's home, so the decoy home contents are not visible. See [Persona modes](#persona-modes). |
 <!-- END config-keys -->
 
@@ -209,3 +210,37 @@ A third model, `separate-user` — a fixed-UID hidden account distinct from the
 decoy user — is planned for a later release. It needs the hidden NixOS
 generation switched before login rather than at activation time, so it is not an
 accepted value yet; `persona.mode` accepts only `shared-home` and `fresh-home`.
+
+## Inherited decoy state
+
+In `shared-home` mode the hidden session inherits whatever the decoy account
+starts on login: autostart entries (`~/.config/autostart` and
+`/etc/xdg/autostart`), enabled systemd user services and timers, lingering, and
+display-manager autologin. Sync, cloud, messaging and account clients configured
+in the decoy therefore run under the decoy identity in the hidden session and can
+reach remote servers and your other devices.
+
+`nails check` lists this inherited state and flags names that look like
+remote-linked clients (a name-only heuristic; it makes no claim about signed-in
+state). The same summary appears in the activation confirmation.
+
+`persona.mask_inherited` hides specific inherited entries from the hidden session.
+List the entry names to mask, or the single value `"*"` to mask every maskable
+entry:
+
+```toml
+[persona]
+mask_inherited = ["dropbox", "syncthing.service"]
+```
+
+Autostart entries are masked with a `Hidden=true` override and user units with a
+`/dev/null` mask, both written through the merged home after the overlays mount
+and before the session restarts, so they land only in the hidden overlay and are
+gone on deactivation. Lingering and autologin are reported but cannot be masked
+this way — disable them on the decoy itself if they matter.
+
+Masking hides what *runs*; it does not roll back remote or account state. Shared
+accounts, tokens and sync history remain shared and are never undone. Correlation
+through shared network identifiers (machine-id, hostname, MAC, NetworkManager
+profiles) is out of scope for the overlay; see the user security guide for the
+optional hidden network-identity snippet.

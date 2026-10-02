@@ -36,6 +36,11 @@ pub struct RegistryInputs {
     /// The flake directory auto-discovery selected, validated directly by the
     /// build-target check when it runs.
     pub selected_flake_dir: Option<PathBuf>,
+    /// The operator whose inherited decoy persona state the inherited-autostart
+    /// check inspects. Resolved best-effort by [`NailsManager::preflight_registry`];
+    /// `None` (the default used by unit tests that build inputs directly) makes
+    /// that check report a skipped Pass instead of inspecting anything.
+    pub operator: Option<crate::TargetUser>,
 }
 
 /// Assemble the pre-flight check registry for a set of [`RegistryInputs`].
@@ -58,9 +63,9 @@ pub fn build_registry<F: Filesystem>(
     inputs: &RegistryInputs,
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
-        BackendDetectCheck, BinaryLocationCheck, HiddenVolumeCheck, MountNamespaceCheck,
-        NixOSBuildTargetCheck, NixOSConfigCheck, OverlayCompatibilityCheck, OverlayTargetsCheck,
-        SnapshotMemoryCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
+        BackendDetectCheck, BinaryLocationCheck, HiddenVolumeCheck, InheritedAutostartCheck,
+        MountNamespaceCheck, NixOSBuildTargetCheck, NixOSConfigCheck, OverlayCompatibilityCheck,
+        OverlayTargetsCheck, SnapshotMemoryCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
         SuspiciousNailsReferenceCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
 
@@ -191,6 +196,20 @@ pub fn build_registry<F: Filesystem>(
         config.hidden_volume_root.clone(),
     )));
 
+    // Warns (never fails) about the decoy autostart entries, enabled user
+    // services, lingering and autologin the hidden session would inherit. When no
+    // operator could be resolved the check degrades to a skipped Pass. Fresh-home
+    // mode reports only system-level inherited state.
+    let fresh_home = config.persona.mode == crate::config::PersonaMode::FreshHome;
+    registry.add_check(Box::new(match inputs.operator.as_ref() {
+        Some(operator) => InheritedAutostartCheck::new(
+            operator.home().to_path_buf(),
+            operator.name.clone(),
+            fresh_home,
+        ),
+        None => InheritedAutostartCheck::disabled(),
+    }));
+
     registry.add_check(Box::new(StateCheck::new(inputs.current_state.clone())));
 
     Ok(registry)
@@ -257,6 +276,9 @@ impl<F: Filesystem> NailsManager<F> {
             current_state: self.current_state()?,
             flake_target_already_validated,
             selected_flake_dir,
+            // Resolve the operator best-effort so the inherited-autostart check
+            // can inspect the decoy state; an unresolved operator simply skips it.
+            operator: crate::TargetUser::resolve().ok(),
         };
 
         build_registry(&self.filesystem, &self.config, &inputs)

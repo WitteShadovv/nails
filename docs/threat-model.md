@@ -38,3 +38,33 @@ suite): it hashes the ESP file listing and captures the EFI variable list
 (`efibootmgr -v` / efivarfs) and `/var/lib/nixos` contents before activation and
 after deactivation, and asserts both are unchanged relative to a plain-reboot
 control.
+
+## Shared remote, account and network identifiers are out of scope
+
+**Statement:** the overlay isolates the on-disk filesystem, not online identity or
+network identity. In the default `shared-home` persona the hidden session runs as
+the decoy user, so it inherits the decoy account's autostart entries, enabled
+systemd user services and timers, lingering and display-manager autologin, and it
+shares the host's machine-id, hostname, MAC addresses and NetworkManager profiles
+(including VPN autoconnect).
+
+Two consequences are explicitly **not** defended against:
+
+- **Remote and account state is shared and never rolled back.** Anything the
+  hidden session touches through a shared account, token or sync client lives on
+  the remote service, not on the host, so unmounting the overlay cannot undo it.
+  NAILS inventories the inherited autostart/user-service/autologin state
+  (`nails check`, activation confirmation) and can mask autostart entries and user
+  units for the hidden session (`[persona] mask_inherited`), but masking only
+  stops them from running — it does not reach the remote side.
+- **Correlation through shared network identifiers is out of scope.** The overlay
+  does not change machine-id, hostname, MAC or NetworkManager state;
+  `clean_stale_network_config` preserves only DNS. An optional hidden
+  network-identity configuration (random MAC, distinct hostname, VPN autoconnect
+  off) can be applied in the hidden NixOS generation or as a NetworkManager
+  drop-in, but it is opt-in and takes effect only when the hidden switch runs
+  before the session restarts.
+
+Fresh-home persona mode reduces the first consequence by starting the hidden
+session from a clean home, so the decoy's accounts and clients are not visible; it
+does not change the shared network identity.

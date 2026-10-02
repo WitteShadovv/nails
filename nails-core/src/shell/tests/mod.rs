@@ -33,6 +33,7 @@ mod alias_scripts;
 mod colors;
 mod detection;
 mod overlay_gate;
+mod persona_masks;
 mod prompt_scripts;
 mod rc_files;
 mod setup_cleanup;

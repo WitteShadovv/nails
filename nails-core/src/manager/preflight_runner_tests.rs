@@ -32,6 +32,7 @@ fn build_registry_includes_the_shared_checks() {
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
+        operator: None,
     };
 
     let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
@@ -64,6 +65,7 @@ fn overlay_only_registry_drops_the_nixos_checks() {
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
+        operator: None,
     };
 
     let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
@@ -118,6 +120,7 @@ fn read_only_registry_creates_nothing() {
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
+        operator: None,
     };
 
     let registry = build_registry(&fs, &config, &inputs).expect("registry builds");

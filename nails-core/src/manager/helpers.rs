@@ -106,6 +106,12 @@ pub(crate) fn ensure_run_current_system_symlink<F: Filesystem>(
 /// upper layer directory. This allows the real system files to show through the overlay's
 /// lower layer, preserving DNS resolution.
 ///
+/// This touches **only** DNS resolution: it preserves `resolv.conf` and `nsswitch.conf`
+/// and nothing else. It does not alter the machine-id, hostname, MAC addresses or
+/// NetworkManager profiles, so those network identifiers are shared between the decoy and the
+/// hidden session. Correlation through them is out of scope for the overlay; see the user
+/// security guide for the optional hidden network-identity configuration.
+///
 /// # Arguments
 ///
 /// * `upper_dir` - Path to the /etc overlay's upper layer directory

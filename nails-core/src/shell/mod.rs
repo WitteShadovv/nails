@@ -53,6 +53,13 @@ use std::path::{Path, PathBuf};
 // Re-export ShellType from cleanup module for backward compatibility
 pub use crate::cleanup::history::ShellType;
 
+/// Basename of the XDG autostart entry NAILS writes into the overlaid home for
+/// login-time notification dispatch.
+///
+/// Shared so the persona inventory can skip NAILS' own entry when it lists the
+/// decoy autostart state the hidden session inherits.
+pub(crate) const NOTIFY_AUTOSTART_FILE: &str = "nails-notify.desktop";
+
 /// Result of shell setup operation during activation
 ///
 /// Contains information about generated scripts and instructions for the user

@@ -1,0 +1,13 @@
+//! Persona inventory: the decoy state the hidden session inherits.
+//!
+//! This is the runtime collector that lists the decoy autostart entries, enabled
+//! user units, lingering and display-manager autologin the hidden session would
+//! inherit when it runs in the decoy home. It is distinct from the
+//! [`config::persona`](crate::config::persona) table, which decides *how* the
+//! hidden session relates to the decoy account; this module reports *what* that
+//! choice would carry over, and provides the data the inherited-autostart
+//! pre-flight check, `nails check` and the activation-time masking all consume.
+
+pub mod inventory;
+
+pub use inventory::{InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona};

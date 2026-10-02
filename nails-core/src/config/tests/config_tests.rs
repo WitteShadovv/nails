@@ -182,6 +182,7 @@ fn test_persona_round_trips_through_toml() {
     let config = Config {
         persona: crate::config::PersonaConfig {
             mode: PersonaMode::FreshHome,
+            ..Default::default()
         },
         ..Config::test_default()
     };

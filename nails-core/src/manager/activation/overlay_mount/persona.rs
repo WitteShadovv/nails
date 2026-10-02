@@ -87,7 +87,10 @@ mod tests {
             hidden_volume_root: hidden_root.clone(),
             state_file_path: hidden_root.join("state.json"),
             log_path: hidden_root.join("logs"),
-            persona: PersonaConfig { mode },
+            persona: PersonaConfig {
+                mode,
+                ..Default::default()
+            },
             ..Config::test_default()
         };
         let state_path = config.state_file_path.clone();
