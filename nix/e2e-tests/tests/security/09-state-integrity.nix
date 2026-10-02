@@ -48,7 +48,9 @@ in
     else:
         print("Note: No explicit state file found (state may be tracked via mounts/runtime)")
 
-    status = machine.succeed("nails status")
+    # The binary lives in the Nix store, so status must use the headless config
+    # to read the hidden-volume state rather than the binary-derived default.
+    status = machine.succeed(f"nails --config {headless_config} status")
     assert "Active" in status or "ACTIVE" in status, f"Expected Active status, got: {status}"
     print("✓ NAILS reports Active state")
 
@@ -64,7 +66,7 @@ in
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
-        status = machine.succeed("nails status")
+        status = machine.succeed(f"nails --config {headless_config} status")
         assert "Active" in status or "ACTIVE" in status, \
             f"Cycle {cycle}: Expected Active, got: {status}"
 

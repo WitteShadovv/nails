@@ -84,7 +84,11 @@ in
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
-    status_json = json.loads(machine.succeed("nails status --json"))["data"]
+    # The binary lives in the Nix store, so status needs the headless config to
+    # resolve the hidden-volume state file rather than the binary-derived default.
+    status_json = json.loads(
+        machine.succeed(f"nails --config {headless_config} status --json")
+    )["data"]
     assert status_json["state"]["kind"] == "active", \
         f"Expected active state, got: {status_json}"
     print(f"✓ Status shows {status_json['state']['kind']} after activation")

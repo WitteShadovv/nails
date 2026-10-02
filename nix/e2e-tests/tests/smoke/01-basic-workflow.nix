@@ -83,7 +83,10 @@ in
     machine.succeed("nix-instantiate --eval -E '1+1'")
     print("✓ Nix operations work during active session")
 
-    active_status = read_status_json()
+    # The running binary lives in the Nix store, not on the hidden volume, so
+    # status must be pointed at the headless config to read the hidden-volume
+    # state file (the binary-derived default would look beside the store binary).
+    active_status = read_status_json(config_path=headless_config)
     assert active_status["state"]["kind"] == "active", f"Expected Active status, got: {active_status}"
     active_paths = {overlay["path"] for overlay in active_status["overlays"]}
     assert "/home" in active_paths and "/etc" in active_paths, \

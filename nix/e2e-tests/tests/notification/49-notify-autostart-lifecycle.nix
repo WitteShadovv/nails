@@ -86,7 +86,10 @@ in
         machine.wait_until_succeeds(f"test -f {desktop_path}")
         # Queued notification signal retention can vary by dispatch backend; verify activation and autostart wiring instead.
         assert_overlay_mounted("/home")
-        wait_for_status_state("Active")
+        # The binary lives in the Nix store, so status must use the headless
+        # config to read the hidden-volume state rather than the store-derived
+        # default root.
+        wait_for_status_state("Active", config_path=headless_config)
 
         machine.succeed(f"test -f {hidden_desktop_path}")
         desktop_text = machine.succeed(f"cat {desktop_path}")
