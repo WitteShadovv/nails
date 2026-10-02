@@ -6,48 +6,15 @@
 //! - Parses all commands and flags
 //! - Links properly to nails-core library
 //!
-//! # Safety Warnings
-//!
-//! Some tests in this file execute REAL system commands (activate, deactivate, emergency).
-//! These tests are protected by Layer 3 safety guards that check for the
-//! `NAILS_UNSAFE_REAL_OPS=1` environment variable.
-//!
-//! To run these tests:
-//! ```bash
-//! NAILS_UNSAFE_REAL_OPS=1 cargo test -p nails-cli --test cli_integration
-//! ```
-//!
-//! By default (without the env var), dangerous tests will print a skip message
-//! and pass without executing real operations.
+//! Every test here runs unprivileged and performs no destructive operation.
+//! `activate`, `deactivate` and `emergency` are only exercised along paths
+//! that refuse before any mount, switch or teardown: the confirmation gate off
+//! a terminal, a config error, or the read-only `--dry-run` alias. A case that
+//! would need root is marked `#[ignore]`, never silently skipped on an
+//! environment variable.
 
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
-
-/// TEST SAFETY GUARD (Layer 3): Check if unsafe real operations are allowed
-///
-/// This helper function is called at the start of integration tests that execute
-/// real system commands (activate, deactivate, emergency). It checks for the
-/// `NAILS_UNSAFE_REAL_OPS=1` environment variable and skips the test if not set.
-///
-/// # Returns
-///
-/// - `true` if the test should run (env var is set)
-/// - `false` if the test should be skipped (safe mode)
-fn check_unsafe_ops_allowed(test_name: &str) -> bool {
-    if std::env::var("NAILS_UNSAFE_REAL_OPS").unwrap_or_default() != "1" {
-        eprintln!();
-        eprintln!("⚠️  SKIPPED: {}", test_name);
-        eprintln!("   This test executes real system commands (mount, systemctl, etc.)");
-        eprintln!("   and is skipped by default for safety.");
-        eprintln!();
-        eprintln!("   To run: NAILS_UNSAFE_REAL_OPS=1 cargo test");
-        eprintln!();
-        eprintln!("   ⚠️  WARNING: This will execute REAL operations on your system!");
-        eprintln!();
-        return false;
-    }
-    true
-}
 
 /// Test that the CLI binary exists and runs
 #[test]
@@ -183,34 +150,6 @@ fn test_all_commands_have_help() {
     }
 }
 
-/// Test that activate command executes and fails without root/setup (expected)
-#[test]
-fn test_activate_command_fails_without_setup() {
-    if !check_unsafe_ops_allowed("test_activate_command_fails_without_setup") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.arg("activate")
-        .assert()
-        .failure() // Expect failure without proper setup
-        .code(2); // Confirmation gate refuses off a terminal with exit code 2
-}
-
-/// Test that activate command with --no-preflight flag also fails without setup
-#[test]
-fn test_activate_command_fails_with_no_preflight() {
-    if !check_unsafe_ops_allowed("test_activate_command_fails_with_no_preflight") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--no-preflight"])
-        .assert()
-        .failure() // Expect failure without proper setup
-        .code(2); // Confirmation gate refuses off a terminal with exit code 2
-}
-
 /// Test that activate command has --json flag in help
 #[test]
 fn test_activate_has_json_flag() {
@@ -238,22 +177,6 @@ fn test_activate_has_color_and_ascii_flags() {
         .stdout(predicates::str::contains("--plain").not());
 }
 
-/// Test that activate command with --json produces JSON output
-#[test]
-fn test_activate_json_output() {
-    if !check_unsafe_ops_allowed("test_activate_json_output") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--json"])
-        .assert()
-        .failure() // Refuses off a terminal without -y
-        .stdout(
-            predicates::str::contains("status").or(predicates::str::contains("needs_confirmation")),
-        );
-}
-
 /// Test that activate command help advertises quiet mode
 #[test]
 fn test_activate_help_includes_quiet_flag() {
@@ -275,26 +198,6 @@ fn test_activate_color_never_flag() {
         .assert()
         .success()
         .stdout(predicates::str::is_match(r"\x1b\[").unwrap().not()); // No ANSI escape sequences
-}
-
-/// Test that activate command with verbosity flags are accepted
-#[test]
-fn test_activate_verbosity_flags() {
-    if !check_unsafe_ops_allowed("test_activate_verbosity_flags") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
-    // Test -v flag
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "-v"]).assert().failure(); // Will fail without setup
-
-    // Test -vv flag
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "-vv"]).assert().failure(); // Will fail without setup
-
-    // Test --quiet flag
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--quiet"]).assert().failure(); // Will fail without setup
 }
 
 /// Test that notify-dispatch command exists and has help text
@@ -359,162 +262,6 @@ fn test_notify_dispatch_with_config() {
         ])
         .assert()
         .success();
-}
-
-/// Test that deactivate command executes (idempotent when inactive)
-#[test]
-fn test_deactivate_command_executes() {
-    if !check_unsafe_ops_allowed("test_deactivate_command_executes") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.arg("deactivate")
-        .assert()
-        .failure() // Refuses off a terminal without -y (exit code 2)
-        .code(2);
-}
-
-/// Test that deactivate command with --no-clear-history flag executes
-#[test]
-fn test_deactivate_command_executes_with_no_clear_history() {
-    if !check_unsafe_ops_allowed("test_deactivate_command_executes_with_no_clear_history") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["deactivate", "--no-clear-history"])
-        .assert()
-        .failure() // Refuses off a terminal without -y (exit code 2)
-        .code(2);
-}
-
-/// Test that deactivate command with --json flag produces JSON output
-#[test]
-fn test_deactivate_json_output() {
-    if !check_unsafe_ops_allowed("test_deactivate_json_output") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["deactivate", "--json"])
-        .assert()
-        .failure() // Refuses off a terminal without -y
-        .code(2);
-}
-
-/// Test deactivate with --quiet flag
-#[test]
-fn test_deactivate_with_quiet() {
-    if !check_unsafe_ops_allowed("test_deactivate_with_quiet") {
-        return;
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["deactivate", "--quiet"])
-        .assert()
-        .failure()
-        .code(2);
-}
-
-/// Test deactivate with verbose flag combinations
-#[test]
-fn test_deactivate_verbosity_combinations() {
-    if !check_unsafe_ops_allowed("test_deactivate_verbosity_combinations") {
-        return;
-    }
-
-    // Test -v flag
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["deactivate", "-v"]).assert().failure().code(2);
-
-    // Test -vv flag
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["deactivate", "-vv"]).assert().failure().code(2);
-}
-
-/// Test deactivate with --ascii flag
-#[test]
-fn test_deactivate_with_ascii() {
-    if !check_unsafe_ops_allowed("test_deactivate_with_ascii") {
-        return;
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["deactivate", "--ascii"])
-        .assert()
-        .failure()
-        .code(2);
-}
-
-/// Test deactivate respects NO_COLOR environment variable
-#[test]
-fn test_deactivate_respects_no_color_env() {
-    if !check_unsafe_ops_allowed("test_deactivate_respects_no_color_env") {
-        return;
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["deactivate"])
-        .env("NO_COLOR", "1")
-        .assert()
-        .failure()
-        .code(2);
-}
-
-/// Test that deactivate command accepts --color never
-#[test]
-fn test_deactivate_color_never_flag() {
-    if !check_unsafe_ops_allowed("test_deactivate_color_never_flag") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["deactivate", "--color", "never"])
-        .assert()
-        .failure() // Refuses off a terminal without -y
-        .code(2);
-}
-
-/// Test that deactivate command exit code is 0 on success
-#[test]
-fn test_deactivate_exit_code_success() {
-    if !check_unsafe_ops_allowed("test_deactivate_exit_code_success") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.arg("deactivate").assert().failure().code(2); // Refuses off a terminal without -y
-}
-
-/// Test that emergency command with --no-countdown executes (no 3s wait)
-/// Note: This will fork and run the real emergency flow, which reaches INACTIVE
-/// from an already-inactive state (defensive mode). The parent exits 0 after fork.
-#[test]
-fn test_emergency_command_executes_no_countdown() {
-    if !check_unsafe_ops_allowed("test_emergency_command_executes_no_countdown") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["emergency", "--no-countdown"])
-        .assert()
-        .failure()
-        .code(2); // Refuses off a terminal without -y
-}
-
-/// Test that emergency command with --no-countdown --json executes
-#[test]
-fn test_emergency_command_executes_no_countdown_json() {
-    if !check_unsafe_ops_allowed("test_emergency_command_executes_no_countdown_json") {
-        return; // Skip test - not opted in to unsafe operations
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["emergency", "--no-countdown", "--json"])
-        .assert()
-        .failure() // Refuses off a terminal without -y
-        .code(2);
 }
 
 /// Test that status command executes successfully
@@ -1558,119 +1305,6 @@ fn test_deactivate_help_mentions_reboot() {
         .stdout(predicates::str::contains("reboot"));
 }
 
-/// Test activate with --overlay-only flag
-#[test]
-fn test_activate_overlay_only_flag() {
-    if !check_unsafe_ops_allowed("test_activate_overlay_only_flag") {
-        return;
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--overlay-only"])
-        .assert()
-        .failure()
-        .code(2); // Confirmation gate: non-terminal without -y
-}
-
-/// Test activate with --pivot allow flag
-#[test]
-fn test_activate_pivot_allow_flag() {
-    if !check_unsafe_ops_allowed("test_activate_pivot_allow_flag") {
-        return;
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--pivot", "allow"])
-        .assert()
-        .failure(); // Confirmation gate refuses without -y on a non-terminal
-}
-
-/// Test activate with multiple verbosity levels
-#[test]
-fn test_activate_multiple_verbosity() {
-    if !check_unsafe_ops_allowed("test_activate_multiple_verbosity") {
-        return;
-    }
-
-    // Test quiet mode
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--quiet", "--no-preflight"])
-        .assert()
-        .failure()
-        .code(2);
-
-    // Test normal verbosity
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--no-preflight"])
-        .assert()
-        .failure()
-        .code(2);
-}
-
-/// Test activate with --ascii flag (ASCII-only output)
-#[test]
-fn test_activate_ascii_output() {
-    if !check_unsafe_ops_allowed("test_activate_ascii_output") {
-        return;
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--ascii", "--no-preflight"])
-        .assert()
-        .failure()
-        .code(2);
-}
-
-/// Test activate respects NO_COLOR environment variable
-#[test]
-fn test_activate_respects_no_color_env() {
-    if !check_unsafe_ops_allowed("test_activate_respects_no_color_env") {
-        return;
-    }
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--no-preflight"])
-        .env("NO_COLOR", "1")
-        .assert()
-        .failure()
-        .code(2);
-}
-
-/// Test backward compatibility: CLI works when config file doesn't exist
-///
-/// This verifies that:
-/// - When config file is missing, defaults are used
-/// - Then CLI overrides are applied
-/// - Existing users without config files should see no behavior change
-#[test]
-fn test_backward_compatibility_without_config_file() {
-    // SAFETY: This test executes real activate command which can perform dangerous operations
-    // Skip unless explicitly allowed via environment variable
-    if !check_unsafe_ops_allowed("test_backward_compatibility_without_config_file") {
-        return;
-    }
-
-    use tempfile::TempDir;
-
-    // Create a temporary home directory with no config file
-    let temp_home = TempDir::new().unwrap();
-    let config_path = temp_home.path().join("config/nails.toml");
-
-    // Verify config file doesn't exist
-    assert!(!config_path.exists());
-
-    // Test that activate command works without config file (should use defaults + CLI overrides)
-    // Pass HOME only to the subprocess via .env(), don't modify this process's HOME
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--no-preflight"])
-        .env("HOME", temp_home.path())
-        .env("NAILS_UNSAFE_REAL_OPS", "1") // Opt in to the real-operation test harness gate
-        .assert()
-        .code(2); // Expect the confirmation gate to refuse off a terminal
-
-    // Note: We don't modify this process's HOME, only the subprocess's
-}
-
 /// Test that --config flag is accepted globally
 #[test]
 fn test_config_flag_accepted() {
@@ -1680,6 +1314,124 @@ fn test_config_flag_accepted() {
         .success()
         .stdout(predicates::str::contains("-c, --config <PATH>"))
         .stdout(predicates::str::contains("Path to the configuration file"));
+}
+
+// ========== Lifecycle commands: unprivileged, non-destructive paths ==========
+//
+// `activate`, `deactivate` and `emergency` change the live system, so they are
+// driven here only along paths that refuse before any mount, switch or teardown.
+// The confirmation gate refuses off a terminal (the test harness has no TTY on
+// stdin) before activation stages anything, so these cases run unprivileged and
+// assert the machine-readable contract directly rather than substring-matching.
+
+/// Parse the final line of a `--json` invocation as a single JSON document.
+fn parse_json_tail(output: &std::process::Output) -> serde_json::Value {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let last = stdout.trim().lines().next_back().unwrap_or("");
+    serde_json::from_str(last)
+        .unwrap_or_else(|e| panic!("stdout is not one JSON document ({e}): {stdout}"))
+}
+
+/// `activate --json` off a terminal refuses at the confirmation gate, before any
+/// staging or mount, with a machine-readable error envelope and the usage code.
+#[test]
+fn test_activate_json_refuses_off_terminal_with_envelope() {
+    let config = create_test_config_file("/tmp/nails-contract-volume");
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config.path().to_str().unwrap(),
+            "activate",
+            "--json",
+        ])
+        .output()
+        .expect("run nails activate --json");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let value = parse_json_tail(&output);
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["command"], "activate");
+    assert_eq!(value["error"]["code"], "needs_confirmation");
+}
+
+/// The gate still accepts the verbosity, colour and ASCII flags on the `activate`
+/// subcommand and refuses off a terminal, so flag parsing is covered without
+/// reaching a real operation.
+#[test]
+fn test_activate_flags_parse_and_still_refuse_off_terminal() {
+    let config = create_test_config_file("/tmp/nails-contract-volume");
+    std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config.path().to_str().unwrap(),
+            "activate",
+            "--overlay-only",
+            "--ascii",
+            "--color",
+            "never",
+            "-vv",
+        ])
+        .env("NO_COLOR", "1")
+        .assert()
+        .failure()
+        .code(2);
+}
+
+/// `activate --dry-run --json` is a read-only alias for `check`: it emits one
+/// parseable JSON document and never touches the system.
+#[test]
+fn test_activate_dry_run_json_is_parseable() {
+    let config = create_test_config_file("/tmp/nails-contract-volume");
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config.path().to_str().unwrap(),
+            "activate",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .expect("run nails activate --dry-run --json");
+    let value = parse_json_tail(&output);
+    // --dry-run defers to the read-only `check` command, so the envelope is its.
+    assert_eq!(value["command"], "check");
+    assert!(
+        value.get("ok").is_some(),
+        "envelope carries an ok flag: {value}"
+    );
+}
+
+/// `deactivate --json` off a terminal refuses at its confirmation gate, before
+/// any teardown or reboot, with a machine-readable error envelope.
+#[test]
+fn test_deactivate_json_refuses_off_terminal_with_envelope() {
+    let config = create_test_config_file("/tmp/nails-contract-volume");
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config.path().to_str().unwrap(),
+            "deactivate",
+            "--json",
+        ])
+        .output()
+        .expect("run nails deactivate --json");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let value = parse_json_tail(&output);
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["command"], "deactivate");
+    assert_eq!(value["error"]["code"], "needs_confirmation");
+}
+
+/// `deactivate` off a terminal refuses with the human message naming the missing
+/// confirmation, before any teardown.
+#[test]
+fn test_deactivate_human_refuses_off_terminal() {
+    let config = create_test_config_file("/tmp/nails-contract-volume");
+    std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args(["--config", config.path().to_str().unwrap(), "deactivate"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains("stdin is not a terminal"));
 }
 
 // ========== Config Discovery Helper ==========
