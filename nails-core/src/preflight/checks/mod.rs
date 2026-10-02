@@ -14,6 +14,7 @@ pub mod storage_readiness;
 pub mod suspicious_nails_reference;
 pub mod swap;
 pub mod symlink_support;
+pub mod upper_fs_probe;
 
 // Re-exports for convenient access
 pub use hidden_volume::HiddenVolumeCheck;
@@ -27,3 +28,4 @@ pub use storage_readiness::StorageReadinessCheck;
 pub use suspicious_nails_reference::SuspiciousNailsReferenceCheck;
 pub use swap::SwapCheck;
 pub use symlink_support::SymlinkSupportCheck;
+pub use upper_fs_probe::UpperFsCapabilityCheck;

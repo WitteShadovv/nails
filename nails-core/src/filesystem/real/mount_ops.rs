@@ -20,6 +20,21 @@ fn canonical_target(target: &Path) -> PathBuf {
         .unwrap_or_else(|_| target.to_path_buf())
 }
 
+/// Build the overlay mount option string.
+///
+/// `index=off,metacopy=off,redirect_dir=off` is always appended. NAILS depends on
+/// plain, predictable copy-up semantics: `metacopy` and `redirect_dir` change
+/// where file data and rename state live across the layers (and can leave traces
+/// or complicate teardown), and `index` affects hardlink/nlink bookkeeping, so
+/// all three are disabled explicitly rather than left to the kernel default,
+/// which varies by kernel build and mount-time auto-detection. The segments are
+/// already escaped by [`escape_overlay_path`].
+fn overlay_mount_options(lowerdir: &str, upper: &str, work: &str) -> String {
+    format!(
+        "lowerdir={lowerdir},upperdir={upper},workdir={work},index=off,metacopy=off,redirect_dir=off"
+    )
+}
+
 /// Perform an overlay mount.
 pub(super) fn mount_overlay(
     fs: &RealFilesystem,
@@ -43,11 +58,10 @@ pub(super) fn mount_overlay(
         .collect::<Result<Vec<_>>>()?
         .join(":");
 
-    let options = format!(
-        "lowerdir={},upperdir={},workdir={}",
-        lowerdir,
-        escape_overlay_path(upper)?,
-        escape_overlay_path(work)?
+    let options = overlay_mount_options(
+        &lowerdir,
+        &escape_overlay_path(upper)?,
+        &escape_overlay_path(work)?,
     );
 
     nix::mount::mount(
@@ -266,4 +280,26 @@ pub(super) fn unmount_bind(fs: &RealFilesystem, target: &Path) -> Result<()> {
     })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::overlay_mount_options;
+
+    #[test]
+    fn overlay_options_disable_index_metacopy_and_redirect_dir() {
+        let opts = overlay_mount_options("/l", "/u", "/w");
+        assert!(opts.contains("index=off"));
+        assert!(opts.contains("metacopy=off"));
+        assert!(opts.contains("redirect_dir=off"));
+    }
+
+    #[test]
+    fn overlay_options_keep_lower_upper_and_work_dirs() {
+        let opts = overlay_mount_options("/a:/b", "/up", "/work");
+        assert_eq!(
+            opts,
+            "lowerdir=/a:/b,upperdir=/up,workdir=/work,index=off,metacopy=off,redirect_dir=off"
+        );
+    }
 }

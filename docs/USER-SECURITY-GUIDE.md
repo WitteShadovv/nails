@@ -420,6 +420,8 @@ Before activating the hidden environment:
 
 ```
 [ ] Hidden VeraCrypt volume is mounted and writable
+[ ] Hidden backend is a local Linux filesystem that can host an overlayfs
+    upper (ext4/xfs/btrfs/f2fs; NOT NFS/SMB/9p/FUSE or FAT/exFAT/NTFS)
 [ ] Hidden volume mount survives session termination
     (kernel-managed mount, NOT session-scoped FUSE)
 [ ] NAILS binary exists ONLY on hidden volume

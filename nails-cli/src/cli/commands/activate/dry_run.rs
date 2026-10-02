@@ -169,6 +169,10 @@ fn build_preflight_registry(
         config.hidden_volume_root.clone(),
     )));
 
+    registry.add_check(Box::new(UpperFsCapabilityCheck::new(
+        config.hidden_volume_root.clone(),
+    )));
+
     // Compute overlay dirs for storage readiness
     let overlay_dirs: Vec<OverlayDirs> = match config.overlay_mode {
         nails_core::config::OverlayMode::Auto => match build_overlay_targets(fs, config) {
@@ -349,7 +353,7 @@ mod tests {
 
         let registry = build_preflight_registry(&RealFilesystem, &config, false);
 
-        assert_eq!(registry.len(), 9);
+        assert_eq!(registry.len(), 10);
     }
 
     #[test]
@@ -363,7 +367,7 @@ mod tests {
 
         let registry = build_preflight_registry(&RealFilesystem, &config, true);
 
-        assert_eq!(registry.len(), 7);
+        assert_eq!(registry.len(), 8);
     }
 
     #[test]
@@ -386,6 +390,6 @@ mod tests {
 
         let registry = build_preflight_registry(&RealFilesystem, &config, false);
 
-        assert_eq!(registry.len(), 9);
+        assert_eq!(registry.len(), 10);
     }
 }

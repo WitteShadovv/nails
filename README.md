@@ -38,7 +38,7 @@ VeraCrypt or LUKS/`cryptsetup` for hidden or encrypted storage.
 
 At a high level:
 
-1. You mount a hidden, writable Linux filesystem that supports symbolic links.
+1. You mount a hidden, writable Linux filesystem that can host an overlayfs upper layer (symbolic links, trusted xattrs, a valid readdir `d_type`, and whiteouts).
 2. `nails activate` overlays selected paths such as `/etc`, `/home`, `/var`, and optionally `/boot`.
 3. Hidden NixOS configuration and hidden state become active without permanently rewriting the decoy.
 4. `nails deactivate` or `nails emergency` removes overlays and returns the system to decoy state.
@@ -59,7 +59,7 @@ NAILS is designed for a narrow threat model and operational style.
 | Requirement | Notes |
 |---|---|
 | NixOS | Required |
-| Hidden storage backend | Must already be mounted, writable, and support symbolic links |
+| Hidden storage backend | Any mounted, writable Linux filesystem that can host an overlayfs upper (symlinks, trusted xattrs, `d_type`, whiteouts) — e.g. ext4, xfs, btrfs, f2fs. NFS, CIFS/SMB, 9p, most FUSE mounts, and FAT/exFAT/NTFS cannot. |
 | Root access | Required for `activate`, `deactivate`, and `emergency` |
 | Rust 1.93+ | Only needed to build from source |
 | Impermanence-style setup | Strongly recommended for the strongest documented posture |

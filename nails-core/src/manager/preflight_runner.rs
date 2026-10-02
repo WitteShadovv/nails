@@ -78,7 +78,7 @@ impl<F: Filesystem> NailsManager<F> {
         use crate::preflight::{
             HiddenVolumeCheck, MountNamespaceCheck, NixOSBuildTargetCheck, NixOSConfigCheck,
             OverlayCompatibilityCheck, PreFlightRegistry, SpaceCheck, StateCheck,
-            StorageReadinessCheck, SwapCheck, SymlinkSupportCheck,
+            StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
         };
 
         let mut registry = PreFlightRegistry::new();
@@ -93,6 +93,13 @@ impl<F: Filesystem> NailsManager<F> {
         registry.add_check(Box::new(MountNamespaceCheck::new()));
 
         registry.add_check(Box::new(SymlinkSupportCheck::new(
+            self.config.hidden_volume_root.clone(),
+        )));
+
+        // Runs before the session kill so an upper filesystem that cannot back an
+        // overlay (NFS/FUSE/FAT, missing xattrs/d_type/whiteouts) is refused
+        // while the decoy session is still intact, not after staging has begun.
+        registry.add_check(Box::new(UpperFsCapabilityCheck::new(
             self.config.hidden_volume_root.clone(),
         )));
 
