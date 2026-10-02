@@ -1,24 +1,31 @@
-# Test 06: Snapshot Comparison
-# Tests that the decoy filesystem returns to its exact initial state after a
-# full activate/populate/deactivate workflow. The comparison is a full diff of
-# the file lists and checksums against an explicit allowlist of volatile paths,
-# so an artifact with no telltale keyword still turns the test red.
+# Test 06: Decoy filesystem and disk image return to the baseline
+#
+# Two complementary views of the same activate/populate/deactivate workflow on
+# one disk lineage. From inside the booted decoy, the live filesystem is diffed
+# against its baseline so a stray artifact with no telltale keyword still turns
+# the test red. From outside, the powered-off decoy root is imaged and its fls
+# listing (deleted names included) is diffed against the baseline image, catching
+# anything that was unlinked before the live view could see it.
 
-{ self, ... }:
+{ self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
+  diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
 in
 {
   name = "snapshot-diff";
   meta.tags = [ "forensic" ];
 
+  # Imaging the root disk before and after the workflow; generous margin.
+  globalTimeout = 1800;
+
   nodes = {
     machine =
       { ... }:
       {
-        imports = [ ./../../lib/vm-config.nix ];
+        imports = [ ./../../lib/forensic-vm-config.nix ];
         environment.systemPackages = [ self.packages.x86_64-linux.nails ];
       };
   };
@@ -27,17 +34,16 @@ in
     import re
 
     ${testHelpers.writeHeadlessConfigFn}
-    ${testHelpers.readStatusJsonFn}
     ${testHelpers.canonicalDeactivateFn}
     ${assertions.assertStatusStateFn}
     ${assertions.assertNoOverlaysFn}
+    ${diskForensics.pythonSetup}
 
     # Paths that legitimately change on their own across a reboot and an
-    # activation cycle. Everything NOT matched here must be byte-identical
-    # before and after, so a stray artifact with no "nails"/"secret"/"hidden"
-    # keyword is still caught. /var is runtime state (journal, systemd, dhcp,
-    # nixos) and is not an overlay target in this config, so it is treated as
-    # wholly volatile; /home and /etc are diffed strictly.
+    # activation cycle. Everything NOT matched here must be byte-identical before
+    # and after. /var is runtime state (journal, systemd, dhcp, nixos) and is not
+    # an overlay target in this config, so it is treated as wholly volatile;
+    # /home and /etc are diffed strictly.
     volatile = re.compile(
         "|".join(
             [
@@ -50,6 +56,15 @@ in
                 r"^/home/[^/]+/\.bash_history$",
             ]
         )
+    )
+
+    # Image-side allowlist: the same volatile classes, but on fls relative paths
+    # (no leading slash, deleted entries included).
+    image_volatile = re.compile(
+        r"(^|/)("
+        r"var/|run/|tmp/|etc/machine-id|etc/resolv\.conf|etc/ssh/ssh_host_|"
+        r"etc/\.(updated|clean)|nix/var/|nix/store/\.links"
+        r")"
     )
 
     def listed(scope):
@@ -69,18 +84,25 @@ in
     def kept(paths):
         return sorted(path for path in paths if not volatile.search(path))
 
+    def kept_image(paths):
+        return sorted(path for path in paths if not image_volatile.search(path))
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
     headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
 
-    with subtest("capture the decoy baseline"):
+    with subtest("capture the decoy baseline (live and image)"):
         initial_files = listed("/home /etc /var")
         initial_sums = summed("/home /etc")
+        baseline_image = disk_forensics.snapshot(machine, "baseline")
+        baseline_fls = disk_forensics.fls_paths(disk_forensics.run_fls(baseline_image))
 
     with subtest("run a full activate/populate/deactivate workflow"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
+        machine.succeed(
+            f"nails --config {headless_config} activate --overlay-only --session keep -y"
+        )
         machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
         machine.succeed("su - testuser -c 'mkdir -p ~/work/project'")
         machine.succeed(
@@ -94,7 +116,7 @@ in
         assert_status_state("inactive")
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
 
-    with subtest("the decoy filesystem is byte-identical outside volatile paths"):
+    with subtest("the live decoy filesystem is byte-identical outside volatile paths"):
         final_files = listed("/home /etc /var")
         final_sums = summed("/home /etc")
 
@@ -114,5 +136,14 @@ in
     with subtest("no overlay or hidden-volume mount remains"):
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp", "/var", "/opt", "/boot"])
         machine.fail("mount | grep -E '(/mnt/data|/mnt/nails-pivot|hidden-volume)'")
+
+    with subtest("the powered-off decoy image gained no non-volatile entries"):
+        post_image = disk_forensics.snapshot(machine, "post", restart=False)
+        post_fls = disk_forensics.fls_paths(disk_forensics.run_fls(post_image))
+        appeared_image = kept_image(disk_forensics.diff(baseline_fls, post_fls))
+        assert not appeared_image, (
+            f"the disk image gained entries outside volatile paths: "
+            f"{appeared_image[:40]}"
+        )
   '';
 }

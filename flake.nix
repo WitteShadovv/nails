@@ -235,8 +235,6 @@
         groups = rawE2eTests._groups;
         timeouts = lib.mapAttrs (_: meta: meta.timeout) rawE2eTests._meta;
       };
-
-      rawForensicsEval = import ./nix/forensics-eval { inherit self pkgs; };
     in
     {
       packages.${system} = {
@@ -250,7 +248,6 @@
       legacyPackages.${system} = {
         e2e = e2eTests;
         e2e-metadata = e2eTestMetadata;
-        forensics-eval-metadata = rawForensicsEval.metadata;
       };
 
       checks.${system} = import ./nix/checks.nix {

@@ -211,7 +211,7 @@ The pre-overhaul layout had 14 workflows and about 38 jobs; the mapping below sa
 | `nix-pr-verify.yml` | Folded into the `nix-build` and `lint-misc` jobs of `ci.yml`. |
 | `e2e-tests.yml` (dev-branch smoke) | `e2e.yml` in `affected` mode on every pull request. |
 | `e2e-tests-full.yml`, `e2e-tests-full-shard.yml` (`pull_request_target` + `hetzner-pr`) | `e2e.yml` in `all` mode (push, label, nightly); the Hetzner part is `e2e-hetzner.yml`, dispatch-only. |
-| `forensics-eval-fast.yml`, `forensics-eval-regression.yml`, `forensics-eval-full*.yml` | Removed; the decoy disk-image checks move into the E2E suite as ordinary tests. |
+| The five standalone disk-forensics workflows | Removed; the decoy disk-image checks are now ordinary tests in the E2E suite's `forensic` group. |
 | `release.yml` (verify) + `publish-release.yml` + `release-core.yml` | One `release.yml` on the tag: build, rebuild, E2E, SBOM, attest, draft. |
 | `reproducibility.yml` with duplicated inputs | `reproducibility.yml` declares its inputs once (`workflow_call`) and also runs weekly from `scheduled.yml`. |
 | `update-flake-lock.yml` | The `flake-lock` and `pre-commit` tasks of `scheduled.yml`. |

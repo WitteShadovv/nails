@@ -1,305 +1,135 @@
-# Test 05: Standard Deactivation Forensic Safety
-# Tests that standard deactivation leaves no forensic traces
+# Test 05: Standard deactivation leaves no trace on the decoy disk image
+#
+# One disk lineage: baseline -> activate and plant canaries -> standard
+# deactivate -> image the decoy root. The hidden canaries (a file, a shell
+# history line and a logged journal line) and every artifact-indicator token
+# from the shared registry must be absent from the post-deactivation image,
+# measured against the baseline so decoy-native strings do not raise false
+# findings. The old test grepped a live filesystem and ran `fls` on the LUKS
+# ciphertext, so it could not observe a leak onto the decoy.
 
-{ self, ... }:
+{ self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
+  assertions = import ./../../lib/assertions.nix;
+  diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
 in
 {
   name = "standard-deactivation-forensic";
   meta.tags = [ "forensic" ];
 
+  # Disk imaging across the lineage plus two activation cycles; generous margin.
+  globalTimeout = 1800;
+
   nodes = {
     machine =
       { ... }:
       {
-        imports = [ ./../../lib/vm-config.nix ];
+        imports = [ ./../../lib/forensic-vm-config.nix ];
         environment.systemPackages = [ self.packages.x86_64-linux.nails ];
       };
   };
 
   testScript = _: ''
     import json
-    import shlex
 
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.canonicalDeactivateFn}
     ${testHelpers.runVerifyFn}
+    ${assertions.assertNoOverlaysFn}
+    ${diskForensics.pythonSetup}
 
-    def assert_grep_pattern_absent(pattern, paths, description):
-        quoted_pattern = shlex.quote(pattern)
-        quoted_paths = " ".join(shlex.quote(path) for path in paths)
-        status, output = machine.execute(
-            f"grep -r -I -l -m 1 --exclude-dir=journal {quoted_pattern} {quoted_paths} 2>/dev/null"
-        )
-        if status == 0:
-            print(f"FAIL: Found {description}: {output}")
-            assert False, f"{description} found after deactivation"
-        assert status == 1, f"Unexpected grep exit status {status} while scanning for {description}: {output}"
+    # Distinctive, run-unique canary tokens planted inside the hidden session.
+    canary_file_token = "NAILS_CANARY_FILE_2026a"
+    canary_hist_token = "NAILS_CANARY_HISTORY_2026a"
+    canary_jrnl_token = "NAILS_CANARY_JOURNAL_2026a"
+    hidden_tokens = [canary_file_token, canary_hist_token, canary_jrnl_token]
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    print("\n" + "=" * 70)
-    print("PHASE 1: SETUP AND ACTIVATE")
-    print("=" * 70)
-
     headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
 
-    baseline_history_size = int(machine.succeed(
-        "su - testuser -c 'wc -c < ~/.bash_history 2>/dev/null || echo 0'"
-    ).strip())
-    print(f"✓ Baseline .bash_history size: {baseline_history_size} bytes")
+    with subtest("capture the decoy baseline image"):
+        baseline = disk_forensics.snapshot(machine, "baseline")
+        baseline_fls = disk_forensics.fls_paths(disk_forensics.run_fls(baseline))
+        registry_tokens = load_registry_tokens()
+        # A registry token that already occurs on the stock decoy image (e.g. the
+        # generic "configuration.nix" under /etc/nixos) is decoy-native; only a
+        # token that appears *after* the cycle can be a leak, so subtract the
+        # baseline strings up front.
+        baseline_registry_hits = disk_forensics.run_strings_scan(baseline, registry_tokens)
 
-    machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    print("✓ Hidden volume created and mounted")
-
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
-    machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
-    print("✓ NAILS activated with overlays")
-
-    machine.succeed("mount | grep 'overlay on /home'")
-    machine.succeed("mount | grep 'overlay on /tmp'")
-    print("✓ Overlays verified active on /home and /tmp")
-
-    print("\n" + "=" * 70)
-    print("PHASE 2: PLANT CANARY PATTERNS")
-    print("=" * 70)
-
-    machine.succeed("su - testuser -c 'echo NAILS_CANARY_HISTORY_2026 >> ~/.bash_history'")
-    machine.succeed("su - testuser -c 'history -s NAILS_CANARY_HISTORY_CMD_2026'")
-    print("✓ Planted NAILS_CANARY_HISTORY_2026 in shell history")
-
-    machine.succeed("echo 'NAILS_CANARY_TEMP_2026' > /tmp/nails-canary-temp")
-    machine.succeed("test -f /tmp/nails-canary-temp")
-    print("✓ Planted NAILS_CANARY_TEMP_2026 in /tmp/nails-canary-temp")
-
-    machine.succeed("su - testuser -c 'echo NAILS_CANARY_DOCUMENT_2026 > ~/canary-document.txt'")
-    machine.succeed("su - testuser -c 'test -f ~/canary-document.txt'")
-    print("✓ Planted NAILS_CANARY_DOCUMENT_2026 in ~/canary-document.txt")
-
-    machine.succeed("su - testuser -c 'echo secret_content > ~/secret-project.txt'")
-    machine.succeed("su - testuser -c 'test -f ~/secret-project.txt'")
-    print("✓ Planted secret-project.txt (sensitive filename)")
-
-    machine.succeed("su - testuser -c 'echo NAILS_CANARY_FINANCIAL_2026,100000,CONFIDENTIAL > ~/financial-data.csv'")
-    machine.succeed("su - testuser -c 'test -f ~/financial-data.csv'")
-    print("✓ Planted financial-data.csv with NAILS_CANARY_FINANCIAL_2026")
-
-    machine.succeed("su - testuser -c 'mkdir -p ~/confidential-project/secrets'")
-    machine.succeed("su - testuser -c 'echo NAILS_CANARY_NESTED_2026 > ~/confidential-project/secrets/keys.txt'")
-    machine.succeed("su - testuser -c 'test -f ~/confidential-project/secrets/keys.txt'")
-    print("✓ Planted nested confidential-project/secrets/keys.txt")
-
-    machine.succeed("su - testuser -c 'echo NAILS_CANARY_HIDDEN_2026 > ~/.hidden-secrets'")
-    machine.succeed("su - testuser -c 'test -f ~/.hidden-secrets'")
-    print("✓ Planted ~/.hidden-secrets (hidden dotfile)")
-
-    machine.succeed("touch /tmp/secret-cache-123")
-    machine.succeed("echo NAILS_CANARY_CACHE_2026 > /tmp/private-session-data")
-    print("✓ Planted additional /tmp canaries")
-
-    canary_count = machine.succeed(
-        "grep -r 'NAILS_CANARY' /home /tmp 2>/dev/null | wc -l"
-    ).strip()
-    print(f"✓ Found {canary_count} canary occurrences in active session")
-
-    print("\n" + "=" * 70)
-    print("PHASE 3: STANDARD DEACTIVATION")
-    print("=" * 70)
-
-    print("Executing: nails deactivate")
-    canonical_deactivate(headless_config, unit_name="nails-deactivate-standard-forensic")
-    print("✓ VM shut down after deactivation")
-
-    print("✓ VM rebooted to decoy state")
-
-    status = json.loads(machine.succeed("nails status --json"))["data"]
-    assert status["state"]["kind"] == "inactive", f"Expected inactive status after reboot, got: {status}"
-    print("✓ NAILS status reports Inactive")
-
-    machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
-    print("✓ Hidden volume unmounted from decoy state")
-
-    print("\n" + "=" * 70)
-    print("PHASE 4: FORENSIC VERIFICATION")
-    print("=" * 70)
-
-    print("\n--- Test 4.1: Canary String Grep Scan ---")
-    assert_grep_pattern_absent(
-        "NAILS_CANARY",
-        ["/home", "/tmp", "/var", "/etc", "/root"],
-        "canary strings",
-    )
-    print("✓ No NAILS_CANARY strings found on filesystem")
-
-    print("\n--- Test 4.2: Canary File Existence Checks ---")
-    machine.fail("test -f /tmp/nails-canary-temp")
-    print("✓ /tmp/nails-canary-temp does not exist")
-    machine.fail("su - testuser -c 'test -f ~/canary-document.txt'")
-    print("✓ ~/canary-document.txt does not exist")
-    machine.fail("su - testuser -c 'test -f ~/secret-project.txt'")
-    print("✓ ~/secret-project.txt does not exist")
-    machine.fail("su - testuser -c 'test -f ~/financial-data.csv'")
-    print("✓ ~/financial-data.csv does not exist")
-    machine.fail("su - testuser -c 'test -d ~/confidential-project'")
-    print("✓ ~/confidential-project/ directory does not exist")
-    machine.fail("su - testuser -c 'test -f ~/.hidden-secrets'")
-    print("✓ ~/.hidden-secrets does not exist")
-    machine.fail("test -f /tmp/secret-cache-123")
-    print("✓ /tmp/secret-cache-123 does not exist")
-    machine.fail("test -f /tmp/private-session-data")
-    print("✓ /tmp/private-session-data does not exist")
-
-    print("\n--- Test 4.3: Shell History Verification ---")
-    history_check = machine.succeed(
-        "su - testuser -c 'cat ~/.bash_history 2>/dev/null || echo NO_HISTORY'"
-    )
-    if "NAILS_CANARY" in history_check:
-        print(f"FAIL: Found canary in shell history: {history_check}")
-        assert False, "Shell history contains NAILS_CANARY strings"
-    print("✓ No NAILS_CANARY strings in shell history")
-
-    print("\n--- Test 4.4: History File Size Check ---")
-    post_history_size = int(machine.succeed(
-        "su - testuser -c 'wc -c < ~/.bash_history 2>/dev/null || echo 0'"
-    ).strip())
-
-    print(f"  Baseline history size: {baseline_history_size} bytes")
-    print(f"  Post-deactivation history size: {post_history_size} bytes")
-
-    max_allowed = max(200, baseline_history_size + 50)
-    if post_history_size > max_allowed:
-        print(f"WARNING: History file larger than expected ({post_history_size} > {max_allowed})")
-        history_content = machine.succeed(
-            "su - testuser -c 'cat ~/.bash_history 2>/dev/null || echo EMPTY'"
+    with subtest("activate and plant hidden canaries"):
+        machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+        machine.succeed(
+            f"nails --config {headless_config} activate --overlay-only --session keep -y"
         )
-        print(f"History content: {history_content[:500]}")
-        assert "NAILS_CANARY" not in history_content, \
-            "History file contains canary despite size check"
-    print(f"✓ History file size acceptable: {post_history_size} bytes")
+        machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
+        machine.succeed("mount | grep 'overlay on /home'")
 
-    print("\n--- Test 4.5: nails verify --deep ---")
-    verify_status, verify_payload = run_verify("--deep")
-    findings_text = json.dumps(verify_payload)
-    if "NAILS_CANARY" in findings_text or "canary" in findings_text.lower():
-        print(f"FAIL: verify --deep found canary artifacts: {verify_payload}")
-        assert False, "nails verify --deep found canary artifacts"
-
-    verify_messages = [finding["message"] for finding in verify_payload.get("findings", [])]
-    overlay_findings = [m for m in verify_messages if "Overlay mount found" in m]
-    assert not overlay_findings, f"Found overlay mount findings: {overlay_findings}"
-
-    print(f"✓ nails verify --deep status: {verify_payload.get('status', 'Unknown')}")
-    print(f"✓ nails verify --deep exit code: {verify_status}")
-
-    print("\n--- Test 4.6: Sleuth Kit fls Deleted File Analysis ---")
-    fls_output = machine.succeed(
-        "fls -r /dev/vdb 2>/dev/null | grep -iE '(nails|canary|secret|financial|confidential|hidden|keys)' || echo 'CLEAN'"
-    )
-
-    if "CLEAN" not in fls_output:
-        print(f"FAIL: Sleuth Kit found artifacts in deleted files: {fls_output}")
-        assert False, "Sleuth Kit fls found NAILS/canary artifacts in deleted files"
-    print("✓ No canary-related deleted files found via Sleuth Kit fls")
-
-    print("\n--- Test 4.7: Comprehensive Sensitive Pattern Scan ---")
-    sensitive_patterns = [
-        "NAILS_CANARY",
-        "secret-project",
-        "financial-data",
-        "confidential-project",
-        "hidden-secrets",
-        "secret-cache",
-        "private-session",
-    ]
-
-    for pattern in sensitive_patterns:
-        assert_grep_pattern_absent(
-            pattern,
-            ["/home", "/tmp", "/var", "/etc"],
-            f"pattern '{pattern}'",
+        machine.succeed(
+            f"su - testuser -c 'echo {canary_file_token} > ~/secret-notes.txt'"
         )
-        print(f"✓ Pattern '{pattern}' not found")
+        machine.succeed(
+            f"su - testuser -c 'echo {canary_hist_token} >> ~/.bash_history'"
+        )
+        machine.succeed(f"logger -t session {canary_jrnl_token}")
+        machine.succeed("journalctl --sync 2>/dev/null || journalctl --flush || true")
+        # The canaries are visible while the session is live.
+        assert canary_file_token in machine.succeed(
+            "su - testuser -c 'cat ~/secret-notes.txt'"
+        )
 
-    print("\n--- Test 4.8: Sensitive Filename Scan ---")
-    filename_scan = machine.succeed(
-        "find /home /tmp 2>/dev/null | grep -iE '(secret|financial|confidential|canary|hidden-secret|keys\\.txt)' || echo 'CLEAN'"
-    )
+    with subtest("standard deactivation and verify"):
+        canonical_deactivate(
+            headless_config, unit_name="nails-deactivate-standard-forensic"
+        )
+        status = json.loads(machine.succeed("nails status --json"))["data"]
+        assert status["state"]["kind"] == "inactive", f"expected inactive, got {status}"
+        machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
 
-    if "CLEAN" not in filename_scan:
-        print(f"FAIL: Found sensitive filenames: {filename_scan}")
-        assert False, "Sensitive filenames found after deactivation"
-    print("✓ No sensitive filenames found in /home or /tmp")
+        verify_status, verify_payload = run_verify("--deep")
+        findings_text = json.dumps(verify_payload)
+        assert "NAILS_CANARY" not in findings_text, (
+            f"verify --deep surfaced a canary: {verify_payload}"
+        )
+        overlay_findings = [
+            finding["message"]
+            for finding in verify_payload.get("findings", [])
+            if "Overlay mount found" in finding["message"]
+        ]
+        assert not overlay_findings, f"verify reported overlays: {overlay_findings}"
+        assert verify_status == 0, f"verify --deep exit code was {verify_status}"
+        assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp", "/var"])
 
-    print("\n--- Test 4.9: Overlay Mount Verification ---")
-    machine.fail("mount | grep 'overlay on /home'")
-    print("✓ No overlay on /home")
-    machine.fail("mount | grep 'overlay on /tmp'")
-    print("✓ No overlay on /tmp")
-    machine.fail("mount | grep 'overlay on /etc'")
-    print("✓ No overlay on /etc")
-    machine.fail("mount | grep 'overlay on /root'")
-    print("✓ No overlay on /root")
-    machine.fail("mount | grep 'overlay on /srv'")
-    print("✓ No overlay on /srv")
+    with subtest("the decoy disk image is clean of every canary and registry token"):
+        post = disk_forensics.snapshot(machine, "post-standard", restart=False)
+        offset = disk_forensics.partition_offset(post)
 
-    print("\n--- Test 4.10: NAILS-related Mount Verification ---")
-    mount_check = machine.succeed(
-        "mount | grep -E '(/mnt/data|/mnt/nails-pivot|hidden-volume)' || echo 'CLEAN'"
-    )
+        post_fls = disk_forensics.fls_paths(disk_forensics.run_fls(post, offset))
+        new_names = disk_forensics.diff(baseline_fls, post_fls)
+        leaked_names = {
+            name for name in new_names if any(tok in name for tok in hidden_tokens)
+        }
+        assert not leaked_names, f"fls found canary-named entries: {sorted(leaked_names)}"
 
-    if "CLEAN" not in mount_check:
-        print(f"FAIL: Found NAILS-related mounts: {mount_check}")
-        assert False, "NAILS-related mounts still present"
-    print("✓ No NAILS-related mounts found")
+        string_hits = disk_forensics.run_strings_scan(post, hidden_tokens)
+        assert not string_hits, f"strings found canary content: {sorted(string_hits)}"
 
-    print("\n" + "=" * 70)
-    print("PHASE 5: REPEAT CYCLE")
-    print("=" * 70)
+        journal_hits = disk_forensics.run_journal_scan(post, hidden_tokens, offset=offset)
+        assert not journal_hits, f"journal retained a canary line: {sorted(journal_hits)}"
 
-    # One more activation and teardown on the same machine must be just as
-    # clean. The flow is deterministic, so further repeats add runtime and
-    # reboots but no evidence.
-    machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
-
-    cycle_canary = "NAILS_CANARY_CYCLE_2026"
-    machine.succeed(f"su - testuser -c 'echo {cycle_canary} > ~/cycle-canary.txt'")
-    machine.succeed(f"echo {cycle_canary} > /tmp/cycle-canary-temp")
-    machine.succeed(f"su - testuser -c 'grep {cycle_canary} ~/cycle-canary.txt'")
-    print(f"✓ Planted {cycle_canary}")
-
-    canonical_deactivate(headless_config, unit_name="nails-deactivate-standard-forensic-cycle")
-    print("✓ Rebooted to decoy state")
-
-    machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
-
-    assert_grep_pattern_absent(cycle_canary, ["/home", "/tmp", "/var", "/etc"], "repeat cycle canary")
-    print(f"✓ {cycle_canary} not found after deactivation")
-
-    machine.fail("su - testuser -c 'test -f ~/cycle-canary.txt'")
-    machine.fail("test -f /tmp/cycle-canary-temp")
-    print("✓ Repeat cycle canary files do not exist")
-
-    print("\n" + "=" * 70)
-    print("ALL STANDARD DEACTIVATION FORENSIC TESTS PASSED")
-    print("=" * 70)
-    print("""
-    Summary of verified forensic safety:
-      ✓ All canary strings removed from filesystem
-      ✓ All canary files removed from /home and /tmp
-      ✓ Shell history does not contain canary strings
-      ✓ History file size within acceptable bounds
-      ✓ nails verify --deep returns clean
-      ✓ Sleuth Kit fls finds no canary-related deleted files
-      ✓ No sensitive patterns found via grep
-      ✓ No sensitive filenames found via find
-      ✓ All overlay mounts removed
-      ✓ No NAILS-related mounts present
-      ✓ Repeat activation/deactivation cycle passed
-    """)
+        # Registry tokens that were not already on the baseline image must not be
+        # introduced by the cycle.
+        post_registry_hits = disk_forensics.run_strings_scan(post, registry_tokens)
+        new_registry = post_registry_hits - baseline_registry_hits
+        assert not new_registry, (
+            f"activate/deactivate introduced registry tokens onto the decoy "
+            f"image: {sorted(new_registry)}"
+        )
+        print("✓ post-standard image clean of canaries and registry tokens")
   '';
 }

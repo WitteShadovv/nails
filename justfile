@@ -118,6 +118,13 @@ ci-python:
     ruff check ci
     mypy ci
 
+# The host-side disk-image forensics parsers and their unit tests (CI's
+# `e2e-disk-forensics` check). No VM, no root; runs against captured fixtures.
+e2e-disk-forensics:
+    python3 -m unittest discover -s nix/e2e-tests/lib/tests -t nix/e2e-tests/lib
+    ruff check nix/e2e-tests/lib
+    mypy nix/e2e-tests/lib/disk_forensics.py nix/e2e-tests/lib/tests/test_disk_forensics.py
+
 # --- Docs ---
 
 # Fail when docs/ci.md does not list every workflow (and no stale one).

@@ -1,112 +1,115 @@
-# Test 04: Forensic Cleanliness Validation
-# Tests that no forensic artifacts remain after deactivation
+# Test 04: Disk-image harness controls (null and positive)
+#
+# This test does not exercise NAILS. It proves the host-side disk-image harness
+# itself is honest: a plain boot leaves no decoy-disk findings beyond a short,
+# documented allowlist (the null control), and a leak deliberately written onto
+# the decoy root is caught by every scanner -- fls, strings, journal and store
+# (the positive control). The old test ran `fls` against the LUKS ciphertext of
+# the hidden volume and could neither see a leak nor fail; this one images the
+# decoy root while the VM is off, the way a seized disk would be read.
 
-{ self, ... }:
+{ self, pkgs, ... }:
 let
-  hiddenVolume = import ./../../lib/hidden-volume.nix;
-  testHelpers = import ./../../lib/test-helpers.nix;
+  diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
 in
 {
   name = "forensic-clean";
   meta.tags = [ "forensic" ];
 
+  # Imaging the root disk several times (shutdown, qemu-img convert, restart)
+  # takes longer than a single-boot test; measured runtime leaves margin here.
+  globalTimeout = 1800;
+
   nodes = {
     machine =
       { ... }:
       {
-        imports = [ ./../../lib/vm-config.nix ];
+        imports = [ ./../../lib/forensic-vm-config.nix ];
         environment.systemPackages = [ self.packages.x86_64-linux.nails ];
       };
   };
 
   testScript = _: ''
-    import json
+    import re
 
-    ${testHelpers.writeHeadlessConfigFn}
-    ${testHelpers.canonicalDeactivateFn}
+    ${diskForensics.pythonSetup}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-    headless_config = "/tmp/nails-headless.toml"
-    write_headless_config(headless_config)
 
-    print("\n=== Capturing Baseline Filesystem State ===")
-    machine.succeed("find /home /etc /var -type f 2>/dev/null | sort > /tmp/baseline-files.txt || true")
-    machine.succeed("find /home /etc /var -type d 2>/dev/null | sort > /tmp/baseline-dirs.txt || true")
-    print("✓ Baseline captured")
+    # Paths a stock NixOS boot legitimately churns, so they are not findings.
+    # /var/lib/nixos drift is tracked under TODO T-076's /etc/nixos fixture
+    # work; the rest is runtime state (journal, systemd, dhcp, machine-id, ssh
+    # host keys, /run).
+    allowlist = re.compile(
+        r"(^|/)("
+        r"var/log/|var/lib/nixos|var/lib/systemd|var/lib/dhcp|var/lib/private|"
+        r"var/cache/|var/tmp/|var/spool/|etc/machine-id|etc/ssh/ssh_host_|"
+        r"etc/\.(updated|clean)|run/|tmp/"
+        r")"
+    )
 
-    print("\n=== Setting up Hidden Volume and Creating Markers ===")
-    machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
-    machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
-    print("✓ NAILS activated")
+    def kept(paths):
+        return sorted(p for p in paths if not allowlist.search(p))
 
-    machine.succeed("su - testuser -c 'echo FORENSIC_MARKER_SECRET > ~/forensic-test.txt'")
-    print("✓ Created FORENSIC_MARKER_SECRET in home directory")
+    with subtest("null control: a plain boot introduces no disk findings"):
+        baseline = disk_forensics.snapshot(machine, "baseline")
+        baseline_paths = disk_forensics.fls_paths(disk_forensics.run_fls(baseline))
 
-    machine.succeed("echo FORENSIC_MARKER_TEMP > /tmp/nails-temp-file")
-    print("✓ Created FORENSIC_MARKER_TEMP in /tmp")
+        # snapshot() already power-cycles the machine, so a second snapshot is a
+        # second boot on the same disk lineage: the null control.
+        reboot_snap = disk_forensics.snapshot(machine, "reboot")
+        reboot_paths = disk_forensics.fls_paths(disk_forensics.run_fls(reboot_snap))
 
-    machine.succeed("su - testuser -c 'echo FORENSIC_MARKER_HISTORY >> ~/.bash_history'")
-    machine.succeed("su - testuser -c 'history -s FORENSIC_MARKER_HISTORY_CMD'")
-    print("✓ Added FORENSIC_MARKER_HISTORY to shell history")
+        introduced = kept(disk_forensics.diff(baseline_paths, reboot_paths))
+        assert not introduced, (
+            "null control failed: a plain boot added disk entries outside the "
+            f"allowlist: {introduced[:40]}"
+        )
+        print(f"✓ null control clean ({len(baseline_paths)} baseline entries)")
 
-    machine.succeed("su - testuser -c 'test -f ~/forensic-test.txt'")
-    machine.succeed("test -f /tmp/nails-temp-file")
-    print("✓ Verified markers exist during active session")
+    with subtest("positive control: a decoy-root leak is caught by every scanner"):
+        # Four distinct tokens so each scanner is proven independently. These are
+        # written straight onto the decoy root (no overlay, no hidden volume), so
+        # they are a genuine leak the image must expose. Remove these four writes
+        # and this subtest fails -- that is the control.
+        base = "NAILS_POSCTL_7e1c"
+        file_token = f"{base}_FILE"
+        str_token = f"{base}_STR"
+        jrnl_token = f"{base}_JRNL"
+        store_token = f"{base}_STORE"
 
-    print("\n=== Deactivating and Cleaning Up ===")
-    canonical_deactivate(headless_config, unit_name="nails-deactivate-forensic-clean")
-    print("✓ NAILS rebooted back to decoy state")
+        machine.succeed("mkdir -p /var/lib/nails-control")
+        machine.succeed(
+            f"printf '%s\\n' {str_token} > /var/lib/nails-control/{file_token}.txt"
+        )
+        machine.succeed(f"logger -t nails-control {jrnl_token}")
+        machine.succeed(f"printf 'nonce\\n' > /tmp/{store_token}")
+        machine.succeed(f"nix store add-file /tmp/{store_token}")
+        # Force the journal and filesystem to disk before imaging.
+        machine.succeed("journalctl --sync 2>/dev/null || journalctl --flush || true")
+        machine.succeed("sync")
 
-    status = json.loads(machine.succeed("nails status --json"))["data"]
-    assert status["state"]["kind"] == "inactive", f"Expected inactive status after reboot, got: {status}"
-    print("✓ NAILS status reports Inactive after reboot")
+        positive = disk_forensics.snapshot(machine, "positive", restart=False)
+        offset = disk_forensics.partition_offset(positive)
 
-    machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
-    print("✓ Hidden volume unmounted from decoy state")
-
-    print("\n=== Forensic Analysis: Grep Scan ===")
-    grep_result = machine.succeed("grep -r 'FORENSIC_MARKER' /home /etc /var /tmp /root 2>/dev/null || echo 'CLEAN'")
-    if "FORENSIC_MARKER" in grep_result:
-        print(f"FAIL: Found forensic markers: {grep_result}")
-        assert False, "Forensic markers found after deactivation"
-    else:
-        print("✓ No FORENSIC_MARKER strings found on filesystem")
-
-    print("\n=== Forensic Analysis: Sleuth Kit fls ===")
-    fls_output = machine.succeed("fls -r /dev/vdb 2>/dev/null | grep -i 'nails\\|forensic\\|secret\\|hidden' || echo 'CLEAN'")
-    if "CLEAN" not in fls_output:
-        print(f"FAIL: Found NAILS artifacts in deleted files: {fls_output}")
-        assert False, "Sleuth Kit found NAILS artifacts in deleted files"
-    else:
-        print("✓ No NAILS-related deleted files found")
-
-    print("\n=== Forensic Analysis: Shell History ===")
-    history_check = machine.succeed("cat /home/testuser/.bash_history 2>/dev/null || echo 'NO_HISTORY'")
-    if "FORENSIC_MARKER" in history_check:
-        print(f"FAIL: Found forensic markers in shell history: {history_check}")
-        assert False, "Shell history contains forensic markers"
-    else:
-        print("✓ No FORENSIC_MARKER strings in shell history")
-
-    print("\n=== Forensic Analysis: Filesystem Diff ===")
-    machine.succeed("find /home /etc /var -type f 2>/dev/null | sort > /tmp/post-files.txt || true")
-    machine.succeed("find /home /etc /var -type d 2>/dev/null | sort > /tmp/post-dirs.txt || true")
-
-    file_diff = machine.succeed("diff /tmp/baseline-files.txt /tmp/post-files.txt || echo 'DIFF_FOUND'")
-    unexpected_paths = machine.succeed("""
-      grep -v '^/var/log/' /tmp/post-files.txt 2>/dev/null | \
-      grep -v '^/var/lib/' | \
-      grep -E '(secret|hidden|forensic)' || echo 'CLEAN'
-    """)
-
-    if "CLEAN" not in unexpected_paths:
-        print(f"FAIL: Found unexpected NAILS-related paths: {unexpected_paths}")
-        assert False, "Filesystem diff found unexpected NAILS paths"
-    else:
-        print("✓ No unexpected NAILS/secret/hidden/forensic paths outside transient locations")
-
-    print("\n=== All Forensic Cleanliness Tests Passed ===")
+        fls_names = disk_forensics.fls_paths(disk_forensics.run_fls(positive, offset))
+        assert any(file_token in name for name in fls_names), (
+            "positive control failed: fls did not see the planted filename"
+        )
+        assert disk_forensics.run_strings_scan(positive, [str_token]) == {str_token}, (
+            "positive control failed: strings did not see the planted content"
+        )
+        assert disk_forensics.run_journal_scan(
+            positive, [jrnl_token], offset=offset
+        ) == {jrnl_token}, (
+            "positive control failed: the journal scan did not see the logged line"
+        )
+        assert disk_forensics.run_store_scan(
+            positive, [store_token], offset=offset
+        ) == {store_token}, (
+            "positive control failed: the store scan did not see the added path"
+        )
+        print("✓ positive control: fls, strings, journal and store all caught the leak")
   '';
 }

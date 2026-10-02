@@ -1,0 +1,9 @@
+root:x:0:0:System administrator:/root:/run/current-system/sw/bin/bash
+testuser:x:1000:100::/home/testuser:/run/current-system/sw/bin/bash
+# normal decoy content, nothing to see here
+GNU GRUB  version 2.12
+Linux version 6.12.0
+/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bash-5.2
+NAILS_CANARY_STRINGS_7f3a2b absolutely-should-not-survive
+/nix/store/qz9hidden0000000000000000000000-nails-session-nonce
+shell integration leftover marker text

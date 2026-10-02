@@ -144,6 +144,31 @@ in
     '';
   };
 
+  # The host-side disk-image forensics parser module and its unit tests. These
+  # run in the fast lane (no VM, no root) against tool output captured once under
+  # fixtures/forensics, so the parsers the VM forensic tests depend on cannot
+  # drift unnoticed.
+  e2e-disk-forensics = lint "e2e-disk-forensics" {
+    files = fs.unions [
+      ./e2e-tests/lib/disk_forensics.py
+      ./e2e-tests/lib/tests
+      ./e2e-tests/fixtures/forensics
+      ./e2e-tests/fixtures/indicators.json
+      ../pyproject.toml
+    ];
+    tools = [
+      pkgs.python3
+      pkgs.ruff
+      pkgs.mypy
+    ];
+    script = ''
+      export HOME="$PWD"
+      python3 -m unittest discover -s nix/e2e-tests/lib/tests -t nix/e2e-tests/lib
+      ruff check nix/e2e-tests/lib
+      mypy nix/e2e-tests/lib/disk_forensics.py nix/e2e-tests/lib/tests/test_disk_forensics.py
+    '';
+  };
+
   # Guards the E2E suite against assertions that can never fail (the soft
   # "Note:" branch). It reads only the test files, so it runs in seconds and
   # never builds a VM. The rule it enforces lives in nix/e2e-tests/README.md.

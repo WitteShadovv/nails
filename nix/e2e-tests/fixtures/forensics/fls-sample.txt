@@ -1,0 +1,16 @@
+d/d 11:	lost+found
+r/r 12:	etc/fstab
+r/r 13:	etc/nixos/configuration.nix
+r/r 14:	etc/nixos/hardware-configuration.nix
+d/d 2001:	home/testuser
+r/r 2002:	home/testuser/.bash_history
+r/r 2003:	home/testuser/notes.txt
+r/r * 5120:	home/testuser/canary-document.txt
+r/r * 5121-128-2:	tmp/nails-canary-temp
+r/r * 5122:	home/testuser/secret-project.txt (realloc)
+l/l 5123:	run/nails
+d/d * 5200:	mnt/nails-pivot
+r/r 6000:	var/log/journal/0a1b2c3d/system.journal
+r/r * 6100:	nix/store/qz9hidden0000000000000000000000-nails-session-nonce
+r/r 7000:	var/lib/nixos/uid-map
+V/V 8000:	$OrphanFiles

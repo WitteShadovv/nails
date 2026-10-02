@@ -1,0 +1,6 @@
+kernel: Linux version 6.12.0 (nixbld) #1-NixOS SMP
+systemd[1]: Starting Journal Service...
+systemd[1]: Reached target Multi-User System.
+testuser[4211]: NAILS_CANARY_JOURNAL_9c1d4e planted via logger during active session
+sshd[4300]: Accepted publickey for testuser
+systemd[1]: Stopped target Multi-User System.
