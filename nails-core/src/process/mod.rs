@@ -53,7 +53,7 @@ pub mod shell_cleanup;
 pub use classification::{RestartStrategy, RiskyServicePolicy, classify_process};
 pub use detection::{ProcessInfo, detect_processes_using};
 pub use restart::{RestartMethod, RestartedProcess, restart_processes};
-pub use run::{ProcessCommand, ProcessRunner, Program, RealProcessRunner};
+pub use run::{ProcessCommand, ProcessRunner, Program, RealProcessRunner, SYSTEM_TOOL_DIRS};
 pub use session::{
     RealSessionCommandExecutor, SessionCommandExecutor, SessionContext, SessionKillResult,
     SessionKind, SessionRestartPlan, detect_session_context, detect_session_context_with_executor,

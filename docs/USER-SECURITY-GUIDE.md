@@ -16,6 +16,8 @@ This guide provides essential security information for NAILS users. Read this do
 - [Critical Operational Requirements](#critical-operational-requirements)
   - [Binary Location Requirements](#binary-location-requirements)
   - [Why This Matters](#why-this-matters)
+  - [Trusted Computing Base](#trusted-computing-base)
+  - [Updating NAILS](#updating-nails)
 - [Standard vs Emergency Deactivation](#standard-vs-emergency-deactivation)
   - [When to Use Each](#when-to-use-each)
   - [Cleanup Comparison](#cleanup-comparison)
@@ -117,6 +119,61 @@ The NAILS binary contains identifiable strings that reveal its purpose:
 1. Open and mount the hidden volume first ([backends.md](./backends.md) lists the commands for each backend)
 2. Run the binary directly from the hidden volume: `sudo /mnt/hidden/nails activate`
 3. Never copy the binary to the decoy filesystem
+
+### Trusted Computing Base
+
+NAILS runs as `root` and reconfigures the running system. Everything it loads at
+activation time is therefore part of root's **trusted computing base (TCB)**: if
+any of it is tampered with, the hidden session offers no protection. The TCB is:
+
+- the `nails` binary itself,
+- its configuration file (`nails.toml`),
+- the hidden Nix flake and `configuration.nix` it builds and switches to.
+
+Keep all of these on the hidden volume alongside the binary, under `root`
+ownership, and treat their integrity as a precondition for every run:
+
+- **Root integrity is assumed.** NAILS does **not** perform a runtime
+  self-integrity check and cannot detect a modified binary, config, or flake
+  while it runs. If an adversary has already obtained root on the decoy system,
+  or has written to the hidden backend while it was mounted and unlocked, that is
+  outside the threat model — a compromised root can defeat any tool that runs as
+  root. Protect the hidden volume's confidentiality and integrity at rest
+  (strong passphrase, trusted hardware, no shared write access) rather than
+  relying on NAILS to notice tampering.
+- **No unauthenticated or remote backends.** The flake, configuration, and
+  binary must come from storage you control and have verified. Building or
+  switching to a configuration fetched from an unauthenticated source, a remote
+  builder you do not trust, or a network location is **unsupported**: it would
+  place an attacker-controlled component inside root's TCB. NAILS deliberately
+  gives root child processes a fixed, root-owned tool search path and a cleared
+  environment, so the caller's `PATH` and Nix settings cannot redirect which
+  binaries run or steer evaluation; do not reintroduce that exposure by pointing
+  the backend at untrusted inputs.
+
+### Updating NAILS
+
+Update NAILS by replacing the binary and backend on the hidden volume with a
+freshly built, verified release — never by downloading a binary onto the decoy
+disk:
+
+1. **Build or obtain a release artifact** following
+   [Release Artifact Reproducibility](./release-artifact-reproducibility.md).
+   The release is built deterministically, so an independently built binary
+   should match the published artifact byte for byte.
+2. **Verify the artifact before trusting it.** Check the published
+   `checksums.txt` against the binary you intend to install, and prefer a build
+   you reproduced yourself over one you only downloaded. An unverified binary is
+   an untrusted addition to root's TCB (see
+   [Trusted Computing Base](#trusted-computing-base)).
+3. **Install it on the hidden root only.** Replace the binary (and, when they
+   change, the flake and configuration) on the hidden volume, keeping everything
+   `root`-owned. Do not stage the new binary on the decoy filesystem at any
+   point — the same string-leakage hazard from
+   [Binary Location Requirements](#binary-location-requirements) applies to an
+   update as much as to a first install.
+4. **Re-read this guide after a version change**, since operational requirements
+   can change between releases.
 
 ---
 

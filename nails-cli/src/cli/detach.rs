@@ -1,14 +1,21 @@
 use std::env;
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::{collections::HashSet, path::PathBuf};
 
 use nails_core::constants::{
     ENV_DETACHED, ENV_DISPLAY_MANAGER, ENV_FORCE_DETACH, ENV_LOGIND_AVAILABLE, ENV_SESSION_ID,
     ENV_SKIP_DETACH, ENV_TARGET_UID, ENV_TARGET_USER,
 };
+use nails_core::process::SYSTEM_TOOL_DIRS;
 use nails_core::{NailsError, SessionContext, SessionKind, detect_session_context};
+
+/// Fallback `PATH` for the detached worker if `env::join_paths` ever fails.
+///
+/// The members are all static, colon- and NUL-free paths, so the join cannot
+/// fail in practice; this keeps the result total without an `unwrap`.
+const DETACHED_PATH_FALLBACK: &str =
+    "/run/wrappers/bin:/run/current-system/sw/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 /// Description applied to every detached transient unit.
 ///
@@ -193,35 +200,22 @@ fn is_already_detached() -> bool {
     env::var_os(ENV_DETACHED).is_some()
 }
 
+/// Build the fixed `PATH` for the detached worker unit.
+///
+/// The worker re-execs this binary as root, so whatever `PATH` the unit carries
+/// decides which tools that root process resolves by name. Deriving it from the
+/// caller's `PATH` would let a lower-privileged invoker's profile directories
+/// steer a root child, which is exactly the hijack this item removes. The result
+/// is therefore a fixed, root-owned search path, independent of the invoking
+/// environment: the NixOS setuid wrappers (`/run/wrappers/bin`, not part of
+/// [`SYSTEM_TOOL_DIRS`]) first, then the same root-owned directories the process
+/// runner itself resolves [`nails_core::process::Program::Tool`] from.
 fn detached_path_env() -> OsString {
-    let mut merged_paths: Vec<PathBuf> = Vec::new();
-    let mut seen = HashSet::new();
+    let mut dirs: Vec<PathBuf> = Vec::with_capacity(SYSTEM_TOOL_DIRS.len() + 1);
+    dirs.push(PathBuf::from("/run/wrappers/bin"));
+    dirs.extend(SYSTEM_TOOL_DIRS.iter().map(PathBuf::from));
 
-    let push_unique =
-        |path: PathBuf, merged_paths: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>| {
-            if seen.insert(path.clone()) {
-                merged_paths.push(path);
-            }
-        };
-
-    if let Some(current_path) = env::var_os("PATH") {
-        for path in env::split_paths(&current_path) {
-            push_unique(path, &mut merged_paths, &mut seen);
-        }
-    }
-
-    for path in [
-        PathBuf::from("/run/current-system/sw/bin"),
-        PathBuf::from("/run/wrappers/bin"),
-        PathBuf::from("/usr/bin"),
-        PathBuf::from("/bin"),
-    ] {
-        push_unique(path, &mut merged_paths, &mut seen);
-    }
-
-    env::join_paths(merged_paths).unwrap_or_else(|_| {
-        OsString::from("/run/current-system/sw/bin:/run/wrappers/bin:/usr/bin:/bin")
-    })
+    env::join_paths(dirs).unwrap_or_else(|_| OsString::from(DETACHED_PATH_FALLBACK))
 }
 
 /// Detach using systemd-run to create a transient service in system.slice.
@@ -290,19 +284,15 @@ pub fn maybe_detach_for_session_kill(
     cmd.arg(format!("--setenv={}=1", ENV_DETACHED));
     cmd.arg("--setenv=XDG_SESSION_ID="); // Clear session tracking
 
-    // Set PATH to include NixOS binaries (nixos-rebuild, etc.)
+    // Give the worker a fixed, root-owned PATH so the root child resolves its
+    // tools from system directories, not from the caller's PATH. No NIX_*
+    // variable is forwarded: the hidden build is a flake build run with
+    // `--impure`, which ignores NIX_PATH, and forwarding the caller's Nix
+    // configuration would let it steer evaluation inside the root worker.
     cmd.arg(format!(
         "--setenv=PATH={}",
         detached_path_env().to_string_lossy()
     ));
-
-    // Capture and pass through all NIX_* environment variables from current environment
-    // This ensures nixos-rebuild has all the Nix configuration it needs
-    for (key, value) in env::vars() {
-        if key.starts_with("NIX_") {
-            cmd.arg(format!("--setenv={}={}", key, value));
-        }
-    }
 
     if let Some(ctx) = session_ctx
         && ctx.kind == SessionKind::GraphicalUser

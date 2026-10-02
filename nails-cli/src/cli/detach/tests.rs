@@ -554,6 +554,104 @@ fn write_recording_systemd_run(fake_systemd_run: &std::path::Path, log: &std::pa
     );
 }
 
+/// Extract the value of the `--setenv=PATH=` argument from a recorded argv.
+fn setenv_path_value(logged_args: &str) -> &str {
+    logged_args
+        .lines()
+        .find_map(|line| line.strip_prefix("--setenv=PATH="))
+        .expect("detached unit must set PATH")
+}
+
+/// The detached unit must carry a fixed, root-owned PATH and forward no `NIX_*`
+/// variable, so a lower-privileged caller cannot steer the root worker's tool
+/// resolution or `nixos-rebuild` evaluation through its environment.
+#[test]
+fn session_detach_pins_a_fixed_path_and_drops_nix_env() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let fake_systemd_run = temp_dir.path().join("fake-systemd-run");
+    let log = temp_dir.path().join("systemd-run.log");
+    write_recording_systemd_run(&fake_systemd_run, &log);
+
+    let output = run_entrypoint("detach-session-success", |command| {
+        command
+            .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+            .env(ENV_FORCE_DETACH, "1")
+            .env("PATH", "/tmp/evil:/usr/bin")
+            .env("NIX_PATH", "nixpkgs=/tmp/evil/nixpkgs")
+            .env("NIX_CONFIG", "substituters = http://evil.example")
+            .env("NIX_REMOTE", "daemon")
+            .env_remove(ENV_SKIP_DETACH)
+            .env_remove(ENV_DETACHED);
+    });
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let logged_args = fs::read_to_string(&log).expect("fake systemd-run log");
+    let path_value = setenv_path_value(&logged_args);
+
+    assert!(
+        !path_value.contains("/tmp/evil"),
+        "caller PATH leaked into the detached unit: {path_value:?}"
+    );
+    assert!(
+        path_value.contains("/run/wrappers/bin")
+            && path_value.contains("/run/current-system/sw/bin"),
+        "detached unit must carry the fixed root-owned PATH: {path_value:?}"
+    );
+    assert!(
+        !logged_args
+            .lines()
+            .any(|line| line.starts_with("--setenv=NIX_")),
+        "no NIX_* variable may reach the detached worker: {logged_args}"
+    );
+}
+
+/// The detached PATH is a fixed constant: two handoffs with different caller
+/// `PATH` values must produce byte-identical `--setenv=PATH` arguments.
+#[test]
+fn session_detach_path_is_independent_of_caller_path() {
+    let run_once = |caller_path: &str| -> String {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let fake_systemd_run = temp_dir.path().join("fake-systemd-run");
+        let log = temp_dir.path().join("systemd-run.log");
+        write_recording_systemd_run(&fake_systemd_run, &log);
+
+        let output = run_entrypoint("detach-session-success", |command| {
+            command
+                .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+                .env(ENV_FORCE_DETACH, "1")
+                .env("PATH", caller_path)
+                .env_remove(ENV_SKIP_DETACH)
+                .env_remove(ENV_DETACHED);
+        });
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let logged_args = fs::read_to_string(&log).expect("fake systemd-run log");
+        setenv_path_value(&logged_args).to_string()
+    };
+
+    let first = run_once("/tmp/evil:/usr/bin");
+    let second = run_once("/opt/somewhere/bin:/snap/bin");
+
+    assert_eq!(
+        first, second,
+        "detached PATH must not vary with the caller's PATH"
+    );
+    assert_eq!(
+        first, "/run/wrappers/bin:/run/current-system/sw/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "detached PATH must be the fixed root-owned search path"
+    );
+}
+
 #[test]
 fn session_detach_uses_neutral_unit_and_discards_output() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
