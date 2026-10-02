@@ -57,6 +57,19 @@ predicates = "3.1.3"
 # Property tests. Only `std`: the fork and timeout features add crates unused here
 proptest = { version = "1.11", default-features = false, features = ["std"] }
 
+# Compile-time code policy shared by every crate and target. `unsafe_code` is
+# denied: each production unsafe site opts in with a scoped
+# `#[allow(unsafe_code)]` next to its `// SAFETY:` comments, so a new unsafe
+# block cannot land without one. The size lints catch functions that outgrow a
+# single screen of logic; their thresholds live in clippy.toml.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+
 [profile.release]
 strip = true
 lto = true

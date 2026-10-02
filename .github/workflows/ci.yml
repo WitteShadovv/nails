@@ -100,8 +100,8 @@ jobs:
       - name: Run clippy
         run: just lint
 
-      - name: Check Rust file length
-        run: ./scripts/check-line-count.sh
+      - name: Check Rust file sizes
+        run: just line-count
 
       - name: Check for orphan (undeclared) modules
         run: ./scripts/check-orphan-modules.sh

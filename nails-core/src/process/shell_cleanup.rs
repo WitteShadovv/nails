@@ -7,8 +7,6 @@
 
 use crate::constants::ENV_TARGET_UID;
 #[cfg(not(test))]
-use nix::libc;
-#[cfg(not(test))]
 use std::fs;
 #[cfg(not(test))]
 use std::path::Path;
@@ -230,16 +228,12 @@ pub fn kill_user_shells(protected_pids: &[u32]) -> ShellKillReport {
 
             tracing::debug!(pid = pid, comm = %comm, "Killing shell process");
 
-            // Send SIGKILL
-            // SAFETY: We're sending a signal to a process we identified via /proc.
-            // This is a standard POSIX operation.
-            let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-
-            if result == 0 {
-                report.killed.push(pid);
-            } else {
-                let err = std::io::Error::last_os_error();
-                report.failed.push((pid, format!("{}: {}", comm, err)));
+            // SIGKILL, not SIGHUP: the shell gets no chance to flush its history.
+            // The PID came from a /proc directory name, so it fits a pid_t.
+            let process = nix::unistd::Pid::from_raw(pid as i32);
+            match nix::sys::signal::kill(process, nix::sys::signal::Signal::SIGKILL) {
+                Ok(()) => report.killed.push(pid),
+                Err(err) => report.failed.push((pid, format!("{}: {}", comm, err))),
             }
         }
 

@@ -1,0 +1,10 @@
+# Limits for the size lints that the root Cargo.toml enables for every crate.
+# Each sits at the largest function in the tree when the lints were introduced,
+# so no function can grow past today's worst; lower them as functions are
+# split. The few functions far beyond them carry an `#[expect]` with a reason.
+
+# Lines of code per function, not counting blank lines and comments.
+too-many-lines-threshold = 170
+
+# Clippy's branch-and-nesting score per function.
+cognitive-complexity-threshold = 32

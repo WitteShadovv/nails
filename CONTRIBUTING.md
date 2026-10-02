@@ -83,6 +83,7 @@ Running the full hook set before you open a pull request is the best way to redu
 
 - New behavior should include tests when feasible.
 - Avoid unnecessary dependencies.
+- Unsafe code is denied workspace-wide. Prefer a safe wrapper (`nix`, `rustix`); where a raw call is unavoidable, put a scoped `#[allow(unsafe_code)]` on the smallest enclosing item and a `// SAFETY:` comment on each block (see the [lint policy](docs/ci.md#lint-policy)).
 - Keep CLI code thin and business logic in library code where possible.
 - Do not introduce custom cryptography or weak secret-handling patterns.
 

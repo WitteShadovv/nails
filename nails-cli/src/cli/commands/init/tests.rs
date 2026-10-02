@@ -130,6 +130,10 @@ fn mock_minimal_activation_prereqs(fs: &MockFilesystem) {
 }
 
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "every assert! counts as a branch; the test is a flat list of checks"
+)]
 fn test_init_creates_directory_structure() {
     let tmp = TempDir::new().unwrap();
     let base_hardware_config = write_test_base_hardware_config(&tmp);

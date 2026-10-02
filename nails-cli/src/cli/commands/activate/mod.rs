@@ -49,6 +49,10 @@ fn suspicious_check_name() -> String {
 /// the safety guard blocks real operations, [`ExitStatus::InvalidState`] when the
 /// state file cannot be trusted, and [`ExitStatus::Config`] for a missing or
 /// invalid configuration file.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear flow from flag checks to the report; split it rather than raise the limit"
+)]
 pub fn execute(
     settings: &OutputSettings,
     args: &ActivateArgs,

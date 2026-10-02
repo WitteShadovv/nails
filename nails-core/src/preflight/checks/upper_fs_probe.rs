@@ -194,6 +194,7 @@ fn probe_in_scratch(scratch: &Path) -> std::result::Result<(), ProbeError> {
 }
 
 /// Set then remove a `trusted.*` probe xattr on `dir`.
+#[allow(unsafe_code)]
 fn probe_trusted_xattr(dir: &Path) -> std::result::Result<(), ProbeError> {
     let c_dir = cstring(dir)?;
     let name = c"trusted.overlay.probe";
@@ -227,6 +228,7 @@ fn probe_trusted_xattr(dir: &Path) -> std::result::Result<(), ProbeError> {
 /// A filesystem without `d_type` support returns `DT_UNKNOWN` for every entry
 /// (including `.`/`..`); one that supports it reports a concrete type. Seeing any
 /// known type is therefore a sufficient capability signal.
+#[allow(unsafe_code)]
 fn probe_dir_entry_type(dir: &Path) -> std::result::Result<(), ProbeError> {
     let c_dir = cstring(dir)?;
 

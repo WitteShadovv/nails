@@ -30,7 +30,6 @@ on:
           - cache-warm
           - stress
           - benchmarks
-          - geiger
           - lockfile
 
 permissions:
@@ -66,8 +65,8 @@ jobs:
           elif [ "$SCHEDULE" = "0 4 1 * *" ]; then
             run='["lockfile"]'
           elif [ "${TASK:-all}" = all ]; then
-            # geiger and lockfile are opt-in: each runs only on its own
-            # schedule or when dispatched by name
+            # lockfile is opt-in: it runs only on its own schedule or when
+            # dispatched by name
             run='["advisories","fetcher-canary","cache-warm","stress","benchmarks"]'
           else
             run=$(jq -cn --arg task "$TASK" '[$task]')
@@ -261,38 +260,6 @@ jobs:
           path: target/criterion/
           retention-days: 90
 
-  # Opt-in unsafe-code report: dispatch this workflow with task 'geiger'.
-  geiger:
-    name: Unsafe code report (informational)
-    needs: tasks
-    if: contains(fromJSON(needs.tasks.outputs.run), 'geiger')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    continue-on-error: true
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          persist-credentials: false
-
-      - name: Install Rust toolchain
-        run: rustup toolchain install
-
-      - name: Install cargo-geiger
-        run: cargo install cargo-geiger@0.13.0 --locked
-
-      - name: Report unsafe code
-        run: cargo geiger --all-features --all-targets 2>&1 | tee geiger-report.txt
-
-      - name: Upload the report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: geiger-report
-          path: geiger-report.txt
-          retention-days: 30
-
   # Monthly transitive refresh: #54's fixes were lockfile-only bumps that
   # Dependabot's direct-dependency updates never proposed. `cargo update` moves
   # every dependency to the newest version its requirement allows, then the
@@ -418,7 +385,7 @@ jobs:
           title: "Dependency advisories"
 
   # The infrastructure tasks share the ci-red issue 'CI red: Scheduled'. The
-  # informational benchmarks and geiger jobs are left out on purpose.
+  # informational benchmarks job is left out on purpose.
   report-ci:
     name: Report CI status
     needs: [tasks, fetcher-canary, cache-warm, stress]

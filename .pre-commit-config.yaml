@@ -105,6 +105,15 @@ repos:
         types: [rust]
         pass_filenames: false
 
+      # Rust file size limits: the script `just check` and CI run, well under
+      # a second, so it can run on every commit that touches Rust.
+      - id: check-line-count
+        name: Rust file size limits
+        entry: scripts/check-line-count.sh
+        language: system
+        types: [rust]
+        pass_filenames: false
+
       # Every deny.toml advisory ignore needs a current "# expires:" date;
       # this is offline and only runs when deny.toml changes.
       - id: deny-ignores
@@ -114,9 +123,9 @@ repos:
         pass_filenames: false
         files: ^deny\.toml$
 
-      # Push gate: formatting, clippy and the full test suite in one recipe.
+      # Push gate: formatting, clippy, file sizes and the full test suite.
       - id: just-check
-        name: just check (fmt, lint, test)
+        name: just check (fmt, lint, line-count, test)
         entry: just check
         language: system
         pass_filenames: false

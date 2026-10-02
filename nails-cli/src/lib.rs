@@ -4,4 +4,8 @@
 //! Commands are implemented in the `cli` module for testability and reusability.
 //! The entry point in main.rs simply invokes `cli::execute_command()`.
 
+// Unsafe code is denied workspace-wide (see the root Cargo.toml). Test code
+// may use it freely; production code opts in per site with a scoped allow.
+#![cfg_attr(test, allow(unsafe_code))]
+
 pub mod cli;

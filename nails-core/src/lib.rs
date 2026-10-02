@@ -22,6 +22,10 @@
 //! - Pure business logic with clear error handling
 //! - Well-defined traits for extensibility
 
+// Unsafe code is denied workspace-wide (see the root Cargo.toml). Test code
+// may use it freely; production code opts in per site with a scoped allow.
+#![cfg_attr(test, allow(unsafe_code))]
+
 // Error handling module
 pub mod error;
 

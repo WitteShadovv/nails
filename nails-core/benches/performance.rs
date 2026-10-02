@@ -84,6 +84,7 @@ fn create_status_command() -> StatusCommand<MockFilesystem> {
     StatusCommand::new(fs, config, state_path)
 }
 
+#[allow(unsafe_code)]
 fn create_emergency_orchestrator() -> (NailsManager<MockFilesystem>, DeactivationOrchestrator) {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.keep();
@@ -93,6 +94,8 @@ fn create_emergency_orchestrator() -> (NailsManager<MockFilesystem>, Deactivatio
 
     let safe_home = hidden_root.join("safe-home");
     std::fs::create_dir_all(&safe_home).unwrap();
+    // SAFETY: Criterion runs the setup on the bench's only thread, so nothing
+    // reads the environment concurrently.
     unsafe {
         std::env::set_var("HOME", &safe_home);
     }
@@ -105,6 +108,7 @@ fn create_emergency_orchestrator() -> (NailsManager<MockFilesystem>, Deactivatio
     let mut perms = std::fs::metadata(&switch_script).unwrap().permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&switch_script, perms).unwrap();
+    // SAFETY: as for HOME above.
     unsafe {
         std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", profiles_dir.join("system"));
     }

@@ -12,6 +12,9 @@ readme = "../README.md"
 keywords = ["nixos", "anti-forensics", "security", "privacy", "veracrypt"]
 categories = ["filesystem", "os::linux-apis"]
 
+[lints]
+workspace = true
+
 [lib]
 name = "nails_core"
 path = "src/lib.rs"

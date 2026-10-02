@@ -93,6 +93,9 @@ impl EnvGuard {
     }
 
     /// Sets `key` to `value` until the guard is dropped.
+    // This module also compiles without cfg(test), under the test-support
+    // feature, so the crate root's test-only allow does not reach it.
+    #[allow(unsafe_code)]
     pub fn set(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> &mut Self {
         let key = key.as_ref();
         self.remember(key);
@@ -104,6 +107,7 @@ impl EnvGuard {
     }
 
     /// Removes `key` until the guard is dropped.
+    #[allow(unsafe_code)]
     pub fn remove(&mut self, key: impl AsRef<OsStr>) -> &mut Self {
         let key = key.as_ref();
         self.remember(key);
@@ -137,6 +141,7 @@ impl EnvGuard {
 }
 
 impl Drop for EnvGuard {
+    #[allow(unsafe_code)]
     fn drop(&mut self) {
         for (key, value) in self.saved.drain(..).rev() {
             // SAFETY: the lock is still held; it is released only after this

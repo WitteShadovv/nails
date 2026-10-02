@@ -26,6 +26,10 @@ fmt-check:
 lint:
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+# Rust file size limits; the pre-commit hook and CI run the same script.
+line-count:
+    ./scripts/check-line-count.sh
+
 # Run the unit and integration suite through nextest.
 test:
     cargo nextest run --workspace --all-features --locked --no-fail-fast
@@ -63,11 +67,11 @@ coverage:
         exit 1
     }
 
-# The pre-push gate: formatting, lints and the test suite.
-check: fmt-check lint test
+# The pre-push gate: formatting, lints, file sizes and the test suite.
+check: fmt-check lint line-count test
 
 # Everything the ci.yml Rust jobs run, for reproducing the gate locally.
-ci-rust: fmt-check lint coverage doctest
+ci-rust: fmt-check lint line-count coverage doctest
 
 # --- Dependency policy ---
 
