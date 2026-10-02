@@ -365,6 +365,11 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
+    // This blocking `waitpid` on the short-lived, raw-syscall namespace helper is
+    // deliberately left blocking: converting it to a WNOHANG poll with a deadline
+    // is deferred to the bind-teardown rework (T-082), which may remove these fork
+    // helpers entirely. A deadline could not recover a D-state child here in any
+    // case, as the process runner's documentation notes.
     fn wait_for_init_namespace_helper(child: nix::unistd::Pid, context: &str) -> Result<()> {
         match waitpid(child, None).map_err(|e| {
             NailsError::OverlayError(format!(
