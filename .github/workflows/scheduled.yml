@@ -2,8 +2,9 @@ name: Scheduled
 
 # Maintenance that watches for problems appearing without a change to this
 # repository: new advisories, expiring deny.toml ignores, a crate fetcher that
-# crates.io stopped serving, evicted caches and flaky tests. Nothing here gates
-# a pull request; the report jobs at the end track red runs in issues instead.
+# crates.io stopped serving, a release build that is no longer reproducible,
+# evicted caches and flaky tests. Nothing here gates a pull request; the
+# report jobs at the end track red runs in issues instead.
 # GitHub disables a schedule after 60 days without repository activity.
 
 on:
@@ -27,6 +28,7 @@ on:
           - all
           - advisories
           - fetcher-canary
+          - reproducibility
           - cache-warm
           - stress
           - benchmarks
@@ -67,7 +69,7 @@ jobs:
           elif [ "${TASK:-all}" = all ]; then
             # lockfile is opt-in: it runs only on its own schedule or when
             # dispatched by name
-            run='["advisories","fetcher-canary","cache-warm","stress","benchmarks"]'
+            run='["advisories","fetcher-canary","reproducibility","cache-warm","stress","benchmarks"]'
           else
             run=$(jq -cn --arg task "$TASK" '[$task]')
           fi
@@ -157,6 +159,16 @@ jobs:
           fi
           echo "Downloading ${#crates[@]} crates again"
           nix-store --realise --check "${crates[@]}" > /dev/null
+
+  # Two from-source builds of main on fresh runners must match byte for byte,
+  # so a determinism regression shows up here rather than in a release run.
+  reproducibility:
+    name: Reproducibility
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'reproducibility')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reproducibility.yml
 
   # Restores the Rust cache that ci.yml saves on main. A restore counts as an
   # access, so the cache survives weeks without a push to main.
@@ -465,7 +477,7 @@ jobs:
   # broken build or a missing result.
   report-ci:
     name: Report CI status
-    needs: [tasks, fetcher-canary, cache-warm, stress, benchmarks]
+    needs: [tasks, fetcher-canary, reproducibility, cache-warm, stress, benchmarks]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5

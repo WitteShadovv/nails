@@ -10,10 +10,11 @@ name: E2E
 #   nightly schedule      execute: every test driver runs, cache or not,
 #                         durations are refreshed, the performance tests run
 #                         without blocking and red runs open an issue
+#   dispatch or call      any mode on any runner (`runner` is runs-on JSON);
+#                         release.yml calls it with mode all for a tag
 #
 # Only the nightly (or a dispatched 'execute') run times anything: every other
 # lane leaves the performance group out.
-#   dispatch or call      any mode on any runner (`runner` is runs-on JSON)
 #
 # No secret reaches code that nobody vetted: fork and Dependabot pull requests
 # run like any other, with a read-only cache. `e2e-result` is the one status
@@ -99,6 +100,8 @@ jobs:
 
       # The single path filter of the suite. A change outside these paths
       # cannot alter a test, so the run is skipped and e2e-result passes.
+      # It filters this workflow's own pull request and push runs only: a
+      # dispatch or a call (which sets MODE_INPUT) asked for its tests.
       - name: Select mode, runner and base revision
         id: select
         env:
@@ -134,7 +137,7 @@ jobs:
             base=
           fi
 
-          if [ "$EVENT_NAME" = pull_request ] || [ "$EVENT_NAME" = push ]; then
+          if [ -z "$MODE_INPUT" ] && { [ "$EVENT_NAME" = pull_request ] || [ "$EVENT_NAME" = push ]; }; then
             relevant='^(nails-core/|nails-cli/|nix/|ci/e2e/|\.github/actions/setup-nix/|\.github/workflows/e2e\.yml$|scripts/run-e2e-tests\.sh$|flake\.(nix|lock)$|Cargo\.(toml|lock)$|rust-toolchain\.toml$)'
             # An unknown base (new branch, force push) counts as a change.
             if [ -n "$base" ] && ! git diff --name-only "$base" HEAD | grep -qE "$relevant"; then

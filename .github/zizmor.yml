@@ -4,9 +4,6 @@ rules:
   unpinned-uses:
     config:
       policies:
-        # The SLSA generator must be referenced by its release tag: it
-        # verifies that ref when it generates provenance.
-        slsa-framework/slsa-github-generator/*: ref-pin
         "*": hash-pin
 
   # Findings that predate the zizmor check, ignored per file because these
@@ -18,9 +15,3 @@ rules:
   dependabot-cooldown:
     ignore:
       - dependabot.yml
-  superfluous-actions:
-    ignore:
-      - release-core.yml
-  template-injection:
-    ignore:
-      - release-core.yml

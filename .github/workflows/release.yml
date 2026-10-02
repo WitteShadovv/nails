@@ -1,51 +1,342 @@
 name: Release
 
+# One run takes a release tag to a draft GitHub release:
+#
+#   version        the tag is annotated and equals v<workspace version>,
+#                  Cargo.lock carries that version and CHANGELOG.md has its
+#                  section (ci/release.py); a mistake fails here, in seconds
+#   build          .#nails-release, compiled from source without the cache
+#   rebuild        reproducibility.yml builds it again on a fresh runner; the
+#                  binary, the archive and checksums.txt must match byte for
+#                  byte
+#   e2e            the whole E2E suite (e2e.yml) on the tagged commit
+#   sbom           CycloneDX SBOM of the binary for the musl target, musl
+#                  included
+#   attest         build provenance for the archive and the binary, and the
+#                  SBOM as an attestation of its own
+#   draft-release  a draft whose notes are the CHANGELOG.md section
+#
+# Publishing the draft stays a maintainer's step; RELEASING.md has the
+# checklist. A dispatch runs the same pipeline again for an existing tag, for
+# example after an infrastructure failure. It must run from the tag itself
+# ("Use workflow from: vX.Y.Z"), because the provenance records the ref and
+# commit of the run as the source: every job builds and tests that commit,
+# with the workflow and the tooling of the tag.
+
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Tag to release, for example v0.3.0; run the workflow from this same
+          tag
+        required: true
+        type: string
+      e2e-runner:
+        description: >-
+          runs-on for the E2E shards, as JSON: "ubuntu-24.04" or a label list
+          such as ["self-hosted","nails-e2e"]
+        type: string
+        default: '"ubuntu-24.04"'
+      e2e-max-shards:
+        description: >-
+          Upper bound on parallel E2E shards; use 1 for a single-use
+          self-hosted runner
+        type: number
+        default: 10
 
 permissions: {}
 
+# A second run for the same tag waits instead of cancelling the first: a
+# cancelled run must never leave a release half done.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  classify-tag:
-    name: Classify release tag
+  version:
+    name: Check tag and version
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       contents: read
     outputs:
-      publication-mode: ${{ steps.classify.outputs.publication-mode }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
 
     steps:
-      - name: Classify tag trigger
-        id: classify
+      # A ruleset cannot require annotated tags, so the run does.
+      - name: Require a run on an annotated tag
+        id: tag
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            echo "publication-mode=prerelease" >> "$GITHUB_OUTPUT"
-          else
-            echo "publication-mode=verify" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF" != "refs/tags/$TAG" ]; then
+            echo "::error::Run this workflow from the tag $TAG, not from $GITHUB_REF: the provenance names the ref of the run"
+            exit 1
           fi
+          type=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.type)
+          if [ "$type" != tag ]; then
+            echo "::error::$TAG is a lightweight tag; release tags are annotated (git tag -a)"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-  release:
-    name: Verify or publish tagged release
-    needs: classify-tag
+      - name: Checkout the tagged commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Check the version, Cargo.lock and CHANGELOG.md
+        id: check
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          python3 -m ci.release check --tag "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --notes "$RUNNER_TEMP/release-notes.md" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/release-notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the release notes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+          retention-days: 14
+
+  build:
+    name: Build
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     permissions:
-      actions: read
-      attestations: write
-      contents: write
-      id-token: write
-    uses: ./.github/workflows/release-core.yml
+      contents: read
+    outputs:
+      musl-version: ${{ steps.musl.outputs.version }}
+
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      # Without the project cache, nails is compiled from source here.
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cache: 'false'
+
+      - name: Build the release bundle
+        run: nix build -L .#nails-release -o result --option accept-flake-config false
+
+      - name: Smoke-test the release bundle
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          name="nails-$VERSION-x86_64-unknown-linux-musl"
+          smoke=$(mktemp -d)
+          tar -xzf "result/$name.tar.gz" -C "$smoke"
+          test -f "$smoke/$name/LICENSE"
+          test -f "$smoke/$name/README.md"
+          cmp result/nails "$smoke/$name/nails"
+          test "$(result/nails --version)" = "nails $VERSION"
+          (cd result && sha256sum --check --strict checksums.txt)
+
+      # musl is linked statically, so the SBOM names it; this is the musl of
+      # the nixpkgs revision that flake.lock pins.
+      - name: Read the musl version
+        id: musl
+        run: |
+          version=$(nix eval --raw --inputs-from . nixpkgs#pkgsCross.musl64.musl.version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Collect the release bundle
+        run: mkdir dist && cp result/* dist/
+
+      - name: Upload the release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-bundle
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  rebuild:
+    name: Rebuild
+    needs: [version, build]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reproducibility.yml
     with:
-      release-tag: ${{ github.ref_name }}
-      publication-mode: ${{ needs.classify-tag.outputs.publication-mode }}
+      reference-artifact: release-bundle
+
+  # GitHub refuses a call that grants less than any job of the called workflow
+  # declares. e2e.yml's report-status job declares issues: write, but it runs
+  # only for main and the nightly schedule, never for a release.
+  e2e:
+    name: E2E
+    needs: version
+    permissions:
+      contents: read
+      issues: write # declared by e2e.yml's report-status job, unused here
+    uses: ./.github/workflows/e2e.yml
+    with:
+      mode: all
+      runner: ${{ inputs.e2e-runner || '"ubuntu-24.04"' }}
+      max-shards: ${{ inputs.e2e-max-shards || 10 }}
+    secrets:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+  sbom:
+    name: SBOM
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      # No arguments: rustup installs the channel from rust-toolchain.toml.
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      # Prebuilt binaries, checked against the digests that install-action
+      # pins, instead of tools compiled or downloaded unchecked here.
+      - name: Install cargo-cyclonedx and cyclonedx-cli
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: cargo-cyclonedx@0.5.9,cyclonedx@0.30.0
+
+      # Only the nails binary, resolved for the release target without
+      # build-time dependencies; the commit time keeps the file reproducible.
+      - name: Generate the SBOM
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          MUSL_VERSION: ${{ needs.build.outputs.musl-version }}
+        run: |
+          cargo metadata --locked --format-version 1 > /dev/null
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) cargo cyclonedx \
+            --manifest-path nails-cli/Cargo.toml --format json --spec-version 1.5 \
+            --target x86_64-unknown-linux-musl --describe binaries --no-build-deps
+          python3 -m ci.release sbom-libc --sbom nails-cli/nails_bin.cdx.json \
+            --version "$VERSION" --musl-version "$MUSL_VERSION" \
+            --output "$RUNNER_TEMP/sbom.cdx.json"
+
+      - name: Validate the SBOM
+        run: |
+          cyclonedx validate --input-file "$RUNNER_TEMP/sbom.cdx.json" \
+            --input-format json --input-version v1_5 --fail-on-errors
+
+      - name: Upload the SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-sbom
+          path: ${{ runner.temp }}/sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # Only a bundle that passed every gate is attested: an attestation is a
+  # public statement, and it outlives a deleted draft.
+  attest:
+    name: Attest
+    needs: [version, build, rebuild, e2e, sbom]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      id-token: write # sign through Sigstore with this job's OIDC identity
+      attestations: write # store the attestations with the repository
+
+    steps:
+      - name: Download the release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-bundle
+          path: dist
+
+      - name: Download the SBOM
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-sbom
+          path: sbom
+
+      # SLSA build provenance for each file that checksums.txt lists: the
+      # archive and the binary.
+      - name: Attest build provenance
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-checksums: dist/checksums.txt
+
+      - name: Attest the SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-checksums: dist/checksums.txt
+          sbom-path: sbom/sbom.cdx.json
+
+  draft-release:
+    name: Draft release
+    needs: [version, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the draft release and upload its assets
+
+    steps:
+      - name: Download the release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-bundle
+          path: dist
+
+      - name: Download the SBOM
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-sbom
+          path: dist
+
+      - name: Download the release notes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-notes
+          path: notes
+
+      # A draft is only visible to maintainers. An existing release is never
+      # touched: delete a stale draft to run again; a published one is final.
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "::error::A release for $TAG exists already; delete the draft to run again"
+            exit 1
+          fi
+          flags=(--draft --verify-tag --title "nails $TAG" --notes-file notes/release-notes.md)
+          if [ "$PRERELEASE" = true ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" "${flags[@]}" dist/*
 
   # Tag pushes run unattended: a failed release opens or comments on the
   # 'CI red: Release' issue, and the next successful release closes it.
   report-status:
     name: Report status
-    needs: [classify-tag, release]
+    needs: [version, build, rebuild, e2e, sbom, attest, draft-release]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
