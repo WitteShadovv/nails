@@ -96,6 +96,11 @@ pub mod hidden_root;
 
 mod runtime_safety;
 
+// Test helpers shared across modules and with downstream test code (the
+// process-environment guard). Off in release builds.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 // Re-export for convenience
 #[cfg(any(test, feature = "test-support"))]
 pub use config::TestWorld;
