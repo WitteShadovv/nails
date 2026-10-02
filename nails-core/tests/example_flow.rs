@@ -4,48 +4,25 @@
 //! and emergency deactivation — all using MockFilesystem (no root required).
 
 use nails_core::{
-    Config, MockFilesystem, NailsManager, StatusCommand, SystemState, Verifier, VerifyStatus,
+    Config, MockFilesystem, NailsManager, StatusCommand, SystemState, TestWorld, Verifier,
+    VerifyStatus,
 };
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
-/// Helper: create a NailsManager with MockFilesystem inside a tempdir-backed state path.
-/// The hidden_volume_root is set to the tempdir so state file validation passes.
-fn make_manager() -> (
-    Arc<Mutex<NailsManager<MockFilesystem>>>,
-    MockFilesystem,
-    Config,
-    PathBuf,
-    tempfile::TempDir,
-) {
-    let tmp = tempfile::tempdir().unwrap();
-    let hidden_root = tmp.path().to_path_buf();
-    let state_path = hidden_root.join("state.json");
-
-    let fs = MockFilesystem::new();
-    let config = Config {
-        hidden_volume_root: hidden_root,
-        state_file_path: state_path.clone(),
-        overlays: vec![],
-        ..Config::default()
-    };
-
-    let manager = NailsManager::new(fs.clone(), config.clone(), state_path.clone());
-    (Arc::new(Mutex::new(manager)), fs, config, state_path, tmp)
-}
-
-/// Helper: force the manager into Active state for deactivation tests.
-fn force_active(arc: &Arc<Mutex<NailsManager<MockFilesystem>>>) {
-    let mut m = arc.lock().unwrap();
-    m.force_state(SystemState::Activating {
-        started_at: chrono::Utc::now(),
-    })
-    .unwrap();
-    m.force_state(SystemState::Active {
-        activated_at: chrono::Utc::now(),
-        overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
-    })
-    .unwrap();
+/// Force a freshly built manager into the Active state that the deactivation,
+/// status and verify flows start from.
+fn force_active(manager: &mut NailsManager<MockFilesystem>) {
+    manager
+        .force_state(SystemState::Activating {
+            started_at: chrono::Utc::now(),
+        })
+        .unwrap();
+    manager
+        .force_state(SystemState::Active {
+            activated_at: chrono::Utc::now(),
+            overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
+        })
+        .unwrap();
 }
 
 // ============================================================================
@@ -54,38 +31,33 @@ fn force_active(arc: &Arc<Mutex<NailsManager<MockFilesystem>>>) {
 
 #[test]
 fn test_basic_activation_flow() {
-    let (arc, _fs, _config, _state_path, _tmp) = make_manager();
+    let (mut manager, _tmp) = TestWorld::new().manager();
 
     // Initial state is Inactive
-    {
-        let m = arc.lock().unwrap();
-        assert_eq!(m.current_state().unwrap(), SystemState::Inactive);
-    }
+    assert_eq!(manager.current_state().unwrap(), SystemState::Inactive);
 
     // Transition Inactive -> Activating
-    {
-        let mut m = arc.lock().unwrap();
-        m.update_state(SystemState::Activating {
+    manager
+        .update_state(SystemState::Activating {
             started_at: chrono::Utc::now(),
         })
         .unwrap();
-        assert!(matches!(
-            m.current_state().unwrap(),
-            SystemState::Activating { .. }
-        ));
-    }
+    assert!(matches!(
+        manager.current_state().unwrap(),
+        SystemState::Activating { .. }
+    ));
 
     // Transition Activating -> Active
-    {
-        let mut m = arc.lock().unwrap();
-        m.update_state(SystemState::Active {
+    manager
+        .update_state(SystemState::Active {
             activated_at: chrono::Utc::now(),
             overlays: vec![PathBuf::from("/home")],
         })
         .unwrap();
-        let state = m.current_state().unwrap();
-        assert!(matches!(state, SystemState::Active { .. }));
-    }
+    assert!(matches!(
+        manager.current_state().unwrap(),
+        SystemState::Active { .. }
+    ));
 }
 
 // ============================================================================
@@ -132,28 +104,23 @@ fn test_activation_with_config() {
 
 #[test]
 fn test_deactivation_flow() {
-    let (arc, _fs, _config, _state_path, _tmp) = make_manager();
-    force_active(&arc);
+    let (mut manager, _tmp) = TestWorld::new().manager();
+    force_active(&mut manager);
 
     // Active -> Deactivating
-    {
-        let mut m = arc.lock().unwrap();
-        m.update_state(SystemState::Deactivating {
+    manager
+        .update_state(SystemState::Deactivating {
             started_at: chrono::Utc::now(),
         })
         .unwrap();
-        assert!(matches!(
-            m.current_state().unwrap(),
-            SystemState::Deactivating { .. }
-        ));
-    }
+    assert!(matches!(
+        manager.current_state().unwrap(),
+        SystemState::Deactivating { .. }
+    ));
 
     // Deactivating -> Inactive
-    {
-        let mut m = arc.lock().unwrap();
-        m.update_state(SystemState::Inactive).unwrap();
-        assert_eq!(m.current_state().unwrap(), SystemState::Inactive);
-    }
+    manager.update_state(SystemState::Inactive).unwrap();
+    assert_eq!(manager.current_state().unwrap(), SystemState::Inactive);
 }
 
 // ============================================================================
@@ -162,34 +129,30 @@ fn test_deactivation_flow() {
 
 #[test]
 fn test_state_machine_round_trip() {
-    let (arc, _fs, _config, _state_path, _tmp) = make_manager();
+    let (mut manager, _tmp) = TestWorld::new().manager();
 
     // Inactive -> Activating -> Active
-    {
-        let mut m = arc.lock().unwrap();
-        assert_eq!(m.current_state().unwrap(), SystemState::Inactive);
-
-        m.update_state(SystemState::Activating {
+    assert_eq!(manager.current_state().unwrap(), SystemState::Inactive);
+    manager
+        .update_state(SystemState::Activating {
             started_at: chrono::Utc::now(),
         })
         .unwrap();
-        m.update_state(SystemState::Active {
+    manager
+        .update_state(SystemState::Active {
             activated_at: chrono::Utc::now(),
             overlays: vec![PathBuf::from("/home")],
         })
         .unwrap();
-    }
 
     // Active -> Deactivating -> Inactive
-    {
-        let mut m = arc.lock().unwrap();
-        m.update_state(SystemState::Deactivating {
+    manager
+        .update_state(SystemState::Deactivating {
             started_at: chrono::Utc::now(),
         })
         .unwrap();
-        m.update_state(SystemState::Inactive).unwrap();
-        assert_eq!(m.current_state().unwrap(), SystemState::Inactive);
-    }
+    manager.update_state(SystemState::Inactive).unwrap();
+    assert_eq!(manager.current_state().unwrap(), SystemState::Inactive);
 }
 
 // ============================================================================
@@ -229,23 +192,21 @@ fn test_preflight_check_rejection() {
 
 #[test]
 fn test_emergency_deactivation() {
-    let (arc, _fs, _config, _state_path, _tmp) = make_manager();
-    force_active(&arc);
+    let (mut manager, _tmp) = TestWorld::new().manager();
+    force_active(&mut manager);
 
     // A partial emergency teardown can degrade from any live state.
-    {
-        let mut m = arc.lock().unwrap();
-        m.update_state(SystemState::Degraded {
+    manager
+        .update_state(SystemState::Degraded {
             since: chrono::Utc::now(),
             reason: "emergency teardown left mounts".into(),
             remaining_mounts: vec![],
         })
         .unwrap();
-        assert!(matches!(
-            m.current_state().unwrap(),
-            SystemState::Degraded { .. }
-        ));
-    }
+    assert!(matches!(
+        manager.current_state().unwrap(),
+        SystemState::Degraded { .. }
+    ));
 }
 
 // ============================================================================
@@ -254,65 +215,53 @@ fn test_emergency_deactivation() {
 
 #[test]
 fn test_status_from_various_states() {
-    let (arc, _fs, _config, _state_path, _tmp) = make_manager();
+    let (mut manager, _tmp) = TestWorld::new().manager();
 
     // Inactive
-    {
-        let m = arc.lock().unwrap();
-        let state = m.current_state().unwrap();
-        assert_eq!(state, SystemState::Inactive);
-        assert!(!state.is_active());
-    }
+    let state = manager.current_state().unwrap();
+    assert_eq!(state, SystemState::Inactive);
+    assert!(!state.is_active());
 
     // Activating
-    {
-        let mut m = arc.lock().unwrap();
-        m.force_state(SystemState::Activating {
+    manager
+        .force_state(SystemState::Activating {
             started_at: chrono::Utc::now(),
         })
         .unwrap();
-        let state = m.current_state().unwrap();
-        assert!(matches!(state, SystemState::Activating { .. }));
-        assert!(!state.is_active());
-    }
+    let state = manager.current_state().unwrap();
+    assert!(matches!(state, SystemState::Activating { .. }));
+    assert!(!state.is_active());
 
     // Active
-    {
-        let mut m = arc.lock().unwrap();
-        m.force_state(SystemState::Active {
+    manager
+        .force_state(SystemState::Active {
             activated_at: chrono::Utc::now(),
             overlays: vec![],
         })
         .unwrap();
-        let state = m.current_state().unwrap();
-        assert!(state.is_active());
-    }
+    assert!(manager.current_state().unwrap().is_active());
 
     // Degraded
-    {
-        let mut m = arc.lock().unwrap();
-        m.force_state(SystemState::Degraded {
+    manager
+        .force_state(SystemState::Degraded {
             since: chrono::Utc::now(),
             reason: "unmount failed".into(),
             remaining_mounts: vec![],
         })
         .unwrap();
-        let state = m.current_state().unwrap();
-        assert!(matches!(state, SystemState::Degraded { .. }));
-        assert!(!state.is_active());
-    }
+    let state = manager.current_state().unwrap();
+    assert!(matches!(state, SystemState::Degraded { .. }));
+    assert!(!state.is_active());
 
     // Deactivating
-    {
-        let mut m = arc.lock().unwrap();
-        m.force_state(SystemState::Deactivating {
+    manager
+        .force_state(SystemState::Deactivating {
             started_at: chrono::Utc::now(),
         })
         .unwrap();
-        let state = m.current_state().unwrap();
-        assert!(matches!(state, SystemState::Deactivating { .. }));
-        assert!(!state.is_active());
-    }
+    let state = manager.current_state().unwrap();
+    assert!(matches!(state, SystemState::Deactivating { .. }));
+    assert!(!state.is_active());
 }
 
 // ============================================================================
@@ -321,8 +270,12 @@ fn test_status_from_various_states() {
 
 #[test]
 fn test_status_command_flow() {
-    let (arc, fs, config, state_path, _tmp) = make_manager();
-    force_active(&arc);
+    let (mut manager, _tmp) = TestWorld::new().manager();
+    force_active(&mut manager);
+
+    let fs = manager.filesystem().clone();
+    let config = manager.config().clone();
+    let state_path = config.state_file_path.clone();
 
     fs.mock_set_mounted(PathBuf::from("/home").as_path(), true);
     fs.mock_set_mounted(PathBuf::from("/etc").as_path(), true);
@@ -339,7 +292,10 @@ fn test_status_command_flow() {
 
 #[test]
 fn test_verify_flow() {
-    let (_arc, fs, config, state_path, _tmp) = make_manager();
+    let (manager, _tmp) = TestWorld::new().manager();
+    let fs = manager.filesystem().clone();
+    let config = manager.config().clone();
+    let state_path = config.state_file_path.clone();
 
     let verifier = Verifier::with_config(
         fs,
