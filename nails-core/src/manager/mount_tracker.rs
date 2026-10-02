@@ -156,120 +156,47 @@ impl<'a, F: Filesystem> MountTracker<'a, F> {
         self.committed = true;
     }
 
-    /// Rollback all mounts in reverse order (LIFO) with graceful unmount first
+    /// Take ownership of the tracked mounts, leaving the tracker empty.
     ///
-    /// Unmounts all tracked overlays in reverse order (last mounted, first unmounted).
-    /// Uses best-effort approach: continues unmounting even if some fail.
-    /// Tries graceful unmount (force=false) first, then force unmount if that fails.
+    /// Used by the activation flow to move the mount list into an
+    /// activation-scope rollback guard once the mount phase completes. The
+    /// emptied tracker's `Drop` then becomes inert, so removing the old
+    /// `commit()` call no longer risks a spurious rollback on the success path.
+    pub fn take_mounts(&mut self) -> Vec<MountInfo> {
+        std::mem::take(&mut self.mounted)
+    }
+
+    /// Roll back all tracked mounts in reverse (LIFO) order, best-effort.
     ///
-    /// For ephemeral mounts, also unmounts associated tmpfs filesystems after
-    /// unmounting the overlay (cascade unmount).
+    /// Delegates to [`rollback_mounts`](crate::manager::activation::rollback::rollback_mounts),
+    /// the single unmount routine shared with the activation-scope guard: it
+    /// tries a graceful unmount before forcing, cascades ephemeral tmpfs
+    /// teardown, and continues past individual failures. The tracker is emptied
+    /// so a later drop is a no-op.
     ///
     /// # Returns
     ///
-    /// - `Ok(())` if all unmounts succeed
-    /// - `Err(NailsError)` with aggregate errors if any unmounts fail
-    ///
-    /// # Best-Effort Behavior
-    ///
-    /// Even if this method returns an error, it will have attempted to unmount
-    /// all tracked paths. The error contains details of all failures.
+    /// - `Ok(())` if every tracked mount came down.
+    /// - `Err(NailsError::OverlayError)` listing the targets that did not, after
+    ///   attempting all of them.
     ///
     /// (Story 4.11: Extended Overlay Strategy with tmpfs cleanup)
     pub fn rollback_all(&mut self) -> Result<()> {
-        let mut errors: Vec<String> = Vec::new();
-
-        // LIFO: unmount in reverse order
-        for mount_info in self.mounted.iter().rev() {
-            let path = &mount_info.target;
-            let mount_type_str = match mount_info.mount_type {
-                MountType::Persistent => "persistent",
-                MountType::Ephemeral => "ephemeral",
-            };
-
-            tracing::info!(
-                path = %path.display(),
-                mount_type = mount_type_str,
-                phase = "rollback",
-                "Unmounting overlay"
-            );
-
-            // Try graceful unmount first (Epic 4.2 requirement)
-            if let Err(e) = self.filesystem.unmount(path, false) {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %e,
-                    attempt = "graceful",
-                    "Unmount failed, trying force unmount"
-                );
-
-                // If graceful fails, try force unmount
-                if let Err(force_err) = self.filesystem.unmount(path, true) {
-                    let msg = format!(
-                        "Failed to unmount {} (graceful and force both failed): {}",
-                        path.display(),
-                        force_err
-                    );
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %force_err,
-                        attempts = "both",
-                        "Force unmount also failed"
-                    );
-                    errors.push(msg); // Collect error but continue (best-effort)
-                } else {
-                    tracing::info!(
-                        path = %path.display(),
-                        method = "force",
-                        "Unmount succeeded"
-                    );
-                }
-            } else {
-                tracing::info!(
-                    path = %path.display(),
-                    method = "graceful",
-                    "Unmount succeeded"
-                );
-            }
-
-            // For ephemeral mounts, also unmount tmpfs filesystems (cascade)
-            if mount_info.mount_type == MountType::Ephemeral {
-                for tmpfs_path in &mount_info.tmpfs_paths {
-                    tracing::info!(
-                        path = %tmpfs_path.display(),
-                        filesystem_type = "tmpfs",
-                        "Unmounting tmpfs"
-                    );
-
-                    if let Err(e) = self.filesystem.unmount_tmpfs(tmpfs_path) {
-                        let msg =
-                            format!("Failed to unmount tmpfs at {}: {}", tmpfs_path.display(), e);
-                        tracing::warn!(
-                            path = %tmpfs_path.display(),
-                            error = %e,
-                            filesystem_type = "tmpfs",
-                            "Tmpfs unmount failed"
-                        );
-                        errors.push(msg); // Collect error but continue (best-effort)
-                    } else {
-                        tracing::info!(
-                            path = %tmpfs_path.display(),
-                            filesystem_type = "tmpfs",
-                            "Tmpfs unmounted"
-                        );
-                    }
-                }
-            }
-        }
-
+        let remaining =
+            crate::manager::activation::rollback::rollback_mounts(self.filesystem, &self.mounted);
         self.mounted.clear();
 
-        if errors.is_empty() {
+        if remaining.is_empty() {
             Ok(())
         } else {
+            let detail = remaining
+                .iter()
+                .map(|path| format!("Failed to unmount {}", path.display()))
+                .collect::<Vec<_>>()
+                .join("; ");
             Err(NailsError::OverlayError(format!(
                 "Rollback completed with errors: {}",
-                errors.join("; ")
+                detail
             )))
         }
     }
@@ -289,5 +216,56 @@ impl<'a, F: Filesystem> Drop for MountTracker<'a, F> {
             );
             let _ = self.rollback_all();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MockFilesystem;
+    use std::path::Path;
+
+    #[test]
+    fn take_mounts_empties_tracker_so_drop_is_inert() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_mounted(Path::new("/home"), true);
+
+        let mut tracker = MountTracker::new(&fs);
+        tracker.push_mount(MountInfo::persistent(PathBuf::from("/home")));
+
+        let taken = tracker.take_mounts();
+        assert_eq!(taken.len(), 1);
+        assert!(tracker.mounted.is_empty());
+
+        // The tracker is uncommitted, but take_mounts emptied it, so its drop
+        // must not roll back the overlay the caller now owns.
+        drop(tracker);
+        assert!(
+            fs.is_mounted(Path::new("/home")).unwrap(),
+            "/home must stay mounted after an emptied tracker is dropped"
+        );
+    }
+
+    #[test]
+    fn rollback_all_reports_targets_it_could_not_unmount() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_mounted(Path::new("/home"), true);
+        fs.mock_set_mounted(Path::new("/etc"), true);
+        fs.mock_set_unmount_should_fail("/etc", true);
+
+        let mut tracker = MountTracker::new(&fs);
+        tracker.push_mount(MountInfo::persistent(PathBuf::from("/home")));
+        tracker.push_mount(MountInfo::persistent(PathBuf::from("/etc")));
+
+        let err = tracker
+            .rollback_all()
+            .expect_err("rollback should report /etc");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("/etc") && msg.contains("Failed to unmount"),
+            "got: {msg}"
+        );
+        // Best-effort: /home still came down.
+        assert!(!fs.is_mounted(Path::new("/home")).unwrap());
     }
 }

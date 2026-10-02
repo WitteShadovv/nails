@@ -33,6 +33,7 @@ mod nixos_build;
 mod nixos_switch;
 mod overlay_mount;
 mod preflight;
+pub(crate) mod rollback;
 mod session;
 
 #[cfg(test)]
@@ -151,6 +152,11 @@ fn restart_session_after_success(plan: &crate::process::SessionRestartPlan) -> R
 
 #[cfg(test)]
 fn restart_session_after_success(_plan: &crate::process::SessionRestartPlan) -> Result<()> {
+    if guards::test_hooks::should_fail_restart() {
+        return Err(NailsError::OverlayError(
+            "injected session restart failure (test seam)".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -261,6 +267,11 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
         let restart_plan = Self::handle_session_kill(verbosity, &options)?;
+        // Test seam: the session-detection stub panics, so a non-default plan
+        // cannot be produced the normal way; this lets a rollback test inject one
+        // to drive (and fail) the after-overlay restart path.
+        #[cfg(test)]
+        let restart_plan = guards::test_hooks::override_plan(restart_plan);
         let restart_phase =
             determine_session_restart_phase(&restart_plan, options.overlay_only, false);
 
@@ -269,7 +280,13 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Step 5: Take the rollback guard; every subsequent step runs through it.
         let activating_state = previous_state.begin_activation()?;
-        let mut guard = StateGuard::new(&mut *self, previous_state.clone());
+        // Shared handle for overlays the activation-scope rollback cannot unmount.
+        // The StateGuard reads it on rollback to persist Degraded (listing those
+        // mounts) rather than Inactive, so the state never claims the system is
+        // clean while NAILS overlays are still live.
+        let residue = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut guard =
+            StateGuard::new(&mut *self, previous_state.clone()).with_residue(residue.clone());
         guard.update_state(activating_state)?;
         maybe_block_after_activating_state_transition()?;
 
@@ -285,8 +302,24 @@ impl<F: Filesystem> NailsManager<F> {
         // Step 7: Mount persistent and ephemeral overlays.
         emit_progress(verbosity, "overlay_mount", 4, "[4/7] Mounting overlays...");
         let mount_timer = Stopwatch::start();
-        let (direct_mounts, pivot_mounts, leaking_targets, mounted_overlays) =
+        let (direct_mounts, pivot_mounts, leaking_targets, mounts) =
             guard.mount_overlays(&options, verbosity)?;
+
+        // Persistent overlay paths are what the Active state records.
+        let mounted_overlays: Vec<std::path::PathBuf> = mounts
+            .iter()
+            .filter(|info| info.mount_type == MountType::Persistent)
+            .map(|info| info.target.clone())
+            .collect();
+
+        // Arm the activation-scope rollback guard over the mounts. It is declared
+        // after `guard`, so on any later failure it drops first: the overlays come
+        // down, then the StateGuard writes the rolled-back state, then
+        // SessionRestartGuard restarts the session onto the decoy. It owns a clone
+        // of the filesystem, so its drop never borrows the manager that the
+        // StateGuard holds by `&mut`.
+        let mut activation_mounts =
+            rollback::ActivationMounts::arm(guard.filesystem().clone(), mounts, residue.clone());
 
         // The posture depends on surviving writers that still leak to the decoy,
         // not on whether any overlay used the pivot method.
@@ -341,8 +374,10 @@ impl<F: Filesystem> NailsManager<F> {
         let active_state = current.complete_activation(mounted_overlays)?;
         guard.update_state(active_state)?;
 
-        // Step 11: Success - commit the guard (prevents rollback) and release the
-        // manager borrow, then suppress the error-path session restart.
+        // Step 11: Success - disarm the overlay rollback so the mounts stay, commit
+        // the guard (prevents state rollback) and release the manager borrow, then
+        // suppress the error-path session restart.
+        activation_mounts.disarm();
         guard.commit();
         session_restart_guard.disarm();
 

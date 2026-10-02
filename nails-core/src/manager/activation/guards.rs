@@ -4,7 +4,9 @@
 //! if activation fails mid-process, preventing partially-activated states.
 
 use super::start_service_and_socket;
-use crate::process::{SessionRestartPlan, restart_display_manager, restart_user_manager};
+use crate::process::SessionRestartPlan;
+#[cfg(not(test))]
+use crate::process::{restart_display_manager, restart_user_manager};
 
 /// RAII guard: if we kill the session but exit early with an error,
 /// attempt to restart the user manager and display manager.
@@ -33,6 +35,15 @@ impl Drop for SessionRestartGuard {
             return;
         }
 
+        self.restart_session();
+    }
+}
+
+#[cfg(not(test))]
+impl SessionRestartGuard {
+    /// Best-effort restart of the user and display managers on the error path,
+    /// so the decoy session comes back after a failed activation.
+    fn restart_session(&mut self) {
         if let Some(uid) = self.plan.target_uid
             && let Err(e) = restart_user_manager(uid)
         {
@@ -56,6 +67,22 @@ impl Drop for SessionRestartGuard {
                     "Display manager restarted after activation error"
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+impl SessionRestartGuard {
+    /// The real restart calls `systemctl` and the test stubs panic, so under
+    /// test the guard only records that the error-path restart ran. This lets a
+    /// rollback test prove the restart happens after the overlay unmounts
+    /// without touching the host. A default (empty) plan records nothing,
+    /// matching production, where there is no session to restart.
+    fn restart_session(&mut self) {
+        if self.plan.target_uid.is_some() || self.plan.display_manager.is_some() {
+            super::rollback::test_events::record(
+                super::rollback::test_events::ActivationEvent::SessionRestart,
+            );
         }
     }
 }
@@ -86,5 +113,54 @@ impl Drop for NixDaemonGuard {
             return;
         }
         start_service_and_socket("nix-daemon");
+    }
+}
+
+/// Test seams for the activation session-restart path.
+///
+/// Production derives the restart plan from live session detection, whose test
+/// stub panics, so a non-default plan cannot be produced the normal way under
+/// test. These hooks let a rollback regression test (1) inject a non-default
+/// plan — forcing the after-overlay restart step to run — and (2) make that
+/// restart fail, which is the post-mount failure the fix must handle.
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use crate::process::SessionRestartPlan;
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        static OVERRIDE_PLAN: RefCell<Option<SessionRestartPlan>> = const { RefCell::new(None) };
+        static FAIL_RESTART: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// While held, overrides the restart plan and optionally forces the restart
+    /// to fail; clears both on drop.
+    pub(crate) struct SessionRestartTestGuard;
+
+    impl SessionRestartTestGuard {
+        pub(crate) fn arm(plan: SessionRestartPlan, fail: bool) -> Self {
+            OVERRIDE_PLAN.with(|cell| *cell.borrow_mut() = Some(plan));
+            FAIL_RESTART.with(|cell| cell.set(fail));
+            Self
+        }
+    }
+
+    impl Drop for SessionRestartTestGuard {
+        fn drop(&mut self) {
+            OVERRIDE_PLAN.with(|cell| *cell.borrow_mut() = None);
+            FAIL_RESTART.with(|cell| cell.set(false));
+        }
+    }
+
+    /// Return the injected plan if one is armed, otherwise the caller's plan.
+    pub(crate) fn override_plan(plan: SessionRestartPlan) -> SessionRestartPlan {
+        OVERRIDE_PLAN
+            .with(|cell| cell.borrow().clone())
+            .unwrap_or(plan)
+    }
+
+    /// Whether the after-overlay session restart should return an error.
+    pub(crate) fn should_fail_restart() -> bool {
+        FAIL_RESTART.with(|cell| cell.get())
     }
 }

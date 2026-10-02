@@ -246,7 +246,7 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Story 14.10, AC9: Record failed overlays in state for status reporting
         if !mount_failures.is_empty() {
-            self.record_failed_overlays(&mount_failures, verbosity)?;
+            self.record_failed_overlays(&mount_failures)?;
         }
 
         // Any failure should abort activation to avoid partially-active state.

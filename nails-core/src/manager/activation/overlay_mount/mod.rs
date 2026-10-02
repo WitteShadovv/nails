@@ -24,23 +24,32 @@ use chrono::Utc;
 use std::path::{Path, PathBuf};
 
 impl<F: Filesystem> NailsManager<F> {
-    /// Mount persistent overlays
+    /// Mount persistent and ephemeral overlays.
     ///
-    /// Returns: (direct_mounts, pivot_mounts, leaking_targets, mounted_overlays)
-    /// where `leaking_targets` are the targets still referenced by surviving
-    /// writers after Phase 2 (the basis for the security label), independent of
-    /// which mount method was used.
-    /// Note: Tracker is committed before returning, so no rollback on drop
+    /// Returns `(direct_mounts, pivot_mounts, leaking_targets, mounts)` where
+    /// `leaking_targets` are the targets still referenced by surviving writers
+    /// after Phase 2 (the basis for the security label), independent of which
+    /// mount method was used, and `mounts` is the full tracked list in mount
+    /// order.
+    ///
+    /// The in-scope [`MountTracker`] rolls back automatically if a mount fails
+    /// mid-phase. On success the mounts are *moved out* of the tracker (via
+    /// [`take_mounts`](crate::MountTracker::take_mounts)) and handed to the
+    /// caller, which arms an activation-scope guard over them: the tracker no
+    /// longer commits here, because activation can still fail after this returns
+    /// and those overlays must come down before the state is rolled back.
     pub(super) fn mount_overlays(
         &self,
         options: &crate::ActivateOptions,
         verbosity: Verbosity,
-    ) -> Result<(usize, usize, Vec<PathBuf>, Vec<PathBuf>)> {
+    ) -> Result<(usize, usize, Vec<PathBuf>, Vec<MountInfo>)> {
         if verbosity >= Verbosity::Normal {
             tracing::info!("Mounting overlays...");
         }
 
-        // Tracker will be committed only after full activation succeeds.
+        // The tracker is the mid-mount safety net: if any mount below fails it
+        // rolls back on drop. Its mounts are taken out on success instead of
+        // committed, so a later activation failure can still unmount them.
         let mut tracker = MountTracker::new(&self.filesystem);
 
         // Build OverlayStrategyOptions from ActivateOptions. The risky-service
@@ -87,14 +96,6 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
-        // Persistent overlay paths for the state file
-        let mounted_overlays: Vec<PathBuf> = tracker
-            .mounted
-            .iter()
-            .filter(|info| info.mount_type == MountType::Persistent)
-            .map(|info| info.target.clone())
-            .collect();
-
         // Story 9.3 AC#1: Log overlays mounted with structured fields
         let mounted_paths: Vec<_> = tracker
             .mounted
@@ -103,15 +104,11 @@ impl<F: Filesystem> NailsManager<F> {
             .collect();
         tracing::info!(overlays = ?mounted_paths, "Overlays mounted");
 
-        // Commit tracker before returning to prevent rollback on drop
-        tracker.commit();
+        // Move the mounts out of the tracker (emptying it, so its drop is inert)
+        // and hand them to the caller, which owns rollback from here on.
+        let mounts = tracker.take_mounts();
 
-        Ok((
-            direct_mounts,
-            pivot_mounts,
-            leaking_targets,
-            mounted_overlays,
-        ))
+        Ok((direct_mounts, pivot_mounts, leaking_targets, mounts))
     }
 
     /// Handle successful overlay mount with service restart and state tracking
@@ -238,11 +235,18 @@ impl<F: Filesystem> NailsManager<F> {
                 .insert(overlay.target.clone(), overlay_info);
 
             drop(cached); // Release lock before saving
-            if let Err(e) = self.save_cached_state()
-                && verbosity >= Verbosity::Debug
-            {
-                tracing::warn!("Failed to save state after mount: {}", e);
-            }
+            // A per-mount state save that fails is a hard error: continuing would
+            // leave an overlay mounted but unrecorded on disk, so the tracker
+            // could not roll it back and status would under-report the hidden
+            // mounts. Aborting here lets the in-scope tracker unmount what is
+            // already mounted before activation proceeds.
+            self.save_cached_state().inspect_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    target = %overlay.target.display(),
+                    "Failed to persist overlay state after mount; aborting activation"
+                );
+            })?;
         }
 
         Ok(())
@@ -252,7 +256,6 @@ impl<F: Filesystem> NailsManager<F> {
     pub(super) fn record_failed_overlays(
         &self,
         mount_failures: &[(PathBuf, NailsError)],
-        verbosity: Verbosity,
     ) -> Result<()> {
         let failed_infos: Vec<FailedOverlayInfo> = mount_failures
             .iter()
@@ -273,11 +276,12 @@ impl<F: Filesystem> NailsManager<F> {
         if let Some(ref mut state_file) = *cached {
             state_file.failed_overlays = failed_infos;
             drop(cached);
-            if let Err(e) = self.save_cached_state()
-                && verbosity >= Verbosity::Debug
-            {
-                tracing::warn!("Failed to save failed_overlays to state: {}", e);
-            }
+            // Persisting the failure record is a hard error for the same reason
+            // as a per-mount save: if it cannot be written the on-disk state no
+            // longer matches reality.
+            self.save_cached_state().inspect_err(|e| {
+                tracing::error!(error = %e, "Failed to persist failed overlays to state");
+            })?;
         }
 
         Ok(())

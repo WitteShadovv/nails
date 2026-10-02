@@ -319,3 +319,203 @@ fn security_label_degraded_when_unverified_target_leaks_alongside_verified() {
         "DEGRADED"
     );
 }
+
+// ===========================================================================
+// Activation mount rollback (T-063)
+//
+// When activation fails *after* overlays are mounted, the overlays must be
+// unmounted before the state is rolled back, so the system never records a
+// clean state while NAILS mounts are still live, and the session is restarted
+// onto the decoy only after the unmounts.
+// ===========================================================================
+
+/// Build a manager with two explicit overlays (`/home`, `/etc`) wired to mount
+/// successfully on the mock, with state on a temporary hidden volume. Returns
+/// the manager, a filesystem handle sharing its state, and the temp dir guard.
+fn rollback_test_manager() -> (
+    NailsManager<MockFilesystem>,
+    MockFilesystem,
+    tempfile::TempDir,
+) {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let hv = temp_dir.path().to_path_buf();
+    std::fs::create_dir_all(&hv).expect("hidden volume dir");
+    let state_path = hv.join("state.json");
+    let hv_str = hv.to_string_lossy().to_string();
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_path_exists("/etc", true);
+    fs.mock_set_path_exists(&hv_str, true);
+    for sub in ["home-upper", "home-work", "etc-upper", "etc-work"] {
+        fs.mock_set_path_exists(&format!("{hv_str}/{sub}"), true);
+    }
+    fs.mock_set_writable(&hv_str, true);
+    fs.mock_set_writable("/", true);
+    fs.mock_set_readable("/", true);
+    fs.mock_set_readable("/home", true);
+    fs.mock_set_readable("/etc", true);
+    fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+    fs.mock_set_path_exists(
+        "/nix/var/nix/profiles/system/bin/switch-to-configuration",
+        true,
+    );
+
+    let config = Config {
+        hidden_volume_root: hv.clone(),
+        state_file_path: state_path.clone(),
+        overlays: vec![
+            OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: hv.join("home-upper"),
+                work: hv.join("home-work"),
+                target: PathBuf::from("/home"),
+            },
+            OverlayConfig {
+                name: "etc".to_string(),
+                lower: PathBuf::from("/"),
+                upper: hv.join("etc-upper"),
+                work: hv.join("etc-work"),
+                target: PathBuf::from("/etc"),
+            },
+        ],
+        overlay_mode: crate::OverlayMode::Explicit,
+        ..Config::test_default()
+    };
+
+    let manager = NailsManager::new(fs.clone(), config, state_path);
+    (manager, fs, temp_dir)
+}
+
+#[test]
+fn successful_activation_keeps_overlays_and_does_not_roll_back() {
+    let (mut manager, fs, _tmp) = rollback_test_manager();
+
+    manager.activate(true).expect("activation should succeed");
+
+    assert!(matches!(
+        manager.current_state().expect("state"),
+        SystemState::Active { .. }
+    ));
+    // The activation-scope guard was disarmed, so the overlays are still mounted.
+    assert!(fs.is_mounted(Path::new("/home")).expect("/home mounted"));
+    assert!(fs.is_mounted(Path::new("/etc")).expect("/etc mounted"));
+}
+
+#[test]
+#[serial]
+fn failure_at_active_state_write_unmounts_overlays_and_restores_inactive() {
+    use crate::state::save_probe::{self, FailOn};
+
+    let (mut manager, fs, _tmp) = rollback_test_manager();
+
+    // Fail only the Activating -> Active write; the overlays mount first.
+    save_probe::arm(&[FailOn::Active]);
+    let result = manager.activate(true);
+    save_probe::disarm();
+
+    assert!(
+        result.is_err(),
+        "activation must fail when the Active state write fails"
+    );
+    assert!(
+        fs.get_mounted_paths().is_empty(),
+        "overlays must be unmounted on rollback, still mounted: {:?}",
+        fs.get_mounted_paths()
+    );
+    assert!(
+        matches!(
+            manager.current_state().expect("state"),
+            SystemState::Inactive
+        ),
+        "state must roll back to Inactive when every overlay came down"
+    );
+}
+
+#[test]
+#[serial]
+fn failure_during_rollback_unmount_marks_state_degraded() {
+    use crate::state::save_probe::{self, FailOn};
+
+    let (mut manager, fs, _tmp) = rollback_test_manager();
+    // /etc cannot be unmounted, so rollback leaves it live.
+    fs.mock_set_unmount_should_fail("/etc", true);
+
+    save_probe::arm(&[FailOn::Active]);
+    let result = manager.activate(true);
+    save_probe::disarm();
+
+    assert!(result.is_err(), "activation must fail");
+    // /home comes down (best-effort), /etc stays live.
+    assert!(!fs.is_mounted(Path::new("/home")).expect("/home status"));
+    assert!(fs.is_mounted(Path::new("/etc")).expect("/etc status"));
+
+    match manager.current_state().expect("state") {
+        SystemState::Degraded {
+            remaining_mounts, ..
+        } => assert!(
+            remaining_mounts.contains(&PathBuf::from("/etc")),
+            "degraded state must list the still-live mount, got {remaining_mounts:?}"
+        ),
+        other => panic!("expected Degraded with remaining mounts, got {other:?}"),
+    }
+}
+
+#[test]
+#[serial]
+fn failed_session_restart_unmounts_before_restart_and_restores_inactive() {
+    use super::guards::test_hooks::SessionRestartTestGuard;
+    use super::rollback::test_events::{ActivationEvent, EventRecorder};
+    use crate::process::SessionRestartPlan;
+
+    let (mut manager, fs, _tmp) = rollback_test_manager();
+
+    // Inject a non-default restart plan (so the after-overlay restart step runs)
+    // and force that restart to fail — the post-mount failure under test.
+    let _restart = SessionRestartTestGuard::arm(
+        SessionRestartPlan {
+            display_manager: Some("display-manager.service".to_string()),
+            target_uid: Some(1000),
+        },
+        true,
+    );
+    let _recorder = EventRecorder::arm();
+
+    let result = manager.activate(true);
+
+    assert!(
+        result.is_err(),
+        "activation must fail when the session restart fails"
+    );
+    assert!(
+        fs.get_mounted_paths().is_empty(),
+        "overlays must be unmounted, still mounted: {:?}",
+        fs.get_mounted_paths()
+    );
+    assert!(matches!(
+        manager.current_state().expect("state"),
+        SystemState::Inactive
+    ));
+
+    // Ordering: every overlay unmount is recorded before the error-path session
+    // restart, so the display manager comes back onto the decoy.
+    let events = EventRecorder::events();
+    assert_eq!(
+        events.last(),
+        Some(&ActivationEvent::SessionRestart),
+        "session restart must be the last recorded step, got {events:?}"
+    );
+    let restart_idx = events
+        .iter()
+        .position(|e| *e == ActivationEvent::SessionRestart)
+        .expect("session restart recorded");
+    assert!(restart_idx > 0, "at least one unmount before the restart");
+    assert!(
+        events[..restart_idx]
+            .iter()
+            .all(|e| matches!(e, ActivationEvent::Unmounted(_))),
+        "all steps before the restart must be unmounts, got {events:?}"
+    );
+}

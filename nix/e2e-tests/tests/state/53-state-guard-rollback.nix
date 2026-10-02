@@ -26,6 +26,17 @@ in
       environment.systemPackages = [ self.packages.x86_64-linux.nails ];
     };
 
+  # A graphical node is needed for the post-mount failure case: the overlays
+  # mount, then the after-overlay session restart fails because the display
+  # manager has been masked. That is the failure the rollback must handle, and
+  # it only exists where there is a graphical session to restart.
+  nodes.graphical =
+    { ... }:
+    {
+      imports = [ ./../../lib/graphical-vm-config.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+    };
+
   testScript = _: ''
     import json
 
@@ -91,5 +102,78 @@ in
         state_doc = json.loads(machine.succeed(f"cat {state_path}"))
         assert state_doc["state"] == "Inactive", f"Expected persisted rollback state, got: {state_doc}"
         assert state_doc["overlay_status"] == {}, f"Expected empty overlay tracking after rollback, got: {state_doc}"
+
+    # Post-mount failure: the overlays mount, then the after-overlay session
+    # restart fails because the display manager is masked. The rollback must
+    # unmount every overlay and persist the decoy (Inactive) state, and must do
+    # so before the session is restarted onto the decoy.
+    graphical_config = "/tmp/state-guard-rollback-graphical.toml"
+
+    def write_post_mount_config(path):
+        graphical.succeed(
+            """cat > %s <<'EOF'
+    hidden_volume_root = "/mnt/hidden-volume"
+    overlay_mode = "explicit"
+    risky_services = "skip"
+
+    [[overlays]]
+    name = "home"
+    lower = "/home"
+    upper = "/mnt/hidden-volume/home"
+    work = "/mnt/hidden-volume/.work/home"
+    target = "/home"
+
+    [[overlays]]
+    name = "etc"
+    lower = "/etc"
+    upper = "/mnt/hidden-volume/etc"
+    work = "/mnt/hidden-volume/.work/etc"
+    target = "/etc"
+    EOF"""
+            % path
+        )
+
+    graphical.start()
+    graphical.wait_for_unit("display-manager.service")
+    graphical.wait_until_succeeds("systemctl is-active user@1000.service")
+
+    with subtest("prepare hidden volume and a masked display manager"):
+        graphical.succeed("""${hiddenVolume.setupHiddenVolume}""")
+        write_post_mount_config(graphical_config)
+        graphical.fail("mountpoint -q /home")
+        # Mask the display manager so the after-overlay restart cannot succeed.
+        graphical.succeed("systemctl mask display-manager.service")
+
+    with subtest("post-mount failure unmounts overlays and restores the decoy"):
+        # Killing the graphical session makes the CLI detach into a transient
+        # system-slice unit, so this returns immediately; the activation then
+        # fails at the session restart and rolls back on its own.
+        graphical.succeed(
+            "env DISPLAY=:0 XDG_SESSION_TYPE=x11 SUDO_UID=1000 SUDO_USER=testuser "
+            + f"nails --config {graphical_config} activate --session kill -y"
+        )
+
+        # The rollback persists Inactive once every overlay is unmounted.
+        graphical.wait_until_succeeds(
+            "grep -q '\"state\": \"Inactive\"' /mnt/hidden-volume/state.json"
+        )
+
+        for path in ["/home", "/etc"]:
+            graphical.fail(
+                "/bin/sh -lc "
+                + __import__("shlex").quote(
+                    f"mountpoint -q {path} && [ \"$(findmnt -n -o FSTYPE {path})\" = overlay ]"
+                )
+            )
+
+        graphical_state = json.loads(
+            graphical.succeed("cat /mnt/hidden-volume/state.json")
+        )
+        assert graphical_state["state"] == "Inactive", (
+            f"Expected decoy state after post-mount rollback, got: {graphical_state}"
+        )
+        assert graphical_state["overlay_status"] == {}, (
+            f"Expected empty overlay tracking after rollback, got: {graphical_state}"
+        )
   '';
 }

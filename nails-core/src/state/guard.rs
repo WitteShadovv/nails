@@ -4,7 +4,11 @@
 
 use super::SystemState;
 use crate::{Filesystem, NailsManager};
+use chrono::Utc;
+use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
+use std::path::PathBuf;
+use std::rc::Rc;
 
 /// RAII guard for automatic state rollback on error or panic
 ///
@@ -76,6 +80,13 @@ pub struct StateGuard<'a, F: Filesystem> {
 
     /// Whether transaction was explicitly committed
     committed: bool,
+
+    /// Shared handle, set only by activation, into which the activation-scope
+    /// overlay rollback writes any mounts it could not unmount. When it is
+    /// non-empty on rollback the guard persists `Degraded` (listing those
+    /// mounts) instead of the previous state, so `Inactive` is never written
+    /// while NAILS overlays are still live. Deactivation leaves this `None`.
+    residue: Option<Rc<RefCell<Vec<PathBuf>>>>,
 }
 
 impl<'a, F: Filesystem> StateGuard<'a, F> {
@@ -115,7 +126,20 @@ impl<'a, F: Filesystem> StateGuard<'a, F> {
             manager,
             previous_state,
             committed: false,
+            residue: None,
         }
+    }
+
+    /// Attach a shared residue handle (activation only).
+    ///
+    /// The activation-scope overlay rollback writes the mounts it could not
+    /// unmount into this handle; if it is non-empty when the guard rolls back,
+    /// the guard persists `Degraded` with those mounts listed instead of the
+    /// previous state. Deactivation does not call this, so its rollback keeps
+    /// restoring the previous state unchanged.
+    pub fn with_residue(mut self, residue: Rc<RefCell<Vec<PathBuf>>>) -> Self {
+        self.residue = Some(residue);
+        self
     }
 
     /// Commit the transaction to prevent rollback
@@ -256,12 +280,36 @@ impl<F: Filesystem> Drop for StateGuard<'_, F> {
     /// `force_state` must also keep any interior borrow (the cached-state
     /// `RefCell`) scoped so it is released before this returns.
     fn drop(&mut self) {
-        if !self.committed {
-            tracing::warn!("Rolling back to previous state: {:?}", self.previous_state);
+        if self.committed {
+            return;
+        }
 
-            if let Err(e) = self.manager.force_state(self.previous_state.clone()) {
-                tracing::error!("Failed to rollback state: {}", e);
+        // The activation-scope overlay rollback runs first (it is declared after
+        // this guard, so it drops before it) and records any mount it could not
+        // remove. If mounts remain, the system is not cleanly inactive, so
+        // persist `Degraded` with those mounts rather than `Inactive` — which
+        // `force_state` would write with `overlay_status` cleared, hiding live
+        // NAILS mounts from status and recovery.
+        let remaining = self
+            .residue
+            .as_ref()
+            .map(|handle| handle.borrow().clone())
+            .unwrap_or_default();
+
+        let rollback_state = if remaining.is_empty() {
+            self.previous_state.clone()
+        } else {
+            SystemState::Degraded {
+                since: Utc::now(),
+                reason: "activation rollback could not unmount all overlays".to_string(),
+                remaining_mounts: remaining,
             }
+        };
+
+        tracing::warn!("Rolling back to state: {:?}", rollback_state);
+
+        if let Err(e) = self.manager.force_state(rollback_state) {
+            tracing::error!("Failed to rollback state: {}", e);
         }
     }
 }
