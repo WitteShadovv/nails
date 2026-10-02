@@ -17,7 +17,7 @@ use std::path::PathBuf;
 ///
 /// Each failure mode provides actionable guidance following UXR19 requirements:
 /// - **Path not found**: Suggests mounting the hidden volume
-/// - **Not mounted**: Provides cryptsetup command example
+/// - **Not mounted**: Suggests unlocking the backend and mounting it there
 /// - **Not writable**: Suggests checking permissions
 ///
 /// # Example
@@ -84,7 +84,7 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
         // Step 2: Check path is mounted
         if !fs.is_mounted(&self.hidden_volume_root)? {
             return Ok(CheckResult::Fail(format!(
-                "Hidden volume at {} is not mounted. Mount the hidden LUKS volume to this path before activation.",
+                "Hidden volume at {} is not mounted. Unlock the hidden storage backend and mount its filesystem at this path before activation (see docs/backends.md).",
                 self.hidden_volume_root.display()
             )));
         }
@@ -189,7 +189,15 @@ mod tests {
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
         assert!(result.message().contains("is not mounted"));
-        assert!(result.message().contains("Mount the hidden LUKS volume"));
+        assert!(
+            result
+                .message()
+                .contains("Unlock the hidden storage backend and mount its filesystem")
+        );
+        // The guidance applies to every backend, so it names none of them.
+        for backend in ["LUKS", "VeraCrypt", "tcrypt", "cryptsetup"] {
+            assert!(!result.message().contains(backend), "names {backend}");
+        }
     }
 
     #[test]

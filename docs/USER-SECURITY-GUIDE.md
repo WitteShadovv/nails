@@ -31,6 +31,7 @@ This guide provides essential security information for NAILS users. Read this do
 - [Threat Model Limitations](#threat-model-limitations)
   - [What NAILS Does NOT Protect Against](#what-nails-does-not-protect-against)
   - [SSD Wear-Leveling Limitations](#ssd-wear-leveling-limitations)
+  - [Storage Backend Hazards](#storage-backend-hazards)
   - [Cold Boot Attacks](#cold-boot-attacks)
   - [Memory Forensics While Running](#memory-forensics-while-running)
 - [Best Practices](#best-practices)
@@ -80,7 +81,7 @@ NAILS assumes the following adversary model:
 
 ### Binary Location Requirements
 
-> **CRITICAL:** The NAILS binary must **NEVER** exist on the decoy disk. It must only reside inside the hidden VeraCrypt volume.
+> **CRITICAL:** The NAILS binary must **NEVER** exist on the decoy disk. It must only reside inside the hidden volume.
 
 Correct setup:
 ```
@@ -112,7 +113,7 @@ The NAILS binary contains identifiable strings that reveal its purpose:
 - Backup or snapshot systems
 
 **Correct workflow:**
-1. Open and mount the hidden VeraCrypt volume with `cryptsetup` first
+1. Open and mount the hidden volume first ([backends.md](./backends.md) lists the commands for each backend)
 2. Run the binary directly from the hidden volume: `sudo /mnt/hidden/nails activate`
 3. Never copy the binary to the decoy filesystem
 
@@ -366,13 +367,32 @@ Modern SSDs use wear-leveling algorithms that:
 | `shred` file | Effective | Mostly ineffective |
 | `truncate` file | Data recoverable | Data likely recoverable |
 | `wipe` file | Effective | Mostly ineffective |
-| TRIM/discard | N/A | Hints SSD to erase (not guaranteed) |
+| TRIM/discard | N/A | Hints SSD to erase (not guaranteed); destroys or exposes a hidden volume |
 
 **Mitigations:**
 - Use full-disk encryption (LUKS) so wear-leveled blocks are encrypted
-- Enable TRIM support for encrypted volumes
-- Consider periodic `fstrim` to encourage block erasure
+- Never enable TRIM/discard on, or run `fstrim` through, a volume that contains a hidden volume (see [Storage Backend Hazards](#storage-backend-hazards))
+- On an SSD, prefer a hidden volume on a whole device or partition over a file container
 - For highest security, use HDDs or encrypted RAM disks
+
+TRIM on the decoy's own encrypted root, which holds no hidden volume, is a separate trade-off: cryptsetup-open(8) warns that it reveals that filesystem's type and used space.
+
+### Storage Backend Hazards
+
+The storage backend decides what a disk image reveals about the hidden volume. [backends.md](./backends.md) has the support matrix and the unlock, discard, timestamp and lock guidance for each backend. The hazards below apply to every hidden-volume setup; the `backend-detect` preflight check warns about each one it can see, without blocking activation.
+
+**Discards destroy or expose hidden volumes.** cryptsetup-open(8) warns that `--allow-discards` makes filesystem-level operations visible on the physical device. For a VeraCrypt hidden volume, opened with `--tcrypt-hidden`, it is worse than a leak:
+
+- Discards from the hidden volume zero or unmap its free blocks inside the outer volume's random-looking free space, which leaves a readable used/free map. In a loop-backed file container they punch holes in the file that record the same map.
+- Discards from the outer volume trim its free space, which is where the hidden volume lives, and can destroy the hidden volume.
+
+Never pass `--allow-discards` when opening the outer or the hidden volume, never mount either with `-o discard`, and never run `fstrim` on them. Without the flag dm-crypt drops discards, so a periodic fstrim timer cannot reach the device.
+
+**File containers expose their timestamps.** Using a container read-write, through a cryptsetup loop device or the VeraCrypt application, updates its mtime and ctime in every session. `touch` can restore mtime but sets ctime to the current time, and ctime cannot be restored at all, so the container shows when it was last used.
+
+**Copy-on-write filesystems and SSDs keep old blocks.** A container on btrfs, zfs or bcachefs is not rewritten in place: old versions of changed blocks stay in free space or in snapshots, and an SSD keeps old copies of remapped blocks. An adversary with one or several disk images can compare the versions and see which parts of the outer volume's "unused" space changed.
+
+**Recommendation:** on a copy-on-write or SSD decoy, put the hidden volume on a whole device or partition instead of in a file container, and disable automatic snapshots (snapper, timeshift, btrbk, zfs auto-snapshot) of every filesystem that holds a container.
 
 ### Cold Boot Attacks
 
@@ -419,11 +439,15 @@ If an adversary can dump memory while the hidden environment is active:
 Before activating the hidden environment:
 
 ```
-[ ] Hidden VeraCrypt volume is mounted and writable
+[ ] Hidden volume is mounted and writable
+[ ] Neither the outer nor the hidden volume was opened with
+    --allow-discards
 [ ] Hidden backend is a local Linux filesystem that can host an overlayfs
     upper (ext4/xfs/btrfs/f2fs; NOT NFS/SMB/9p/FUSE or FAT/exFAT/NTFS)
 [ ] Hidden volume mount survives session termination
     (kernel-managed mount, NOT session-scoped FUSE)
+[ ] backend-detect preflight warnings are resolved or accepted
+    (see backends.md)
 [ ] NAILS binary exists ONLY on hidden volume
 [ ] No copies of NAILS binary on decoy filesystem
 [ ] Decoy system has plausible recent activity
@@ -614,6 +638,7 @@ After recovering:
 ## Additional Resources
 
 - [NAILS README](../README.md) - Full project documentation
+- [backends.md](./backends.md) - Storage backend matrix and per-backend deniability notes
 - [SECURITY.md](../SECURITY.md) - Vulnerability reporting policy
 - [bash-history-forensics.md](./bash-history-forensics.md) - Technical details on history protection
 - [CHANGELOG.md](../CHANGELOG.md) - Release notes and published fixes

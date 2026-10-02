@@ -59,7 +59,7 @@ NAILS is designed for a narrow threat model and operational style.
 | Requirement | Notes |
 |---|---|
 | NixOS | Required |
-| Hidden storage backend | Any mounted, writable Linux filesystem that can host an overlayfs upper (symlinks, trusted xattrs, `d_type`, whiteouts) — e.g. ext4, xfs, btrfs, f2fs. NFS, CIFS/SMB, 9p, most FUSE mounts, and FAT/exFAT/NTFS cannot. |
+| Hidden storage backend | Any mounted, writable Linux filesystem that can host an overlayfs upper (symlinks, trusted xattrs, `d_type`, whiteouts) — e.g. ext4, xfs, btrfs, f2fs. NFS, CIFS/SMB, 9p, most FUSE mounts, and FAT/exFAT/NTFS cannot. See [docs/backends.md](docs/backends.md) for what is tested and the hazards of each backend. |
 | Root access | Required for `activate`, `deactivate`, and `emergency` |
 | Rust 1.93+ | Only needed to build from source |
 | Impermanence-style setup | Strongly recommended for the strongest documented posture |
@@ -120,6 +120,10 @@ install -m0755 ./result/bin/nails /mnt/hidden/nails
      "$HOME/Downloads/family_photos" veracrypt-hidden
    sudo mount /dev/mapper/veracrypt-hidden /mnt/hidden-volume
    ```
+
+   This opens a VeraCrypt hidden volume stored in a file container. [docs/backends.md](docs/backends.md)
+   has the commands for a whole-device VeraCrypt volume and for LUKS2, and the discard and
+   timestamp hazards of each; never add `--allow-discards`.
 
 2. **Bootstrap the hidden layout** on the mounted backend.
 
@@ -240,6 +244,7 @@ They are related projects, but they are not interchangeable products and do not 
 - [GitHub Releases](https://github.com/WitteShadovv/nails/releases) *(published stable releases and prereleases)*
 - [Change history](CHANGELOG.md)
 - [Roadmap](ROADMAP.md)
+- [Storage backends](docs/backends.md)
 - [Release artifact reproducibility](docs/release-artifact-reproducibility.md)
 
 ### Contributing and governance

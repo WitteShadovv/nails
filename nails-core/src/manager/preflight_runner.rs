@@ -76,8 +76,8 @@ impl<F: Filesystem> NailsManager<F> {
     /// ```
     pub fn run_preflight_checks(&self, overlay_only: bool) -> Result<()> {
         use crate::preflight::{
-            HiddenVolumeCheck, MountNamespaceCheck, NixOSBuildTargetCheck, NixOSConfigCheck,
-            OverlayCompatibilityCheck, PreFlightRegistry, SpaceCheck, StateCheck,
+            BackendDetectCheck, HiddenVolumeCheck, MountNamespaceCheck, NixOSBuildTargetCheck,
+            NixOSConfigCheck, OverlayCompatibilityCheck, PreFlightRegistry, SpaceCheck, StateCheck,
             StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
         };
 
@@ -100,6 +100,13 @@ impl<F: Filesystem> NailsManager<F> {
         // overlay (NFS/FUSE/FAT, missing xattrs/d_type/whiteouts) is refused
         // while the decoy session is still intact, not after staging has begun.
         registry.add_check(Box::new(UpperFsCapabilityCheck::new(
+            self.config.hidden_volume_root.clone(),
+        )));
+
+        // Warns, never fails: names deniability hazards of the detected backend
+        // (discard-enabled tcrypt/plain mappings, file-container timestamps,
+        // containers on a copy-on-write decoy) while they can still be fixed.
+        registry.add_check(Box::new(BackendDetectCheck::new(
             self.config.hidden_volume_root.clone(),
         )));
 
