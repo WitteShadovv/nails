@@ -5063,6 +5063,66 @@ fn test_activate_auto_mode_overlays_all_non_excluded_dirs() {
 }
 
 #[test]
+#[serial]
+fn test_activate_auto_mode_rollback_restarts_journald_and_nix_daemon_after_unmounts() {
+    // When a later overlay fails after /nix and /var were mounted, activation
+    // rolls everything back and only then restarts the services that were moved
+    // onto overlays: journald (off the /var overlay) and nix-daemon.
+    let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/nix", "/srv", "/var"]);
+    let mock_hidden_vol = temp_dir.path();
+
+    // /srv fails to mount after /nix and /var have succeeded (alphabetical order).
+    fs.mock_set_mount_should_fail("/srv", true);
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlay_mode: OverlayMode::Auto,
+        overlay_exclusions: vec![],
+        overlay_exclusions_remove: vec![],
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path.clone(),
+    )));
+
+    // Clear any recorder residue left on this thread by earlier work.
+    let _ = crate::manager::helpers::drain_recorded_service_actions();
+
+    let result = manager.lock().unwrap().activate(true);
+    assert!(
+        result.is_err(),
+        "activation should fail when an overlay cannot be mounted"
+    );
+
+    // Everything that mounted was rolled back.
+    assert!(
+        !fs.is_mounted(Path::new("/nix")).unwrap(),
+        "/nix overlay should be unmounted after rollback"
+    );
+    assert!(
+        !fs.is_mounted(Path::new("/var")).unwrap(),
+        "/var overlay should be unmounted after rollback"
+    );
+
+    let actions = crate::manager::helpers::drain_recorded_service_actions();
+    assert!(
+        actions.iter().any(|action| action == "start:nix-daemon"),
+        "nix-daemon must be restarted on activation rollback: {actions:?}"
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|action| action == "start:systemd-journald"),
+        "journald must be restarted on activation rollback: {actions:?}"
+    );
+}
+
+#[test]
 fn test_activate_auto_mode_mount_order_is_alphabetical() {
     // Task 12.2: Test mount order is alphabetical
     let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/var", "/etc", "/home"]);

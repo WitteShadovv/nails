@@ -21,6 +21,9 @@ static CURRENT_SYSTEM_PROFILE: OnceLock<PathBuf> = OnceLock::new();
 pub(crate) use runtime_cache::{cache_nix_overlay_runtime_commands, cached_current_system_profile};
 pub(crate) use service_controller::{ServiceController, start_service_and_socket};
 
+#[cfg(test)]
+pub(crate) use service_controller::recorder::drain as drain_recorded_service_actions;
+
 /// Return the system profile path, honoring NAILS_SYSTEM_PROFILE_PATH if set.
 pub(crate) fn system_profile_path() -> PathBuf {
     std::env::var_os(ENV_SYSTEM_PROFILE_PATH)

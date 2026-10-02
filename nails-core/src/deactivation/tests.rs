@@ -1644,7 +1644,7 @@ fn test_deactivate_uses_overlay_metadata_when_active_overlay_list_is_incomplete(
 
 #[test]
 #[serial]
-fn test_emergency_deactivate_fails_when_nix_store_unmount_fails() {
+fn test_emergency_deactivate_restarts_nix_daemon_when_nix_store_unmount_fails() {
     clear_system_profile_env();
 
     let fs = MockFilesystem::new();
@@ -1677,18 +1677,33 @@ fn test_emergency_deactivate_fails_when_nix_store_unmount_fails() {
         let fs = manager_guard.filesystem();
         fs.mock_set_mounted(Path::new("/nix"), true);
         fs.mock_set_mounted(Path::new("/nix/store"), true);
+        // The read-only /nix/store bind refuses to unmount; teardown must treat
+        // that as best-effort and still restart nix-daemon, rather than leaving
+        // the decoy without a daemon.
         fs.mock_set_unmount_should_fail("/nix/store", true);
         fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
         fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
     }
 
-    let err = manager
+    // Clear any recorder residue left on this thread by earlier work.
+    let _ = crate::manager::helpers::drain_recorded_service_actions();
+
+    manager
         .lock()
         .unwrap()
         .emergency_deactivate()
-        .expect_err("deactivation should fail when /nix/store cannot be unmounted");
-    assert!(err.to_string().contains("/nix/store"));
-    assert!(manager.lock().unwrap().current_state().unwrap().is_active());
+        .expect("a best-effort /nix/store unmount failure must not abort deactivation");
+
+    let actions = crate::manager::helpers::drain_recorded_service_actions();
+    assert!(
+        actions.iter().any(|action| action == "start:nix-daemon"),
+        "nix-daemon must be restarted even when the /nix/store bind unmount fails: {actions:?}"
+    );
+    assert_eq!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive,
+        "deactivation should complete to Inactive once the /nix overlay is unmounted"
+    );
 
     clear_system_profile_env();
 }

@@ -263,6 +263,7 @@ impl ManagerDeactivationKind {
 #[derive(Debug, Default)]
 struct OverlayContext {
     nix_was_overlaid: bool,
+    var_was_overlaid: bool,
 }
 
 fn requires_decoy_restore<F: Filesystem>(manager: &NailsManager<F>) -> Result<bool> {
@@ -314,6 +315,7 @@ fn inspect_overlay_context<F: Filesystem>(manager: &NailsManager<F>) -> Result<O
 
     Ok(OverlayContext {
         nix_was_overlaid: overlay_paths.iter().any(|p| p == Path::new("/nix")),
+        var_was_overlaid: overlay_paths.iter().any(|p| p == Path::new("/var")),
     })
 }
 
@@ -379,15 +381,22 @@ impl<F: Filesystem> NailsManager<F> {
             let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();
 
             tracing::info!("Unmounting /nix/store bind mount...");
-            self.filesystem
-                .unmount(Path::new("/nix/store"), false)
-                .or_else(|graceful_error| {
+            // Best-effort: a failure here must not short-circuit the teardown
+            // before the service restart below, which would otherwise leave the
+            // decoy without a nix-daemon. The /nix overlay unmount in the
+            // orchestrator surfaces any remaining problem.
+            if let Err(graceful_error) = self.filesystem.unmount(Path::new("/nix/store"), false) {
+                tracing::warn!(
+                    error = %graceful_error,
+                    "Graceful /nix/store unmount failed, trying force unmount"
+                );
+                if let Err(force_error) = self.filesystem.unmount(Path::new("/nix/store"), true) {
                     tracing::warn!(
-                        error = %graceful_error,
-                        "Graceful /nix/store unmount failed, trying force unmount"
+                        error = %force_error,
+                        "Force /nix/store unmount failed; continuing to overlay teardown and service restart"
                     );
-                    self.filesystem.unmount(Path::new("/nix/store"), true)
-                })?;
+                }
+            }
         }
 
         let cleanup_config = build_cleanup_config(self, kind);
@@ -417,9 +426,16 @@ impl<F: Filesystem> NailsManager<F> {
 
         let result = orchestrator.run(self);
 
+        // Restart services on every exit path, after /nix and /var have been
+        // unmounted (the orchestrator ran above), never before — so a failed
+        // teardown never leaves the decoy without nix-daemon or journald.
         if overlay_context.nix_was_overlaid {
             tracing::info!("Restarting nix-daemon...");
             start_service_and_socket("nix-daemon");
+        }
+        if overlay_context.var_was_overlaid {
+            tracing::info!("Restarting systemd-journald...");
+            start_service_and_socket("systemd-journald");
         }
 
         let _report = result?;

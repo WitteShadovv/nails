@@ -39,11 +39,66 @@ impl<F: Filesystem> NailsManager<F> {
             let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();
         }
 
+        let mut var_was_overlaid = false;
+        let outcome = self.mount_auto_overlays_body(
+            tracker,
+            &overlay_targets,
+            strategy_options,
+            verbosity,
+            direct_mounts,
+            pivot_mounts,
+            leaking_targets,
+            &mut nix_guard,
+            &mut var_was_overlaid,
+        );
+
+        if let Err(error) = outcome {
+            // Roll back every overlay that was mounted BEFORE restarting any
+            // service, so nix-daemon and journald never come back up writing to
+            // an overlay that is about to be torn down. nix-daemon is restarted
+            // by `nix_guard` on drop, which happens after this rollback returns.
+            if let Err(rollback_err) = tracker.rollback_all() {
+                tracing::error!(
+                    error = %rollback_err,
+                    context = "activation_abort",
+                    rollback = true,
+                    "Rollback failed during activation abort"
+                );
+            }
+            if var_was_overlaid {
+                crate::manager::helpers::start_service_and_socket("systemd-journald");
+                tracing::info!(
+                    "Restarted systemd-journald after activation rollback (now writing to base /var)"
+                );
+            }
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
+    /// Body of auto-mode mounting: enumerate, mount, and restore the NixOS
+    /// security model. Any error is propagated to [`mount_auto_overlays`], which
+    /// performs the rollback and service restarts in the correct order.
+    #[allow(clippy::too_many_arguments)]
+    fn mount_auto_overlays_body(
+        &self,
+        tracker: &mut MountTracker<F>,
+        overlay_targets: &[PathBuf],
+        strategy_options: &crate::overlay::OverlayStrategyOptions,
+        verbosity: Verbosity,
+        direct_mounts: &mut usize,
+        pivot_mounts: &mut usize,
+        leaking_targets: &mut Vec<PathBuf>,
+        nix_guard: &mut NixDaemonGuard,
+        var_was_overlaid: &mut bool,
+    ) -> Result<()> {
         // Track mount failures for best-effort mounting (Story 14.10, Task 8)
         let mut mount_failures: Vec<(PathBuf, NailsError)> = Vec::new();
         let mut nix_overlay_succeeded = false;
 
         for target in overlay_targets {
+            let target = target.clone();
             // Create overlay config on-the-fly (Story 14.10, Task 6)
             let overlay = match create_overlay_config(
                 &self.filesystem,
@@ -150,6 +205,11 @@ impl<F: Filesystem> NailsManager<F> {
                         leaking_targets,
                         &mut nix_overlay_succeeded,
                     )?;
+                    if target == Path::new("/var") {
+                        // journald was moved onto the /var overlay; remember so a
+                        // later abort can restart it against the base /var.
+                        *var_was_overlaid = true;
+                    }
                 }
                 Err(e) => {
                     // Story 14.10, Task 8: Best-effort mounting
@@ -166,21 +226,13 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
-        // If ALL overlays failed, rollback and return error
+        // If ALL overlays failed, abort. The caller rolls back (nothing is
+        // mounted) and restarts services.
         if tracker.mounted.is_empty() && !mount_failures.is_empty() {
             tracing::error!(
                 failure_count = mount_failures.len(),
                 "All overlay mounts failed - activation aborted"
             );
-
-            if let Err(rollback_err) = tracker.rollback_all() {
-                tracing::error!(
-                    error = %rollback_err,
-                    context = "mount_failure_recovery",
-                    rollback = true,
-                    "Rollback failed during mount failure recovery"
-                );
-            }
 
             // Return first failure as representative error
             return Err(mount_failures.into_iter().next().unwrap().1);
@@ -192,6 +244,8 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         // Any failure should abort activation to avoid partially-active state.
+        // The caller rolls back the overlays already mounted and restarts
+        // journald/nix-daemon after the unmounts.
         if !mount_failures.is_empty() {
             return Err(NailsError::InvalidState(format!(
                 "{} overlay(s) failed to mount",
@@ -201,7 +255,7 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Post-overlay: if /nix was successfully overlaid, restore NixOS security model
         if nix_overlay_succeeded {
-            self.restore_nix_security_model(&mut nix_guard)?;
+            self.restore_nix_security_model(nix_guard)?;
         }
 
         Ok(())

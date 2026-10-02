@@ -4,6 +4,31 @@ use std::path::PathBuf;
 #[cfg(test)]
 use std::path::Path;
 
+/// Test-only recorder for service lifecycle actions.
+///
+/// In a test or runtime-safety context the real `systemctl` calls are skipped,
+/// so there is otherwise no way to observe that a restart happened. This
+/// per-thread log lets unit tests assert that teardown and rollback paths
+/// restart the services they must (e.g. nix-daemon and journald) in the right
+/// order. Deactivation and rollback run synchronously on the calling thread.
+#[cfg(test)]
+pub(crate) mod recorder {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static ACTIONS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn record(action: impl Into<String>) {
+        ACTIONS.with(|actions| actions.borrow_mut().push(action.into()));
+    }
+
+    /// Take and clear the recorded actions for the current thread.
+    pub(crate) fn drain() -> Vec<String> {
+        ACTIONS.with(|actions| std::mem::take(&mut *actions.borrow_mut()))
+    }
+}
+
 fn run_systemctl(args: &[&str]) -> std::result::Result<std::process::Output, std::io::Error> {
     systemctl_command().spawn_output(args)
 }
@@ -227,6 +252,8 @@ impl ServiceController {
     /// callers can decide how to handle them.
     pub fn stop_nix_daemon() -> std::result::Result<(), std::io::Error> {
         if Self::should_skip() {
+            #[cfg(test)]
+            recorder::record("stop:nix-daemon");
             tracing::debug!(
                 "Skipping nix-daemon stop commands in test/test-like context to avoid host interaction"
             );
@@ -316,6 +343,8 @@ impl ServiceController {
     /// Start a systemd service and its socket (socket first), best-effort.
     pub fn start_service_and_socket(service: &str) {
         if Self::should_skip() {
+            #[cfg(test)]
+            recorder::record(format!("start:{service}"));
             return;
         }
 
