@@ -39,6 +39,13 @@ impl Filesystem for MockFilesystem {
         self.mount_source_impl(mount_point)
     }
 
+    fn discover_nails_mounts(
+        &self,
+        hidden_root: Option<&Path>,
+    ) -> Result<crate::filesystem::NailsMounts> {
+        self.discover_nails_mounts_impl(hidden_root)
+    }
+
     fn swap_is_enabled(&self) -> Result<bool> {
         self.swap_is_enabled_impl()
     }

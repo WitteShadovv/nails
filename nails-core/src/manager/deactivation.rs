@@ -10,6 +10,7 @@ use crate::deactivation::test_gate::maybe_block_after_deactivating_state_transit
 #[cfg(not(test))]
 use crate::deactivation::test_gate::should_skip_shell_cleanup_before_deactivation_gate;
 use crate::deactivation::{DeactivationReport, PostUnmountCleanupReport};
+use crate::filesystem::NailsMounts;
 use crate::nixos::SwitchAction;
 #[cfg(not(test))]
 use crate::process::kill_user_shells;
@@ -427,6 +428,31 @@ fn inspect_overlay_context<F: Filesystem>(manager: &NailsManager<F>) -> Result<O
     })
 }
 
+/// Derive the service-restart context from the live mount table rather than the
+/// state file, for an emergency teardown on an untrusted state.
+///
+/// The cached state is the safe default (empty overlay list) when the state file
+/// is corrupt, so the nix-daemon / journald restart must be driven by what is
+/// actually mounted: whether `/nix` is overlaid, and whether `/var` is among the
+/// discovered overlays.
+fn overlay_context_from_mounts<F: Filesystem>(manager: &NailsManager<F>) -> Result<OverlayContext> {
+    let hidden_root = manager.config().hidden_volume_root.clone();
+    let mounts = manager
+        .filesystem()
+        .discover_nails_mounts(Some(&hidden_root))?;
+
+    let var_was_overlaid = mounts
+        .persistent_overlays
+        .iter()
+        .chain(mounts.ephemeral_overlays.iter())
+        .any(|p| p == Path::new("/var"));
+
+    Ok(OverlayContext {
+        nix_was_overlaid: mounts.nix_overlay_present,
+        var_was_overlaid,
+    })
+}
+
 fn verify_history_truncation<F: Filesystem>(manager: &NailsManager<F>) {
     let history_files =
         crate::cleanup::history::get_extended_history_files_for_homes(&history_cleanup_homes());
@@ -457,21 +483,34 @@ fn verify_history_truncation<F: Filesystem>(manager: &NailsManager<F>) {
 
 impl<F: Filesystem> NailsManager<F> {
     fn run_deactivation(&mut self, kind: ManagerDeactivationKind) -> Result<()> {
-        // Preconditions: both modes require an Active system; only the messages differ.
-        let state = self.current_state()?;
-        if !matches!(state, SystemState::Active { .. }) {
-            let message = match kind {
-                ManagerDeactivationKind::Normal => {
-                    "Cannot deactivate: system is not in Active state".to_string()
-                }
-                ManagerDeactivationKind::Emergency if state == SystemState::Inactive => {
-                    "Cannot deactivate from state Inactive. Must be ACTIVE.".to_string()
-                }
-                ManagerDeactivationKind::Emergency => {
-                    format!("Cannot deactivate from state {:?}. Must be ACTIVE.", state)
-                }
-            };
-            return Err(NailsError::InvalidState(message));
+        // Emergency on an untrusted state: a corrupt or unreadable state file
+        // must not silently collapse to Inactive and refuse the teardown. When
+        // the honest load outcome is unknown, enumerate the NAILS overlays from
+        // the live mount table instead of trusting the recorded state. Normal
+        // deactivation still requires a trustworthy Active state.
+        let untrusted_state = kind == ManagerDeactivationKind::Emergency
+            && self
+                .current_state_with_outcome()
+                .map(|(_, outcome)| outcome.is_unknown())
+                .unwrap_or(true);
+
+        if !untrusted_state {
+            // Preconditions: both modes require an Active system; only the messages differ.
+            let state = self.current_state()?;
+            if !matches!(state, SystemState::Active { .. }) {
+                let message = match kind {
+                    ManagerDeactivationKind::Normal => {
+                        "Cannot deactivate: system is not in Active state".to_string()
+                    }
+                    ManagerDeactivationKind::Emergency if state == SystemState::Inactive => {
+                        "Cannot deactivate from state Inactive. Must be ACTIVE.".to_string()
+                    }
+                    ManagerDeactivationKind::Emergency => {
+                        format!("Cannot deactivate from state {:?}. Must be ACTIVE.", state)
+                    }
+                };
+                return Err(NailsError::InvalidState(message));
+            }
         }
 
         if kind == ManagerDeactivationKind::Normal
@@ -483,7 +522,11 @@ impl<F: Filesystem> NailsManager<F> {
             ));
         }
 
-        let overlay_context = inspect_overlay_context(self)?;
+        let overlay_context = if untrusted_state {
+            overlay_context_from_mounts(self)?
+        } else {
+            inspect_overlay_context(self)?
+        };
 
         if overlay_context.nix_was_overlaid {
             tracing::info!("Stopping nix-daemon before /nix overlay unmount...");
@@ -530,7 +573,8 @@ impl<F: Filesystem> NailsManager<F> {
         let restore_decoy_profile = requires_decoy_restore(self)?;
         let orchestrator = DeactivationOrchestrator::new(cleanup_config)
             .with_mode(kind.orchestrator_mode())
-            .with_decoy_profile_restore(restore_decoy_profile);
+            .with_decoy_profile_restore(restore_decoy_profile)
+            .with_untrusted_state(untrusted_state);
 
         let result = orchestrator.run(self);
 
@@ -612,6 +656,27 @@ fn overlay_unmount_targets<F: Filesystem>(
     Ok(merged)
 }
 
+/// Targets to unmount for an untrusted-state teardown, in mount order.
+///
+/// [`unmount_overlays`](DeactivationOrchestrator::unmount_overlays) reverses this
+/// list, so placing the `/nix/store` restore bind last makes it come off before
+/// the `/nix` overlay it sits on, and the persistent overlays come off last. The
+/// `/nix/store` bind is only ours when `/nix` is overlaid, so it is included only
+/// then (and only when still present — the `/nix` teardown path may already have
+/// removed it before the orchestrator runs).
+fn discovered_unmount_targets(mounts: &NailsMounts) -> Vec<PathBuf> {
+    let mut targets = Vec::new();
+    targets.extend(mounts.persistent_overlays.iter().cloned());
+    targets.extend(mounts.ephemeral_overlays.iter().cloned());
+    targets.extend(mounts.pivot_binds.iter().cloned());
+    if mounts.nix_overlay_present
+        && let Some(bind) = &mounts.nix_store_bind
+    {
+        targets.push(bind.clone());
+    }
+    targets
+}
+
 /// Result of attempting to unmount every tracked overlay.
 ///
 /// The teardown attempts all targets rather than aborting on the first failure,
@@ -673,6 +738,7 @@ pub struct DeactivationOrchestrator {
     cleanup_config: CleanupConfig,
     mode: DeactivationMode,
     restore_decoy_profile: bool,
+    untrusted_state: bool,
 }
 
 impl DeactivationOrchestrator {
@@ -682,6 +748,7 @@ impl DeactivationOrchestrator {
             cleanup_config,
             mode: DeactivationMode::Normal,
             restore_decoy_profile: true,
+            untrusted_state: false,
         }
     }
 
@@ -697,6 +764,17 @@ impl DeactivationOrchestrator {
         self
     }
 
+    /// Enumerate overlays from the live mount table instead of the state file.
+    ///
+    /// Set only by an emergency teardown that found the state file corrupt or
+    /// unreadable: the recorded overlay list cannot be trusted, so the teardown
+    /// discovers the NAILS-owned mounts directly. Normal deactivation leaves this
+    /// `false` and keeps trusting the Active state's overlay list.
+    pub fn with_untrusted_state(mut self, untrusted_state: bool) -> Self {
+        self.untrusted_state = untrusted_state;
+        self
+    }
+
     /// Execute deactivation against the borrowed manager.
     ///
     /// Returns a [`DeactivationReport`] on success. On failure the state is
@@ -706,9 +784,25 @@ impl DeactivationOrchestrator {
     /// unmounted) — never ACTIVE once any overlay has been detached.
     pub fn run<F: Filesystem>(&self, manager: &mut NailsManager<F>) -> Result<DeactivationReport> {
         let start = Instant::now();
-
         tracing::info!(phase = "deactivation", "Deactivation started");
 
+        // When the state file is untrusted the recorded overlay list cannot be
+        // read, so that teardown enumerates NAILS mounts from the live mount
+        // table instead of the Active state's overlay list.
+        if self.untrusted_state {
+            self.run_from_untrusted_state(manager, start)
+        } else {
+            self.run_from_trusted_state(manager, start)
+        }
+    }
+
+    /// Standard teardown driven by a trustworthy Active state and its recorded
+    /// overlay list.
+    fn run_from_trusted_state<F: Filesystem>(
+        &self,
+        manager: &mut NailsManager<F>,
+        start: Instant,
+    ) -> Result<DeactivationReport> {
         // Step 0: Check if already inactive (idempotent). Emergency mode refuses.
         let current_state = manager.current_state()?;
         if current_state == SystemState::Inactive {
@@ -919,6 +1013,137 @@ impl DeactivationOrchestrator {
             final_state: SystemState::Inactive,
             was_already_inactive: false,
             post_unmount_cleanup: post_unmount_report,
+        })
+    }
+
+    /// Emergency teardown when the state file cannot be trusted.
+    ///
+    /// The recorded overlay list is unavailable (corrupt/unreadable state), so
+    /// the targets come from the live mount table
+    /// ([`Filesystem::discover_nails_mounts`](crate::Filesystem::discover_nails_mounts)).
+    /// The teardown first replaces the untrusted state with a valid `Degraded`
+    /// marker, attempts every unmount (best-effort, never remounting), and ends
+    /// `Inactive` when nothing survives or `Degraded` with
+    /// [`NailsError::DeactivationIncomplete`] when a mount could not be removed.
+    fn run_from_untrusted_state<F: Filesystem>(
+        &self,
+        manager: &mut NailsManager<F>,
+        start: Instant,
+    ) -> Result<DeactivationReport> {
+        let hidden_root = manager.config().hidden_volume_root.clone();
+        let discovered = manager
+            .filesystem()
+            .discover_nails_mounts(Some(&hidden_root))?;
+        let overlays_to_unmount = discovered_unmount_targets(&discovered);
+
+        tracing::warn!(
+            targets = ?overlays_to_unmount,
+            phase = "deactivation",
+            untrusted_state = true,
+            "State file untrusted; tearing down NAILS overlays found in the live mount table"
+        );
+
+        // Replace the untrusted on-disk state with a valid Degraded marker so the
+        // state file is trustworthy from here on, and capture it as the guard's
+        // rollback baseline. force_state is the only way out of an unknown state:
+        // update_state cannot validate a transition from a state it never read.
+        let baseline = SystemState::Degraded {
+            since: chrono::Utc::now(),
+            reason: "emergency teardown from an untrusted state".to_string(),
+            remaining_mounts: overlays_to_unmount.clone(),
+        };
+        manager.force_state(baseline.clone())?;
+
+        let mut guard = StateGuard::new(&mut *manager, baseline);
+
+        // Best-effort cleanup; its failure must never abort the teardown.
+        let cleanup_start = Instant::now();
+        let cleanup_report = match self.execute_emergency_cleanup(&guard) {
+            Ok(report) => {
+                tracing::info!(
+                    cleaned_items = report.cleaned_items.len(),
+                    errors = report.errors.len(),
+                    duration_ms = cleanup_start.elapsed().as_millis() as u64,
+                    "Emergency cleanup complete (best-effort)"
+                );
+                report
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    phase = "cleanup",
+                    "Emergency cleanup failed (non-fatal) - continuing teardown"
+                );
+                CleanupReport::default()
+            }
+        };
+
+        // Attempt every unmount in reverse mount order; never abort, never remount.
+        let unmount_start = Instant::now();
+        let unmount_outcome = self.unmount_overlays(&guard, &overlays_to_unmount);
+        let remaining_mounts = remaining_nails_mounts(&guard, &overlays_to_unmount);
+
+        if !remaining_mounts.is_empty() {
+            let remaining_display = remaining_mounts
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let reason = format!(
+                "emergency teardown left {} NAILS mount(s) live: {}",
+                remaining_mounts.len(),
+                remaining_display
+            );
+
+            tracing::error!(
+                remaining = %remaining_display,
+                unmounted = ?unmount_outcome.unmounted,
+                failed = ?unmount_outcome.failed,
+                duration_ms = unmount_start.elapsed().as_millis() as u64,
+                phase = "unmount",
+                state_to = "Degraded",
+                "Emergency teardown incomplete; recording DEGRADED (no remount)"
+            );
+
+            let degraded = guard
+                .current_state()?
+                .enter_degraded(reason, remaining_mounts.clone());
+            guard.update_state(degraded)?;
+            guard.commit();
+
+            return Err(NailsError::DeactivationIncomplete { remaining_mounts });
+        }
+
+        let unmounted = unmount_outcome.unmounted;
+        tracing::info!(
+            unmounted_paths = ?unmounted,
+            duration_ms = unmount_start.elapsed().as_millis() as u64,
+            "Overlays unmounted"
+        );
+
+        // Clean teardown: clear tracking and go Degraded -> Inactive.
+        guard.clear_overlay_status_in_cache()?;
+        let inactive_state = guard.current_state()?.recover()?;
+        guard.update_state(inactive_state)?;
+        guard.commit();
+
+        tracing::info!(
+            duration_ms = start.elapsed().as_millis() as u64,
+            state_to = ?SystemState::Inactive,
+            unmounted_count = unmounted.len(),
+            untrusted_state = true,
+            "Emergency teardown from untrusted state complete"
+        );
+
+        Ok(DeactivationReport {
+            cleanup_report,
+            unmounted_overlays: unmounted,
+            failed_overlays: Vec::new(),
+            remaining_mounts: Vec::new(),
+            duration: start.elapsed(),
+            final_state: SystemState::Inactive,
+            was_already_inactive: false,
+            post_unmount_cleanup: PostUnmountCleanupReport::default(),
         })
     }
 

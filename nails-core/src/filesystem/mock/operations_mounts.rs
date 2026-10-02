@@ -1,7 +1,8 @@
+use super::super::mountinfo::{MountEntry, NailsMounts, escape_overlay_path};
 use super::super::{MountInfo, MountSource, verify_mount_preconditions};
 use super::{MockFilesystem, MockOp};
 use crate::{NailsError, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 impl MockFilesystem {
     pub(super) fn mount_overlay_impl(
@@ -162,6 +163,67 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .get(mount_point)
             .cloned())
+    }
+
+    /// Classify the mock's tracked mounts the way the real parser classifies
+    /// `/proc/self/mountinfo`.
+    ///
+    /// Each tracked overlay is turned into a synthetic `overlay` mount entry
+    /// carrying its recorded lower/upper/work, and each bind mount into a
+    /// synthetic bind entry, so the shared [`NailsMounts::from_entries`]
+    /// classifier decides persistent/ephemeral/pivot/nix-store ownership exactly
+    /// as it would against a real kernel mount table. A mounted-but-unowned path
+    /// (set with `mock_set_mount_unmanaged`) is tracked only as a plain mount, so
+    /// it never appears here and is correctly reported as not owned.
+    pub(super) fn discover_nails_mounts_impl(
+        &self,
+        hidden_root: Option<&Path>,
+    ) -> Result<NailsMounts> {
+        let mut entries = Vec::new();
+
+        for (target, info) in self
+            .mounted_overlays
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .iter()
+        {
+            let super_opts = format!(
+                "rw,lowerdir={},upperdir={},workdir={}",
+                escape_overlay_path(&info.lower)?,
+                escape_overlay_path(&info.upper)?,
+                escape_overlay_path(&info.work)?,
+            );
+            entries.push(MountEntry {
+                mount_id: 0,
+                parent_id: 0,
+                dev: String::new(),
+                root: PathBuf::from("/"),
+                mount_point: target.clone(),
+                fstype: "overlay".to_string(),
+                source: PathBuf::from("overlay"),
+                super_opts,
+            });
+        }
+
+        for (target, source) in self
+            .bind_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .iter()
+        {
+            entries.push(MountEntry {
+                mount_id: 0,
+                parent_id: 0,
+                dev: String::new(),
+                root: PathBuf::from("/"),
+                mount_point: target.clone(),
+                fstype: "none".to_string(),
+                source: source.clone(),
+                super_opts: "rw".to_string(),
+            });
+        }
+
+        Ok(NailsMounts::from_entries(&entries, hidden_root))
     }
 
     pub(super) fn is_overlay_mounted_impl(&self, target: &Path) -> Result<bool> {

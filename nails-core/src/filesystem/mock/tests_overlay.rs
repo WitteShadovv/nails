@@ -487,3 +487,56 @@ fn test_verify_mount_preconditions_fails_when_work_not_creatable() {
         _ => panic!("Expected PermissionDenied error"),
     }
 }
+
+#[test]
+fn discover_nails_mounts_reports_overlays_and_binds_owned_but_not_foreign() {
+    // A persistent overlay, a pivot staging bind and the /nix/store restore bind
+    // over an overlaid /nix are all NAILS-owned; a plain mounted-but-unmanaged
+    // path is not — the mock must classify the same way the real parser does.
+    let fs = MockFilesystem::new();
+    let hidden = Path::new("/mnt/hidden");
+
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists("/mnt/hidden/home/upper", true);
+    fs.mock_set_path_exists("/mnt/hidden/home/work", true);
+    fs.mount_overlay(
+        &[Path::new("/")],
+        Path::new("/mnt/hidden/home/upper"),
+        Path::new("/mnt/hidden/home/work"),
+        Path::new("/home"),
+    )
+    .unwrap();
+
+    fs.mock_set_path_exists("/nix", true);
+    fs.mock_set_path_exists("/mnt/hidden/nix/upper", true);
+    fs.mock_set_path_exists("/mnt/hidden/nix/work", true);
+    fs.mount_overlay(
+        &[Path::new("/nix")],
+        Path::new("/mnt/hidden/nix/upper"),
+        Path::new("/mnt/hidden/nix/work"),
+        Path::new("/nix"),
+    )
+    .unwrap();
+
+    // Pivot staging bind and the /nix/store restore bind.
+    fs.mock_set_path_exists("/nix/store", true);
+    fs.bind_mount(Path::new("/nix/store"), Path::new("/mnt/nails-pivot/etc"))
+        .unwrap();
+    fs.mock_set_path_exists("/nix-real/store", true);
+    fs.bind_mount(Path::new("/nix-real/store"), Path::new("/nix/store"))
+        .unwrap();
+
+    // A plain host mount stale state might wrongly point at.
+    fs.mock_set_mount_unmanaged(Path::new("/data"));
+
+    let mounts = fs.discover_nails_mounts(Some(hidden)).unwrap();
+
+    assert!(mounts.is_owned(Path::new("/home")));
+    assert!(mounts.is_owned(Path::new("/nix")));
+    assert!(mounts.is_owned(Path::new("/mnt/nails-pivot/etc")));
+    // /nix/store is ours because /nix is overlaid.
+    assert!(mounts.nix_overlay_present);
+    assert!(mounts.is_owned(Path::new("/nix/store")));
+    // The foreign mount is never owned.
+    assert!(!mounts.is_owned(Path::new("/data")));
+}

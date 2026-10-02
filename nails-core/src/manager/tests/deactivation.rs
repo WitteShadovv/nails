@@ -989,3 +989,141 @@ fn test_full_cycle_base_config_clean_after_deactivation() {
         "Base hardware-configuration.nix must remain clean after full cycle (AC2, AC3)"
     );
 }
+
+// ========== emergency_deactivate() on an untrusted (corrupt) state ==========
+
+/// Write bytes that cannot be parsed as a state file, so the honest load outcome
+/// is `Corrupt` (unknown). `current_state` would hide this behind the safe
+/// `Inactive` default; `current_state_with_outcome` surfaces it.
+fn write_corrupt_state(path: &Path) {
+    std::fs::write(path, b"{ this is not valid state json").expect("write corrupt state");
+}
+
+/// Mount `/home` as a NAILS overlay whose upper/work live under `hidden_root`, so
+/// `discover_nails_mounts(Some(hidden_root))` classifies it as a persistent NAILS
+/// overlay the teardown can enumerate without a trustworthy state file.
+fn mount_home_overlay_under(fs: &MockFilesystem, hidden_root: &Path) {
+    let upper = hidden_root.join("overlays/home/upper");
+    let work = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists(upper.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work.to_str().unwrap(), true);
+    fs.mount_overlay(&[Path::new("/")], &upper, &work, Path::new("/home"))
+        .expect("mount /home overlay");
+}
+
+fn untrusted_state_config(hidden_root: &Path, state_path: &Path) -> Config {
+    Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.to_path_buf(),
+        log_path: hidden_root.join("logs"),
+        overlay_mode: crate::OverlayMode::Explicit,
+        overlays: vec![],
+        ..Config::test_default()
+    }
+}
+
+#[test]
+fn test_emergency_on_untrusted_state_tears_down_discovered_overlays() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+
+    let fs = MockFilesystem::new();
+    mount_home_overlay_under(&fs, hidden_root);
+    let fs_clone = fs.clone();
+
+    let config = untrusted_state_config(hidden_root, &state_path);
+    let mut manager = NailsManager::new(fs, config, state_path.clone());
+
+    // On-disk state is corrupt: the honest load reports it as unknown.
+    write_corrupt_state(&state_path);
+    let (_, outcome) = manager.current_state_with_outcome().unwrap();
+    assert!(outcome.is_unknown(), "corrupt state must load as unknown");
+
+    // Emergency must tear down the live overlay rather than refuse on "Inactive".
+    manager
+        .emergency_deactivate()
+        .expect("emergency must run on a corrupt state");
+
+    assert!(
+        !fs_clone.is_mounted(Path::new("/home")).unwrap(),
+        "/home must be unmounted by the mount-table fallback"
+    );
+    assert_eq!(manager.current_state().unwrap(), SystemState::Inactive);
+
+    let loaded = StateFile::load(&state_path).unwrap();
+    assert_eq!(loaded.state, SystemState::Inactive);
+    assert!(loaded.overlay_status.is_empty());
+}
+
+#[test]
+fn test_emergency_on_untrusted_state_ends_degraded_when_unmount_fails() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+
+    let fs = MockFilesystem::new();
+    mount_home_overlay_under(&fs, hidden_root);
+    fs.mock_set_unmount_should_fail("/home", true);
+    let fs_clone = fs.clone();
+
+    let config = untrusted_state_config(hidden_root, &state_path);
+    let mut manager = NailsManager::new(fs, config, state_path.clone());
+    write_corrupt_state(&state_path);
+
+    let err = manager
+        .emergency_deactivate()
+        .expect_err("teardown must fail when the discovered overlay stays mounted");
+    match err {
+        NailsError::DeactivationIncomplete {
+            ref remaining_mounts,
+        } => assert_eq!(remaining_mounts, &vec![PathBuf::from("/home")]),
+        other => panic!("expected DeactivationIncomplete, got {other:?}"),
+    }
+
+    match manager.current_state().unwrap() {
+        SystemState::Degraded {
+            remaining_mounts, ..
+        } => assert_eq!(remaining_mounts, vec![PathBuf::from("/home")]),
+        other => panic!("expected Degraded, got {other:?}"),
+    }
+    assert!(
+        fs_clone.is_mounted(Path::new("/home")).unwrap(),
+        "the overlay that failed to unmount stays live and is never remounted"
+    );
+
+    let loaded = StateFile::load(&state_path).unwrap();
+    assert!(
+        loaded.state.is_degraded(),
+        "persisted state must be Degraded"
+    );
+}
+
+#[test]
+fn test_normal_deactivate_on_untrusted_state_still_refuses() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+
+    let fs = MockFilesystem::new();
+    mount_home_overlay_under(&fs, hidden_root);
+    let fs_clone = fs.clone();
+
+    let config = untrusted_state_config(hidden_root, &state_path);
+    let mut manager = NailsManager::new(fs, config, state_path.clone());
+    write_corrupt_state(&state_path);
+
+    // Normal deactivation never uses the mount-table fallback: it refuses an
+    // untrusted (not Active) state and leaves every overlay in place.
+    let err = manager
+        .deactivate()
+        .expect_err("normal deactivate must refuse an untrusted state");
+    assert!(matches!(err, NailsError::InvalidState(_)), "got {err:?}");
+    assert!(
+        fs_clone.is_mounted(Path::new("/home")).unwrap(),
+        "normal deactivate must not touch the mount table on an untrusted state"
+    );
+}

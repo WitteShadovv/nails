@@ -124,6 +124,20 @@ pub trait Filesystem: Send + Sync + Clone {
     /// than reported as an error.
     fn mount_source(&self, mount_point: &Path) -> Result<Option<MountSource>>;
 
+    /// Classify the NAILS-created mounts currently live, from the mount table
+    /// rather than any state file.
+    ///
+    /// This is the enumeration an emergency (or future recover) teardown falls
+    /// back to when the state file is corrupt or unreadable: it must tear down
+    /// the overlays NAILS actually mounted even though it can no longer trust the
+    /// recorded list. `hidden_root` distinguishes persistent overlays from
+    /// foreign ones exactly as in
+    /// [`NailsMounts::discover`](crate::filesystem::NailsMounts::discover).
+    fn discover_nails_mounts(
+        &self,
+        hidden_root: Option<&Path>,
+    ) -> Result<crate::filesystem::NailsMounts>;
+
     // ------------------------------------------------------------------------
     // Swap Management
     // ------------------------------------------------------------------------

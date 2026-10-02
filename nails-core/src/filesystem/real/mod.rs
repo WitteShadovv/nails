@@ -87,6 +87,13 @@ impl Filesystem for RealFilesystem {
         mount_ops::mount_source(mount_point)
     }
 
+    fn discover_nails_mounts(
+        &self,
+        hidden_root: Option<&Path>,
+    ) -> Result<crate::filesystem::NailsMounts> {
+        crate::filesystem::NailsMounts::discover(hidden_root)
+    }
+
     fn swap_is_enabled(&self) -> Result<bool> {
         system_ops::swap_is_enabled()
     }
