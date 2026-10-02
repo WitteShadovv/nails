@@ -1,5 +1,8 @@
 use super::*;
-use crate::{Filesystem, filesystem::MockFilesystem};
+use crate::{
+    Filesystem,
+    filesystem::{MockFilesystem, PathKind},
+};
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
@@ -9,11 +12,14 @@ fn test_prepare_nixos_config_overlay_success() {
 
     // Setup filesystem structure using mock
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
     fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", PathKind::File);
 
     let etc_nixos = hidden_path.join("etc/nixos");
     let hardware_config = etc_nixos.join("hardware-configuration.nix");
@@ -52,7 +58,7 @@ fn test_prepare_nixos_config_overlay_missing_hardware_config_returns_error() {
     let hidden_path = std::path::PathBuf::from("/mnt/hidden");
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
 
     let err = prepare_nixos_config_overlay(&fs, &hidden_path).unwrap_err();
     assert!(
@@ -68,9 +74,12 @@ fn test_prepare_nixos_config_overlay_missing_hidden_configuration_returns_error(
     let hardware_config = hidden_path.join("etc/nixos/hardware-configuration.nix");
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
     <MockFilesystem as Filesystem>::write_file_content(
         &fs,
         &hardware_config,
@@ -93,11 +102,14 @@ fn test_prepare_nixos_config_overlay_rejects_missing_required_import() {
     let hidden_config = hidden_path.join("config/nixos/configuration.nix");
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
     fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", PathKind::File);
 
     <MockFilesystem as Filesystem>::write_file_content(
         &fs,
@@ -414,7 +426,7 @@ const LIVE_BASE: &str = "/etc/nixos/hardware-configuration.base.nix";
 
 fn seed_live_hardware(fs: &MockFilesystem, content: &str) {
     fs.mock_set_path_exists(LIVE_HARDWARE, true);
-    fs.mock_set_path_type(LIVE_HARDWARE, "file");
+    fs.mock_set_path_type(LIVE_HARDWARE, PathKind::File);
     <MockFilesystem as Filesystem>::write_file_content(
         fs,
         std::path::Path::new(LIVE_HARDWARE),
@@ -608,12 +620,12 @@ fn test_stage_hidden_config_symlink_creates_dir_and_symlink() {
 
     // Setup hidden config
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", "directory");
+    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden", true);
     let hidden_config = hidden_path.join("config/nixos/configuration.nix");
 
@@ -651,10 +663,10 @@ fn test_ensure_hidden_configuration_module_creates_minimal_module() {
     let hidden_root = hidden_path.clone();
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_root.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(hidden_root.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_writable(hidden_root.to_str().unwrap(), true);
 
     ensure_hidden_configuration_module(&fs, &hidden_path).unwrap();
@@ -678,20 +690,20 @@ fn test_ensure_hidden_configuration_module_preserves_existing_file() {
     let hidden_config = hidden_path.join("config/nixos/configuration.nix");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", "directory");
+    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden", true);
     fs.mock_set_path_exists("/mnt/hidden/config", true);
-    fs.mock_set_path_type("/mnt/hidden/config", "directory");
+    fs.mock_set_path_type("/mnt/hidden/config", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/config", true);
     fs.mock_set_path_exists("/mnt/hidden/config/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/config/nixos", true);
 
     fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", PathKind::File);
     <MockFilesystem as Filesystem>::write_file_content(
         &fs,
         &hidden_config,
@@ -713,10 +725,10 @@ fn test_ensure_hidden_configuration_module_errors_when_directory_creation_fails(
     let hidden_path = std::path::PathBuf::from("/mnt/hidden");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", "directory");
+    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden", false);
 
     let err = ensure_hidden_configuration_module(&fs, &hidden_path).unwrap_err();
@@ -733,16 +745,16 @@ fn test_ensure_hidden_configuration_module_errors_when_write_fails() {
     let hidden_config = hidden_path.join("config/nixos/configuration.nix");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", "directory");
+    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden", true);
     fs.mock_set_path_exists("/mnt/hidden/config", true);
-    fs.mock_set_path_type("/mnt/hidden/config", "directory");
+    fs.mock_set_path_type("/mnt/hidden/config", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/config", true);
     fs.mock_set_path_exists("/mnt/hidden/config/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/config/nixos", true);
     fs.mock_set_write_should_fail(hidden_config.to_str().unwrap(), true);
 
@@ -760,13 +772,13 @@ fn test_ensure_hidden_configuration_module_errors_when_directory_permission_upda
     let config_dir = hidden_path.join("config/nixos");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", "directory");
+    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden", true);
     fs.mock_set_path_exists(config_dir.to_str().unwrap(), true);
-    fs.mock_set_path_type(config_dir.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(config_dir.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_permissions_should_fail(config_dir.to_str().unwrap(), true);
 
     let err = ensure_hidden_configuration_module(&fs, &hidden_path).unwrap_err();
@@ -783,19 +795,19 @@ fn test_ensure_hidden_configuration_module_errors_when_existing_file_permission_
     let hidden_config = hidden_path.join("config/nixos/configuration.nix");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", "directory");
+    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden", true);
     fs.mock_set_path_exists("/mnt/hidden/config", true);
-    fs.mock_set_path_type("/mnt/hidden/config", "directory");
+    fs.mock_set_path_type("/mnt/hidden/config", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/config", true);
     fs.mock_set_path_exists("/mnt/hidden/config/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/config/nixos", true);
     fs.mock_set_path_exists(hidden_config.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_config.to_str().unwrap(), "file");
+    fs.mock_set_path_type(hidden_config.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(hidden_config.to_str().unwrap(), "{ ... }: { }");
     fs.mock_set_permissions_should_fail(hidden_config.to_str().unwrap(), true);
 
@@ -814,29 +826,29 @@ fn test_ensure_hidden_hardware_configuration_bootstraps_from_base_config() {
     let hidden_hardware = hidden_path.join("etc/nixos/hardware-configuration.nix");
 
     fs.mock_set_path_exists("/etc", true);
-    fs.mock_set_path_type("/etc", "directory");
+    fs.mock_set_path_type("/etc", PathKind::Dir);
     fs.mock_set_writable("/etc", true);
     fs.mock_set_path_exists("/etc/nixos", true);
-    fs.mock_set_path_type("/etc/nixos", "directory");
+    fs.mock_set_path_type("/etc/nixos", PathKind::Dir);
     fs.mock_set_writable("/etc/nixos", true);
     fs.mock_set_path_exists(base_hardware.to_str().unwrap(), true);
-    fs.mock_set_path_type(base_hardware.to_str().unwrap(), "file");
+    fs.mock_set_path_type(base_hardware.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(
         base_hardware.to_str().unwrap(),
         "{ config, lib, pkgs, modulesPath, ... }:\n{\n  imports = [ (modulesPath + \"/installer/scan/not-detected.nix\") ];\n}\n",
     );
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists(hidden_path.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_path.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(hidden_path.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_writable(hidden_path.to_str().unwrap(), true);
     fs.mock_set_path_exists("/mnt/hidden/etc", true);
-    fs.mock_set_path_type("/mnt/hidden/etc", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc", true);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc/nixos", true);
 
     ensure_hidden_hardware_configuration(&fs, &hidden_path, &base_hardware).unwrap();
@@ -868,25 +880,25 @@ fn test_ensure_hidden_hardware_configuration_updates_existing_hidden_file() {
     let hidden_hardware = hidden_path.join("etc/nixos/hardware-configuration.nix");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists(hidden_path.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_path.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(hidden_path.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_writable(hidden_path.to_str().unwrap(), true);
     fs.mock_set_path_exists("/mnt/hidden/etc", true);
-    fs.mock_set_path_type("/mnt/hidden/etc", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc", true);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc/nixos", true);
     fs.mock_set_path_exists(hidden_hardware.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_hardware.to_str().unwrap(), "file");
+    fs.mock_set_path_type(hidden_hardware.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(
         hidden_hardware.to_str().unwrap(),
         "{ config, lib, pkgs, ... }:\n{\n  networking.hostName = \"hidden\";\n}\n",
     );
     fs.mock_set_path_exists(base_hardware.to_str().unwrap(), true);
-    fs.mock_set_path_type(base_hardware.to_str().unwrap(), "file");
+    fs.mock_set_path_type(base_hardware.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(base_hardware.to_str().unwrap(), "{ }: { }\n");
 
     ensure_hidden_hardware_configuration(&fs, &hidden_path, &base_hardware).unwrap();
@@ -913,19 +925,19 @@ fn test_ensure_hidden_hardware_configuration_errors_when_base_read_fails() {
     let base_hardware = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists(hidden_path.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_path.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(hidden_path.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_writable(hidden_path.to_str().unwrap(), true);
     fs.mock_set_path_exists("/mnt/hidden/etc", true);
-    fs.mock_set_path_type("/mnt/hidden/etc", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc", true);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc/nixos", true);
     fs.mock_set_path_exists(base_hardware.to_str().unwrap(), true);
-    fs.mock_set_path_type(base_hardware.to_str().unwrap(), "file");
+    fs.mock_set_path_type(base_hardware.to_str().unwrap(), PathKind::File);
 
     let err = ensure_hidden_hardware_configuration(&fs, &hidden_path, &base_hardware).unwrap_err();
     assert!(
@@ -941,10 +953,10 @@ fn test_ensure_hidden_hardware_configuration_errors_when_directory_creation_fail
     let base_hardware = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists(hidden_path.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_path.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(hidden_path.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_writable(hidden_path.to_str().unwrap(), false);
 
     let err = ensure_hidden_hardware_configuration(&fs, &hidden_path, &base_hardware).unwrap_err();
@@ -962,13 +974,13 @@ fn test_ensure_hidden_hardware_configuration_errors_when_directory_permission_up
     let hidden_etc_nixos = hidden_path.join("etc/nixos");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists(hidden_path.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_path.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(hidden_path.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_writable(hidden_path.to_str().unwrap(), true);
     fs.mock_set_path_exists(hidden_etc_nixos.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_etc_nixos.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(hidden_etc_nixos.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_permissions_should_fail(hidden_etc_nixos.to_str().unwrap(), true);
 
     let err = ensure_hidden_hardware_configuration(&fs, &hidden_path, &base_hardware).unwrap_err();
@@ -986,25 +998,25 @@ fn test_ensure_hidden_hardware_configuration_errors_when_existing_file_permissio
     let hidden_hardware = hidden_path.join("etc/nixos/hardware-configuration.nix");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists(hidden_path.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_path.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(hidden_path.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_writable(hidden_path.to_str().unwrap(), true);
     fs.mock_set_path_exists("/mnt/hidden/etc", true);
-    fs.mock_set_path_type("/mnt/hidden/etc", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc", true);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc/nixos", true);
     fs.mock_set_path_exists(hidden_hardware.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_hardware.to_str().unwrap(), "file");
+    fs.mock_set_path_type(hidden_hardware.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(
         hidden_hardware.to_str().unwrap(),
         "{ config, lib, pkgs, ... }:\n{\n  imports = [ ./nails/configuration.nix ];\n}\n",
     );
     fs.mock_set_path_exists(base_hardware.to_str().unwrap(), true);
-    fs.mock_set_path_type(base_hardware.to_str().unwrap(), "file");
+    fs.mock_set_path_type(base_hardware.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(base_hardware.to_str().unwrap(), "{ }: { }\n");
     fs.mock_set_permissions_should_fail(hidden_hardware.to_str().unwrap(), true);
 
@@ -1023,19 +1035,19 @@ fn test_ensure_hidden_hardware_configuration_errors_when_write_fails() {
     let hidden_hardware = hidden_path.join("etc/nixos/hardware-configuration.nix");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists(hidden_path.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_path.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(hidden_path.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_writable(hidden_path.to_str().unwrap(), true);
     fs.mock_set_path_exists("/mnt/hidden/etc", true);
-    fs.mock_set_path_type("/mnt/hidden/etc", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc", true);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc/nixos", true);
     fs.mock_set_path_exists(hidden_hardware.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_hardware.to_str().unwrap(), "file");
+    fs.mock_set_path_type(hidden_hardware.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(hidden_hardware.to_str().unwrap(), "{ }: { }\n");
     fs.mock_set_write_should_fail(hidden_hardware.to_str().unwrap(), true);
 
@@ -1056,28 +1068,28 @@ fn test_stage_hidden_config_symlink_is_idempotent_for_existing_correct_symlink()
     let symlink_path = nails_dir.join("configuration.nix");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", "directory");
+    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden", true);
     fs.mock_set_path_exists("/mnt/hidden/etc", true);
-    fs.mock_set_path_type("/mnt/hidden/etc", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc", true);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc/nixos", true);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/nails", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/nails", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos/nails", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc/nixos/nails", true);
     fs.mock_set_path_exists("/mnt/hidden/config", true);
-    fs.mock_set_path_type("/mnt/hidden/config", "directory");
+    fs.mock_set_path_type("/mnt/hidden/config", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/config", true);
     fs.mock_set_path_exists("/mnt/hidden/config/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/config/nixos", true);
     fs.mock_set_path_exists(hidden_config.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_config.to_str().unwrap(), "file");
+    fs.mock_set_path_type(hidden_config.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(hidden_config.to_str().unwrap(), "{ ... }: { }");
     <MockFilesystem as Filesystem>::create_symlink(&fs, &hidden_config, &symlink_path).unwrap();
 
@@ -1099,28 +1111,28 @@ fn test_stage_hidden_config_symlink_errors_for_conflicting_existing_symlink() {
     let symlink_path = nails_dir.join("configuration.nix");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", "directory");
+    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden", true);
     fs.mock_set_path_exists("/mnt/hidden/etc", true);
-    fs.mock_set_path_type("/mnt/hidden/etc", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc", true);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc/nixos", true);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/nails", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/nails", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos/nails", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc/nixos/nails", true);
     fs.mock_set_path_exists("/mnt/hidden/config", true);
-    fs.mock_set_path_type("/mnt/hidden/config", "directory");
+    fs.mock_set_path_type("/mnt/hidden/config", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/config", true);
     fs.mock_set_path_exists("/mnt/hidden/config/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/config/nixos", true);
     fs.mock_set_path_exists(hidden_config.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_config.to_str().unwrap(), "file");
+    fs.mock_set_path_type(hidden_config.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(hidden_config.to_str().unwrap(), "{ ... }: { }");
     <MockFilesystem as Filesystem>::create_symlink(
         &fs,
@@ -1141,28 +1153,28 @@ fn test_stage_hidden_config_symlink_errors_when_nails_directory_permission_updat
     let hidden_config = hidden_path.join("config/nixos/configuration.nix");
 
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", "directory");
+    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden", true);
     fs.mock_set_path_exists("/mnt/hidden/etc", true);
-    fs.mock_set_path_type("/mnt/hidden/etc", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc", true);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/etc/nixos", true);
     fs.mock_set_path_exists(nails_dir.to_str().unwrap(), true);
-    fs.mock_set_path_type(nails_dir.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(nails_dir.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_writable(nails_dir.to_str().unwrap(), true);
     fs.mock_set_path_exists("/mnt/hidden/config", true);
-    fs.mock_set_path_type("/mnt/hidden/config", "directory");
+    fs.mock_set_path_type("/mnt/hidden/config", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/config", true);
     fs.mock_set_path_exists("/mnt/hidden/config/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden/config/nixos", true);
     fs.mock_set_path_exists(hidden_config.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_config.to_str().unwrap(), "file");
+    fs.mock_set_path_type(hidden_config.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(hidden_config.to_str().unwrap(), "{ ... }: { }\n");
     fs.mock_set_permissions_should_fail(nails_dir.to_str().unwrap(), true);
 

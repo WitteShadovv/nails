@@ -3,6 +3,7 @@
 use super::Verifier;
 use super::types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
 use crate::MockFilesystem;
+use crate::filesystem::PathKind;
 
 // ========================================================================
 // Data Structure Tests
@@ -600,7 +601,7 @@ fn test_recursive_directory_scan_finds_nails_files() {
 
     // Set up /tmp directory with nails files
     fs.mock_set_path_exists("/tmp", true);
-    fs.mock_set_path_type("/tmp", "directory");
+    fs.mock_set_path_type("/tmp", PathKind::Dir);
 
     // Mock pattern search to find nails files
     fs.mock_set_files_with_pattern(
@@ -646,7 +647,7 @@ fn test_deep_scan_combines_all_checks() {
     fs.mock_set_path_exists("/root/.bash_history", true);
     fs.mock_set_file_content("/root/.bash_history", "nails activate\n"); // History
     fs.mock_set_path_exists("/tmp", true);
-    fs.mock_set_path_type("/tmp", "directory");
+    fs.mock_set_path_type("/tmp", PathKind::Dir);
     fs.mock_set_files_with_pattern("/tmp", "nails", &[std::path::Path::new("/tmp/nails.log")]); // Files
 
     let result = verifier.run(true).unwrap();
@@ -745,11 +746,11 @@ fn test_deep_scan_all_temp_directories() {
 
     // Set up all deep scan paths as directories
     fs.mock_set_path_exists("/tmp", true);
-    fs.mock_set_path_type("/tmp", "directory");
+    fs.mock_set_path_type("/tmp", PathKind::Dir);
     fs.mock_set_path_exists("/var/tmp", true);
-    fs.mock_set_path_type("/var/tmp", "directory");
+    fs.mock_set_path_type("/var/tmp", PathKind::Dir);
     fs.mock_set_path_exists("/var/log", true);
-    fs.mock_set_path_type("/var/log", "directory");
+    fs.mock_set_path_type("/var/log", PathKind::Dir);
 
     // Mock pattern search results for each directory
     fs.mock_set_files_with_pattern(
@@ -963,7 +964,7 @@ fn test_verify_detects_config_overlay_mounts_and_log_files() {
 
     fs.mock_set_overlay_mounted(std::path::Path::new("/srv"), true);
     fs.mock_set_path_exists("/var/custom-log", true);
-    fs.mock_set_path_type("/var/custom-log", "directory");
+    fs.mock_set_path_type("/var/custom-log", PathKind::Dir);
     fs.mock_set_files_with_pattern(
         "/var/custom-log",
         "nails",

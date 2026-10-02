@@ -8,7 +8,7 @@
 //! Test Design Reference: docs/test-design-system.md lines 606-611
 
 use nails_core::NailsError;
-use nails_core::filesystem::{Filesystem, MockFilesystem};
+use nails_core::filesystem::{Filesystem, MockFilesystem, PathKind};
 use std::path::Path;
 
 // ============================================================================
@@ -342,7 +342,7 @@ fn test_path_exists_returns_false_for_missing_path() {
 fn test_is_directory_returns_true_for_directory() {
     // GIVEN: MockFilesystem with directory
     let fs = MockFilesystem::new();
-    fs.mock_set_path_type("/mnt/hidden-volume", "directory");
+    fs.mock_set_path_type("/mnt/hidden-volume", PathKind::Dir);
 
     // WHEN: Checking if path is directory
     let result = fs.is_directory(Path::new("/mnt/hidden-volume"));
@@ -355,7 +355,7 @@ fn test_is_directory_returns_true_for_directory() {
 fn test_is_directory_returns_false_for_file() {
     // GIVEN: MockFilesystem with file (not directory)
     let fs = MockFilesystem::new();
-    fs.mock_set_path_type("/mnt/hidden-volume/state.json", "file");
+    fs.mock_set_path_type("/mnt/hidden-volume/state.json", PathKind::File);
 
     // WHEN: Checking if path is directory
     let result = fs.is_directory(Path::new("/mnt/hidden-volume/state.json"));

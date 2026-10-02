@@ -1,4 +1,5 @@
 use super::MockFilesystem;
+use super::PathKind;
 use crate::filesystem::Filesystem;
 use std::path::Path;
 
@@ -61,7 +62,7 @@ fn test_mock_filesystem_directory_operations() {
     let path = Path::new("/test/dir");
 
     fs.mock_set_path_exists("/test/dir", true);
-    fs.mock_set_path_type("/test/dir", "directory");
+    fs.mock_set_path_type("/test/dir", PathKind::Dir);
 
     assert!(fs.path_exists(path).unwrap());
     assert!(fs.is_directory(path).unwrap());

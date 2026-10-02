@@ -14,6 +14,7 @@ use super::types::{CleanupConfig, CleanupMode, CleanupReport};
 use crate::Filesystem;
 use crate::MockFilesystem;
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
+use crate::filesystem::PathKind;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -565,7 +566,7 @@ fn test_cleanup_manager_verification_flags_large_history_file() {
     assert_path_is_safe(&bash_history);
 
     fs.mock_set_path_exists(&bash_history, true);
-    fs.mock_set_path_type(&bash_history, "file");
+    fs.mock_set_path_type(&bash_history, PathKind::File);
     fs.mock_set_file_size(&bash_history, 20 * 1024);
     fs.mock_set_directory_contents(&log_path, vec![]);
 
@@ -629,8 +630,8 @@ fn test_cleanup_manager_temp_files_integration() {
     );
     fs.mock_set_path_exists("/tmp/nails-12345.lock", true);
     fs.mock_set_path_exists("/tmp/nails_cache", true);
-    fs.mock_set_path_type("/tmp/nails-12345.lock", "file");
-    fs.mock_set_path_type("/tmp/nails_cache", "directory");
+    fs.mock_set_path_type("/tmp/nails-12345.lock", PathKind::File);
+    fs.mock_set_path_type("/tmp/nails_cache", PathKind::Dir);
 
     let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
     let config = CleanupConfig {
@@ -703,8 +704,8 @@ fn test_cleanup_manager_temp_files_with_errors() {
     );
     fs.mock_set_path_exists("/tmp/nails-readonly.lock", true);
     fs.mock_set_path_exists("/tmp/nails-normal.txt", true);
-    fs.mock_set_path_type("/tmp/nails-readonly.lock", "file");
-    fs.mock_set_path_type("/tmp/nails-normal.txt", "file");
+    fs.mock_set_path_type("/tmp/nails-readonly.lock", PathKind::File);
+    fs.mock_set_path_type("/tmp/nails-normal.txt", PathKind::File);
     fs.mock_set_remove_should_fail("/tmp/nails-readonly.lock", true);
 
     let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
@@ -746,7 +747,7 @@ fn test_cleanup_manager_verification_ignores_preserved_explicit_temp_config() {
     fs.mock_set_path_exists("/tmp", true);
     fs.mock_set_files_with_pattern("/tmp", "nails", &[config_path.as_path()]);
     fs.mock_set_path_exists(config_path.to_str().unwrap(), true);
-    fs.mock_set_path_type(config_path.to_str().unwrap(), "file");
+    fs.mock_set_path_type(config_path.to_str().unwrap(), PathKind::File);
 
     let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
     let config = CleanupConfig {
@@ -802,9 +803,9 @@ fn test_cleanup_manager_verification_still_flags_non_preserved_temp_residue() {
         &[config_path.as_path(), leftover_path.as_path()],
     );
     fs.mock_set_path_exists(config_path.to_str().unwrap(), true);
-    fs.mock_set_path_type(config_path.to_str().unwrap(), "file");
+    fs.mock_set_path_type(config_path.to_str().unwrap(), PathKind::File);
     fs.mock_set_path_exists(leftover_path.to_str().unwrap(), true);
-    fs.mock_set_path_type(leftover_path.to_str().unwrap(), "file");
+    fs.mock_set_path_type(leftover_path.to_str().unwrap(), PathKind::File);
     fs.mock_set_remove_should_fail(leftover_path.to_str().unwrap(), true);
 
     let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
@@ -895,8 +896,8 @@ fn test_full_cleanup_cycle_all_cleaners_invoked() {
     );
     fs.mock_set_path_exists("/tmp/nails-12345.lock", true);
     fs.mock_set_path_exists("/tmp/nails-session-data.tmp", true);
-    fs.mock_set_path_type("/tmp/nails-12345.lock", "file");
-    fs.mock_set_path_type("/tmp/nails-session-data.tmp", "file");
+    fs.mock_set_path_type("/tmp/nails-12345.lock", PathKind::File);
+    fs.mock_set_path_type("/tmp/nails-session-data.tmp", PathKind::File);
 
     // 3. Setup log files (for LogCleaner)
     // LogCleaner validates that log_path.starts_with(hidden_volume)
@@ -909,8 +910,8 @@ fn test_full_cleanup_cycle_all_cleaners_invoked() {
     fs.mock_set_path_exists(&log_dir_str, true);
     fs.mock_set_path_exists(&log_file1, true);
     fs.mock_set_path_exists(&log_file2, true);
-    fs.mock_set_path_type(&log_file1, "file");
-    fs.mock_set_path_type(&log_file2, "file");
+    fs.mock_set_path_type(&log_file1, PathKind::File);
+    fs.mock_set_path_type(&log_file2, PathKind::File);
 
     // Mock directory listing for log files
     fs.mock_set_directory_contents(
@@ -1316,7 +1317,7 @@ fn test_cleanup_manager_uses_secure_delete_when_configured() {
     fs.mock_set_path_exists("/tmp", true);
     fs.mock_set_files_with_pattern("/tmp", "nails", &[Path::new("/tmp/nails-test.tmp")]);
     fs.mock_set_path_exists("/tmp/nails-test.tmp", true);
-    fs.mock_set_path_type("/tmp/nails-test.tmp", "file");
+    fs.mock_set_path_type("/tmp/nails-test.tmp", PathKind::File);
 
     // Setup log directory
     let hidden_volume = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);

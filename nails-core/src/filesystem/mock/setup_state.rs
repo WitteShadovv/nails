@@ -3,6 +3,24 @@ use super::MockFilesystem;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 
+/// The kind of entry a mock path represents.
+///
+/// Replaces the former free-form string argument of
+/// [`mock_set_path_type`](MockFilesystem::mock_set_path_type) so a test can only
+/// ask for a kind the mock actually models, rather than relying on the old
+/// "anything that is not `\"directory\"` is a file" convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathKind {
+    /// A regular file: exists, is not a directory and is not a symlink.
+    File,
+    /// A directory: exists and reports `is_directory`.
+    Dir,
+    /// A symbolic link: exists and reports `is_symlink`.
+    Symlink,
+    /// A path that does not exist.
+    Missing,
+}
+
 impl MockFilesystem {
     /// Set whether a path is mounted.
     ///
@@ -93,12 +111,40 @@ impl MockFilesystem {
         entry.exists = exists;
     }
 
-    /// Set a path's type (directory or file)
-    pub fn mock_set_path_type(&self, path: &str, type_str: &str) {
+    /// Set a path's kind (file, directory, symlink or missing).
+    pub fn mock_set_path_type(&self, path: &str, kind: PathKind) {
         let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         let entry = paths.entry(PathBuf::from(path)).or_default();
-        entry.exists = true;
-        entry.is_directory = type_str == "directory";
+        match kind {
+            PathKind::File => {
+                entry.exists = true;
+                entry.is_directory = false;
+                entry.is_symlink = false;
+            }
+            PathKind::Dir => {
+                entry.exists = true;
+                entry.is_directory = true;
+                entry.is_symlink = false;
+            }
+            PathKind::Symlink => {
+                entry.exists = true;
+                entry.is_directory = false;
+                entry.is_symlink = true;
+            }
+            PathKind::Missing => {
+                entry.exists = false;
+            }
+        }
+    }
+
+    /// Stand up a readable mock file in a single call.
+    ///
+    /// Combines [`mock_set_path_type`](Self::mock_set_path_type) with
+    /// [`mock_set_file_content`](Self::mock_set_file_content) so a test does not
+    /// need separate calls to make one file both exist and return contents.
+    pub fn mock_add_file(&self, path: &str, content: &str) {
+        self.mock_set_path_type(path, PathKind::File);
+        self.mock_set_file_content(path, content);
     }
 
     /// Set whether a path is writable
@@ -541,5 +587,60 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned");
         times.insert(path.to_path_buf(), modified_time);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::filesystem::Filesystem;
+
+    #[test]
+    fn path_kind_dir_reports_directory() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_type("/some/dir", PathKind::Dir);
+        assert!(fs.path_exists(Path::new("/some/dir")).unwrap());
+        assert!(fs.is_directory(Path::new("/some/dir")).unwrap());
+        assert!(!fs.is_symlink(Path::new("/some/dir")).unwrap());
+    }
+
+    #[test]
+    fn path_kind_file_is_not_a_directory() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_type("/some/file", PathKind::File);
+        assert!(fs.path_exists(Path::new("/some/file")).unwrap());
+        assert!(!fs.is_directory(Path::new("/some/file")).unwrap());
+        assert!(!fs.is_symlink(Path::new("/some/file")).unwrap());
+    }
+
+    #[test]
+    fn path_kind_symlink_reports_symlink() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_type("/some/link", PathKind::Symlink);
+        assert!(fs.path_exists(Path::new("/some/link")).unwrap());
+        assert!(fs.is_symlink(Path::new("/some/link")).unwrap());
+        assert!(!fs.is_directory(Path::new("/some/link")).unwrap());
+    }
+
+    #[test]
+    fn path_kind_missing_does_not_exist() {
+        let fs = MockFilesystem::new();
+        // Mark it present first, then clear it with `Missing`.
+        fs.mock_set_path_type("/gone", PathKind::File);
+        fs.mock_set_path_type("/gone", PathKind::Missing);
+        assert!(!fs.path_exists(Path::new("/gone")).unwrap());
+    }
+
+    #[test]
+    fn add_file_sets_existence_and_content() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file("/etc/example.conf", "key = value\n");
+        assert!(fs.path_exists(Path::new("/etc/example.conf")).unwrap());
+        assert!(!fs.is_directory(Path::new("/etc/example.conf")).unwrap());
+        assert_eq!(
+            fs.read_file_content(Path::new("/etc/example.conf"))
+                .unwrap(),
+            "key = value\n"
+        );
     }
 }

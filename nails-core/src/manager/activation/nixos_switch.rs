@@ -147,6 +147,7 @@ impl<F: Filesystem> NailsManager<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filesystem::PathKind;
     use crate::nixos::NixOSBuilder;
     use crate::{Config, MockFilesystem, StateFile, SystemState};
     use serial_test::serial;
@@ -236,10 +237,10 @@ mod tests {
 
         let fs = MockFilesystem::new();
         fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
-        fs.mock_set_path_type(profiles_dir.to_str().unwrap(), "directory");
+        fs.mock_set_path_type(profiles_dir.to_str().unwrap(), PathKind::Dir);
         fs.mock_set_directory_contents(&profiles_dir, vec![generation_dir]);
         fs.mock_set_path_exists("/run/current-system", true);
-        fs.mock_set_path_type("/run/current-system", "directory");
+        fs.mock_set_path_type("/run/current-system", PathKind::Dir);
 
         unsafe {
             std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
@@ -304,7 +305,7 @@ mod tests {
 
         let fs = MockFilesystem::new();
         fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
-        fs.mock_set_path_type(profiles_dir.to_str().unwrap(), "directory");
+        fs.mock_set_path_type(profiles_dir.to_str().unwrap(), PathKind::Dir);
         fs.mock_set_directory_contents(&profiles_dir, vec![system_generation.clone()]);
 
         let builder =

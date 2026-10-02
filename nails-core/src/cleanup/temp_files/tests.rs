@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::MockFilesystem;
+use crate::filesystem::PathKind;
 
 #[test]
 fn test_temp_files_cleaner_new() {
@@ -186,8 +187,8 @@ fn test_cleanup_removes_matching_files() {
     );
     fs.mock_set_path_exists("/tmp/nails-12345.lock", true);
     fs.mock_set_path_exists("/tmp/nails_cache", true);
-    fs.mock_set_path_type("/tmp/nails-12345.lock", "file");
-    fs.mock_set_path_type("/tmp/nails_cache", "directory");
+    fs.mock_set_path_type("/tmp/nails-12345.lock", PathKind::File);
+    fs.mock_set_path_type("/tmp/nails_cache", PathKind::Dir);
 
     let cleaner = TempFilesCleaner::new(fs);
     let result = cleaner.clean().unwrap();
@@ -213,9 +214,9 @@ fn test_cleanup_preserves_nails_config_files() {
     fs.mock_set_path_exists("/tmp/nails-headless.yaml", true);
     fs.mock_set_path_exists("/tmp/nails-overlay.toml", true);
     fs.mock_set_path_exists("/tmp/nails-12345.lock", true);
-    fs.mock_set_path_type("/tmp/nails-headless.yaml", "file");
-    fs.mock_set_path_type("/tmp/nails-overlay.toml", "file");
-    fs.mock_set_path_type("/tmp/nails-12345.lock", "file");
+    fs.mock_set_path_type("/tmp/nails-headless.yaml", PathKind::File);
+    fs.mock_set_path_type("/tmp/nails-overlay.toml", PathKind::File);
+    fs.mock_set_path_type("/tmp/nails-12345.lock", PathKind::File);
 
     let cleaner = TempFilesCleaner::new(fs.clone());
     let result = cleaner.clean().unwrap();
@@ -258,8 +259,8 @@ fn test_cleanup_continues_on_permission_error() {
     );
     fs.mock_set_path_exists("/tmp/nails-readonly.lock", true);
     fs.mock_set_path_exists("/tmp/nails-normal.txt", true);
-    fs.mock_set_path_type("/tmp/nails-readonly.lock", "file");
-    fs.mock_set_path_type("/tmp/nails-normal.txt", "file");
+    fs.mock_set_path_type("/tmp/nails-readonly.lock", PathKind::File);
+    fs.mock_set_path_type("/tmp/nails-normal.txt", PathKind::File);
 
     // Configure first file to fail removal
     fs.mock_set_remove_should_fail("/tmp/nails-readonly.lock", true);
@@ -288,8 +289,8 @@ fn test_cleanup_preserves_explicit_config_path() {
     );
     fs.mock_set_path_exists("/tmp/nails-tracker-integrity.yaml", true);
     fs.mock_set_path_exists("/tmp/nails-status.stdout", true);
-    fs.mock_set_path_type("/tmp/nails-tracker-integrity.yaml", "file");
-    fs.mock_set_path_type("/tmp/nails-status.stdout", "file");
+    fs.mock_set_path_type("/tmp/nails-tracker-integrity.yaml", PathKind::File);
+    fs.mock_set_path_type("/tmp/nails-status.stdout", PathKind::File);
 
     let cleaner = TempFilesCleaner::new(fs.clone())
         .with_preserved_paths(vec![PathBuf::from("/tmp/nails-tracker-integrity.yaml")]);

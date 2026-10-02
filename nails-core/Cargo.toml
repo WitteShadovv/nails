@@ -22,6 +22,10 @@ path = "src/lib.rs"
 # real write paths against temp directories. Off in release builds, so the
 # hooks never exist in a shipped binary.
 afs-test-hooks-compile-time = []
+# Exposes the in-crate test fixtures (`Config::test_default`, `TestWorld`) to
+# downstream test code in `nails-cli` and this crate's integration tests. Off by
+# default; the fixtures also compile for this crate's own tests via `cfg(test)`.
+test-support = []
 
 [dependencies]
 # Use workspace versions for consistency

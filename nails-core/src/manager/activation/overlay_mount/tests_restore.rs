@@ -1,3 +1,4 @@
+use crate::filesystem::PathKind;
 use crate::manager::activation::guards::NixDaemonGuard;
 use crate::{Config, Filesystem, MockFilesystem, NailsManager, OverlayConfig};
 use std::os::unix::fs::PermissionsExt;
@@ -11,7 +12,7 @@ fn test_restore_nix_security_model_self_binds_nix_store_in_test_runtime() {
 
     // The overlaid /nix/store is self-bound read-only; no decoy source is used.
     fs.mock_set_path_exists("/nix/store", true);
-    fs.mock_set_path_type("/nix/store", "directory");
+    fs.mock_set_path_type("/nix/store", PathKind::Dir);
 
     let manager = NailsManager::new(
         fs.clone(),
@@ -53,7 +54,7 @@ fn test_restore_nix_security_model_self_binds_without_any_submount_sources() {
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/nix/store", true);
-    fs.mock_set_path_type("/nix/store", "directory");
+    fs.mock_set_path_type("/nix/store", PathKind::Dir);
 
     let manager = NailsManager::new(
         fs.clone(),

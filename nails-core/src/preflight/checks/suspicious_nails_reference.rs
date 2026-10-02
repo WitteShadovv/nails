@@ -42,13 +42,13 @@ impl<F: Filesystem> PreFlightCheck<F> for SuspiciousNailsReferenceCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filesystem::MockFilesystem;
+    use crate::filesystem::{MockFilesystem, PathKind};
     use std::path::Path;
 
     fn register_base_config(fs: &MockFilesystem, content: &str) {
         let path = "/etc/nixos/hardware-configuration.nix";
         fs.mock_set_path_exists(path, true);
-        fs.mock_set_path_type(path, "file");
+        fs.mock_set_path_type(path, PathKind::File);
         fs.mock_set_file_content(path, content);
         fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[Path::new(path)]);
     }

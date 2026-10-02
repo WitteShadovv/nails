@@ -1,5 +1,6 @@
 use super::*;
 use crate::MockFilesystem;
+use crate::filesystem::PathKind;
 use std::path::PathBuf;
 
 // ========================================================================
@@ -42,7 +43,7 @@ fn test_rotate_logs_rotates_when_exceeds_size_limit() {
 
     // Set up log directory for enforce_retention to list
     fs.mock_set_path_exists("/mnt/hidden/logs", true);
-    fs.mock_set_path_type("/mnt/hidden/logs", "directory");
+    fs.mock_set_path_type("/mnt/hidden/logs", PathKind::Dir);
     fs.mock_set_directory_contents(
         &PathBuf::from("/mnt/hidden/logs"),
         vec![PathBuf::from("/mnt/hidden/logs/nails.log")],
@@ -94,7 +95,7 @@ fn test_rotate_logs_shifts_existing_numbered_logs() {
 
     // Set up log directory for enforce_retention
     fs.mock_set_path_exists("/mnt/hidden/logs", true);
-    fs.mock_set_path_type("/mnt/hidden/logs", "directory");
+    fs.mock_set_path_type("/mnt/hidden/logs", PathKind::Dir);
     fs.mock_set_directory_contents(
         &PathBuf::from("/mnt/hidden/logs"),
         vec![
@@ -166,7 +167,7 @@ fn test_enforce_retention_deletes_old_numbered_logs() {
 
     // Set up log directory with files beyond retention (7 days)
     fs.mock_set_path_exists("/mnt/hidden/logs", true);
-    fs.mock_set_path_type("/mnt/hidden/logs", "directory");
+    fs.mock_set_path_type("/mnt/hidden/logs", PathKind::Dir);
 
     let now = chrono::Utc::now();
 
@@ -214,7 +215,7 @@ fn test_enforce_retention_handles_no_old_logs() {
 
     // Set up log directory with only recent logs (within retention)
     fs.mock_set_path_exists("/mnt/hidden/logs", true);
-    fs.mock_set_path_type("/mnt/hidden/logs", "directory");
+    fs.mock_set_path_type("/mnt/hidden/logs", PathKind::Dir);
 
     let mut dir_contents = vec![];
     for i in 1..=5 {
@@ -342,7 +343,7 @@ fn test_rotate_logs_handles_permission_denied_on_rename() {
 
     // Set up log directory
     fs.mock_set_path_exists("/mnt/hidden/logs", true);
-    fs.mock_set_path_type("/mnt/hidden/logs", "directory");
+    fs.mock_set_path_type("/mnt/hidden/logs", PathKind::Dir);
     fs.mock_set_directory_contents(
         &PathBuf::from("/mnt/hidden/logs"),
         vec![PathBuf::from("/mnt/hidden/logs/nails.log")],

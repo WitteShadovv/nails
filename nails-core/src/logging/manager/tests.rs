@@ -1,6 +1,7 @@
 use super::*;
 use crate::MockFilesystem;
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
+use crate::filesystem::PathKind;
 
 // ========================================================================
 // LoggingManager struct tests
@@ -434,7 +435,7 @@ fn test_rotate_logs_delegates_to_rotation_helper() {
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/mnt/data/logs", true);
-    fs.mock_set_path_type("/mnt/data/logs", "directory");
+    fs.mock_set_path_type("/mnt/data/logs", PathKind::Dir);
     fs.mock_set_path_exists("/mnt/data/logs/nails.log", true);
     fs.mock_set_file_size("/mnt/data/logs/nails.log", 11_000_000);
     fs.mock_set_file_content("/mnt/data/logs/nails.log", "current");
@@ -480,7 +481,7 @@ fn test_enforce_retention_delegates_to_rotation_helper() {
     let fresh_log = PathBuf::from("/mnt/data/logs/nails.log.1");
 
     fs.mock_set_path_exists("/mnt/data/logs", true);
-    fs.mock_set_path_type("/mnt/data/logs", "directory");
+    fs.mock_set_path_type("/mnt/data/logs", PathKind::Dir);
     fs.mock_set_path_exists(old_log.to_str().unwrap(), true);
     fs.mock_set_path_exists(fresh_log.to_str().unwrap(), true);
     fs.mock_set_directory_contents(

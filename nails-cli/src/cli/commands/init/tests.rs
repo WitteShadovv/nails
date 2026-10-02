@@ -1,4 +1,5 @@
 use super::*;
+use nails_core::filesystem::PathKind;
 use nails_core::{
     Config, Filesystem, MockFilesystem, NailsManager, StateFile, SystemState,
     stage_hidden_config_symlink,
@@ -36,7 +37,7 @@ fn load_generated_config(root: &Path) -> Config {
 
 fn mock_init_layout(fs: &MockFilesystem, hidden_root: &Path) {
     fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_root.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(hidden_root.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_mounted(hidden_root, true);
     fs.mock_set_readable(hidden_root.to_str().unwrap(), true);
     fs.mock_set_writable(hidden_root.to_str().unwrap(), true);
@@ -45,7 +46,7 @@ fn mock_init_layout(fs: &MockFilesystem, hidden_root: &Path) {
     for rel in SUBDIRS {
         let path = hidden_root.join(rel);
         fs.mock_set_path_exists(path.to_str().unwrap(), true);
-        fs.mock_set_path_type(path.to_str().unwrap(), "directory");
+        fs.mock_set_path_type(path.to_str().unwrap(), PathKind::Dir);
         fs.mock_set_readable(path.to_str().unwrap(), true);
         fs.mock_set_writable(path.to_str().unwrap(), true);
     }
@@ -53,24 +54,24 @@ fn mock_init_layout(fs: &MockFilesystem, hidden_root: &Path) {
 
 fn mock_minimal_activation_prereqs(fs: &MockFilesystem) {
     fs.mock_set_path_exists("/", true);
-    fs.mock_set_path_type("/", "directory");
+    fs.mock_set_path_type("/", PathKind::Dir);
 
     for dir in ["/etc", "/etc/nixos", "/home", "/nix", "/nix/store"] {
         fs.mock_set_path_exists(dir, true);
-        fs.mock_set_path_type(dir, "directory");
+        fs.mock_set_path_type(dir, PathKind::Dir);
         fs.mock_set_readable(dir, true);
         fs.mock_set_writable(dir, true);
     }
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_file_content(
         "/etc/nixos/hardware-configuration.nix",
         "{ config, lib, pkgs, ... }:\n{\n  imports = [ ];\n}\n",
     );
 
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
     fs.mock_set_file_content("/etc/nixos/configuration.nix", "{ }\n");
 
     fs.mock_set_root_directories(vec!["/etc".into(), "/home".into(), "/nix".into()]);
@@ -224,22 +225,22 @@ fn test_init_generated_config_is_preflight_ready_for_activation() {
     ] {
         let path = hidden_root.join(rel);
         fs.mock_set_path_exists(path.to_str().unwrap(), true);
-        fs.mock_set_path_type(path.to_str().unwrap(), "directory");
+        fs.mock_set_path_type(path.to_str().unwrap(), PathKind::Dir);
         fs.mock_set_writable(path.to_str().unwrap(), true);
         fs.mock_set_readable(path.to_str().unwrap(), true);
     }
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_file_content(
         "/etc/nixos/hardware-configuration.nix",
         "{ config, lib, pkgs, ... }:\n{ }",
     );
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
     for lower in ["/etc", "/home", "/nix"] {
         fs.mock_set_path_exists(lower, true);
-        fs.mock_set_path_type(lower, "directory");
+        fs.mock_set_path_type(lower, PathKind::Dir);
         fs.mock_set_readable(lower, true);
     }
     fs.mock_set_root_directories(vec!["/etc".into(), "/home".into(), "/nix".into()]);

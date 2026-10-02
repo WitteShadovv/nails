@@ -6,6 +6,7 @@
 
 use chrono::Utc;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use nails_core::filesystem::PathKind;
 use nails_core::{
     CleanupConfig, Config, ConfigBuilder, DeactivationMode, DeactivationOrchestrator,
     MockFilesystem, NailsManager, OverlayInfo, StateFile, StatusCommand, SystemState,
@@ -108,14 +109,14 @@ fn create_emergency_orchestrator() -> (NailsManager<MockFilesystem>, Deactivatio
         std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", profiles_dir.join("system"));
     }
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
-    fs.mock_set_path_type(profiles_dir.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(profiles_dir.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_directory_contents(&profiles_dir, vec![system_profile.clone()]);
     fs.mock_set_path_exists(switch_script.to_str().unwrap(), true);
-    fs.mock_set_path_type(switch_script.to_str().unwrap(), "file");
+    fs.mock_set_path_type(switch_script.to_str().unwrap(), PathKind::File);
 
     let history_path = safe_home.join(".bash_history");
     fs.mock_set_path_exists(history_path.to_str().unwrap(), true);
-    fs.mock_set_path_type(history_path.to_str().unwrap(), "file");
+    fs.mock_set_path_type(history_path.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(history_path.to_str().unwrap(), "nails emergency\n");
 
     let mut overlay_status = HashMap::new();

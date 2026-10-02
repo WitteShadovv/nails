@@ -324,7 +324,7 @@ mod tests {
 
     fn make_manager() -> NailsManager<MockFilesystem> {
         let fs = MockFilesystem::new();
-        let config = Config::default();
+        let config = Config::test_default();
         NailsManager::new(fs, config, PathBuf::from("/tmp/test-state.json"))
     }
 

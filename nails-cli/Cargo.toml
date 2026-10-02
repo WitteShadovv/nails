@@ -40,11 +40,16 @@ assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = "3"
 criterion = { version = "0.8", features = ["html_reports"] }
-# Compile the attach-gate test hooks into nails-core for test builds only, so the
-# CLI's integration tests can drive file logging against temp directories. The
-# shipped binary (`cargo build`) never pulls in dev-dependencies, so the hooks
-# stay out of release builds.
-nails-core = { path = "../nails-core", features = ["afs-test-hooks-compile-time"] }
+# Pull in nails-core's test-only extras for the CLI test/bench builds. The
+# shipped binary (`cargo build`) never pulls in dev-dependencies, so neither
+# feature reaches release builds:
+#   - afs-test-hooks-compile-time: compile the attach-gate test hooks so the
+#     integration tests can drive file logging against temp directories.
+#   - test-support: the shared test fixtures (`Config::test_default`, `TestWorld`).
+nails-core = { path = "../nails-core", features = [
+    "afs-test-hooks-compile-time",
+    "test-support",
+] }
 
 [[bench]]
 name = "startup"

@@ -97,12 +97,14 @@ pub mod hidden_root;
 mod runtime_safety;
 
 // Re-export for convenience
+#[cfg(any(test, feature = "test-support"))]
+pub use config::TestWorld;
 pub use config::{
     CliOverrides, ColorProfile, ColorSchemeConfig, Config, ConfigBuilder, DecoyProfile,
     EphemeralOverlayDir, LoadedConfig, OverlayConfig, OverlayMode, ValueSource,
 };
 pub use error::{NailsError, Result};
-pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
+pub use filesystem::{Filesystem, MockFilesystem, PathKind, RealFilesystem};
 pub use hidden_root::{AttachState, HiddenRoot};
 pub use manager::deactivation::{DeactivationMode, DeactivationOrchestrator};
 pub use manager::{

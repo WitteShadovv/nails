@@ -36,9 +36,13 @@ mod suggest;
 mod types;
 mod validation;
 
-// Test-only utilities module
-#[cfg(test)]
+// Test-support utilities: available to this crate's tests and, via the
+// `test-support` feature, to downstream test code.
+#[cfg(any(test, feature = "test-support"))]
 mod testing;
+
+#[cfg(any(test, feature = "test-support"))]
+pub use testing::TestWorld;
 
 // Re-exports for public API - color types
 pub use colors::{ColorProfile, ColorSchemeConfig, DecoyProfile};

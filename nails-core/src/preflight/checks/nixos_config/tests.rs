@@ -1,5 +1,5 @@
 use super::*;
-use crate::filesystem::MockFilesystem;
+use crate::filesystem::{MockFilesystem, PathKind};
 use std::sync::Arc;
 
 #[test]
@@ -9,22 +9,25 @@ fn test_nixos_config_check_success() {
 
     // Setup: All required files exist with correct content
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
     fs.mock_set_file_content(
         "/mnt/hidden/etc/nixos/hardware-configuration.nix",
         "{ config, lib, pkgs, ... }:\n{ imports = [ ./nails/configuration.nix ]; }",
     );
 
     fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", PathKind::File);
 
     let check = NixOSConfigCheck::new(PathBuf::from("/mnt/hidden"));
     let result = check.run(&fs).expect("Check should not error");
@@ -47,7 +50,7 @@ fn test_nixos_config_check_missing_base_config() {
     // Base config does NOT exist
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", false);
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
 
     let check = NixOSConfigCheck::new(PathBuf::from("/mnt/hidden"));
     let result = check.run(&fs).expect("Check should not error");
@@ -74,7 +77,7 @@ fn test_nixos_config_check_missing_base_nixos_config() {
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
 
     // Neither configuration.nix nor flake.nix exists
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", false);
@@ -99,9 +102,9 @@ fn test_nixos_config_check_missing_hidden_etc_nixos() {
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
 
     // Hidden etc/nixos directory does NOT exist
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", false);
@@ -128,22 +131,22 @@ fn test_nixos_config_check_missing_modified_hardware_config() {
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_file_content(
         "/etc/nixos/hardware-configuration.nix",
         "# base config\n{ imports = [ ]; }\n",
     );
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
 
     // Modified hardware-configuration.nix does NOT exist
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", false);
 
     fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", PathKind::File);
 
     let check = NixOSConfigCheck::new(PathBuf::from("/mnt/hidden"));
     let result = check.run(&fs).expect("Check should not error");
@@ -182,16 +185,16 @@ fn test_nixos_config_check_auto_create_modified_hardware_config_write_fails() {
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_file_content(
         "/etc/nixos/hardware-configuration.nix",
         "{ imports = [ ]; }\n",
     );
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
 
     // Modified hardware-configuration.nix does NOT exist and write should fail
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", false);
@@ -216,15 +219,18 @@ fn test_nixos_config_check_missing_hidden_import() {
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
     // Content does NOT contain the hidden import
     fs.mock_set_file_content(
         "/mnt/hidden/etc/nixos/hardware-configuration.nix",
@@ -253,22 +259,25 @@ fn test_nixos_config_check_commented_import_fails() {
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
     fs.mock_set_file_content(
         "/mnt/hidden/etc/nixos/hardware-configuration.nix",
         "{ imports = [\n  # ./nails/configuration.nix\n  (modulesPath + \"/installer/scan/not-detected.nix\")\n]; }",
     );
 
     fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", PathKind::File);
 
     let check = NixOSConfigCheck::new(PathBuf::from("/mnt/hidden"));
     let result = check.run(&fs).expect("Check should not error");
@@ -290,21 +299,24 @@ fn test_nixos_config_check_missing_hidden_configuration_auto_creates() {
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", "directory");
+    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden", true);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
     fs.mock_set_file_content(
         "/mnt/hidden/etc/nixos/hardware-configuration.nix",
         "{ config, lib, pkgs, ... }:\n{ imports = [ ./nails/configuration.nix ]; }",
@@ -330,19 +342,22 @@ fn test_nixos_config_check_auto_create_hidden_configuration_write_fails() {
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
     fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", "directory");
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
     fs.mock_set_writable("/mnt", true);
     fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", "directory");
+    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
     fs.mock_set_writable("/mnt/hidden", true);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
     fs.mock_set_file_content(
         "/mnt/hidden/etc/nixos/hardware-configuration.nix",
         "{ config, lib, pkgs, ... }:\n{ imports = [ ./nails/configuration.nix ]; }",
@@ -362,22 +377,28 @@ fn test_nixos_config_check_different_hidden_path() {
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
-    fs.mock_set_path_type("/etc/nixos/flake.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/flake.nix", PathKind::File);
 
     fs.mock_set_path_exists("/media/secret/etc/nixos", true);
-    fs.mock_set_path_type("/media/secret/etc/nixos", "directory");
+    fs.mock_set_path_type("/media/secret/etc/nixos", PathKind::Dir);
 
     fs.mock_set_path_exists("/media/secret/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/media/secret/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/media/secret/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
     fs.mock_set_file_content(
         "/media/secret/etc/nixos/hardware-configuration.nix",
         "{ imports = [ ./nails/configuration.nix ]; }",
     );
 
     fs.mock_set_path_exists("/media/secret/config/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/media/secret/config/nixos/configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/media/secret/config/nixos/configuration.nix",
+        PathKind::File,
+    );
 
     let check = NixOSConfigCheck::new(PathBuf::from("/media/secret"));
     let result = check.run(&fs).expect("Check should not error");
@@ -394,23 +415,26 @@ fn test_nixos_config_check_allows_flake_only() {
 
     // Base hardware-configuration.nix exists
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
 
     // Base flake exists, configuration.nix missing
     fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
-    fs.mock_set_path_type("/etc/nixos/flake.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/flake.nix", PathKind::File);
 
     // Hidden overlay structure valid
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
     fs.mock_set_file_content(
         "/mnt/hidden/etc/nixos/hardware-configuration.nix",
         "{ imports = [ ./nails/configuration.nix ]; }",
     );
     fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", PathKind::File);
     let check = NixOSConfigCheck::new(PathBuf::from("/mnt/hidden"));
     let result = check.run(&fs).expect("Check should not error");
 
@@ -423,7 +447,7 @@ fn test_nixos_config_check_fails_without_base_config_or_flake() {
 
     // Base hardware-configuration.nix exists
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
 
     // Neither configuration.nix nor flake.nix exists
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", false);
@@ -453,22 +477,25 @@ fn test_nixos_config_check_integration_with_registry() {
 
     // Setup valid configuration
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
     fs.mock_set_file_content(
         "/mnt/hidden/etc/nixos/hardware-configuration.nix",
         "{ imports = [ ./nails/configuration.nix ]; }",
     );
 
     fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", PathKind::File);
 
     let mut registry: PreFlightRegistry<MockFilesystem> = PreFlightRegistry::new();
     registry.add_check(Box::new(NixOSConfigCheck::new(PathBuf::from(
@@ -501,14 +528,17 @@ impl crate::NixParser for FixedNixParser {
 
 fn valid_hidden_config(fs: &MockFilesystem) {
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", "directory");
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos/hardware-configuration.nix", "file");
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
     fs.mock_set_file_content(
         "/mnt/hidden/etc/nixos/hardware-configuration.nix",
         "{ ... }: {\n  imports = [\n    ./hardware-configuration.base.nix\n    ./nails/configuration.nix\n  ];\n}\n",
@@ -519,14 +549,14 @@ fn valid_hidden_config(fs: &MockFilesystem) {
     );
     fs.mock_set_path_type(
         "/mnt/hidden/etc/nixos/hardware-configuration.base.nix",
-        "file",
+        PathKind::File,
     );
     fs.mock_set_file_content(
         "/mnt/hidden/etc/nixos/hardware-configuration.base.nix",
         "{ config, lib, pkgs, ... }:\n{ }\n",
     );
     fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", "file");
+    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", PathKind::File);
     fs.mock_set_file_content(
         "/mnt/hidden/config/nixos/configuration.nix",
         "{ ... }: { }\n",

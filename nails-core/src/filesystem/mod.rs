@@ -44,7 +44,7 @@ pub mod real;
 mod traits;
 
 // Re-exports
-pub use mock::{MockFilesystem, MockOp};
+pub use mock::{MockFilesystem, MockOp, PathKind};
 pub use mount_info::MountInfo;
 pub use mountinfo::{
     MountEntry, NailsMounts, OverlayOpts, escape_overlay_path, parse_mountinfo, parse_overlay_opts,

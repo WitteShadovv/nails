@@ -14,7 +14,7 @@ use super::{DeactivationReport, PostUnmountCleanupReport};
 use crate::DeactivationOrchestrator;
 use crate::cleanup::test_utils::{TEST_HOME, assert_path_is_safe, set_safe_test_home};
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
-use crate::filesystem::Filesystem;
+use crate::filesystem::{Filesystem, PathKind};
 use crate::{
     CleanupConfig, CleanupMode, CleanupReport, Config, MockFilesystem, NailsError, NailsManager,
     StateFile, SystemState,
@@ -176,10 +176,10 @@ fn setup_system_profile_stub(fs: &MockFilesystem) -> SystemProfileStub {
     fs::set_permissions(&switch_script, perms).expect("chmod switch script");
 
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
-    fs.mock_set_path_type(profiles_dir.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(profiles_dir.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_directory_contents(&profiles_dir, vec![system_link]);
     fs.mock_set_path_exists(switch_script.to_str().unwrap(), true);
-    fs.mock_set_path_type(switch_script.to_str().unwrap(), "file");
+    fs.mock_set_path_type(switch_script.to_str().unwrap(), PathKind::File);
 
     SystemProfileStub {
         _dir: profile_root,
@@ -212,8 +212,8 @@ fn setup_active_manager() -> ManagerFixture {
     // Setup mock filesystem for active state
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
     fs.mock_set_path_exists("/mnt/hidden-volume", true);
-    fs.mock_set_path_type(DEFAULT_HIDDEN_VOLUME_ROOT, "directory");
-    fs.mock_set_path_type("/mnt/hidden-volume", "directory");
+    fs.mock_set_path_type(DEFAULT_HIDDEN_VOLUME_ROOT, PathKind::Dir);
+    fs.mock_set_path_type("/mnt/hidden-volume", PathKind::Dir);
 
     let temp_dir = tempfile::tempdir().unwrap();
     let mock_hidden_vol = temp_dir.path().to_path_buf();
@@ -751,7 +751,7 @@ fn test_deactivation_returns_error_when_switch_script_is_missing() {
         m.filesystem()
             .mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
         m.filesystem()
-            .mock_set_path_type(profiles_dir.to_str().unwrap(), "directory");
+            .mock_set_path_type(profiles_dir.to_str().unwrap(), PathKind::Dir);
         m.filesystem()
             .mock_set_directory_contents(&profiles_dir, vec![generation_dir.clone()]);
         m.filesystem().mock_set_mounted(Path::new("/home"), true);
@@ -784,8 +784,8 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
 
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
     fs.mock_set_path_exists("/mnt/hidden-volume", true);
-    fs.mock_set_path_type(DEFAULT_HIDDEN_VOLUME_ROOT, "directory");
-    fs.mock_set_path_type("/mnt/hidden-volume", "directory");
+    fs.mock_set_path_type(DEFAULT_HIDDEN_VOLUME_ROOT, PathKind::Dir);
+    fs.mock_set_path_type("/mnt/hidden-volume", PathKind::Dir);
 
     let temp_dir = tempfile::tempdir().unwrap();
     let mock_hidden_vol = temp_dir.path();
@@ -919,9 +919,9 @@ fn test_emergency_cleanup_preserves_explicit_config_path() {
         &[config_path.as_path(), Path::new("/tmp/nails-status.stdout")],
     );
     fs.mock_set_path_exists(config_path.to_str().unwrap(), true);
-    fs.mock_set_path_type(config_path.to_str().unwrap(), "file");
+    fs.mock_set_path_type(config_path.to_str().unwrap(), PathKind::File);
     fs.mock_set_path_exists("/tmp/nails-status.stdout", true);
-    fs.mock_set_path_type("/tmp/nails-status.stdout", "file");
+    fs.mock_set_path_type("/tmp/nails-status.stdout", PathKind::File);
 
     let state_file = StateFile {
         state: SystemState::Active {
@@ -1390,7 +1390,7 @@ fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
     fs.mock_set_path_exists(system_profile.parent().unwrap().to_str().unwrap(), true);
     fs.mock_set_path_type(
         system_profile.parent().unwrap().to_str().unwrap(),
-        "directory",
+        PathKind::Dir,
     );
     fs.mock_set_directory_contents(system_profile.parent().unwrap(), vec![]);
 
@@ -1482,13 +1482,13 @@ fn test_deactivate_prepares_decoy_symlink_when_restore_is_required() {
     fs.mock_set_path_exists(system_profile.parent().unwrap().to_str().unwrap(), true);
     fs.mock_set_path_type(
         system_profile.parent().unwrap().to_str().unwrap(),
-        "directory",
+        PathKind::Dir,
     );
     fs.mock_set_directory_contents(system_profile.parent().unwrap(), vec![profile_root.clone()]);
     fs.mock_set_path_exists(profile_root.to_str().unwrap(), true);
-    fs.mock_set_path_type(profile_root.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(profile_root.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_path_exists(switch_script.to_str().unwrap(), true);
-    fs.mock_set_path_type(switch_script.to_str().unwrap(), "file");
+    fs.mock_set_path_type(switch_script.to_str().unwrap(), PathKind::File);
 
     let upper_dir = hidden_root.join("overlays/home/upper");
     let work_dir = hidden_root.join("overlays/home/work");
@@ -1739,7 +1739,7 @@ fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
         std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
     }
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
-    fs.mock_set_path_type(profiles_dir.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(profiles_dir.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_directory_contents(&profiles_dir, vec![generation_dir.clone()]);
 
     let upper_dir = hidden_root.join("overlays/home/upper");
@@ -2288,7 +2288,7 @@ fn active_manager_with_failing_profile_lookup() -> (
     // The profiles directory exists but its contents are deliberately left
     // unconfigured, so `list_directory` returns Err and the lookup fails.
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
-    fs.mock_set_path_type(profiles_dir.to_str().unwrap(), "directory");
+    fs.mock_set_path_type(profiles_dir.to_str().unwrap(), PathKind::Dir);
 
     let config = Config {
         hidden_volume_root: hidden_root.clone(),

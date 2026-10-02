@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
-use crate::filesystem::MockFilesystem;
+use crate::filesystem::{MockFilesystem, PathKind};
 use std::path::Path;
 
 /// Helper: create StorageReadinessCheck with no overlays
@@ -42,7 +42,7 @@ fn setup_all_required_dirs(fs: &MockFilesystem) {
     ] {
         let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, "directory");
+        fs.mock_set_path_type(&path, PathKind::Dir);
         fs.mock_set_writable(&path, true);
     }
 }
@@ -134,7 +134,7 @@ fn test_storage_readiness_missing_dir_autocreate_success() {
     ] {
         let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, "directory");
+        fs.mock_set_path_type(&path, PathKind::Dir);
     }
 
     // etc/ is missing but creatable
@@ -165,7 +165,7 @@ fn test_storage_readiness_missing_dir_autocreate_fails() {
     ] {
         let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, "directory");
+        fs.mock_set_path_type(&path, PathKind::Dir);
     }
 
     fs.mock_set_path_exists("/mnt/data/etc", false);
@@ -236,7 +236,7 @@ fn test_storage_readiness_mixed_issues_single_fail() {
     for dir in &["etc", "home", ".work/etc", ".work/home", ".work/nix"] {
         let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, "directory");
+        fs.mock_set_path_type(&path, PathKind::Dir);
         fs.mock_set_writable(&path, true);
     }
     fs.mock_set_path_exists("/mnt/data/config", false);
@@ -279,13 +279,13 @@ fn test_storage_readiness_directory_is_file_triggers_autocreate() {
     ] {
         let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, "directory");
+        fs.mock_set_path_type(&path, PathKind::Dir);
         fs.mock_set_writable(&path, true);
     }
 
     // etc/ exists but is a file, not a directory
     fs.mock_set_path_exists("/mnt/data/etc", true);
-    fs.mock_set_path_type("/mnt/data/etc", "file");
+    fs.mock_set_path_type("/mnt/data/etc", PathKind::File);
     fs.mock_set_directory_creatable("/mnt/data/etc", false);
 
     let result = check.run(&fs).unwrap();
@@ -386,7 +386,7 @@ fn test_storage_readiness_multiple_missing_dirs_autocreate_partial() {
     for dir in &["home", ".work/etc", ".work/home", ".work/nix"] {
         let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, "directory");
+        fs.mock_set_path_type(&path, PathKind::Dir);
     }
 
     // config/ missing but creatable
@@ -397,7 +397,7 @@ fn test_storage_readiness_multiple_missing_dirs_autocreate_partial() {
     fs.mock_set_directory_creatable("/mnt/data/nix", false);
     // etc/ exists
     fs.mock_set_path_exists("/mnt/data/etc", true);
-    fs.mock_set_path_type("/mnt/data/etc", "directory");
+    fs.mock_set_path_type("/mnt/data/etc", PathKind::Dir);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
