@@ -30,7 +30,7 @@ in
     code, output = machine.execute("nails --no-log-file --config /nonexistent/path/config.toml status 2>&1")
     assert code == 3, f"expected exit 3 for a missing --config, got {code}: {output!r}"
     assert output.strip() == (
-        "Error: config file not found: /nonexistent/path/config.toml "
+        "error: config file not found: /nonexistent/path/config.toml "
         "(run `nails init <root>` or pass --config)"
     ), f"expected exactly one error line, got: {output!r}"
     print("✓ nails --config /nonexistent exits 3 with one error line")

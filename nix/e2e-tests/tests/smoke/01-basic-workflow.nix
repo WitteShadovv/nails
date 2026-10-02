@@ -54,7 +54,7 @@ in
     print("✓ No overlays mounted on /home, /etc, or /var")
 
     inactive_status = read_status_json()
-    assert inactive_status["state"] == "Inactive", f"Expected Inactive status, got: {inactive_status}"
+    assert inactive_status["state"]["kind"] == "inactive", f"Expected Inactive status, got: {inactive_status}"
     print("✓ NAILS status reports Inactive before activation")
 
     print("\n=== Testing Activation ===")
@@ -84,7 +84,7 @@ in
     print("✓ Nix operations work during active session")
 
     active_status = read_status_json()
-    assert active_status["state"].startswith("Active"), f"Expected Active status, got: {active_status}"
+    assert active_status["state"]["kind"] == "active", f"Expected Active status, got: {active_status}"
     active_paths = {overlay["path"] for overlay in active_status["overlays"]}
     assert "/home" in active_paths and "/etc" in active_paths, \
         f"Expected core overlays in status output, got: {active_status}"
@@ -123,7 +123,7 @@ in
     print("✓ Nix tooling works after reboot")
 
     post_status = read_status_json()
-    assert post_status["state"] == "Inactive", f"Expected Inactive after reboot, got: {post_status}"
+    assert post_status["state"]["kind"] == "inactive", f"Expected Inactive after reboot, got: {post_status}"
     print("✓ NAILS status reports Inactive after reboot")
 
     print("\n=== Testing Forensic Cleanliness ===")
