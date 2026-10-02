@@ -6127,6 +6127,11 @@ fn test_overlay_mount_failure_error_format() {
 
     let mut config = Config::default();
     config.hidden_volume_root = mock_hidden_vol.to_path_buf();
+    // Keep the state file and logs on the hidden volume. Their defaults are
+    // derived from the test binary location under `/home`, which the
+    // overlay-targets floor would (correctly) refuse to mount over.
+    config.state_file_path = state_path.clone();
+    config.log_path = mock_hidden_vol.join("logs");
     config.overlay_mode = OverlayMode::Auto;
 
     let manager = Arc::new(Mutex::new(NailsManager::new(
