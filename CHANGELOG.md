@@ -76,6 +76,15 @@ of this changelog for that version becomes the release notes word for word, and
 - A fast `ci-python` flake check and `just ci-python` recipe running the `ci/` unittest suite, ruff
   and mypy.
 - Architecture decision records under `docs/adr/`.
+- An inventory of the decoy autostart entries, enabled user services, lingering and display-manager
+  autologin the hidden session inherits, reported as a warning by `nails check` and the activation
+  confirmation, with opt-in hidden-only masking of autostart entries and user units through
+  `[persona] mask_inherited`.
+- An optional hidden network-identity NixOS module and NetworkManager drop-in (random MAC, distinct
+  hostname), and documentation of the account and network identifiers the hidden session shares
+  with the decoy.
+- A warn-only `snapshot-memory` preflight check comparing the RAM the snapshot tmpfs of
+  overlay-incompatible targets would pin with `MemAvailable`.
 
 ### Changed
 
@@ -192,6 +201,8 @@ of this changelog for that version becomes the release notes word for word, and
 - The scheduled flaky-test lane runs the suite threaded, single-threaded and shuffled with a printed
   seed, and the dev shell provides zsh and fish.
 - Internal planning identifiers are removed from source, tests and docs.
+- The snapshot tmpfs for an overlay-incompatible target (such as a vfat `/boot`) is sized from the
+  target's measured content plus headroom instead of a fixed 1 GiB.
 
 ### Removed
 
@@ -303,6 +314,9 @@ of this changelog for that version becomes the release notes word for word, and
   documents the trusted computing base and a verified update procedure.
 - Notification signal files are created 0600 and get their mode on the open descriptor, so a symlink
   swapped into the operator-owned queue cannot redirect root's chmod.
+- Overlay upper and work directories are created through an `openat2`-contained resolver beneath
+  the hidden root, so a symlink or `..` planted on the hidden volume cannot redirect them onto the
+  decoy filesystem; on a kernel without `openat2` activation fails closed.
 
 ## [0.2.0] - 2026-05-08
 
