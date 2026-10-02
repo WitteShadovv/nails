@@ -13,7 +13,7 @@ use crate::deactivation::{DeactivationReport, PostUnmountCleanupReport};
 use crate::nixos::SwitchAction;
 #[cfg(not(test))]
 use crate::process::kill_user_shells;
-use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
+use crate::process::{ProcessCommand, ProcessRunner, Program, RealProcessRunner};
 use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError, Result,
     StateGuard, SystemState,
@@ -36,27 +36,27 @@ const SHELL_CLEANUP_PROTECTED_PIDS_ENV: &str = "NAILS_SHELL_CLEANUP_PROTECTED_PI
 
 #[derive(Debug, Clone)]
 struct RebootCommand {
-    program: std::ffi::OsString,
+    program: Program,
     args: Vec<std::ffi::OsString>,
 }
 
 impl RebootCommand {
-    fn systemctl<P: Into<std::ffi::OsString>>(program: P) -> Self {
+    fn systemctl(program: Program) -> Self {
         Self {
-            program: program.into(),
+            program,
             args: vec![std::ffi::OsString::from("reboot")],
         }
     }
 
-    fn reboot<P: Into<std::ffi::OsString>>(program: P) -> Self {
+    fn reboot(program: Program) -> Self {
         Self {
-            program: program.into(),
+            program,
             args: Vec::new(),
         }
     }
 
     fn display(&self) -> String {
-        let program = std::path::Path::new(&self.program).display().to_string();
+        let program = self.program.to_string();
         if self.args.is_empty() {
             program
         } else {
@@ -83,22 +83,23 @@ fn reboot_candidates() -> Vec<RebootCommand> {
             let mut candidates = Vec::new();
 
             if let Some(path) = systemctl_override {
-                candidates.push(RebootCommand::systemctl(path));
+                candidates.push(RebootCommand::systemctl(Program::Exact(path.into())));
             }
 
             if let Some(path) = reboot_override {
-                candidates.push(RebootCommand::reboot(path));
+                candidates.push(RebootCommand::reboot(Program::Exact(path.into())));
             }
 
             return candidates;
         }
     }
 
+    // The runner resolves each tool from the fixed system directories (which lead
+    // with `/run/current-system/sw/bin`), so a single `systemctl`/`reboot` covers
+    // NixOS and the FHS distros without a hardcoded store path.
     vec![
-        RebootCommand::systemctl("/run/current-system/sw/bin/systemctl"),
-        RebootCommand::systemctl("systemctl"),
-        RebootCommand::reboot("/run/current-system/sw/bin/reboot"),
-        RebootCommand::reboot("reboot"),
+        RebootCommand::systemctl(Program::Tool("systemctl")),
+        RebootCommand::reboot(Program::Tool("reboot")),
     ]
 }
 
@@ -129,10 +130,15 @@ fn dispatch_reboot_candidates(candidates: Vec<RebootCommand>) -> Result<()> {
     for candidate in candidates {
         let command_display = candidate.display();
 
-        match std::process::Command::new(&candidate.program)
+        // Dispatch is bounded so a hung `systemctl reboot` cannot wedge
+        // deactivation; the whole-host guard lives in `request_reboot`, so the
+        // runner itself is allowed to run here (the override tests drive stubs).
+        let command = ProcessCommand::new(candidate.program.clone())
             .args(&candidate.args)
-            .output()
-        {
+            .deadline(crate::process::run::REBOOT_DISPATCH_BUDGET)
+            .allow_in_test_runtime();
+
+        match RealProcessRunner.run(&command) {
             Ok(output) if output.status.success() => {
                 tracing::info!(command = %command_display, "Reboot command dispatched");
                 return Ok(());
@@ -142,7 +148,7 @@ fn dispatch_reboot_candidates(candidates: Vec<RebootCommand>) -> Result<()> {
                 tracing::warn!(command = %command_display, error = %failure, "Reboot command failed");
                 failures.push(failure);
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(NailsError::IoError(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 tracing::debug!(command = %command_display, "Reboot command not available");
             }
             Err(error) => {
