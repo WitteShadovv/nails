@@ -60,8 +60,8 @@ Two consequences are explicitly **not** defended against:
 - **Correlation through shared network identifiers is out of scope.** The overlay
   does not change machine-id, hostname, MAC or NetworkManager state;
   `clean_stale_network_config` preserves only DNS. An optional hidden
-  network-identity configuration (random MAC, distinct hostname, VPN autoconnect
-  off) can be applied in the hidden NixOS generation or as a NetworkManager
+  network-identity configuration (random MAC, distinct hostname; VPN autoconnect
+  is disabled per profile) can be applied in the hidden NixOS generation or as a NetworkManager
   drop-in, but it is opt-in and takes effect only when the hidden switch runs
   before the session restarts.
 

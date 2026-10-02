@@ -8,25 +8,29 @@
 # switch runs before the session restarts, so it is a hidden-generation setting,
 # not an activation-time one.
 #
+# The hidden configuration imports the decoy configuration, which normally sets
+# these options itself, so they are forced here: a default-priority value would
+# silently lose to the decoy's definition.
+#
 # This is a template: set `networking.hostName` to a plausible, decoy-unrelated
 # value. The file cannot be evaluated in the development sandbox (the Nix daemon
 # is unavailable); evaluate it with the rest of the hidden configuration on a Nix
 # host.
+#
+# NetworkManager has no global switch for VPN autoconnect, so it is not set
+# here. Disable it per profile from the hidden session instead (see the user
+# security guide); with /etc overlaid the change lands only in the hidden upper.
 
 { lib, ... }:
 {
   # A distinct hostname for the hidden session. Choose something unremarkable and
-  # unrelated to the decoy; the default below is a placeholder.
-  networking.hostName = lib.mkDefault "localhost";
+  # unrelated to the decoy; the value below is a placeholder.
+  networking.hostName = lib.mkForce "localhost";
 
+  # Randomise the Wi-Fi and Ethernet MAC addresses so the hidden session does
+  # not reuse the decoy's hardware addresses on the network.
   networking.networkmanager = {
-    # Randomise the Wi-Fi and Ethernet MAC addresses so the hidden session does
-    # not reuse the decoy's hardware addresses on the network.
-    wifi.macAddress = lib.mkDefault "random";
-    ethernet.macAddress = lib.mkDefault "random";
-
-    # Do not auto-connect saved VPNs in the hidden session: a VPN that dials out
-    # under the decoy's profile is a correlation and leak hazard.
-    settings.connection."vpn.autoconnect" = lib.mkDefault false;
+    wifi.macAddress = lib.mkForce "random";
+    ethernet.macAddress = lib.mkForce "random";
   };
 }

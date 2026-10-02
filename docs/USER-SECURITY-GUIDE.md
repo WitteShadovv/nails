@@ -528,12 +528,17 @@ If your threat model needs the hidden session to present a different network ide
 hidden NixOS generation (so it switches before the session restarts) or as a NetworkManager drop-in on
 an FHS host. NAILS ships an optional snippet for both:
 
-- NixOS: `nix/modules/hidden-network-identity.nix` (random Wi-Fi/Ethernet MAC, a distinct
-  `networking.hostName`, VPN autoconnect off)
-- FHS/NetworkManager: `nix/modules/network-identity/00-hidden-identity.conf`
+- NixOS: `nix/modules/hidden-network-identity.nix` (random Wi-Fi/Ethernet MAC and a distinct
+  `networking.hostName`, forced over the decoy's values)
+- FHS/NetworkManager: `nix/modules/network-identity/00-hidden-identity.conf` (random MAC)
 
 These take effect only once the hidden switch runs before the session restarts; the overlay alone
 cannot change them.
+
+NetworkManager has no global switch for VPN autoconnect, so neither snippet can turn it off. From the
+hidden session, run `nmcli connection modify <vpn> connection.autoconnect no` for each VPN profile and
+remove the VPN from the `connection.secondaries` of the Wi-Fi/Ethernet profiles that start it. With
+`/etc` overlaid, NetworkManager rewrites those profiles in the hidden upper only.
 
 ### SSD Wear-Leveling Limitations
 
