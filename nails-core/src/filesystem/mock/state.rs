@@ -37,6 +37,7 @@ impl Default for PathInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MockOp {
     MountOverlay { target: PathBuf },
+    MountTmpfs { target: PathBuf, size: String },
     WriteFile { path: PathBuf },
     CopyTree { src: PathBuf, dst: PathBuf },
 }

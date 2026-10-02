@@ -60,8 +60,8 @@ pub fn build_registry<F: Filesystem>(
     use crate::preflight::{
         BackendDetectCheck, BinaryLocationCheck, HiddenVolumeCheck, MountNamespaceCheck,
         NixOSBuildTargetCheck, NixOSConfigCheck, OverlayCompatibilityCheck, OverlayTargetsCheck,
-        SpaceCheck, StateCheck, StorageReadinessCheck, SuspiciousNailsReferenceCheck, SwapCheck,
-        SymlinkSupportCheck, UpperFsCapabilityCheck,
+        SnapshotMemoryCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
+        SuspiciousNailsReferenceCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
 
     let mut registry = PreFlightRegistry::new();
@@ -144,8 +144,16 @@ pub fn build_registry<F: Filesystem>(
     };
 
     registry.add_check(Box::new(OverlayCompatibilityCheck::new(
-        persistent_overlay_target_paths,
+        persistent_overlay_target_paths.clone(),
         config.hidden_volume_root.clone(),
+    )));
+
+    // Warn-only: estimate the RAM the snapshot tmpfs filesystems for
+    // overlay-incompatible targets would consume against MemAvailable. Swap is
+    // disabled during a hidden session, so a large snapshot on a low-memory host
+    // can cause pressure; this surfaces that before activation without blocking.
+    registry.add_check(Box::new(SnapshotMemoryCheck::new(
+        persistent_overlay_target_paths,
     )));
 
     // Reports a base `/etc/nixos` that still references the hidden environment.

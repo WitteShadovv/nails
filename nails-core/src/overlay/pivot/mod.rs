@@ -15,6 +15,31 @@ mod tests;
 /// Default staging directory for pivot mounts
 pub const PIVOT_STAGING_BASE: &str = "/mnt/nails-pivot";
 
+/// Upper bound on a snapshot tmpfs, so an overlay-incompatible target can never
+/// request an unbounded amount of RAM. Shared with the overlay-compatibility
+/// preflight check, which fails any target measuring larger than this.
+pub const DEFAULT_MAX_SNAPSHOT_BYTES: u64 = 1_073_741_824;
+
+/// Floor for a snapshot tmpfs, so a near-empty target still yields a usable
+/// filesystem (overlayfs copy-up and the snapshot copy both need a little room).
+const MIN_SNAPSHOT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Derive the snapshot tmpfs size (in bytes) from the measured size of the
+/// target directory.
+///
+/// The old code hard-coded `"1G"` for every snapshot regardless of how small the
+/// target was, pinning a gigabyte of RAM for a 50 MB ESP. Instead, size the
+/// tmpfs from the actual content plus headroom for filesystem overhead and the
+/// copy itself, with a floor so a tiny target still mounts and a ceiling so an
+/// unexpectedly large one cannot exhaust RAM.
+pub(crate) fn snapshot_tmpfs_bytes(measured: u64) -> u64 {
+    // 25% headroom plus the floor as a fixed slack allowance.
+    let with_headroom = measured
+        .saturating_add(measured / 4)
+        .saturating_add(MIN_SNAPSHOT_BYTES);
+    with_headroom.clamp(MIN_SNAPSHOT_BYTES, DEFAULT_MAX_SNAPSHOT_BYTES)
+}
+
 fn cleanup_empty_directory<F: Filesystem>(fs: &F, path: &Path) {
     let _ = fs.remove_directory(path);
 }
@@ -262,12 +287,17 @@ pub fn snapshot_pivot_overlay_mount<F: Filesystem>(
         })?
         .to_string_lossy();
 
+    // Measure the target so the snapshot tmpfs is sized from its real content
+    // plus headroom, rather than pinning a fixed gigabyte of RAM.
+    let measured = fs.get_directory_size(target)?;
+    let snapshot_size = snapshot_tmpfs_bytes(measured).to_string();
+
     // Step 1: Create snapshot tmpfs directory
     let snapshot_path = PathBuf::from(PIVOT_STAGING_BASE).join(format!("{}-snapshot", dir_name));
     fs.create_directory(&snapshot_path)?;
 
     // Step 2: Mount tmpfs at snapshot location
-    if let Err(e) = fs.mount_tmpfs(&snapshot_path, "1G") {
+    if let Err(e) = fs.mount_tmpfs(&snapshot_path, &snapshot_size) {
         cleanup_empty_directory(fs, &snapshot_path);
         return Err(e);
     }

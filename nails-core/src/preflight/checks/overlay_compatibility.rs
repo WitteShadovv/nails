@@ -9,12 +9,9 @@
 //!    so preflight and `--dry-run` make no writes.
 
 use super::super::{CheckResult, PreFlightCheck};
-use crate::overlay::OVERLAY_INCOMPATIBLE_FSTYPES;
+use crate::overlay::{DEFAULT_MAX_SNAPSHOT_BYTES, OVERLAY_INCOMPATIBLE_FSTYPES};
 use crate::{Filesystem, Result};
 use std::path::PathBuf;
-
-/// Default maximum snapshot size: 1 GB
-const DEFAULT_MAX_SNAPSHOT_BYTES: u64 = 1_073_741_824;
 
 /// Pre-flight check for overlay compatibility issues
 ///

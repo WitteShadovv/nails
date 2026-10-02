@@ -88,5 +88,9 @@ pub use pivot::{
 pub use strategy::mount_overlay_with_strategy;
 
 // Constants
-pub use pivot::PIVOT_STAGING_BASE;
+pub use pivot::{DEFAULT_MAX_SNAPSHOT_BYTES, PIVOT_STAGING_BASE};
 pub use strategy::OVERLAY_INCOMPATIBLE_FSTYPES;
+
+// Snapshot tmpfs sizing, shared with the overlay-compatibility and
+// snapshot-memory preflight checks.
+pub(crate) use pivot::snapshot_tmpfs_bytes;

@@ -291,6 +291,14 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .insert(target.to_path_buf());
 
+        self.op_log
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push(MockOp::MountTmpfs {
+                target: target.to_path_buf(),
+                size: size.to_string(),
+            });
+
         Ok(())
     }
 

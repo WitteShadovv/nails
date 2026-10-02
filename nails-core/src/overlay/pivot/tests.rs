@@ -267,3 +267,69 @@ fn test_snapshot_pivot_root_target_fails() {
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn snapshot_tmpfs_bytes_floors_tiny_targets() {
+    // An empty or near-empty target still gets at least the floor so the tmpfs
+    // and overlay copy-up have room to work.
+    assert_eq!(snapshot_tmpfs_bytes(0), MIN_SNAPSHOT_BYTES);
+    assert_eq!(snapshot_tmpfs_bytes(1024), MIN_SNAPSHOT_BYTES + 1024 + 256);
+}
+
+#[test]
+fn snapshot_tmpfs_bytes_adds_headroom_to_measured_content() {
+    let measured = 200 * 1024 * 1024; // 200 MiB
+    let sized = snapshot_tmpfs_bytes(measured);
+    // 25% headroom plus the fixed floor slack, and well under the ceiling.
+    assert_eq!(sized, measured + measured / 4 + MIN_SNAPSHOT_BYTES);
+    assert!(sized < DEFAULT_MAX_SNAPSHOT_BYTES);
+}
+
+#[test]
+fn snapshot_tmpfs_bytes_clamps_to_the_ceiling() {
+    // A target measuring at or above the limit can never request more RAM than
+    // the shared ceiling.
+    assert_eq!(
+        snapshot_tmpfs_bytes(DEFAULT_MAX_SNAPSHOT_BYTES),
+        DEFAULT_MAX_SNAPSHOT_BYTES
+    );
+    assert_eq!(snapshot_tmpfs_bytes(u64::MAX), DEFAULT_MAX_SNAPSHOT_BYTES);
+}
+
+#[test]
+fn snapshot_pivot_sizes_tmpfs_from_measured_content_not_a_fixed_gigabyte() {
+    use crate::filesystem::MockOp;
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/boot", true);
+    fs.mock_set_path_exists("/mnt/hidden/boot-upper", true);
+    fs.mock_set_path_exists("/mnt/hidden/boot-work", true);
+    fs.mock_set_path_exists("/mnt", true);
+    let measured = 120 * 1024 * 1024; // 120 MiB ESP
+    fs.mock_set_directory_size(Path::new("/boot"), measured);
+
+    snapshot_pivot_overlay_mount(
+        &fs,
+        &[Path::new("/boot")],
+        Path::new("/mnt/hidden/boot-upper"),
+        Path::new("/mnt/hidden/boot-work"),
+        Path::new("/boot"),
+    )
+    .expect("snapshot pivot should succeed");
+
+    let snapshot = PathBuf::from(PIVOT_STAGING_BASE).join("boot-snapshot");
+    let recorded = fs
+        .mock_ops()
+        .into_iter()
+        .find_map(|op| match op {
+            MockOp::MountTmpfs { target, size } if target == snapshot => Some(size),
+            _ => None,
+        })
+        .expect("snapshot tmpfs should have been mounted");
+
+    let expected = snapshot_tmpfs_bytes(measured).to_string();
+    assert_eq!(recorded, expected);
+    // The old hard-coded "1G" literal is gone.
+    assert_ne!(recorded, "1G");
+    assert!(recorded.parse::<u64>().unwrap() < DEFAULT_MAX_SNAPSHOT_BYTES);
+}
