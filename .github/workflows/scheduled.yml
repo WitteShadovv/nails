@@ -230,15 +230,22 @@ jobs:
       - name: Repeat the test suite
         run: just stress
 
-  # Informational: the Criterion report is uploaded for comparison, but a slow
-  # or failing run never turns the workflow red or opens an issue.
+  # The nails-core micro-benchmarks, compared with the baseline of the latest
+  # earlier run on main instead of fixed budgets: shared runners vary too much
+  # for an absolute number to mean anything. A median more than ALERT_PERCENT
+  # slower raises a warning and never fails the job; a listed benchmark that
+  # leaves no result does, and so does a build or a benchmark that breaks.
   benchmarks:
-    name: Benchmarks (informational)
+    name: Benchmarks
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'benchmarks')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    continue-on-error: true
+    permissions:
+      contents: read
+      actions: read # find and download the previous run's baseline artifact
+    env:
+      ALERT_PERCENT: 25
 
     steps:
       - name: Checkout code
@@ -249,16 +256,85 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install
 
-      - name: Run benchmarks
-        run: cargo bench --workspace --all-features --locked --bench '*'
+      # --locked builds it with the dependency versions it was released with.
+      - name: Install critcmp
+        run: cargo install critcmp --version '~0.1' --locked
 
-      - name: Upload benchmark results
-        if: always()
+      # Each run saves its results as the Criterion baseline 'current'.
+      - name: Run benchmarks
+        run: cargo bench --workspace --all-features --locked --bench '*' -- --save-baseline current
+
+      # --list names every benchmark the harnesses define; each one must have
+      # written a result, so a skipped or silently dropped benchmark fails here.
+      - name: Check that every benchmark left a result
+        run: |
+          set -euo pipefail
+          cargo bench --workspace --all-features --locked --bench '*' -- --list | sed -n 's/: benchmark$//p' | sort > "$RUNNER_TEMP/expected.txt"
+          find target/criterion -path '*/current/benchmark.json' -exec jq -r .title {} + | sort > "$RUNNER_TEMP/measured.txt"
+          missing=$(comm -23 "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/measured.txt" | paste -sd, -)
+          if [ ! -s "$RUNNER_TEMP/expected.txt" ] || [ -n "$missing" ]; then
+            echo "::error::Benchmarks without a result: ${missing:-none was listed}"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/bench"
+          critcmp --export current > "$RUNNER_TEMP/bench/baseline.json"
+
+      # The newest unexpired baseline from main. Without one (the first run,
+      # none within the retention period, or an API hiccup) this run only
+      # records its own: a comparison that cannot happen is no reason to fail.
+      - name: Download the previous baseline
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          LATEST_FROM_MAIN: >-
+            [.artifacts[] | select((.expired | not) and .workflow_run.head_branch == "main")][0].workflow_run.id // empty
+        run: |
+          if ! run_id=$(gh api "repos/$REPO/actions/artifacts?name=benchmark-baseline&per_page=50" --jq "$LATEST_FROM_MAIN"); then
+            echo "::warning::Could not list earlier benchmark baselines; nothing to compare with."
+          elif [ -z "$run_id" ]; then
+            echo "::notice::No earlier baseline from main; nothing to compare with."
+          elif gh run download "$run_id" --repo "$REPO" --name benchmark-baseline --dir "$RUNNER_TEMP/bench/previous"; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Could not download the baseline of run $run_id; nothing to compare with."
+          fi
+
+      # Both exports name their baseline 'current'; the earlier one is renamed
+      # so critcmp can tell the columns apart.
+      - name: Compare with the previous baseline
+        if: steps.previous.outputs.found == 'true'
+        working-directory: ${{ runner.temp }}/bench
+        env:
+          SLOWDOWNS: >-
+            .benchmarks | to_entries[] | select($old[0].benchmarks[.key]) |
+            (.value.criterion_estimates_v1.median.point_estimate /
+            $old[0].benchmarks[.key].criterion_estimates_v1.median.point_estimate) as $ratio |
+            select($ratio > 1 + $limit / 100) |
+            "::warning title=Benchmark slowdown::\(.key) is \(($ratio - 1) * 100 | round)% slower than in the previous run"
+        run: |
+          set -euo pipefail
+          jq '.name = "previous" | .benchmarks |= map_values(.baseline = "previous")' previous/baseline.json > previous.json
+          { echo "## Benchmarks against the previous run"; echo; echo '```'; critcmp previous.json baseline.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          jq -r --argjson limit "$ALERT_PERCENT" --slurpfile old previous.json "$SLOWDOWNS" baseline.json
+
+      # Only a complete run becomes the next baseline.
+      - name: Upload the baseline
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: benchmark-results
-          path: target/criterion/
+          name: benchmark-baseline
+          path: ${{ runner.temp }}/bench/baseline.json
+          if-no-files-found: error
           retention-days: 90
+
+      - name: Upload the Criterion report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: benchmark-report
+          path: target/criterion/
+          if-no-files-found: ignore
+          retention-days: 30
 
   # Monthly transitive refresh: #54's fixes were lockfile-only bumps that
   # Dependabot's direct-dependency updates never proposed. `cargo update` moves
@@ -384,11 +460,12 @@ jobs:
           label: advisory
           title: "Dependency advisories"
 
-  # The infrastructure tasks share the ci-red issue 'CI red: Scheduled'. The
-  # informational benchmarks job is left out on purpose.
+  # The infrastructure tasks share the ci-red issue 'CI red: Scheduled'. A
+  # benchmark slowdown is only a warning, so a red benchmarks job means a
+  # broken build or a missing result.
   report-ci:
     name: Report CI status
-    needs: [tasks, fetcher-canary, cache-warm, stress]
+    needs: [tasks, fetcher-canary, cache-warm, stress, benchmarks]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5

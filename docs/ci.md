@@ -9,7 +9,7 @@ This repository is public. The CI and release workflows are written for a public
 | Workflow | Purpose | Triggers |
 |---|---|---|
 | `.github/workflows/ci.yml` | The pull request gate: lint, tests with coverage and doctests, dependency policy, privileged mount tests, the Nix release build and the flake checks, summarised by the single required `gate` job | PRs targeting `main`, push to `main`, manual dispatch |
-| `.github/workflows/scheduled.yml` | Maintenance that never gates a merge: the full-graph dependency policy scan (`just deny-full`), the `deny.toml` ignore expiry check, the crate fetcher canary, Rust cache warming, the stress loop (`just stress`), informational benchmarks and the monthly transitive `Cargo.lock` refresh | Weekly schedule (cache warming twice a week, lockfile refresh monthly), manual dispatch with a `task` input |
+| `.github/workflows/scheduled.yml` | Maintenance that never gates a merge: the full-graph dependency policy scan (`just deny-full`), the `deny.toml` ignore expiry check, the crate fetcher canary, Rust cache warming, the stress loop (`just stress`), the benchmarks (compared with the previous run's baseline) and the monthly transitive `Cargo.lock` refresh | Weekly schedule (cache warming twice a week, lockfile refresh monthly), manual dispatch with a `task` input |
 | `.github/workflows/pr-title.yml` | Holds the pull request title to the same Conventional Commits grammar as the commit-msg hook, so a squash merge lands a valid subject on `main` | Pull request opened, edited, synchronized or reopened |
 | `.github/workflows/update-flake-lock.yml` | Monthly refresh of the version sources Dependabot has no ecosystem for: `flake.lock` (`nix flake update`) and the pre-commit hook revisions (`pre-commit autoupdate`), each opening its own pull request | Monthly schedule, manual dispatch |
 | `.github/workflows/forensics-eval-regression.yml` | Cheap non-privileged forensics regression lane covering Python tests plus a fixture-backed smoke run | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
@@ -46,7 +46,7 @@ Every work job runs in parallel. None waits for another; each is gated only on t
 - **Fork-safe.** No job in `ci.yml` writes to the pull request, so a fork pull request and any other run with a read-only token pass the gate. Only `report-status` has a write permission (`issues: write`), and it runs only on pushes to `main`.
 - **Advisories gate dependency changes only.** A newly published RustSec advisory does not fail unrelated PRs or `main`; the weekly `just deny-full` run in `scheduled.yml` reports it, including advisories for crates that never ship (other targets, dev-dependencies). See [security-validation.md](security-validation.md#dependency-policy).
 - **E2E tests are not folded into `gate`.** They run in `e2e.yml`, whose `e2e-result` job is the status to require.
-- **Off the pull request path.** The SBOM is generated only by the release workflow; benchmarks run in `scheduled.yml` and never gate.
+- **Off the pull request path.** The SBOM is generated only by the release workflow; the benchmarks run weekly in `scheduled.yml` (see [Benchmarks](#benchmarks)) and never gate.
 
 ### Lint policy
 
@@ -56,13 +56,22 @@ The policy is compiled in, so `cargo build`, clippy and every editor enforce it 
 - **Function size.** `clippy::too_many_lines` and `clippy::cognitive_complexity` warn, so `-D warnings` fails on them. Their thresholds in `clippy.toml` sit at the largest function when the lints were introduced: no function may grow past that, and the limits go down as functions are split. A function far beyond them carries an `#[expect]` with a reason, which turns into a warning once the function is fixed.
 - **File size.** `scripts/check-line-count.sh` counts code lines (neither blank nor a `//` comment) per file. Production files warn above 500 and fail above 850; test files (`tests.rs`, `tests_*.rs`, `*_tests.rs`, anything below `tests/` or `benches/`) only warn, above 1500. It has no exemption list and needs only POSIX tools, and the pre-commit hook, `just check` and the `lint` job run the same script, in well under a second.
 
+### Benchmarks
+
+`nails-core/benches/performance.rs` holds Criterion micro-benchmarks of the state, config, status, activation fast path and emergency orchestration code. Everything outside the state file runs against `MockFilesystem`, so the numbers track regressions between runs; real switching time is what the E2E performance test measures. Each fixture owns its temporary directory, so a run leaves the temp directory as it found it.
+
+- **Where.** The `benchmarks` job of `scheduled.yml`, weekly or dispatched with `task: benchmarks`. The `bench` profile uses thin LTO (`[profile.bench]` in the root `Cargo.toml`) instead of inheriting the release profile's fat LTO.
+- **Baseline.** Each run saves its results as the Criterion baseline `current`, exports them with critcmp and uploads the export as the `benchmark-baseline` artifact (kept 90 days). The next run downloads the newest unexpired one from `main` and writes the critcmp table of both runs to the job summary. The first run, or one without an earlier baseline, only records its own.
+- **Alerts, not budgets.** A benchmark whose median is more than `ALERT_PERCENT` (25) slower than in the previous run raises a warning annotation; timing never fails the job. The job fails when the build or a benchmark breaks, or when a benchmark that `--list` names left no result, and then it reports through the `ci-red` issue like the other infrastructure tasks.
+- **Locally.** `cargo bench -p nails-core --bench performance`; add `-- --save-baseline <name>` and compare two baselines with `critcmp <old> <new>`.
+
 ### Tracking issues for unattended runs
 
 Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `e2e.yml` on pushes to `main` and nightly, `scheduled.yml`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
 
 - A failed or cancelled job opens the issue (label `ci-red`, title `CI red: <workflow>`; `CI red: main` for `ci.yml`), or comments on it with the run link and the red jobs when it is already open.
 - A run in which every reported job passed closes the issue. A run that skipped some jobs without a failure (for example a manual dispatch of a single `scheduled.yml` task) leaves it as it is.
-- The full-graph advisory scan and the `deny.toml` ignore expiry check report under their own `advisory` label (`Dependency advisories`), so they never touch the `ci-red` issue or any pull request check. The informational benchmark job never reports.
+- The full-graph advisory scan and the `deny.toml` ignore expiry check report under their own `advisory` label (`Dependency advisories`), so they never touch the `ci-red` issue or any pull request check. The benchmarks job reports with the infrastructure tasks; only a broken build or a missing result turns it red, never a slowdown.
 
 Only the reporting jobs get `issues: write`. The rules live in `report_status.py` next to the action and are tested in `scripts/tests/test_report_status.py`.
 
