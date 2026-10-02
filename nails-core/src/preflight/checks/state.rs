@@ -31,9 +31,9 @@ use crate::{Filesystem, Result, SystemState};
 ///
 /// See [`SystemState`](crate::state::SystemState) for complete state machine documentation.
 ///
-/// # Idempotent Activation (FR61)
+/// # Idempotent Activation
 ///
-/// Per requirement FR61, attempting to activate when already active returns
+/// When already active, attempting to activate returns
 /// a friendly message ("already active") rather than an error, supporting
 /// idempotent behavior.
 ///

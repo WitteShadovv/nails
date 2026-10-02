@@ -100,7 +100,7 @@ fn test_config_fingerprint_field_persistence() {
     assert_eq!(
         restored_state.config_fingerprint,
         Some(test_fingerprint.clone()),
-        "Fingerprint should be persisted to disk (AC4 requirement)"
+        "Fingerprint should be persisted to disk"
     );
 
     // === TEST 4: Verify persisted fingerprint can be loaded back ===
@@ -113,11 +113,11 @@ fn test_config_fingerprint_field_persistence() {
     assert_eq!(
         loaded_state.config_fingerprint,
         Some(test_fingerprint),
-        "Fingerprint should be loaded correctly from disk (AC2 fast path prerequisite)"
+        "Fingerprint should be loaded correctly from disk (fast-path prerequisite)"
     );
 
     // Test passes: config_fingerprint field is properly saved to disk and loaded back,
-    // validating the state persistence integration for Story 15.4
+    // validating the state persistence integration
 }
 
 #[test]

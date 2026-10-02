@@ -439,7 +439,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             self.filesystem.create_directory(&scripts_dir)?;
         }
 
-        // Resolve binary path for alias (Task 5)
+        // Resolve binary path for alias
         let binary_path = self.resolve_binary_path().display().to_string();
 
         // Write bash/zsh alias scripts

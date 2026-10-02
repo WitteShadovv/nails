@@ -19,7 +19,7 @@ use std::path::PathBuf;
 /// Distinguishes between persistent overlays (backed by hidden storage)
 /// and ephemeral overlays (backed by tmpfs RAM storage).
 ///
-/// (Story 4.11: Extended Overlay Strategy)
+/// (Extended Overlay Strategy)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MountType {
     /// Persistent overlay: lower from system, upper/work on hidden storage
@@ -39,7 +39,7 @@ pub enum MountType {
 /// Contains metadata needed to properly unmount both the overlay
 /// and any associated tmpfs filesystems.
 ///
-/// (Story 4.11: Extended Overlay Strategy)
+/// (Extended Overlay Strategy)
 #[derive(Debug, Clone)]
 pub struct MountInfo {
     /// Type of mount (persistent or ephemeral)
@@ -180,7 +180,7 @@ impl<'a, F: Filesystem> MountTracker<'a, F> {
     /// - `Err(NailsError::OverlayError)` listing the targets that did not, after
     ///   attempting all of them.
     ///
-    /// (Story 4.11: Extended Overlay Strategy with tmpfs cleanup)
+    /// (Extended Overlay Strategy with tmpfs cleanup)
     pub fn rollback_all(&mut self) -> Result<()> {
         let remaining =
             crate::manager::activation::rollback::rollback_mounts(self.filesystem, &self.mounted);

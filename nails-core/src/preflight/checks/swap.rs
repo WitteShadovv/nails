@@ -26,7 +26,7 @@ use crate::{Filesystem, Result};
 /// - Clear explanation of the problem ("Swap is enabled")
 /// - Exact command to fix it (`sudo swapoff -a`)
 ///
-/// This follows UXR19 requirements for error messages with fix guidance.
+/// Error messages include fix guidance.
 ///
 /// # Example
 ///

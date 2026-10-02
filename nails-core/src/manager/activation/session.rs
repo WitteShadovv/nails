@@ -14,7 +14,7 @@ use crate::{
 use crate::process::{SessionCommandExecutor, detect_session_context_with_executor};
 
 impl<F: Filesystem> NailsManager<F> {
-    /// Handle --kill-session flag (Story 4.15, AC8)
+    /// Handle --kill-session flag
     /// Kill graphical session only after pre-flight checks succeed.
     pub(super) fn handle_session_kill(
         verbosity: Verbosity,

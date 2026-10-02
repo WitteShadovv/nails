@@ -854,7 +854,7 @@ fn test_cleanup_manager_verification_still_flags_non_preserved_temp_residue() {
     );
 }
 
-/// AC6: Integration test verifying all three cleaners are invoked
+/// Integration test verifying all three cleaners are invoked
 ///
 /// This test verifies that CleanupManager correctly orchestrates all three cleaners:
 /// 1. HistoryCleaner (shell history)
@@ -983,7 +983,7 @@ fn test_full_cleanup_cycle_all_cleaners_invoked() {
     );
 
     // Verify that CleanupManager aggregates results from all cleaners
-    // The key requirement of AC6 is that all three cleaners are INVOKED
+    // The key requirement is that all three cleaners are INVOKED
     // The report should contain either cleaned items or errors, demonstrating invocation
     assert!(
         !report.cleaned_items.is_empty() || !report.errors.is_empty(),

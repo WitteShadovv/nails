@@ -37,7 +37,7 @@ fn suspicious_token(name: &str) -> Option<&'static str> {
 ///
 /// # Failure Guidance
 ///
-/// Each failure mode provides actionable guidance following UXR19 requirements:
+/// Each failure mode provides actionable guidance with fix steps:
 /// - **Path not found**: Suggests mounting the hidden volume
 /// - **Not mounted**: Suggests unlocking the backend and mounting it there
 /// - **Not writable**: Suggests checking permissions

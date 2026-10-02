@@ -73,7 +73,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// First call loads from disk and caches result.
     /// Subsequent calls return cached value.
     ///
-    /// # Graceful Degradation (AR27, AR53)
+    /// # Graceful Degradation
     ///
     /// Returns Inactive if file missing or malformed (safe default).
     /// Logs warning when using default Inactive state.
@@ -111,7 +111,7 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Lazy load from disk
         // Note: StateFile::load() handles warning logs for missing/malformed files
-        // and returns default Inactive state per AR27, AR53. This keeps the logging
+        // and returns default Inactive state. This keeps the logging
         // logic centralized in the StateFile module.
         let state_file = StateFile::load(&self.state_file_path)?;
         let state = state_file.state.clone();
@@ -243,7 +243,7 @@ impl<F: Filesystem> NailsManager<F> {
         state_file.state = new_state.clone();
         state_file.last_modified = Utc::now();
 
-        // Task 5 (AC4): Clear overlay_status and nixos_generation when rolling back to Inactive
+        // Clear overlay_status and nixos_generation when rolling back to Inactive
         // This ensures the state file doesn't retain stale activation metadata after rollback
         if let SystemState::Inactive = new_state {
             state_file.overlay_status.clear();
@@ -359,7 +359,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// Save cached state to disk without validation
     ///
     /// Helper method to persist the current cached state to disk.
-    /// Used during incremental state updates (Story 4.7, AC1, AC2).
+    /// Used during incremental state updates.
     ///
     /// # Returns
     ///

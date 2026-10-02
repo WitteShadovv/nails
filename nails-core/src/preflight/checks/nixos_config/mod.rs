@@ -1,6 +1,6 @@
 //! NixOS configuration pre-flight check
 //!
-//! Validates NixOS configuration overlay structure in hidden storage (Story 4.12).
+//! Validates NixOS configuration overlay structure in hidden storage.
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, NixParser, RealNixParser, Result, parse_check_composed_config};
@@ -15,7 +15,7 @@ use std::sync::Arc;
 /// - `{hidden}/etc/nixos/hardware-configuration.nix` exists (modified with import)
 /// - `{hidden}/config/nixos/configuration.nix` exists (hidden environment config)
 /// - Modified hardware-configuration.nix contains relative import `./nails/configuration.nix`
-/// - `{hidden}/etc/nixos/nails/configuration.nix` symlink exists (staged by Story 15.2)
+/// - `{hidden}/etc/nixos/nails/configuration.nix` symlink exists (staged during activation)
 /// - Base `/etc/nixos/configuration.nix` OR `/etc/nixos/flake.nix` exists
 ///
 /// # Example

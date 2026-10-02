@@ -123,11 +123,11 @@ impl LoggingManager {
     /// # Errors
     ///
     /// Returns `NailsError::InvalidState` if:
-    /// - Log path is outside the hidden volume (AR26, FR36)
+    /// - Log path is outside the hidden volume
     /// - Log directory is a symlink (security bypass attempt)
     /// - Log directory cannot be created
     pub fn init<F: Filesystem>(&self, fs: &F) -> Result<Option<LoggingConfig>> {
-        // Validate log path is within hidden volume (AR26)
+        // Validate log path is within hidden volume
         self.validate_log_path()?;
 
         // Verify the hidden volume is positively attached: present and on its own

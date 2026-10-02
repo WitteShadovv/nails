@@ -3,7 +3,7 @@ use super::{MockFilesystem, MockOp};
 use std::path::{Path, PathBuf};
 
 impl MockFilesystem {
-    /// Get written file content for test verification (Story 5.2)
+    /// Get written file content for test verification
     ///
     /// Returns the content that was written to a file via write_file_content(),
     /// or None if the file was not written.
@@ -57,7 +57,7 @@ impl MockFilesystem {
             .copied()
     }
 
-    /// Get the symlink target recorded by `create_symlink` (Story 15.2)
+    /// Get the symlink target recorded by `create_symlink`
     ///
     /// Returns `None` if no symlink was created at this path.
     pub fn mock_get_symlink_target(&self, link: &Path) -> Option<PathBuf> {

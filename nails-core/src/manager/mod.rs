@@ -9,7 +9,7 @@
 //! - Production: `NailsManager<RealFilesystem>` uses actual syscalls
 //! - Testing: `NailsManager<MockFilesystem>` uses in-memory state (no root required)
 //!
-//! This pattern enables 99% of tests to run without root privileges (AR4, NFR37).
+//! This pattern enables 99% of tests to run without root privileges.
 //!
 //! # Module Structure
 //!
@@ -84,14 +84,14 @@ pub(crate) use helpers::{
 /// # Interior mutability
 ///
 /// `cached_state` uses `RefCell<_>` so the lazy load can populate the cache
-/// through a shared reference. NAILS orchestration is single-threaded (AR47),
+/// through a shared reference. NAILS orchestration is single-threaded,
 /// so no cross-thread synchronisation is required.
 ///
 /// # Requirements
 ///
-/// - AR3: Core library contains all business logic
-/// - AR4: Testable without root via trait abstraction
-/// - AR44: Generic NailsManager<F: Filesystem> pattern
+/// - Core library contains all business logic
+/// - Testable without root via trait abstraction
+/// - Generic NailsManager<F: Filesystem> pattern
 pub struct NailsManager<F: Filesystem> {
     /// Filesystem implementation (real or mock)
     filesystem: F,
@@ -308,7 +308,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// * `Ok(())` - All unmounts succeeded
     /// * `Err(NailsError)` - One or more unmounts failed (with aggregate error details)
     ///
-    /// # Behavior (Story 4.6, AC4-AC5)
+    /// # Behavior
     ///
     /// - Unmounts in LIFO order (reverse iteration)
     /// - Tries graceful unmount first, then force unmount on failure
@@ -341,7 +341,7 @@ impl<F: Filesystem> NailsManager<F> {
                 "Unmounting overlay"
             );
 
-            // Try graceful unmount first (Epic 4.2 requirement)
+            // Try graceful unmount first
             if let Err(e) = self.filesystem.unmount(path, false) {
                 tracing::warn!(
                     path = %path.display(),
@@ -393,7 +393,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// Get reference to filesystem implementation
     ///
     /// Provides access to filesystem operations for advanced use cases like
-    /// ActivationOrchestrator (Story 4.5).
+    /// ActivationOrchestrator.
     ///
     /// # Returns
     ///
@@ -405,7 +405,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// Get reference to configuration
     ///
     /// Provides access to configuration for advanced use cases like
-    /// ActivationOrchestrator (Story 4.5).
+    /// ActivationOrchestrator.
     ///
     /// # Returns
     ///

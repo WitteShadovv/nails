@@ -1,8 +1,8 @@
 //! Overlay filesystem operations for extended overlay strategy
 //!
 //! This module provides operations for mounting and unmounting ephemeral overlays
-//! with tmpfs-backed upper layers (Story 4.11) and the universal overlay mounting
-//! strategy with intelligent process management (Story 4.15).
+//! with tmpfs-backed upper layers and the universal overlay mounting
+//! strategy with intelligent process management.
 //!
 //! # Forensic Rationale (Thesis Section 4.3.6)
 //!

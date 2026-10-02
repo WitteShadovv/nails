@@ -556,7 +556,7 @@ fn test_path_validation_with_non_canonical_paths() {
 
 #[test]
 fn test_custom_hidden_volume_root_tmp_validation() {
-    // AC3: When hidden_volume_root is configured as /tmp,
+    // When hidden_volume_root is configured as /tmp,
     // state file at /tmp/state.json passes validation,
     // and /mnt/data/state.json fails
     use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
@@ -1147,7 +1147,7 @@ fn test_integration_deactivate_panic_triggers_stateguard_rollback() {
     let loaded = StateFile::load(&state_path).unwrap();
     assert!(
         loaded.state.is_active(),
-        "State file should contain Active after StateGuard rollback (FR51: Remount overlays if cleanup fails)"
+        "State file should contain Active after StateGuard rollback (Remount overlays if cleanup fails)"
     );
 }
 

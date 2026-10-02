@@ -283,7 +283,7 @@ pub fn stage_hidden_nixos_config<F: Filesystem>(
     Ok(())
 }
 
-/// Stage the hidden config symlink into the hidden /etc/nixos tree (Story 15.2)
+/// Stage the hidden config symlink into the hidden /etc/nixos tree
 ///
 /// Creates `{hidden}/etc/nixos/nails/` directory (if missing) and a symlink
 /// `{hidden}/etc/nixos/nails/configuration.nix` → `{hidden}/config/nixos/configuration.nix`.

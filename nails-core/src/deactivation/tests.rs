@@ -871,7 +871,7 @@ fn test_cleanup_failure_rollback() {
     let _home = set_safe_test_home();
 
     // Configure cleanup to FAIL by making the history file write fail
-    // This triggers AC4: cleanup failure → rollback to ACTIVE
+    // This triggers cleanup failure → rollback to ACTIVE
     {
         let m = manager.lock().unwrap();
         let bash_history = Path::new(TEST_HOME).join(".bash_history");
@@ -897,7 +897,7 @@ fn test_cleanup_failure_rollback() {
 
     let result = orchestrator.run(&mut manager.lock().unwrap());
 
-    // AC4: Cleanup failure should cause deactivation to fail and rollback to ACTIVE
+    // Cleanup failure should cause deactivation to fail and rollback to ACTIVE
     // This is required for forensic safety - if traces can't be cleaned, we must
     // remain in ACTIVE state with overlays mounted
     assert!(
@@ -919,12 +919,12 @@ fn test_cleanup_failure_rollback() {
     }
 
     // Verify state rolled back to ACTIVE via StateGuard RAII
-    // AC4: "StateGuard automatically rolls back to ACTIVE"
+    // "StateGuard automatically rolls back to ACTIVE"
     let m = manager.lock().unwrap();
     let state = m.current_state().unwrap();
     assert!(
         state.is_active(),
-        "AC4 violation: Expected ACTIVE state after cleanup failure, got {:?}",
+        "Expected ACTIVE state after cleanup failure, got {:?}",
         state
     );
 }
@@ -932,7 +932,7 @@ fn test_cleanup_failure_rollback() {
 #[test]
 #[serial]
 fn test_cleanup_failure_keeps_overlays_mounted() {
-    // Additional test for AC4: verify overlays remain mounted after cleanup failure
+    // Additional test: verify overlays remain mounted after cleanup failure
     let manager = setup_active_manager();
     // Cleanup resolves the history files from HOME, so it points at the fake
     // home for the whole test.
@@ -963,16 +963,16 @@ fn test_cleanup_failure_keeps_overlays_mounted() {
 
     let _result = orchestrator.run(&mut manager.lock().unwrap());
 
-    // Verify overlays are still mounted (AC4: "overlays are NOT unmounted")
+    // Verify overlays are still mounted ("overlays are NOT unmounted")
     let m = manager.lock().unwrap();
     let fs = m.filesystem();
     assert!(
         fs.is_mounted(Path::new("/home")).unwrap(),
-        "AC4 violation: /home should remain mounted after cleanup failure"
+        "/home should remain mounted after cleanup failure"
     );
     assert!(
         fs.is_mounted(Path::new("/etc")).unwrap(),
-        "AC4 violation: /etc should remain mounted after cleanup failure"
+        "/etc should remain mounted after cleanup failure"
     );
 }
 
@@ -1723,7 +1723,7 @@ fn test_emergency_deactivate_unmounts_nix_store_when_nix_overlay_present() {
 }
 
 // ============================================================================
-// Story 9.3: Structured Logging Tests for Deactivation
+// Structured Logging Tests for Deactivation
 // ============================================================================
 
 #[test]

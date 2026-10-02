@@ -470,7 +470,7 @@ impl MockFilesystem {
         contents.insert(PathBuf::from(path), content.to_string());
     }
 
-    /// Set mock file size for file_size() tests (Story 9.2)
+    /// Set mock file size for file_size() tests
     ///
     /// Sets the size that will be returned by file_size() for a specific path.
     /// Note: If file content is also set via mock_set_file_content(), the content
@@ -507,7 +507,7 @@ impl MockFilesystem {
             .insert(PathBuf::from(path));
     }
 
-    /// Set whether rename operations should fail for a specific path (Story 9.2)
+    /// Set whether rename operations should fail for a specific path
     ///
     /// This is useful for testing rotation failure scenarios where file renames fail.
     ///
@@ -558,7 +558,7 @@ impl MockFilesystem {
         }
     }
 
-    /// Set the modification time for a file (Story 9.2)
+    /// Set the modification time for a file
     ///
     /// Allows tests to control file ages for timestamp-based log retention.
     ///

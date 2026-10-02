@@ -758,7 +758,7 @@ fn setup_active_with_home_overlay() -> (
     (manager, fs_clone, state_path, temp_dir)
 }
 
-/// AC2, Subtask 2.1 + AC3, Subtask 2.2:
+/// Base config reverts after the /etc overlay unmounts:
 /// After deactivation, /etc overlay is unmounted, so /etc/nixos/hardware-configuration.nix
 /// reverts to the base (clean) file. verify_base_config_clean() is called post-unmount and
 /// confirms the base is clean. Deactivation succeeds.
@@ -863,7 +863,7 @@ fn test_deactivation_skips_base_check_when_etc_not_overlaid() {
     );
 }
 
-/// AC2-3, Subtask 4.1 (integration):
+/// Integration coverage:
 /// Full activation → deactivation cycle.
 /// After deactivation the base config view is clean (no hidden import).
 /// Uses Explicit mode with a /home overlay (avoids Auto-mode overlay discovery complexity).
@@ -878,7 +878,7 @@ fn test_full_cycle_base_config_clean_after_deactivation() {
     // Mock NixOS system profile for deactivation
     setup_deactivation_system_profile(&fs);
 
-    // Base hardware config: clean (AC1 pre-condition)
+    // Base hardware config: clean (pre-condition)
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
     fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
     fs.mock_set_file_content(
@@ -986,7 +986,7 @@ fn test_full_cycle_base_config_clean_after_deactivation() {
         .unwrap();
     assert!(
         !base_content.contains("./nails/configuration.nix"),
-        "Base hardware-configuration.nix must remain clean after full cycle (AC2, AC3)"
+        "Base hardware-configuration.nix must remain clean after full cycle"
     );
 }
 

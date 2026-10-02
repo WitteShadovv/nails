@@ -96,7 +96,7 @@ fn test_activate_from_non_inactive_returns_error() {
     // Force manager to reload state from disk
     *manager.lock().unwrap().cached_state.borrow_mut() = None;
 
-    // AC7: activate() is idempotent - calling from Active state should succeed (no-op)
+    // activate() is idempotent - calling from Active state should succeed (no-op)
     let result = manager.lock().unwrap().activate(true);
     assert!(
         result.is_ok(),
@@ -230,12 +230,12 @@ fn test_activate_saves_state_incrementally_after_each_step() {
     // Verify final state file contains overlay_status for BOTH mounts
     let final_state = StateFile::load(&state_path).expect("Should load final state");
 
-    // AC2: Verify overlay_status populated with /home mount
+    // Verify overlay_status populated with /home mount
     assert!(
         final_state
             .overlay_status
             .contains_key(&PathBuf::from("/home")),
-        "overlay_status should contain /home entry (AC2)"
+        "overlay_status should contain /home entry"
     );
 
     let home_info = final_state
@@ -247,12 +247,12 @@ fn test_activate_saves_state_incrementally_after_each_step() {
     assert_eq!(home_info.upper_dir, home_upper);
     assert_eq!(home_info.work_dir, home_work);
 
-    // AC2: Verify overlay_status populated with /etc mount
+    // Verify overlay_status populated with /etc mount
     assert!(
         final_state
             .overlay_status
             .contains_key(&PathBuf::from("/etc")),
-        "overlay_status should contain /etc entry (AC2)"
+        "overlay_status should contain /etc entry"
     );
 
     let etc_info = final_state
@@ -264,10 +264,10 @@ fn test_activate_saves_state_incrementally_after_each_step() {
     assert_eq!(etc_info.upper_dir, etc_upper);
     assert_eq!(etc_info.work_dir, etc_work);
 
-    // AC1: Verify final state is Active
+    // Verify final state is Active
     assert!(
         matches!(final_state.state, SystemState::Active { .. }),
-        "Final state should be Active (AC1)"
+        "Final state should be Active"
     );
 
     // Verify both overlays are in the Active state's overlay list

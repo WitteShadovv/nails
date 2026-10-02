@@ -59,7 +59,7 @@ fn test_activate_failure_at_mount_rolls_back_to_inactive() {
     let result = manager.lock().unwrap().activate(true);
     assert!(result.is_err());
 
-    // Verify state was rolled back to Inactive (FR50)
+    // Verify state was rolled back to Inactive
     let final_state = manager.lock().unwrap().current_state().unwrap();
     assert_eq!(
         final_state,
@@ -299,7 +299,7 @@ fn test_rollback_clears_overlay_status_and_nixos_generation() {
     let result = manager.lock().unwrap().activate(true);
     assert!(result.is_err(), "Activation should fail");
 
-    // AC4: Verify rollback cleared overlay_status and nixos_generation
+    // Verify rollback cleared overlay_status and nixos_generation
     let loaded = StateFile::load(&state_path).unwrap();
     assert_eq!(
         loaded.state,
@@ -307,14 +307,14 @@ fn test_rollback_clears_overlay_status_and_nixos_generation() {
         "State should be Inactive after rollback"
     );
 
-    // THIS IS THE KEY TEST for Task 5 (AC4):
+    // THIS IS THE KEY TEST:
     assert!(
         loaded.overlay_status.is_empty(),
-        "overlay_status should be cleared after rollback (AC4)"
+        "overlay_status should be cleared after rollback"
     );
     assert_eq!(
         loaded.nixos_generation, None,
-        "nixos_generation should be cleared after rollback (AC4)"
+        "nixos_generation should be cleared after rollback"
     );
 }
 

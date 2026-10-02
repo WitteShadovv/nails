@@ -36,14 +36,14 @@
 //!
 //! # Requirements
 //!
-//! - FR4: Status command
-//! - FR14: Overlay verification
-//! - FR26: Track current state
-//! - FR27: Track timestamp
-//! - FR28: Track overlay status
-//! - FR63: Status always succeeds (even on verification failure)
-//! - NFR23: State verification (overlays match reality)
-//! - NFR4: Status <500ms
+//! - Status command
+//! - Overlay verification
+//! - Track current state
+//! - Track timestamp
+//! - Track overlay status
+//! - Status always succeeds (even on verification failure)
+//! - State verification (overlays match reality)
+//! - Status <500ms
 
 use crate::{Config, Filesystem, LoadOutcome, Result, StateFile, SystemState};
 use chrono::{DateTime, Duration, Utc};
@@ -260,8 +260,8 @@ impl<F: Filesystem> StatusCommand<F> {
 
     /// Execute the status command, converting unreadable state into a truthful report.
     ///
-    /// Permission errors are surfaced to callers while preserving FR63 for other
-    /// recoverable state-file problems inside `run()`.
+    /// Permission errors are surfaced to callers, while other recoverable
+    /// state-file problems inside `run()` still yield a truthful report.
     pub fn run_truthful(&self) -> Result<StatusReport> {
         self.run()
     }

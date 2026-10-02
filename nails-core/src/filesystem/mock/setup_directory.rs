@@ -2,7 +2,7 @@ use super::MockFilesystem;
 use std::path::{Path, PathBuf};
 
 impl MockFilesystem {
-    /// Set whether a write operation should fail for a specific path (Story 5.5)
+    /// Set whether a write operation should fail for a specific path
     ///
     /// This is useful for testing cleanup failure scenarios where file writes fail.
     ///
@@ -65,7 +65,7 @@ impl MockFilesystem {
         pattern_results.insert(key, files.iter().map(|p| p.to_path_buf()).collect());
     }
 
-    /// Set whether a file/directory removal should fail (Story 5.3)
+    /// Set whether a file/directory removal should fail
     ///
     /// This is useful for testing error handling in cleanup operations.
     ///
@@ -173,7 +173,7 @@ impl MockFilesystem {
             .insert(dir.to_path_buf(), contents);
     }
 
-    /// Set the list of root directories for enumeration (Story 14.10)
+    /// Set the list of root directories for enumeration
     ///
     /// Configures the list of real directories under `/` that will be returned
     /// by `enumerate_root_directories()`. Symlinks should be set separately
@@ -206,7 +206,7 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned") = dirs;
     }
 
-    /// Set the list of symlinks under `/` (Story 14.10)
+    /// Set the list of symlinks under `/`
     ///
     /// Configures which paths under `/` are symlinks (not real directories).
     /// These will be excluded from `enumerate_root_directories()` results.

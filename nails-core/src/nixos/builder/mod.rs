@@ -111,14 +111,14 @@ impl NixOSBuilder {
     /// - Cached: <1s (symlink read + parse)
     /// - Build: 30-60s (one-time cost)
     pub fn build_profile(&self) -> Result<String> {
-        // Check for cached profile (FR16: Fast subsequent activations)
+        // Check for cached profile (Fast subsequent activations)
         if let Some(generation) = self.get_cached_generation()? {
             tracing::info!("Using cached NixOS profile: generation {}", generation);
             return Ok(generation);
         }
 
-        // No cache found, need to build (FR15: Lazy build pattern)
-        // FR17: Graceful fallback to build if cache invalid
+        // No cache found, need to build (Lazy build pattern)
+        // Graceful fallback to build if cache invalid
         // Distinguish between expected first activation vs unexpected cache loss
         if self.profile_path.exists() {
             tracing::warn!(
@@ -132,7 +132,7 @@ impl NixOSBuilder {
         let start = std::time::Instant::now();
 
         // Execute nixos-rebuild build command
-        // AC1 (Story 15.5): --no-update-lock-file prevents any package version updates.
+        // --no-update-lock-file prevents any package version updates.
         let flake_arg = self.effective_flake_arg();
         let (success, stdout, stderr) = self.executor.execute_nixos_rebuild(
             &[
@@ -163,7 +163,7 @@ impl NixOSBuilder {
         Ok(generation_id)
     }
 
-    /// Build NixOS profile with config fingerprint fast-path (Story 15.4)
+    /// Build NixOS profile with config fingerprint fast-path
     ///
     /// Implements the fingerprint-based fast path:
     ///
@@ -189,14 +189,14 @@ impl NixOSBuilder {
         current_fingerprint: &str,
         stored_fingerprint: Option<&str>,
     ) -> Result<(String, String, bool)> {
-        // AC2: Fast path – fingerprint matches and cached profile exists
+        // Fast path – fingerprint matches and cached profile exists
         if let Some(stored) = stored_fingerprint {
             if stored == current_fingerprint {
                 if let Some(generation) = self.get_cached_generation()? {
                     tracing::info!(
                         fingerprint = current_fingerprint,
                         generation = %generation,
-                        "⚡ Fast path: config fingerprint matches and profile exists — skipping build (AC2)"
+                        "⚡ Fast path: config fingerprint matches and profile exists — skipping build"
                     );
                     return Ok((generation, current_fingerprint.to_owned(), true));
                 }
@@ -216,9 +216,9 @@ impl NixOSBuilder {
             tracing::info!("No stored fingerprint — building NixOS profile for the first time");
         }
 
-        // AC3: Fall back to missing-only build (Story 15.5).
+        // Fall back to missing-only build.
         // build_profile_missing_only() checks whether the store path already exists
-        // before invoking nixos-rebuild, and always passes --no-update-lock-file (AC1).
+        // before invoking nixos-rebuild, and always passes --no-update-lock-file.
         let (generation, _store_path_reused) = self.build_profile_missing_only()?;
         Ok((generation, current_fingerprint.to_owned(), false))
     }
@@ -269,11 +269,11 @@ impl NixOSBuilder {
         }
     }
 
-    /// Build NixOS profile using the missing-only path (Story 15.5)
+    /// Build NixOS profile using the missing-only path
     ///
-    /// 1. **Store-path reuse** (AC2): If `{config_path}/result` already points to a
+    /// 1. **Store-path reuse**: If `{config_path}/result` already points to a
     ///    live Nix store path, extract the generation ID and return immediately.
-    /// 2. **Missing-only build** (AC1 + AC3): If the store path is absent, run
+    /// 2. **Missing-only build**: If the store path is absent, run
     ///    `nixos-rebuild build --no-update-lock-file`.
     ///
     /// # Returns
@@ -288,20 +288,20 @@ impl NixOSBuilder {
                 "Legacy NixOS builds are not supported in the missing-only path".into(),
             ));
         }
-        // AC2: Check whether the result store path is already present.
+        // Check whether the result store path is already present.
         if let Some(store_path) = self.get_result_store_path()? {
             let generation_id = self.extract_generation_from_store_path(&store_path)?;
             tracing::info!(
                 store_path = %store_path.display(),
                 generation = %generation_id,
-                "Missing-only path: store path already present — skipping build (AC2)"
+                "Missing-only path: store path already present — skipping build"
             );
             return Ok((generation_id, true));
         }
 
-        // AC1 + AC3: Store path missing — build only missing derivations.
+        // Store path missing — build only missing derivations.
         tracing::info!(
-            "Missing-only path: store path absent — building with --no-update-lock-file (AC1, AC3)"
+            "Missing-only path: store path absent — building with --no-update-lock-file"
         );
         let start = std::time::Instant::now();
 
@@ -321,7 +321,7 @@ impl NixOSBuilder {
             return Err(NailsError::NixOSError(format!("Build failed: {}", stderr)));
         }
 
-        // AC3: Parse generation from the result symlink created by nixos-rebuild build.
+        // Parse generation from the result symlink created by nixos-rebuild build.
         let generation_id = self.parse_generation_from_build_output(&stdout)?;
 
         let duration = start.elapsed();

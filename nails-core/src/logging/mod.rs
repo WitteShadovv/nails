@@ -5,10 +5,10 @@
 //!
 //! # Security Constraints
 //!
-//! - **FR35**: Logs to hidden volume ONLY
-//! - **FR36**: Refuse to log if hidden volume not mounted (fail-safe)
-//! - **FR38**: Structured JSON logs (newline-delimited)
-//! - **AR26**: Pre-flight validation of hidden volume path before any write
+//! - Logs to hidden volume ONLY
+//! - Refuse to log if hidden volume not mounted (fail-safe)
+//! - Structured JSON logs (newline-delimited)
+//! - Pre-flight validation of hidden volume path before any write
 //!
 //! # Usage Workflow
 //!

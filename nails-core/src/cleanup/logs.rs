@@ -212,7 +212,7 @@ impl<F: Filesystem> LogCleaner<F> {
                 self.log_path.display()
             )])
         } else {
-            // AC3/AC5: Return summary message with count and list
+            // Return summary message with count and list
             let count = removed_files.len();
             let files_list = removed_files.join(", ");
             let secure_note = if self.secure_delete {
@@ -364,7 +364,7 @@ mod tests {
 
         let result = cleaner.clean().unwrap();
 
-        // AC3/AC5: Should return summary message
+        // Should return summary message
         assert_eq!(result.len(), 1);
         assert!(result[0].contains("Removed 3 log files:"));
         assert!(result[0].contains("nails.log"));
@@ -449,7 +449,7 @@ mod tests {
         assert!(result.is_ok());
         let cleaned = result.unwrap();
 
-        // AC3/AC5: Should have summary with 2 files that succeeded
+        // Should have summary with 2 files that succeeded
         assert_eq!(cleaned.len(), 1);
         assert!(cleaned[0].contains("Removed 2 log files:"));
         assert!(cleaned[0].contains("nails.log.1"));
@@ -469,7 +469,7 @@ mod tests {
 
         let result = cleaner.clean().unwrap();
 
-        // AC3/AC5: Should return summary message with count
+        // Should return summary message with count
         assert_eq!(result.len(), 1);
         assert!(result[0].contains("Removed 1 log files:"));
         assert!(result[0].contains("nails.log"));

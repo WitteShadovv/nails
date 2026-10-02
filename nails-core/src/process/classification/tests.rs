@@ -251,7 +251,7 @@ fn test_nix_no_references_skip() {
     assert_eq!(strategy, RestartStrategy::Skip);
 }
 
-// Tests for generic overlay process classification (Story 14.10)
+// Tests for generic overlay process classification
 #[test]
 fn test_unknown_volume_user_no_restart() {
     let proc = make_test_process("some-app", 1234, true);

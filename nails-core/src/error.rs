@@ -134,7 +134,7 @@ pub enum NailsError {
     /// Invalid command-line argument or option
     ///
     /// Used when CLI flags or options are invalid or conflicting.
-    /// Story 4.15: User Prompts and CLI Flags for Overlay Strategy
+    /// User Prompts and CLI Flags for Overlay Strategy
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
 
@@ -210,7 +210,7 @@ pub enum NailsError {
     /// Cleanup operation failed
     ///
     /// Used when artifact cleanup fails during deactivation.
-    /// Per AC4: cleanup failures trigger rollback to ACTIVE state.
+    /// Cleanup failures trigger rollback to ACTIVE state.
     ///
     /// # Example
     /// ```

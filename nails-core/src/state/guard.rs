@@ -54,7 +54,7 @@ use std::rc::Rc;
 /// guard.commit();
 /// ```
 ///
-/// # Security Guarantee (NFR24)
+/// # Security Guarantee
 ///
 /// Even if a panic occurs during activation/deactivation, Drop trait ensures
 /// state is rolled back. This prevents the system from being left in an
@@ -62,15 +62,15 @@ use std::rc::Rc;
 ///
 /// # Requirements
 ///
-/// - **FR50**: Automatic rollback on activation failure
-/// - **FR51**: Restore the captured state when an operation fails (the guard
+/// - Automatic rollback on activation failure
+/// - Restore the captured state when an operation fails (the guard
 ///   restores state only; it does not touch overlays, and teardown leaves any
 ///   still-mounted overlay in place rather than reattaching it)
-/// - **FR52**: Track steps for reverse rollback
-/// - **FR53**: Idempotent rollback (safe to call multiple times)
-/// - **NFR15**: Prevent memory leaks via RAII
-/// - **NFR20**: Rollback on partial failures
-/// - **NFR24**: Automatic cleanup even on panic
+/// - Track steps for reverse rollback
+/// - Idempotent rollback (safe to call multiple times)
+/// - Prevent memory leaks via RAII
+/// - Rollback on partial failures
+/// - Automatic cleanup even on panic
 pub struct StateGuard<'a, F: Filesystem> {
     /// Exclusive borrow of the manager for state restoration
     manager: &'a mut NailsManager<F>,
@@ -264,9 +264,9 @@ impl<F: Filesystem> Drop for StateGuard<'_, F> {
     ///
     /// # Requirements
     ///
-    /// - **FR50**: Automatic rollback on activation failure
-    /// - **FR52**: Log warning "Rolling back to previous state: {:?}"
-    /// - **NFR24**: Works even during panic (Drop during stack unwinding)
+    /// - Automatic rollback on activation failure
+    /// - Log warning "Rolling back to previous state: {:?}"
+    /// - Works even during panic (Drop during stack unwinding)
     ///
     /// # Invariant: no lock acquisition
     ///

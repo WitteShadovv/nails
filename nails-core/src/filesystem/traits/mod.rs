@@ -159,7 +159,7 @@ pub trait Filesystem: Send + Sync + Clone {
     fn unmount_bind(&self, target: &Path) -> Result<()>;
 
     // ------------------------------------------------------------------------
-    // Tmpfs Operations (Story 4.11: Extended Overlay Strategy)
+    // Tmpfs Operations (Extended Overlay Strategy)
     // ------------------------------------------------------------------------
 
     /// Mount a tmpfs filesystem at target with specified size.
@@ -273,7 +273,7 @@ pub trait Filesystem: Send + Sync + Clone {
     ) -> Result<()>;
 
     // ------------------------------------------------------------------------
-    // Directory Listing Operations (Story 5.4: Log Cleanup)
+    // Directory Listing Operations (Log Cleanup)
     // ------------------------------------------------------------------------
 
     /// List files and directories in a directory (non-recursive).
@@ -282,11 +282,11 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Enumerate all top-level real directories under `/` (sorted alphabetically).
     ///
     /// Returns only real directories (not symlinks, not files). Used for dynamic
-    /// overlay enumeration when `overlay_mode: auto` is configured (Story 14.10).
+    /// overlay enumeration when `overlay_mode: auto` is configured.
     fn enumerate_root_directories(&self) -> Result<Vec<PathBuf>>;
 
     // ------------------------------------------------------------------------
-    // File Size and Rename Operations (Story 9.2: Log Rotation)
+    // File Size and Rename Operations (Log Rotation)
     // ------------------------------------------------------------------------
 
     /// Get the size of a file in bytes.
@@ -296,7 +296,7 @@ pub trait Filesystem: Send + Sync + Clone {
     fn rename_file(&self, from: &Path, to: &Path) -> Result<()>;
 
     // ------------------------------------------------------------------------
-    // File Removal Operations (Story 5.3: Temporary Files Cleanup)
+    // File Removal Operations (Temporary Files Cleanup)
     // ------------------------------------------------------------------------
 
     /// Remove a single file.
@@ -319,7 +319,7 @@ pub trait Filesystem: Send + Sync + Clone {
     fn secure_delete_dir_all(&self, path: &Path) -> Result<()>;
 
     // ------------------------------------------------------------------------
-    // Directory Operations (Story 9.x: Log Rotation)
+    // Directory Operations (Log Rotation)
     // ------------------------------------------------------------------------
 
     /// Check if a directory's filesystem supports symbolic links.

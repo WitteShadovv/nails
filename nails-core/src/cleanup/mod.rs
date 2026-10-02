@@ -9,9 +9,9 @@
 //!
 //! # Submodules
 //!
-//! - [`history`] - Shell history cleanup for bash, zsh, fish (Story 5.2)
-//! - [`temp_files`] - Temporary files cleanup (Story 5.3)
-//! - [`logs`] - Log files cleanup (Story 5.4)
+//! - [`history`] - Shell history cleanup for bash, zsh, fish
+//! - [`temp_files`] - Temporary files cleanup
+//! - [`logs`] - Log files cleanup
 //!
 //! # Example
 //!

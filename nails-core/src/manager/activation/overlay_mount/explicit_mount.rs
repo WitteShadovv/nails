@@ -123,7 +123,7 @@ impl<F: Filesystem> NailsManager<F> {
                 lower_refs.push(extra.as_path());
             }
 
-            // Task 6: DNS preservation - clean stale network config before mounting /etc
+            // DNS preservation - clean stale network config before mounting /etc
             if overlay.target == Path::new("/etc")
                 && let Err(e) = clean_stale_network_config(&overlay.upper, &self.filesystem)
             {
@@ -135,7 +135,7 @@ impl<F: Filesystem> NailsManager<F> {
                 // Continue anyway - this is best-effort
             }
 
-            // Use universal overlay mounting algorithm (Story 4.15, AC8)
+            // Use universal overlay mounting algorithm
             match crate::overlay::mount_overlay_with_strategy(
                 &self.filesystem,
                 &lower_refs,

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 #[test]
 fn test_nixos_config_check_success() {
-    // AC5: Pre-flight validation - all conditions pass
+    // Pre-flight validation - all conditions pass
     let fs = MockFilesystem::new();
 
     // Setup: All required files exist with correct content
@@ -44,7 +44,7 @@ fn test_nixos_config_check_success() {
 
 #[test]
 fn test_nixos_config_check_missing_base_config() {
-    // AC5: Check 1 - Base hardware-configuration.nix missing
+    // Check 1 - Base hardware-configuration.nix missing
     let fs = MockFilesystem::new();
 
     // Base config does NOT exist
@@ -98,7 +98,7 @@ fn test_nixos_config_check_missing_base_nixos_config() {
 
 #[test]
 fn test_nixos_config_check_missing_hidden_etc_nixos() {
-    // AC5: Check 2 - Hidden etc/nixos directory missing
+    // Check 2 - Hidden etc/nixos directory missing
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
@@ -175,7 +175,7 @@ fn test_nixos_config_check_missing_modified_hardware_config() {
 
 #[test]
 fn test_nixos_config_check_missing_hidden_import() {
-    // AC5: Check 4 - Modified hardware-configuration.nix missing hidden import
+    // Check 4 - Modified hardware-configuration.nix missing hidden import
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
@@ -303,7 +303,7 @@ fn test_nixos_config_check_missing_hidden_configuration_fails_read_only() {
 
 #[test]
 fn test_nixos_config_check_different_hidden_path() {
-    // AC5: Test with non-standard hidden storage path
+    // Test with non-standard hidden storage path
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
@@ -400,7 +400,7 @@ fn test_nixos_config_check_fails_without_base_config_or_flake() {
 
 #[test]
 fn test_nixos_config_check_integration_with_registry() {
-    // AC5: Integration test - NixOSConfigCheck works with PreFlightRegistry
+    // Integration test - NixOSConfigCheck works with PreFlightRegistry
     use crate::preflight::PreFlightRegistry;
 
     let fs = MockFilesystem::new();

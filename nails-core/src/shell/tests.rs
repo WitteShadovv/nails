@@ -1231,9 +1231,9 @@ fn test_shell_setup_result_paths() {
     );
 }
 
-// Color scheme integration tests (Story 14-8, Code Review Follow-up)
+// Color scheme integration tests
 //
-// Note: stdout write error testing (AC8 silent failure path) is not included here
+// Note: stdout write error testing (silent failure path) is not included here
 // because mocking std::io::stdout() requires complex test infrastructure that's not
 // practical in this context. The error handling is implemented in shell_setup() and
 // shell_cleanup() methods using tracing::warn!() for logging failures while continuing
@@ -1460,7 +1460,7 @@ fn test_emergency_deactivation_includes_color_reset() {
 }
 
 // ============================================================================
-// RC File Integration Tests (Task 1: Auto-source shell integration)
+// RC File Integration Tests (Auto-source shell integration)
 // ============================================================================
 
 #[test]

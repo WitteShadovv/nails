@@ -212,7 +212,7 @@ pub struct StatusReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlay_details: Option<std::collections::HashMap<PathBuf, crate::OverlayInfo>>,
 
-    /// Per-overlay mount status (Task 3: Fix status display)
+    /// Per-overlay mount status
     /// Contains expected vs actual mount status for each overlay
     pub overlay_mount_statuses: Vec<OverlayMountStatus>,
 

@@ -72,8 +72,8 @@ impl<F: Filesystem> NailsManager<F> {
         let mut pivot_mounts = 0;
         let mut leaking_targets: Vec<PathBuf> = Vec::new();
 
-        // Step 8a: Mount persistent overlays using universal algorithm (Story 4.15)
-        // Story 14.10: Use dynamic target list based on overlay_mode
+        // Step 8a: Mount persistent overlays using universal algorithm
+        // Use dynamic target list based on overlay_mode
         match self.config.overlay_mode {
             crate::OverlayMode::Auto => {
                 self.mount_auto_overlays(
@@ -103,7 +103,7 @@ impl<F: Filesystem> NailsManager<F> {
         // shared-home mode.
         self.mount_persona_home(&mut tracker, verbosity)?;
 
-        // Story 9.3 AC#1: Log overlays mounted with structured fields
+        // Log overlays mounted with structured fields
         let mounted_paths: Vec<_> = tracker
             .mounted
             .iter()
@@ -202,9 +202,9 @@ impl<F: Filesystem> NailsManager<F> {
 
         tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
 
-        // Story 15.1, AC2/AC4: After /etc overlay is mounted, inject the
+        // After /etc overlay is mounted, inject the
         // NAILS import block into the overlayed hardware-configuration.nix.
-        // Writes land in the upper layer — the base underlay is untouched (AC3).
+        // Writes land in the upper layer — the base underlay is untouched.
         if overlay.target == Path::new("/etc")
             && let Err(e) = inject_import_block(&self.filesystem)
         {
@@ -225,7 +225,7 @@ impl<F: Filesystem> NailsManager<F> {
             return Err(e);
         }
 
-        // Story 4.7, AC2, Task 4: Update overlay_status incrementally after EACH mount
+        // Update overlay_status incrementally after EACH mount
         let overlay_info = OverlayInfo {
             mount_path: overlay.target.clone(),
             lower_dir: overlay.lower.clone(),

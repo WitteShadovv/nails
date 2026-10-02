@@ -56,7 +56,7 @@ fn test_verification_status_is_verified() {
     assert!(!VerificationStatus::NotApplicable.is_verified());
 }
 
-// Task 6: Unit tests for INACTIVE state
+// Unit tests for INACTIVE state
 #[test]
 fn test_status_command_inactive() {
     let fs = MockFilesystem::new();
@@ -143,7 +143,7 @@ fn test_status_command_propagates_permission_denied_for_unreadable_state() {
     }
 }
 
-// Task 7: Unit tests for ACTIVE state
+// Unit tests for ACTIVE state
 #[test]
 fn test_status_command_active_verified() {
     let fs = MockFilesystem::new();
@@ -226,7 +226,7 @@ fn test_status_command_active_mismatch() {
     }
 }
 
-// Task 8: Unit tests for transitional states
+// Unit tests for transitional states
 #[test]
 fn test_status_command_activating() {
     let fs = MockFilesystem::new();
@@ -296,7 +296,7 @@ fn test_status_command_degraded() {
     assert!(report.activated_at.is_none());
 }
 
-// Task 9: Unit tests for overlay verification edge cases
+// Unit tests for overlay verification edge cases
 #[test]
 fn test_status_command_active_all_overlays_mounted() {
     let fs = MockFilesystem::new();
@@ -475,7 +475,7 @@ fn test_uptime_calculation_with_long_activation() {
     assert_eq!(uptime.num_days(), 7);
 }
 
-// Security posture tests (Story 7.2)
+// Security posture tests
 
 #[test]
 fn test_security_posture_active_verified() {
@@ -711,7 +711,7 @@ fn test_security_posture_screenreader_compatibility() {
     }
 }
 
-// ========== Uptime Formatting Tests (Story 7.3) ==========
+// ========== Uptime Formatting Tests ==========
 
 #[test]
 fn test_uptime_formatting_less_than_hour() {
@@ -809,7 +809,7 @@ fn test_uptime_formatting_zero_duration() {
     assert_eq!(formatted, "0 minutes");
 }
 
-// ========== OpSec Reminder Generation Tests (Story 7.3) ==========
+// ========== OpSec Reminder Generation Tests ==========
 
 #[test]
 fn test_opsec_reminders_less_than_6_hours() {
@@ -862,7 +862,7 @@ fn test_opsec_reminders_disabled() {
     assert_eq!(reminders.len(), 0);
 }
 
-// ========== OpSec Reminder Struct Tests (Story 7.3) ==========
+// ========== OpSec Reminder Struct Tests ==========
 
 #[test]
 fn test_opsec_reminder_display_info() {
@@ -922,7 +922,7 @@ fn test_opsec_reminder_serialization() {
     assert_eq!(reminder, deserialized);
 }
 
-// ========== ReminderSeverity Tests (Story 7.3) ==========
+// ========== ReminderSeverity Tests ==========
 
 #[test]
 fn test_reminder_severity_display() {
@@ -938,7 +938,7 @@ fn test_reminder_severity_to_plain() {
     assert_eq!(ReminderSeverity::Critical.to_plain(), "[CRITICAL]");
 }
 
-// ========== Integration Tests (Story 7.3) ==========
+// ========== Integration Tests ==========
 
 #[test]
 fn test_status_command_includes_formatted_uptime() {
@@ -1298,7 +1298,7 @@ fn test_status_command_reports_mount_check_errors_as_mismatch_and_status_false()
 }
 
 // ============================================================================
-// Story 9.3: Structured Logging Tests for Status
+// Structured Logging Tests for Status
 // ============================================================================
 
 #[test]
@@ -1356,7 +1356,7 @@ fn test_status_logs_verification_result() {
 }
 
 // ============================================================================
-// Task 3: Per-Overlay Mount Status Display Tests
+// Per-Overlay Mount Status Display Tests
 // ============================================================================
 
 #[test]

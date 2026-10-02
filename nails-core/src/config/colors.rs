@@ -63,7 +63,7 @@ impl Default for ColorSchemeConfig {
 ///
 /// **No format validation is performed** on color values. Invalid formats
 /// are passed directly to the terminal via OSC sequences. Terminals that
-/// don't recognize the format will silently ignore the sequences (per AC8).
+/// don't recognize the format will silently ignore the sequences.
 ///
 /// This design choice prioritizes:
 /// 1. Flexibility: Support various terminal color formats without restriction

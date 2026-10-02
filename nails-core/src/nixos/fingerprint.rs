@@ -1,4 +1,4 @@
-//! Configuration Fingerprinting (Story 15.4)
+//! Configuration Fingerprinting
 //!
 //! Provides stable fingerprinting of NixOS configuration inputs to enable
 //! fast-path activation when configuration hasn't changed.
@@ -23,7 +23,7 @@
 //! - Stable output (same input always produces same hash)
 //! - Good distribution for short inputs
 
-/// Compute a stable fingerprint of NixOS config inputs (Story 15.4, AC1)
+/// Compute a stable fingerprint of NixOS config inputs
 ///
 /// Hashes the content of the hardware configuration and hidden configuration
 /// using FNV-1a (64-bit). This is a deterministic, dependency-free hash that

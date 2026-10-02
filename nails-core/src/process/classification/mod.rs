@@ -9,9 +9,9 @@
 //! - **`/etc`**: Config readers mostly safe, critical services risky
 //! - **`/home`**: GUI apps cannot restart (lose work), audio risky
 //! - **`/nix`** (or `/nix/store`): `Skip` for read-only consumers, `Risky` for `cwd`, nix-daemon `Safe`
-//! - **Unknown volumes**: Generic overlay process classification (Story 14.10)
+//! - **Unknown volumes**: Generic overlay process classification
 //!
-//! With dynamic overlay enumeration (Story 14.10), any directory under `/` can
+//! With dynamic overlay enumeration, any directory under `/` can
 //! be an overlay target. Unknown volumes use a conservative fallback that treats
 //! processes with `cwd` in the target as `Risky` and others as `Safe`.
 //!
@@ -138,7 +138,7 @@ pub fn classify_process(proc: &ProcessInfo, target: &Path) -> RestartStrategy {
     }
 }
 
-/// Classify process for an arbitrary overlay target (Story 14.10)
+/// Classify process for an arbitrary overlay target
 ///
 /// With dynamic overlay enumeration, any directory under `/` can be an overlay
 /// target (e.g., `/tmp`, `/opt`, `/srv`, `/boot`, `/root`, `/usr`, `/nix`,

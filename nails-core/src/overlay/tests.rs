@@ -39,7 +39,7 @@ fn test_ephemeral_mount_info_clone() {
 
 #[test]
 fn test_mount_ephemeral_overlay_success() {
-    // AC2: Creates tmpfs mounts and overlay
+    // Creates tmpfs mounts and overlay
     let fs = MockFilesystem::new();
     let config = EphemeralOverlayDir {
         path: PathBuf::from("/var"),
@@ -71,7 +71,7 @@ fn test_mount_ephemeral_overlay_success() {
 
 #[test]
 fn test_mount_ephemeral_overlay_creates_directories() {
-    // AC2: Creates upper and work directories
+    // Creates upper and work directories
     let fs = MockFilesystem::new();
     let config = EphemeralOverlayDir {
         path: PathBuf::from("/var"),
@@ -97,7 +97,7 @@ fn test_mount_ephemeral_overlay_creates_directories() {
 
 #[test]
 fn test_mount_ephemeral_overlay_validates_sizes() {
-    // AC1: Size validation via tmpfs mount
+    // Size validation via tmpfs mount
     let fs = MockFilesystem::new();
     let config = EphemeralOverlayDir {
         path: PathBuf::from("/var"),
@@ -131,7 +131,7 @@ fn test_mount_ephemeral_overlay_rejects_root_target_without_file_name() {
 
 #[test]
 fn test_mount_ephemeral_overlay_multiple_directories() {
-    // AC2: Can mount multiple ephemeral overlays
+    // Can mount multiple ephemeral overlays
     let fs = MockFilesystem::new();
 
     let config_var = EphemeralOverlayDir {
@@ -171,7 +171,7 @@ fn test_mount_ephemeral_overlay_multiple_directories() {
 
 #[test]
 fn test_unmount_ephemeral_overlay_success() {
-    // AC5: Unmounts overlay and tmpfs in correct order
+    // Unmounts overlay and tmpfs in correct order
     let fs = MockFilesystem::new();
     let config = EphemeralOverlayDir {
         path: PathBuf::from("/var"),
@@ -202,7 +202,7 @@ fn test_unmount_ephemeral_overlay_success() {
 
 #[test]
 fn test_unmount_ephemeral_overlay_best_effort() {
-    // AC5: Best-effort unmount continues even if some fail
+    // Best-effort unmount continues even if some fail
     let fs = MockFilesystem::new();
     let info = EphemeralMountInfo {
         target: PathBuf::from("/var"),
@@ -246,7 +246,7 @@ fn test_unmount_ephemeral_overlay_reports_all_failures_after_force_fallback() {
 
 #[test]
 fn test_unmount_ephemeral_overlay_full_cycle() {
-    // AC4, AC5: Full mount/write/unmount cycle
+    // Full mount/write/unmount cycle
     let fs = MockFilesystem::new();
     let config = EphemeralOverlayDir {
         path: PathBuf::from("/var"),

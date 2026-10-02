@@ -195,10 +195,10 @@ fn clean_path_components(path: &Path) -> PathBuf {
 ///
 /// # Requirements
 ///
-/// - FR26: Track current state
-/// - FR27: Track timestamp for each state transition
-/// - FR29: Serialize state to JSON
-/// - NFR12: Impossible invalid states via enum pattern matching
+/// - Track current state
+/// - Track timestamp for each state transition
+/// - Serialize state to JSON
+/// - Impossible invalid states via enum pattern matching
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SystemState {
     /// System is inactive (decoy state)
@@ -244,8 +244,8 @@ pub enum SystemState {
 ///
 /// # Requirements
 ///
-/// - FR28: Track overlay status with mount paths and directories
-/// - AR25: State file contains overlay status
+/// - Track overlay status with mount paths and directories
+/// - State file contains overlay status
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverlayInfo {
     /// Target mount point (e.g., /home, /etc)
@@ -264,7 +264,7 @@ pub struct OverlayInfo {
     pub mounted_at: DateTime<Utc>,
 }
 
-/// Information about a failed overlay mount attempt (Story 14.10, AC9)
+/// Information about a failed overlay mount attempt
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FailedOverlayInfo {
     /// Target mount point that failed (e.g., /var, /tmp)

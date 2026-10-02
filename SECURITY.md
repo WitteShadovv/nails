@@ -134,6 +134,81 @@ When we publish a security fix, we communicate it through the repository's publi
 
 Publication format and timing depend on severity, remediation, and disclosure coordination. During the current alpha phase, some fixes may appear first in GitHub release or prerelease notes before a formal advisory is published.
 
+## Maintainer Handling Process
+
+This section describes how maintainers triage, fix, and disclose vulnerabilities.
+It is public on purpose: reporters should be able to see the standards we aim to
+follow. It describes intended practice, not a legal guarantee, and it will evolve
+with the project's release process and tooling.
+
+### Principles
+
+- Protect users first.
+- Validate reports carefully and respectfully.
+- Prefer coordinated disclosure over surprise public discussion.
+- Document fixes clearly once a remedy is available.
+- Avoid overstating process maturity while the project is in alpha.
+
+A report that arrives through private vulnerability reporting opens a draft
+advisory, so triage, the fix, and the published advisory stay in one private
+thread. If a report appears in public, move the conversation to a private channel
+and delete the public issue as quickly as practical: editing is not enough,
+because the original text stays in the edit history and in notification emails
+that were already sent.
+
+### Triage
+
+1. Acknowledge receipt.
+2. Confirm whether the report appears credible and in scope.
+3. Reproduce the issue when possible.
+4. Assess impact, affected versions, and likely mitigations.
+5. Assign a severity (see the table above) and decide whether the fix needs
+   restricted coordination. When in doubt, classify conservatively at first and
+   refine after reproduction.
+
+### Developing and shipping a fix
+
+For higher-severity issues, use the least-public coordination path available
+until users have a fix or mitigation. Depending on repository capabilities, that
+may include GitHub Security Advisories, restricted branches or private forks, and
+limited distribution of proof-of-concept details until release.
+
+Every security fix should aim to include:
+
+- a clear root-cause fix
+- regression coverage where feasible
+- review of adjacent failure paths and cleanup behaviour
+- release notes or advisory text appropriate to the issue
+
+Once a fix is ready, prepare the release or patch, coordinate timing with the
+reporter when practical, publish an advisory and/or release note, and credit the
+reporter unless anonymity was requested.
+
+### Post-incident follow-up
+
+For significant issues, record what failed, how the issue was introduced, why
+earlier review or testing did not catch it, and what preventive action should
+follow. That follow-up may live in a public postmortem, a tracked issue, or a
+smaller maintainer note, depending on sensitivity.
+
+### Dependency vulnerabilities
+
+When an upstream dependency issue affects NAILS:
+
+1. confirm whether the vulnerable path is reachable in this project
+2. assess NAILS-specific impact rather than copying upstream severity blindly
+3. update, patch, pin, or mitigate based on urgency and feasibility
+4. document user-facing impact if the issue materially affects released builds
+
+### Maintainer review checklist
+
+- [ ] Report is in scope or routed appropriately
+- [ ] Sensitive details are not exposed publicly
+- [ ] Severity and affected versions are recorded
+- [ ] Fix includes tests or a documented reason why it cannot
+- [ ] Release/advisory text is prepared
+- [ ] Reporter credit preference is respected
+
 ## Non-sensitive Security Questions
 
 For non-sensitive questions about hardening, threat model, or secure use:

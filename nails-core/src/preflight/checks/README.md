@@ -29,12 +29,12 @@ All checks implement the `PreFlightCheck<F: Filesystem>` trait defined in `../mo
   - Checks mount point exists and is writable
   - Ensures hidden storage root directory is available
 
-- **`space.rs`** - `SpaceCheck`: Validates sufficient disk space for activation
+- **`space/`** - `SpaceCheck`: Validates sufficient disk space for activation
   - Uses graduated response system (Pass/Warn/Fail thresholds)
   - Default minimum: 1024 MB (1 GB)
   - Also defines `OverlayDirs` struct for overlay configuration
 
-- **`storage_readiness.rs`** - `StorageReadinessCheck`: Unified storage validation (Story 14.5)
+- **`storage_readiness/`** - `StorageReadinessCheck`: Unified storage validation
   - Validates required directory structure on hidden volume
   - Auto-creates missing directories with proper permissions
   - Validates overlay directory accessibility (lower/upper/work)
@@ -42,7 +42,7 @@ All checks implement the `PreFlightCheck<F: Filesystem>` trait defined in `../mo
 
 ### Configuration
 
-- **`nixos_config.rs`** - `NixOSConfigCheck`: Validates NixOS configuration overlay structure
+- **`nixos_config/`** - `NixOSConfigCheck`: Validates NixOS configuration overlay structure
   - Ensures base NixOS config exists
   - Validates hidden storage NixOS configuration structure
   - Checks modified hardware-configuration.nix has correct imports
@@ -177,20 +177,20 @@ Return early with clear error messages. Include:
 - How to fix it (when applicable)
 
 ### 3. Actionable Error Messages
-Follow UXR19: Provide fix guidance in failure messages.
+Provide fix guidance in failure messages.
 
 Bad: "Storage not ready"
 Good: "Storage not ready: Missing /etc/ directory. Create with: sudo mkdir -p /mnt/hidden-volume/etc"
 
 ### 4. Idempotent Checks
-Checks should be safe to run multiple times without side effects (except auto-creation features like Story 14.4).
+Checks should be safe to run multiple times without side effects (except auto-creation features).
 
 ### 5. Test Coverage
 All checks require comprehensive unit tests with 100% coverage. Use `MockFilesystem` for deterministic testing.
 
-## Story 14.4: Auto-creation Pattern
+## Auto-creation Pattern
 
-Starting with Story 14.4, checks can auto-create missing resources:
+Checks can auto-create missing resources:
 
 ```rust
 if !fs.path_exists(&required_dir)? {
@@ -351,4 +351,5 @@ if let Err(e) = fs.create_directory(&path) {
 - Parent module: `../mod.rs` (trait definitions, registry)
 - Filesystem abstraction: `../../filesystem/mod.rs`
 - Error types: `../../error.rs`
-- Design documentation: `docs/design.tex` (Section 4.3.5 - Pre-flight Checks)
+- Architecture decisions: [`docs/adr/`](../../../../docs/adr)
+- Threat model: [`docs/threat-model.md`](../../../../docs/threat-model.md)

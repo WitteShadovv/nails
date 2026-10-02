@@ -70,7 +70,7 @@ fn test_storage_readiness_trait_metadata() {
 
 #[test]
 fn test_storage_readiness_all_dirs_exist_no_overlays_pass() {
-    // AC4: All dirs exist -> Pass
+    // All dirs exist -> Pass
     let fs = MockFilesystem::new();
     let check = make_check_no_overlays();
     setup_all_required_dirs(&fs);
@@ -82,7 +82,7 @@ fn test_storage_readiness_all_dirs_exist_no_overlays_pass() {
 
 #[test]
 fn test_storage_readiness_all_dirs_and_overlays_pass() {
-    // AC1+AC4: All dirs exist + overlays accessible -> single Pass
+    // All dirs exist + overlays accessible -> single Pass
     let fs = MockFilesystem::new();
     let check = make_check_with_overlays();
     setup_all_required_dirs(&fs);
@@ -119,7 +119,7 @@ fn test_storage_readiness_sets_upper_permissions_from_lower() {
 
 #[test]
 fn test_storage_readiness_missing_dir_autocreate_success() {
-    // AC6: Auto-create missing dirs (integration from 14.4)
+    // Auto-create missing dirs (integration from 14.4)
     let fs = MockFilesystem::new();
     let check = make_check_no_overlays();
 
@@ -151,7 +151,7 @@ fn test_storage_readiness_missing_dir_autocreate_success() {
 
 #[test]
 fn test_storage_readiness_missing_dir_autocreate_fails() {
-    // AC3: Creation failure -> single Fail message
+    // Creation failure -> single Fail message
     let fs = MockFilesystem::new();
     let check = make_check_no_overlays();
 
@@ -179,7 +179,7 @@ fn test_storage_readiness_missing_dir_autocreate_fails() {
 
 #[test]
 fn test_storage_readiness_overlay_lower_missing_fail() {
-    // AC3: Overlay lower missing -> Fail
+    // Overlay lower missing -> Fail
     let fs = MockFilesystem::new();
     let check = make_check_with_overlays();
     setup_all_required_dirs(&fs);
@@ -196,7 +196,7 @@ fn test_storage_readiness_overlay_lower_missing_fail() {
 
 #[test]
 fn test_storage_readiness_overlay_upper_not_writable_fail() {
-    // AC3: Upper not writable -> single Fail
+    // Upper not writable -> single Fail
     let fs = MockFilesystem::new();
     let check = make_check_with_overlays();
     setup_all_required_dirs(&fs);
@@ -212,7 +212,7 @@ fn test_storage_readiness_overlay_upper_not_writable_fail() {
 
 #[test]
 fn test_storage_readiness_overlay_work_not_writable_fail() {
-    // AC3: Work not writable -> Fail
+    // Work not writable -> Fail
     let fs = MockFilesystem::new();
     let check = make_check_with_overlays();
     setup_all_required_dirs(&fs);
@@ -228,7 +228,7 @@ fn test_storage_readiness_overlay_work_not_writable_fail() {
 
 #[test]
 fn test_storage_readiness_mixed_issues_single_fail() {
-    // AC3: Mixed issues -> single Fail message listing ALL problems
+    // Mixed issues -> single Fail message listing ALL problems
     let fs = MockFilesystem::new();
     let check = make_check_with_overlays();
 

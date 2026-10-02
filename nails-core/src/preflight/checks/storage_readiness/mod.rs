@@ -1,7 +1,7 @@
 //! Storage readiness pre-flight check
 //!
 //! Unified pre-flight check that validates hidden storage directory structure
-//! AND overlay directory accessibility in a single pass (Story 14.5).
+//! AND overlay directory accessibility in a single pass.
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::OverlayDirs;
@@ -116,7 +116,7 @@ impl StorageReadinessCheck {
             }
         }
 
-        // Phase 2: Auto-create missing directories (Story 14.4), or record them
+        // Phase 2: Auto-create missing directories, or record them
         // when read-only.
         if !missing.is_empty() {
             let mut created = Vec::new();

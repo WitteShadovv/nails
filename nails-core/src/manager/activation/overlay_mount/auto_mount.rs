@@ -96,13 +96,13 @@ impl<F: Filesystem> NailsManager<F> {
         nix_guard: &mut NixDaemonGuard,
         var_was_overlaid: &mut bool,
     ) -> Result<()> {
-        // Track mount failures for best-effort mounting (Story 14.10, Task 8)
+        // Track mount failures for best-effort mounting
         let mut mount_failures: Vec<(PathBuf, NailsError)> = Vec::new();
         let mut nix_overlay_succeeded = false;
 
         for target in overlay_targets {
             let target = target.clone();
-            // Create overlay config on-the-fly (Story 14.10, Task 6)
+            // Create overlay config on-the-fly
             let overlay = match create_overlay_config(
                 &self.filesystem,
                 &target,
@@ -179,7 +179,7 @@ impl<F: Filesystem> NailsManager<F> {
                 lower_refs.push(extra.as_path());
             }
 
-            // Task 6: DNS preservation - clean stale network config before mounting /etc
+            // DNS preservation - clean stale network config before mounting /etc
             if target == Path::new("/etc")
                 && let Err(e) = clean_stale_network_config(&overlay.upper, &self.filesystem)
             {
@@ -191,7 +191,7 @@ impl<F: Filesystem> NailsManager<F> {
                 // Continue anyway - this is best-effort
             }
 
-            // Use universal overlay mounting algorithm (Story 4.15, AC8)
+            // Use universal overlay mounting algorithm
             match crate::overlay::mount_overlay_with_strategy(
                 &self.filesystem,
                 &lower_refs,
@@ -218,7 +218,7 @@ impl<F: Filesystem> NailsManager<F> {
                     }
                 }
                 Err(e) => {
-                    // Story 14.10, Task 8: Best-effort mounting
+                    // Best-effort mounting
                     tracing::warn!(
                         error = %e,
                         target = %overlay.target.display(),
@@ -244,7 +244,7 @@ impl<F: Filesystem> NailsManager<F> {
             return Err(mount_failures.into_iter().next().unwrap().1);
         }
 
-        // Story 14.10, AC9: Record failed overlays in state for status reporting
+        // Record failed overlays in state for status reporting
         if !mount_failures.is_empty() {
             self.record_failed_overlays(&mount_failures)?;
         }

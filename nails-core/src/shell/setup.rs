@@ -22,7 +22,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     /// - On failure: Logs warning but does NOT propagate error (best-effort)
     /// - Empty sequences are silently ignored (no write attempt)
     ///
-    /// This function embodies the "silent failure" requirement (AC8) where
+    /// This function embodies the "silent failure" requirement where
     /// terminals that don't support OSC sequences ignore them, and write
     /// failures don't prevent activation/deactivation from continuing.
     fn apply_color_scheme_to_terminal(sequences: &str, context: &str) {
@@ -127,13 +127,13 @@ impl<F: Filesystem> ShellInstrumentation<F> {
 
         let shell_type = self.detect_current_shell();
 
-        // Task 1: Inject rc integration (best-effort)
+        // Inject rc integration (best-effort)
         let rc_modified = match shell_type {
             Some(shell) => self.inject_rc_integration(shell).unwrap_or(false),
             None => false,
         };
 
-        // Apply hidden color scheme (Story 14-8, Task 3)
+        // Apply hidden color scheme
         // OSC sequences are written to stdout so the terminal processes them
         // This is best-effort and non-blocking - failures are logged but don't prevent activation
         let color_sequences = color_scheme::apply_hidden_color_scheme(&self.config.color_scheme);
@@ -219,7 +219,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             instructions.push(format!("source {}", alias_cleanup.display()));
         }
 
-        // Apply decoy color scheme (Story 14-8, Task 4 & Task 5)
+        // Apply decoy color scheme
         // OSC reset sequences are written to stdout so the terminal processes them
         // This is best-effort and non-blocking - failures are logged but don't prevent deactivation
         let color_sequences = color_scheme::apply_decoy_color_scheme(&self.config.color_scheme);

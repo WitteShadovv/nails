@@ -71,7 +71,7 @@ pub(super) fn enumerate_root_directories() -> Result<Vec<PathBuf>> {
             continue;
         }
 
-        // Skip /run/nails directory (Story 14.10, Issue 6)
+        // Skip /run/nails directory
         if path.starts_with("/run/nails") {
             tracing::debug!("Skipping NAILS runtime directory: {}", path.display());
             continue;
@@ -80,7 +80,7 @@ pub(super) fn enumerate_root_directories() -> Result<Vec<PathBuf>> {
         directories.push(path);
     }
 
-    // Sort alphabetically for consistent mount order (Story 14.10)
+    // Sort alphabetically for consistent mount order
     directories.sort();
 
     Ok(directories)

@@ -61,7 +61,7 @@ fn setup_auto_mode_test(
 
 #[test]
 fn test_activate_auto_mode_overlays_all_non_excluded_dirs() {
-    // Task 12.1: Test activation with overlay_mode: auto creates overlays for all non-excluded dirs
+    // Test activation with overlay_mode: auto creates overlays for all non-excluded dirs
     let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/home", "/etc", "/var"]);
     let mock_hidden_vol = temp_dir.path();
 
@@ -158,7 +158,7 @@ fn test_activate_auto_mode_rollback_restarts_journald_and_nix_daemon_after_unmou
 
 #[test]
 fn test_activate_auto_mode_mount_order_is_alphabetical() {
-    // Task 12.2: Test mount order is alphabetical
+    // Test mount order is alphabetical
     let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/var", "/etc", "/home"]);
     let mock_hidden_vol = temp_dir.path();
 
@@ -197,7 +197,7 @@ fn test_activate_auto_mode_mount_order_is_alphabetical() {
 
 #[test]
 fn test_activate_auto_mode_upper_work_dirs_at_correct_paths() {
-    // Task 12.3: Test upper/work dirs created at correct paths
+    // Test upper/work dirs created at correct paths
     let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/home", "/etc"]);
     let mock_hidden_vol = temp_dir.path();
 
@@ -475,7 +475,7 @@ fn test_activate_refuses_a_leaky_exclusion_even_without_preflight() {
 
 #[test]
 fn test_activate_explicit_mode_uses_only_configured_overlays() {
-    // Task 13.1: Test explicit mode uses only configured overlays (legacy behavior)
+    // Test explicit mode uses only configured overlays (legacy behavior)
     use crate::OverlayConfig;
 
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
@@ -541,7 +541,7 @@ fn test_activate_explicit_mode_uses_only_configured_overlays() {
 
 #[test]
 fn test_default_overlay_mode_is_auto() {
-    // Task 13.2: Test default mode is auto
+    // Test default mode is auto
     let config = Config::test_default();
     assert_eq!(config.overlay_mode, OverlayMode::Auto);
 }
@@ -559,7 +559,7 @@ fn test_activation_injects_import_block_into_overlayed_hardware_config() {
 
     let fs = MockFilesystem::new();
 
-    // Base hardware config must exist and be clean (AC1)
+    // Base hardware config must exist and be clean
     let base_content = r#"{ config, pkgs, modulesPath, ... }:
 {
   imports = [
@@ -987,7 +987,7 @@ fn test_activate_explicit_mode_continues_when_clean_stale_network_config_fails()
 #[test]
 #[tracing_test::traced_test]
 fn test_overlay_mount_failure_error_format() {
-    // AC9: Validate error message format "⚠ Could not overlay /path: {reason}"
+    // Validate error message format "⚠ Could not overlay /path: {reason}"
     use std::sync::Arc;
 
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
@@ -1037,7 +1037,7 @@ fn test_overlay_mount_failure_error_format() {
     // Skip preflight to directly test mount failure error format
     let _result = manager.lock().unwrap().activate(true);
 
-    // Verify error message format matches AC9 specification
+    // Verify error message format
     assert!(
         logs_contain("⚠ Could not overlay /etc"),
         "Error message should contain '⚠ Could not overlay /etc'"
@@ -1121,7 +1121,7 @@ fn test_activate_auto_mode_all_directories_excluded() {
 
 // ========== Import Injection Target ==========
 
-/// AC1, Subtask 1.1 / 1.2:
+/// Injection targets the overlay path, leaving the hidden underlay clean:
 /// inject_import_block() targets `/etc/nixos/hardware-configuration.nix` (the overlayed
 /// path). The hidden underlay at `{hidden}/etc/nixos/hardware-configuration.nix` must
 /// remain unmodified (no import injected).
@@ -1172,11 +1172,11 @@ fn test_activation_inject_targets_overlayed_path_not_underlay() {
         "Overlayed hardware-configuration.nix should contain the injected import"
     );
 
-    // Underlay path is UNTOUCHED — contains no import (AC1, subtask 1.2)
+    // Underlay path is UNTOUCHED — contains no import
     let underlay_content = fs.read_file_content(&underlay).unwrap();
     assert!(
         !underlay_content.contains("./nails/configuration.nix"),
-        "Hidden underlay hardware-configuration.nix must NOT be modified by inject_import_block (AC1)"
+        "Hidden underlay hardware-configuration.nix must NOT be modified by inject_import_block"
     );
 
     // Verify only the overlayed path was written
@@ -1193,7 +1193,6 @@ fn test_activation_inject_targets_overlayed_path_not_underlay() {
     );
 }
 
-/// AC1, Subtask 1.1:
 /// inject_import_block() must run AFTER the /etc overlay is mounted.
 /// This test verifies ordering by inspecting the MockFilesystem operation log.
 #[test]

@@ -100,7 +100,7 @@ pub(crate) fn ensure_run_current_system_symlink<F: Filesystem>(
     Ok(())
 }
 
-/// Clean stale network configuration files from /etc overlay upper layer (Task 6: DNS preservation)
+/// Clean stale network configuration files from /etc overlay upper layer (DNS preservation)
 ///
 /// Before mounting the /etc overlay, remove stale `resolv.conf` and `nsswitch.conf` from the
 /// upper layer directory. This allows the real system files to show through the overlay's
@@ -175,11 +175,11 @@ pub(crate) fn clean_stale_network_config<F: Filesystem>(upper_dir: &Path, fs: &F
     Ok(())
 }
 
-/// Apply exclusion filter to a list of directories (Story 14.10, Task 4)
+/// Apply exclusion filter to a list of directories
 ///
 /// Filters out directories that match any path in the exclusion list.
 /// This function is separated from build_overlay_targets() for testability
-/// and modularity as specified in Task 4.
+/// and modularity.
 ///
 /// # Arguments
 ///
@@ -225,7 +225,7 @@ pub fn apply_exclusion_filter(directories: Vec<PathBuf>, exclusions: &[PathBuf])
     filtered
 }
 
-/// Build list of overlay targets based on overlay mode (Story 14.10)
+/// Build list of overlay targets based on overlay mode
 ///
 /// Determines which directories should be overlaid based on the configuration:
 /// - **Auto mode** (default): Enumerate all directories under `/`, apply exclusions
@@ -277,7 +277,7 @@ pub fn build_overlay_targets<F: Filesystem>(fs: &F, config: &Config) -> Result<V
             let all_dirs = fs.enumerate_root_directories()?;
             let exclusions = config.compute_effective_exclusions();
 
-            // Apply exclusion filtering (using separate function per Task 4 spec)
+            // Apply exclusion filtering (separate helper for clarity)
             let mut targets = apply_exclusion_filter(all_dirs, &exclusions);
 
             // Safety: never overlay core binary roots even if exclusions are misconfigured.
@@ -338,7 +338,7 @@ pub(crate) fn derive_upper_work_paths(
     Ok((upper, work))
 }
 
-/// Create overlay configuration for a target directory (Story 14.10)
+/// Create overlay configuration for a target directory
 ///
 /// Generates an OverlayConfig with auto-created upper/work directories
 /// based on the target path and hidden volume root.
@@ -386,7 +386,7 @@ pub(crate) fn create_overlay_config<F: Filesystem>(
     let (upper, work) = derive_upper_work_paths(target, hidden_volume_root)?;
     let work_parent = hidden_volume_root.join(".work");
 
-    // Create directories if they don't exist (Story 14.10, Task 6)
+    // Create directories if they don't exist
     // First create .work parent directory (may not exist yet)
     fs.create_directory(&work_parent)?;
 

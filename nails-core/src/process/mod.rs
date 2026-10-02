@@ -7,7 +7,7 @@
 //! This module implements the **Universal Overlay Mounting Strategy** documented in
 //! `/docs/architecture/universal-overlay-mounting-strategy.md`.
 //!
-//! The module is designed for code reuse between Epic 4 (Activation) and Epic 5 (Deactivation):
+//! The module is designed for code reuse between activation and deactivation:
 //! - Detection and classification logic is identical
 //! - Only the context (mounting vs unmounting) differs
 //!

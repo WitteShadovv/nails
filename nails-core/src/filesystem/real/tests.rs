@@ -15,12 +15,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 // ========================================================================
-// Tests for Story 4.11: Tmpfs Operations for Extended Overlays
+// Tests for Tmpfs Operations for Extended Overlays
 // ========================================================================
 
 #[test]
 fn test_mock_mount_tmpfs_success() {
-    // AC2: MockFilesystem tracks tmpfs mounts
+    // MockFilesystem tracks tmpfs mounts
     let fs = MockFilesystem::new();
 
     // Set up target directory
@@ -36,7 +36,7 @@ fn test_mock_mount_tmpfs_success() {
 
 #[test]
 fn test_mock_mount_tmpfs_validates_size_format() {
-    // AC1: Size validation rejects invalid formats
+    // Size validation rejects invalid formats
     let fs = MockFilesystem::new();
 
     // Set up directories as creatable
@@ -69,7 +69,7 @@ fn test_mock_mount_tmpfs_validates_size_format() {
 
 #[test]
 fn test_mock_mount_tmpfs_rejects_already_mounted() {
-    // AC2: Cannot mount tmpfs on already-mounted path
+    // Cannot mount tmpfs on already-mounted path
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/run/nails/var-upper", true);
@@ -93,7 +93,7 @@ fn test_mock_mount_tmpfs_rejects_already_mounted() {
 
 #[test]
 fn test_mock_mount_tmpfs_creates_directory() {
-    // AC2: Mount creates target directory if missing
+    // Mount creates target directory if missing
     let fs = MockFilesystem::new();
 
     // Set parent writable to allow directory creation
@@ -112,7 +112,7 @@ fn test_mock_mount_tmpfs_creates_directory() {
 
 #[test]
 fn test_mock_unmount_tmpfs_success() {
-    // AC2: Unmount removes tmpfs mount
+    // Unmount removes tmpfs mount
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/run/nails/var-upper", true);
@@ -132,7 +132,7 @@ fn test_mock_unmount_tmpfs_success() {
 
 #[test]
 fn test_mock_unmount_tmpfs_idempotent() {
-    // AC2: Unmount succeeds even if not mounted
+    // Unmount succeeds even if not mounted
     let fs = MockFilesystem::new();
 
     // Unmount without mount should succeed (idempotent)
@@ -142,7 +142,7 @@ fn test_mock_unmount_tmpfs_idempotent() {
 
 #[test]
 fn test_mock_tmpfs_multiple_mounts() {
-    // AC2: Can mount multiple tmpfs filesystems
+    // Can mount multiple tmpfs filesystems
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/run/nails/var-upper", true);
@@ -189,7 +189,7 @@ fn test_mock_tmpfs_reset_clears_mounts() {
     assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
 }
 
-// ========== Task 3: enumerate_root_directories() Tests (Story 14.10) ==========
+// ========== enumerate_root_directories() Tests ==========
 
 #[test]
 fn test_enumerate_root_directories_returns_sorted_list() {
@@ -289,11 +289,11 @@ fn test_enumerate_root_directories_many_directories() {
     }
 }
 
-// ========== Story 14.10: Symlink Edge Case Tests ==========
+// ========== Symlink Edge Case Tests ==========
 
 #[test]
 fn test_enumerate_root_directories_symlink_to_directory_is_excluded() {
-    // AC3: Symlinks to directories should be excluded (not overlaid)
+    // Symlinks to directories should be excluded (not overlaid)
     // Common NixOS case: /bin -> /nix/store/... (symlink to directory)
     let fs = MockFilesystem::new();
 
@@ -370,7 +370,7 @@ fn test_enumerate_root_directories_mixed_real_and_symlink() {
 
 #[test]
 fn test_enumerate_root_directories_excludes_run_nails() {
-    // Issue 6: Verify /run/nails directory is excluded from enumeration
+    // Verify /run/nails directory is excluded from enumeration
     // This prevents nested overlay filesystem issues
     let fs = MockFilesystem::new();
 

@@ -56,31 +56,31 @@ pub mod timing;
 // Verbosity configuration
 pub mod verbosity;
 
-// Overlay operations module (Story 4.11: Extended Overlay Strategy)
+// Overlay operations module (Extended Overlay Strategy)
 pub mod overlay;
 
-// Process detection and classification module (Story 4.13: Process Detection)
+// Process detection and classification module (Process Detection)
 pub mod process;
 
-// Activation options module (Story 4.15: User Prompts and CLI Flags)
+// Activation options module (User Prompts and CLI Flags)
 pub mod activate_options;
 
-// User prompts module (Story 4.15: User Prompts and CLI Flags)
+// User prompts module (User Prompts and CLI Flags)
 pub mod prompts;
 
-// Cleanup management module (Story 5.1: CleanupManager with Thorough and Fast Modes)
+// Cleanup management module (CleanupManager with Thorough and Fast Modes)
 pub mod cleanup;
 
-// Deactivation orchestrator module (Story 5.5: DeactivationOrchestrator with Cleanup + Unmount + Rollback)
+// Deactivation orchestrator module (DeactivationOrchestrator with Cleanup + Unmount + Rollback)
 pub mod deactivation;
 
-// Status command module (Story 7.1: State Query with Overlay Verification)
+// Status command module (State Query with Overlay Verification)
 pub mod status;
 
-// Shell instrumentation module (Story 8.1: Shell Prompt Instrumentation Scripts)
+// Shell instrumentation module (Shell Prompt Instrumentation Scripts)
 pub mod shell;
 
-// Logging infrastructure module (Story 9.1: Logging with Hidden Volume Validation)
+// Logging infrastructure module (Logging with Hidden Volume Validation)
 pub mod logging;
 
 // Shared marks and per-stream styles for CLI output
@@ -163,15 +163,15 @@ pub use timing::Stopwatch;
 // Verbosity configuration exports
 pub use verbosity::Verbosity;
 
-// Overlay operations exports (Story 4.11: Extended Overlay Strategy)
+// Overlay operations exports (Extended Overlay Strategy)
 pub use overlay::{
     EphemeralMountInfo, MountMethod, MountResult, OverlayStrategyOptions, SurvivingWriter,
     mount_ephemeral_overlay, unmount_ephemeral_overlay,
 };
 
-// Process detection and classification exports (Story 4.13: Process Detection)
+// Process detection and classification exports (Process Detection)
 pub use process::{
-    // Story 4.14: Session Detection and Shutdown Support
+    // Session Detection and Shutdown Support
     ProcessInfo,
     RestartMethod,
     RestartStrategy,
@@ -191,39 +191,39 @@ pub use process::{
     restart_user_manager,
 };
 
-// Activation options exports (Story 4.15: User Prompts and CLI Flags)
+// Activation options exports (User Prompts and CLI Flags)
 pub use activate_options::ActivateOptions;
 
-// User prompts exports (Story 4.15: User Prompts and CLI Flags)
+// User prompts exports (User Prompts and CLI Flags)
 pub use prompts::{
     display_abort_message, prompt_pivot_mount_acceptance, prompt_risky_process_restart,
     prompt_yes_no,
 };
 
-// Cleanup management exports (Story 5.1: CleanupManager with Thorough and Fast Modes)
+// Cleanup management exports (CleanupManager with Thorough and Fast Modes)
 pub use cleanup::{
     CleanupConfig,
     CleanupManager,
     CleanupMode,
     CleanupReport,
-    history::{HistoryCleaner, ShellType}, // Story 5.2 - nested to access private imports
-    logs::LogCleaner,                     // Story 5.4 - nested to access private imports
-    temp_files::TempFilesCleaner,         // Story 5.3 - nested to access private imports
+    history::{HistoryCleaner, ShellType}, // nested to access private imports
+    logs::LogCleaner,                     // nested to access private imports
+    temp_files::TempFilesCleaner,         // nested to access private imports
 };
 
 // Deactivation report exports (the deactivation sequence lives in `manager::deactivation`)
 pub use deactivation::{DeactivationReport, PostUnmountCleanupReport};
 
-// Status command exports (Story 7.1: State Query with Overlay Verification)
+// Status command exports (State Query with Overlay Verification)
 pub use status::{
     OpSecReminder, ReminderSeverity, SecurityPosture, StatusCommand, StatusReport,
     VerificationStatus,
 };
 
-// Shell instrumentation exports (Story 8.1: Shell Prompt Instrumentation Scripts)
+// Shell instrumentation exports (Shell Prompt Instrumentation Scripts)
 pub use shell::{ShellCleanupResult, ShellInstrumentation, ShellSetupResult};
 
-// Logging infrastructure exports (Story 9.1: Logging with Hidden Volume Validation)
+// Logging infrastructure exports (Logging with Hidden Volume Validation)
 pub use logging::{LoggingConfig, LoggingManager};
 
 // Shared marks and per-stream styles for CLI output

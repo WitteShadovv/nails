@@ -88,10 +88,10 @@ enum NixOSBuildMode {
 ///
 /// # References
 ///
-/// - [FR15: Lazy build pattern](docs/prd.md#FR15)
-/// - [FR16: Fast subsequent activations](docs/prd.md#FR16)
-/// - [FR17: Graceful fallback](docs/prd.md#FR17)
-/// - [NFR2: First activation 10-60s](docs/prd.md#NFR2)
+/// - Lazy build pattern
+/// - Fast subsequent activations
+/// - Graceful fallback
+/// - First activation 10-60s
 pub struct NixOSBuilder {
     /// Path to flake configuration directory (e.g., /mnt/hidden/nixos)
     config_path: PathBuf,

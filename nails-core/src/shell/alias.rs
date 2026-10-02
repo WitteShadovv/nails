@@ -279,7 +279,7 @@ mod tests {
         assert!(fish_cleanup.contains("; or true"));
     }
 
-    // Edge case tests for AC8 100% coverage
+    // Edge case tests for 100% coverage
 
     #[test]
     fn test_bash_alias_script_with_path_containing_spaces() {

@@ -52,7 +52,7 @@ pub enum MockOp {
 /// - `swap_enabled`: Boolean flag for swap status
 /// - `paths`: HashMap storing path metadata
 /// - `busy`: HashSet of paths marked as busy (open files)
-/// - `tmpfs_mounts`: HashSet of paths with tmpfs mounted (Story 4.11)
+/// - `tmpfs_mounts`: HashSet of paths with tmpfs mounted
 /// - `bind_mounts`: HashMap tracking bind mount source→target relationships
 ///
 /// # Thread Safety & Clone Behavior
