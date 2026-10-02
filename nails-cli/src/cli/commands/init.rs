@@ -4,8 +4,9 @@
 //!
 //! Every precondition is checked *before* the first write: the target must be a
 //! directory, a mounted volume of its own (so the layout never lands on the
-//! decoy disk where the real volume later hides it), writable, and able to hold
-//! symlinks; the base hardware configuration must be readable whenever the
+//! decoy disk where the real volume later hides it), writable, able to hold
+//! symlinks, and free of a file where the layout needs a directory or the
+//! reverse; the base hardware configuration must be readable whenever the
 //! hidden NixOS layout will be bootstrapped. A refusal therefore leaves the
 //! target untouched. Writes then go through the [`Filesystem`] trait, except the
 //! state file, which the core state module writes atomically under its lock.
@@ -252,6 +253,8 @@ fn plan<F: Filesystem>(fs: &F, args: &InitArgs) -> std::result::Result<InitPlan,
         ));
     }
 
+    failures.extend(obstructions(fs, base)?);
+
     let bootstrap = resolve_bootstrap(fs, args)?;
     if let HardwareBootstrap::From(hardware) = &bootstrap
         && !(fs.path_exists(hardware)? && fs.is_readable(hardware)?)
@@ -271,6 +274,36 @@ fn plan<F: Filesystem>(fs: &F, args: &InitArgs) -> std::result::Result<InitPlan,
     } else {
         Err(InitFailure::Preconditions(failures))
     }
+}
+
+/// Existing entries of the wrong kind where the layout needs a directory or a
+/// file.
+///
+/// Found before the first write, so init neither creates part of the layout nor
+/// changes the permissions of something it would then fail to replace.
+fn obstructions<F: Filesystem>(fs: &F, base: &Path) -> Result<Vec<String>> {
+    let mut found = Vec::new();
+    for dir_name in SUBDIRS {
+        let dir = base.join(dir_name);
+        if fs.path_exists(&dir)? && !fs.is_directory(&dir)? {
+            found.push(format!(
+                "{} exists but is not a directory; move it aside first",
+                dir.display()
+            ));
+        }
+    }
+    for file in [
+        base.join("config").join(CONFIG_FILE_NAME),
+        base.join("state.json"),
+    ] {
+        if fs.path_exists(&file)? && fs.is_directory(&file)? {
+            found.push(format!(
+                "{} exists but is a directory; move it aside first",
+                file.display()
+            ));
+        }
+    }
+    Ok(found)
 }
 
 /// A validated plan: what to bootstrap and the warnings to surface.

@@ -309,6 +309,69 @@ fn unmounted_target_refused_with_zero_writes() {
 }
 
 #[test]
+fn obstructing_file_refused_before_any_write() {
+    let root = Path::new("/mnt/data");
+    let fs = attached_mock(root);
+    // A file sits where the layout needs the config directory.
+    fs.mock_set_path_exists("/mnt/data/config", true);
+    fs.mock_set_path_type("/mnt/data/config", PathKind::File);
+
+    let args = InitArgs {
+        path: root.to_path_buf(),
+        allow_unmounted: false,
+        hardware_config: None,
+        no_hardware_config: true,
+    };
+
+    match plan(&fs, &args) {
+        Err(InitFailure::Preconditions(failures)) => assert!(
+            failures
+                .iter()
+                .any(|reason| reason.contains("/mnt/data/config exists but is not a directory")),
+            "{failures:?}"
+        ),
+        other => panic!("expected a precondition failure, got {:?}", other.is_ok()),
+    }
+
+    let status = run(&OutputSettings::default(), &fs, &args);
+    assert_eq!(status, ExitStatus::PreflightRefused);
+    assert!(
+        !fs.path_exists(&root.join("logs")).unwrap(),
+        "no directory may be created before the obstruction is reported"
+    );
+    assert_eq!(
+        fs.mock_get_permissions(Path::new("/mnt/data/config")),
+        None,
+        "the obstructing file's permissions must be left alone"
+    );
+}
+
+#[test]
+fn directory_in_place_of_the_state_file_is_refused() {
+    let root = Path::new("/mnt/data");
+    let fs = attached_mock(root);
+    fs.mock_set_path_exists("/mnt/data/state.json", true);
+    fs.mock_set_path_type("/mnt/data/state.json", PathKind::Dir);
+
+    let args = InitArgs {
+        path: root.to_path_buf(),
+        allow_unmounted: false,
+        hardware_config: None,
+        no_hardware_config: true,
+    };
+
+    match plan(&fs, &args) {
+        Err(InitFailure::Preconditions(failures)) => assert!(
+            failures
+                .iter()
+                .any(|reason| reason.contains("/mnt/data/state.json exists but is a directory")),
+            "{failures:?}"
+        ),
+        other => panic!("expected a precondition failure, got {:?}", other.is_ok()),
+    }
+}
+
+#[test]
 fn same_device_target_reports_the_mount_reason() {
     let root = Path::new("/mnt/data");
     let fs = attached_mock(root);
