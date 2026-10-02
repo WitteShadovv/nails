@@ -126,14 +126,14 @@ docs-check:
 
 # --- Flaky-test detection ---
 
-# Surface flaky, order- or timing-dependent tests: the suite threaded, then
-# single-threaded, then shuffled with a printed seed, then repeated through
-# nextest with no retries so one failure in any pass fails the run. Override
-# the shuffle seed with SHUFFLE_SEED to reproduce a reported ordering.
+# Surface flaky, order- or timing-dependent tests (set SHUFFLE_SEED to replay).
 stress iterations="10":
     #!/usr/bin/env bash
     set -euo pipefail
 
+    # Run the suite threaded, then single-threaded, then shuffled with a printed
+    # seed, then repeated through nextest with no retries so one failure in any
+    # pass fails the run. SHUFFLE_SEED reproduces a reported ordering.
     echo "== threaded run =="
     cargo test --workspace --all-features --locked
 
