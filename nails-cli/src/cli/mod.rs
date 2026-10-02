@@ -7,6 +7,7 @@ pub mod safety;
 
 // Re-export main types for convenience
 pub use args::{Cli, Commands, ConfigCommand, GlobalArgs};
+pub use detach::install_panic_hook;
 pub use logging::init_subscriber;
 pub use output::{ExitStatus, OutputSettings};
 pub use safety::check_real_operations_allowed;

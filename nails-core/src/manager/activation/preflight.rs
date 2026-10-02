@@ -185,8 +185,7 @@ impl<F: Filesystem> NailsManager<F> {
 
         let history_patterns = patterns::pre_activation_cleanup_patterns();
 
-        let cleaner =
-            HistoryCleaner::new(self.filesystem.clone()).with_patterns(history_patterns.clone());
+        let cleaner = HistoryCleaner::new(self.filesystem.clone()).with_patterns(history_patterns);
 
         match cleaner.clean() {
             Ok(cleaned_items) => {
@@ -197,12 +196,17 @@ impl<F: Filesystem> NailsManager<F> {
                         );
                     }
                 } else {
+                    // The matched patterns and the per-file results name the very
+                    // commands and paths this phase exists to erase. This runs in
+                    // the detached worker before /var is overlaid, so it must never
+                    // reach the decoy journal: keep both out of the info stream and
+                    // emit only a count there; the detail goes to the hidden-root
+                    // log at debug.
                     for item in &cleaned_items {
-                        tracing::info!(cleanup_result = %item, "Pre-activation history cleanup");
+                        tracing::debug!(cleanup_result = %item, "Pre-activation history cleanup");
                     }
                     if verbosity >= Verbosity::Normal {
                         tracing::info!(
-                            patterns = ?history_patterns,
                             items_cleaned = cleaned_items.len(),
                             "Pre-activation history cleanup complete"
                         );
@@ -217,5 +221,68 @@ impl<F: Filesystem> NailsManager<F> {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cleanup::test_utils::TEST_HOME;
+    use crate::{Config, MockFilesystem, NailsManager};
+
+    /// The whole capture buffer `tracing-test` has accumulated. We read it
+    /// directly rather than through the scope-filtered helper so the rendered
+    /// level of each line is visible.
+    fn captured_logs() -> String {
+        String::from_utf8(tracing_test::internal::global_buf().lock().unwrap().clone())
+            .expect("captured logs are valid UTF-8")
+    }
+
+    /// The matched patterns and the per-file results name the very commands this
+    /// phase erases, so they must stay off the INFO stream that a detached worker
+    /// would otherwise feed into the decoy journal before `/var` is overlaid.
+    #[tracing_test::traced_test]
+    #[test]
+    fn pre_activation_cleanup_keeps_patterns_and_per_file_detail_off_info() {
+        let fs = MockFilesystem::new();
+        let bash_history = format!("{TEST_HOME}/.bash_history");
+        fs.mock_set_file_content(
+            bash_history.as_str(),
+            "ls -la\ncryptsetup open /dev/sdb secret\nnails activate\n",
+        );
+        fs.mock_set_path_exists(bash_history.as_str(), true);
+
+        let config = Config::test_default();
+        let state_path = config.state_file_path.clone();
+        let manager = NailsManager::new(fs, config, state_path);
+
+        manager.run_pre_activation_cleanup(Verbosity::Normal);
+
+        let logs = captured_logs();
+
+        // The pattern list is never logged, at any level.
+        assert!(
+            !logs.contains("patterns="),
+            "cleanup pattern list leaked into the logs:\n{logs}"
+        );
+
+        // Per-file detail must not ride an INFO line; only the count summary does.
+        let mut saw_info_summary = false;
+        for line in logs.lines() {
+            if !line.contains("INFO") {
+                continue;
+            }
+            assert!(
+                !line.contains("cleanup_result"),
+                "per-file cleanup detail reached INFO: {line}"
+            );
+            if line.contains("items_cleaned") {
+                saw_info_summary = true;
+            }
+        }
+        assert!(
+            saw_info_summary,
+            "expected an INFO summary carrying only the cleaned count:\n{logs}"
+        );
     }
 }

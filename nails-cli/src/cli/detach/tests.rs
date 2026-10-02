@@ -43,6 +43,27 @@ fn run_entrypoint(case: &str, configure: impl FnOnce(&mut Command)) -> std::proc
     command.output().expect("run subprocess")
 }
 
+/// Assert the recorded `systemd-run` argv names no product unit and carries a
+/// neutral description with no path or product name.
+fn assert_neutral_unit_argv(logged_args: &str) {
+    assert!(
+        !logged_args.lines().any(|line| line == "--unit"),
+        "detached unit must not pass --unit (systemd auto-names it): {logged_args}"
+    );
+    assert!(
+        !logged_args.contains("nails-activate-") && !logged_args.contains("nails-deactivate-"),
+        "detached unit name must not carry the product name: {logged_args}"
+    );
+    let description = logged_args
+        .lines()
+        .find_map(|line| line.strip_prefix("--description="))
+        .expect("detached unit must pass a --description");
+    assert!(
+        !description.contains('/') && !description.to_lowercase().contains("nails"),
+        "unit description must carry no path or product name: {description:?}"
+    );
+}
+
 #[test]
 fn does_nothing_when_kill_session_false() {
     let mut env = EnvGuard::lock();
@@ -321,6 +342,16 @@ fn subprocess_detach_entrypoint() {
             // reaching here means the detach did not succeed.
             exit_process(7);
         }
+        "panic-hook" => {
+            // Install the hook, then provoke a panic whose payload carries a
+            // path-like secret. The hook must keep that off stderr; catch_unwind
+            // keeps the child from aborting so the parent can read stderr.
+            install_panic_hook();
+            let _ = std::panic::catch_unwind(|| {
+                panic!("boom at /mnt/hidden-volume/nixos/flake.nix");
+            });
+            exit_process(0);
+        }
         other => panic!("unknown detach subprocess case: {other}"),
     }
 }
@@ -448,12 +479,9 @@ fn deactivation_detach_uses_explicit_systemd_run_override() {
         command
             .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
             .env(ENV_FORCE_DETACH, "1")
-            .env(
-                DEACTIVATE_UNIT_NAME_OVERRIDE_ENV,
-                "nails-deactivate-test.service",
-            )
             .env("SUDO_UID", "1000")
             .env("SUDO_USER", "alice")
+            .env_remove(DETACH_DEBUG_JOURNAL_ENV)
             .env_remove(ENV_SKIP_DETACH)
             .env_remove(ENV_DETACHED);
     });
@@ -463,7 +491,7 @@ fn deactivation_detach_uses_explicit_systemd_run_override() {
     assert!(stderr.contains("Detached to background via systemd transient service."));
 
     let logged_args = fs::read_to_string(log).expect("fake systemd-run log");
-    assert!(logged_args.contains("nails-deactivate-test.service"));
+    assert_neutral_unit_argv(&logged_args);
     assert!(logged_args.contains("--working-directory=/"));
     assert!(logged_args.contains("--setenv=NAILS_TARGET_UID=1000"));
     assert!(logged_args.contains("--setenv=NAILS_TARGET_USER=alice"));
@@ -491,13 +519,10 @@ fn deactivation_detach_propagates_protected_shell_cleanup_pids() {
         command
             .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
             .env(ENV_FORCE_DETACH, "1")
-            .env(
-                DEACTIVATE_UNIT_NAME_OVERRIDE_ENV,
-                "nails-deactivate-test.service",
-            )
             .env("SUDO_UID", "1000")
             .env("SUDO_USER", "alice")
             .env(SHELL_CLEANUP_PROTECTED_PIDS_ENV, "101,202")
+            .env_remove(DETACH_DEBUG_JOURNAL_ENV)
             .env_remove(ENV_SKIP_DETACH)
             .env_remove(ENV_DETACHED);
     });
@@ -513,5 +538,117 @@ fn deactivation_detach_propagates_protected_shell_cleanup_pids() {
     assert!(
         logged_args.contains("--setenv=PATH="),
         "logged args were: {logged_args}"
+    );
+}
+
+/// Helper: write a `systemd-run` fake that records its argv to `log`.
+fn write_recording_systemd_run(fake_systemd_run: &std::path::Path, log: &std::path::Path) {
+    let shell_path = locate_shell_path();
+    write_executable_script(
+        fake_systemd_run,
+        &format!(
+            "#!{}\nprintf '%s\\n' \"$@\" > '{}'\nexit 0\n",
+            shell_path.display(),
+            log.display()
+        ),
+    );
+}
+
+#[test]
+fn session_detach_uses_neutral_unit_and_discards_output() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let fake_systemd_run = temp_dir.path().join("fake-systemd-run");
+    let log = temp_dir.path().join("systemd-run.log");
+    write_recording_systemd_run(&fake_systemd_run, &log);
+
+    let output = run_entrypoint("detach-session-success", |command| {
+        command
+            .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+            .env(ENV_FORCE_DETACH, "1")
+            .env_remove(DETACH_DEBUG_JOURNAL_ENV)
+            .env_remove(ENV_SKIP_DETACH)
+            .env_remove(ENV_DETACHED);
+    });
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "stderr={stderr}");
+
+    let logged_args = fs::read_to_string(log).expect("fake systemd-run log");
+    assert_neutral_unit_argv(&logged_args);
+    assert!(
+        logged_args.contains("--property=StandardOutput=null"),
+        "worker stdout must be discarded by default: {logged_args}"
+    );
+    assert!(
+        logged_args.contains("--property=StandardError=null"),
+        "worker stderr must be discarded by default: {logged_args}"
+    );
+    assert!(
+        !logged_args.contains("StandardOutput=journal")
+            && !logged_args.contains("StandardError=journal"),
+        "worker streams must not reach the journal by default: {logged_args}"
+    );
+}
+
+#[test]
+fn session_detach_debug_flag_routes_output_to_journal() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let fake_systemd_run = temp_dir.path().join("fake-systemd-run");
+    let log = temp_dir.path().join("systemd-run.log");
+    write_recording_systemd_run(&fake_systemd_run, &log);
+
+    let output = run_entrypoint("detach-session-success", |command| {
+        command
+            .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+            .env(ENV_FORCE_DETACH, "1")
+            .env(DETACH_DEBUG_JOURNAL_ENV, "1")
+            .env_remove(ENV_SKIP_DETACH)
+            .env_remove(ENV_DETACHED);
+    });
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "stderr={stderr}");
+
+    let logged_args = fs::read_to_string(log).expect("fake systemd-run log");
+    assert_neutral_unit_argv(&logged_args);
+    assert!(
+        logged_args.contains("--property=StandardOutput=journal")
+            && logged_args.contains("--property=StandardError=journal"),
+        "debug flag must route worker streams to the journal: {logged_args}"
+    );
+    assert!(
+        !logged_args.contains("StandardOutput=null"),
+        "debug flag must not also discard worker streams: {logged_args}"
+    );
+}
+
+#[test]
+fn panic_hook_keeps_paths_and_payload_off_stderr() {
+    let output = run_entrypoint("panic-hook", |command| {
+        command.env_remove(ENV_SKIP_DETACH).env_remove(ENV_DETACHED);
+    });
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "stderr={stderr}");
+    assert!(
+        stderr.contains("A fatal internal error occurred"),
+        "operator must see a neutral abort line: {stderr}"
+    );
+    // Neither the panic payload, its source location, nor a crate path may leak.
+    assert!(
+        !stderr.contains("boom"),
+        "payload leaked to stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("/mnt/hidden-volume"),
+        "payload path leaked to stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains(".rs:"),
+        "a source path leaked to stderr: {stderr}"
+    );
+    assert!(
+        !stderr.to_lowercase().contains("panicked"),
+        "the default panic line leaked to stderr: {stderr}"
     );
 }

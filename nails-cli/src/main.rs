@@ -49,6 +49,11 @@ fn main() -> std::process::ExitCode {
         stdout_format_for(&cli.command, &settings),
     );
 
+    // Route panics through tracing (the hidden-root log when one is active) and
+    // keep source paths and payloads off stderr, so a detached worker's crash
+    // never lands in the decoy journal. Installed after the subscriber exists.
+    nails::cli::install_panic_hook();
+
     execute_command(cli, &settings).to_exit_code()
 }
 

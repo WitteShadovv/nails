@@ -10,16 +10,31 @@ use nails_core::constants::{
 };
 use nails_core::{NailsError, SessionContext, SessionKind, detect_session_context};
 
-const ACTIVATE_UNIT_PREFIX: &str = "nails-activate-";
-const DEACTIVATE_UNIT_PREFIX: &str = "nails-deactivate-";
+/// Description applied to every detached transient unit.
+///
+/// `systemd-run` otherwise derives the unit's description (and, without an
+/// explicit `--unit`, its name) from the command line, so PID 1 would log the
+/// hidden-root binary path and the `activate`/`deactivate` verb into the decoy
+/// journal. A fixed, generic description keeps the activate and deactivate
+/// workers indistinguishable from any other transient maintenance unit, and
+/// omitting `--unit` lets systemd auto-name them `run-u<NNN>.service` with no
+/// product string at all.
+const NEUTRAL_UNIT_DESCRIPTION: &str = "System maintenance task";
+
+/// Opt-in debug escape hatch: send the detached worker's stdout/stderr to the
+/// journal instead of discarding it.
+///
+/// Off by default, the hidden-root file log is the worker's only sink, so
+/// nothing identifying reaches the decoy journal before `/var` is overlaid. An
+/// operator who needs to debug a failing handoff can set this to route the
+/// worker's streams back to the journal.
+const DETACH_DEBUG_JOURNAL_ENV: &str = "NAILS_DETACH_DEBUG_JOURNAL";
 
 // Test-only override hooks. Compiled in only under the `test-hooks` feature (and
 // this crate's own `cfg(test)` builds), so a shipped binary neither reads them
 // nor carries the strings.
 #[cfg(any(test, feature = "test-hooks"))]
 const SYSTEMD_RUN_OVERRIDE_ENV: &str = "NAILS_SYSTEMD_RUN_PATH";
-#[cfg(any(test, feature = "test-hooks"))]
-const DEACTIVATE_UNIT_NAME_OVERRIDE_ENV: &str = "NAILS_DEACTIVATE_UNIT_NAME";
 #[cfg(any(test, feature = "test-hooks"))]
 const SHELL_CLEANUP_PROTECTED_PIDS_ENV: &str = "NAILS_SHELL_CLEANUP_PROTECTED_PIDS";
 
@@ -32,6 +47,38 @@ const SHELL_CLEANUP_PROTECTED_PIDS_ENV: &str = "NAILS_SHELL_CLEANUP_PROTECTED_PI
 /// reuse it to terminate the child with a handler's code.
 pub(crate) fn exit_process(code: u8) -> ! {
     std::process::exit(i32::from(code));
+}
+
+/// Install a panic hook that keeps source paths out of the decoy journal.
+///
+/// The default hook prints `thread '…' panicked at <crate>/<file>:<line>` to
+/// stderr. For a detached worker whose stderr is wired to the journal that would
+/// leak the crate layout, and a panic payload can carry a hidden-root path. This
+/// hook instead sends the full payload and location only through `tracing`
+/// (whose active sink is the hidden-root file log for the commands that write
+/// one) and prints a single neutral line, with no path, crate name or payload,
+/// to stderr. It deliberately does not chain to the previous hook, so the
+/// default path-bearing line is never emitted.
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        tracing::error!(target: "panic", detail = %info, "aborted by an internal error");
+        eprintln!("A fatal internal error occurred; the operation was aborted.");
+    }));
+}
+
+/// Choose where the detached worker's stdout/stderr go.
+///
+/// Defaults to discarding both so the hidden-root file log is the only sink and
+/// nothing identifying reaches the decoy journal; the journal is used only when
+/// the debug escape hatch is set.
+fn apply_worker_stdio(cmd: &mut Command) {
+    if env::var_os(DETACH_DEBUG_JOURNAL_ENV).is_some() {
+        cmd.arg("--property=StandardOutput=journal");
+        cmd.arg("--property=StandardError=journal");
+    } else {
+        cmd.arg("--property=StandardOutput=null");
+        cmd.arg("--property=StandardError=null");
+    }
 }
 
 fn maybe_exit_after_detach(
@@ -198,7 +245,6 @@ pub fn maybe_detach_for_session_kill(
 
     // Prevent recursion - if already detached, just continue.
     if is_already_detached() {
-        eprintln!("DEBUG: Already detached, continuing...");
         return Ok(());
     }
 
@@ -228,18 +274,17 @@ pub fn maybe_detach_for_session_kill(
         NailsError::InvalidState(format!("Failed to get current executable path: {}", e))
     })?;
 
-    // Generate unique unit name
-    let unit_name = format!("{}{}.service", ACTIVATE_UNIT_PREFIX, std::process::id());
-
-    // Build systemd-run command
-    // Using no --scope flag creates a proper transient service
+    // Build systemd-run command.
+    //
+    // No --scope flag creates a proper transient service, and no --unit lets
+    // systemd auto-name it `run-u<NNN>.service` so the product name never reaches
+    // the journal; the neutral --description hides the hidden-root command line.
     let mut cmd = Command::new(systemd_run_program()?);
-    cmd.arg("--unit")
-        .arg(&unit_name)
-        .arg("--slice=system.slice")
+    cmd.arg("--slice=system.slice")
         .arg("--same-dir") // Keep current working directory
         .arg("--collect") // Clean up unit after it finishes
-        .arg("--quiet");
+        .arg("--quiet")
+        .arg(format!("--description={NEUTRAL_UNIT_DESCRIPTION}"));
 
     // Set environment variables for the service
     cmd.arg(format!("--setenv={}=1", ENV_DETACHED));
@@ -283,9 +328,9 @@ pub fn maybe_detach_for_session_kill(
 
     set_target_identity_from_environment(&mut cmd);
 
-    // Redirect output to the systemd journal for post-mortem debugging
-    cmd.arg("--property=StandardOutput=journal");
-    cmd.arg("--property=StandardError=journal");
+    // Discard the worker's streams by default so nothing identifying reaches the
+    // decoy journal; the hidden-root file log is the sink.
+    apply_worker_stdio(&mut cmd);
 
     // Add the command to execute
     cmd.arg("--");
@@ -314,30 +359,28 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
     })?;
 
     let argv: Vec<OsString> = std::env::args_os().collect();
-    let default_unit_name = format!("{}{}.service", DEACTIVATE_UNIT_PREFIX, std::process::id());
-    #[cfg(any(test, feature = "test-hooks"))]
-    let unit_name = env::var(DEACTIVATE_UNIT_NAME_OVERRIDE_ENV).unwrap_or(default_unit_name);
-    #[cfg(not(any(test, feature = "test-hooks")))]
-    let unit_name = default_unit_name;
 
+    // No --unit (systemd auto-names `run-u<NNN>.service`) and a neutral
+    // --description keep the product name and hidden-root command line out of the
+    // journal.
     let mut cmd = Command::new(systemd_run_program()?);
-    cmd.arg("--unit")
-        .arg(&unit_name)
-        .arg("--slice=system.slice")
+    cmd.arg("--slice=system.slice")
         .arg("--collect")
         .arg("--quiet")
+        .arg(format!("--description={NEUTRAL_UNIT_DESCRIPTION}"))
         .arg("--working-directory=/")
         .arg(format!("--setenv={}=1", ENV_DETACHED))
         .arg("--setenv=XDG_SESSION_ID=")
         .arg(format!(
             "--setenv=PATH={}",
             detached_path_env().to_string_lossy()
-        ))
-        .arg("--property=StandardOutput=journal")
-        .arg("--property=StandardError=journal")
-        .arg("--")
-        .arg(&exe_path)
-        .args(argv.iter().skip(1));
+        ));
+
+    // Discard the worker's streams by default; the hidden-root file log is the
+    // sink. Must precede the `--` separator below.
+    apply_worker_stdio(&mut cmd);
+
+    cmd.arg("--").arg(&exe_path).args(argv.iter().skip(1));
 
     set_target_identity_from_environment(&mut cmd);
     propagate_shell_cleanup_protection(&mut cmd);

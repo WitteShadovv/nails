@@ -1129,7 +1129,30 @@ fn test_activate_kill_session_detaches_via_systemd_run() {
     );
 
     let logged_args = fs::read_to_string(systemd_run_log).unwrap();
-    assert!(logged_args.contains("--unit"));
+    // No --unit (systemd auto-names the unit) and no product name in it, a
+    // neutral description, and discarded streams keep the decoy journal clean.
+    assert!(
+        !logged_args.lines().any(|line| line == "--unit"),
+        "detached unit must not pass --unit: {logged_args}"
+    );
+    assert!(
+        !logged_args.contains("nails-activate-"),
+        "detached unit name must not carry the product name: {logged_args}"
+    );
+    assert!(
+        logged_args.contains("--description=System maintenance task"),
+        "detached unit must pass a neutral description: {logged_args}"
+    );
+    assert!(
+        logged_args.contains("--property=StandardOutput=null")
+            && logged_args.contains("--property=StandardError=null"),
+        "detached worker streams must be discarded: {logged_args}"
+    );
+    assert!(
+        !logged_args.contains("StandardOutput=journal")
+            && !logged_args.contains("StandardError=journal"),
+        "detached worker streams must not reach the journal: {logged_args}"
+    );
     assert!(logged_args.contains("--slice=system.slice"));
     assert!(logged_args.contains("--same-dir"));
     assert!(logged_args.contains("--collect"));
