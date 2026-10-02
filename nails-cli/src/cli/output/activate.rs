@@ -188,86 +188,16 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
 ) {
     use nails_core::NailsError;
 
-    let out = settings.stdout_style();
     let err = settings.stderr_style();
-    let manual_hint = "You can manually source scripts from the hidden volume if needed";
 
     match result {
         Ok(_) => {
-            println!(
+            // The success summary (stdout) is built as a string so it can be
+            // snapshotted at each verbosity without capturing the process stdout.
+            print!(
                 "{}",
-                out.paint_bold(
-                    format_args!(
-                        "{} Activation complete in {:.1}s",
-                        out.glyph(Mark::Pass),
-                        duration
-                    ),
-                    Tone::Green
-                )
+                render_activate_success(duration, shell_setup, settings)
             );
-
-            if settings.is_quiet() {
-                return;
-            }
-
-            println!();
-            match shell_setup {
-                Some(setup) if setup.warning.is_some() => {
-                    // Script generation failed, show warning with reason
-                    let reason = setup.warning.as_deref().unwrap_or_default();
-                    println!(
-                        "{}",
-                        out.paint(
-                            format_args!("Shell prompt not updated: {reason}"),
-                            Tone::Yellow
-                        )
-                    );
-                    println!("{}", out.paint(manual_hint, Tone::Dim));
-                }
-                Some(setup) => {
-                    println!("{}", out.paint_bold("Shell Integration:", Tone::Cyan));
-                    if setup.rc_modified {
-                        // RC file was modified - new terminals auto-configured
-                        println!(
-                            "{}",
-                            out.paint(
-                                format_args!(
-                                    "{} New terminals will automatically have prompt, alias, and color scheme.",
-                                    out.glyph(Mark::Pass)
-                                ),
-                                Tone::Green
-                            )
-                        );
-                        println!();
-                        println!(
-                            "{}",
-                            out.paint("To apply to this terminal now, run:", Tone::Dim)
-                        );
-                    } else {
-                        println!(
-                            "{}",
-                            out.paint(
-                                "To update your prompt and add the 'nails' alias, run:",
-                                Tone::Dim
-                            )
-                        );
-                    }
-                    for cmd in &setup.instructions {
-                        println!("  {}", out.paint(cmd, Tone::Bold));
-                    }
-                }
-                None => {
-                    // No shell detected or unsupported shell
-                    println!(
-                        "{}",
-                        out.paint(
-                            "Shell prompt not updated - no supported shell detected",
-                            Tone::Yellow
-                        )
-                    );
-                    println!("{}", out.paint(manual_hint, Tone::Dim));
-                }
-            }
         }
         Err(NailsError::PreFlightCheckFailed(failures)) => {
             eprintln!(
@@ -312,6 +242,106 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
     }
 }
 
+/// Build the human-readable success summary for `activate` (stdout).
+///
+/// Only `--quiet` changes what is shown: it prints just the completion line,
+/// while every other level adds the shell-integration guidance. Verbosity above
+/// Normal affects tracing, not this summary, so Normal, Verbose and Debug render
+/// identically here.
+fn render_activate_success(
+    duration: f64,
+    shell_setup: Option<&nails_core::ShellSetupResult>,
+    settings: &OutputSettings,
+) -> String {
+    use std::fmt::Write as _;
+
+    let out = settings.stdout_style();
+    let manual_hint = "You can manually source scripts from the hidden volume if needed";
+    let mut buf = String::new();
+
+    let _ = writeln!(
+        buf,
+        "{}",
+        out.paint_bold(
+            format_args!(
+                "{} Activation complete in {:.1}s",
+                out.glyph(Mark::Pass),
+                duration
+            ),
+            Tone::Green
+        )
+    );
+
+    if settings.is_quiet() {
+        return buf;
+    }
+
+    let _ = writeln!(buf);
+    match shell_setup {
+        Some(setup) if setup.warning.is_some() => {
+            // Script generation failed, show warning with reason
+            let reason = setup.warning.as_deref().unwrap_or_default();
+            let _ = writeln!(
+                buf,
+                "{}",
+                out.paint(
+                    format_args!("Shell prompt not updated: {reason}"),
+                    Tone::Yellow
+                )
+            );
+            let _ = writeln!(buf, "{}", out.paint(manual_hint, Tone::Dim));
+        }
+        Some(setup) => {
+            let _ = writeln!(buf, "{}", out.paint_bold("Shell Integration:", Tone::Cyan));
+            if setup.rc_modified {
+                // RC file was modified - new terminals auto-configured
+                let _ = writeln!(
+                    buf,
+                    "{}",
+                    out.paint(
+                        format_args!(
+                            "{} New terminals will automatically have prompt, alias, and color scheme.",
+                            out.glyph(Mark::Pass)
+                        ),
+                        Tone::Green
+                    )
+                );
+                let _ = writeln!(buf);
+                let _ = writeln!(
+                    buf,
+                    "{}",
+                    out.paint("To apply to this terminal now, run:", Tone::Dim)
+                );
+            } else {
+                let _ = writeln!(
+                    buf,
+                    "{}",
+                    out.paint(
+                        "To update your prompt and add the 'nails' alias, run:",
+                        Tone::Dim
+                    )
+                );
+            }
+            for cmd in &setup.instructions {
+                let _ = writeln!(buf, "  {}", out.paint(cmd, Tone::Bold));
+            }
+        }
+        None => {
+            // No shell detected or unsupported shell
+            let _ = writeln!(
+                buf,
+                "{}",
+                out.paint(
+                    "Shell prompt not updated - no supported shell detected",
+                    Tone::Yellow
+                )
+            );
+            let _ = writeln!(buf, "{}", out.paint(manual_hint, Tone::Dim));
+        }
+    }
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +351,16 @@ mod tests {
     fn quiet_settings() -> OutputSettings {
         OutputSettings {
             verbosity: nails_core::Verbosity::Quiet,
+            ..OutputSettings::default()
+        }
+    }
+
+    /// Settings fixed at one verbosity with colour off and ASCII markers, so a
+    /// rendering snapshot is deterministic and isolates the verbosity dimension.
+    fn settings_at(verbosity: nails_core::Verbosity) -> OutputSettings {
+        OutputSettings {
+            verbosity,
+            ascii: true,
             ..OutputSettings::default()
         }
     }
@@ -448,6 +488,30 @@ mod tests {
     fn test_progress_event_is_typed_ndjson() {
         // Smoke: the progress line serializes without panicking.
         print_activate_progress("activating");
+    }
+
+    // ── renderer verbosity matrix ───────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_activate_success_render_across_verbosity() {
+        // The success summary only branches on `--quiet`: Normal, Verbose and
+        // Debug add the same shell-integration guidance (verbosity above Normal
+        // changes tracing, not this summary), and Quiet prints just the result
+        // line. `-vv` and `-vvv` both resolve to Debug, so the four distinct
+        // states are Quiet / Normal / Verbose / Debug.
+        use nails_core::Verbosity;
+        let setup = make_shell_setup_rc_modified();
+        for (label, verbosity) in [
+            ("quiet", Verbosity::Quiet),
+            ("normal", Verbosity::Normal),
+            ("verbose", Verbosity::Verbose),
+            ("debug", Verbosity::Debug),
+        ] {
+            insta::assert_snapshot!(
+                format!("activate_success_{label}"),
+                render_activate_success(1.5, Some(&setup), &settings_at(verbosity))
+            );
+        }
     }
 
     // ── print_activate_human ───────────────────────────────────────────────────
