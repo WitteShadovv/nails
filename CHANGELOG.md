@@ -40,6 +40,14 @@ during the current alpha phase.
 - A scheduled maintenance workflow (crate fetcher canary, Rust cache warming, stress loop and a
   task-dispatch input) and a `report-status` action that tracks red runs of `main`, scheduled jobs
   and releases in `ci-red`/advisory issues.
+- Preflight refuses activation outside PID 1's mount namespace or when `/` lacks shared
+  propagation, and probes that the hidden root can host an overlayfs upper layer (trusted xattrs,
+  `d_type`, whiteouts), naming the filesystem type when it cannot.
+- A `backend-detect` preflight that warns, never fails, about discard-enabled VeraCrypt or plain
+  mappings, file-container timestamp exposure and containers on copy-on-write filesystems, plus
+  `docs/backends.md` with the backend support matrix and per-backend deniability notes.
+- GitHub issue forms for bug reports and feature requests that require an OPSEC acknowledgement and
+  no longer ask for `nails status` output.
 
 ### Changed
 
@@ -104,6 +112,11 @@ during the current alpha phase.
   titles, a PR-title check, and flake/pre-commit auto-update and monthly `Cargo.lock` refresh
   workflows); the shipped dependency footprint is trimmed (`signal-hook` removed, chrono built
   without default features).
+- Overlay mounts always set `index=off,metacopy=off,redirect_dir=off`.
+- The security guide no longer recommends TRIM or `fstrim` on volumes that carry a hidden volume and
+  documents the discard, timestamp and copy-on-write hazards of each backend.
+- `.gitignore` no longer lists personal or planning paths and its packaging patterns are anchored;
+  the shell-history forensics page is trimmed to what NAILS does about each history surface.
 
 ### Removed
 
@@ -123,6 +136,9 @@ during the current alpha phase.
 - The `--plain`, `--no-color` and `--no-logs` flags and the `NAILS_NO_COLOR` environment variable,
   replaced by `--color` and `--ascii`; the six separate E2E and forensics-eval workflows,
   `scripts/ci-local.sh`, `scripts/burn-in.sh` and `shell.nix`.
+- The unused `.github/scripts/package-release.sh`; the flake's `nails-release` builds the release.
+- The copy of the systemd closure into `/run/nails/systemctl-cache` on every activation; systemctl
+  runs through the existing read-only store bind instead.
 
 ### Fixed
 
@@ -138,6 +154,13 @@ during the current alpha phase.
 - The E2E runner recorded a failed `nix build` as a pass and passed a bare revision to `--affected`
   as a flake reference; outcomes are now read from the store and `--affected` pins a `git+file`
   revision, evaluating both sides in one `nix eval`.
+- Nix store writes made in a hidden session land in the hidden overlay instead of the decoy
+  partition: the overlaid `/nix/store` is self-bound read-only rather than re-bound to the
+  pre-overlay store.
+- nix-daemon and journald are restarted on every teardown path after `/nix` and `/var` are
+  unmounted, including deactivation after a failed `/nix/store` unmount and activation rollback.
+- The init-namespace store bind is skipped when NAILS already shares PID 1's mount namespace, and
+  its forked helper uses only async-signal-safe calls.
 
 ### Security
 
@@ -146,6 +169,8 @@ during the current alpha phase.
 - Configured paths in `nails.toml` are validated when the file is loaded: a relative or
   non-normalized path, a `..` component, a symlinked or out-of-root hidden volume, and a `,` or `:`
   in an overlay path are each rejected with a specific error.
+- Vulnerabilities are reported through GitHub private vulnerability reporting first, with
+  `security@nails.run` as the PGP-capable fallback.
 
 ## [0.2.0] - 2026-05-08
 
