@@ -18,8 +18,10 @@ use std::path::{Path, PathBuf};
 /// `nix` or `nixos-rebuild` with `args`, taken from the caller's `PATH`.
 ///
 /// Allowed in test runtimes because the builder tests drive both through stub
-/// binaries. `clear_nix_path` drops `NIX_PATH`; flake builds request it so the
-/// caller's channel search path cannot influence evaluation.
+/// binaries. The child starts from a cleared environment, so `NIX_PATH` is
+/// absent by default: a flake build (`clear_nix_path`) leaves it that way so the
+/// caller's channel search path cannot influence evaluation, while a
+/// channel-based build passes it through explicitly.
 fn nix_toolchain_command(
     program: &'static str,
     args: &[&str],
@@ -29,9 +31,9 @@ fn nix_toolchain_command(
         .args(args)
         .allow_in_test_runtime();
     if clear_nix_path {
-        command.env_remove("NIX_PATH")
-    } else {
         command
+    } else {
+        command.allow_env("NIX_PATH")
     }
 }
 

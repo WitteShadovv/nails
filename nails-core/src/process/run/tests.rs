@@ -201,26 +201,110 @@ fn real_runner_closes_stdin() {
     assert_eq!(stdout, "eof");
 }
 
+/// Sets an environment variable and restores its previous value on drop, so a
+/// failing assertion cannot leak the change to other serial tests.
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe { std::env::set_var(key, value) };
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => unsafe { std::env::set_var(self.key, value) },
+            None => unsafe { std::env::remove_var(self.key) },
+        }
+    }
+}
+
+/// The variable names in the child's environment, read with `env`, which prints
+/// exactly what it inherits and adds nothing of its own.
+fn child_env_keys(command: ProcessCommand) -> Vec<String> {
+    let (ok, stdout, stderr) = RealProcessRunner.run_text(&command).unwrap();
+    assert!(ok, "env failed: {stderr}");
+    stdout
+        .lines()
+        .filter_map(|line| line.split_once('=').map(|(key, _)| key.to_string()))
+        .collect()
+}
+
 #[test]
 #[serial]
-fn real_runner_removes_requested_environment_variables() {
-    unsafe {
-        std::env::set_var("NAILS_RUN_TEST_VARIABLE", "inherited");
-    }
-    let base = ProcessCommand::tool("sh")
-        .args(["-c", "printf '%s' \"${NAILS_RUN_TEST_VARIABLE-unset}\""])
-        .allow_in_test_runtime();
+fn real_runner_gives_the_child_only_the_allowlisted_environment() {
+    // A secret the caller holds (dropped), locale/terminal variables (kept), and
+    // NIX_PATH (dropped unless the command opts in).
+    let _secret = EnvGuard::set("NAILS_RUN_SECRET", "leak");
+    let _lang = EnvGuard::set("LANG", "en_US.UTF-8");
+    let _lc_all = EnvGuard::set("LC_ALL", "C");
+    let _term = EnvGuard::set("TERM", "xterm-256color");
+    let _nix_path = EnvGuard::set("NIX_PATH", "nixpkgs=/caller/channel");
 
-    let inherited = RealProcessRunner.run_text(&base.clone()).unwrap();
-    let removed = RealProcessRunner
-        .run_text(&base.env_remove("NAILS_RUN_TEST_VARIABLE"))
+    let keys = child_env_keys(ProcessCommand::tool("env").allow_in_test_runtime());
+
+    // The child sees only the fixed PATH and allowlisted locale/terminal keys.
+    assert!(keys.contains(&"PATH".to_string()), "{keys:?}");
+    assert!(keys.contains(&"LANG".to_string()), "{keys:?}");
+    assert!(keys.contains(&"LC_ALL".to_string()), "{keys:?}");
+    assert!(keys.contains(&"TERM".to_string()), "{keys:?}");
+    assert!(
+        !keys.contains(&"NAILS_RUN_SECRET".to_string()),
+        "caller secret leaked to the child: {keys:?}"
+    );
+    assert!(
+        !keys.contains(&"NIX_PATH".to_string()),
+        "NIX_PATH reached the child without allow_env: {keys:?}"
+    );
+    for key in &keys {
+        assert!(
+            key == "PATH" || key == "LANG" || key == "TERM" || key.starts_with("LC_"),
+            "non-allowlisted variable {key} reached the child: {keys:?}"
+        );
+    }
+}
+
+#[test]
+#[serial]
+fn real_runner_sets_a_fixed_path_the_caller_cannot_override() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let _path = PathGuard::prepend(temp_dir.path());
+
+    // allow_env("PATH") must not win over the fixed PATH.
+    let (ok, stdout, _) = RealProcessRunner
+        .run_text(
+            &ProcessCommand::tool("sh")
+                .args(["-c", "printf '%s' \"$PATH\""])
+                .allow_env("PATH")
+                .allow_in_test_runtime(),
+        )
         .unwrap();
-    unsafe {
-        std::env::remove_var("NAILS_RUN_TEST_VARIABLE");
-    }
 
-    assert_eq!(inherited.1, "inherited");
-    assert_eq!(removed.1, "unset");
+    assert!(ok);
+    assert_eq!(stdout, SYSTEM_TOOL_DIRS.join(":"));
+}
+
+#[test]
+#[serial]
+fn real_runner_passes_allowed_variables_through() {
+    let _nix_path = EnvGuard::set("NIX_PATH", "nixpkgs=/caller/channel");
+
+    let base = ProcessCommand::tool("sh")
+        .args(["-c", "printf '%s' \"${NIX_PATH-unset}\""])
+        .allow_in_test_runtime();
+    let dropped = RealProcessRunner.run_text(&base.clone()).unwrap();
+    let kept = RealProcessRunner
+        .run_text(&base.allow_env("NIX_PATH"))
+        .unwrap();
+
+    assert_eq!(dropped.1, "unset");
+    assert_eq!(kept.1, "nixpkgs=/caller/channel");
 }
 
 #[test]

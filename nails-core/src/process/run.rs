@@ -10,8 +10,28 @@
 //! - **whether it may run at all**: commands are refused in test and test-like
 //!   runtimes unless they opt in, so a test that reaches the real runner gets
 //!   an error instead of stopping services or signalling host processes;
+//! - **what environment it inherits**: the child starts from a *cleared*
+//!   environment (see [below](#environment)), never the caller's;
 //! - **how the child starts**: stdin is closed and stdout/stderr are captured;
 //! - **how long it may run**: a command may carry a [deadline](ProcessCommand::deadline).
+//!
+//! # Environment
+//!
+//! nails runs as root, so a child must not inherit variables a lower-privileged
+//! caller could have set. Every child is started with [`env_clear`] and then
+//! given only:
+//!
+//! - a fixed `PATH` ([`SYSTEM_TOOL_DIRS`]), so the child resolves *its own*
+//!   helpers from the same root-owned directories the runner resolves from,
+//!   never from a user profile on the caller's `PATH`;
+//! - the caller's `LANG`, `LC_*` and `TERM`, which affect only locale and
+//!   terminal rendering and never tool resolution or a trust decision;
+//! - any variable a call site adds with [`ProcessCommand::allow_env`]. The only
+//!   use today is `NIX_PATH` for channel-based `nixos-rebuild`; a flake build
+//!   never allows it, so the caller's channel search path cannot steer
+//!   evaluation. `NIX_*` variables are *not* inherited otherwise.
+//!
+//! [`env_clear`]: std::process::Command::env_clear
 //!
 //! # Deadlines
 //!
@@ -123,7 +143,7 @@ impl fmt::Display for Program {
 pub struct ProcessCommand {
     program: Program,
     args: Vec<OsString>,
-    removed_env: Vec<OsString>,
+    allowed_env: Vec<OsString>,
     allowed_in_test_runtime: bool,
     timeout: Option<Duration>,
 }
@@ -134,7 +154,7 @@ impl ProcessCommand {
         Self {
             program,
             args: Vec::new(),
-            removed_env: Vec::new(),
+            allowed_env: Vec::new(),
             allowed_in_test_runtime: false,
             timeout: None,
         }
@@ -173,9 +193,15 @@ impl ProcessCommand {
         self
     }
 
-    /// Removes `key` from the environment the child inherits.
-    pub fn env_remove(mut self, key: impl AsRef<OsStr>) -> Self {
-        self.removed_env.push(key.as_ref().to_os_string());
+    /// Passes `key` from the caller's environment through to the child.
+    ///
+    /// The child otherwise starts from a cleared environment plus the fixed
+    /// allowlist (see the [module docs](self#environment)); this adds one more
+    /// variable to it when the caller holds it. Use it only for a concrete,
+    /// documented need — today just `NIX_PATH` for a channel-based
+    /// `nixos-rebuild`. It cannot override the fixed `PATH`.
+    pub fn allow_env(mut self, key: impl AsRef<OsStr>) -> Self {
+        self.allowed_env.push(key.as_ref().to_os_string());
         self
     }
 
@@ -257,14 +283,40 @@ impl ProcessRunner for RealProcessRunner {
 }
 
 /// Builds the `std::process::Command` shared by both run modes: the resolved
-/// executable, the arguments, and the requested environment removals.
+/// executable, the arguments, and the cleared, allowlisted environment.
 fn base_command(executable: &Path, command: &ProcessCommand) -> std::process::Command {
     let mut child = std::process::Command::new(executable);
     child.args(&command.args);
-    for key in &command.removed_env {
-        child.env_remove(key);
-    }
+    apply_environment(&mut child, command);
     child
+}
+
+/// Clears the child's environment and rebuilds it from the allowlist.
+///
+/// See the [module docs](self#environment): a fixed `PATH`, the caller's
+/// locale/terminal variables, and any key the command opted in with
+/// [`ProcessCommand::allow_env`]. Nothing else of the caller's reaches the
+/// child.
+fn apply_environment(child: &mut std::process::Command, command: &ProcessCommand) {
+    child.env_clear();
+    for (key, value) in std::env::vars_os() {
+        if is_allowlisted_env(&key) || command.allowed_env.contains(&key) {
+            child.env(key, value);
+        }
+    }
+    // Set last so an `allow_env("PATH")` cannot redirect the child onto a
+    // caller-chosen search path.
+    child.env("PATH", SYSTEM_TOOL_DIRS.join(":"));
+}
+
+/// Whether `key` is always passed through to a child.
+///
+/// Only `LANG`, `LC_*` and `TERM`: locale and terminal rendering, which never
+/// decide which binary runs or whether to trust something. Everything else is
+/// dropped unless a call site allows it explicitly.
+fn is_allowlisted_env(key: &OsStr) -> bool {
+    key.to_str()
+        .is_some_and(|key| key == "LANG" || key == "TERM" || key.starts_with("LC_"))
 }
 
 /// Wraps a spawn/`wait` failure with the executable path for context.
