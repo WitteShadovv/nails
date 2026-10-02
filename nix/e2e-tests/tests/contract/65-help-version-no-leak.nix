@@ -1,5 +1,4 @@
 # Test 65: Help and Version Do Not Leak Paths
-# Self-check: uses subtests, hard assertions, shared lib helpers, tags contract, no sleep.
 
 { self, pkgs, ... }:
 let

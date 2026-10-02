@@ -1,5 +1,4 @@
 # Test 62: No-Color Rendering
-# Self-check: uses subtests, hard assertions, shared lib helpers, tags contract, no sleep.
 
 { self, pkgs, ... }:
 let

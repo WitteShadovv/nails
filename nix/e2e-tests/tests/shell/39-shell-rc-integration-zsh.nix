@@ -1,5 +1,4 @@
 # Test 39: Shell RC Integration Zsh
-# Self-check: subtests used, no sleep sync, hard assertions, shell tag, shared helpers only.
 
 { self, pkgs, ... }:
 let

@@ -30,8 +30,11 @@
         machine.wait_for_unit("multi-user.target")
   '';
 
+  # With reboot=False the caller can assert the live, post-emergency state
+  # before the machine reboots, so a test proves emergency teardown itself
+  # cleaned up rather than relying on the reboot to hide leftovers.
   runEmergencyCommandFn = ''
-    def run_emergency_command():
+    def run_emergency_command(reboot=True):
         import time
 
         prepare_tty1_shell()
@@ -45,7 +48,8 @@
         wait_for_console_log(r"Emergency deactivation complete", timeout=30, start_index=console_start)
         wait_for_console_log(r"System returned to decoy configuration", timeout=5, start_index=console_start)
         elapsed = time.time() - start_time
-        reboot_after_emergency()
+        if reboot:
+            reboot_after_emergency()
         return elapsed
   '';
 

@@ -1,14 +1,4 @@
 # Test 45: Shell History under a real `sudo nails` invocation
-# Self-check: subtests used, no sleep sync, hard assertions, shell tag.
-#
-# Every other shell test seeds the operator's identity for NAILS (SUDO_UID /
-# SUDO_USER, or — before this was fixed — HOME/USER). This test instead performs
-# the genuine invocation the product documents: an unprivileged `testuser` runs
-# `sudo nails ...` with NO identity variables injected at all. Under that real
-# invocation `sudo` resets HOME to /root, so a resolver that trusted HOME would
-# clean root's history and leave the operator's untouched. The assertions below
-# prove NAILS resolves the operator from the escalation environment and cleans
-# /home/testuser — and leaves those files owned by the operator, not root.
 
 { self, pkgs, ... }:
 let

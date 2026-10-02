@@ -140,7 +140,29 @@ Do not violate:
 - hidden root at `/mnt/data`
 - hidden backing disk at `/dev/vdb`
 - non-root `testuser`
-- no softened assertions
+- no softened assertions (see [Assertions must be able to fail](#assertions-must-be-able-to-fail))
+
+## Assertions must be able to fail
+
+A test earns its keep only when a regression turns it red, so an assertion that
+cannot fail is worse than none: it hides the regression behind a green run. Two
+checks guard against that, and both run inside `nix flake check` without
+building a VM:
+
+- `nix/e2e-tests/lint.nix` (the `e2e-soft-assertions` flake check) fails on the
+  soft `print("Note: ...")` / `print(f"Note: ...")` branch, the idiom of
+  reporting a problem and then letting the test pass. Replace each with a hard
+  `assert ...` or `machine.fail(...)`.
+- `default.nix` wraps every test's `testScript` so that a run which never boots
+  a VM fails with `testScript never started a VM`. This catches a mis-indented
+  Nix `''` block that folds the Python body into a helper string (so
+  `machine.start()` never runs) and any test that asserts nothing against a
+  booted guest.
+
+A grep lint cannot judge the `|| echo 'CLEAN'` keyword filter, because a keyword
+search still passes on drift that happens to carry no keyword. Prove cleanliness
+with a full before/after diff of the file lists and checksums against an explicit
+allowlist of volatile paths instead (see `tests/forensic/06-snapshot-diff.nix`).
 
 ## Adding a test
 
@@ -149,7 +171,8 @@ Do not violate:
 3. Set `name` (it must differ from every group and tag name) and `meta.tags`, and add an estimated weight to `shard-durations.json` (refresh it from the next full run).
 4. Import shared helpers instead of duplicating Python.
 5. Use `with subtest(...)` for each logical phase.
-6. Verify with a direct `nix build` target before sending for review.
+6. Assert against the booted guest with hard `assert ...` or `machine.fail(...)`; never a `print("Note: ...")` escape hatch (the `e2e-soft-assertions` lint rejects it).
+7. Verify with a direct `nix build` target before sending for review.
 
 ## Adding a fixture
 

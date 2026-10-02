@@ -1,12 +1,4 @@
 # Test 53: State Guard Rollback
-# Self-check list:
-# 1. Uses with subtest(...).
-# 2. Uses deterministic waits only.
-# 3. Uses hard assertions only.
-# 4. Sets meta.tags.
-# 5. Uses shared lib helpers.
-# 6. Preserves forensic invariants.
-# 7. Exercises explicit failure injection and recovery.
 
 { self, ... }:
 let

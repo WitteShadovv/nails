@@ -144,6 +144,14 @@ in
     '';
   };
 
+  # Guards the E2E suite against assertions that can never fail (the soft
+  # "Note:" branch). It reads only the test files, so it runs in seconds and
+  # never builds a VM. The rule it enforces lives in nix/e2e-tests/README.md.
+  e2e-soft-assertions = import ./e2e-tests/lint.nix {
+    inherit pkgs;
+    tests = ./e2e-tests/tests;
+  };
+
   # Validates the checked-in shard weights against the timeouts the test
   # derivations really use. Evaluating the metadata also runs the assertions
   # in nix/e2e-tests/default.nix without building any VM test.

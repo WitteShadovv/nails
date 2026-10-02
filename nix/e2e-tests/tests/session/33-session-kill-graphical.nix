@@ -1,5 +1,4 @@
 # Test 33: Session Kill Graphical
-# Self-check: subtests used, no sleep sync, hard assertions, session tag, shared helpers only.
 
 { self, ... }:
 let
@@ -165,11 +164,11 @@ in
         assert_overlay_mounted("/home")
         assert_overlay_mounted("/etc")
         assert_status_state("active", config_path=headless_config)
-        rebuild_log_rc, rebuild_log = machine.execute("cat /tmp/nixos-rebuild-graphical.log")
-        if rebuild_log_rc != 0 or not rebuild_log.strip():
-            print("Note: nixos-rebuild-graphical.log absent or empty; skipping wrapper log assertion")
-        else:
-            assert any(token in rebuild_log for token in ["test", "switch", "boot"]), rebuild_log
+        # The wrapper records every nixos-rebuild invocation, so a full
+        # activation must leave a non-empty log naming the switch it performed.
+        rebuild_log = machine.succeed("cat /tmp/nixos-rebuild-graphical.log")
+        assert rebuild_log.strip(), "nixos-rebuild-graphical.log is empty: no rebuild ran"
+        assert any(token in rebuild_log for token in ["test", "switch", "boot"]), rebuild_log
         active_shell = run_command_capture("session-graphical-shell-active", shell_command)
         assert active_shell["rc"] == 0, active_shell
         assert osc_sequence in active_shell["stdout"], repr(active_shell["stdout"])

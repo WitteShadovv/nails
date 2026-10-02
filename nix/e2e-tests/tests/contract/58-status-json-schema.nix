@@ -1,5 +1,4 @@
 # Test 58: Status JSON Schema Contract
-# Self-check: uses subtests, hard assertions, shared lib helpers, tags contract, no sleep.
 
 { self, pkgs, ... }:
 let

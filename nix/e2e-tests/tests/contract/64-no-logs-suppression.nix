@@ -1,5 +1,4 @@
 # Test 64: Log-File Suppression (--no-log-file)
-# Self-check: uses subtests, hard assertions, shared lib helpers, tags contract, no sleep.
 
 { self, pkgs, ... }:
 let
@@ -35,6 +34,18 @@ in
             ).strip()
         )
 
+    def nails_journal_lines():
+        # Any record the nails process wrote to the journal would carry its
+        # command name. With logging suppressed there must be none.
+        raw = machine.succeed(
+            "journalctl -b --no-pager -o cat _COMM=nails 2>/dev/null || true"
+        )
+        return [
+            line
+            for line in raw.splitlines()
+            if line.strip() and line.strip() != "-- No entries --"
+        ]
+
     with subtest("boot and prepare hidden volume"):
         machine.start()
         machine.wait_for_unit("multi-user.target")
@@ -50,6 +61,10 @@ in
         size_after = hidden_log_size()
         assert size_after == size_before, (size_before, size_after)
         assert_status_state("Active", config_path=headless_config)
+        # --no-log-file silences every sink, not just the file: nails must not
+        # fall back to the journal.
+        leaked = nails_journal_lines()
+        assert not leaked, f"nails leaked {len(leaked)} journal line(s) under --no-log-file: {leaked[:5]}"
 
     with subtest("deactivation with --no-log-file succeeds"):
         run_detached_command(
@@ -60,7 +75,9 @@ in
         machine.start()
         machine.wait_for_unit("multi-user.target")
         machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
-        print(f"Note: hidden log size after --no-log-file deactivation: {hidden_log_size()} bytes")
+        # The whole --no-log-file cycle must leave the hidden log untouched.
+        size_final = hidden_log_size()
+        assert size_final == size_before, (size_before, size_final)
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';
 }

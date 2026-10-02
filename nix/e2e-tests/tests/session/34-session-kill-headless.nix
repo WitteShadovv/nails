@@ -1,5 +1,4 @@
 # Test 34: Session Kill Headless
-# Self-check: subtests used, no sleep sync, hard assertions, session tag, shared helpers only.
 
 { self, ... }:
 let

@@ -1,5 +1,4 @@
 # Test 43: Shell Color Scheme
-# Self-check: subtests used, no sleep sync, hard assertions, shell tag, shared helpers only.
 
 { self, ... }:
 let

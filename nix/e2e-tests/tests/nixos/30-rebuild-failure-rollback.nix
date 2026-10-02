@@ -1,5 +1,4 @@
 # Test 30: Rebuild Failure Preserves Activation
-# Checklist: subtests, deterministic waits, hard assertions, meta.tags, shared helpers, forensic invariants preserved.
 
 { self, ... }:
 let

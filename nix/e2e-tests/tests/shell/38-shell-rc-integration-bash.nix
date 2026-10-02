@@ -1,5 +1,4 @@
 # Test 38: Shell RC Integration Bash
-# Self-check: subtests used, no sleep sync, hard assertions, shell tag, shared helpers only.
 
 { self, ... }:
 let

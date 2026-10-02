@@ -1,5 +1,4 @@
 # Test 63: Plain Rendering
-# Self-check: uses subtests, hard assertions, shared lib helpers, tags contract, no sleep.
 
 { self, pkgs, ... }:
 let

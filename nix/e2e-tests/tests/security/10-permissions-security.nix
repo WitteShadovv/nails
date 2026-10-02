@@ -1,10 +1,12 @@
 # Test 10: Permission and Path Security
-# Tests log permissions, directory permissions, symlink rejection, path traversal
+# Tests that unsafe config paths are refused and that the activity log is
+# never group- or world-accessible.
 
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
+  assertions = import ./../../lib/assertions.nix;
   symlinkFixture = ./../../fixtures/configs/symlink-target.toml;
   traversalFixture = ./../../fixtures/configs/path-traversal.toml;
 in
@@ -23,63 +25,64 @@ in
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.readStatusJsonFn}
+    ${assertions.assertStatusStateFn}
+    ${assertions.assertNoOverlaysFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
     headless_config = "/tmp/nails-headless.toml"
+    overlay_targets = ["/home", "/etc", "/root", "/srv", "/tmp"]
     write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    print("\n=== Test 1: Log file permissions ===")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
+    def assert_config_refused(config_fixture, config_path, description):
+        machine.succeed(f"cp {config_fixture} {config_path}")
+        # Activation must exit non-zero: the config loader rejects the unsafe
+        # path before anything is mounted. A zero exit would mean the guard is
+        # gone, so this is the whole point of the test.
+        machine.fail(
+            f"nails --config {config_path} activate --overlay-only --session keep -y"
+        )
+        # A refusal must leave no trace: no overlay mounted and the tracked
+        # state still inactive.
+        assert_no_overlays(overlay_targets)
+        assert_status_state("inactive", config_path=headless_config)
+        print(f"✓ {description} is refused with no overlay left behind")
 
-    log_files = machine.succeed(
-      "find /var/log /mnt/data/logs -type f "
-      "\\( -name 'nails.log' -o -name 'nails*.log' \\) 2>/dev/null || true"
-    ).strip()
+    with subtest("symlinked hidden-volume root is refused"):
+        machine.succeed("ln -sfn /mnt/data /tmp/symlink-to-hidden")
+        assert_config_refused(
+            "${symlinkFixture}",
+            "/tmp/symlink-config.toml",
+            "Symlinked hidden-volume root",
+        )
+        machine.succeed("rm -f /tmp/symlink-to-hidden /tmp/symlink-config.toml")
 
-    if log_files:
-        for log_file in log_files.split("\n"):
-            log_file = log_file.strip()
-            if log_file:
-                perms = machine.succeed(f"stat -c %a {log_file}").strip()
-                print(f"  Log file {log_file}: permissions {perms}")
-                mode = int(perms, 8)
-                assert (mode & 0o022) == 0, \
-                    f"Log file {log_file} is writable by non-owner (perms={perms})"
-        print("✓ Log files have restrictive permissions")
-    else:
-        print("Note: No nails log files found (may use journald)")
+    with subtest("relative path-traversal root is refused"):
+        assert_config_refused(
+            "${traversalFixture}",
+            "/tmp/traversal-config.toml",
+            "Path traversal in config",
+        )
+        machine.succeed("rm -f /tmp/traversal-config.toml")
 
-    print("\n=== Test 2: Symlink rejection ===")
-    machine.succeed("nails emergency")
-    machine.succeed("ln -sfn /mnt/data /tmp/symlink-to-hidden")
-    machine.succeed("cp ${symlinkFixture} /tmp/symlink-config.toml")
+    with subtest("activity log is owner-only"):
+        # Default logging writes to the hidden-volume log. It records operator
+        # activity, so it must exist after a real activation and must not be
+        # readable or writable by group or other.
+        machine.succeed(
+            f"nails --config {headless_config} activate --overlay-only --session keep -y"
+        )
+        assert_status_state("active", config_path=headless_config)
 
-    result = machine.execute("nails --config /tmp/symlink-config.toml activate --overlay-only --session keep -y 2>&1")
-    print(f"  Symlink activation result: exit={result[0]}")
-    if result[0] != 0:
-        print("✓ Symlinked hidden-volume root is rejected")
-    else:
-        print("Note: Symlinked hidden-volume root was accepted (cleanup needed)")
-        machine.succeed("nails emergency")
-
-    machine.succeed("rm -f /tmp/symlink-to-hidden /tmp/symlink-config.toml")
-
-    print("\n=== Test 3: Path traversal rejection ===")
-    machine.succeed("cp ${traversalFixture} /tmp/traversal-config.toml")
-
-    result = machine.execute("nails --config /tmp/traversal-config.toml activate --overlay-only --session keep -y 2>&1")
-    print(f"  Path traversal activation result: exit={result[0]}")
-    if result[0] != 0:
-        print("✓ Path traversal in config is rejected")
-    else:
-        print("Note: Path traversal was accepted (cleanup needed)")
-        machine.succeed("nails emergency")
-
-    machine.succeed("rm -f /tmp/traversal-config.toml")
-    machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
-    print("\n=== All Permissions Security Tests Passed ===")
+        log_file = "/mnt/data/logs/nails.log"
+        machine.succeed(f"test -f {log_file}")
+        perms = machine.succeed(f"stat -c %a {log_file}").strip()
+        mode = int(perms, 8)
+        assert (mode & 0o077) == 0, \
+            f"Log file {log_file} is accessible by group/other (perms={perms})"
+        print(f"✓ Log file {log_file} is owner-only ({perms})")
   '';
 }

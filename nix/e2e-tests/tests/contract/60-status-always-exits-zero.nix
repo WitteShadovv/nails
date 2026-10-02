@@ -1,5 +1,4 @@
 # Test 60: Status Always Exits Zero
-# Self-check: uses subtests, hard assertions, shared lib helpers, tags contract, no sleep.
 
 { self, pkgs, ... }:
 let

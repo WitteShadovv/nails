@@ -40,6 +40,44 @@ let
   # in README.md.
   defaultGlobalTimeout = 900;
 
+  # A test that never boots a VM used to pass silently: a mis-indented Nix `''`
+  # block folds the Python body into the last interpolated helper string, so
+  # `machine.start()` ends up inside a string literal and never runs. Wrapping
+  # every test's script with a start tracker and a closing assert turns that
+  # into a build failure. The tracker monkeypatches each machine's `start()`
+  # (so `start()`, `start_all()` and any lazy auto-start all trip it) and the
+  # assert runs last even for scripts that end in `crash()` or `shutdown()`,
+  # because it only reads a Python global.
+  vmStartedPrelude = ''
+    _nails_vm_started = False
+
+
+    def _nails_track_start(_nails_machine):
+        _nails_original_start = _nails_machine.start
+
+        def _nails_wrapped_start(*args, **kwargs):
+            global _nails_vm_started
+            _nails_vm_started = True
+            return _nails_original_start(*args, **kwargs)
+
+        _nails_machine.start = _nails_wrapped_start
+
+
+    for _nails_machine in machines:
+        _nails_track_start(_nails_machine)
+  '';
+
+  vmStartedAssert = ''
+    assert _nails_vm_started, "testScript never started a VM"
+  '';
+
+  wrapTestScript =
+    original: args:
+    let
+      body = if builtins.isFunction original then original args else original;
+    in
+    vmStartedPrelude + "\n" + body + "\n" + vmStartedAssert;
+
   # The assertions live here rather than in the test derivation so that
   # evaluating the metadata (which the shard planner consumes) enforces them.
   effectiveTimeout =
@@ -62,6 +100,7 @@ let
         pkgs.testers.runNixOSTest (
           spec
           // {
+            testScript = wrapTestScript spec.testScript;
             globalTimeout = effectiveTimeout spec;
             # meta.timeout bounds the whole derivation for an outer builder.
             # Keeping it a minute above the driver's own deadline lets the

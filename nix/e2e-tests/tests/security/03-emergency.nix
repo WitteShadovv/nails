@@ -29,10 +29,12 @@ in
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.readStatusJsonFn}
     ${emergency.prepareTty1ShellFn}
     ${emergency.waitForConsoleLogFn}
     ${emergency.rebootAfterEmergencyFn}
     ${emergency.runEmergencyCommandFn}
+    ${assertions.assertStatusStateFn}
     ${assertions.assertNoOverlaysFn}
 
     machine.start()
@@ -40,47 +42,38 @@ in
     headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
 
-    print("\n=== Setting up active session with data ===")
-    machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
-    print("✓ NAILS activated")
+    def assert_session_data_gone():
+        assert_no_overlays(["/home", "/etc"])
+        for marker in ("secret_1", "secret_50", "secret_100"):
+            machine.fail(f"su - testuser -c 'test -f ~/{marker}.txt'")
+        history = machine.succeed(
+            "su - testuser -c 'cat ~/.bash_history 2>/dev/null || echo gone'"
+        )
+        assert "sensitive_command_1" not in history, \
+            f"shell history still holds sensitive commands: {history!r}"
+        assert "secret_key_export" not in history, \
+            f"shell history still holds the secret key export: {history!r}"
 
-    machine.succeed("su - testuser -c 'for i in $(seq 1 100); do echo \"secret data $i\" > ~/secret_$i.txt; done'")
-    print("✓ Created 100 secret files")
+    with subtest("set up an active session with sensitive data"):
+        machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
+        machine.succeed("su - testuser -c 'for i in $(seq 1 100); do echo \"secret data $i\" > ~/secret_$i.txt; done'")
+        machine.succeed("su - testuser -c 'echo \"sensitive_command_1\" >> ~/.bash_history'")
+        machine.succeed("su - testuser -c 'echo \"secret_key_export\" >> ~/.bash_history'")
+        machine.succeed("su - testuser -c 'test -s ~/.bash_history'")
+        for marker in ("secret_1", "secret_50", "secret_100"):
+            machine.succeed(f"su - testuser -c 'test -f ~/{marker}.txt'")
 
-    machine.succeed("su - testuser -c 'echo \"sensitive_command_1\" >> ~/.bash_history'")
-    machine.succeed("su - testuser -c 'echo \"secret_key_export\" >> ~/.bash_history'")
-    machine.succeed("su - testuser -c 'echo \"password_entry\" >> ~/.bash_history'")
-    machine.succeed("su - testuser -c 'test -f ~/.bash_history && test -s ~/.bash_history'")
-    print("✓ Added shell history entries")
+    with subtest("emergency teardown cleans the live system before any reboot"):
+        # Stop short of the reboot so the assertions below prove the emergency
+        # command itself tore the session down, not a lucky reboot.
+        emergency_time = run_emergency_command(reboot=False)
+        print(f"✓ emergency command completed in {emergency_time:.3f}s")
+        assert_session_data_gone()
 
-    machine.succeed("su - testuser -c 'test -f ~/secret_1.txt'")
-    machine.succeed("su - testuser -c 'test -f ~/secret_50.txt'")
-    machine.succeed("su - testuser -c 'test -f ~/secret_100.txt'")
-    print("✓ Verified data exists")
-
-    print("\n=== Running Emergency Deactivation ===")
-    emergency_time = run_emergency_command()
-    print(f"✓ Emergency command completed in {emergency_time:.3f}s")
-
-    print("\n=== Verifying Clean State ===")
-    assert_no_overlays(["/home", "/etc"])
-    print("✓ Overlays unmounted")
-
-    machine.fail("su - testuser -c 'test -f ~/secret_1.txt'")
-    machine.fail("su - testuser -c 'test -f ~/secret_50.txt'")
-    machine.fail("su - testuser -c 'test -f ~/secret_100.txt'")
-    print("✓ All secret files removed")
-
-    history_check = machine.succeed("su - testuser -c 'cat ~/.bash_history 2>/dev/null || echo \"gone\"'")
-    assert "sensitive_command_1" not in history_check, "Shell history not cleaned - sensitive commands found"
-    assert "secret_key_export" not in history_check, "Shell history not cleaned - secret key export found"
-    print("✓ Shell history cleaned")
-
-    status = machine.succeed(f"nails --config {headless_config} status")
-    assert "Inactive" in status or "INACTIVE" in status, f"Expected Inactive in status, got: {status}"
-    print("✓ NAILS status reports inactive")
-
-    print("\n=== All Emergency Tests Passed ===")
+    with subtest("the decoy state survives the reboot"):
+        reboot_after_emergency()
+        assert_session_data_gone()
+        assert_status_state("inactive", config_path=headless_config)
   '';
 }

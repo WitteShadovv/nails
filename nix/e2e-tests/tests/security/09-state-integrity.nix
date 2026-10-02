@@ -1,10 +1,11 @@
 # Test 09: State File Integrity
-# Tests state file existence, permissions, corruption detection, and persistence
+# Tests state file existence, permissions, and the tracked state across cycles.
 
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
+  assertions = import ./../../lib/assertions.nix;
 in
 {
   name = "state-integrity";
@@ -23,8 +24,27 @@ in
   };
 
   testScript = _: ''
+    import json
+
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.readStatusJsonFn}
     ${testHelpers.canonicalDeactivateFn}
+    ${assertions.assertStatusStateFn}
+
+    # The state file lives on the hidden volume, so it is the only path to read.
+    state_file = "/mnt/data/state.json"
+
+    def read_state_kind():
+        # The on-disk state uses the externally tagged SystemState enum: the
+        # active variant is an object keyed by "Active", the inactive variant is
+        # the bare string "Inactive". Checking membership on the string would
+        # match "Active" inside "Inactive", so the type is checked first.
+        raw = json.loads(machine.succeed(f"cat {state_file}"))["state"]
+        if isinstance(raw, dict):
+            keys = list(raw.keys())
+            assert len(keys) == 1, f"unexpected state object: {raw}"
+            return keys[0]
+        return raw
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -33,54 +53,33 @@ in
     write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    print("\n=== Test 1: State file existence and permissions after activate ===")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
-
-    state_file = machine.succeed(
-        "find /run /tmp /var -name '*.state' -o -name 'nails.state' -o -name 'state.json' 2>/dev/null | head -1 || "
-        "find /run /tmp /var -name '*nails*' -type f 2>/dev/null | grep -v config | head -1 || "
-        "echo NONE"
-    ).strip()
-
-    if state_file and state_file != "NONE":
-        perms = machine.succeed(f"stat -c %a {state_file}").strip()
-        print(f"✓ State file found at {state_file} with permissions {perms}")
-    else:
-        print("Note: No explicit state file found (state may be tracked via mounts/runtime)")
-
-    # The binary lives in the Nix store, so status must use the headless config
-    # to read the hidden-volume state rather than the binary-derived default.
-    status = machine.succeed(f"nails --config {headless_config} status")
-    assert "Active" in status or "ACTIVE" in status, f"Expected Active status, got: {status}"
-    print("✓ NAILS reports Active state")
-
-    print("\n=== Test 2: Deactivate and verify state ===")
-    canonical_deactivate(headless_config, unit_name="nails-deactivate-state-integrity")
-
-    status = machine.succeed("nails status")
-    assert "Inactive" in status or "INACTIVE" in status, f"Expected Inactive after deactivate, got: {status}"
-    print("✓ NAILS reports Inactive after deactivate")
-
-    print("\n=== Test 3: State persistence across cycles ===")
-    for cycle in range(1, 4):
-        machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    with subtest("activate writes an owner-only state file recording Active"):
         machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
-        status = machine.succeed(f"nails --config {headless_config} status")
-        assert "Active" in status or "ACTIVE" in status, \
-            f"Cycle {cycle}: Expected Active, got: {status}"
+        machine.succeed(f"test -f {state_file}")
+        perms = machine.succeed(f"stat -c %a {state_file}").strip()
+        assert perms == "600", f"state file {state_file} has permissions {perms}, expected 600"
 
-        canonical_deactivate(
-            headless_config,
-            unit_name=f"nails-deactivate-state-integrity-cycle-{cycle}",
-        )
+        kind = read_state_kind()
+        assert kind == "Active", f"state file records {kind!r}, expected Active"
+        assert_status_state("active", config_path=headless_config)
 
-        status = machine.succeed("nails status")
-        assert "Inactive" in status or "INACTIVE" in status, \
-            f"Cycle {cycle}: Expected Inactive, got: {status}"
+    with subtest("deactivate returns the tracked state to Inactive"):
+        canonical_deactivate(headless_config, unit_name="nails-deactivate-state-integrity")
+        assert_status_state("inactive")
 
-        print(f"✓ Cycle {cycle}: activate/deactivate state tracked correctly")
+    with subtest("state is tracked correctly across repeated cycles"):
+        for cycle in range(1, 4):
+            machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+            machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
+            assert read_state_kind() == "Active", f"cycle {cycle}: state file not Active"
+            assert_status_state("active", config_path=headless_config)
 
-    print("\n=== All State Integrity Tests Passed ===")
+            canonical_deactivate(
+                headless_config,
+                unit_name=f"nails-deactivate-state-integrity-cycle-{cycle}",
+            )
+            assert_status_state("inactive")
+            print(f"✓ cycle {cycle}: activate/deactivate state tracked correctly")
   '';
 }

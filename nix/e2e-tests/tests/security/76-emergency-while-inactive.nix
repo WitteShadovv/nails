@@ -1,5 +1,4 @@
 # Test 76: Emergency While Inactive
-# Self-checks: with subtest; no time.sleep sync; hard assertions only; meta.tags set; shared helpers only; forensic invariants preserved.
 
 { self, ... }:
 let

@@ -1,5 +1,4 @@
 # Test 41: Shell Prompt Indicator
-# Self-check: subtests used, no sleep sync, hard assertions, shell tag, shared helpers only.
 
 { self, ... }:
 let

@@ -1,5 +1,4 @@
 # Test 42: Shell Alias Setup
-# Self-check: subtests used, no sleep sync, hard assertions, shell tag, shared helpers only.
 
 { self, ... }:
 let

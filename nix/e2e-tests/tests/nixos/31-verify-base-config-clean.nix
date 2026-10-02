@@ -1,5 +1,4 @@
 # Test 31: Verify Base Config Clean
-# Checklist: subtests, deterministic waits, hard assertions, meta.tags, shared helpers, forensic invariants preserved.
 
 { self, ... }:
 let

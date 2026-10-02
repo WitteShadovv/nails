@@ -1,5 +1,4 @@
 # Test 44: Nix Daemon Restart on Overlay
-# Self-check: subtests used, no sleep sync, hard assertions, shell tag, shared helpers only.
 
 { self, ... }:
 let

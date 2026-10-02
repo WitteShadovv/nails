@@ -1,12 +1,4 @@
 # Test 32: Config Inject Hardware Imports
-# Checklist: subtests, deterministic waits, hard assertions, meta.tags, shared helpers, forensic invariants preserved.
-#
-# Covers the hardware-configuration wrapper: instead of text-patching Nix source,
-# activation preserves the original hardware-configuration.nix as
-# hardware-configuration.base.nix and replaces it with a fixed wrapper that
-# imports the base file plus ./nails/configuration.nix. The decoy file here has
-# NO imports attribute at all — the shape the old text-patcher turned into
-# invalid Nix — so this proves the wrapper is valid regardless of the original.
 
 { self, ... }:
 let
