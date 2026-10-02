@@ -30,7 +30,6 @@ struct ResetUpperData {
 ///
 /// - [`ExitStatus::Ok`] once the upper was removed (or there was nothing to do)
 /// - [`ExitStatus::Config`] when the configuration file could not be loaded
-/// - [`ExitStatus::NeedsRoot`] when the safety guard blocks real operations
 /// - [`ExitStatus::InvalidState`] when the system is Active or the target is mounted
 /// - [`ExitStatus::Usage`] when confirmation is needed but stdin is not a terminal
 /// - [`ExitStatus::Failed`] when the operator declines, or on a lock or removal failure
@@ -38,7 +37,6 @@ pub fn execute(
     settings: &OutputSettings,
     args: &ResetUpperArgs,
     config_override: Option<&Path>,
-    check_real_ops: impl Fn(&Path) -> Result<(), String>,
 ) -> ExitStatus {
     use nails_core::{NailsManager, RealFilesystem};
 
@@ -51,15 +49,6 @@ pub fn execute(
         Err(status) => return status,
     };
     let config = loaded.into_config();
-
-    if let Err(msg) = check_real_ops(&config.hidden_volume_root) {
-        return report_error(
-            json,
-            "reset-upper",
-            ExitStatus::NeedsRoot,
-            ErrorBody::new("safety_guard", msg),
-        );
-    }
 
     let state_path = config.state_file_path.clone();
     let lock_state_path = state_path.clone();

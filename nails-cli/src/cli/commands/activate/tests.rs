@@ -50,21 +50,11 @@ fn subprocess_activate_entrypoint() {
     };
 
     let status = match case.as_str() {
-        "needs-confirmation-off-tty" => execute(
-            &OutputSettings::default(),
-            &ActivateArgs::default(),
-            config,
-            |_| Ok(()),
-        ),
-        "invalid-config" => execute(
-            &OutputSettings::default(),
-            &keep_session,
-            config,
-            |_| Ok(()),
-        ),
-        "safety-guard" => execute(&OutputSettings::default(), &guarded, config, |_| {
-            Err("activate guard blocked".to_string())
-        }),
+        "needs-confirmation-off-tty" => {
+            execute(&OutputSettings::default(), &ActivateArgs::default(), config)
+        }
+        "needs-confirmation-plain" => execute(&ascii, &ActivateArgs::default(), config),
+        "invalid-config" => execute(&OutputSettings::default(), &keep_session, config),
         "dry-run" => execute(
             &OutputSettings {
                 verbosity: nails_core::Verbosity::Debug,
@@ -72,9 +62,8 @@ fn subprocess_activate_entrypoint() {
             },
             &dry_run,
             config,
-            |_| Ok(()),
         ),
-        "dry-run-no-color" => execute(&OutputSettings::default(), &dry_run, config, |_| Ok(())),
+        "dry-run-no-color" => execute(&OutputSettings::default(), &dry_run, config),
         "dry-run-color" => execute(
             &OutputSettings {
                 color_stdout: true,
@@ -83,18 +72,14 @@ fn subprocess_activate_entrypoint() {
             },
             &dry_run,
             config,
-            |_| Ok(()),
         ),
-        "safety-guard-plain" => execute(&ascii, &guarded, config, |_| {
-            Err("activate guard blocked".to_string())
-        }),
         other => panic!("unknown activate subprocess case: {other}"),
     };
     crate::cli::detach::exit_process(status.code());
 }
 
 #[test]
-fn execute_refuses_off_tty_without_yes_after_the_safety_guard_passes() {
+fn execute_refuses_off_tty_without_yes() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -170,24 +155,6 @@ fn execute_exits_3_with_one_line_for_missing_explicit_config() {
 }
 
 #[test]
-fn execute_honors_safety_guard_after_loading_config() {
-    use std::io::Write;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    std::fs::create_dir_all(&hidden_root).unwrap();
-
-    let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
-
-    let output = run_subprocess("safety-guard", Some(config.path()));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert_eq!(output.status.code(), Some(5), "stderr={stderr}");
-    assert!(stderr.contains("activate guard blocked"));
-}
-
-#[test]
 fn execute_routes_into_dry_run_mode() {
     use std::io::Write;
 
@@ -239,10 +206,12 @@ fn execute_ascii_uses_ascii_for_failures() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
-    let output = run_subprocess("safety-guard-plain", Some(config.path()));
+    // Off a terminal without -y, activate refuses at the confirmation gate; in
+    // ASCII mode that failure renders without any non-ASCII mark.
+    let output = run_subprocess("needs-confirmation-plain", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(output.status.code(), Some(5), "stderr={stderr}");
+    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
     assert!(stderr.is_ascii(), "stderr={stderr}");
     assert!(!stderr.contains("✗"), "stderr={stderr}");
 }

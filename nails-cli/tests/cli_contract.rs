@@ -516,27 +516,6 @@ fn exit_code_4_preflight_refused_on_check() {
 }
 
 #[test]
-fn exit_code_5_needs_root_on_safety_guard() {
-    // A hidden root under a build directory trips the test safety guard before
-    // any real operation, which reports NeedsRoot.
-    let dir = tempfile::tempdir().unwrap();
-    let hidden_root = dir.path().join("target/debug/fake-hidden");
-    std::fs::create_dir_all(&hidden_root).unwrap();
-    let config = dir.path().join("nails.toml");
-    std::fs::write(
-        &config,
-        format!(
-            "hidden_volume_root = {:?}\n",
-            hidden_root.display().to_string()
-        ),
-    )
-    .unwrap();
-    let (code, value) = run_json(&config, &["activate", "--no-preflight", "--overlay-only"]);
-    assert_eq!(code, 5);
-    assert_eq!(value["error"]["code"], "safety_guard");
-}
-
-#[test]
 fn exit_code_6_invalid_state_on_reset_upper_while_active() {
     // reset-upper refuses when the system is not Inactive, before touching data.
     let harness = write_active_harness();

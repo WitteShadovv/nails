@@ -194,7 +194,7 @@ fn test_activate_command_fails_without_setup() {
     cmd.arg("activate")
         .assert()
         .failure() // Expect failure without proper setup
-        .code(2); // Exit code 2 for safety guard (changed from 1)
+        .code(2); // Confirmation gate refuses off a terminal with exit code 2
 }
 
 /// Test that activate command with --no-preflight flag also fails without setup
@@ -208,7 +208,7 @@ fn test_activate_command_fails_with_no_preflight() {
     cmd.args(["activate", "--no-preflight"])
         .assert()
         .failure() // Expect failure without proper setup
-        .code(2); // Exit code 2 for safety guard (changed from 1)
+        .code(2); // Confirmation gate refuses off a terminal with exit code 2
 }
 
 /// Test that activate command has --json flag in help
@@ -248,9 +248,9 @@ fn test_activate_json_output() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["activate", "--json"])
         .assert()
-        .failure() // Will fail with safety guard
+        .failure() // Refuses off a terminal without -y
         .stdout(
-            predicates::str::contains("status").or(predicates::str::contains("TEST SAFETY GUARD")),
+            predicates::str::contains("status").or(predicates::str::contains("needs_confirmation")),
         );
 }
 
@@ -371,7 +371,7 @@ fn test_deactivate_command_executes() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.arg("deactivate")
         .assert()
-        .failure() // Now fails with safety guard (exit code 2)
+        .failure() // Refuses off a terminal without -y (exit code 2)
         .code(2);
 }
 
@@ -385,7 +385,7 @@ fn test_deactivate_command_executes_with_no_clear_history() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["deactivate", "--no-clear-history"])
         .assert()
-        .failure() // Now fails with safety guard (exit code 2)
+        .failure() // Refuses off a terminal without -y (exit code 2)
         .code(2);
 }
 
@@ -399,7 +399,7 @@ fn test_deactivate_json_output() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["deactivate", "--json"])
         .assert()
-        .failure() // Now fails with safety guard
+        .failure() // Refuses off a terminal without -y
         .code(2);
 }
 
@@ -472,7 +472,7 @@ fn test_deactivate_color_never_flag() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["deactivate", "--color", "never"])
         .assert()
-        .failure() // Now fails with safety guard
+        .failure() // Refuses off a terminal without -y
         .code(2);
 }
 
@@ -484,7 +484,7 @@ fn test_deactivate_exit_code_success() {
     }
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.arg("deactivate").assert().failure().code(2); // Now fails with safety guard
+    cmd.arg("deactivate").assert().failure().code(2); // Refuses off a terminal without -y
 }
 
 /// Test that emergency command with --no-countdown executes (no 3s wait)
@@ -500,7 +500,7 @@ fn test_emergency_command_executes_no_countdown() {
     cmd.args(["emergency", "--no-countdown"])
         .assert()
         .failure()
-        .code(2); // Now fails with safety guard
+        .code(2); // Refuses off a terminal without -y
 }
 
 /// Test that emergency command with --no-countdown --json executes
@@ -513,7 +513,7 @@ fn test_emergency_command_executes_no_countdown_json() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["emergency", "--no-countdown", "--json"])
         .assert()
-        .failure() // Now fails with safety guard
+        .failure() // Refuses off a terminal without -y
         .code(2);
 }
 
@@ -825,8 +825,9 @@ fn test_status_fails_closed_on_unreadable_config_path() {
 // emergency and deactivate fall back to defaults on a bad config instead of
 // refusing. Running the real binary here would therefore start a real
 // teardown, so that behaviour is covered by the in-crate subprocess tests in
-// `commands/emergency.rs` and `commands/deactivate/tests.rs`, which inject a
-// blocking safety guard.
+// `commands/emergency.rs` and `commands/deactivate/tests.rs`, which keep the
+// teardown in runtime-safety mode (emergency) or stop at the confirmation gate
+// (deactivate) so the host is never touched.
 
 #[test]
 fn test_verify_command_json_output() {
@@ -999,9 +1000,8 @@ fn test_verify_command_json_output_reports_present_state_file_status() {
 fn test_activate_off_tty_without_yes_refuses_before_real_ops() {
     use std::io::Write;
 
-    // A real (non-build-dir) hidden root passes the safety guard, so the
-    // confirmation gate is what must stop activation: without -y and without a
-    // terminal it refuses before anything is staged, mounted or switched.
+    // The confirmation gate is what must stop activation: without -y and without
+    // a terminal it refuses before anything is staged, mounted or switched.
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().join("hidden-volume");
     std::fs::create_dir_all(&hidden_root).unwrap();
@@ -1026,25 +1026,6 @@ fn test_activate_off_tty_without_yes_refuses_before_real_ops() {
     .failure()
     .code(2)
     .stderr(predicates::str::contains("stdin is not a terminal"));
-}
-
-#[test]
-fn test_activate_with_build_dir_config_hits_safety_guard() {
-    let config_file = create_test_config_file("/tmp/fake/target/debug/fake-hidden");
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args([
-        "--config",
-        config_file.path().to_str().unwrap(),
-        "activate",
-        "--session",
-        "keep",
-        "--no-preflight",
-    ])
-    .assert()
-    .failure()
-    .code(5)
-    .stderr(predicates::str::contains("TEST SAFETY GUARD"));
 }
 
 #[test]
@@ -1266,22 +1247,6 @@ fn test_activate_kill_session_refuses_real_transient_units_in_test_runtime() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
     assert!(stderr.contains("Refusing to start transient systemd units"));
-}
-
-#[test]
-fn test_deactivate_with_build_dir_config_hits_safety_guard() {
-    let config_file = create_test_config_file("/tmp/fake/target/debug/fake-hidden");
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args([
-        "--config",
-        config_file.path().to_str().unwrap(),
-        "deactivate",
-    ])
-    .assert()
-    .failure()
-    .code(5)
-    .stderr(predicates::str::contains("TEST SAFETY GUARD"));
 }
 
 #[test]
@@ -1548,7 +1513,7 @@ fn test_activate_kill_session_fails_before_detach_on_flake_lock_preflight_error(
 }
 
 #[test]
-fn test_activate_fails_closed_on_invalid_config_before_safety_guard() {
+fn test_activate_fails_closed_on_invalid_config() {
     let config_file = create_invalid_config_file();
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
@@ -1563,24 +1528,7 @@ fn test_activate_fails_closed_on_invalid_config_before_safety_guard() {
     .assert()
     .failure()
     .code(3)
-    .stderr(predicates::str::contains("invalid config"))
-    .stderr(predicates::str::contains("TEST SAFETY GUARD").not());
-}
-
-#[test]
-fn test_emergency_with_build_dir_config_hits_safety_guard() {
-    let config_file = create_test_config_file("/tmp/fake/target/llvm-cov-target/fake-hidden");
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args([
-        "--config",
-        config_file.path().to_str().unwrap(),
-        "emergency",
-    ])
-    .assert()
-    .failure()
-    .code(5)
-    .stderr(predicates::str::contains("TEST SAFETY GUARD"));
+    .stderr(predicates::str::contains("invalid config"));
 }
 
 /// `activate --help` advertises the redesigned flags and drops the removed ones.
@@ -1716,9 +1664,9 @@ fn test_backward_compatibility_without_config_file() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["activate", "--no-preflight"])
         .env("HOME", temp_home.path())
-        .env("NAILS_UNSAFE_REAL_OPS", "1") // Required to bypass safety guard
+        .env("NAILS_UNSAFE_REAL_OPS", "1") // Opt in to the real-operation test harness gate
         .assert()
-        .code(2); // Expect safety guard exit code since we're in build directory
+        .code(2); // Expect the confirmation gate to refuse off a terminal
 
     // Note: We don't modify this process's HOME, only the subprocess's
 }

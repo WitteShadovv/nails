@@ -1,7 +1,7 @@
 //! Binary-level tests for `nails config` and strict configuration loading
 //!
 //! Every command run here is read-only or exits during configuration loading,
-//! before any system operation, so no safety guard is needed.
+//! before any system operation, so none of them touch the host.
 
 use assert_cmd::Command;
 use predicates::prelude::*;

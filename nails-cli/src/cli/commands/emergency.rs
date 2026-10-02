@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::cli::args::EmergencyArgs;
 use crate::cli::output::deactivate::deactivate_error_body;
-use crate::cli::output::envelope::{Envelope, ErrorBody, report_error};
+use crate::cli::output::envelope::{Envelope, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// Execute the emergency command.
@@ -18,13 +18,11 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// # Returns
 ///
 /// - [`ExitStatus::Ok`] once the teardown completed
-/// - [`ExitStatus::NeedsRoot`] when the safety guard blocks real operations
 /// - [`ExitStatus::Failed`] when the teardown failed
 pub fn execute(
     settings: &OutputSettings,
     args: &EmergencyArgs,
     config_override: Option<&Path>,
-    check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
 ) -> ExitStatus {
     use nails_core::{NailsManager, RealFilesystem};
 
@@ -33,15 +31,6 @@ pub fn execute(
 
     // A broken or missing config must never block an emergency teardown.
     let config = super::load_config_or_defaults(config_override).into_config();
-
-    if let Err(msg) = check_real_ops(&config.hidden_volume_root) {
-        return report_error(
-            json,
-            "emergency",
-            ExitStatus::NeedsRoot,
-            ErrorBody::new("safety_guard", msg),
-        );
-    }
 
     let state_path = config.state_file_path.clone();
     // Retained for the state lock, since `config` and the clone above are moved
@@ -150,6 +139,10 @@ mod tests {
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
             .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
+            // Keep the subprocess in runtime-safety mode so the emergency teardown
+            // never touches the host (no confirmation gate stands between the CLI
+            // and the real teardown).
+            .env("NAILS_TEST_RUNTIME", "1")
             .env("NAILS_EMERGENCY_SUBPROCESS_CASE", case);
 
         if let Some(path) = config_path {
@@ -183,18 +176,15 @@ mod tests {
                 &OutputSettings::default(),
                 &args,
                 config_override.as_deref(),
-                |root| Err(format!("guard saw root {}", root.display())),
             ),
-            "guard" => {
+            "invalid-config-json" => {
                 let settings = OutputSettings {
                     verbosity: nails_core::Verbosity::Verbose,
                     mode: OutputMode::Json,
                     ascii: true,
                     ..OutputSettings::default()
                 };
-                execute(&settings, &args, config_override.as_deref(), |_| {
-                    Err("emergency guard blocked".to_string())
-                })
+                execute(&settings, &args, config_override.as_deref())
             }
             other => panic!("unknown emergency subprocess case: {other}"),
         };
@@ -211,16 +201,12 @@ mod tests {
         let output = run_subprocess("invalid-config", Some(config.path()));
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        // Exit 5 comes from the safety guard, which runs only after config
-        // loading has fallen back to defaults instead of refusing.
-        assert_eq!(output.status.code(), Some(5), "stderr={stderr}");
+        // A broken config never blocks an emergency teardown: it falls back to
+        // defaults with a warning and proceeds to the teardown, which refuses from
+        // the Inactive default state (exit 1).
+        assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
         assert!(stderr.contains("did you mean `enabled`?"), "{stderr}");
         assert!(stderr.contains("continuing with defaults"), "{stderr}");
-        let derived = nails_core::config::derive_hidden_volume_root();
-        assert!(
-            stderr.contains(&format!("guard saw root {}", derived.display())),
-            "{stderr}"
-        );
     }
 
     #[test]
@@ -231,32 +217,22 @@ mod tests {
         let output = run_subprocess("invalid-config", Some(&missing));
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        assert_eq!(output.status.code(), Some(5), "stderr={stderr}");
+        assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
         assert!(stderr.contains("config file not found"), "{stderr}");
-        assert!(stderr.contains("guard saw root"), "{stderr}");
     }
 
     #[test]
-    fn execute_emergency_honors_safety_guard() {
-        use std::io::Write;
-
+    fn execute_emergency_reports_inactive_refusal_as_json() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let hidden_root = temp_dir.path().join("hidden-volume");
-        std::fs::create_dir_all(&hidden_root).unwrap();
+        let missing = temp_dir.path().join("missing.toml");
 
-        let mut config = tempfile::NamedTempFile::new().unwrap();
-        writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
-
-        let output = run_subprocess("guard", Some(config.path()));
+        let output = run_subprocess("invalid-config-json", Some(&missing));
         let stdout = String::from_utf8_lossy(&output.stdout);
 
-        // --json routes the guard refusal through one envelope on stdout.
-        assert_eq!(output.status.code(), Some(5), "stdout={stdout}");
-        assert!(
-            stdout.contains("emergency guard blocked"),
-            "stdout={stdout}"
-        );
+        // --json routes the Inactive refusal through one envelope on stdout.
+        assert_eq!(output.status.code(), Some(1), "stdout={stdout}");
         assert!(stdout.contains("\"ok\":false"), "stdout={stdout}");
+        assert!(stdout.contains("invalid_state"), "stdout={stdout}");
     }
 
     #[test]

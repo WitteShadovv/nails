@@ -33,16 +33,14 @@ fn suspicious_check_name() -> String {
 /// - `settings`: Output settings resolved once from the global flags
 /// - `args`: The `activate` arguments
 /// - `config_override`: Optional path to configuration file (`--config`)
-/// - `check_real_ops`: Safety guard callback to verify real operations are allowed
 ///
 /// # Returns
 ///
 /// An [`ExitStatus`] describing the outcome: [`ExitStatus::Ok`] on success,
 /// [`ExitStatus::PreflightRefused`] when a pre-flight check refuses the
 /// operation, [`ExitStatus::Failed`] for an activation failure,
-/// [`ExitStatus::Usage`] for conflicting flags, [`ExitStatus::NeedsRoot`] when
-/// the safety guard blocks real operations, [`ExitStatus::InvalidState`] when the
-/// state file cannot be trusted, and [`ExitStatus::Config`] for a missing or
+/// [`ExitStatus::Usage`] for conflicting flags, [`ExitStatus::InvalidState`] when
+/// the state file cannot be trusted, and [`ExitStatus::Config`] for a missing or
 /// invalid configuration file.
 #[expect(
     clippy::too_many_lines,
@@ -52,7 +50,6 @@ pub fn execute(
     settings: &OutputSettings,
     args: &ActivateArgs,
     config_override: Option<&std::path::Path>,
-    check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
 ) -> ExitStatus {
     let ActivateArgs {
         no_preflight,
@@ -100,8 +97,8 @@ pub fn execute(
 
     // --dry-run is a thin alias for the read-only `check` command, so the two
     // always produce the same report and exit code. It runs before the config
-    // load, the safety guard and any confirmation gate because `check` does its
-    // own strict config load and never touches the system.
+    // load and any confirmation gate because `check` does its own strict config
+    // load and never touches the system.
     if dry_run {
         let check_args = crate::cli::args::CheckArgs {
             overlay_only,
@@ -129,16 +126,6 @@ pub fn execute(
     // fall back to the config key, leaving None to be resolved at mount time.
     if options.risky_services.is_none() {
         options.risky_services = config.risky_services;
-    }
-
-    // TEST SAFETY GUARD (Layer 1): Check if real operations are allowed
-    if let Err(msg) = check_real_ops(&config.hidden_volume_root) {
-        return report_error(
-            json,
-            "activate",
-            ExitStatus::NeedsRoot,
-            ErrorBody::new("safety_guard", msg),
-        );
     }
 
     // Confirmation gate: -y proceeds unattended; otherwise a terminal confirms

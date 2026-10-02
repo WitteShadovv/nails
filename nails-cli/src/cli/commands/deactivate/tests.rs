@@ -80,18 +80,6 @@ fn subprocess_deactivate_entrypoint() {
 
     let config_override = std::env::var_os("NAILS_DEACTIVATE_SUBPROCESS_CONFIG").map(PathBuf::from);
 
-    fn allow_real_ops(_: &std::path::Path) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn reject_real_ops(_: &std::path::Path) -> Result<(), String> {
-        Err("real operations blocked for test".to_string())
-    }
-
-    fn report_root(root: &std::path::Path) -> Result<(), String> {
-        Err(format!("guard saw root {}", root.display()))
-    }
-
     // Make the config warning visible on stderr, as the binary's subscriber does.
     let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -112,10 +100,6 @@ fn subprocess_deactivate_entrypoint() {
         ascii: true,
         ..OutputSettings::default()
     };
-    let with_verbosity = |verbosity| OutputSettings {
-        verbosity,
-        ..OutputSettings::default()
-    };
     let config = config_override.as_deref();
 
     let status = match case.as_str() {
@@ -123,46 +107,16 @@ fn subprocess_deactivate_entrypoint() {
             &OutputSettings::default(),
             &DeactivateArgs::default(),
             config,
-            report_root,
         ),
         "inactive-error" | "runtime-inactive-error" | "detach-error-json" => {
-            execute(&json_debug, &keep_history, config, allow_real_ops)
+            execute(&json_debug, &keep_history, config)
         }
-        "detach-error-human" => execute(
-            &OutputSettings::default(),
-            &confirmed,
-            config,
-            allow_real_ops,
-        ),
-        "reboot-guidance-order" => execute(
-            &OutputSettings::default(),
-            &confirmed,
-            config,
-            allow_real_ops,
-        ),
+        "detach-error-human" => execute(&OutputSettings::default(), &confirmed, config),
+        "reboot-guidance-order" => execute(&OutputSettings::default(), &confirmed, config),
         "needs-confirmation-off-tty" => execute(
             &OutputSettings::default(),
             &DeactivateArgs::default(),
             config,
-            allow_real_ops,
-        ),
-        "real-ops-blocked" => execute(
-            &OutputSettings::default(),
-            &DeactivateArgs::default(),
-            config,
-            reject_real_ops,
-        ),
-        "real-ops-blocked-quiet" => execute(
-            &with_verbosity(Verbosity::Quiet),
-            &DeactivateArgs::default(),
-            config,
-            reject_real_ops,
-        ),
-        "real-ops-blocked-verbose" => execute(
-            &with_verbosity(Verbosity::Verbose),
-            &DeactivateArgs::default(),
-            config,
-            reject_real_ops,
         ),
         other => panic!("unknown deactivate subprocess case: {other}"),
     };
@@ -183,16 +137,13 @@ fn execute_deactivate_warns_and_proceeds_with_defaults_for_invalid_config() {
     let output = run_subprocess("invalid-config", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Exit 5 comes from the safety guard, which runs only after config loading
-    // has fallen back to defaults instead of refusing.
-    assert_eq!(output.status.code(), Some(5), "stderr={stderr}");
+    // A broken config never blocks returning to the decoy: it falls back to
+    // defaults with a warning and proceeds to the confirmation gate, which off a
+    // terminal refuses with exit 2 before any teardown.
+    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
     assert!(stderr.contains("did you mean `nixos_flake`?"), "{stderr}");
     assert!(stderr.contains("continuing with defaults"), "{stderr}");
-    let derived = nails_core::config::derive_hidden_volume_root();
-    assert!(
-        stderr.contains(&format!("guard saw root {}", derived.display())),
-        "{stderr}"
-    );
+    assert!(stderr.contains("stdin is not a terminal"), "{stderr}");
     assert_eq!(
         stderr.matches("continuing with defaults").count(),
         1,
@@ -208,9 +159,11 @@ fn execute_deactivate_warns_and_proceeds_when_explicit_config_is_missing() {
     let output = run_subprocess("invalid-config", Some(&missing));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(output.status.code(), Some(5), "stderr={stderr}");
+    // Missing config also falls back to defaults and proceeds to the confirmation
+    // gate, which refuses off a terminal with exit 2.
+    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
     assert!(stderr.contains("config file not found"), "{stderr}");
-    assert!(stderr.contains("guard saw root"), "{stderr}");
+    assert!(stderr.contains("stdin is not a terminal"), "{stderr}");
 }
 
 #[test]
@@ -338,96 +291,6 @@ fn execute_deactivate_reports_detach_error_in_human_output() {
 }
 
 #[test]
-fn execute_deactivate_blocks_disallowed_real_operations_before_manager_creation() {
-    use std::io::Write;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    std::fs::create_dir_all(&hidden_root).unwrap();
-
-    let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(
-        config,
-        "hidden_volume_root = \"{}\"\noverlays = []",
-        hidden_root.display()
-    )
-    .unwrap();
-
-    let _env = EnvGuard::lock();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
-        .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", "real-ops-blocked")
-        .env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", config.path())
-        .env(ENV_SKIP_DETACH, "1")
-        .output()
-        .expect("failed to run deactivate subprocess test");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert_eq!(output.status.code(), Some(5), "stderr={stderr}");
-    assert!(stderr.contains("real operations blocked for test"));
-}
-
-#[test]
-fn execute_deactivate_blocks_disallowed_real_operations_in_quiet_mode() {
-    use std::io::Write;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    std::fs::create_dir_all(&hidden_root).unwrap();
-
-    let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(
-        config,
-        "hidden_volume_root = \"{}\"\noverlays = []",
-        hidden_root.display()
-    )
-    .unwrap();
-
-    let _env = EnvGuard::lock();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
-        .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", "real-ops-blocked-quiet")
-        .env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", config.path())
-        .env(ENV_SKIP_DETACH, "1")
-        .output()
-        .expect("failed to run deactivate subprocess test");
-
-    assert_eq!(output.status.code(), Some(5));
-}
-
-#[test]
-fn execute_deactivate_blocks_disallowed_real_operations_with_verbose_mode() {
-    use std::io::Write;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    std::fs::create_dir_all(&hidden_root).unwrap();
-
-    let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(
-        config,
-        "hidden_volume_root = \"{}\"\noverlays = []",
-        hidden_root.display()
-    )
-    .unwrap();
-
-    let _env = EnvGuard::lock();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
-        .env(
-            "NAILS_DEACTIVATE_SUBPROCESS_CASE",
-            "real-ops-blocked-verbose",
-        )
-        .env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", config.path())
-        .env(ENV_SKIP_DETACH, "1")
-        .output()
-        .expect("failed to run deactivate subprocess test");
-
-    assert_eq!(output.status.code(), Some(5));
-}
-
-#[test]
 fn deactivate_ascii_recovery_guidance_is_ascii_only() {
     let settings = OutputSettings {
         ascii: true,
@@ -458,9 +321,8 @@ fn deactivate_recovery_guidance_default_mode_uses_unicode_warning_text() {
 fn execute_deactivate_refuses_off_tty_without_yes_before_any_teardown() {
     use std::io::Write;
 
-    // The safety guard passes (a non-build-dir hidden root), so the confirmation
-    // gate is what must stop the reboot: without -y and without a terminal it
-    // refuses before unmounting, restoring or rebooting anything.
+    // The confirmation gate is what must stop the reboot: without -y and without
+    // a terminal it refuses before unmounting, restoring or rebooting anything.
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().join("hidden-volume");
     std::fs::create_dir_all(&hidden_root).unwrap();

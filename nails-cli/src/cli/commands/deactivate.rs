@@ -21,14 +21,12 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 ///
 /// - [`ExitStatus::Ok`] once the restore + reboot was requested
 /// - [`ExitStatus::Usage`] when confirmation is needed but stdin is not a terminal
-/// - [`ExitStatus::NeedsRoot`] when the safety guard blocks real operations
 /// - [`ExitStatus::Failed`] when the operator declines, or on a detach, lock, or
 ///   deactivation failure
 pub fn execute(
     settings: &OutputSettings,
     args: &DeactivateArgs,
     config_override: Option<&Path>,
-    check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
 ) -> ExitStatus {
     use nails_core::{NailsManager, RealFilesystem};
 
@@ -41,15 +39,6 @@ pub fn execute(
     // Apply --no-clear-history CLI override
     if args.no_clear_history {
         config.clear_history = false;
-    }
-
-    if let Err(msg) = check_real_ops(&config.hidden_volume_root) {
-        return report_error(
-            json,
-            "deactivate",
-            ExitStatus::NeedsRoot,
-            ErrorBody::new("safety_guard", msg),
-        );
     }
 
     // Confirmation gate: deactivation restores the decoy and reboots, so without

@@ -233,10 +233,11 @@ fn a_config_load_failure_is_one_enveloped_document_on_stdout() {
 
 #[test]
 fn activate_json_streams_ndjson_ending_in_a_result_event() {
-    // The attached path (overlay-only, no detach) hits the safety guard in-tree,
-    // which is one envelope; use a build-dir config to reach it deterministically.
+    // Off a terminal without -y, activate refuses at the confirmation gate before
+    // staging anything, which is one envelope on stdout; use it to confirm the
+    // --json refusal is a single JSON document, not a stream.
     let dir = tempfile::tempdir().unwrap();
-    let hidden_root = dir.path().join("target/debug/fake-hidden");
+    let hidden_root = dir.path().join("hidden-volume");
     std::fs::create_dir_all(&hidden_root).unwrap();
     let config_path = dir.path().join("nails.toml");
     let mut file = std::fs::File::create(&config_path).unwrap();
@@ -250,14 +251,13 @@ fn activate_json_streams_ndjson_ending_in_a_result_event() {
         .output()
         .unwrap();
 
-    // The safety guard refuses with code 5 and one envelope on stdout.
-    assert_eq!(output.status.code(), Some(5));
+    // The confirmation gate refuses with code 2 and one envelope on stdout.
+    assert_eq!(output.status.code(), Some(2));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let value: Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-        panic!("activate --json guard refusal must be one JSON doc ({e}): {stdout}")
-    });
+    let value: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("activate --json refusal must be one JSON doc ({e}): {stdout}"));
     assert_eq!(value["schema_version"], 1);
     assert_eq!(value["command"], "activate");
     assert_eq!(value["ok"], false);
-    assert_eq!(value["error"]["code"], "safety_guard");
+    assert_eq!(value["error"]["code"], "needs_confirmation");
 }
