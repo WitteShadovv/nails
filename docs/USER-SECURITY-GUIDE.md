@@ -653,4 +653,4 @@ After recovering:
 
 ---
 
-*This document is part of the NAILS project. For security vulnerabilities, contact security@nails.run.*
+*This document is part of the NAILS project. Report security vulnerabilities privately as described in [SECURITY.md](../SECURITY.md): GitHub private vulnerability reporting first, `security@nails.run` as the fallback.*

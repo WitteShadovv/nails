@@ -37,20 +37,44 @@ Because the project is pre-1.0, we recommend upgrading to the latest published s
 > [!NOTE]
 > NAILS is currently maintained by a solo developer. Response targets below are best-effort goals, not guaranteed SLAs.
 
-### Private reporting channel
+### Private reporting channels
 
-Report vulnerabilities by email to **security@nails.run**.
+Use one of these two channels, in this order:
 
-Please **do not** open public GitHub issues, discussions, or pull requests for suspected vulnerabilities.
+1. **GitHub private vulnerability reporting (primary).** Open a report at <https://github.com/WitteShadovv/nails/security/advisories/new>, or use **Report a vulnerability** on the repository's Security tab. Only you and the maintainer can see the report, and the fix and the eventual advisory are coordinated in the same private thread.
+2. **Email to `security@nails.run` (fallback).** Use it if you cannot or do not want to use a GitHub account, or if you do not want GitHub to be able to read the report. Encrypt it with the PGP key below if you can.
 
-If you accidentally disclose something sensitive in a public issue, edit the report if possible and contact us at `security@nails.run`.
+Please **do not** open public GitHub issues or pull requests for suspected vulnerabilities.
+
+If you accidentally post something sensitive in a public issue, tell us through one of the channels above so we can delete the issue. Editing it is not enough: the original text stays in the issue's edit history and in notification emails that were already sent.
+
+### PGP key
+
+The OpenPGP key for `security@nails.run` is published through Web Key Directory (WKD) on nails.run. Fetch it with:
+
+```sh
+gpg --auto-key-locate clear,nodefault,wkd --locate-external-keys security@nails.run
+```
+
+Compare the fingerprint gpg prints with the one below before encrypting, and do not use a key for this address whose fingerprint differs, wherever it came from.
+
+<!-- Replace the next line with the full 40-hex-digit fingerprint of the key served by WKD on
+     nails.run, grouped in blocks of four, once that key is published. -->
+**Fingerprint:** not yet published. Until it appears here, prefer private vulnerability reporting. If you must use email, first send only a short request for a private channel, without any details of the issue.
+
+### OPSEC for reporters
+
+- A pseudonymous or throwaway GitHub account or email address is fine. We do not need your real name.
+- Real paths, hostnames, usernames, volume labels, and unredacted `nails status` or `nails verify` output are not needed. Replace them with placeholders such as `/mnt/hidden` or `host1`, or describe the layout in words.
+- Strip metadata from attachments such as screenshots and log files.
+- Say if you do not want to be credited. We then leave your name and account out of the published advisory.
 
 ### What to include
 
 Please include as much of the following as you can:
 
 - affected version or commit
-- environment details relevant to reproduction
+- environment details relevant to reproduction (OS or distribution, storage backend), with placeholders for anything that identifies your setup
 - clear reproduction steps or proof of concept
 - expected security boundary and observed failure
 - impact assessment and any suggested mitigations
@@ -115,11 +139,11 @@ Publication format and timing depend on severity, remediation, and disclosure co
 For non-sensitive questions about hardening, threat model, or secure use:
 
 - review the existing documentation first
-- use the repository's public collaboration channels if appropriate and available
-- use `security@nails.run` only when the discussion itself would be sensitive
+- if the documentation leaves a gap, open a public issue about it, following the OPSEC note above
+- use the private channels above only when the question itself would be sensitive
 
 ## Policy Updates
 
 This policy is maintained with the repository. Material updates will be reflected in this file.
 
-**Last updated:** 2026-04-20
+**Last updated:** 2026-10-02

@@ -61,5 +61,5 @@ In general, NAILS prioritizes:
 ## Feedback
 
 If there is a capability, hardening effort, or workflow improvement you would like to see
-prioritized, open an issue or start a public discussion with the operating scenario and risk you are
-trying to address.
+prioritized, open an issue with the operating scenario and risk you are trying to address. Issues
+are public, so describe the scenario in general terms rather than your actual setup.

@@ -1,0 +1,62 @@
+name: Feature request
+description: Propose a focused improvement to NAILS or its documentation.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This issue is public and permanent, and it links your GitHub account to NAILS.**
+
+        - **Vulnerabilities:** do not report them here. Use [private vulnerability reporting](https://github.com/WitteShadovv/nails/security/advisories/new) as described in [SECURITY.md](https://github.com/WitteShadovv/nails/blob/main/SECURITY.md).
+        - **Support scope and issue guidance:** see [SUPPORT.md](https://github.com/WitteShadovv/nails/blob/main/SUPPORT.md).
+
+  - type: checkboxes
+    id: opsec
+    attributes:
+      label: OPSEC check
+      description: A public feature request can reveal that you use NAILS and what you use it for.
+      options:
+        - label: I considered opening this from a throwaway account instead of my usual one.
+          required: true
+        - label: I described my scenario in general terms, without real paths, hostnames, usernames, or details that identify my setup.
+          required: true
+        - label: I redacted all output and attachments.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What operational gap or workflow limitation does this address?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: The behavior you would like from NAILS. Keep it focused and concrete.
+    validations:
+      required: true
+
+  - type: textarea
+    id: threat-model
+    attributes:
+      label: Threat model or safety impact
+      description: Does this change security assumptions, documented threat-model boundaries, cleanup behavior, or user safety expectations? Say so if you are not sure.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches, workarounds, or reasons to keep the current behavior.
+
+  - type: input
+    id: related
+    attributes:
+      label: Related issues
+      description: Links to related issues, if any.
+      placeholder: "#123"

@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a reproducible bug in NAILS.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This issue is public and permanent, and it links your GitHub account to NAILS.**
+
+        - **Vulnerabilities:** do not report them here. Use [private vulnerability reporting](https://github.com/WitteShadovv/nails/security/advisories/new) as described in [SECURITY.md](https://github.com/WitteShadovv/nails/blob/main/SECURITY.md).
+        - **Usage or setup questions:** read [SUPPORT.md](https://github.com/WitteShadovv/nails/blob/main/SUPPORT.md) first.
+        - **NAILS OS, the installable distribution:** report it in [nails-os](https://github.com/WitteShadovv/nails-os/issues).
+
+  - type: checkboxes
+    id: opsec
+    attributes:
+      label: OPSEC check
+      description: A public bug report can reveal that you use NAILS and how your system is laid out.
+      options:
+        - label: I considered opening this from a throwaway account instead of my usual one.
+          required: true
+        - label: I pasted no real paths, hostnames, usernames, or volume labels, and used placeholders such as /mnt/hidden or host1 instead.
+          required: true
+        - label: I redacted all output and attachments, and pasted no nails status or nails verify output.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: NAILS version
+      description: "The output of `nails --version`."
+      placeholder: nails 0.2.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: distribution
+    attributes:
+      label: Distribution
+      options:
+        - NixOS
+        - Debian
+        - Ubuntu
+        - Other (name it in the steps below)
+    validations:
+      required: true
+
+  - type: input
+    id: release
+    attributes:
+      label: Distribution release
+      description: "The release number only. Do not paste `uname -a` or `hostnamectl` output: both print your hostname."
+      placeholder: 25.05, 13 or 24.04
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The commands you ran, what you expected, and what happened instead, including the exact error text with paths and hostnames replaced by placeholders.
+      placeholder: |
+        1. sudo nails activate
+        2. ...
+
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
