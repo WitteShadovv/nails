@@ -68,6 +68,14 @@ of this changelog for that version becomes the release notes word for word, and
   `docs/verify-release.md` (the single release verification guide) and `RELEASING.md` (the release
   checklist).
 - A manual `e2e-hetzner.yml` workflow that runs the E2E suite on one single-use Hetzner runner.
+- An opt-in `persona.mode = "fresh-home"` that bind-mounts a clean home from the hidden volume over
+  the operator's home, so the decoy home stays hidden during a session; the default `shared-home`
+  now warns at activation, and `nails status` and `nails check` report the persona mode.
+- A UEFI end-to-end test asserting that the ESP and EFI NVRAM stay unchanged across an
+  activate/deactivate cycle.
+- A fast `ci-python` flake check and `just ci-python` recipe running the `ci/` unittest suite, ruff
+  and mypy.
+- Architecture decision records under `docs/adr/`.
 
 ### Changed
 
@@ -170,6 +178,20 @@ of this changelog for that version becomes the release notes word for word, and
   inside a hidden session.
 - Preflight checks no longer write: activation stages the hidden NixOS configuration before the
   checks run, and the storage check only reports what activation would create when run read-only.
+- External control commands (systemctl, loginctl, `nix store ping`, ldd, cp and reboot dispatch)
+  run under per-command deadlines, and long `nixos-rebuild` and `switch-to-configuration` steps
+  report periodic progress instead of running silently.
+- `nails activate`, `nails check`/`--dry-run` and the `nixos-build-target` preflight share one NixOS
+  build-target discovery, and activation refuses unsupported hosts (ostree/image-based or
+  non-systemd) with exit status 8.
+- Every subsystem resolves the operator through one target-user resolver, so under sudo or a
+  detached run shell-history and related cleanup target the operator's home and files stay
+  operator-owned.
+- Docs and E2E tests use neutral storage names (mapper and label `data`, mount point `/mnt/data`),
+  and the user security guide gains a Pre-Activation Residue section.
+- The scheduled flaky-test lane runs the suite threaded, single-threaded and shuffled with a printed
+  seed, and the dev shell provides zsh and fish.
+- Internal planning identifiers are removed from source, tests and docs.
 
 ### Removed
 
@@ -195,6 +217,8 @@ of this changelog for that version becomes the release notes word for word, and
 - The placeholder benchmarks and the PR benchmark-budget job, the cargo-geiger report, the Codecov
   upload, `publish-release.yml`, `release-core.yml` and the slsa-github-generator provenance, the
   forensics-eval workflows and `update-flake-lock.yml`.
+- `docs/vulnerability-handling.md`; the maintainer triage and disclosure process now lives in
+  `SECURITY.md`.
 
 ### Fixed
 
@@ -239,6 +263,12 @@ of this changelog for that version becomes the release notes word for word, and
 - The hidden NixOS flake is checked with `nix` only after `/nix` and `/root` are overlaid; the
   pre-overlay preflight performs static checks only, so the hidden configuration stays off the decoy
   Nix store, database and root cache, and a broken flake fails with the overlays rolled back.
+- Emergency deactivation on a corrupt or unreadable state file tears down the NAILS overlays found
+  in the live mount table instead of refusing.
+- Deactivate and emergency teardown remove the read-only `/nix/store` bind left in PID 1's mount
+  namespace, so it is no longer pinned after a hidden session ends.
+- `nails activate` refuses to stage configuration onto a hidden root that is not a positively
+  attached volume, and `verify` no longer flags logs stored on the hidden volume as residue.
 
 ### Security
 
@@ -268,6 +298,11 @@ of this changelog for that version becomes the release notes word for word, and
   hidden volume root, state file, log directory or the running binary (symlinks resolved), so the
   hidden volume can no longer disappear under an Auto-mode `/media` overlay and the hidden session's
   state and logs cannot be written through to the decoy disk.
+- The detached root worker runs with a fixed, root-owned PATH and no `NIX_*` passthrough, so a
+  caller's environment cannot steer root tool resolution or Nix evaluation; the user security guide
+  documents the trusted computing base and a verified update procedure.
+- Notification signal files are created 0600 and get their mode on the open descriptor, so a symlink
+  swapped into the operator-owned queue cannot redirect root's chmod.
 
 ## [0.2.0] - 2026-05-08
 
