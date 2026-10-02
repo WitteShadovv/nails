@@ -9,11 +9,21 @@ use super::{
     FakePlatform, FhsPlatform, NixOsPlatform, OverlayPolicy, Platform, PlatformKind,
     UnsupportedPlatform,
 };
+use crate::constants::ENV_SYSTEM_PROFILE_PATH;
 use crate::filesystem::{Filesystem, MockFilesystem, PathKind};
 use crate::process::run::MockProcessRunner;
+use crate::test_support::EnvGuard;
 
 /// Assert the invariants that hold for every backend.
 fn assert_contract<F: Filesystem, P: Platform<F>>(platform: &P, fs: &F) {
+    // `restore_base_system` resolves the decoy system profile through the
+    // process environment (`NAILS_SYSTEM_PROFILE_PATH`), so take the environment
+    // lock with that override cleared. Otherwise a deactivation test elsewhere
+    // can point the lookup at a stub profile absent from the mock and make the
+    // restore fail for a reason that has nothing to do with this contract.
+    let mut env = EnvGuard::lock();
+    env.remove(ENV_SYSTEM_PROFILE_PATH);
+
     let kind = platform.kind();
 
     // Kind and overlay policy agree.
