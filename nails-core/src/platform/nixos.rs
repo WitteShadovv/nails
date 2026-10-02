@@ -129,6 +129,7 @@ mod tests {
     use super::*;
     use crate::filesystem::{MockFilesystem, PathKind};
     use crate::process::run::{MockProcessRunner, exited};
+    use crate::test_support::EnvGuard;
 
     const PROFILE: &str = "/nix/var/nix/profiles/system";
     const SWITCH_SCRIPT: &str = "/nix/var/nix/profiles/system/bin/switch-to-configuration";
@@ -147,6 +148,9 @@ mod tests {
 
     #[test]
     fn successful_reboot_runs_no_switch() {
+        // Profile discovery reads NAILS_SYSTEM_PROFILE_PATH; hold the lock so a
+        // concurrent test cannot point it elsewhere mid-read.
+        let _env = EnvGuard::lock();
         let fs = host();
         let runner = MockProcessRunner::new();
         let platform = NixOsPlatform;
@@ -163,6 +167,7 @@ mod tests {
 
     #[test]
     fn failed_reboot_falls_back_to_session_switch() {
+        let _env = EnvGuard::lock();
         let fs = host();
         let runner = MockProcessRunner::new();
         let platform = NixOsPlatform;
@@ -184,6 +189,7 @@ mod tests {
 
     #[test]
     fn no_reboot_only_restores_symlink() {
+        let _env = EnvGuard::lock();
         let fs = host();
         let runner = MockProcessRunner::new();
         let platform = NixOsPlatform;
@@ -197,6 +203,7 @@ mod tests {
 
     #[test]
     fn missing_system_profile_errors() {
+        let _env = EnvGuard::lock();
         let fs = MockFilesystem::new();
         let runner = MockProcessRunner::new();
         let platform = NixOsPlatform;
@@ -207,6 +214,7 @@ mod tests {
 
     #[test]
     fn failed_switch_surfaces_error() {
+        let _env = EnvGuard::lock();
         let fs = host();
         let runner = MockProcessRunner::new().with_response(Ok(exited(1, "", "boom")));
         let platform = NixOsPlatform;
