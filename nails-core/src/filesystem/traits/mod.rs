@@ -5,6 +5,7 @@ mod helpers;
 pub use helpers::verify_mount_preconditions;
 
 use crate::Result;
+use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
 
 use super::MountInfo;
@@ -177,6 +178,36 @@ pub trait Filesystem: Send + Sync + Clone {
 
     /// Write content to a file atomically (write to temp, then rename).
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()>;
+
+    /// Write a file on behalf of an unprivileged user with symlink-safe opens
+    /// and correct numeric ownership.
+    ///
+    /// This is the write to use for any file NAILS creates inside a user-owned,
+    /// overlaid home path (shell rc files, the XDG autostart entry, and similar).
+    /// Unlike [`write_file_content`](Self::write_file_content) it never opens a
+    /// predictable sibling temp name, never follows a symlink at the destination
+    /// or in its parent chain, and leaves the result owned by the target user
+    /// rather than root.
+    ///
+    /// Contract:
+    ///
+    /// * Missing parent directories are created and owned by `user`.
+    /// * A **new** file is created with `user`'s numeric uid/gid and
+    ///   `default_mode` (e.g. `0o600` or `0o644`).
+    /// * An **existing** file keeps its current owner and mode; only its content
+    ///   is replaced.
+    /// * The write is atomic (unique temp opened `O_CREAT | O_EXCL | O_NOFOLLOW`
+    ///   relative to a directory fd resolved with the symlinks-disallowed flags,
+    ///   then renamed over the destination), so a pre-planted `<path>.tmp` or a
+    ///   symlinked parent cannot redirect it (CWE-59).
+    /// * An ownership failure is surfaced as an error, never silently ignored.
+    fn write_user_file(
+        &self,
+        path: &Path,
+        content: &str,
+        user: &TargetUser,
+        default_mode: u32,
+    ) -> Result<()>;
 
     // ------------------------------------------------------------------------
     // Directory Listing Operations (Story 5.4: Log Cleanup)

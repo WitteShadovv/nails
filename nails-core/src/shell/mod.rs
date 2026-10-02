@@ -45,6 +45,7 @@ mod rc_integration;
 mod setup;
 
 use crate::constants::ENV_TARGET_USER;
+use crate::target_user::TargetUser;
 use crate::{Config, Filesystem, Result};
 use std::path::{Path, PathBuf};
 
@@ -105,6 +106,12 @@ pub struct ShellCleanupResult {
 pub struct ShellInstrumentation<F: Filesystem> {
     filesystem: F,
     config: Config,
+    /// The operator the home writes belong to. When set, rc and autostart files
+    /// are written through [`Filesystem::write_user_file`] so they end up
+    /// symlink-safe and owned by the operator instead of root. When `None`
+    /// (the default, used by unit tests) the writes fall back to a plain,
+    /// root-owned write.
+    target_user: Option<TargetUser>,
     /// Test-only override for the `/proc/self/mountinfo` snapshot consulted by
     /// the overlay guard, so unit tests can exercise the gate without a real
     /// overlay. `None` means "assume the home is on a hidden overlay" so that
@@ -119,9 +126,38 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         Self {
             filesystem,
             config,
+            target_user: None,
             #[cfg(test)]
             mountinfo_override: std::cell::RefCell::new(None),
         }
+    }
+
+    /// Attach the operator whose home the integration writes into, so rc and
+    /// autostart files are created symlink-safe and owned by that account.
+    ///
+    /// Production callers resolve the operator once (via [`TargetUser::resolve`])
+    /// and pass it here; when it cannot be resolved they construct without it and
+    /// the integration degrades to a best-effort root-owned write.
+    pub fn with_target_user(mut self, target_user: TargetUser) -> Self {
+        self.target_user = Some(target_user);
+        self
+    }
+
+    /// Write a file into the operator's home, owned by the operator and
+    /// symlink-safe, when the operator is known; otherwise fall back to a plain
+    /// write. Returns whether the write succeeded (mirroring the best-effort
+    /// contract of the shell integration).
+    fn write_home_file(&self, path: &Path, content: &str, mode: u32) -> Result<()> {
+        match self.target_user.as_ref() {
+            Some(user) => self.filesystem.write_user_file(path, content, user, mode),
+            None => self.filesystem.write_file_content(path, content),
+        }
+    }
+
+    /// Whether home writes carry a resolved operator (and therefore create their
+    /// own user-owned parent directories).
+    fn owns_home_writes(&self) -> bool {
+        self.target_user.is_some()
     }
 
     /// Set the mountinfo snapshot the overlay guard will parse (tests only).

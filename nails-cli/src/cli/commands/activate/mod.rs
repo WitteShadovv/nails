@@ -399,7 +399,20 @@ pub fn execute(
     // If activation succeeded, set up shell instrumentation (non-critical)
     let shell_setup_result = if result.is_ok() {
         use nails_core::ShellInstrumentation;
-        let shell = ShellInstrumentation::new(nails_core::RealFilesystem, manager.config().clone());
+        let mut shell =
+            ShellInstrumentation::new(nails_core::RealFilesystem, manager.config().clone());
+        // Attach the operator so rc and autostart files land symlink-safe and
+        // owned by them; fall back to a best-effort root-owned write otherwise.
+        match nails_core::TargetUser::resolve() {
+            Ok(user) => shell = shell.with_target_user(user),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Could not resolve the operator; shell integration files will be written \
+                     best-effort without ownership"
+                );
+            }
+        }
         // shell_setup() never returns Err, only Ok(Some) or Ok(None)
         shell.shell_setup().ok().flatten()
     } else {

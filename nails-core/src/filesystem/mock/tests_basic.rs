@@ -79,3 +79,67 @@ fn test_mock_filesystem_file_permissions() {
     assert!(fs.is_readable(path).unwrap());
     assert!(fs.is_writable(path).unwrap());
 }
+
+#[test]
+fn test_write_user_file_new_file_gets_target_owner_and_mode() {
+    let fs = MockFilesystem::new();
+    let user = crate::TargetUser::for_test(1000, 100, "operator", "/home/operator", "/bin/bash");
+    let path = Path::new("/home/operator/.bashrc");
+
+    fs.write_user_file(path, "export X=1", &user, 0o644)
+        .unwrap();
+
+    assert_eq!(fs.get_written_content(path).as_deref(), Some("export X=1"));
+    assert_eq!(fs.mock_get_owner(path), Some((1000, 100)));
+    assert_eq!(fs.mock_get_permissions(path), Some(0o644));
+}
+
+#[test]
+fn test_write_user_file_existing_file_keeps_owner_and_mode() {
+    let fs = MockFilesystem::new();
+    let first = crate::TargetUser::for_test(1000, 100, "operator", "/home/operator", "/bin/bash");
+    let path = Path::new("/home/operator/.bashrc");
+
+    // First write establishes owner 1000:100 and mode 0644.
+    fs.write_user_file(path, "first", &first, 0o644).unwrap();
+
+    // A later write by a different user with a different default must not change
+    // the recorded owner or mode of the now-existing file.
+    let second = crate::TargetUser::for_test(2000, 2000, "intruder", "/home/intruder", "/bin/sh");
+    fs.write_user_file(path, "second", &second, 0o600).unwrap();
+
+    assert_eq!(fs.get_written_content(path).as_deref(), Some("second"));
+    assert_eq!(fs.mock_get_owner(path), Some((1000, 100)));
+    assert_eq!(fs.mock_get_permissions(path), Some(0o644));
+}
+
+#[test]
+fn test_write_user_file_creates_user_owned_parents() {
+    let fs = MockFilesystem::new();
+    let user = crate::TargetUser::for_test(1000, 100, "operator", "/home/operator", "/bin/bash");
+    // /home/operator exists already; the autostart chain below it does not.
+    fs.mock_set_path_exists("/home/operator", true);
+    let path = Path::new("/home/operator/.config/autostart/nails-notify.desktop");
+
+    fs.write_user_file(path, "[Desktop Entry]\n", &user, 0o644)
+        .unwrap();
+
+    // The directories NAILS created are owned by the operator, 0700.
+    assert_eq!(
+        fs.mock_get_owner(Path::new("/home/operator/.config")),
+        Some((1000, 100))
+    );
+    assert_eq!(
+        fs.mock_get_owner(Path::new("/home/operator/.config/autostart")),
+        Some((1000, 100))
+    );
+    assert_eq!(
+        fs.mock_get_permissions(Path::new("/home/operator/.config/autostart")),
+        Some(0o700)
+    );
+    // The pre-existing home is left untouched.
+    assert_eq!(fs.mock_get_owner(Path::new("/home/operator")), None);
+    // The file itself is operator-owned with the requested mode.
+    assert_eq!(fs.mock_get_owner(path), Some((1000, 100)));
+    assert_eq!(fs.mock_get_permissions(path), Some(0o644));
+}

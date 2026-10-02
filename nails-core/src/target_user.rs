@@ -141,6 +141,28 @@ impl TargetUser {
     {
         resolve_from(env, passwd, session)
     }
+
+    /// Construct a `TargetUser` directly from fixed fields. Test-only: production
+    /// code must go through [`TargetUser::resolve`] so resolution stays in one
+    /// place. Lets tests in other modules (filesystem, shell, notification)
+    /// exercise owner-aware writes without a real passwd entry.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        uid: u32,
+        gid: u32,
+        name: &str,
+        home: impl Into<PathBuf>,
+        shell: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            uid,
+            gid,
+            name: name.to_string(),
+            home: home.into(),
+            shell: shell.into(),
+            persona_home: None,
+        }
+    }
 }
 
 fn resolve_from<E, P, S>(env: &E, passwd: &P, session: &S) -> Result<TargetUser>

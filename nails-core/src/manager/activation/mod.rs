@@ -93,8 +93,22 @@ fn derive_security_label(
 }
 
 fn prepare_notification_autostart_before_session_restart<F: Filesystem>(manager: &NailsManager<F>) {
-    let shell =
+    let mut shell =
         crate::ShellInstrumentation::new(manager.filesystem().clone(), manager.config().clone());
+
+    // Attach the operator so the autostart entry is written symlink-safe and
+    // owned by them. If the operator cannot be resolved the integration still
+    // runs, degrading to a best-effort root-owned write.
+    match crate::TargetUser::resolve() {
+        Ok(user) => shell = shell.with_target_user(user),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Could not resolve the operator before session restart; the autostart entry \
+                 will be written best-effort without ownership"
+            );
+        }
+    }
 
     match shell.write_xdg_autostart_entry() {
         Ok(true) => {

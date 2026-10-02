@@ -104,19 +104,42 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
         );
     }
 
-    // Best-effort chown directory to target user so dispatch_all can delete files
-    if crate::runtime_safety::should_skip_host_interaction() {
+    // Resolve the operator once so both the directory and the signal file can be
+    // handed to their numeric uid and gid. The gid matters: on NixOS an ordinary
+    // account's primary group is `users`, not a per-user group, so the previous
+    // `chown user:user` left the files owned by a group the operator was not in
+    // and the user-run dispatcher could not read them. Skipped in test/test-like
+    // runtimes, where the process may lack the privilege to chown to another
+    // account.
+    let target_user = if crate::runtime_safety::should_skip_host_interaction() {
         tracing::debug!(
             dir = %dir.display(),
-            "Skipping notifications directory chown in test/test-like context"
+            "Skipping notification ownership in test/test-like context"
         );
-    } else if let Ok(user) =
-        std::env::var(crate::constants::ENV_TARGET_USER).or_else(|_| std::env::var("SUDO_USER"))
+        None
+    } else {
+        match crate::TargetUser::resolve() {
+            Ok(user) => Some(user),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Could not resolve the target user to own notification files (non-fatal)"
+                );
+                None
+            }
+        }
+    };
+
+    // Hand the directory to the operator so the user-run dispatcher can delete
+    // the files it processes.
+    if let Some(user) = target_user.as_ref()
+        && let Err(e) = chown_to_user(&dir, user)
     {
-        let _ = std::process::Command::new("chown")
-            .arg(format!("{}:{}", user, user))
-            .arg(&dir)
-            .output();
+        tracing::warn!(
+            dir = %dir.display(),
+            error = %e,
+            "Failed to set ownership on notifications directory (non-fatal)"
+        );
     }
 
     // Generate a filename that sorts chronologically
@@ -197,23 +220,36 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
         );
     }
 
-    // Best-effort chown to target user so dispatch_all can delete the file
-    if crate::runtime_safety::should_skip_host_interaction() {
-        tracing::debug!(
-            path = %path.display(),
-            "Skipping notification file chown in test/test-like context"
-        );
-    } else if let Ok(user) =
-        std::env::var(crate::constants::ENV_TARGET_USER).or_else(|_| std::env::var("SUDO_USER"))
+    // Hand the signal file to the operator for the same reason. Operating on the
+    // open file descriptor avoids any symlink race on the path.
+    if let Some(user) = target_user.as_ref()
+        && let Err(e) = fchown_to_user(&file, user)
     {
-        let _ = std::process::Command::new("chown")
-            .arg(format!("{}:{}", user, user))
-            .arg(&path)
-            .output();
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "Failed to set ownership on notification file (non-fatal)"
+        );
     }
 
     tracing::debug!(path = %path.display(), title = %notification.title, "Wrote notification signal file");
     Ok(())
+}
+
+/// Change `path`'s ownership to the operator's numeric uid and gid.
+fn chown_to_user(path: &Path, user: &crate::TargetUser) -> std::io::Result<()> {
+    std::os::unix::fs::chown(path, Some(user.uid), Some(user.gid))
+}
+
+/// Change the ownership of an open file descriptor to the operator. Using the fd
+/// rather than the path closes the window where the path could be swapped for a
+/// symlink between creation and chown.
+fn fchown_to_user<Fd: std::os::fd::AsFd>(fd: Fd, user: &crate::TargetUser) -> nix::Result<()> {
+    nix::unistd::fchown(
+        fd,
+        Some(nix::unistd::Uid::from_raw(user.uid)),
+        Some(nix::unistd::Gid::from_raw(user.gid)),
+    )
 }
 
 /// Read all pending notification signal files, sorted chronologically.

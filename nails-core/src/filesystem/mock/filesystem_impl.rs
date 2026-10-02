@@ -1,6 +1,7 @@
 use super::super::{Filesystem, MountInfo};
 use super::MockFilesystem;
 use crate::Result;
+use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
 
 impl Filesystem for MockFilesystem {
@@ -108,6 +109,16 @@ impl Filesystem for MockFilesystem {
 
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {
         self.write_file_content_impl(path, content)
+    }
+
+    fn write_user_file(
+        &self,
+        path: &Path,
+        content: &str,
+        user: &TargetUser,
+        default_mode: u32,
+    ) -> Result<()> {
+        self.write_user_file_impl(path, content, user, default_mode)
     }
 
     fn list_directory(&self, dir: &Path) -> Result<Vec<PathBuf>> {

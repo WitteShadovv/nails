@@ -2391,3 +2391,70 @@ fn test_write_xdg_autostart_entry_writes_neutral_name_when_home_on_hidden_overla
     assert!(!content.contains("NAILS"));
     assert!(content.contains("notify-dispatch"));
 }
+
+#[test]
+#[serial]
+fn test_inject_rc_integration_owns_file_when_target_user_attached() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+
+    fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_path_exists("/home/operator", true);
+
+    unsafe {
+        std::env::set_var("SHELL", "/bin/bash");
+        std::env::set_var("SUDO_USER", "operator");
+    }
+
+    let user = crate::TargetUser::for_test(1000, 100, "operator", "/home/operator", "/bin/bash");
+    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(user);
+    let result = shell.inject_rc_integration(ShellType::Bash);
+
+    unsafe {
+        std::env::remove_var("SHELL");
+        std::env::remove_var("SUDO_USER");
+    }
+
+    assert!(matches!(result, Ok(true)));
+    let bashrc = PathBuf::from("/home/operator/.bashrc");
+    assert!(
+        fs.read_file_content(&bashrc)
+            .unwrap()
+            .contains("managed shell integration")
+    );
+    // The rc file ends up owned by the operator (numeric uid/gid), 0644.
+    assert_eq!(fs.mock_get_owner(&bashrc), Some((1000, 100)));
+    assert_eq!(fs.mock_get_permissions(&bashrc), Some(0o644));
+}
+
+#[test]
+#[serial]
+fn test_write_xdg_autostart_entry_owns_dir_and_file_when_target_user_attached() {
+    let fs = MockFilesystem::new();
+    let config = Config::default();
+
+    fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_path_exists("/home/operator", true);
+
+    unsafe {
+        std::env::set_var("SUDO_USER", "operator");
+    }
+
+    let user = crate::TargetUser::for_test(1000, 100, "operator", "/home/operator", "/bin/bash");
+    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(user);
+    let result = shell.write_xdg_autostart_entry();
+
+    unsafe {
+        std::env::remove_var("SUDO_USER");
+    }
+
+    assert!(matches!(result, Ok(true)));
+    let desktop = PathBuf::from("/home/operator/.config/autostart/nails-notify.desktop");
+    let autostart_dir = PathBuf::from("/home/operator/.config/autostart");
+    // Both the created directory chain and the file are operator-owned.
+    assert_eq!(fs.mock_get_owner(&desktop), Some((1000, 100)));
+    assert_eq!(fs.mock_get_owner(&autostart_dir), Some((1000, 100)));
+    assert_eq!(fs.mock_get_permissions(&autostart_dir), Some(0o700));
+}

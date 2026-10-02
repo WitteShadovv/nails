@@ -89,8 +89,12 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             format!("{}\n{}", existing_content, integration_block)
         };
 
-        // Create parent directories if needed (for Fish)
-        if let Some(parent) = rc_file_path.parent()
+        // Create parent directories if needed (for Fish). When an operator is
+        // attached the owner-aware write creates and chowns parents itself, so
+        // this pre-creation (which would leave the directory root-owned) is
+        // skipped.
+        if !self.owns_home_writes()
+            && let Some(parent) = rc_file_path.parent()
             && !self.filesystem.path_exists(parent)?
             && let Err(e) = self.filesystem.create_directory(parent)
         {
@@ -102,11 +106,8 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             return Ok(false);
         }
 
-        // Write updated content (best-effort)
-        match self
-            .filesystem
-            .write_file_content(&rc_file_path, &new_content)
-        {
+        // Write updated content (best-effort). rc files are world-readable 0644.
+        match self.write_home_file(&rc_file_path, &new_content, 0o644) {
             Ok(_) => {
                 tracing::info!("Injected shell integration into {}", rc_file_path.display());
                 Ok(true)
@@ -163,8 +164,11 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         let autostart_dir = home_dir.join(".config/autostart");
         let desktop_file_path = autostart_dir.join("nails-notify.desktop");
 
-        // Create autostart directory if it doesn't exist
-        if !self.filesystem.path_exists(&autostart_dir)?
+        // Create autostart directory if it doesn't exist. When an operator is
+        // attached the owner-aware write creates and chowns the directory chain
+        // itself, so this (root-owned) pre-creation is skipped.
+        if !self.owns_home_writes()
+            && !self.filesystem.path_exists(&autostart_dir)?
             && let Err(e) = self.filesystem.create_directory(&autostart_dir)
         {
             tracing::warn!(
@@ -188,11 +192,8 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             NoDisplay=true\n\
             X-GNOME-Autostart-enabled=true\n";
 
-        // Write desktop file (best-effort)
-        match self
-            .filesystem
-            .write_file_content(&desktop_file_path, &desktop_entry)
-        {
+        // Write desktop file (best-effort). The .desktop entry is 0644.
+        match self.write_home_file(&desktop_file_path, &desktop_entry, 0o644) {
             Ok(_) => {
                 tracing::info!("Wrote XDG autostart entry: {}", desktop_file_path.display());
                 Ok(true)

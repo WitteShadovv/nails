@@ -67,4 +67,17 @@ impl MockFilesystem {
             .get(link)
             .cloned()
     }
+
+    /// Get the numeric `(uid, gid)` ownership recorded by `write_user_file`.
+    ///
+    /// Returns `None` for a path `write_user_file` never created (ordinary
+    /// `write_file_content`, `create_directory`, and similar do not record
+    /// ownership).
+    pub fn mock_get_owner(&self, path: &Path) -> Option<(u32, u32)> {
+        self.owners
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+            .copied()
+    }
 }

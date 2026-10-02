@@ -23,6 +23,7 @@ pub(crate) use submount::parse_submount_sources;
 
 use super::{Filesystem, MountInfo};
 use crate::Result;
+use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
 
 // ============================================================================
@@ -140,6 +141,16 @@ impl Filesystem for RealFilesystem {
 
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {
         file_ops::write_file_content(path, content)
+    }
+
+    fn write_user_file(
+        &self,
+        path: &Path,
+        content: &str,
+        user: &TargetUser,
+        default_mode: u32,
+    ) -> Result<()> {
+        file_ops::write_user_file(path, content, user, default_mode)
     }
 
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
