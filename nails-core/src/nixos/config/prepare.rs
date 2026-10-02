@@ -154,8 +154,7 @@ pub fn ensure_hidden_configuration_module<F: Filesystem>(fs: &F, hidden_path: &P
 
     tracing::info!(
         path = %hidden_config.display(),
-        package = "ripgrep",
-        "Auto-generated minimal hidden configuration.nix"
+        "Seeded the hidden configuration.nix template (all settings commented out)"
     );
 
     Ok(())
@@ -256,6 +255,30 @@ pub fn ensure_hidden_hardware_configuration<F: Filesystem>(
             e
         ))
     })?;
+
+    Ok(())
+}
+
+/// Stage the complete hidden NixOS config before pre-flight checks run.
+///
+/// Combines [`stage_hidden_config_symlink`] (the hidden module and the
+/// `./nails/configuration.nix` symlink) with [`ensure_hidden_hardware_configuration`]
+/// (the wrapper that imports it). Activation calls this before the pre-flight
+/// phase so the read-only `nixos-config` check only has to validate what staging
+/// produced instead of creating files itself. The hardware wrapper is skipped in
+/// overlay-only mode, where no NixOS profile switch happens and
+/// `/etc/nixos/hardware-configuration.nix` may not exist.
+pub fn stage_hidden_nixos_config<F: Filesystem>(
+    fs: &F,
+    hidden_path: &Path,
+    overlay_only: bool,
+) -> Result<()> {
+    stage_hidden_config_symlink(fs, hidden_path)?;
+
+    if !overlay_only {
+        let base_hardware_config = Path::new("/etc/nixos/hardware-configuration.nix");
+        ensure_hidden_hardware_configuration(fs, hidden_path, base_hardware_config)?;
+    }
 
     Ok(())
 }

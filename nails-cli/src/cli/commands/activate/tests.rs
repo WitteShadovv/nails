@@ -198,12 +198,14 @@ fn execute_routes_into_dry_run_mode() {
     let mut config = tempfile::NamedTempFile::new().unwrap();
     writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
+    // --dry-run is a thin alias for `check`; the tempdir is not a mounted hidden
+    // volume, so the readiness check refuses with exit 4 but still reports.
     let output = run_subprocess("dry-run", Some(config.path()));
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    assert!(output.status.success(), "stdout={stdout}");
-    assert!(stdout.contains("=== NAILS Dry-Run: Activation Preview ==="));
-    assert!(stdout.contains("[WARN] Pre-flight checks skipped (--no-preflight)"));
+    assert_eq!(output.status.code(), Some(4), "stdout={stdout}");
+    assert!(stdout.contains("NAILS Readiness Check"), "stdout={stdout}");
+    assert!(stdout.contains("Pre-flight checks:"), "stdout={stdout}");
 }
 
 #[test]
@@ -219,11 +221,10 @@ fn execute_no_color_keeps_unicode_but_strips_ansi_from_failures() {
 
     let output = run_subprocess("dry-run-no-color", Some(config.path()));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert!(output.status.success(), "stdout={stdout} stderr={stderr}");
-    assert!(stderr.trim().is_empty(), "stderr={stderr}");
-    assert!(stdout.contains("⚠ Pre-flight checks skipped (--no-preflight)"));
+    assert_eq!(output.status.code(), Some(4), "stdout={stdout}");
+    // A failing check renders the Unicode fail mark without any ANSI colour.
+    assert!(stdout.contains("✗"), "stdout={stdout}");
     assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
 }
 
@@ -251,9 +252,10 @@ fn execute_colour_settings_paint_dry_run_marks() {
     let output = run_subprocess("dry-run-color", None);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    assert!(output.status.success(), "stdout={stdout}");
+    assert_eq!(output.status.code(), Some(4), "stdout={stdout}");
+    // A failing check paints its mark red when colour is on.
     assert!(
-        stdout.contains("\u{001b}[1;33m⚠\u{001b}[0m Pre-flight checks skipped (--no-preflight)"),
+        stdout.contains("\u{001b}[1;31m✗\u{001b}[0m"),
         "stdout={stdout}"
     );
 }

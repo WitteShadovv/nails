@@ -117,8 +117,8 @@ pub use filesystem::{Filesystem, MockFilesystem, PathKind, RealFilesystem};
 pub use hidden_root::{AttachState, HiddenRoot};
 pub use manager::deactivation::{DeactivationMode, DeactivationOrchestrator};
 pub use manager::{
-    MountInfo, MountTracker, MountType, NailsManager, ResetUpperPlan, apply_exclusion_filter,
-    build_overlay_targets,
+    MountInfo, MountTracker, MountType, NailsManager, RegistryInputs, ResetUpperPlan,
+    apply_exclusion_filter, build_overlay_targets, build_registry,
 };
 pub use target_user::TargetUser;
 
@@ -145,7 +145,7 @@ pub use nixos::{
     NixOSBuilder, NixOSConfigInfo, NixParser, RealNixParser, compute_config_fingerprint,
     ensure_hidden_configuration_module, ensure_hidden_hardware_configuration, inject_import_block,
     parse_check_composed_config, prepare_nixos_config_overlay, stage_hidden_config_symlink,
-    verify_base_config_clean,
+    stage_hidden_nixos_config, verify_base_config_clean,
 };
 pub(crate) use nixos::{classify_nixos_failure_category, format_classified_nixos_failure};
 

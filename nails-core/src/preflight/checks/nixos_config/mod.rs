@@ -3,10 +3,7 @@
 //! Validates NixOS configuration overlay structure in hidden storage (Story 4.12).
 
 use super::super::{CheckResult, PreFlightCheck};
-use crate::{
-    Filesystem, NixParser, RealNixParser, Result, ensure_hidden_configuration_module,
-    ensure_hidden_hardware_configuration, parse_check_composed_config,
-};
+use crate::{Filesystem, NixParser, RealNixParser, Result, parse_check_composed_config};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -114,22 +111,18 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
             )));
         }
 
-        // Check 4: Modified hardware-configuration.nix exists (auto-create if missing)
+        // Check 4: Modified hardware-configuration.nix exists.
+        //
+        // This check is read-only: it never creates the file. Activation stages
+        // it (via `stage_hidden_nixos_config`) before the pre-flight phase runs,
+        // so a missing file here means the volume was never initialised with the
+        // hidden NixOS layout.
         let modified_config = hidden_etc_nixos.join("hardware-configuration.nix");
         if !fs.path_exists(&modified_config)? {
-            if let Err(e) =
-                ensure_hidden_hardware_configuration(fs, &self.hidden_storage_path, &base_config)
-            {
-                return Ok(CheckResult::Fail(format!(
-                    "Modified hardware-configuration.nix not found at {}. Auto-create failed: {}",
-                    modified_config.display(),
-                    e
-                )));
-            }
-            tracing::info!(
-                "Auto-created modified hardware-configuration.nix at {}",
+            return Ok(CheckResult::Fail(format!(
+                "Modified hardware-configuration.nix not found at {}. Run `nails init <root>` to stage the hidden NixOS layout.",
                 modified_config.display()
-            );
+            )));
         }
 
         // Check 5: Modified hardware-configuration.nix has relative import to hidden config
@@ -142,17 +135,18 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
             )));
         }
 
-        // Check 6: Hidden configuration.nix exists at new location (auto-create if missing)
+        // Check 6: Hidden configuration.nix exists at the new location.
+        //
+        // Read-only, like Check 4: activation stages this module before the
+        // pre-flight phase, so a missing file here means the volume was not
+        // initialised with the hidden NixOS layout.
         let hidden_config = self
             .hidden_storage_path
             .join("config/nixos/configuration.nix");
-        if !fs.path_exists(&hidden_config)?
-            && let Err(e) = ensure_hidden_configuration_module(fs, &self.hidden_storage_path)
-        {
+        if !fs.path_exists(&hidden_config)? {
             return Ok(CheckResult::Fail(format!(
-                "Hidden configuration.nix not found at {}. Auto-create failed: {}",
-                hidden_config.display(),
-                e
+                "Hidden configuration.nix not found at {}. Run `nails init <root>` to stage the hidden NixOS layout.",
+                hidden_config.display()
             )));
         }
 

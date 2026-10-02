@@ -14,6 +14,7 @@ use crate::cli::output::envelope::{ErrorBody, report_error};
 use crate::cli::output::exit::ExitStatus;
 
 pub mod activate;
+pub mod check;
 pub mod config;
 pub mod deactivate;
 pub mod emergency;
@@ -88,6 +89,52 @@ pub(crate) fn load_config_or_defaults(config_override: Option<&Path>) -> LoadedC
         loaded.config.loaded_config_path = Some(path);
         loaded
     })
+}
+
+/// Build a [`NailsManager`](nails_core::NailsManager) with the NixOS build target
+/// activation would pick for the same configuration.
+///
+/// The discovery cascade is: overlay-only (no builder) → explicit
+/// `config.nixos_flake` → a flake in the hidden volume → `/etc/nixos/flake.nix` →
+/// a legacy `/etc/nixos/configuration.nix` or system profile → no NixOS. The
+/// `check`/`doctor` command uses it so its pre-flight registry matches the one
+/// activation would run; keeping it in one place lets a later platform/host-profile
+/// seam replace the cascade in a single spot.
+pub(crate) fn build_nixos_manager(
+    config: nails_core::Config,
+    state_path: PathBuf,
+    overlay_only: bool,
+) -> nails_core::NailsManager<nails_core::RealFilesystem> {
+    use nails_core::{NailsManager, NixOSBuilder, RealFilesystem};
+
+    let filesystem = RealFilesystem;
+    let nails_profile = PathBuf::from("/nix/var/nix/profiles/nails-system");
+
+    if overlay_only {
+        NailsManager::new(filesystem, config, state_path)
+    } else if let Some(flake_ref) = config.nixos_flake.clone() {
+        let builder = NixOSBuilder::new_with_flake_ref(flake_ref, nails_profile);
+        NailsManager::with_nixos(filesystem, config, state_path, builder)
+    } else {
+        let nixos_flake_dir = config.hidden_volume_root.join("nixos");
+        let nixos_flake = nixos_flake_dir.join("flake.nix");
+        let etc_flake = PathBuf::from("/etc/nixos/flake.nix");
+        let legacy_config = PathBuf::from("/etc/nixos/configuration.nix");
+        let system_profile = PathBuf::from("/nix/var/nix/profiles/system");
+
+        if nixos_flake.exists() {
+            let builder = NixOSBuilder::new(nixos_flake_dir, nails_profile);
+            NailsManager::with_nixos(filesystem, config, state_path, builder)
+        } else if etc_flake.exists() {
+            let builder = NixOSBuilder::new(PathBuf::from("/etc/nixos"), nails_profile);
+            NailsManager::with_nixos(filesystem, config, state_path, builder)
+        } else if legacy_config.exists() || system_profile.exists() {
+            let builder = NixOSBuilder::new_legacy(legacy_config, nails_profile);
+            NailsManager::with_nixos(filesystem, config, state_path, builder)
+        } else {
+            NailsManager::new(filesystem, config, state_path)
+        }
+    }
 }
 
 /// Directory holding the state file (and its `.lock`) on the hidden volume.

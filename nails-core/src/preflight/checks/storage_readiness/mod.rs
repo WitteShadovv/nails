@@ -69,6 +69,10 @@ const REQUIRED_DIRS: &[&str] = &[
 pub struct StorageReadinessCheck {
     hidden_volume_root: PathBuf,
     overlays: Vec<OverlayDirs>,
+    /// When set, the check only inspects the layout: it never creates a missing
+    /// directory or changes permissions, and reports what activation would create
+    /// as a warning instead. Used by the read-only `nails check` command.
+    read_only: bool,
 }
 
 impl StorageReadinessCheck {
@@ -82,7 +86,16 @@ impl StorageReadinessCheck {
         Self {
             hidden_volume_root,
             overlays,
+            read_only: false,
         }
+    }
+
+    /// Make the check read-only: it validates the layout without creating any
+    /// missing directory or changing permissions. Missing directories activation
+    /// would auto-create are reported as a warning rather than a failure.
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
     }
 }
 
@@ -97,6 +110,10 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
         let mut issues = Vec::new();
+        // Directories activation would auto-create. In read-only mode they are
+        // reported here instead of being created, so a fresh-but-sound volume
+        // warns rather than fails.
+        let mut pending: Vec<String> = Vec::new();
 
         // Phase 1: Check required directories exist on hidden volume
         let mut missing = Vec::new();
@@ -107,11 +124,16 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
             }
         }
 
-        // Phase 2: Auto-create missing directories (Story 14.4)
+        // Phase 2: Auto-create missing directories (Story 14.4), or record them
+        // when read-only.
         if !missing.is_empty() {
             let mut created = Vec::new();
 
             for dir in &missing {
+                if self.read_only {
+                    pending.push(format!("{}/", dir));
+                    continue;
+                }
                 let path = self.hidden_volume_root.join(dir);
                 match fs.create_directory(&path) {
                     Ok(()) => {
@@ -172,31 +194,40 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
                 None
             };
 
-            // Upper: auto-create if missing
+            // Upper: auto-create if missing (or record it when read-only)
             let mut upper_exists = fs.path_exists(&overlay.upper)?;
             if !upper_exists {
-                match fs.create_directory(&overlay.upper) {
-                    Ok(()) => {
-                        upper_exists = true;
-                        tracing::info!(
-                            directory = %overlay.upper.display(),
-                            overlay = %overlay.name,
-                            "Created missing overlay upper directory"
-                        );
-                    }
-                    Err(e) => {
-                        issues.push(format!(
-                            "{} upper directory not found: {}. Auto-create failed: {}",
-                            overlay.name,
-                            overlay.upper.display(),
-                            e
-                        ));
+                if self.read_only {
+                    pending.push(format!(
+                        "{} upper ({})",
+                        overlay.name,
+                        overlay.upper.display()
+                    ));
+                } else {
+                    match fs.create_directory(&overlay.upper) {
+                        Ok(()) => {
+                            upper_exists = true;
+                            tracing::info!(
+                                directory = %overlay.upper.display(),
+                                overlay = %overlay.name,
+                                "Created missing overlay upper directory"
+                            );
+                        }
+                        Err(e) => {
+                            issues.push(format!(
+                                "{} upper directory not found: {}. Auto-create failed: {}",
+                                overlay.name,
+                                overlay.upper.display(),
+                                e
+                            ));
+                        }
                     }
                 }
             }
 
             if upper_exists {
-                if let Some(mode) = desired_upper_mode
+                if !self.read_only
+                    && let Some(mode) = desired_upper_mode
                     && let Err(e) = fs.set_permissions(&overlay.upper, mode)
                 {
                     issues.push(format!(
@@ -213,31 +244,41 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
                 }
             }
 
-            // Work: auto-create if missing
+            // Work: auto-create if missing (or record it when read-only)
             let mut work_exists = fs.path_exists(&overlay.work)?;
             if !work_exists {
-                match fs.create_directory(&overlay.work) {
-                    Ok(()) => {
-                        work_exists = true;
-                        tracing::info!(
-                            directory = %overlay.work.display(),
-                            overlay = %overlay.name,
-                            "Created missing overlay work directory"
-                        );
-                    }
-                    Err(e) => {
-                        issues.push(format!(
-                            "{} work directory not found: {}. Auto-create failed: {}",
-                            overlay.name,
-                            overlay.work.display(),
-                            e
-                        ));
+                if self.read_only {
+                    pending.push(format!(
+                        "{} work ({})",
+                        overlay.name,
+                        overlay.work.display()
+                    ));
+                } else {
+                    match fs.create_directory(&overlay.work) {
+                        Ok(()) => {
+                            work_exists = true;
+                            tracing::info!(
+                                directory = %overlay.work.display(),
+                                overlay = %overlay.name,
+                                "Created missing overlay work directory"
+                            );
+                        }
+                        Err(e) => {
+                            issues.push(format!(
+                                "{} work directory not found: {}. Auto-create failed: {}",
+                                overlay.name,
+                                overlay.work.display(),
+                                e
+                            ));
+                        }
                     }
                 }
             }
 
             if work_exists {
-                if let Err(e) = fs.set_permissions(&overlay.work, 0o700) {
+                if !self.read_only
+                    && let Err(e) = fs.set_permissions(&overlay.work, 0o700)
+                {
                     issues.push(format!(
                         "{} work directory: failed to set permissions: {}",
                         overlay.name, e
@@ -253,15 +294,20 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
             }
         }
 
-        if issues.is_empty() {
-            Ok(CheckResult::Pass(
-                "Hidden storage ready: all directories accessible".to_string(),
-            ))
-        } else {
+        if !issues.is_empty() {
             Ok(CheckResult::Fail(format!(
                 "Storage not ready: {}",
                 issues.join(". ")
             )))
+        } else if !pending.is_empty() {
+            Ok(CheckResult::Warn(format!(
+                "Hidden storage usable; activation will create: {}",
+                pending.join(", ")
+            )))
+        } else {
+            Ok(CheckResult::Pass(
+                "Hidden storage ready: all directories accessible".to_string(),
+            ))
         }
     }
 }

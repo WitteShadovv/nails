@@ -1,0 +1,198 @@
+//! Check (alias `doctor`) command handler.
+//!
+//! A strictly read-only readiness check: it loads the configuration, builds the
+//! same pre-flight registry activation would run (through
+//! [`NailsManager::preflight_registry`](nails_core::NailsManager::preflight_registry)),
+//! runs it without staging or mutating anything, and reports each result plus the
+//! effective configuration, the overlay targets, how the session would be handled
+//! and which NixOS profile would be built. `activate --dry-run` is a thin alias
+//! for this command, so the two always agree.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use nails_core::{
+    CliOverrides, Config, Filesystem, OverlayMode, SessionKind, build_overlay_targets,
+};
+
+use crate::cli::args::CheckArgs;
+use crate::cli::output::check::{
+    CheckReport, CheckRow, ConfigSummary, ProfileSummary, SessionSummary, print_check_human,
+    print_check_json,
+};
+use crate::cli::output::envelope::{ErrorBody, report_error};
+use crate::cli::output::{ExitStatus, OutputSettings};
+
+/// The command name used in the JSON envelope and error reports.
+const COMMAND: &str = "check";
+
+/// Execute the `check`/`doctor` command.
+///
+/// Returns [`ExitStatus::Ok`] when every check passed (warnings allowed),
+/// [`ExitStatus::PreflightRefused`] when any check failed,
+/// [`ExitStatus::Config`] when the configuration file could not be loaded, and
+/// [`ExitStatus::Failed`] when the checks could not be assembled.
+pub fn execute(
+    settings: &OutputSettings,
+    args: &CheckArgs,
+    config_override: Option<&Path>,
+) -> ExitStatus {
+    let json = settings.is_json();
+
+    let mut loaded = match super::load_config_or_report(config_override, COMMAND, json) {
+        Ok(loaded) => loaded,
+        Err(status) => return status,
+    };
+    loaded.apply_cli_overrides(&CliOverrides {
+        clear_history: None,
+        nixos_flake: args.nixos_flake.clone(),
+    });
+
+    let config_path = loaded.path.clone();
+    let config = loaded.into_config();
+    let overlay_only = args.overlay_only;
+    let state_path = config.state_file_path.clone();
+
+    // Build the manager with the NixOS target activation would pick, then build
+    // its pre-flight registry. The registry is read-only to run; staging of the
+    // hidden NixOS layout only happens on the activation path, never here.
+    let manager = super::build_nixos_manager(config, state_path, overlay_only);
+
+    let registry = match manager.preflight_registry(overlay_only, true) {
+        Ok(registry) => registry,
+        Err(e) => {
+            return report_error(
+                json,
+                COMMAND,
+                ExitStatus::Failed,
+                ErrorBody::new("check_error", format!("could not assemble checks: {e}")),
+            );
+        }
+    };
+
+    let (results, _) = registry.run_all_detailed(manager.filesystem());
+    let checks: Vec<CheckRow> = results
+        .iter()
+        .map(|(name, result)| CheckRow::from_result(name.clone(), result))
+        .collect();
+
+    let config = manager.config();
+    let config_summary = ConfigSummary {
+        config_file: config_path
+            .exists()
+            .then(|| config_path.display().to_string()),
+        hidden_volume_root: config.hidden_volume_root.display().to_string(),
+        state_file: config.state_file_path.display().to_string(),
+        log_path: config.log_path.display().to_string(),
+        overlay_mode: match config.overlay_mode {
+            OverlayMode::Auto => "auto",
+            OverlayMode::Explicit => "explicit",
+        },
+        minimum_space_mb: config.minimum_space_mb,
+    };
+
+    let overlay_targets = build_overlay_targets(manager.filesystem(), config)
+        .map(|targets| {
+            targets
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let session = session_summary();
+    let profile = profile_summary(overlay_only, config, manager.filesystem());
+
+    let report = CheckReport::finalize(checks, config_summary, overlay_targets, session, profile);
+
+    if json {
+        print_check_json(&report);
+    } else {
+        print_check_human(&report, settings.stdout_style());
+    }
+    let _ = std::io::stdout().flush();
+
+    if report.ready {
+        ExitStatus::Ok
+    } else {
+        ExitStatus::PreflightRefused
+    }
+}
+
+/// Describe how the graphical session would be handled.
+///
+/// The check runs non-interactively and without privileges, so a session it
+/// cannot classify is reported as `unknown` rather than surfaced as an error.
+fn session_summary() -> SessionSummary {
+    match nails_core::detect_session_context() {
+        Ok(ctx) => {
+            let kind = match ctx.kind {
+                SessionKind::Tty => "tty",
+                SessionKind::GraphicalUser => "graphical-user",
+                SessionKind::GraphicalRoot => "graphical-root",
+                SessionKind::Ssh => "ssh",
+                SessionKind::Unknown => "unknown",
+            };
+            SessionSummary {
+                kind,
+                display_manager: ctx.display_manager,
+                // Activation's default session policy ends a graphical user
+                // session before mounting; other kinds are left running.
+                would_terminate: ctx.kind == SessionKind::GraphicalUser,
+            }
+        }
+        Err(_) => SessionSummary {
+            kind: "unknown",
+            display_manager: None,
+            would_terminate: false,
+        },
+    }
+}
+
+/// Describe which NixOS profile activation would build, mirroring the discovery
+/// cascade in [`super::build_nixos_manager`].
+fn profile_summary<F: Filesystem>(overlay_only: bool, config: &Config, fs: &F) -> ProfileSummary {
+    if overlay_only {
+        return ProfileSummary {
+            mode: "overlay-only",
+            detail: Some("overlay-only mode: the NixOS profile switch is skipped".into()),
+        };
+    }
+
+    if let Some(flake) = &config.nixos_flake {
+        return ProfileSummary {
+            mode: "flake",
+            detail: Some(format!("NixOS flake: {flake}")),
+        };
+    }
+
+    let hidden_flake = config.hidden_volume_root.join("nixos/flake.nix");
+    let etc_flake = PathBuf::from("/etc/nixos/flake.nix");
+    let legacy_config = PathBuf::from("/etc/nixos/configuration.nix");
+
+    if fs.path_exists(&hidden_flake).unwrap_or(false) {
+        ProfileSummary {
+            mode: "flake",
+            detail: Some("NixOS flake found in the hidden volume".into()),
+        }
+    } else if fs.path_exists(&etc_flake).unwrap_or(false) {
+        ProfileSummary {
+            mode: "flake",
+            detail: Some("NixOS flake found at /etc/nixos".into()),
+        }
+    } else if fs.path_exists(&legacy_config).unwrap_or(false) {
+        ProfileSummary {
+            mode: "legacy",
+            detail: Some("legacy /etc/nixos/configuration.nix found".into()),
+        }
+    } else {
+        ProfileSummary {
+            mode: "none",
+            detail: None,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "check_tests.rs"]
+mod tests;

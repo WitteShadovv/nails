@@ -44,14 +44,60 @@ mod tests;
 pub use inject::{NixParser, RealNixParser, inject_import_block, parse_check_composed_config};
 pub use prepare::{
     ensure_hidden_configuration_module, ensure_hidden_hardware_configuration,
-    prepare_nixos_config_overlay, stage_hidden_config_symlink,
+    prepare_nixos_config_overlay, stage_hidden_config_symlink, stage_hidden_nixos_config,
 };
 pub use verify::verify_base_config_clean;
 
 use std::path::PathBuf;
 
-pub(crate) const AUTO_GENERATED_HIDDEN_CONFIGURATION: &str =
-    "{ pkgs, ... }: {\n  environment.systemPackages = [ pkgs.ripgrep ];\n}\n";
+/// Seed written as the hidden module when a volume has none yet.
+///
+/// It is a complete, valid NixOS module whose settings are all commented out, so
+/// a fresh volume composes and parses without changing the decoy's behaviour. The
+/// operator uncomments the hidden-session settings they want. Keeping it a
+/// commented template (not an empty module) documents the switches that exist —
+/// volatile journald, a cleared shell history, an emergency teardown unit and a
+/// session indicator — without turning any of them on by default. It must stay
+/// valid Nix: `nix-instantiate --parse` runs over the composed configuration
+/// before any overlay is mounted.
+pub(crate) const AUTO_GENERATED_HIDDEN_CONFIGURATION: &str = r#"{ config, lib, pkgs, ... }:
+# Hidden-session configuration.
+#
+# This module is imported only while the hidden environment is active. Every
+# setting below is commented out: uncomment the ones you want and keep the file
+# valid Nix (the trailing attribute set must stay intact).
+{
+  # Keep the systemd journal in RAM so the hidden session leaves no log trail on
+  # the disk.
+  # services.journald.extraConfig = ''
+  #   Storage=volatile
+  # '';
+
+  # Start interactive shells with no persistent history.
+  # environment.interactiveShellInit = ''
+  #   unset HISTFILE
+  #   export HISTSIZE=0
+  #   export HISTFILESIZE=0
+  # '';
+
+  # An emergency teardown unit you can trigger to leave the hidden session in a
+  # hurry. Point ExecStart at your own `nails emergency` wrapper.
+  # systemd.services.nails-panic = {
+  #   description = "Emergency teardown of the hidden session";
+  #   serviceConfig = {
+  #     Type = "oneshot";
+  #     ExecStart = "/run/current-system/sw/bin/true";
+  #   };
+  # };
+
+  # A discreet prompt indicator that the hidden session is active. Any on-screen
+  # marker is a shoulder-surfing and screenshot liability, so it is off by
+  # default.
+  # programs.bash.promptInit = ''
+  #   PS1="(session) $PS1"
+  # '';
+}
+"#;
 
 /// The live hardware configuration file NixOS reads at build time.
 pub(crate) const HARDWARE_CONFIG_FILE: &str = "hardware-configuration.nix";

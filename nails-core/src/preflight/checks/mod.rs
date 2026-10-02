@@ -4,6 +4,7 @@
 //! Each check validates a specific aspect of the system before activation.
 
 pub mod backend_detect;
+pub mod binary_location;
 pub mod hidden_volume;
 pub mod mount_namespace;
 pub mod nixos_build_target;
@@ -20,6 +21,7 @@ pub mod upper_fs_probe;
 
 // Re-exports for convenient access
 pub use backend_detect::BackendDetectCheck;
+pub use binary_location::BinaryLocationCheck;
 pub use hidden_volume::HiddenVolumeCheck;
 pub use mount_namespace::MountNamespaceCheck;
 pub use nixos_build_target::NixOSBuildTargetCheck;

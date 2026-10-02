@@ -637,7 +637,7 @@ fn test_stage_hidden_config_symlink_creates_dir_and_symlink() {
         "hidden configuration should exist"
     );
     let generated = <MockFilesystem as Filesystem>::read_file_content(&fs, &hidden_config).unwrap();
-    assert!(generated.contains("pkgs.ripgrep"));
+    assert!(generated.contains("Hidden-session configuration"));
     assert_eq!(fs.mock_get_permissions(&hidden_config), Some(0o600));
 
     // Verify nails directory was created
@@ -673,9 +673,11 @@ fn test_ensure_hidden_configuration_module_creates_minimal_module() {
 
     let hidden_config = hidden_path.join("config/nixos/configuration.nix");
     let content = <MockFilesystem as Filesystem>::read_file_content(&fs, &hidden_config).unwrap();
-    assert!(content.contains("environment.systemPackages"));
-    assert!(content.contains("pkgs.ripgrep"));
-    assert!(content.starts_with("{ pkgs, ... }"));
+    // The seed is a commented template: it documents the hidden-session knobs
+    // without turning any of them on.
+    assert!(content.contains("Hidden-session configuration"));
+    assert!(content.contains("Storage=volatile"));
+    assert!(content.starts_with("{ config, lib, pkgs, ... }"));
     assert_eq!(
         fs.mock_get_permissions(&hidden_path.join("config/nixos")),
         Some(0o700)
@@ -1290,5 +1292,5 @@ fn test_stage_hidden_config_symlink_real_filesystem_creates_expected_symlink() {
     assert_eq!(link_target, hidden_config);
     assert_eq!(nails_mode, 0o700);
     assert_eq!(config_mode, 0o600);
-    assert!(config_content.contains("pkgs.ripgrep"));
+    assert!(config_content.contains("Hidden-session configuration"));
 }

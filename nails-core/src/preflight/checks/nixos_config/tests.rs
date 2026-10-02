@@ -127,7 +127,9 @@ fn test_nixos_config_check_missing_hidden_etc_nixos() {
 
 #[test]
 fn test_nixos_config_check_missing_modified_hardware_config() {
-    // AC5: Check 3 - Modified hardware-configuration.nix missing (auto-create)
+    // The check is read-only: a missing modified hardware-configuration.nix is a
+    // failure that points at `nails init`, never an auto-create. Activation stages
+    // the file before this check runs.
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
@@ -152,64 +154,22 @@ fn test_nixos_config_check_missing_modified_hardware_config() {
     let result = check.run(&fs).expect("Check should not error");
 
     assert!(
-        result.is_pass(),
-        "Check should pass after auto-creating modified hardware config"
-    );
-    let created = fs
-        .read_file_content(&PathBuf::from(
-            "/mnt/hidden/etc/nixos/hardware-configuration.nix",
-        ))
-        .expect("Auto-created hardware config should be readable");
-    assert!(
-        created.contains("./nails/configuration.nix"),
-        "Auto-created wrapper should include hidden import"
-    );
-    assert!(
-        created.contains("./hardware-configuration.base.nix"),
-        "Auto-created wrapper should import the preserved base"
-    );
-    let base = fs
-        .read_file_content(&PathBuf::from(
-            "/mnt/hidden/etc/nixos/hardware-configuration.base.nix",
-        ))
-        .expect("Preserved base config should be readable");
-    assert!(
-        base.contains("# base config"),
-        "Base config content should be preserved verbatim in the base file"
-    );
-}
-
-#[test]
-fn test_nixos_config_check_auto_create_modified_hardware_config_write_fails() {
-    // Auto-create should fail cleanly when write fails
-    let fs = MockFilesystem::new();
-
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ imports = [ ]; }\n",
-    );
-    fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
-
-    fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
-
-    // Modified hardware-configuration.nix does NOT exist and write should fail
-    fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", false);
-    fs.mock_set_write_should_fail("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-
-    let check = NixOSConfigCheck::new(PathBuf::from("/mnt/hidden"));
-    let result = check.run(&fs).expect("Check should not error");
-
-    assert!(
         result.is_fail(),
-        "Check should fail when auto-create write fails"
+        "a missing modified hardware config must fail read-only"
     );
     assert!(
-        result.message().contains("Auto-create failed"),
-        "Failure should mention auto-create"
+        result
+            .message()
+            .contains("Modified hardware-configuration.nix not found")
+    );
+    assert!(result.message().contains("nails init"));
+    // Read-only: the check must not have created the file.
+    assert!(
+        fs.get_written_content(&PathBuf::from(
+            "/mnt/hidden/etc/nixos/hardware-configuration.nix"
+        ))
+        .is_none(),
+        "the read-only check must not write the hardware config"
     );
 }
 
@@ -294,8 +254,9 @@ fn test_nixos_config_check_commented_import_fails() {
 }
 
 #[test]
-fn test_nixos_config_check_missing_hidden_configuration_auto_creates() {
-    // AC5: Check 5 - Hidden configuration.nix missing, auto-create it
+fn test_nixos_config_check_missing_hidden_configuration_fails_read_only() {
+    // Read-only: a missing hidden configuration.nix is a failure pointing at
+    // `nails init`, not an auto-create. Activation stages it before this check.
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
@@ -305,12 +266,6 @@ fn test_nixos_config_check_missing_hidden_configuration_auto_creates() {
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
     fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
-    fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", PathKind::Dir);
-    fs.mock_set_writable("/mnt", true);
-    fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
-    fs.mock_set_writable("/mnt/hidden", true);
 
     fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
     fs.mock_set_path_type(
@@ -322,53 +277,28 @@ fn test_nixos_config_check_missing_hidden_configuration_auto_creates() {
         "{ config, lib, pkgs, ... }:\n{ imports = [ ./nails/configuration.nix ]; }",
     );
 
-    // Hidden configuration.nix does NOT exist at new path
+    // Hidden configuration.nix does NOT exist at the new path.
     fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", false);
+
     let check = NixOSConfigCheck::new(PathBuf::from("/mnt/hidden"));
     let result = check.run(&fs).expect("Check should not error");
 
     assert!(
-        result.is_pass(),
-        "Check should pass after auto-creating hidden config"
+        result.is_fail(),
+        "a missing hidden configuration.nix must fail read-only"
     );
-    let created = fs
-        .read_file_content(&PathBuf::from("/mnt/hidden/config/nixos/configuration.nix"))
-        .expect("Auto-created hidden config should be readable");
-    assert!(created.contains("pkgs.ripgrep"));
-}
-
-#[test]
-fn test_nixos_config_check_auto_create_hidden_configuration_write_fails() {
-    let fs = MockFilesystem::new();
-
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
-    fs.mock_set_path_exists("/mnt", true);
-    fs.mock_set_path_type("/mnt", PathKind::Dir);
-    fs.mock_set_writable("/mnt", true);
-    fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
-    fs.mock_set_writable("/mnt/hidden", true);
-    fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
-    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
-    fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type(
-        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
-        PathKind::File,
+    assert!(
+        result
+            .message()
+            .contains("Hidden configuration.nix not found")
     );
-    fs.mock_set_file_content(
-        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ imports = [ ./nails/configuration.nix ]; }",
+    assert!(result.message().contains("nails init"));
+    // Read-only: the check must not have created the module.
+    assert!(
+        fs.get_written_content(&PathBuf::from("/mnt/hidden/config/nixos/configuration.nix"))
+            .is_none(),
+        "the read-only check must not write the hidden module"
     );
-    fs.mock_set_write_should_fail("/mnt/hidden/config/nixos/configuration.nix", true);
-
-    let check = NixOSConfigCheck::new(PathBuf::from("/mnt/hidden"));
-    let result = check.run(&fs).expect("Check should not error");
-
-    assert!(result.is_fail());
-    assert!(result.message().contains("Auto-create failed"));
 }
 
 #[test]

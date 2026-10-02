@@ -96,16 +96,27 @@ in
         wrapper_env = install_nixos_rebuild_wrapper("/tmp/nixos-rebuild-dry-run.log")
         machine.fail("test -e /mnt/hidden-volume/state.json")
 
-    with subtest("dry-run prints plan without mutations"):
-        rc, stdout, stderr = run_command_capture(
+    with subtest("check reports readiness without mutating anything"):
+        check_rc, check_stdout, check_stderr = run_command_capture(
+            "nails-check",
+            f"{wrapper_env} nails --config {headless_config} check --flake {flake_ref}",
+        )
+        assert "NAILS Readiness Check" in check_stdout, f"Unexpected check output: {check_stdout!r}"
+        assert "Pre-flight checks:" in check_stdout, f"Expected the check list, got: {check_stdout!r}"
+        assert "Overlay targets:" in check_stdout, f"Expected overlay targets, got: {check_stdout!r}"
+        assert "NixOS profile:" in check_stdout, f"Expected a profile section, got: {check_stdout!r}"
+        # The hidden layout was never staged, so the read-only check refuses
+        # (exit 4) instead of creating it.
+        assert check_rc == 4, f"Expected check to refuse (rc=4), got rc={check_rc}, stderr={check_stderr!r}"
+        machine.fail("test -s /tmp/nixos-rebuild-dry-run.log")
+
+    with subtest("activate --dry-run is a thin alias for check"):
+        dry_rc, dry_stdout, _ = run_command_capture(
             "activate-dry-run",
             f"{wrapper_env} nails --config {headless_config} activate --dry-run --session keep --flake {flake_ref}",
         )
-        assert rc == 0, f"Expected dry-run success, got rc={rc}, stdout={stdout!r}, stderr={stderr!r}"
-        assert "NAILS Dry-Run: Activation Preview" in stdout, f"Unexpected dry-run output: {stdout!r}"
-        assert "Overlay Targets" in stdout, f"Expected overlay plan in stdout, got: {stdout!r}"
-        assert f"NixOS flake: {flake_ref} — would build and switch profile" in stdout, \
-            f"Expected explicit flake plan in stdout, got: {stdout!r}"
+        assert dry_rc == check_rc, f"dry-run rc={dry_rc} must match check rc={check_rc}"
+        assert dry_stdout == check_stdout, "dry-run and check must produce identical output"
         machine.fail("test -s /tmp/nixos-rebuild-dry-run.log")
 
     with subtest("state and filesystem remain untouched"):
@@ -114,6 +125,7 @@ in
         machine.fail("test -e /mnt/hidden-volume/state.json")
         machine.fail("test -e /mnt/hidden-volume/config/nixos/configuration.nix")
         machine.fail("test -e /mnt/hidden-volume/etc/nixos/nails/configuration.nix")
+        machine.fail("test -e /mnt/hidden-volume/etc/nixos/hardware-configuration.nix")
         machine.fail("test -e /etc/nixos/nails/configuration.nix")
   '';
 }

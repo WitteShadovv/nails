@@ -157,6 +157,9 @@ pub enum Commands {
     Status(StatusArgs),
     /// Verify system is clean of NAILS artifacts
     Verify(VerifyArgs),
+    /// Check readiness to activate without making any changes (alias: doctor)
+    #[command(alias = "doctor")]
+    Check(CheckArgs),
     /// Initialize NAILS directory structure on a hidden volume
     Init(InitArgs),
     /// Delete a target's persistent overlay upper on the hidden volume
@@ -295,6 +298,22 @@ pub struct VerifyArgs {
     /// Perform deep scan (slower, more thorough)
     #[arg(long)]
     pub deep: bool,
+}
+
+/// `nails check` (alias `doctor`) arguments
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct CheckArgs {
+    /// Check as for an overlay-only activation (skip the NixOS profile checks)
+    #[arg(long)]
+    pub overlay_only: bool,
+
+    /// Check against a specific NixOS flake reference (e.g. /etc/nixos#hostname)
+    #[arg(
+        long = "flake",
+        value_name = "FLAKE_REF",
+        conflicts_with = "overlay_only"
+    )]
+    pub nixos_flake: Option<String>,
 }
 
 /// `nails config` subcommands

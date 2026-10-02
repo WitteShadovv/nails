@@ -53,7 +53,7 @@ pub use config::{
     NixOSConfigInfo, NixParser, RealNixParser, contains_nails_import,
     ensure_hidden_configuration_module, ensure_hidden_hardware_configuration, inject_import_block,
     parse_check_composed_config, prepare_nixos_config_overlay, stage_hidden_config_symlink,
-    verify_base_config_clean,
+    stage_hidden_nixos_config, verify_base_config_clean,
 };
 pub use fingerprint::compute_config_fingerprint;
 

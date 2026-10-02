@@ -48,7 +48,7 @@ fn ensure_hidden_configuration_module_real_filesystem_creates_secure_defaults() 
         .mode()
         & 0o777;
 
-    assert!(content.contains("pkgs.ripgrep"));
+    assert!(content.contains("Hidden-session configuration"));
     assert_eq!(dir_mode, 0o700);
     assert_eq!(file_mode, 0o600);
 }
@@ -314,7 +314,7 @@ fn stage_hidden_config_symlink_real_filesystem_creates_hidden_config_with_secure
     assert_eq!(target, hidden_config);
     assert_eq!(config_mode, 0o600);
     assert_eq!(nails_dir_mode, 0o700);
-    assert!(content.contains("pkgs.ripgrep"));
+    assert!(content.contains("Hidden-session configuration"));
 }
 
 #[test]

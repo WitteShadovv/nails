@@ -95,7 +95,9 @@ in
         assert "./nails/configuration.nix" in hardware_text, hardware_text
 
         hidden_config = machine.succeed("cat /mnt/hidden-volume/config/nixos/configuration.nix")
-        assert "pkgs.ripgrep" in hidden_config, hidden_config
+        assert "Hidden-session configuration" in hidden_config, hidden_config
+        # The seed is a commented template: it must parse but enable nothing.
+        machine.succeed("nix-instantiate --parse /mnt/hidden-volume/config/nixos/configuration.nix")
 
         state_json = machine.succeed("cat /mnt/hidden-volume/state.json")
         assert '"state": "Inactive"' in state_json, state_json

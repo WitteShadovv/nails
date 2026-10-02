@@ -60,6 +60,7 @@ pub use state_management::ResetUpperPlan;
 
 // Re-export public functions from helpers
 pub use helpers::{apply_exclusion_filter, build_overlay_targets};
+pub use preflight_runner::{RegistryInputs, build_registry};
 
 // Re-export crate-internal helpers so sub-modules (e.g., activation) can use `super::*`
 pub(crate) use helpers::{

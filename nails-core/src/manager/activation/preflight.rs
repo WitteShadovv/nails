@@ -113,12 +113,17 @@ impl<F: Filesystem> NailsManager<F> {
             self.run_pre_activation_cleanup(verbosity);
         }
 
-        if let Err(e) =
-            crate::stage_hidden_config_symlink(&self.filesystem, &self.config.hidden_volume_root)
-        {
+        // Stage the hidden NixOS layout (module symlink plus the hardware
+        // wrapper) before the read-only pre-flight checks run. The checks no
+        // longer create these files, so staging must produce them here.
+        if let Err(e) = crate::stage_hidden_nixos_config(
+            &self.filesystem,
+            &self.config.hidden_volume_root,
+            overlay_only,
+        ) {
             tracing::error!(
                 error = %e,
-                "Failed to stage hidden config symlink after early pre-flight checks"
+                "Failed to stage hidden NixOS config after early pre-flight checks"
             );
             return Err(NailsError::PreFlightCheckFailed(vec![(
                 "nixos-config-staging".to_string(),

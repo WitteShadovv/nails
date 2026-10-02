@@ -10,8 +10,6 @@
 //! The handler is extracted from the main CLI dispatch logic to improve modularity
 //! and testability.
 
-mod dry_run;
-
 use crate::cli::args::ActivateArgs;
 use crate::cli::detach::maybe_detach_for_session_kill;
 use crate::cli::output::envelope::{ErrorBody, report_error};
@@ -97,6 +95,18 @@ pub fn execute(
         );
     }
 
+    // --dry-run is a thin alias for the read-only `check` command, so the two
+    // always produce the same report and exit code. It runs before the config
+    // load, the safety guard and any confirmation gate because `check` does its
+    // own strict config load and never touches the system.
+    if dry_run {
+        let check_args = crate::cli::args::CheckArgs {
+            overlay_only,
+            nixos_flake: nixos_flake.clone(),
+        };
+        return super::check::execute(settings, &check_args, config_override);
+    }
+
     // Activate no longer overrides clear_history; only deactivation clears it.
     let cli_overrides = CliOverrides {
         clear_history: None,
@@ -125,17 +135,6 @@ pub fn execute(
             "activate",
             ExitStatus::NeedsRoot,
             ErrorBody::new("safety_guard", msg),
-        );
-    }
-
-    // --dry-run: preview activation steps without making changes
-    if dry_run {
-        return dry_run::execute_dry_run(
-            &config,
-            no_preflight,
-            overlay_only,
-            options.kill_session,
-            settings.stdout_style(),
         );
     }
 
@@ -317,13 +316,14 @@ pub fn execute(
 
         {
             let mgr = &manager;
-            if let Err(e) = nails_core::stage_hidden_config_symlink(
+            if let Err(e) = nails_core::stage_hidden_nixos_config(
                 mgr.filesystem(),
                 &mgr.config().hidden_volume_root,
+                overlay_only,
             ) {
                 tracing::error!(
                     error = %e,
-                    "Failed to stage hidden config symlink before detach-safe pre-flight checks"
+                    "Failed to stage hidden NixOS config before detach-safe pre-flight checks"
                 );
                 return report_error(
                     json,

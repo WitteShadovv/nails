@@ -5,7 +5,188 @@
 //! all pre-flight validation checks before activation.
 
 use super::NailsManager;
-use crate::{Filesystem, NailsError, Result, StateFile, build_overlay_targets};
+use crate::preflight::PreFlightRegistry;
+use crate::{
+    Config, Filesystem, NailsError, Result, StateFile, SystemState, build_overlay_targets,
+};
+use std::path::PathBuf;
+
+/// The runtime facts the shared pre-flight registry is assembled from.
+///
+/// Both activation (through [`NailsManager::preflight_registry`]) and the
+/// read-only `nails check` command build their registry from a value of this
+/// type, so the two can never drift: the set of checks is a pure function of
+/// these inputs and the configuration.
+#[derive(Debug, Clone)]
+pub struct RegistryInputs {
+    /// Skip the NixOS config and build-target checks (overlay-only activation).
+    pub overlay_only: bool,
+    /// Assemble a registry that only inspects the system: no check creates a
+    /// directory or changes permissions. Activation leaves this `false` so the
+    /// storage check still auto-creates the hidden layout; `nails check` sets it
+    /// so the command is strictly read-only.
+    pub read_only: bool,
+    /// The current system state, validated by [`StateCheck`](crate::StateCheck).
+    pub current_state: SystemState,
+    /// The flake build target was already validated out of band (the read-only
+    /// flake preflight activation runs before detaching), so the in-registry
+    /// [`NixOSBuildTargetCheck`](crate::preflight::NixOSBuildTargetCheck) is
+    /// redundant and skipped.
+    pub flake_target_already_validated: bool,
+    /// The flake directory auto-discovery selected, validated directly by the
+    /// build-target check when it runs.
+    pub selected_flake_dir: Option<PathBuf>,
+}
+
+/// Assemble the pre-flight check registry for a set of [`RegistryInputs`].
+///
+/// This is the one place the activation set of checks is defined. The registry
+/// it returns is read-only to run: every check only inspects the filesystem, so
+/// the same registry backs both activation and the `nails check`/`doctor`
+/// command. Staging of the hidden NixOS layout happens in the activation path
+/// (see [`crate::stage_hidden_nixos_config`]) before these checks run, never
+/// inside a check.
+///
+/// # Errors
+///
+/// Propagates any error from [`build_overlay_targets`] when the configuration
+/// uses [`OverlayMode::Auto`](crate::config::OverlayMode::Auto); the target list
+/// cannot be enumerated without it.
+pub fn build_registry<F: Filesystem>(
+    fs: &F,
+    config: &Config,
+    inputs: &RegistryInputs,
+) -> Result<PreFlightRegistry<F>> {
+    use crate::preflight::{
+        BackendDetectCheck, BinaryLocationCheck, HiddenVolumeCheck, MountNamespaceCheck,
+        NixOSBuildTargetCheck, NixOSConfigCheck, OverlayCompatibilityCheck, OverlayTargetsCheck,
+        SpaceCheck, StateCheck, StorageReadinessCheck, SuspiciousNailsReferenceCheck, SwapCheck,
+        SymlinkSupportCheck, UpperFsCapabilityCheck,
+    };
+
+    let mut registry = PreFlightRegistry::new();
+
+    registry.add_check(Box::new(HiddenVolumeCheck::new(
+        config.hidden_volume_root.clone(),
+    )));
+
+    // Refuses an overlay target that would hide the hidden volume, its state
+    // file, its logs or the binary, and an exclusion that leaks to the decoy
+    // disk, while the decoy session is still intact.
+    registry.add_check(Box::new(OverlayTargetsCheck::new(config.clone())));
+
+    // Runs before the session kill so a private mount namespace or a non-shared
+    // root is caught while the decoy session is still intact.
+    registry.add_check(Box::new(MountNamespaceCheck::new()));
+
+    registry.add_check(Box::new(SymlinkSupportCheck::new(
+        config.hidden_volume_root.clone(),
+    )));
+
+    // Runs before the session kill so an upper filesystem that cannot back an
+    // overlay (NFS/FUSE/FAT, missing xattrs/d_type/whiteouts) is refused while
+    // the decoy session is still intact, not after staging has begun.
+    registry.add_check(Box::new(UpperFsCapabilityCheck::new(
+        config.hidden_volume_root.clone(),
+    )));
+
+    // Warns, never fails: names deniability hazards of the detected backend
+    // (discard-enabled tcrypt/plain mappings, file-container timestamps,
+    // containers on a copy-on-write decoy) while they can still be fixed.
+    registry.add_check(Box::new(BackendDetectCheck::new(
+        config.hidden_volume_root.clone(),
+    )));
+
+    let overlay_dirs: Vec<crate::preflight::OverlayDirs> = match config.overlay_mode {
+        crate::config::OverlayMode::Auto => {
+            let targets = build_overlay_targets(fs, config)?;
+            targets
+                .iter()
+                .map(|target| {
+                    let dir_name = target
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let upper = config.hidden_volume_root.join(&dir_name);
+                    let work = config.hidden_volume_root.join(".work").join(&dir_name);
+
+                    crate::preflight::OverlayDirs::new(dir_name, target.clone(), upper, work)
+                })
+                .collect()
+        }
+        crate::config::OverlayMode::Explicit => config
+            .overlays
+            .iter()
+            .map(|o| {
+                crate::preflight::OverlayDirs::new(
+                    o.name.clone(),
+                    o.lower.clone(),
+                    o.upper.clone(),
+                    o.work.clone(),
+                )
+            })
+            .collect(),
+    };
+
+    let storage_check = StorageReadinessCheck::new(config.hidden_volume_root.clone(), overlay_dirs);
+    registry.add_check(Box::new(if inputs.read_only {
+        storage_check.read_only()
+    } else {
+        storage_check
+    }));
+
+    let persistent_overlay_target_paths: Vec<std::path::PathBuf> = match config.overlay_mode {
+        crate::config::OverlayMode::Auto => build_overlay_targets(fs, config)?,
+        crate::config::OverlayMode::Explicit => {
+            config.overlays.iter().map(|o| o.lower.clone()).collect()
+        }
+    };
+
+    registry.add_check(Box::new(OverlayCompatibilityCheck::new(
+        persistent_overlay_target_paths,
+        config.hidden_volume_root.clone(),
+    )));
+
+    // Reports a base `/etc/nixos` that still references the hidden environment.
+    // Activation also runs this as an early gate before any staging, so a dirty
+    // base aborts before side effects; keeping it in the shared registry means
+    // `nails check` reports it too, and on a non-NixOS host it simply passes.
+    registry.add_check(Box::new(SuspiciousNailsReferenceCheck::new(
+        config.hidden_volume_root.clone(),
+    )));
+
+    if !inputs.overlay_only {
+        registry.add_check(Box::new(NixOSConfigCheck::new(
+            config.hidden_volume_root.clone(),
+        )));
+
+        if !inputs.flake_target_already_validated {
+            registry.add_check(Box::new(NixOSBuildTargetCheck::with_selected_flake_dir(
+                config.nixos_flake.clone(),
+                inputs.selected_flake_dir.clone(),
+                config.hidden_volume_root.clone(),
+            )));
+        }
+    }
+
+    registry.add_check(Box::new(SwapCheck));
+
+    registry.add_check(Box::new(SpaceCheck::new(
+        config.hidden_volume_root.clone(),
+        config.minimum_space_mb,
+    )));
+
+    // Warns when the running binary, or a PATH symlink to it, is not on the
+    // hidden volume.
+    registry.add_check(Box::new(BinaryLocationCheck::new(
+        config.hidden_volume_root.clone(),
+    )));
+
+    registry.add_check(Box::new(StateCheck::new(inputs.current_state.clone())));
+
+    Ok(registry)
+}
 
 impl<F: Filesystem> NailsManager<F> {
     /// Run read-only NixOS preflight checks that are safe before detach/session kill.
@@ -36,6 +217,41 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         Ok(())
+    }
+
+    /// Build the pre-flight registry for this manager's current inputs.
+    ///
+    /// Assembles the [`RegistryInputs`] from the manager's configuration, builder
+    /// and current state, then delegates to [`build_registry`]. Activation runs
+    /// the result through [`run_preflight_checks`](Self::run_preflight_checks);
+    /// the `nails check` command builds the same registry and runs it read-only.
+    /// Routing both through this one function is what keeps their check lists
+    /// identical. Activation passes `read_only = false` so the storage check still
+    /// stages the hidden layout; `nails check` passes `true` to keep the command
+    /// from touching the system.
+    pub fn preflight_registry(
+        &self,
+        overlay_only: bool,
+        read_only: bool,
+    ) -> Result<PreFlightRegistry<F>> {
+        let flake_target_already_validated = self
+            .nixos_builder
+            .as_ref()
+            .is_some_and(|builder| builder.is_flake());
+        let selected_flake_dir = self
+            .nixos_builder
+            .as_ref()
+            .and_then(|builder| builder.flake_dir().map(|path| path.to_path_buf()));
+
+        let inputs = RegistryInputs {
+            overlay_only,
+            read_only,
+            current_state: self.current_state()?,
+            flake_target_already_validated,
+            selected_flake_dir,
+        };
+
+        build_registry(&self.filesystem, &self.config, &inputs)
     }
 
     /// Run all pre-flight checks before activation
@@ -77,142 +293,8 @@ impl<F: Filesystem> NailsManager<F> {
     /// let result = manager.activate(false);
     /// ```
     pub fn run_preflight_checks(&self, overlay_only: bool) -> Result<()> {
-        use crate::preflight::{
-            BackendDetectCheck, HiddenVolumeCheck, MountNamespaceCheck, NixOSBuildTargetCheck,
-            NixOSConfigCheck, OverlayCompatibilityCheck, OverlayTargetsCheck, PreFlightRegistry,
-            SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck, SymlinkSupportCheck,
-            UpperFsCapabilityCheck,
-        };
-
-        let mut registry = PreFlightRegistry::new();
-
-        // Register all checks (Stories 3.1-3.7, merged in Story 14.5)
-        registry.add_check(Box::new(HiddenVolumeCheck::new(
-            self.config.hidden_volume_root.clone(),
-        )));
-
-        // Refuses an overlay target that would hide the hidden volume, its
-        // state file, its logs or the binary, and an exclusion that leaks to
-        // the decoy disk, while the decoy session is still intact.
-        registry.add_check(Box::new(OverlayTargetsCheck::new(self.config.clone())));
-
-        // Runs before the session kill so a private mount namespace or a
-        // non-shared root is caught while the decoy session is still intact.
-        registry.add_check(Box::new(MountNamespaceCheck::new()));
-
-        registry.add_check(Box::new(SymlinkSupportCheck::new(
-            self.config.hidden_volume_root.clone(),
-        )));
-
-        // Runs before the session kill so an upper filesystem that cannot back an
-        // overlay (NFS/FUSE/FAT, missing xattrs/d_type/whiteouts) is refused
-        // while the decoy session is still intact, not after staging has begun.
-        registry.add_check(Box::new(UpperFsCapabilityCheck::new(
-            self.config.hidden_volume_root.clone(),
-        )));
-
-        // Warns, never fails: names deniability hazards of the detected backend
-        // (discard-enabled tcrypt/plain mappings, file-container timestamps,
-        // containers on a copy-on-write decoy) while they can still be fixed.
-        registry.add_check(Box::new(BackendDetectCheck::new(
-            self.config.hidden_volume_root.clone(),
-        )));
-
-        // Compute overlay directories based on mode (Auto or Explicit)
-        // For Auto mode: use build_overlay_targets() to enumerate dynamically
-        // For Explicit mode: use config.overlays directly
-        let overlay_dirs: Vec<crate::preflight::OverlayDirs> = match self.config.overlay_mode {
-            crate::config::OverlayMode::Auto => {
-                // Use build_overlay_targets to get dynamic list
-                let targets = build_overlay_targets(&self.filesystem, &self.config)?;
-                targets
-                    .iter()
-                    .map(|target| {
-                        let dir_name = target
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
-                        let upper = self.config.hidden_volume_root.join(&dir_name);
-                        let work = self.config.hidden_volume_root.join(".work").join(&dir_name);
-
-                        crate::preflight::OverlayDirs::new(dir_name, target.clone(), upper, work)
-                    })
-                    .collect()
-            }
-            crate::config::OverlayMode::Explicit => {
-                // Use explicit overlays from config
-                self.config
-                    .overlays
-                    .iter()
-                    .map(|o| {
-                        crate::preflight::OverlayDirs::new(
-                            o.name.clone(),
-                            o.lower.clone(),
-                            o.upper.clone(),
-                            o.work.clone(),
-                        )
-                    })
-                    .collect()
-            }
-        };
-
-        registry.add_check(Box::new(StorageReadinessCheck::new(
-            self.config.hidden_volume_root.clone(),
-            overlay_dirs,
-        )));
-
-        // Compute overlay targets for compatibility check
-        let persistent_overlay_target_paths: Vec<std::path::PathBuf> =
-            match self.config.overlay_mode {
-                crate::config::OverlayMode::Auto => {
-                    build_overlay_targets(&self.filesystem, &self.config)?
-                }
-                crate::config::OverlayMode::Explicit => self
-                    .config
-                    .overlays
-                    .iter()
-                    .map(|o| o.lower.clone())
-                    .collect(),
-            };
-
-        registry.add_check(Box::new(OverlayCompatibilityCheck::new(
-            persistent_overlay_target_paths,
-            self.config.hidden_volume_root.clone(),
-        )));
-
-        let flake_target_already_validated = self
-            .nixos_builder
-            .as_ref()
-            .is_some_and(|builder| builder.is_flake());
-
-        if !overlay_only {
-            registry.add_check(Box::new(NixOSConfigCheck::new(
-                self.config.hidden_volume_root.clone(),
-            )));
-
-            if !flake_target_already_validated {
-                let selected_flake_dir = self
-                    .nixos_builder
-                    .as_ref()
-                    .and_then(|builder| builder.flake_dir().map(|path| path.to_path_buf()));
-
-                registry.add_check(Box::new(NixOSBuildTargetCheck::with_selected_flake_dir(
-                    self.config.nixos_flake.clone(),
-                    selected_flake_dir,
-                    self.config.hidden_volume_root.clone(),
-                )));
-            }
-        }
-
-        registry.add_check(Box::new(SwapCheck));
-
-        registry.add_check(Box::new(SpaceCheck::new(
-            self.config.hidden_volume_root.clone(),
-            self.config.minimum_space_mb,
-        )));
-
-        registry.add_check(Box::new(StateCheck::new(self.current_state()?)));
+        // Activation keeps the auto-creating storage check: `read_only = false`.
+        let registry = self.preflight_registry(overlay_only, false)?;
 
         // Run all checks (always get full results for display)
         let (results, all_passed) = registry.run_all_detailed(&self.filesystem);
@@ -265,54 +347,5 @@ impl<F: Filesystem> NailsManager<F> {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::config::OverlayMode;
-    use crate::manager::NailsManager;
-    use crate::{Config, MockFilesystem, NailsError};
-
-    /// Preflight progress now travels on one channel: tracing events the CLI
-    /// subscriber renders under the resolved verbosity. This asserts a failing
-    /// check is reported as a `fail` event and folded into `PreFlightCheckFailed`,
-    /// with no second ad-hoc report (the old `output::check_result` print is gone).
-    #[test]
-    #[tracing_test::traced_test]
-    fn failing_check_is_reported_through_tracing() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let hidden_root = temp_dir.path();
-        let state_path = hidden_root.join("state.json");
-
-        let fs = MockFilesystem::new();
-        fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
-        // Leave the hidden volume unmounted so HiddenVolumeCheck fails.
-        fs.mock_set_mounted(hidden_root, false);
-
-        let config = Config {
-            hidden_volume_root: hidden_root.to_path_buf(),
-            state_file_path: state_path.clone(),
-            overlays: vec![],
-            // Explicit mode keeps the check set independent of the host's layout.
-            overlay_mode: OverlayMode::Explicit,
-            ..Config::test_default()
-        };
-
-        let manager = NailsManager::new(fs, config, state_path);
-
-        let err = manager
-            .run_preflight_checks(true)
-            .expect_err("an unmounted hidden volume must fail preflight");
-        match err {
-            NailsError::PreFlightCheckFailed(failures) => {
-                assert!(
-                    failures.iter().any(|(name, _)| name == "hidden-volume"),
-                    "expected the hidden-volume check among {failures:?}"
-                );
-            }
-            other => panic!("expected PreFlightCheckFailed, got {other:?}"),
-        }
-
-        // The failure is reported on the one progress channel (tracing); the old
-        // unconditional `output::check_result` print is gone, so this is the only
-        // report of the check. `logs_contain` is injected by `traced_test`.
-        assert!(logs_contain("Preflight check failed"));
-    }
-}
+#[path = "preflight_runner_tests.rs"]
+mod tests;

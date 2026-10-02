@@ -3,7 +3,7 @@ use nails_core::filesystem::PathKind;
 use nails_core::test_support::EnvGuard;
 use nails_core::{
     Config, Filesystem, MockFilesystem, NailsManager, StateFile, SystemState,
-    stage_hidden_config_symlink,
+    stage_hidden_nixos_config,
 };
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -194,7 +194,7 @@ fn test_init_creates_directory_structure() {
     let hidden_config_meta = fs::metadata(&hidden_config).unwrap();
     assert_eq!(hidden_config_meta.permissions().mode() & 0o777, 0o600);
     let hidden_config_contents = fs::read_to_string(&hidden_config).unwrap();
-    assert!(hidden_config_contents.contains("pkgs.ripgrep"));
+    assert!(hidden_config_contents.contains("Hidden-session configuration"));
 
     let hidden_hardware = tmp.path().join("etc/nixos/hardware-configuration.nix");
     assert!(hidden_hardware.is_file());
@@ -655,7 +655,9 @@ fn test_init_generated_config_is_preflight_ready_for_activation() {
     fs.mock_set_root_directories(vec!["/etc".into(), "/home".into(), "/nix".into()]);
     fs.mock_set_swap_enabled(false);
 
-    stage_hidden_config_symlink(&fs, &hidden_root).unwrap();
+    // Activation stages the full hidden NixOS layout (module symlink plus the
+    // hardware wrapper) before the read-only pre-flight checks run.
+    stage_hidden_nixos_config(&fs, &hidden_root, false).unwrap();
 
     let manager = NailsManager::new(fs.clone(), config.clone(), config.state_file_path.clone());
     manager.run_preflight_checks(false).unwrap();

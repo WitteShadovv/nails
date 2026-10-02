@@ -19,7 +19,7 @@ fn stdout_format_for(command: &Commands, settings: &OutputSettings) -> StdoutFor
 /// Whether a command may write a log file onto the hidden volume.
 ///
 /// Only the commands that act on an attached hidden volume do. Read-only
-/// commands (`status`, `verify`, `notify-dispatch`, `config`) and `init` — which
+/// commands (`status`, `verify`, `check`, `notify-dispatch`, `config`) and `init` — which
 /// runs before the volume holds any NAILS structure — never create a log
 /// directory or file, so running them from the decoy or a download directory
 /// leaves nothing behind there. The attach gate is still the backstop: even a
@@ -114,6 +114,7 @@ mod tests {
         assert!(!command_writes_logs(&Commands::Verify(
             VerifyArgs::default()
         )));
+        assert!(!command_writes_logs(&Commands::Check(Default::default())));
         assert!(!command_writes_logs(&Commands::Status(Default::default())));
         assert!(!command_writes_logs(&Commands::Init(InitArgs {
             path: PathBuf::from("/mnt/data"),

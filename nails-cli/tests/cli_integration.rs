@@ -1262,7 +1262,7 @@ fn test_deactivate_with_build_dir_config_hits_safety_guard() {
 }
 
 #[test]
-fn test_activate_dry_run_skips_preflight_without_real_mutations() {
+fn test_check_reports_sections_and_refuses_when_volume_not_ready() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -1277,39 +1277,30 @@ fn test_activate_dry_run_skips_preflight_without_real_mutations() {
     )
     .unwrap();
 
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args([
-        "--config",
-        config_file.path().to_str().unwrap(),
-        "activate",
-        "--dry-run",
-        "--no-preflight",
-        "--session",
-        "keep",
-        "--overlay-only",
-        "--ascii",
-    ])
-    .assert()
-    .success()
-    .stdout(predicates::str::contains(
-        "=== NAILS Dry-Run: Activation Preview ===",
-    ))
-    .stdout(predicates::str::contains(
-        "[WARN] Pre-flight checks skipped (--no-preflight)",
-    ))
-    .stdout(predicates::str::contains(
-        "[INFO] Session kill disabled (--session keep)",
-    ))
-    .stdout(predicates::str::contains(
-        "[INFO] Overlay-only mode: NixOS profile switch would be skipped",
-    ))
-    .stdout(predicates::str::contains(
-        "=== Dry-run complete. No changes were made. ===",
-    ));
+    // The tempdir is not a mounted hidden volume, so the readiness check refuses
+    // (exit 4) while still printing a full report.
+    std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_file.path().to_str().unwrap(),
+            "check",
+            "--overlay-only",
+            "--ascii",
+        ])
+        .assert()
+        .failure()
+        .code(4)
+        .stdout(predicates::str::contains("NAILS Readiness Check"))
+        .stdout(predicates::str::contains("Pre-flight checks:"))
+        .stdout(predicates::str::contains("Effective configuration:"))
+        .stdout(predicates::str::contains("Overlay targets:"))
+        .stdout(predicates::str::contains("Session handling:"))
+        .stdout(predicates::str::contains("NixOS profile:"))
+        .stdout(predicates::str::contains("hidden-volume:"));
 }
 
 #[test]
-fn test_activate_dry_run_executes_preflight_and_reports_results() {
+fn test_check_json_emits_envelope() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -1326,38 +1317,78 @@ fn test_activate_dry_run_executes_preflight_and_reports_results() {
 
     let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
         .args([
+            "--json",
             "--config",
             config_file.path().to_str().unwrap(),
-            "activate",
-            "--dry-run",
-            "--session",
-            "keep",
-            "--ascii",
+            "check",
+            "--overlay-only",
         ])
         .output()
-        .expect("failed to run activate dry-run");
+        .expect("failed to run check --json");
 
-    assert!(
-        output.status.success(),
-        "dry-run should succeed\nstdout={}\nstderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(4), "unready volume refuses");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("--- Pre-flight Checks ---"));
-    assert!(stdout.contains("--- Overlay Targets ---"));
-    assert!(stdout.contains("--- Session Management ---"));
-    assert!(stdout.contains("--- NixOS Profile ---"));
-    assert!(stdout.contains("[INFO] Session kill disabled (--session keep)"));
+    let last = stdout.lines().last().expect("one JSON line");
+    let value: serde_json::Value = serde_json::from_str(last).expect("check emits valid JSON");
+    assert_eq!(value["command"], "check");
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["data"]["ready"], false);
+    assert!(value["data"]["checks"].is_array());
     assert!(
-        stdout.contains("[PASS]") || stdout.contains("[WARN]") || stdout.contains("[FAIL]"),
-        "expected preflight result markers in output: {stdout}"
+        value["data"]["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["name"] == "hidden-volume"),
+        "expected the hidden-volume check in the envelope: {last}"
     );
 }
 
 #[test]
-fn test_activate_dry_run_checks_session_context_by_default() {
+fn test_activate_dry_run_is_a_thin_alias_for_check() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root = \"{}\"",
+        hidden_root.display()
+    )
+    .unwrap();
+    let config_path = config_file.path().to_str().unwrap().to_string();
+
+    let run = |extra: &[&str]| {
+        let mut args = vec!["--config", config_path.as_str()];
+        args.extend_from_slice(extra);
+        args.push("--ascii");
+        std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+            .args(&args)
+            .output()
+            .expect("failed to run nails")
+    };
+
+    let dry_run = run(&["activate", "--dry-run", "--overlay-only"]);
+    let check = run(&["check", "--overlay-only"]);
+
+    assert_eq!(
+        dry_run.status.code(),
+        check.status.code(),
+        "dry-run and check must share an exit code"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&dry_run.stdout),
+        String::from_utf8_lossy(&check.stdout),
+        "dry-run and check must produce the same report"
+    );
+}
+
+#[test]
+fn test_doctor_alias_runs_the_check_command() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -1372,61 +1403,18 @@ fn test_activate_dry_run_checks_session_context_by_default() {
     )
     .unwrap();
 
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args([
-        "--config",
-        config_file.path().to_str().unwrap(),
-        "activate",
-        "--dry-run",
-        "--no-preflight",
-        "--ascii",
-    ])
-    .assert()
-    .success()
-    .stdout(predicates::str::contains("--- Session Management ---"))
-    .stdout(
-        predicates::str::contains("Graphical session detected")
-            .or(predicates::str::contains("No graphical session detected"))
-            .or(predicates::str::contains(
-                "Could not detect session context",
-            )),
-    );
-}
-
-#[test]
-fn test_activate_dry_run_reports_explicit_flake_reference() {
-    use std::io::Write;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    std::fs::create_dir_all(&hidden_root).unwrap();
-
-    let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(
-        config_file,
-        "hidden_volume_root = \"{}\"\nnixos_flake = \"/etc/nixos#test-host\"",
-        hidden_root.display()
-    )
-    .unwrap();
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args([
-        "--config",
-        config_file.path().to_str().unwrap(),
-        "activate",
-        "--dry-run",
-        "--no-preflight",
-        "--session",
-        "keep",
-        "-vv",
-        "--ascii",
-    ])
-    .assert()
-    .success()
-    .stdout(predicates::str::contains(
-        "[INFO] NixOS flake: /etc/nixos#test-host",
-    ))
-    .stdout(predicates::str::contains("would build and switch profile"));
+    std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_file.path().to_str().unwrap(),
+            "doctor",
+            "--overlay-only",
+            "--ascii",
+        ])
+        .assert()
+        .failure()
+        .code(4)
+        .stdout(predicates::str::contains("NAILS Readiness Check"));
 }
 
 #[test]
