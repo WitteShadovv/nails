@@ -69,6 +69,7 @@ NAILS is designed for a narrow threat model and operational style.
 - NAILS does **not** mount, unlock, or protect the hidden backend for you.
 - The default activation path may terminate the graphical session before activation completes.
 - Your backend must remain mounted for the full hidden session and through deactivation.
+- The account you run `sudo nails` from must be a local account listed in `/etc/passwd`: the static release binary does not use NSS. A directory account (LDAP, SSSD) cannot be resolved, so its shell history is not cleaned (only `/root` is), shell integration is skipped, login notifications are not delivered, and the `fresh-home` persona mode refuses to activate.
 - A clean `nails verify` result is evidence for known/common artifacts, **not proof** that no trace remains.
 
 ### Hidden-volume space and overlay copy-up
