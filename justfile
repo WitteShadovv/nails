@@ -47,8 +47,14 @@ coverage:
     cargo llvm-cov report --cobertura --output-path "$out/cobertura.xml"
     cargo llvm-cov report --lcov --output-path "$out/lcov.info"
     cargo llvm-cov report --html --output-dir "$out/html"
-    rate=$(grep -oP 'line-rate="\K[0-9.]+' "$out/cobertura.xml" | head -1)
-    pct=$(awk "BEGIN { printf \"%.2f\", ${rate:-0} * 100 }")
+    # The root <coverage> element carries the overall rate. -m1 stops at it:
+    # piping thousands of per-file matches into `head` kills grep with SIGPIPE,
+    # which pipefail turns into a failed recipe.
+    rate=$(grep -m1 -oP '<coverage [^>]*line-rate="\K[0-9.]+' "$out/cobertura.xml") || {
+        echo "No line-rate in $out/cobertura.xml" >&2
+        exit 1
+    }
+    pct=$(awk "BEGIN { printf \"%.2f\", ${rate} * 100 }")
     echo "Line coverage: ${pct}% (threshold {{ coverage_threshold }}%)"
     if [ -n "${GITHUB_ENV:-}" ]; then
         {
