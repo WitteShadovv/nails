@@ -82,29 +82,29 @@ fn resolve_current_system_profile() -> PathBuf {
 }
 
 pub(crate) fn cache_nix_overlay_runtime_commands() -> std::io::Result<PathBuf> {
-    let systemctl = build_cached_command(Path::new("/run/current-system/sw/bin/systemctl"))?;
+    // Create the read-only bind of the pre-overlay /nix/store first: the runtime
+    // command is resolved against it, so no store bytes are copied.
+    let original_nix_store_bind_source = cache_original_nix_store_bind_source()?;
+    let systemctl = build_cached_command(
+        Path::new("/run/current-system/sw/bin/systemctl"),
+        &original_nix_store_bind_source,
+    )?;
     let nix_daemon = std::fs::canonicalize("/run/current-system/sw/bin/nix-daemon")
         .unwrap_or_else(|_| PathBuf::from("/run/current-system/sw/bin/nix-daemon"));
     let nix = std::fs::canonicalize("/run/current-system/sw/bin/nix")
         .unwrap_or_else(|_| PathBuf::from("/run/current-system/sw/bin/nix"));
     let current_system_profile = resolve_current_system_profile();
-    let original_nix_store_bind_source = cache_original_nix_store_bind_source()?;
 
     let display_path = systemctl.display_path().to_path_buf();
     let _ = super::SYSTEMCTL_COMMAND.set(systemctl);
     let _ = super::NIX_DAEMON_PATH.set(nix_daemon);
     let _ = super::NIX_COMMAND_PATH.set(nix);
     let _ = super::CURRENT_SYSTEM_PROFILE.set(current_system_profile);
-    let _ = super::ORIGINAL_NIX_STORE_BIND_SOURCE.set(original_nix_store_bind_source);
     Ok(display_path)
 }
 
 pub(crate) fn cached_current_system_profile() -> Option<PathBuf> {
     super::CURRENT_SYSTEM_PROFILE.get().cloned()
-}
-
-pub(crate) fn cached_original_nix_store_bind_source() -> Option<PathBuf> {
-    super::ORIGINAL_NIX_STORE_BIND_SOURCE.get().cloned()
 }
 
 #[cfg(test)]

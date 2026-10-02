@@ -18,6 +18,7 @@ mod mount_ops;
 mod submount;
 mod system_ops;
 
+#[cfg(test)]
 pub(crate) use submount::parse_submount_sources;
 
 use super::{Filesystem, MountInfo};

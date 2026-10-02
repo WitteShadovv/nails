@@ -17,12 +17,8 @@ static SYSTEMCTL_COMMAND: OnceLock<command_cache::CachedCommand> = OnceLock::new
 static NIX_DAEMON_PATH: OnceLock<PathBuf> = OnceLock::new();
 static NIX_COMMAND_PATH: OnceLock<PathBuf> = OnceLock::new();
 static CURRENT_SYSTEM_PROFILE: OnceLock<PathBuf> = OnceLock::new();
-static ORIGINAL_NIX_STORE_BIND_SOURCE: OnceLock<PathBuf> = OnceLock::new();
 
-pub(crate) use runtime_cache::{
-    cache_nix_overlay_runtime_commands, cached_current_system_profile,
-    cached_original_nix_store_bind_source,
-};
+pub(crate) use runtime_cache::{cache_nix_overlay_runtime_commands, cached_current_system_profile};
 pub(crate) use service_controller::{ServiceController, start_service_and_socket};
 
 /// Return the system profile path, honoring NAILS_SYSTEM_PROFILE_PATH if set.

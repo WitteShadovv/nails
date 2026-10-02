@@ -4,20 +4,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 #[test]
-fn test_restore_nix_security_model_uses_cached_submount_source_in_test_runtime() {
+fn test_restore_nix_security_model_self_binds_nix_store_in_test_runtime() {
     let hidden_root = tempfile::tempdir().unwrap();
     let state_path = hidden_root.path().join("state.json");
     let fs = MockFilesystem::new();
 
-    fs.mock_set_submount_sources(
-        Path::new("/nix"),
-        vec![(
-            PathBuf::from("/nix/store"),
-            PathBuf::from("/persist/nix/store"),
-        )],
-    );
-    fs.mock_set_path_exists("/persist/nix/store", true);
-    fs.mock_set_path_type("/persist/nix/store", "directory");
+    // The overlaid /nix/store is self-bound read-only; no decoy source is used.
     fs.mock_set_path_exists("/nix/store", true);
     fs.mock_set_path_type("/nix/store", "directory");
 
@@ -41,9 +33,11 @@ fn test_restore_nix_security_model_uses_cached_submount_source_in_test_runtime()
 
     manager.restore_nix_security_model(&mut guard).unwrap();
 
+    // Exactly one bind on /nix/store is made and the test-runtime path never
+    // forks into the init namespace.
     assert!(
         fs.is_mounted(Path::new("/nix/store")).unwrap(),
-        "expected /nix/store bind mount to be restored"
+        "expected /nix/store self-bind to be restored"
     );
     assert_eq!(
         fs.mock_get_symlink_target(Path::new("/run/current-system")),
@@ -53,7 +47,7 @@ fn test_restore_nix_security_model_uses_cached_submount_source_in_test_runtime()
 }
 
 #[test]
-fn test_restore_nix_security_model_falls_back_to_nix_store_when_no_submount_sources_exist() {
+fn test_restore_nix_security_model_self_binds_without_any_submount_sources() {
     let hidden_root = tempfile::tempdir().unwrap();
     let state_path = hidden_root.path().join("state.json");
     let fs = MockFilesystem::new();
