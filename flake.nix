@@ -26,7 +26,6 @@
       targetTriple = "x86_64-unknown-linux-musl";
       # Only the release archive records the commit time, as its file mtimes.
       releaseSourceDateEpoch = toString (self.lastModified or 1);
-      shortRev = self.shortRev or (self.dirtyShortRev or "dirty");
 
       # rust-toolchain.toml is the single source of truth for the pinned
       # version; rustup reads it in CI and the flake reads it here.
@@ -76,8 +75,9 @@
 
       workspaceManifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
       workspaceVersion = workspaceManifest.workspace.package.version;
-      releaseVersion = "${workspaceVersion}-git.${shortRev}";
-      releaseArchiveName = "nails-${releaseVersion}-${targetTriple}.tar.gz";
+      # The tag already names the commit; the asset is named after the version.
+      releaseName = "nails-${workspaceVersion}-${targetTriple}";
+      releaseArchiveName = "${releaseName}.tar.gz";
 
       # Vendored crate dependencies. crates.io now returns HTTP 403 for the legacy
       # /api/v1/<name>/<version>/download endpoint that this pinned nixpkgs'
@@ -122,7 +122,10 @@
         inherit (pkgsMusl) stdenv;
         strictDeps = true;
 
+        # A Cargo.lock that does not match the manifests fails the build
+        # instead of being rewritten silently, as it was for v0.2.0.
         cargoBuildFlags = [
+          "--locked"
           "--package"
           "nails-cli"
           "--bin"
@@ -157,7 +160,7 @@
       };
 
       nails-release =
-        pkgs.runCommand "nails-release-${releaseVersion}"
+        pkgs.runCommand "nails-release-${workspaceVersion}"
           {
             nativeBuildInputs = [
               pkgs.coreutils
@@ -180,7 +183,7 @@
             export TZ=UTC
             umask 022
 
-            package_dir="nails-${releaseVersion}-${targetTriple}"
+            package_dir="${releaseName}"
             stage_dir="$TMPDIR/stage/$package_dir"
             mkdir -p "$stage_dir" "$out"
 
