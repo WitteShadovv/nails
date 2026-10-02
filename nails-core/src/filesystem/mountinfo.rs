@@ -229,6 +229,11 @@ pub struct NailsMounts {
     pub nix_store_bind: Option<PathBuf>,
     /// Whether an overlay is mounted on `/nix` (gates `/nix/store` ownership).
     pub nix_overlay_present: bool,
+    /// Fresh-home persona binds: plain binds of `{hidden_root}/persona/home` over
+    /// the operator's home. Recognised by the tail of their in-filesystem root
+    /// (`persona/home`), so teardown can unmount them without knowing where the
+    /// hidden volume is mounted.
+    pub persona_binds: Vec<PathBuf>,
 }
 
 impl NailsMounts {
@@ -274,6 +279,12 @@ impl NailsMounts {
                 }
             } else if mp == Path::new(NIX_STORE) {
                 m.nix_store_bind = Some(mp.clone());
+            } else if crate::config::persona::is_persona_home_root(&e.root) {
+                // A plain bind whose in-filesystem root is `.../persona/home` is
+                // the fresh-home persona bind NAILS created over the operator's
+                // home. The distinctive two-component tail keeps this from matching
+                // an unrelated host mount.
+                m.persona_binds.push(mp.clone());
             }
         }
         m
@@ -287,6 +298,7 @@ impl NailsMounts {
         if self.persistent_overlays.iter().any(|p| p == target)
             || self.ephemeral_overlays.iter().any(|p| p == target)
             || self.pivot_binds.iter().any(|p| p == target)
+            || self.persona_binds.iter().any(|p| p == target)
         {
             return true;
         }
@@ -445,6 +457,23 @@ this is not a mountinfo line
         let entries = parse_mountinfo(content);
         let m = NailsMounts::from_entries(&entries, None);
         assert!(!m.is_owned(Path::new("/nix/store")));
+    }
+
+    #[test]
+    fn persona_home_bind_is_classified_and_owned() {
+        // A plain bind of {hidden_root}/persona/home over the operator's home:
+        // mountinfo shows its in-filesystem root ending in /persona/home.
+        let content = "\
+50 1 8:1 /persona/home /home/op rw - ext4 /dev/sda1 rw
+51 1 8:2 / /home/other rw - ext4 /dev/sdc1 rw";
+        let entries = parse_mountinfo(content);
+
+        // Recognised even without the hidden root (unmount discovers with None).
+        let m = NailsMounts::from_entries(&entries, None);
+        assert!(m.persona_binds.contains(&PathBuf::from("/home/op")));
+        assert!(m.is_owned(Path::new("/home/op")));
+        // An unrelated ext4 mount over another home is still refused.
+        assert!(!m.is_owned(Path::new("/home/other")));
     }
 
     #[test]

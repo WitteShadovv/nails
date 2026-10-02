@@ -61,6 +61,19 @@ pub fn compute_extra_lower_dirs(
     let mut seen = Vec::new();
 
     for (mount_point, source_path) in submount_sources {
+        // The fresh persona home (fresh-home mode) is a plain bind of
+        // `{hidden_root}/persona/home` over the operator's home; it deliberately
+        // has no decoy lower. If it shows up as a submount while computing extra
+        // lowers, skip it so no decoy `/home` subtree is pulled back in underneath
+        // the clean persona home.
+        if crate::config::persona::is_persona_home_root(source_path) {
+            tracing::debug!(
+                source = %source_path.display(),
+                "Skipping persona home bind when computing extra lower layers"
+            );
+            continue;
+        }
+
         // Compute relative path from target to mount_point
         let relative = match mount_point.strip_prefix(target) {
             Ok(rel) => rel,
@@ -274,6 +287,25 @@ mod tests {
     fn test_strip_suffix_path_suffix_longer_than_path() {
         let p = Path::new("/etc");
         assert_eq!(p.strip_suffix_path(Path::new("persist/etc/nixos")), None);
+    }
+
+    #[test]
+    fn test_persona_home_bind_excluded_from_extra_lowers() {
+        // The persona home bind (source under {hidden_root}/persona/home) must not
+        // contribute a decoy /home subtree as an extra lower layer.
+        let sources = vec![
+            (
+                PathBuf::from("/home/op"),
+                PathBuf::from("/mnt/data/persona/home"),
+            ),
+            (
+                PathBuf::from("/home/shared"),
+                PathBuf::from("/persist/home/shared"),
+            ),
+        ];
+        let result = compute_extra_lower_dirs(Path::new("/home"), &sources);
+        // Only the genuine bind source is kept; the persona home is skipped.
+        assert_eq!(result, vec![PathBuf::from("/persist/home")]);
     }
 
     #[test]

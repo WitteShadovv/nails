@@ -80,4 +80,14 @@ impl MockFilesystem {
             .get(path)
             .copied()
     }
+
+    /// Get the bind-mount source recorded for `target`, if a bind mount is active
+    /// there. Lets tests assert what was bind-mounted where.
+    pub fn mock_bind_source(&self, target: &Path) -> Option<PathBuf> {
+        self.bind_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(target)
+            .cloned()
+    }
 }

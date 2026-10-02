@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use super::colors::ColorSchemeConfig;
 use super::overlay::{OverlayConfig, OverlayMode};
+use super::persona::PersonaConfig;
 use crate::process::RiskyServicePolicy;
 
 /// Neutral placeholder hidden volume root path (single source of truth).
@@ -255,6 +256,15 @@ pub struct Config {
     #[serde(default)]
     pub color_scheme: ColorSchemeConfig,
 
+    /// How the hidden session relates to the decoy account.
+    ///
+    /// Defaults to the legacy shared-home model (the decoy home, merged
+    /// read-write). `fresh-home` bind-mounts a clean hidden home over the
+    /// operator's home so the decoy home contents are not visible. See
+    /// [`PersonaConfig`](super::persona::PersonaConfig).
+    #[serde(default)]
+    pub persona: PersonaConfig,
+
     /// Neutral active-state indicator prepended to the shell prompt while the
     /// hidden environment is active.
     ///
@@ -318,4 +328,5 @@ pub const CONFIG_KEYS: &[&str] = &[
     "nixos_flake",
     "risky_services",
     "color_scheme",
+    "persona",
 ];

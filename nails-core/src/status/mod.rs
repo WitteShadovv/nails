@@ -252,6 +252,7 @@ impl<F: Filesystem> StatusCommand<F> {
             hidden_root_used,
             hidden_root_available,
             load_outcome,
+            persona_mode: self.config.persona.mode,
         };
 
         Ok(report)
@@ -392,6 +393,7 @@ impl Default for StatusReport {
             hidden_root_used: None,
             hidden_root_available: None,
             load_outcome: LoadOutcome::Missing,
+            persona_mode: crate::config::PersonaMode::SharedHome,
         }
     }
 }

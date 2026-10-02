@@ -84,6 +84,19 @@ pub fn print_status_human(
         "Security Posture:   {}",
         report.security_posture().render(style)
     );
+    println!("Persona mode:       {}", report.persona_mode.as_str());
+    if report.persona_mode == nails_core::config::PersonaMode::SharedHome {
+        println!(
+            "  {}",
+            style.marked(
+                Mark::Warn,
+                format_args!(
+                    "shared-home: the hidden session uses the decoy home; its accounts and \
+                     secrets are live"
+                ),
+            )
+        );
+    }
 
     if let SystemState::Active { .. } = report.state {
         if let Some(activated_at) = report.activated_at {

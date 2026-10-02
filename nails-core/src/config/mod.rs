@@ -24,6 +24,7 @@
 pub mod colors;
 pub mod ephemeral;
 pub mod overlay;
+pub mod persona;
 
 // Sub-modules for config implementation
 mod builder;
@@ -48,6 +49,7 @@ pub use testing::TestWorld;
 pub use colors::{ColorProfile, ColorSchemeConfig, DecoyProfile};
 pub use ephemeral::EphemeralOverlayDir;
 pub use overlay::{OverlayConfig, OverlayMode};
+pub use persona::{PersonaConfig, PersonaMode, persona_home_source};
 
 // Re-exports for public API - core types
 pub use types::{

@@ -67,6 +67,7 @@ impl Config {
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root
             loaded_config_path: None,
             color_scheme: ColorSchemeConfig::default(),
+            persona: super::persona::PersonaConfig::default(),
             prompt_label: String::new(),
             nixos_flake: None,
             risky_services: None,

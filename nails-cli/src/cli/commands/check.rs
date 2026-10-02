@@ -88,6 +88,7 @@ pub fn execute(
             OverlayMode::Auto => "auto",
             OverlayMode::Explicit => "explicit",
         },
+        persona_mode: config.persona.mode.as_str(),
         minimum_space_mb: config.minimum_space_mb,
     };
 

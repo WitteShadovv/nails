@@ -32,6 +32,7 @@ This guide provides essential security information for NAILS users. Read this do
   - [Understanding the Race Condition Risk](#understanding-the-race-condition-risk)
 - [Threat Model Limitations](#threat-model-limitations)
   - [What NAILS Does NOT Protect Against](#what-nails-does-not-protect-against)
+  - [Shared Decoy Account and Persona Modes](#shared-decoy-account-and-persona-modes)
   - [SSD Wear-Leveling Limitations](#ssd-wear-leveling-limitations)
   - [Storage Backend Hazards](#storage-backend-hazards)
   - [Cold Boot Attacks](#cold-boot-attacks)
@@ -409,6 +410,37 @@ Hidden commands now exist on decoy disk
 | **Electromagnetic side-channels** | CPU emissions can leak encryption keys |
 | **Network traffic analysis** | Hidden sessions may be detectable via timing/volume patterns |
 | **Legal compulsion with forensic expertise** | Deniability is not immunity; sophisticated analysis may detect anomalies |
+
+### Shared Decoy Account and Persona Modes
+
+By default, NAILS runs the hidden session **as the decoy user, in the decoy home**. The `/home`
+overlay merges the decoy home read-write (and `/home` is deliberately not excluded), so every account,
+credential store and application profile configured in the decoy home is live inside the hidden
+session:
+
+- browser profiles, saved logins and cookies
+- SSH and GPG keys and agents
+- password-manager databases and unlocked sessions
+- shell, editor and application history and caches
+
+This shared-account model is convenient — you keep one login — but it means hidden-session activity is
+tied to the decoy's identity, and anything the hidden session opens from the decoy home can leave
+traces the overlay cannot contain in the decoy's own online accounts and remote services.
+
+`persona.mode` in `nails.toml` controls the model:
+
+| Mode | Behaviour | Use when |
+|------|-----------|----------|
+| `shared-home` (default) | Hidden session uses the decoy home; the decoy's accounts and secrets are live. Activation prints a warning; `nails status` and `nails check` report the mode. | You deliberately want the decoy's existing login and accept that the two identities overlap. |
+| `fresh-home` | After the `/home` overlay is mounted, a clean, empty home from the hidden volume (`<hidden_volume_root>/persona/home`) is bind-mounted over your home, so the decoy home contents are not visible. The hidden persona keeps its own state on the hidden volume between sessions. | You want the hidden session isolated from the decoy's credentials and history. |
+
+A fully separate hidden account (`separate-user`, a fixed-UID account distinct from the decoy user)
+is planned for a later release; it requires switching the hidden NixOS generation before login and is
+not an accepted value yet.
+
+**Recommendation:** for sensitive work, set `persona.mode = "fresh-home"` and sign in to the hidden
+session's accounts from the clean home rather than reusing the decoy's. Treat `shared-home` as an
+explicit, informed choice — the activation warning is there to make that choice visible.
 
 ### SSD Wear-Leveling Limitations
 

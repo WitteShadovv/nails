@@ -282,6 +282,17 @@ fn render_template(root: &Path, title: &str) -> String {
 # work = {work_value}
 # target = "/home"
 
+# How the hidden session relates to the decoy account.
+#   "shared-home" (default): run in the decoy home, merged read-write through the
+#     /home overlay. The decoy's accounts, keys and app profiles are live in the
+#     hidden session; activation warns while this mode is in effect.
+#   "fresh-home": bind-mount a clean, empty home from the hidden volume over the
+#     operator's home, so the decoy home contents are not visible.
+# (A separate fixed-UID hidden account, "separate-user", is planned for a later
+#  release and is not an accepted value yet.)
+# [persona]
+# mode = "shared-home"
+
 # Terminal colors while the hidden environment is active.
 # [color_scheme]
 # enabled = true

@@ -13,6 +13,7 @@ expression: redact_status(value)
       "kind": "skipped"
     },
     "overlays": [],
+    "persona_mode": "shared-home",
     "security_posture": "critical",
     "state": {
       "kind": "degraded",

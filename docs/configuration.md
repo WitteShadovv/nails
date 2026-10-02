@@ -87,6 +87,7 @@ is the `name` key of each `[[overlays]]` table.
 | `color_scheme.enabled` | boolean | `true` | Change the terminal colours while the hidden environment is active. Like `prompt_label`, the change is visible on screen and in screenshots. |
 | `color_scheme.hidden.background` | string (colour) | `"#1a1a2e"` | Terminal background while the hidden environment is active, as an OSC colour such as `#rrggbb`. Not validated; terminals ignore values they do not understand. |
 | `color_scheme.hidden.foreground` | string (colour) | `"#e0e0e0"` | Terminal foreground while the hidden environment is active, in the same format as `background`. |
+| `persona.mode` | `"shared-home"` or `"fresh-home"` | `"shared-home"` | How the hidden session relates to the decoy account. `shared-home` runs it in the decoy home (merged read-write through the `/home` overlay), so the decoy's accounts, keys and app profiles are live; activation warns while it is in effect. `fresh-home` bind-mounts a clean, empty home from the hidden volume over the operator's home, so the decoy home contents are not visible. See [Persona modes](#persona-modes). |
 <!-- END config-keys -->
 
 The Key and Default columns are generated from the code, and
@@ -182,3 +183,29 @@ Some limits hold whatever the configuration says:
 - The hidden volume root must be a mount point of its own (the
   `hidden-volume` pre-flight check refuses a plain directory), because
   everything nails writes there would otherwise land on the decoy disk.
+## Persona modes
+
+By default the hidden session runs as the decoy user, in the decoy home. The
+`/home` overlay merges the decoy home read-write, and `/home` is deliberately
+not excluded, so every account, credential store and application profile set up
+in the decoy home is live in the hidden session. `persona.mode` chooses how the
+hidden session relates to that decoy account.
+
+- `shared-home` (default): the legacy shared-account model. The hidden session
+  works in the decoy home, so logging in there gives it the decoy's browser
+  profiles, SSH and GPG keys, password-manager state and shell history. This is
+  a deliberate trade-off — it keeps a single, consistent login — so activation
+  prints a warning while it is in effect, and `nails status` and `nails check`
+  report it.
+- `fresh-home`: once the `/home` overlay is mounted, a fresh, empty directory on
+  the hidden volume (`<hidden_volume_root>/persona/home`) is bind-mounted over
+  the operator's home. It is a plain bind with no decoy lower, so the decoy home
+  contents are not visible and the hidden session starts from a clean home;
+  everything it writes there lands on the hidden volume and is torn down with the
+  other hidden mounts on deactivation. The directory persists on the hidden
+  volume between sessions, so the hidden persona keeps its own state.
+
+A third model, `separate-user` — a fixed-UID hidden account distinct from the
+decoy user — is planned for a later release. It needs the hidden NixOS
+generation switched before login rather than at activation time, so it is not an
+accepted value yet; `persona.mode` accepts only `shared-home` and `fresh-home`.

@@ -29,6 +29,9 @@ pub struct StatusData {
     overlays: Vec<OverlayJsonEntry>,
     /// Overlay verification result as a tagged object.
     overlay_verification: VerificationJson,
+    /// Persona mode (how the hidden session relates to the decoy account).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    persona_mode: Option<&'static str>,
     /// NixOS generation (if available).
     #[serde(skip_serializing_if = "Option::is_none")]
     nixos_generation: Option<String>,
@@ -98,6 +101,7 @@ pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusDat
             })
             .collect(),
         overlay_verification: VerificationJson::from(&report.overlay_verification),
+        persona_mode: Some(report.persona_mode.as_str()),
         nixos_generation: report.nixos_generation.clone(),
         hidden_root_total_bytes: report.hidden_root_total,
         hidden_root_used_bytes: report.hidden_root_used,
@@ -128,6 +132,7 @@ pub fn build_status_data_unknown(reason: String) -> StatusData {
         uptime_formatted: None,
         overlays: Vec::new(),
         overlay_verification: VerificationJson::NotApplicable,
+        persona_mode: None,
         nixos_generation: None,
         hidden_root_total_bytes: None,
         hidden_root_used_bytes: None,

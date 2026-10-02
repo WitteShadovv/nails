@@ -134,6 +134,64 @@ fn test_config_toml_serialization_round_trip() {
 }
 
 #[test]
+fn test_persona_mode_defaults_to_shared_home() {
+    use crate::config::PersonaMode;
+
+    let config = Config::load_or_default(Path::new("/nonexistent/nails.toml")).unwrap();
+    assert_eq!(config.persona.mode, PersonaMode::SharedHome);
+}
+
+#[test]
+fn test_persona_mode_fresh_home_parses_from_file() {
+    use crate::config::PersonaMode;
+
+    let file =
+        write_config("hidden_volume_root = \"/mnt/data\"\n[persona]\nmode = \"fresh-home\"\n");
+    let config = Config::load(file.path()).unwrap();
+    assert_eq!(config.persona.mode, PersonaMode::FreshHome);
+}
+
+#[test]
+fn test_persona_mode_shared_home_parses_from_file() {
+    use crate::config::PersonaMode;
+
+    let file =
+        write_config("hidden_volume_root = \"/mnt/data\"\n[persona]\nmode = \"shared-home\"\n");
+    let config = Config::load(file.path()).unwrap();
+    assert_eq!(config.persona.mode, PersonaMode::SharedHome);
+}
+
+#[test]
+fn test_persona_mode_rejects_unknown_value() {
+    let file = write_config("hidden_volume_root = \"/mnt/data\"\n[persona]\nmode = \"bogus\"\n");
+    assert!(Config::load(file.path()).is_err());
+}
+
+#[test]
+fn test_persona_table_rejects_unknown_key() {
+    let file = write_config(
+        "hidden_volume_root = \"/mnt/data\"\n[persona]\nmode = \"fresh-home\"\nextra = 1\n",
+    );
+    assert!(Config::load(file.path()).is_err());
+}
+
+#[test]
+fn test_persona_round_trips_through_toml() {
+    use crate::config::PersonaMode;
+
+    let config = Config {
+        persona: crate::config::PersonaConfig {
+            mode: PersonaMode::FreshHome,
+        },
+        ..Config::test_default()
+    };
+    let toml_text = toml::to_string(&config).expect("serialize");
+    let parsed: Config = toml::from_str(&toml_text).expect("parse back");
+    assert_eq!(parsed.persona.mode, PersonaMode::FreshHome);
+    assert_eq!(parsed, config);
+}
+
+#[test]
 fn test_config_keys_match_serialized_fields() {
     let config = Config {
         nixos_flake: Some("/flake#host".to_string()),

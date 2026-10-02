@@ -206,6 +206,7 @@ impl ConfigBuilder {
             log_path,
             loaded_config_path: None,
             color_scheme,
+            persona: super::persona::PersonaConfig::default(),
             prompt_label: String::new(),
             nixos_flake: None,
             risky_services: None,

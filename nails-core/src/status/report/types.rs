@@ -1,6 +1,7 @@
 //! Status report types: VerificationStatus, SecurityPosture, StatusReport
 
 use super::OpSecReminder;
+use crate::config::PersonaMode;
 use crate::{LoadOutcome, SystemState};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -235,6 +236,12 @@ pub struct StatusReport {
     /// How the state file was loaded (P1-03: unified load outcome)
     #[serde(skip, default = "default_load_outcome")]
     pub load_outcome: LoadOutcome,
+
+    /// The configured persona mode (how the hidden session relates to the decoy
+    /// account). Reported so an operator can confirm whether the decoy home is
+    /// shared or hidden.
+    #[serde(default)]
+    pub persona_mode: PersonaMode,
 }
 
 fn default_load_outcome() -> LoadOutcome {

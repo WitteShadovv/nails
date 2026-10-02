@@ -248,6 +248,25 @@ NAILS can help reduce host-side artifacts, but it does **not** protect against e
 If you are operating in a high-risk context, validate your exact procedure end to end before using
 NAILS in the field.
 
+### Shared decoy account and persona modes
+
+By default the hidden session runs **as the decoy user, in the decoy home**. The `/home` overlay
+merges that home read-write, so the decoy's accounts, browser profiles, SSH/GPG keys,
+password-manager state and shell history are all live inside the hidden session. This shared-account
+model is convenient but is a real exposure: work done in the hidden session touches the decoy's
+identity.
+
+`persona.mode` in `nails.toml` controls this:
+
+- `shared-home` (default) keeps the legacy shared-account behaviour. Activation prints a warning, and
+  `nails status` and `nails check` report the mode, because the decoy's secrets are live.
+- `fresh-home` bind-mounts a clean, empty home from the hidden volume over the operator's home, so
+  the decoy home contents are not visible and the hidden session starts from its own, separate home.
+
+A fully separate hidden account (`separate-user`) is planned but not yet available. See
+[`docs/configuration.md`](docs/configuration.md#persona-modes) and the
+[user security guide](docs/USER-SECURITY-GUIDE.md) for details and trade-offs.
+
 ## Reproducible release artifact
 
 NAILS has one canonical Nix-built Linux release artifact:

@@ -22,6 +22,7 @@ expression: redact_status(value)
         "status": "not_mounted"
       }
     ],
+    "persona_mode": "shared-home",
     "security_posture": "warning",
     "state": {
       "kind": "active"

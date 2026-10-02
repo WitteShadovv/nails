@@ -9,6 +9,7 @@
 
 mod auto_mount;
 mod explicit_mount;
+mod persona;
 mod restore;
 
 #[allow(unused_imports)]
@@ -95,6 +96,12 @@ impl<F: Filesystem> NailsManager<F> {
                 )?;
             }
         }
+
+        // Fresh-home persona: bind the clean hidden home over the operator's home
+        // now that the /home overlay (if any) is in place. Pushed onto the tracker
+        // after the overlays, so a later failure rolls it back first; a no-op in
+        // shared-home mode.
+        self.mount_persona_home(&mut tracker, verbosity)?;
 
         // Story 9.3 AC#1: Log overlays mounted with structured fields
         let mounted_paths: Vec<_> = tracker

@@ -243,6 +243,29 @@ impl<F: Filesystem> NailsManager<F> {
 
         tracing::info!(event = "activation_started", state_from = ?previous_state, "Activation started");
 
+        // Surface the persona model. Shared-home runs the hidden session in the
+        // decoy home with the decoy's accounts and secrets live, so it is warned
+        // about; fresh-home is reported as the isolating mode.
+        match self.config.persona.mode {
+            crate::config::PersonaMode::SharedHome => {
+                tracing::warn!(
+                    event = "persona_mode",
+                    persona_mode = "shared-home",
+                    "Persona mode is shared-home: the hidden session runs in the decoy home, so the \
+                     decoy's accounts, credentials and app profiles are live. Set persona.mode = \
+                     \"fresh-home\" in nails.toml to start from a clean, isolated home."
+                );
+            }
+            crate::config::PersonaMode::FreshHome => {
+                tracing::info!(
+                    event = "persona_mode",
+                    persona_mode = "fresh-home",
+                    "Persona mode is fresh-home: a clean hidden home will be bound over the \
+                     operator's home, hiding the decoy home contents"
+                );
+            }
+        }
+
         // Step 3: Stage config and run preflight checks before any session
         // disruption (no StateGuard yet, so an early failure leaves state alone).
         emit_progress(

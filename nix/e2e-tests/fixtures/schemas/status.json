@@ -48,6 +48,10 @@
           "type": "string",
           "enum": ["secure", "warning", "critical", "decoy"]
         },
+        "persona_mode": {
+          "type": "string",
+          "enum": ["shared-home", "fresh-home"]
+        },
         "activated_at": { "type": "string", "format": "date-time" },
         "uptime_seconds": { "type": "integer", "minimum": 0 },
         "uptime_formatted": { "type": "string", "minLength": 1 },

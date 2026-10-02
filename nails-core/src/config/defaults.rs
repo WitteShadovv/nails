@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use super::colors::ColorSchemeConfig;
 use super::overlay::{OverlayConfig, OverlayMode};
+use super::persona::PersonaConfig;
 use super::types::{Config, DEFAULT_HIDDEN_VOLUME_ROOT, get_default_hidden_volume_root};
 
 /// Derive hidden volume root from binary location
@@ -184,6 +185,7 @@ impl Default for Config {
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root
             loaded_config_path: None,
             color_scheme: ColorSchemeConfig::default(),
+            persona: PersonaConfig::default(),
             prompt_label: String::new(),
             nixos_flake: None,
             risky_services: None,

@@ -151,6 +151,18 @@ mod tests {
     }
 
     #[test]
+    fn managed_dirs_never_touch_persona_home_upper() {
+        // The fresh persona home is a plain bind, never an overlay upper, and its
+        // target is the operator's home, never /etc; opaque stripping must never
+        // reach into it.
+        let upper = PathBuf::from("/mnt/data/persona/home");
+        assert!(
+            managed_opaque_dirs(&upper, Path::new("/home/op")).is_empty(),
+            "persona home must never be a managed opaque path"
+        );
+    }
+
+    #[test]
     fn report_is_empty_for_missing_path() {
         let report = report_managed_opaque(
             Path::new("/nonexistent/path/that/does/not/exist/etc"),

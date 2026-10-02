@@ -13,6 +13,7 @@ expression: redact_status(value)
       "kind": "not_applicable"
     },
     "overlays": [],
+    "persona_mode": "shared-home",
     "security_posture": "decoy",
     "state": {
       "kind": "unknown",

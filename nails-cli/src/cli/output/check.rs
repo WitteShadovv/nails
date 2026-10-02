@@ -75,6 +75,8 @@ pub struct ConfigSummary {
     pub log_path: String,
     /// `"auto"` or `"explicit"`.
     pub overlay_mode: &'static str,
+    /// Persona mode: `"shared-home"` or `"fresh-home"`.
+    pub persona_mode: &'static str,
     /// Minimum free space required to activate, in MB.
     pub minimum_space_mb: u64,
 }
@@ -185,6 +187,7 @@ pub fn print_check_human(report: &CheckReport, style: Style) {
     println!("  state file:         {}", report.config.state_file);
     println!("  log directory:      {}", report.config.log_path);
     println!("  overlay mode:       {}", report.config.overlay_mode);
+    println!("  persona mode:       {}", report.config.persona_mode);
     println!(
         "  minimum free space: {} MB",
         report.config.minimum_space_mb
@@ -260,6 +263,7 @@ mod tests {
                 state_file: "/mnt/vault/state.json".into(),
                 log_path: "/mnt/vault/logs".into(),
                 overlay_mode: "auto",
+                persona_mode: "shared-home",
                 minimum_space_mb: 100,
             },
             vec!["/home".into()],
