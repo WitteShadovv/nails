@@ -115,7 +115,7 @@ fn build_cached_command_returns_direct_for_non_store_paths() {
 }
 
 #[test]
-fn via_loader_base_command_includes_loader_library_path_and_program() {
+fn via_loader_to_process_command_uses_the_loader_library_path_and_program() {
     let command = CachedCommand::ViaLoader {
         display_path: PathBuf::from("/display/systemctl"),
         loader: PathBuf::from("/run/nails/original-nix-store/ccc/lib64/ld-linux-x86-64.so.2"),
@@ -125,34 +125,24 @@ fn via_loader_base_command_includes_loader_library_path_and_program() {
         program: PathBuf::from("/run/nails/original-nix-store/ddd/bin/systemctl"),
     };
 
-    let base = command.base_command();
-    let args: Vec<_> = base.get_args().map(|arg| arg.to_os_string()).collect();
-
+    // The loader is run directly with --library-path before the program, so the
+    // pre-overlay store bind is searched ahead of any DT_RUNPATH; user args follow.
     assert_eq!(
-        base.get_program(),
-        Path::new("/run/nails/original-nix-store/ccc/lib64/ld-linux-x86-64.so.2")
-    );
-    assert_eq!(
-        args,
-        vec![
-            OsString::from("--library-path"),
-            OsString::from(
-                "/run/nails/original-nix-store/aaa/lib:/run/nails/original-nix-store/ccc/lib64"
-            ),
-            OsString::from("/run/nails/original-nix-store/ddd/bin/systemctl"),
-        ]
+        command.to_process_command(&["status"]),
+        ProcessCommand::exact("/run/nails/original-nix-store/ccc/lib64/ld-linux-x86-64.so.2")
+            .arg("--library-path")
+            .arg("/run/nails/original-nix-store/aaa/lib:/run/nails/original-nix-store/ccc/lib64")
+            .arg("/run/nails/original-nix-store/ddd/bin/systemctl")
+            .arg("status")
     );
 }
 
 #[test]
-fn spawn_output_wraps_process_spawn_errors_with_display_path() {
-    let command = CachedCommand::Direct(PathBuf::from("/definitely/missing/systemctl"));
+fn direct_to_process_command_runs_the_exact_binary() {
+    let command = CachedCommand::Direct(PathBuf::from("/bin/systemctl"));
 
-    let error = command.spawn_output(&["status"]).unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-    let message = error.to_string();
-    assert!(
-        message.contains("failed to spawn systemctl at /definitely/missing/systemctl"),
-        "{message}"
+    assert_eq!(
+        command.to_process_command(&["is-active", "gdm.service"]),
+        ProcessCommand::exact("/bin/systemctl").args(["is-active", "gdm.service"])
     );
 }

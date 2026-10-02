@@ -2,8 +2,8 @@
 
 use crate::Result;
 use crate::process::run::{
-    LOGINCTL_BUDGET, ProcessCommand, ProcessRunner, RealProcessRunner, SYSTEMCTL_ACTION_BUDGET,
-    SYSTEMCTL_PROBE_BUDGET, signal_command, systemctl_command,
+    LOGINCTL_BUDGET, ProcessCommand, ProcessRunner, RealProcessRunner, signal_command,
+    systemctl_budget, systemctl_command,
 };
 use std::time::Duration;
 
@@ -141,21 +141,6 @@ impl SessionCommandExecutor for RealSessionCommandExecutor {
     }
 }
 
-/// The deadline a `systemctl` invocation carries, by verb.
-///
-/// Read-only probes get the shorter probe budget; anything that changes unit
-/// state (start/stop/restart/daemon-reload/…) gets the longer action budget. A
-/// hung probe or action can no longer freeze session detection or teardown.
-fn systemctl_budget(args: &[&str]) -> Duration {
-    match args.first().copied() {
-        Some(
-            "is-active" | "is-enabled" | "is-failed" | "status" | "show" | "cat" | "list-units"
-            | "list-unit-files" | "list-sockets" | "get-default",
-        ) => SYSTEMCTL_PROBE_BUDGET,
-        _ => SYSTEMCTL_ACTION_BUDGET,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +164,8 @@ mod tests {
 
     #[test]
     fn systemctl_budget_separates_probes_from_actions() {
+        use crate::process::run::{SYSTEMCTL_ACTION_BUDGET, SYSTEMCTL_PROBE_BUDGET};
+
         assert_eq!(
             systemctl_budget(&["is-active", "gdm.service"]),
             SYSTEMCTL_PROBE_BUDGET

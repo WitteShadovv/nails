@@ -583,6 +583,22 @@ pub(crate) fn signal_command(pid: u32, signal: &str) -> ProcessCommand {
         .arg(pid.to_string())
 }
 
+/// The deadline a `systemctl` invocation should carry, chosen by its verb.
+///
+/// Read-only probes get the shorter [`SYSTEMCTL_PROBE_BUDGET`]; anything that
+/// changes unit state (start/stop/restart/daemon-reload/…) gets the longer
+/// [`SYSTEMCTL_ACTION_BUDGET`]. Shared by the session executor and the service
+/// controller so both bound a hung `systemctl` the same way.
+pub(crate) fn systemctl_budget(args: &[&str]) -> Duration {
+    match args.first().copied() {
+        Some(
+            "is-active" | "is-enabled" | "is-failed" | "status" | "show" | "cat" | "list-units"
+            | "list-unit-files" | "list-sockets" | "get-default",
+        ) => SYSTEMCTL_PROBE_BUDGET,
+        _ => SYSTEMCTL_ACTION_BUDGET,
+    }
+}
+
 /// Resolves `program` to the absolute path that is executed. A
 /// [`Program::CallerPath`] is looked up in `search_path` when it is given and
 /// on the caller's `PATH` otherwise.

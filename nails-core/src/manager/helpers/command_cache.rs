@@ -1,3 +1,4 @@
+use crate::process::run::{LDD_BUDGET, ProcessCommand, ProcessRunner, RealProcessRunner};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -20,37 +21,27 @@ impl CachedCommand {
         }
     }
 
-    pub(super) fn spawn_output(
-        &self,
-        args: &[&str],
-    ) -> std::result::Result<std::process::Output, std::io::Error> {
-        let mut command = self.base_command();
-        command.args(args);
-        command.output().map_err(|err| {
-            std::io::Error::new(
-                err.kind(),
-                format!(
-                    "failed to spawn systemctl at {}: {}",
-                    self.display_path().display(),
-                    err
-                ),
-            )
-        })
-    }
-
-    fn base_command(&self) -> std::process::Command {
+    /// Describe this command for the shared process runner.
+    ///
+    /// A `Direct` command runs the binary at its path; a `ViaLoader` command runs
+    /// the dynamic loader as `--library-path <dirs> <program> <args>` so the
+    /// loader searches the pre-overlay `/nix/store` bind before any `DT_RUNPATH`,
+    /// exactly as the previous hand-built command did. The caller adds a deadline
+    /// and runs it through [`RealProcessRunner`], which also starts the child from
+    /// a cleared environment and resolves nothing from the caller's `PATH`.
+    pub(super) fn to_process_command(&self, args: &[&str]) -> ProcessCommand {
         match self {
-            Self::Direct(path) => std::process::Command::new(path),
+            Self::Direct(path) => ProcessCommand::exact(path).args(args),
             Self::ViaLoader {
                 loader,
                 library_path,
                 program,
                 ..
-            } => {
-                let mut command = std::process::Command::new(loader);
-                command.arg("--library-path").arg(library_path).arg(program);
-                command
-            }
+            } => ProcessCommand::exact(loader)
+                .arg("--library-path")
+                .arg(library_path)
+                .arg(program)
+                .args(args),
         }
     }
 }
@@ -149,9 +140,15 @@ pub(super) fn build_cached_command(
         return Ok(CachedCommand::Direct(canonical));
     }
 
-    let ldd_output = std::process::Command::new("/run/current-system/sw/bin/ldd")
-        .arg(&canonical)
-        .output()?;
+    // Resolve `ldd` from the fixed system directories and bound it with a
+    // deadline so a hung resolver cannot stall activation before the overlay.
+    let ldd_output = RealProcessRunner
+        .run(
+            &ProcessCommand::tool("ldd")
+                .arg(canonical.as_os_str())
+                .deadline(LDD_BUDGET),
+        )
+        .map_err(runner_error_to_io)?;
     if !ldd_output.status.success() {
         return Err(command_failed_error(
             &format!("ldd {}", canonical.display()),
@@ -205,6 +202,18 @@ pub(super) fn command_failed_error(command: &str, output: &std::process::Output)
         output.status,
         String::from_utf8_lossy(&output.stderr).trim()
     ))
+}
+
+/// Map a [`crate::NailsError`] from the shared runner onto the `io::Error` these
+/// cache and service helpers speak, preserving the kind where it is meaningful.
+pub(super) fn runner_error_to_io(err: crate::NailsError) -> std::io::Error {
+    match err {
+        crate::NailsError::IoError(io) => io,
+        crate::NailsError::Timeout { .. } => {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, err.to_string())
+        }
+        other => std::io::Error::other(other.to_string()),
+    }
 }
 
 #[cfg(test)]

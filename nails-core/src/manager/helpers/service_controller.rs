@@ -1,8 +1,35 @@
-use super::command_cache::{command_failed_error, systemctl_command};
+use super::command_cache::{command_failed_error, runner_error_to_io, systemctl_command};
+use crate::process::run::{
+    NIX_STORE_PING_BUDGET, ProcessCommand, ProcessRunner, RealProcessRunner, systemctl_budget,
+};
 use std::path::PathBuf;
 
 #[cfg(test)]
 use std::path::Path;
+
+/// Run a prepared command through the shared runner, translating its error into
+/// the `io::Error` these helpers speak.
+fn run_command(
+    command: &ProcessCommand,
+) -> std::result::Result<std::process::Output, std::io::Error> {
+    RealProcessRunner.run(command).map_err(runner_error_to_io)
+}
+
+/// A per-call deadline bounded by what remains in the outer retry loop.
+///
+/// Capping at `cap` keeps each attempt short, while capping at the remaining loop
+/// time keeps a single attempt from outliving the loop's own budget — so one hung
+/// `is-active` or `store ping` can never freeze the loop. The small floor lets a
+/// nearly-expired loop still issue one real attempt.
+fn per_call_deadline(
+    loop_deadline: std::time::Instant,
+    cap: std::time::Duration,
+) -> std::time::Duration {
+    loop_deadline
+        .saturating_duration_since(std::time::Instant::now())
+        .min(cap)
+        .max(std::time::Duration::from_millis(50))
+}
 
 /// Test-only recorder for service lifecycle actions.
 ///
@@ -30,29 +57,30 @@ pub(crate) mod recorder {
 }
 
 fn run_systemctl(args: &[&str]) -> std::result::Result<std::process::Output, std::io::Error> {
-    systemctl_command().spawn_output(args)
+    run_command(
+        &systemctl_command()
+            .to_process_command(args)
+            .deadline(systemctl_budget(args)),
+    )
 }
 
+/// The cached `nix` command, resolved against the pre-overlay store when set.
+fn nix_command(args: &[&str]) -> ProcessCommand {
+    let path = super::NIX_COMMAND_PATH
+        .get()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("/run/current-system/sw/bin/nix"));
+    ProcessCommand::exact(path).args(args)
+}
+
+/// Start the daemon. No deadline: `nix-daemon --daemon` daemonises and returns,
+/// and bounding the launch of the daemon itself serves no purpose.
 fn run_nix_daemon(args: &[&str]) -> std::result::Result<std::process::Output, std::io::Error> {
-    std::process::Command::new(
-        super::NIX_DAEMON_PATH
-            .get()
-            .cloned()
-            .unwrap_or_else(|| PathBuf::from("/run/current-system/sw/bin/nix-daemon")),
-    )
-    .args(args)
-    .output()
-}
-
-fn run_nix(args: &[&str]) -> std::result::Result<std::process::Output, std::io::Error> {
-    std::process::Command::new(
-        super::NIX_COMMAND_PATH
-            .get()
-            .cloned()
-            .unwrap_or_else(|| PathBuf::from("/run/current-system/sw/bin/nix")),
-    )
-    .args(args)
-    .output()
+    let path = super::NIX_DAEMON_PATH
+        .get()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("/run/current-system/sw/bin/nix-daemon"));
+    run_command(&ProcessCommand::exact(path).args(args))
 }
 
 fn ensure_systemctl_success(args: &[&str]) -> std::result::Result<(), std::io::Error> {
@@ -79,23 +107,29 @@ fn wait_for_nix_daemon_ping(
     let mut last_error = None;
 
     while std::time::Instant::now() < deadline {
-        let output = run_nix(&[
+        // Each ping is bounded strictly below the loop budget, so a hung daemon
+        // cannot freeze the loop: a timed-out ping is just a failed attempt.
+        let ping = nix_command(&[
             "--extra-experimental-features",
             "nix-command",
             "store",
             "ping",
             "--store",
             "daemon",
-        ])?;
+        ])
+        .deadline(per_call_deadline(deadline, NIX_STORE_PING_BUDGET));
 
-        if output.status.success() {
-            return Ok(());
+        match run_command(&ping) {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) => {
+                last_error = Some(command_failed_error(
+                    "nix --extra-experimental-features nix-command store ping --store daemon",
+                    &output,
+                ));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => last_error = Some(err),
+            Err(err) => return Err(err),
         }
-
-        last_error = Some(command_failed_error(
-            "nix --extra-experimental-features nix-command store ping --store daemon",
-            &output,
-        ));
         std::thread::sleep(poll_interval);
     }
 
@@ -170,19 +204,29 @@ fn wait_for_systemd_unit_active(
     timeout: std::time::Duration,
     poll_interval: std::time::Duration,
 ) -> std::result::Result<(), std::io::Error> {
+    use crate::process::run::SYSTEMCTL_PROBE_BUDGET;
+
     let deadline = std::time::Instant::now() + timeout;
     let mut last_error = None;
 
     while std::time::Instant::now() < deadline {
-        let output = run_systemctl(&["is-active", unit])?;
-        if output.status.success() {
-            return Ok(());
-        }
+        // Bound each probe strictly below the loop budget so a hung is-active
+        // cannot freeze the loop; a timed-out probe is treated as not-yet-active.
+        let probe = systemctl_command()
+            .to_process_command(&["is-active", unit])
+            .deadline(per_call_deadline(deadline, SYSTEMCTL_PROBE_BUDGET));
 
-        last_error = Some(command_failed_error(
-            &format!("systemctl is-active {unit}"),
-            &output,
-        ));
+        match run_command(&probe) {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) => {
+                last_error = Some(command_failed_error(
+                    &format!("systemctl is-active {unit}"),
+                    &output,
+                ));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => last_error = Some(err),
+            Err(err) => return Err(err),
+        }
         std::thread::sleep(poll_interval);
     }
 
