@@ -326,10 +326,10 @@ pub enum ConfigCommand {
 /// `nails init` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct InitArgs {
-    /// Path to the mounted hidden volume to initialise
+    /// Path to the mounted hidden volume to initialize
     pub path: PathBuf,
 
-    /// Initialise a path that is not a mounted volume of its own
+    /// Initialize a path that is not a mounted volume of its own
     ///
     /// By default `init` refuses a target that shares a device with `/`, because
     /// writing the NAILS layout onto the decoy disk is exactly the mistake that

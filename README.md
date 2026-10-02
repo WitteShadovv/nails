@@ -151,6 +151,13 @@ install -m0755 ./result/bin/nails /mnt/hidden-volume/nails
    nails init /mnt/hidden-volume
    ```
 
+   `init` checks the target before writing anything and refuses a directory that is not a
+   mounted volume of its own, so the layout never lands on the decoy disk;
+   `--allow-unmounted` overrides this for a directory-style backend. On NixOS it seeds the
+   hidden NixOS layout from `/etc/nixos/hardware-configuration.nix`; `--hardware-config <PATH>`
+   names another base and `--no-hardware-config` skips the layout. It reports each item as
+   created or already present and ends with the next steps.
+
 3. **Optionally review the generated config**.
 
    ```bash

@@ -228,7 +228,7 @@ fn plan<F: Filesystem>(fs: &F, args: &InitArgs) -> std::result::Result<InitPlan,
     let mut warnings = Vec::new();
     if args.allow_unmounted {
         warnings.push(format!(
-            "--allow-unmounted: initialising {} without verifying it is a mounted volume; \
+            "--allow-unmounted: initializing {} without verifying it is a mounted volume; \
              use this only for a directory-style backend",
             base.display()
         ));

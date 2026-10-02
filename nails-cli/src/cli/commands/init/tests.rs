@@ -37,7 +37,7 @@ fn write_test_base_hardware_config(tmp: &TempDir) -> PathBuf {
     path
 }
 
-/// Arguments that initialise a real temp directory: the target is not a separate
+/// Arguments that initialize a real temp directory: the target is not a separate
 /// mount (a `TempDir` shares `/`'s device), so `--allow-unmounted` is required,
 /// and the base hardware config is pinned so the run never consults the host.
 fn real_init_args(path: &Path, base_hardware_config: &Path) -> InitArgs {
