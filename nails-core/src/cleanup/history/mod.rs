@@ -33,6 +33,40 @@ pub use cleaner::HistoryCleaner;
 use crate::Filesystem;
 use std::path::PathBuf;
 
+/// Home directories that history cleanup must cover for the current run.
+///
+/// Returns the operator's home (resolved through [`crate::TargetUser`]) plus
+/// `/root`. This is the fix for the long-standing bug where cleanup read `$HOME`
+/// directly: under `sudo` `$HOME` is `/root`, and in the detached `systemd-run`
+/// unit it is unset, so the operator's own history was never touched. Resolving
+/// through [`crate::TargetUser`] instead uses the forwarded target-uid and
+/// privilege-tool environment, which identify the real account in both contexts.
+///
+/// If no target user can be resolved, cleanup still covers `/root`, where a
+/// `sudo` invocation always leaves residue; it never silently cleans nothing.
+///
+/// On the static musl build only local `/etc/passwd` accounts resolve (no NSS).
+#[cfg(not(test))]
+pub fn history_cleanup_homes() -> Vec<PathBuf> {
+    match crate::TargetUser::resolve() {
+        Ok(user) => user.cleanup_homes(),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Could not resolve the target user for history cleanup; cleaning /root only"
+            );
+            vec![PathBuf::from("/root")]
+        }
+    }
+}
+
+/// Test build: history cleanup operates on the safe fake home so unit tests never
+/// touch the real operator's files or require environment manipulation.
+#[cfg(test)]
+pub fn history_cleanup_homes() -> Vec<PathBuf> {
+    vec![PathBuf::from(crate::cleanup::test_utils::TEST_HOME)]
+}
+
 /// Supported shell types for history cleanup
 ///
 /// Each shell stores its command history in a different file.
@@ -66,19 +100,6 @@ impl ShellType {
                 .join("fish")
                 .join("fish_history"),
         }
-    }
-
-    /// Get the default history file path for this shell
-    ///
-    /// Resolves $HOME environment variable to get actual path.
-    ///
-    /// # Returns
-    ///
-    /// PathBuf to the history file, or None if $HOME is not set.
-    pub fn history_file_path(&self) -> Option<PathBuf> {
-        let home = std::env::var("HOME").ok()?;
-        let home_path = PathBuf::from(home);
-        Some(self.history_file_path_for_home(&home_path))
     }
 
     /// Get the display name of this shell type
@@ -153,32 +174,18 @@ pub fn get_extended_history_files_for_home(home: &std::path::Path) -> Vec<std::p
     ]
 }
 
-/// Get an extended list of history file paths for forensic cleanup
+/// Get an extended list of history file paths for forensic cleanup across the
+/// given home directories.
 ///
-/// This function returns paths to all known history files that might contain
-/// NAILS-related commands, including:
-/// - Standard shell history files (bash, zsh, fish)
-/// - Less pager history
-/// - Python/IPython history
-/// - Database CLI history (psql, mysql, sqlite)
-/// - GDB debugger history
-/// - Recently used files trackers
-/// - Node.js REPL history
-/// - Ruby IRB history
-///
-/// This list is used for post-unmount cleanup to ensure the REAL disk
-/// (not the overlay) is cleaned of any forensic artifacts.
-///
-/// # Returns
-///
-/// Vector of PathBuf for all history file locations that may exist.
-/// Note: Not all paths will exist on every system.
-pub fn get_extended_history_files() -> Vec<std::path::PathBuf> {
-    let Some(home) = std::env::var("HOME").ok() else {
-        return Vec::new();
-    };
-    let home_path = std::path::PathBuf::from(&home);
-    get_extended_history_files_for_home(&home_path)
+/// This is the multi-home form of [`get_extended_history_files_for_home`]: it
+/// concatenates the per-home lists for every home in `homes`. Callers pass
+/// [`history_cleanup_homes`] so post-unmount cleanup covers both the operator's
+/// home and `/root`.
+pub fn get_extended_history_files_for_homes(homes: &[PathBuf]) -> Vec<PathBuf> {
+    homes
+        .iter()
+        .flat_map(|home| get_extended_history_files_for_home(home))
+        .collect()
 }
 
 /// Filter fish shell YAML history by removing matching `- cmd:` entries and their `when:` lines
@@ -309,62 +316,30 @@ pub fn truncate_all_history_files_for_home<F: Filesystem>(
     results
 }
 
-/// Truncate all known history files to zero length
+/// Truncate all known history files to zero length across the given homes.
 ///
-/// This is the forensically safe approach: rather than pattern-filtering (which
-/// is fragile), truncate every known history file on the real disk. This ensures
-/// ZERO commands remain visible to an adversary.
+/// This is the multi-home form of [`truncate_all_history_files_for_home`].
+/// Callers pass [`history_cleanup_homes`] so post-unmount cleanup covers both
+/// the operator's home and `/root` — the fix for cleanup that previously read
+/// `$HOME` and so only ever reached root's home under `sudo`.
 ///
 /// # Arguments
 ///
 /// * `fs` - Filesystem implementation
+/// * `homes` - Home directories to clean
 /// * `secure` - If true, use secure_delete before truncating (overwrite with zeros/random)
 ///
 /// # Returns
 ///
 /// Vec of descriptions of what was done (best-effort, never fails overall).
-pub fn truncate_all_history_files<F: Filesystem>(fs: &F, secure: bool) -> Vec<String> {
-    let history_files = get_extended_history_files();
+pub fn truncate_all_history_files_for_homes<F: Filesystem>(
+    fs: &F,
+    homes: &[PathBuf],
+    secure: bool,
+) -> Vec<String> {
     let mut results = Vec::new();
-
-    for path in &history_files {
-        match fs.path_exists(path) {
-            Ok(true) => {
-                // Secure delete first if requested
-                if secure && let Err(e) = fs.secure_delete(path) {
-                    tracing::debug!(
-                        file = %path.display(),
-                        error = %e,
-                        "Secure delete failed, proceeding with truncation"
-                    );
-                }
-
-                // Truncate to empty
-                match fs.write_file_content(path, "") {
-                    Ok(()) => {
-                        results.push(format!("Truncated {}", path.display()));
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            file = %path.display(),
-                            error = %e,
-                            "Failed to truncate history file"
-                        );
-                    }
-                }
-            }
-            Ok(false) => {
-                // File doesn't exist, skip silently
-            }
-            Err(e) => {
-                tracing::warn!(
-                    file = %path.display(),
-                    error = %e,
-                    "Failed to check history file existence"
-                );
-            }
-        }
+    for home in homes {
+        results.extend(truncate_all_history_files_for_home(fs, home, secure));
     }
-
     results
 }

@@ -88,6 +88,9 @@ pub mod notification;
 // Shared string constants (environment-variable names).
 pub mod constants;
 
+// Target-user resolution (who a privileged run acts on behalf of).
+pub mod target_user;
+
 mod runtime_safety;
 
 // Re-export for convenience
@@ -102,6 +105,7 @@ pub use manager::{
     MountInfo, MountTracker, MountType, NailsManager, ResetUpperPlan, apply_exclusion_filter,
     build_overlay_targets,
 };
+pub use target_user::TargetUser;
 
 // State management exports
 pub use state::{

@@ -146,14 +146,15 @@ impl<F: Filesystem> CleanupManager<F> {
     }
 
     fn verify_history_cleanup(&self) -> bool {
-        for shell in ShellType::all() {
-            if let Some(path) = shell.history_file_path()
-                && let Ok(content) = self.filesystem.read_file_content(&path)
-            {
-                let content_lower = content.to_lowercase();
-                for pattern in &self.config.history_patterns {
-                    if content_lower.contains(&pattern.to_lowercase()) {
-                        return false;
+        for home in super::history::history_cleanup_homes() {
+            for shell in ShellType::all() {
+                let path = shell.history_file_path_for_home(&home);
+                if let Ok(content) = self.filesystem.read_file_content(&path) {
+                    let content_lower = content.to_lowercase();
+                    for pattern in &self.config.history_patterns {
+                        if content_lower.contains(&pattern.to_lowercase()) {
+                            return false;
+                        }
                     }
                 }
             }
@@ -204,8 +205,9 @@ impl<F: Filesystem> CleanupManager<F> {
         const MAX_HISTORY_SIZE_BYTES: u64 = 10 * 1024;
         let mut all_ok = true;
 
-        for shell in ShellType::all() {
-            if let Some(path) = shell.history_file_path() {
+        for home in super::history::history_cleanup_homes() {
+            for shell in ShellType::all() {
+                let path = shell.history_file_path_for_home(&home);
                 match self.filesystem.file_size(&path) {
                     Ok(size) if size > MAX_HISTORY_SIZE_BYTES => {
                         report.add_error(format!(

@@ -48,8 +48,9 @@ pub mod test_utils;
 // Public re-exports
 pub use canary::{CanaryConfig, CanaryFinding, CanaryScanResult, CanaryScanner};
 pub use history::{
-    ShellType, get_extended_history_files, get_extended_history_files_for_home,
-    truncate_all_history_files, truncate_all_history_files_for_home,
+    ShellType, get_extended_history_files_for_home, get_extended_history_files_for_homes,
+    history_cleanup_homes, truncate_all_history_files_for_home,
+    truncate_all_history_files_for_homes,
 };
 pub use manager::CleanupManager;
 pub use types::{CleanupConfig, CleanupMode, CleanupReport};

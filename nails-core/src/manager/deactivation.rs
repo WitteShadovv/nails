@@ -5,7 +5,7 @@
 
 use super::NailsManager;
 use super::{ensure_run_current_system_symlink, select_system_profile, start_service_and_socket};
-use crate::cleanup::history::truncate_all_history_files;
+use crate::cleanup::history::{history_cleanup_homes, truncate_all_history_files_for_homes};
 use crate::deactivation::test_gate::maybe_block_after_deactivating_state_transition;
 #[cfg(not(test))]
 use crate::deactivation::test_gate::should_skip_shell_cleanup_before_deactivation_gate;
@@ -320,7 +320,8 @@ fn inspect_overlay_context<F: Filesystem>(manager: &NailsManager<F>) -> Result<O
 }
 
 fn verify_history_truncation<F: Filesystem>(manager: &NailsManager<F>) {
-    let history_files = crate::cleanup::history::get_extended_history_files();
+    let history_files =
+        crate::cleanup::history::get_extended_history_files_for_homes(&history_cleanup_homes());
     let mut verification_passed = true;
 
     for path in &history_files {
@@ -442,7 +443,11 @@ impl<F: Filesystem> NailsManager<F> {
 
         if kind.requires_forensic_verification() {
             tracing::info!("Truncating all history files for forensic safety");
-            let truncated = truncate_all_history_files(&self.filesystem, true);
+            let truncated = truncate_all_history_files_for_homes(
+                &self.filesystem,
+                &history_cleanup_homes(),
+                true,
+            );
             tracing::info!(
                 truncated_count = truncated.len(),
                 "History truncation complete"
@@ -910,7 +915,11 @@ impl DeactivationOrchestrator {
             "Starting Phase 2 cleanup on real disk"
         );
 
-        let cleaned_items = truncate_all_history_files(manager.filesystem(), true);
+        let cleaned_items = truncate_all_history_files_for_homes(
+            manager.filesystem(),
+            &history_cleanup_homes(),
+            true,
+        );
 
         let report = PostUnmountCleanupReport {
             cleaned_items,

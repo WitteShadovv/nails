@@ -302,15 +302,14 @@ impl<F: Filesystem> CanaryScanner<F> {
 
     /// Get default paths to scan (shell history files)
     fn get_default_scan_paths(&self) -> Vec<PathBuf> {
-        use super::history::ShellType;
+        use super::history::{ShellType, history_cleanup_homes};
 
         let mut paths = Vec::new();
 
-        // Add all shell history files
-        for shell in ShellType::all() {
-            let history_path: Option<PathBuf> = shell.history_file_path();
-            if let Some(history_path) = history_path {
-                paths.push(history_path);
+        // Add all shell history files across the operator's home and /root.
+        for home in history_cleanup_homes() {
+            for shell in ShellType::all() {
+                paths.push(shell.history_file_path_for_home(&home));
             }
         }
 

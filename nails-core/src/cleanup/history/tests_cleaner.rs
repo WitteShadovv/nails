@@ -34,6 +34,49 @@ fn test_history_cleaner_with_home() {
 }
 
 #[test]
+fn test_history_cleaner_with_homes_cleans_operator_home_and_root() {
+    let fs = MockFilesystem::new();
+
+    // The operator's home plus /root, as produced by TargetUser::cleanup_homes.
+    let homes = vec![PathBuf::from("/home/operator"), PathBuf::from("/root")];
+
+    let operator_hist = "/home/operator/.bash_history";
+    let root_hist = "/root/.bash_history";
+    fs.mock_set_file_content(operator_hist, "ls\nnails activate\n");
+    fs.mock_set_path_exists(operator_hist, true);
+    fs.mock_set_file_content(root_hist, "pwd\nnails status\n");
+    fs.mock_set_path_exists(root_hist, true);
+
+    let cleaner = HistoryCleaner::new(fs.clone())
+        .with_homes(homes)
+        .with_shells(vec![ShellType::Bash]);
+
+    let result = cleaner.clean().unwrap();
+
+    // One message per (home, shell): both homes were filtered.
+    assert_eq!(result.len(), 2);
+    assert!(
+        result
+            .iter()
+            .any(|s| s.contains("Removed 1 entries") && s.contains("/home/operator"))
+    );
+    assert!(
+        result
+            .iter()
+            .any(|s| s.contains("Removed 1 entries") && s.contains("/root"))
+    );
+    assert_eq!(
+        fs.get_written_content(&PathBuf::from(operator_hist))
+            .unwrap(),
+        "ls\n"
+    );
+    assert_eq!(
+        fs.get_written_content(&PathBuf::from(root_hist)).unwrap(),
+        "pwd\n"
+    );
+}
+
+#[test]
 fn test_history_cleaner_with_patterns() {
     let fs = MockFilesystem::new();
     let patterns = vec!["test1".to_string(), "test2".to_string()];

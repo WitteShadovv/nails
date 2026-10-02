@@ -1,4 +1,4 @@
-//! Tests for ShellType, get_extended_history_files, and truncate_all_history_files
+//! Tests for ShellType and the per-home / multi-home history file helpers
 
 use super::*;
 use crate::MockFilesystem;
@@ -158,4 +158,49 @@ fn test_truncate_all_history_files_for_home_includes_recently_used_xbel() {
     assert!(results.iter().any(|r| r.contains("recently-used.xbel")));
     let written = fs.get_written_content(&PathBuf::from(xbel_path)).unwrap();
     assert_eq!(written, "");
+}
+
+// ============================================================================
+// Multi-home variants: the operator's home plus /root in one pass
+// ============================================================================
+
+#[test]
+fn test_get_extended_history_files_for_homes_covers_every_home() {
+    let homes = vec![PathBuf::from("/home/operator"), PathBuf::from("/root")];
+    let files = get_extended_history_files_for_homes(&homes);
+
+    assert!(files.contains(&PathBuf::from("/home/operator/.bash_history")));
+    assert!(files.contains(&PathBuf::from("/root/.bash_history")));
+    // The per-home list is concatenated, so each home contributes its full set.
+    assert_eq!(
+        files.len(),
+        get_extended_history_files_for_home(&PathBuf::from("/home/operator")).len() * 2
+    );
+}
+
+#[test]
+fn test_truncate_all_history_files_for_homes_truncates_both_homes() {
+    let fs = MockFilesystem::new();
+    let homes = vec![PathBuf::from("/home/operator"), PathBuf::from("/root")];
+
+    let operator_hist = "/home/operator/.bash_history";
+    let root_hist = "/root/.bash_history";
+    fs.mock_set_path_exists(operator_hist, true);
+    fs.mock_set_file_content(operator_hist, "nails activate\n");
+    fs.mock_set_path_exists(root_hist, true);
+    fs.mock_set_file_content(root_hist, "cryptsetup open\n");
+
+    let results = truncate_all_history_files_for_homes(&fs, &homes, false);
+
+    assert!(results.iter().any(|r| r.contains("/home/operator")));
+    assert!(results.iter().any(|r| r.contains("/root")));
+    assert_eq!(
+        fs.get_written_content(&PathBuf::from(operator_hist))
+            .unwrap(),
+        ""
+    );
+    assert_eq!(
+        fs.get_written_content(&PathBuf::from(root_hist)).unwrap(),
+        ""
+    );
 }

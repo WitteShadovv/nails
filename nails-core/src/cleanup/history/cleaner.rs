@@ -1,9 +1,9 @@
 //! HistoryCleaner implementation for shell history cleanup
 
 use crate::{Filesystem, Result, output};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use super::{ShellType, filter_fish_history};
+use super::{ShellType, filter_fish_history, history_cleanup_homes};
 
 /// Cleans shell history files by removing lines matching patterns
 ///
@@ -32,8 +32,12 @@ pub struct HistoryCleaner<F: Filesystem> {
     shells: Vec<ShellType>,
     /// Use secure deletion (overwrite before delete)
     pub(crate) secure_delete: bool,
-    /// Optional explicit home directory path (for testing without env vars)
+    /// Optional explicit single home directory path (for testing without env vars)
     home: Option<PathBuf>,
+    /// Optional explicit list of home directories to clean. Takes precedence over
+    /// `home` when set; when both are unset, cleanup falls back to
+    /// [`history_cleanup_homes`] (the operator's home plus `/root`).
+    homes: Option<Vec<PathBuf>>,
 }
 
 impl<F: Filesystem> HistoryCleaner<F> {
@@ -49,6 +53,7 @@ impl<F: Filesystem> HistoryCleaner<F> {
             shells: ShellType::all(),
             secure_delete: false,
             home: None,
+            homes: None,
         }
     }
 
@@ -86,6 +91,16 @@ impl<F: Filesystem> HistoryCleaner<F> {
         self
     }
 
+    /// Set an explicit list of home directories to clean.
+    ///
+    /// This takes precedence over [`Self::with_home`] and over the default
+    /// [`history_cleanup_homes`] resolution. Callers use it to clean the
+    /// operator's home and `/root` in one pass.
+    pub fn with_homes(mut self, homes: Vec<PathBuf>) -> Self {
+        self.homes = Some(homes);
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn test_patterns(&self) -> &[String] {
         &self.patterns
@@ -101,12 +116,22 @@ impl<F: Filesystem> HistoryCleaner<F> {
         self.home.as_ref()
     }
 
-    /// Get the history file path for a shell, using explicit home if set
-    fn get_history_path(&self, shell: ShellType) -> Option<PathBuf> {
-        match &self.home {
-            Some(home) => Some(shell.history_file_path_for_home(home)),
-            None => shell.history_file_path(),
-        }
+    /// The home directories this cleaner will operate on.
+    ///
+    /// Precedence: an explicit [`Self::with_homes`] list, then a single
+    /// [`Self::with_home`], then the default [`history_cleanup_homes`] (the
+    /// operator's home plus `/root`). Duplicates are removed so a file is never
+    /// cleaned twice when, for example, the operator's home is `/root`.
+    fn resolved_homes(&self) -> Vec<PathBuf> {
+        let mut homes = match (&self.homes, &self.home) {
+            (Some(homes), _) => homes.clone(),
+            (None, Some(home)) => vec![home.clone()],
+            (None, None) => history_cleanup_homes(),
+        };
+        homes.dedup();
+        let mut seen = std::collections::HashSet::new();
+        homes.retain(|home| seen.insert(home.clone()));
+        homes
     }
 
     /// Execute history cleanup
@@ -125,22 +150,24 @@ impl<F: Filesystem> HistoryCleaner<F> {
     pub fn clean(&self) -> Result<Vec<String>> {
         let mut cleaned = Vec::new();
 
-        for shell in &self.shells {
-            // Clean history file
-            match self.clean_history_file(*shell) {
-                Ok(Some(msg)) => cleaned.push(msg),
-                Ok(None) => {} // No history file found, skip
-                Err(e) => {
-                    // Log warning but continue (best-effort)
-                    output::warn(&format!("Failed to clean {:?} history: {}", shell, e));
+        for home in self.resolved_homes() {
+            for shell in &self.shells {
+                // Clean history file
+                match self.clean_history_file(*shell, &home) {
+                    Ok(Some(msg)) => cleaned.push(msg),
+                    Ok(None) => {} // No history file found, skip
+                    Err(e) => {
+                        // Log warning but continue (best-effort)
+                        output::warn(&format!("Failed to clean {:?} history: {}", shell, e));
+                    }
                 }
-            }
 
-            // In-memory history in running shells is not cleared from here: a
-            // subprocess cannot touch a parent shell's RAM. The real mitigation
-            // is killing the user's shells before overlay teardown (SIGKILL, see
-            // process::shell_cleanup::kill_user_shells), so they never flush
-            // their in-memory history back to disk on exit.
+                // In-memory history in running shells is not cleared from here: a
+                // subprocess cannot touch a parent shell's RAM. The real mitigation
+                // is killing the user's shells before overlay teardown (SIGKILL, see
+                // process::shell_cleanup::kill_user_shells), so they never flush
+                // their in-memory history back to disk on exit.
+            }
         }
 
         Ok(cleaned)
@@ -157,11 +184,8 @@ impl<F: Filesystem> HistoryCleaner<F> {
     /// - `Ok(Some(msg))` - History cleaned with description
     /// - `Ok(None)` - No history file found (skip)
     /// - `Err(e)` - Error occurred during cleanup
-    fn clean_history_file(&self, shell: ShellType) -> Result<Option<String>> {
-        let history_path = match self.get_history_path(shell) {
-            Some(path) => path,
-            None => return Ok(None), // $HOME not set
-        };
+    fn clean_history_file(&self, shell: ShellType, home: &Path) -> Result<Option<String>> {
+        let history_path = shell.history_file_path_for_home(home);
 
         // Check if history file exists
         if !self.filesystem.path_exists(&history_path)? {
