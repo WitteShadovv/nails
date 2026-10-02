@@ -1,5 +1,6 @@
 use super::MockFilesystem;
 use super::state::DEFAULT_MOCK_FREE_SPACE_BYTES;
+use crate::filesystem::DiskUsage;
 use crate::{NailsError, Result};
 use std::path::Path;
 
@@ -73,12 +74,17 @@ impl MockFilesystem {
         Ok(())
     }
 
-    pub(super) fn get_free_space_impl(&self, path: &Path) -> Result<u64> {
+    pub(super) fn disk_usage_impl(&self, path: &Path) -> Result<DiskUsage> {
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
-        Ok(paths
-            .get(path)
-            .map(|info| info.free_space)
-            .unwrap_or(DEFAULT_MOCK_FREE_SPACE_BYTES))
+        let info = paths.get(path);
+        Ok(DiskUsage {
+            total: info
+                .map(|info| info.total_space)
+                .unwrap_or(DEFAULT_MOCK_FREE_SPACE_BYTES),
+            available: info
+                .map(|info| info.free_space)
+                .unwrap_or(DEFAULT_MOCK_FREE_SPACE_BYTES),
+        })
     }
 
     pub(super) fn create_directory_impl(&self, path: &Path) -> Result<()> {

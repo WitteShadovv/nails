@@ -227,6 +227,15 @@ impl<F: Filesystem> StatusCommand<F> {
             _ => vec![],
         };
 
+        // Report hidden-root disk usage from a single statvfs call. This never
+        // walks directories, and a failed call (e.g. the root is not mounted)
+        // leaves the figures as None so the rest of the report stays truthful.
+        let (hidden_root_total, hidden_root_used, hidden_root_available) =
+            match self.filesystem.disk_usage(&self.config.hidden_volume_root) {
+                Ok(usage) => (Some(usage.total), Some(usage.used()), Some(usage.available)),
+                Err(_) => (None, None, None),
+            };
+
         // Build report
         let report = StatusReport {
             state: state_file.state,
@@ -239,6 +248,9 @@ impl<F: Filesystem> StatusCommand<F> {
             opsec_reminders,
             overlay_details,
             overlay_mount_statuses,
+            hidden_root_total,
+            hidden_root_used,
+            hidden_root_available,
             load_outcome,
         };
 
@@ -376,6 +388,9 @@ impl Default for StatusReport {
             opsec_reminders: vec![],
             overlay_details: None,
             overlay_mount_statuses: vec![],
+            hidden_root_total: None,
+            hidden_root_used: None,
+            hidden_root_available: None,
             load_outcome: LoadOutcome::Missing,
         }
     }

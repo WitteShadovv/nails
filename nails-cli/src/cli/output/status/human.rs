@@ -4,6 +4,41 @@ use nails_core::output::{Mark, Style};
 use super::{config_file_label, read_recent_logs};
 use crate::cli::output::dto::system_state_label;
 
+/// Format a byte count with binary units (KiB/MiB/GiB), one decimal place above
+/// bytes. Used for the hidden-volume usage line.
+pub(super) fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", bytes, UNITS[unit])
+    } else {
+        format!("{:.1} {}", value, UNITS[unit])
+    }
+}
+
+/// The hidden-volume usage line, or `None` when the figures are unavailable
+/// (a failed `statvfs`), so the renderer simply omits it rather than guessing.
+pub(super) fn hidden_volume_line(report: &nails_core::status::StatusReport) -> Option<String> {
+    match (
+        report.hidden_root_total,
+        report.hidden_root_used,
+        report.hidden_root_available,
+    ) {
+        (Some(total), Some(used), Some(available)) => Some(format!(
+            "Hidden volume:      {} used of {} ({} free)",
+            format_bytes(used),
+            format_bytes(total),
+            format_bytes(available),
+        )),
+        _ => None,
+    }
+}
+
 /// Human-readable state label, reporting "Unknown" when the state file could not
 /// be read or trusted rather than claiming the safe default is the real state.
 fn state_label(report: &nails_core::status::StatusReport) -> &'static str {
@@ -89,6 +124,11 @@ pub fn print_status_human(
     } else if let SystemState::Inactive = report.state {
         println!();
         println!("Run 'nails activate' to mount hidden environment");
+    }
+
+    if let Some(line) = hidden_volume_line(report) {
+        println!();
+        println!("{line}");
     }
 
     if details && matches!(report.state, SystemState::Active { .. }) {

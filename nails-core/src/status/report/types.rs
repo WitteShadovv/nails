@@ -215,6 +215,23 @@ pub struct StatusReport {
     /// Contains expected vs actual mount status for each overlay
     pub overlay_mount_statuses: Vec<OverlayMountStatus>,
 
+    /// Total size of the hidden volume's filesystem in bytes.
+    ///
+    /// All three `hidden_root_*` figures come from one `statvfs` call on the
+    /// hidden volume root; the status path never walks directories to compute
+    /// them. They are `None` when that call failed (for example the root is not
+    /// mounted), so an unreadable figure leaves the rest of the report truthful.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden_root_total: Option<u64>,
+
+    /// Bytes in use on the hidden volume (`total - available`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden_root_used: Option<u64>,
+
+    /// Bytes available on the hidden volume.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden_root_available: Option<u64>,
+
     /// How the state file was loaded (P1-03: unified load outcome)
     #[serde(skip, default = "default_load_outcome")]
     pub load_outcome: LoadOutcome,

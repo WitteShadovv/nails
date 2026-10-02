@@ -170,6 +170,18 @@ impl MockFilesystem {
         entry.free_space = bytes;
     }
 
+    /// Set the total and available space reported for a path by
+    /// [`disk_usage`](crate::Filesystem::disk_usage).
+    ///
+    /// Lets tests exercise the status command's hidden-root usage figures
+    /// without a real filesystem.
+    pub fn mock_set_disk_usage(&self, path: &Path, total: u64, available: u64) {
+        let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
+        let entry = paths.entry(path.to_path_buf()).or_default();
+        entry.total_space = total;
+        entry.free_space = available;
+    }
+
     /// Configure [`is_mounted`](crate::Filesystem::is_mounted) to fail for a path.
     ///
     /// The supplied message is returned as the inner [`std::io::Error`], letting

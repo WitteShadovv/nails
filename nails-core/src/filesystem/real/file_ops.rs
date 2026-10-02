@@ -1,7 +1,7 @@
 //! File and path operations for RealFilesystem.
 
 use super::RealFilesystem;
-use crate::filesystem::Filesystem;
+use crate::filesystem::{DiskUsage, Filesystem};
 use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
 
@@ -58,10 +58,14 @@ pub(super) fn create_symlink(target: &Path, link: &Path) -> Result<()> {
     std::os::unix::fs::symlink(target, link).map_err(NailsError::IoError)
 }
 
-pub(super) fn get_free_space(path: &Path) -> Result<u64> {
+pub(super) fn disk_usage(path: &Path) -> Result<DiskUsage> {
     let stat = nix::sys::statvfs::statvfs(path)
         .map_err(|e| NailsError::IoError(std::io::Error::other(e.to_string())))?;
-    Ok(stat.blocks_available() * stat.fragment_size())
+    let fragment_size = stat.fragment_size();
+    Ok(DiskUsage {
+        total: stat.blocks() * fragment_size,
+        available: stat.blocks_available() * fragment_size,
+    })
 }
 
 pub(super) fn create_directory(path: &Path) -> Result<()> {

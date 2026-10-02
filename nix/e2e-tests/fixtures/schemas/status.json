@@ -82,6 +82,9 @@
           }
         },
         "nixos_generation": { "type": "string", "minLength": 1 },
+        "hidden_root_total_bytes": { "type": "integer", "minimum": 0 },
+        "hidden_root_used_bytes": { "type": "integer", "minimum": 0 },
+        "hidden_root_available_bytes": { "type": "integer", "minimum": 0 },
         "opsec_reminders": {
           "type": "array",
           "items": {

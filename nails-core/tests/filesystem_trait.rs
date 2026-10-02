@@ -365,19 +365,22 @@ fn test_is_directory_returns_false_for_file() {
 }
 
 #[test]
-fn test_get_free_space_returns_available_bytes() {
-    // GIVEN: MockFilesystem with 1GB free space
+fn test_disk_usage_returns_total_and_available_bytes() {
+    // GIVEN: MockFilesystem with 4GB total and 1GB available
     let fs = MockFilesystem::new();
     let path = Path::new("/mnt/hidden-volume");
+    let total_bytes = 4 * 1024 * 1024 * 1024; // 4GB
     let free_bytes = 1024 * 1024 * 1024; // 1GB
 
-    fs.mock_set_free_space(path, free_bytes);
+    fs.mock_set_disk_usage(path, total_bytes, free_bytes);
 
-    // WHEN: Querying free space
-    let result = fs.get_free_space(path);
+    // WHEN: Querying disk usage
+    let usage = fs.disk_usage(path).unwrap();
 
-    // THEN: Returns correct byte count
-    assert_eq!(result.unwrap(), free_bytes);
+    // THEN: Returns the seeded totals and derives used = total - available
+    assert_eq!(usage.total, total_bytes);
+    assert_eq!(usage.available, free_bytes);
+    assert_eq!(usage.used(), total_bytes - free_bytes);
 }
 
 #[test]

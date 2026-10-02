@@ -28,6 +28,7 @@ fn inactive_report() -> StatusReport {
         overlay_details: None,
         overlay_mount_statuses: vec![],
         load_outcome: LoadOutcome::Missing,
+        ..Default::default()
     }
 }
 
@@ -59,6 +60,7 @@ fn active_report() -> StatusReport {
             },
         ],
         load_outcome: LoadOutcome::Loaded,
+        ..Default::default()
     }
 }
 
@@ -94,6 +96,7 @@ fn active_report_with_overlay_details() -> StatusReport {
             actually_mounted: true,
         }],
         load_outcome: LoadOutcome::Loaded,
+        ..Default::default()
     }
 }
 
@@ -129,6 +132,7 @@ fn active_report_with_reminders() -> StatusReport {
         overlay_details: None,
         overlay_mount_statuses: vec![],
         load_outcome: LoadOutcome::Loaded,
+        ..Default::default()
     }
 }
 
@@ -149,6 +153,7 @@ fn degraded_report() -> StatusReport {
         overlay_details: None,
         overlay_mount_statuses: vec![],
         load_outcome: LoadOutcome::Missing,
+        ..Default::default()
     }
 }
 
@@ -179,6 +184,64 @@ fn test_print_status_json_with_reminders() {
 #[test]
 fn test_print_status_json_degraded() {
     print_status_json(&degraded_report());
+}
+
+#[test]
+fn test_status_json_includes_hidden_root_disk_figures() {
+    let mut report = active_report();
+    report.hidden_root_total = Some(10 * 1024 * 1024 * 1024);
+    report.hidden_root_used = Some(6 * 1024 * 1024 * 1024);
+    report.hidden_root_available = Some(4 * 1024 * 1024 * 1024);
+
+    let data = super::json::build_status_data(&report);
+    let value = serde_json::to_value(&data).unwrap();
+
+    assert_eq!(value["hidden_root_total_bytes"], 10 * 1024 * 1024 * 1024u64);
+    assert_eq!(value["hidden_root_used_bytes"], 6 * 1024 * 1024 * 1024u64);
+    assert_eq!(
+        value["hidden_root_available_bytes"],
+        4 * 1024 * 1024 * 1024u64
+    );
+}
+
+#[test]
+fn test_status_json_omits_hidden_root_disk_figures_when_absent() {
+    // inactive_report() leaves the hidden_root_* figures at None.
+    let data = super::json::build_status_data(&inactive_report());
+    let value = serde_json::to_value(&data).unwrap();
+
+    assert!(value.get("hidden_root_total_bytes").is_none());
+    assert!(value.get("hidden_root_used_bytes").is_none());
+    assert!(value.get("hidden_root_available_bytes").is_none());
+}
+
+#[test]
+fn test_format_bytes_scales_to_binary_units() {
+    use super::human::format_bytes;
+
+    assert_eq!(format_bytes(0), "0 B");
+    assert_eq!(format_bytes(512), "512 B");
+    assert_eq!(format_bytes(1024), "1.0 KiB");
+    assert_eq!(format_bytes(1024 * 1024), "1.0 MiB");
+    assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
+}
+
+#[test]
+fn test_hidden_volume_line_renders_all_three_figures() {
+    let mut report = inactive_report();
+    report.hidden_root_total = Some(10 * 1024 * 1024 * 1024);
+    report.hidden_root_used = Some(6 * 1024 * 1024 * 1024);
+    report.hidden_root_available = Some(4 * 1024 * 1024 * 1024);
+
+    let line = super::human::hidden_volume_line(&report).expect("line should render");
+    assert!(line.contains("6.0 GiB used"), "got: {line}");
+    assert!(line.contains("of 10.0 GiB"), "got: {line}");
+    assert!(line.contains("4.0 GiB free"), "got: {line}");
+}
+
+#[test]
+fn test_hidden_volume_line_absent_without_figures() {
+    assert!(super::human::hidden_volume_line(&inactive_report()).is_none());
 }
 
 // ── print_status_human ─────────────────────────────────────────────────────

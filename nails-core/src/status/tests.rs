@@ -83,6 +83,36 @@ fn test_status_command_inactive() {
 }
 
 #[test]
+fn test_status_report_carries_hidden_root_disk_usage() {
+    let fs = MockFilesystem::new();
+
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
+        ..Config::default()
+    };
+
+    // Seed the hidden root with 10 GiB total and 4 GiB available via one
+    // statvfs-equivalent seam; the status path must report these without
+    // walking any directories.
+    let total = 10 * 1024 * 1024 * 1024;
+    let available = 4 * 1024 * 1024 * 1024;
+    fs.mock_set_disk_usage(&config.hidden_volume_root, total, available);
+
+    let state_file = StateFile {
+        state: SystemState::Inactive,
+        ..StateFile::default()
+    };
+    let temp_file = create_temp_state_file(&state_file);
+
+    let cmd = StatusCommand::new(fs, config, temp_file.path().to_path_buf());
+    let report = cmd.run().unwrap();
+
+    assert_eq!(report.hidden_root_total, Some(total));
+    assert_eq!(report.hidden_root_available, Some(available));
+    assert_eq!(report.hidden_root_used, Some(total - available));
+}
+
+#[test]
 fn test_status_command_propagates_permission_denied_for_unreadable_state() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -388,6 +418,9 @@ fn test_status_report_serialization() {
         opsec_reminders: vec![],
         overlay_details: None,
         overlay_mount_statuses: vec![],
+        hidden_root_total: Some(4 * 1024 * 1024 * 1024),
+        hidden_root_used: Some(1024 * 1024 * 1024),
+        hidden_root_available: Some(3 * 1024 * 1024 * 1024),
         load_outcome: crate::LoadOutcome::Missing,
     };
 

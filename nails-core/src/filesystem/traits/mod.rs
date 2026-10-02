@@ -9,6 +9,24 @@ use std::path::{Path, PathBuf};
 
 use super::MountInfo;
 
+/// Total and available space for a filesystem, taken from a single `statvfs`
+/// call so the status path never has to walk directories to report usage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskUsage {
+    /// Total size of the filesystem in bytes.
+    pub total: u64,
+    /// Space available to the caller in bytes (unprivileged availability).
+    pub available: u64,
+}
+
+impl DiskUsage {
+    /// Bytes in use: `total` minus `available`, saturating so a filesystem that
+    /// reports more reserved-for-root space than free never underflows.
+    pub fn used(&self) -> u64 {
+        self.total.saturating_sub(self.available)
+    }
+}
+
 // ============================================================================
 // Core Filesystem Trait
 // ============================================================================
@@ -122,8 +140,12 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Create a symbolic link at `link` pointing to `target` (idempotent).
     fn create_symlink(&self, target: &Path, link: &Path) -> Result<()>;
 
-    /// Get free space in bytes for a filesystem path.
-    fn get_free_space(&self, path: &Path) -> Result<u64>;
+    /// Get total and available space for the filesystem holding `path`.
+    ///
+    /// Both figures come from one `statvfs` call, so callers that need free
+    /// space and callers that report usage share a single syscall and never
+    /// walk the tree.
+    fn disk_usage(&self, path: &Path) -> Result<DiskUsage>;
 
     /// Create a directory (and parents).
     fn create_directory(&self, path: &Path) -> Result<()>;

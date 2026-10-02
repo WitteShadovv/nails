@@ -1985,6 +1985,33 @@ fn isolated_status_config() -> (tempfile::TempDir, std::path::PathBuf) {
     (temp_dir, config_path)
 }
 
+/// Status stdout with the live hidden-volume disk figures normalised away.
+///
+/// The usage figures come from a `statvfs` snapshot, so two otherwise identical
+/// runs taken moments apart can legitimately differ. This keeps the flag-order
+/// equivalence check comparing everything but that volatile snapshot.
+fn without_live_disk(stdout: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stdout);
+    if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(text.trim()) {
+        if let Some(data) = value.get_mut("data").and_then(|d| d.as_object_mut()) {
+            data.remove("hidden_root_total_bytes");
+            data.remove("hidden_root_used_bytes");
+            data.remove("hidden_root_available_bytes");
+        }
+        return serde_json::to_string(&value).unwrap();
+    }
+    text.lines()
+        .map(|line| {
+            if line.trim_start().starts_with("Hidden volume:") {
+                "Hidden volume:      <usage>".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Diagnostic lines with their leading tracing timestamp removed.
 fn without_timestamps(stderr: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(stderr)
@@ -2035,7 +2062,11 @@ fn test_global_flags_behave_identically_before_and_after_the_subcommand() {
         let b = run_nails(&after, &[]);
         assert!(a.status.success(), "{before:?}: {a:?}");
         assert_eq!(a.status.code(), b.status.code(), "{before:?} vs {after:?}");
-        assert_eq!(a.stdout, b.stdout, "{before:?} vs {after:?}");
+        assert_eq!(
+            without_live_disk(&a.stdout),
+            without_live_disk(&b.stdout),
+            "{before:?} vs {after:?}"
+        );
         assert_eq!(
             without_timestamps(&a.stderr),
             without_timestamps(&b.stderr),

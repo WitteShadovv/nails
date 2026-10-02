@@ -70,8 +70,8 @@ impl Filesystem for MockFilesystem {
         self.create_symlink_impl(target, link)
     }
 
-    fn get_free_space(&self, path: &Path) -> Result<u64> {
-        self.get_free_space_impl(path)
+    fn disk_usage(&self, path: &Path) -> Result<crate::filesystem::DiskUsage> {
+        self.disk_usage_impl(path)
     }
 
     fn create_directory(&self, path: &Path) -> Result<()> {

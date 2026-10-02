@@ -125,7 +125,7 @@ impl<F: Filesystem> PreFlightCheck<F> for SpaceCheck {
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
         // Get available space in bytes
-        let available_bytes = fs.get_free_space(&self.hidden_volume_root)?;
+        let available_bytes = fs.disk_usage(&self.hidden_volume_root)?.available;
         let available_mb = Self::bytes_to_mb(available_bytes);
         let minimum_mb = self.minimum_space_mb;
         let warn_threshold = minimum_mb / 2; // 50% of minimum

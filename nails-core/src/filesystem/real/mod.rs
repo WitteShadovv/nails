@@ -106,8 +106,8 @@ impl Filesystem for RealFilesystem {
         file_ops::create_symlink(target, link)
     }
 
-    fn get_free_space(&self, path: &Path) -> Result<u64> {
-        file_ops::get_free_space(path)
+    fn disk_usage(&self, path: &Path) -> Result<super::DiskUsage> {
+        file_ops::disk_usage(path)
     }
 
     fn create_directory(&self, path: &Path) -> Result<()> {

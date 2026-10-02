@@ -1244,14 +1244,16 @@ fn test_same_device_mixed_with_cross_device() {
 }
 
 // ========================================================================
-// statvfs / get_free_space tests
+// statvfs / disk_usage tests
 // ========================================================================
 
 #[test]
-fn test_get_free_space_returns_realistic_value() {
+fn test_disk_usage_returns_realistic_values() {
     let fs = RealFilesystem;
-    let free = fs
-        .get_free_space(Path::new("/"))
-        .expect("get_free_space should succeed on /");
-    assert_ne!(free, u64::MAX, "Free space should come from statvfs");
+    let usage = fs
+        .disk_usage(Path::new("/"))
+        .expect("disk_usage should succeed on /");
+    assert_ne!(usage.available, u64::MAX, "Space should come from statvfs");
+    assert!(usage.total > 0, "Total should come from statvfs");
+    assert!(usage.available <= usage.total);
 }

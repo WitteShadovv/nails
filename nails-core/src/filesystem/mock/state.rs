@@ -16,6 +16,7 @@ pub(super) struct PathInfo {
     pub(super) is_readable: bool,
     pub(super) is_writable: bool,
     pub(super) free_space: u64,
+    pub(super) total_space: u64,
 }
 
 impl Default for PathInfo {
@@ -27,6 +28,7 @@ impl Default for PathInfo {
             is_readable: true,
             is_writable: true,
             free_space: DEFAULT_MOCK_FREE_SPACE_BYTES,
+            total_space: DEFAULT_MOCK_FREE_SPACE_BYTES,
         }
     }
 }

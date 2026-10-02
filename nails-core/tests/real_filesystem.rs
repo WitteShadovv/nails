@@ -84,16 +84,18 @@ fn test_real_filesystem_is_directory_for_file() {
 }
 
 #[test]
-fn test_real_filesystem_get_free_space() {
+fn test_real_filesystem_disk_usage() {
     // GIVEN: RealFilesystem
     let fs = RealFilesystem;
 
-    // WHEN: Getting free space for root
-    let result = fs.get_free_space(Path::new("/"));
+    // WHEN: Getting disk usage for root
+    let result = fs.disk_usage(Path::new("/"));
 
-    // THEN: Should return a large number (placeholder implementation)
+    // THEN: Both figures are populated and available never exceeds total
     assert!(result.is_ok());
-    assert!(result.unwrap() > 0);
+    let usage = result.unwrap();
+    assert!(usage.total > 0);
+    assert!(usage.available <= usage.total);
 }
 
 #[test]
