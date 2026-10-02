@@ -498,6 +498,45 @@ fn overlay_unmount_targets<F: Filesystem>(
     Ok(merged)
 }
 
+/// Result of attempting to unmount every tracked overlay.
+///
+/// The teardown attempts all targets rather than aborting on the first failure,
+/// so both the detached and the still-failing targets are recorded.
+struct UnmountOutcome {
+    /// Targets detached successfully, in the order they were attempted.
+    unmounted: Vec<String>,
+    /// Targets whose unmount failed after both graceful and forced attempts.
+    failed: Vec<PathBuf>,
+}
+
+/// Re-read the mount table and return the attempted targets that are still live.
+///
+/// Probing [`Filesystem::is_mounted`](crate::Filesystem::is_mounted) per target
+/// behaves identically on the mock and the real filesystem and needs no new
+/// trait method. A probe error is treated conservatively as "still mounted" so
+/// an unreadable mount table can never be mistaken for a clean teardown.
+fn remaining_nails_mounts<F: Filesystem>(
+    manager: &NailsManager<F>,
+    attempted: &[PathBuf],
+) -> Vec<PathBuf> {
+    attempted
+        .iter()
+        .filter(|target| match manager.filesystem().is_mounted(target) {
+            Ok(mounted) => mounted,
+            Err(e) => {
+                tracing::warn!(
+                    path = %target.display(),
+                    error = %e,
+                    phase = "unmount",
+                    "Could not confirm unmount; treating target as still live"
+                );
+                true
+            }
+        })
+        .cloned()
+        .collect()
+}
+
 /// Single-layer deactivation sequence.
 ///
 /// Holds only the deactivation configuration; the manager is borrowed for the
@@ -505,12 +544,15 @@ fn overlay_unmount_targets<F: Filesystem>(
 /// teardown against one [`StateGuard`]:
 /// 1. State transition ACTIVE -> DEACTIVATING (guarded).
 /// 2. Artifact cleanup (history, temp files, logs).
-/// 3. Overlay unmounting in reverse LIFO order.
+/// 3. Overlay unmounting in reverse LIFO order — every target is attempted.
 /// 4. State transition DEACTIVATING -> INACTIVE.
 /// 5. Decoy system-profile switch.
 ///
-/// If any step fails, the guard rolls the state back to ACTIVE on drop; unmount
-/// failures additionally remount what was already unmounted.
+/// A failure in steps 1-2 (before any overlay is detached) rolls the state back
+/// to ACTIVE on drop. Once step 3 has detached any overlay the teardown never
+/// goes back: if some targets cannot be unmounted it records DEGRADED and
+/// returns an error, and it never remounts what it has already detached (a
+/// remount would route hidden-session writes onto the decoy disk).
 pub struct DeactivationOrchestrator {
     cleanup_config: CleanupConfig,
     mode: DeactivationMode,
@@ -549,8 +591,11 @@ impl DeactivationOrchestrator {
 
     /// Execute deactivation against the borrowed manager.
     ///
-    /// Returns a [`DeactivationReport`] on success; on failure the state has been
-    /// rolled back to ACTIVE (or left INACTIVE when only the decoy switch failed).
+    /// Returns a [`DeactivationReport`] on success. On failure the state is
+    /// either rolled back to ACTIVE (cleanup failed before any unmount), left
+    /// INACTIVE (only the decoy switch failed), or recorded as DEGRADED with
+    /// [`NailsError::DeactivationIncomplete`] (some overlays could not be
+    /// unmounted) — never ACTIVE once any overlay has been detached.
     pub fn run<F: Filesystem>(&self, manager: &mut NailsManager<F>) -> Result<DeactivationReport> {
         let start = Instant::now();
 
@@ -572,6 +617,8 @@ impl DeactivationOrchestrator {
             return Ok(DeactivationReport {
                 cleanup_report: CleanupReport::default(),
                 unmounted_overlays: Vec::new(),
+                failed_overlays: Vec::new(),
+                remaining_mounts: Vec::new(),
                 duration: start.elapsed(),
                 final_state: SystemState::Inactive,
                 was_already_inactive: true,
@@ -643,28 +690,55 @@ impl DeactivationOrchestrator {
             }
         };
 
-        // Step 3: Unmount overlays in reverse order.
+        // Step 3: Attempt every overlay unmount in reverse LIFO order. Never abort
+        // on the first failure and never remount: once a target is detached,
+        // returning to ACTIVE would route hidden-session writes onto the decoy
+        // disk, so a teardown that cannot finish ends DEGRADED instead.
         let unmount_start = Instant::now();
-        let unmounted = match self.unmount_overlays(&guard, &overlays_to_unmount) {
-            Ok(overlays) => {
-                tracing::info!(
-                    unmounted_paths = ?overlays,
-                    duration_ms = unmount_start.elapsed().as_millis() as u64,
-                    "Overlays unmounted"
-                );
-                overlays
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    state = ?current_state,
-                    rollback = true,
-                    phase = "unmount",
-                    "Unmount failed, rolling back to ACTIVE"
-                );
-                return Err(e);
-            }
-        };
+        let unmount_outcome = self.unmount_overlays(&guard, &overlays_to_unmount);
+
+        // Re-read the mount table: which NAILS targets are still live?
+        let remaining_mounts = remaining_nails_mounts(&guard, &overlays_to_unmount);
+
+        if !remaining_mounts.is_empty() {
+            let remaining_display = remaining_mounts
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let reason = format!(
+                "deactivation left {} NAILS mount(s) live: {}",
+                remaining_mounts.len(),
+                remaining_display
+            );
+
+            tracing::error!(
+                remaining = %remaining_display,
+                unmounted = ?unmount_outcome.unmounted,
+                failed = ?unmount_outcome.failed,
+                duration_ms = unmount_start.elapsed().as_millis() as u64,
+                phase = "unmount",
+                state_to = "Degraded",
+                "Teardown incomplete; recording DEGRADED (no remount, no return to ACTIVE)"
+            );
+
+            // Record DEGRADED and commit so the RAII guard does NOT force the
+            // state back to ACTIVE on drop. DEACTIVATING -> DEGRADED is allowed.
+            let degraded = guard
+                .current_state()?
+                .enter_degraded(reason, remaining_mounts.clone());
+            guard.update_state(degraded)?;
+            guard.commit();
+
+            return Err(NailsError::DeactivationIncomplete { remaining_mounts });
+        }
+
+        let unmounted = unmount_outcome.unmounted;
+        tracing::info!(
+            unmounted_paths = ?unmounted,
+            duration_ms = unmount_start.elapsed().as_millis() as u64,
+            "Overlays unmounted"
+        );
 
         // Step 3.5: Post-unmount cleanup on the real disk (Normal mode only).
         let post_unmount_report = if self.mode == DeactivationMode::Emergency {
@@ -757,6 +831,8 @@ impl DeactivationOrchestrator {
         Ok(DeactivationReport {
             cleanup_report,
             unmounted_overlays: unmounted,
+            failed_overlays: Vec::new(),
+            remaining_mounts: Vec::new(),
             duration: start.elapsed(),
             final_state: SystemState::Inactive,
             was_already_inactive: false,
@@ -852,17 +928,21 @@ impl DeactivationOrchestrator {
         report
     }
 
-    /// Unmount overlays in reverse LIFO order, remounting on failure.
+    /// Attempt to unmount every overlay in reverse LIFO order.
+    ///
+    /// Unlike the old teardown this never aborts on the first failure and never
+    /// remounts: every target is attempted (graceful, then forced) and the
+    /// per-target failures are collected so the caller can decide whether the
+    /// teardown is complete or must be recorded as degraded.
     fn unmount_overlays<F: Filesystem>(
         &self,
         manager: &NailsManager<F>,
         overlays: &[PathBuf],
-    ) -> Result<Vec<String>> {
+    ) -> UnmountOutcome {
         let mut unmounted = Vec::new();
+        let mut failed = Vec::new();
 
-        let overlays_reversed: Vec<_> = overlays.iter().rev().collect();
-
-        for overlay_path in overlays_reversed {
+        for overlay_path in overlays.iter().rev() {
             match self.unmount_single_overlay(manager, overlay_path) {
                 Ok(()) => {
                     unmounted.push(overlay_path.to_string_lossy().to_string());
@@ -872,15 +952,14 @@ impl DeactivationOrchestrator {
                         error = %e,
                         path = %overlay_path.display(),
                         phase = "unmount",
-                        "Unmount failed for overlay"
+                        "Unmount failed for overlay; continuing with the remaining targets"
                     );
-                    self.rollback_unmounts(manager, &unmounted)?;
-                    return Err(e);
+                    failed.push(overlay_path.clone());
                 }
             }
         }
 
-        Ok(unmounted)
+        UnmountOutcome { unmounted, failed }
     }
 
     /// Unmount a single overlay with graceful -> force fallback.
@@ -907,76 +986,6 @@ impl DeactivationOrchestrator {
                 manager.filesystem().unmount(path, true)
             }
         }
-    }
-
-    /// Best-effort remount of overlays already unmounted when a later unmount fails.
-    fn rollback_unmounts<F: Filesystem>(
-        &self,
-        manager: &NailsManager<F>,
-        unmounted: &[String],
-    ) -> Result<()> {
-        tracing::warn!(
-            overlay_count = unmounted.len(),
-            phase = "rollback",
-            "Rolling back unmounts - attempting to remount overlays"
-        );
-
-        let mut remounted_count = 0;
-
-        for overlay_str in unmounted.iter().rev() {
-            let overlay_path = PathBuf::from(overlay_str);
-
-            if let Some(mount_info) = manager.filesystem().get_mount_info(&overlay_path) {
-                tracing::info!(
-                    overlay = overlay_str,
-                    lower = %mount_info.lower.display(),
-                    upper = %mount_info.upper.display(),
-                    work = %mount_info.work.display(),
-                    phase = "rollback",
-                    "Remounting overlay"
-                );
-
-                match manager.filesystem().mount_overlay(
-                    &[mount_info.lower.as_path()],
-                    &mount_info.upper,
-                    &mount_info.work,
-                    &mount_info.target,
-                ) {
-                    Ok(()) => {
-                        tracing::info!(
-                            overlay = overlay_str,
-                            phase = "rollback",
-                            "Successfully remounted overlay"
-                        );
-                        remounted_count += 1;
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            overlay = overlay_str,
-                            error = %e,
-                            phase = "rollback",
-                            "Failed to remount overlay during rollback"
-                        );
-                    }
-                }
-            } else {
-                tracing::warn!(
-                    overlay = overlay_str,
-                    phase = "rollback",
-                    recovery = "manual",
-                    "Cannot remount - mount info not available"
-                );
-            }
-        }
-
-        tracing::info!(
-            remounted = remounted_count,
-            total = unmounted.len(),
-            phase = "rollback",
-            "Rollback complete"
-        );
-
-        Ok(())
     }
 }
 

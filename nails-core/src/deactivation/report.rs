@@ -4,6 +4,7 @@
 //! including cleanup details, unmounted overlays, duration, and final state.
 
 use crate::{CleanupReport, SystemState};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Report of post-unmount cleanup operations on the real disk
@@ -31,15 +32,15 @@ pub struct PostUnmountCleanupReport {
 ///
 /// - `cleanup_report`: Results from CleanupManager (history, temp files, logs)
 /// - `unmounted_overlays`: List of overlay paths that were successfully unmounted
+/// - `failed_overlays`: Overlays whose unmount failed after both graceful and
+///   forced attempts
+/// - `remaining_mounts`: NAILS mounts still live after every target was attempted
+///   (non-empty only for a degraded teardown)
 /// - `duration`: Total time taken for the deactivation operation
-/// - `final_state`: System state after deactivation (should be Inactive on success)
+/// - `final_state`: System state after deactivation (Inactive on success,
+///   Degraded when overlays were left behind)
 /// - `was_already_inactive`: Whether system was already inactive (idempotent case)
 /// - `post_unmount_cleanup`: Results from the post-unmount cleanup phase
-///
-/// # Requirements
-///
-/// - AC3: DeactivationReport with cleanup, unmounted overlays, duration, final state
-/// - FR62: Idempotent deactivation tracking
 #[derive(Debug, Clone)]
 pub struct DeactivationReport {
     /// Cleanup operation results (Phase 1: overlay layer cleanup)
@@ -47,6 +48,17 @@ pub struct DeactivationReport {
 
     /// Overlays that were unmounted
     pub unmounted_overlays: Vec<String>,
+
+    /// Overlays whose unmount failed after both graceful and forced attempts.
+    pub failed_overlays: Vec<String>,
+
+    /// NAILS mounts still live after the teardown attempted every target.
+    ///
+    /// Non-empty only for a degraded teardown: the system is recorded as
+    /// [`SystemState::Degraded`](crate::SystemState) and never returns to
+    /// `Active`, because a detached overlay would route hidden-session writes
+    /// onto the decoy disk.
+    pub remaining_mounts: Vec<PathBuf>,
 
     /// Total duration of deactivation
     pub duration: Duration,
@@ -94,6 +106,29 @@ impl std::fmt::Display for DeactivationReport {
         writeln!(f, "Unmounted Overlays:")?;
         for overlay in &self.unmounted_overlays {
             writeln!(f, "  ✓ {}", overlay)?;
+        }
+
+        // Overlays that could not be unmounted (degraded teardown)
+        if !self.failed_overlays.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "Failed to Unmount:")?;
+            for overlay in &self.failed_overlays {
+                writeln!(f, "  ✗ {}", overlay)?;
+            }
+        }
+
+        // NAILS mounts still live after the teardown (degraded teardown)
+        if !self.remaining_mounts.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "Still Mounted (degraded):")?;
+            for mount in &self.remaining_mounts {
+                writeln!(f, "  ! {}", mount.display())?;
+            }
+            writeln!(f)?;
+            writeln!(
+                f,
+                "Run `nails emergency` or `nails recover` to finish the teardown."
+            )?;
         }
 
         // Post-unmount cleanup (Phase 2: real disk)

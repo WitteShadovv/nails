@@ -59,7 +59,9 @@ use std::ops::{Deref, DerefMut};
 /// # Requirements
 ///
 /// - **FR50**: Automatic rollback on activation failure
-/// - **FR51**: Remount overlays if cleanup fails
+/// - **FR51**: Restore the captured state when an operation fails (the guard
+///   restores state only; it does not touch overlays, and teardown leaves any
+///   still-mounted overlay in place rather than reattaching it)
 /// - **FR52**: Track steps for reverse rollback
 /// - **FR53**: Idempotent rollback (safe to call multiple times)
 /// - **NFR15**: Prevent memory leaks via RAII

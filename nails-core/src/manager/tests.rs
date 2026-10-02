@@ -820,7 +820,7 @@ fn test_activate_failure_state_file_reflects_rollback() {
 // ========== Task 7: Deactivation Failure Rollback Tests ==========
 
 #[test]
-fn test_deactivate_failure_at_unmount_rolls_back_to_active() {
+fn test_deactivate_failure_at_unmount_ends_degraded() {
     use crate::OverlayConfig;
 
     // Create mock hidden volume structure in temp dir
@@ -910,36 +910,38 @@ fn test_deactivate_failure_at_unmount_rolls_back_to_active() {
 
     // Deactivation should fail (using emergency_deactivate for full unmount)
     let result = manager.lock().unwrap().emergency_deactivate();
-    assert!(result.is_err());
+    let err = result.expect_err("deactivation must fail when the overlay stays mounted");
 
-    // Verify error message (FR51) - orchestrator returns raw unmount error
-    match result.unwrap_err() {
-        NailsError::UnmountError { reason, .. } => {
-            assert!(
-                !reason.is_empty(),
-                "Error message should not be empty: {}",
-                reason
-            );
+    // The teardown attempted the unmount, it failed, and the overlay is still live.
+    match err {
+        NailsError::DeactivationIncomplete {
+            ref remaining_mounts,
+        } => {
+            assert_eq!(remaining_mounts, &vec![PathBuf::from("/home")]);
         }
-        other => panic!("Expected UnmountError, got: {:?}", other),
+        other => panic!("Expected DeactivationIncomplete, got: {:?}", other),
     }
 
-    // Verify state was rolled back to Active (FR51)
+    // Never ACTIVE once a teardown has begun detaching overlays: it ends DEGRADED.
     let final_state = manager.lock().unwrap().current_state().unwrap();
     assert!(
-        matches!(final_state, SystemState::Active { .. }),
-        "State should be rolled back to Active after unmount failure"
+        final_state.is_degraded(),
+        "State should be Degraded after an unmount failure, got {final_state:?}"
     );
 
-    // Verify overlay remains mounted after rollback (FR51: Remount overlays if cleanup fails)
+    // The overlay that could not be unmounted stays mounted; it is never remounted.
     assert!(
         fs_clone.is_mounted(Path::new("/home")).unwrap(),
-        "Overlay should remain mounted after failed deactivation"
+        "Overlay that failed to unmount should remain mounted"
     );
 
-    // Verify state file contains Active
+    // State file persists Degraded.
     let loaded = StateFile::load(&state_path).unwrap();
-    assert!(matches!(loaded.state, SystemState::Active { .. }));
+    assert!(
+        loaded.state.is_degraded(),
+        "persisted state should be Degraded, got {:?}",
+        loaded.state
+    );
 }
 
 #[test]
@@ -1214,14 +1216,21 @@ fn test_deactivate_does_not_request_reboot_after_failed_teardown() {
 
     let result = manager.lock().unwrap().deactivate();
 
+    // A failed teardown returns Err before the reboot step, so no reboot is ever
+    // requested. The system ends DEGRADED (never back to ACTIVE) with the overlay
+    // that could not be unmounted still live.
     assert!(
         result.is_err(),
         "deactivation should fail when teardown fails"
     );
-    assert!(matches!(
-        manager.lock().unwrap().current_state().unwrap(),
-        SystemState::Active { .. }
-    ));
+    assert!(
+        manager
+            .lock()
+            .unwrap()
+            .current_state()
+            .unwrap()
+            .is_degraded()
+    );
     assert!(fs.is_mounted(Path::new("/home")).unwrap());
 }
 
@@ -1259,7 +1268,7 @@ fn test_deactivate_from_non_active_returns_error() {
 }
 
 #[test]
-fn test_deactivate_partial_failure_unmounts_only_successful_ones() {
+fn test_deactivate_partial_failure_ends_degraded_without_remount() {
     use crate::OverlayConfig;
 
     // Create mock hidden volume structure in temp dir
@@ -1295,6 +1304,8 @@ fn test_deactivate_partial_failure_unmounts_only_successful_ones() {
     let config = Config {
         hidden_volume_root: mock_hidden_vol.to_path_buf(),
         state_file_path: state_path.clone(),
+        log_path: mock_hidden_vol.join("logs"),
+        clear_history: false,
         overlays: vec![
             OverlayConfig {
                 name: "home".to_string(),
@@ -1358,31 +1369,41 @@ fn test_deactivate_partial_failure_unmounts_only_successful_ones() {
         }
     }
 
-    // Deactivation should fail at /etc
-    let result = manager.lock().unwrap().deactivate();
-    assert!(result.is_err());
-
-    // Verify state was rolled back to Active
-    assert!(matches!(
-        manager.lock().unwrap().current_state().unwrap(),
-        SystemState::Active { .. }
-    ));
-
-    // Successful partial unmounts should be rolled back through remounting.
-    let manager_guard = manager.lock().unwrap();
+    // Deactivation attempts every target and then fails because /etc is still live.
+    let err = manager.lock().unwrap().deactivate().unwrap_err();
     assert!(
-        manager_guard
+        matches!(err, NailsError::DeactivationIncomplete { .. }),
+        "unexpected error: {err:?}"
+    );
+    assert!(
+        err.to_string().contains("/etc"),
+        "error must name the mount still live: {err}"
+    );
+
+    // Once an overlay has been detached the teardown never returns to ACTIVE: it
+    // ends DEGRADED, and the successfully unmounted target is NOT remounted.
+    let manager_guard = manager.lock().unwrap();
+    match manager_guard.current_state().unwrap() {
+        SystemState::Degraded {
+            remaining_mounts, ..
+        } => {
+            assert_eq!(remaining_mounts, vec![PathBuf::from("/etc")]);
+        }
+        other => panic!("expected Degraded, got {other:?}"),
+    }
+    assert!(
+        !manager_guard
             .filesystem()
             .is_mounted(Path::new("/home"))
             .unwrap(),
-        "/home should be remounted during rollback"
+        "/home was unmounted and must not be remounted"
     );
     assert!(
         manager_guard
             .filesystem()
             .is_mounted(Path::new("/etc"))
             .unwrap(),
-        "/etc should remain mounted after rollback"
+        "/etc failed to unmount and stays live"
     );
 }
 
@@ -4149,11 +4170,11 @@ fn test_rollback_tr49_cleanup_fails_remounts_overlays() {
 
 #[test]
 fn test_rollback_tr50_unmount_fails_during_deactivation() {
-    // TR50: Unmount fails → StateGuard rolls back state to ACTIVE
+    // TR50: Unmount fails → the teardown attempts every target and ends DEGRADED.
     //
-    // KNOWN LIMITATION: StateGuard only restores state metadata, not physical mounts.
-    // When deactivation fails partway, overlays successfully unmounted before the failure
-    // are NOT remounted. Epic 5 (CleanupManager) will implement full physical rollback.
+    // The teardown never remounts what it has already detached and never returns
+    // to ACTIVE once any overlay is gone: /home unmounts, /etc fails, and the
+    // system is recorded as DEGRADED with /etc still live.
 
     // GIVEN: System in ACTIVE state, unmount configured to fail for /etc
     let fs = MockFilesystem::new();
@@ -4172,38 +4193,34 @@ fn test_rollback_tr50_unmount_fails_during_deactivation() {
     assert!(matches!(state_before, SystemState::Active { .. }));
 
     // WHEN: Attempting deactivation with unmount failure on /etc
-    // Deactivation tries to unmount overlays; /home succeeds, /etc fails
+    // Deactivation tries to unmount every overlay; /home succeeds, /etc fails
     let result = manager_arc.lock().unwrap().emergency_deactivate();
 
-    // THEN: Deactivation fails
-    assert!(result.is_err(), "Expected deactivation to fail");
-
-    // AND: Error is UnmountError
-    let err = result.unwrap_err();
+    // THEN: Deactivation fails because /etc is still live
+    let err = result.expect_err("Expected deactivation to fail");
     assert!(
-        matches!(err, NailsError::UnmountError { .. }),
-        "Expected UnmountError, got: {:?}",
+        matches!(err, NailsError::DeactivationIncomplete { .. }),
+        "Expected DeactivationIncomplete, got: {:?}",
         err
     );
 
-    // AND: State metadata shows ACTIVE (StateGuard rolled back state)
+    // AND: State is DEGRADED (never rolled back to ACTIVE after a partial teardown)
     let state_after = manager_arc.lock().unwrap().current_state().unwrap();
     assert!(
-        matches!(state_after, SystemState::Active { .. }),
-        "Expected state to remain Active after unmount failure"
+        state_after.is_degraded(),
+        "Expected state to be Degraded after unmount failure, got {state_after:?}"
     );
 
-    // BUT: Physical mounts state depends on unmount order
-    // The orchestrator unmounts in LIFO (reverse) order: /etc first, then /home.
-    // Since /etc unmount fails, /home is never unmounted and rollback triggers.
+    // AND: Every target was attempted. /home was detached and is NOT remounted;
+    // /etc could not be unmounted and stays live.
     let manager = manager_arc.lock().unwrap();
     let fs_ref = manager.filesystem();
 
     assert!(
-        fs_ref
+        !fs_ref
             .is_mounted(Path::new("/home"))
             .expect("Should check mount"),
-        "/home should remain mounted - orchestrator stops at first failure (LIFO: /etc tried first)"
+        "/home should be detached - the teardown attempts every target, no remount"
     );
 
     // /etc should still be mounted (unmount failed)
@@ -4230,22 +4247,26 @@ fn test_rollback_tr50_unmount_fails_error_message() {
         .expect("Should activate");
 
     let result = manager_arc.lock().unwrap().emergency_deactivate();
-    assert!(result.is_err());
+    let err = result.expect_err("deactivation should fail when /etc stays mounted");
 
-    let err = result.unwrap_err();
-    let err_msg = err.to_string();
-
-    // TR50: Error should specifically mention unmount failure
     assert!(
-        err_msg.to_lowercase().contains("unmount") && err_msg.contains("/etc"),
-        "Error should mention /etc unmount failure: {}",
+        matches!(err, NailsError::DeactivationIncomplete { .. }),
+        "Expected DeactivationIncomplete, got: {:?}",
+        err
+    );
+
+    // TR50: Error should name the mount that is still live and point to recovery.
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("/etc") && err_msg.to_lowercase().contains("incomplete"),
+        "Error should name the /etc mount still live: {}",
         err_msg
     );
 }
 
 #[test]
 fn test_rollback_tr50_first_unmount_fails() {
-    // Test rollback when first unmount in deactivation sequence fails
+    // Test teardown when the first unmount in the deactivation sequence fails
 
     let fs = MockFilesystem::new();
     // /etc unmounts first in deactivation (LIFO from activation)
@@ -4261,9 +4282,12 @@ fn test_rollback_tr50_first_unmount_fails() {
     let result = manager_arc.lock().unwrap().emergency_deactivate();
     assert!(result.is_err());
 
-    // State should remain ACTIVE
+    // The teardown continues past the first failure and ends DEGRADED, never ACTIVE.
     let state = manager_arc.lock().unwrap().current_state().unwrap();
-    assert!(matches!(state, SystemState::Active { .. }));
+    assert!(
+        state.is_degraded(),
+        "Expected Degraded after a failed first unmount, got {state:?}"
+    );
 }
 
 // ============================================================================
@@ -4611,8 +4635,8 @@ fn test_mount_tracker_mixed_persistent_ephemeral() {
 }
 
 #[test]
-fn test_mount_tracker_ephemeral_rollback_unmounts_tmpfs() {
-    // Verify ephemeral rollback unmounts both overlay and tmpfs
+fn test_mount_tracker_ephemeral_rollback_all_detaches_tmpfs() {
+    // Verify ephemeral rollback detaches both overlay and tmpfs
 
     let fs = MockFilesystem::new();
 

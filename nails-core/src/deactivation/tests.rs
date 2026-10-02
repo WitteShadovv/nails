@@ -315,6 +315,8 @@ fn test_deactivation_report_new() {
     let report = DeactivationReport {
         cleanup_report: CleanupReport::default(),
         unmounted_overlays: vec!["/home".to_string(), "/etc".to_string()],
+        failed_overlays: Vec::new(),
+        remaining_mounts: Vec::new(),
         duration: Duration::from_millis(150),
         final_state: SystemState::Inactive,
         was_already_inactive: false,
@@ -364,6 +366,8 @@ fn test_deactivation_report_display_already_inactive() {
     let report = DeactivationReport {
         cleanup_report: CleanupReport::default(),
         unmounted_overlays: Vec::new(),
+        failed_overlays: Vec::new(),
+        remaining_mounts: Vec::new(),
         duration: Duration::from_millis(5),
         final_state: SystemState::Inactive,
         was_already_inactive: true,
@@ -384,6 +388,8 @@ fn test_deactivation_report_display_with_items() {
     let report = DeactivationReport {
         cleanup_report,
         unmounted_overlays: vec!["/home".to_string(), "/etc".to_string()],
+        failed_overlays: Vec::new(),
+        remaining_mounts: Vec::new(),
         duration: Duration::from_millis(150),
         final_state: SystemState::Inactive,
         was_already_inactive: false,
@@ -1970,6 +1976,8 @@ fn test_deactivation_report_display_with_post_unmount_cleanup() {
     let report = DeactivationReport {
         cleanup_report,
         unmounted_overlays: vec!["/home".to_string(), "/etc".to_string()],
+        failed_overlays: Vec::new(),
+        remaining_mounts: Vec::new(),
         duration: Duration::from_millis(150),
         final_state: SystemState::Inactive,
         was_already_inactive: false,
@@ -2006,6 +2014,8 @@ fn test_deactivation_report_display_without_post_unmount_cleanup() {
     let report = DeactivationReport {
         cleanup_report,
         unmounted_overlays: vec!["/home".to_string()],
+        failed_overlays: Vec::new(),
+        remaining_mounts: Vec::new(),
         duration: Duration::from_millis(150),
         final_state: SystemState::Inactive,
         was_already_inactive: false,
@@ -2024,6 +2034,8 @@ fn test_deactivation_report_is_successful_with_inactive_state() {
     let report = DeactivationReport {
         cleanup_report: CleanupReport::default(),
         unmounted_overlays: vec![],
+        failed_overlays: Vec::new(),
+        remaining_mounts: Vec::new(),
         duration: Duration::from_millis(100),
         final_state: SystemState::Inactive,
         was_already_inactive: false,
@@ -2038,6 +2050,8 @@ fn test_deactivation_report_is_not_successful_with_active_state() {
     let report = DeactivationReport {
         cleanup_report: CleanupReport::default(),
         unmounted_overlays: vec![],
+        failed_overlays: Vec::new(),
+        remaining_mounts: Vec::new(),
         duration: Duration::from_millis(100),
         final_state: SystemState::Active {
             activated_at: chrono::Utc::now(),
@@ -2303,6 +2317,138 @@ fn active_manager_with_failing_profile_lookup() -> (
     (Arc::new(Mutex::new(manager)), temp_dir, profile_env)
 }
 
+/// An ACTIVE manager tracking the given overlay targets, each mounted and
+/// NAILS-owned on the mock filesystem. No decoy generation is recorded, so the
+/// teardown needs no system profile. `mounted_at` is staggered per target so the
+/// tracked mount order is exactly `targets`.
+fn active_manager_with_overlays(
+    targets: &[&str],
+) -> (Arc<Mutex<NailsManager<MockFilesystem>>>, tempfile::TempDir) {
+    clear_system_profile_env();
+    set_safe_test_home();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+
+    let base = chrono::Utc::now();
+    let mut overlay_status = std::collections::HashMap::new();
+    let mut overlays = Vec::new();
+    for (index, target) in targets.iter().enumerate() {
+        let path = PathBuf::from(target);
+        overlays.push(path.clone());
+        overlay_status.insert(
+            path.clone(),
+            crate::OverlayInfo {
+                mount_path: path.clone(),
+                lower_dir: PathBuf::from("/"),
+                upper_dir: hidden_root.join(format!("overlays/{index}/upper")),
+                work_dir: hidden_root.join(format!("overlays/{index}/work")),
+                mounted_at: base + chrono::TimeDelta::milliseconds(index as i64),
+            },
+        );
+    }
+
+    StateFile {
+        state: SystemState::Active {
+            activated_at: base,
+            overlays,
+        },
+        overlay_status,
+        ..StateFile::default()
+    }
+    .save_with_custom_root(&state_path, &hidden_root)
+    .unwrap();
+
+    let fs = MockFilesystem::new();
+    for target in targets {
+        fs.mock_set_mounted(Path::new(target), true);
+    }
+
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
+        overlays: vec![],
+        clear_history: false,
+        ..Config::test_default()
+    };
+
+    let manager = NailsManager::new(fs, config, state_path);
+    (Arc::new(Mutex::new(manager)), temp_dir)
+}
+
+#[test]
+#[serial]
+fn deactivate_degrades_when_a_target_cannot_unmount() {
+    let (manager, _hidden_root) = active_manager_with_overlays(&["/home", "/etc", "/opt"]);
+    // Fail the middle target; the teardown must still attempt the other two and
+    // must NOT remount what it has already detached.
+    manager
+        .lock()
+        .unwrap()
+        .filesystem()
+        .mock_set_unmount_should_fail("/etc", true);
+
+    let worker = Arc::clone(&manager);
+    let result = run_within_timeout(move || worker.lock().unwrap().deactivate());
+
+    let err = result.expect_err("deactivate must fail when a target stays mounted");
+    assert!(
+        matches!(err, NailsError::DeactivationIncomplete { .. }),
+        "unexpected error: {err:?}"
+    );
+    assert!(
+        err.to_string().contains("/etc"),
+        "error must name the live mount: {err}"
+    );
+
+    let guard = manager.lock().unwrap();
+    // Never ACTIVE once an overlay is detached: the teardown ends DEGRADED.
+    match guard.current_state().unwrap() {
+        SystemState::Degraded {
+            remaining_mounts, ..
+        } => assert_eq!(remaining_mounts, vec![PathBuf::from("/etc")]),
+        other => panic!("expected Degraded, got {other:?}"),
+    }
+    // All three targets were attempted: the two that can unmount are gone, and
+    // the failing one stays live (no remount).
+    assert!(!guard.filesystem().is_mounted(Path::new("/home")).unwrap());
+    assert!(!guard.filesystem().is_mounted(Path::new("/opt")).unwrap());
+    assert!(guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
+}
+
+#[test]
+#[serial]
+fn emergency_deactivate_degrades_without_remount_when_a_target_cannot_unmount() {
+    let (manager, _hidden_root) = active_manager_with_overlays(&["/home", "/etc", "/opt"]);
+    manager
+        .lock()
+        .unwrap()
+        .filesystem()
+        .mock_set_unmount_should_fail("/etc", true);
+
+    let worker = Arc::clone(&manager);
+    let result = run_within_timeout(move || worker.lock().unwrap().emergency_deactivate());
+
+    let err = result.expect_err("emergency deactivate must fail when a target stays mounted");
+    assert!(
+        matches!(err, NailsError::DeactivationIncomplete { .. }),
+        "unexpected error: {err:?}"
+    );
+
+    let guard = manager.lock().unwrap();
+    assert!(
+        guard.current_state().unwrap().is_degraded(),
+        "emergency teardown must end DEGRADED, not roll back to ACTIVE"
+    );
+    // Emergency mode also continues past the failure and never remounts: the two
+    // unmountable targets are detached and the failing one is still live.
+    assert!(!guard.filesystem().is_mounted(Path::new("/home")).unwrap());
+    assert!(!guard.filesystem().is_mounted(Path::new("/opt")).unwrap());
+    assert!(guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
+}
+
 #[test]
 #[serial]
 fn deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
@@ -2322,8 +2468,10 @@ fn deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
         result.is_err(),
         "deactivate must surface the failed ACTIVE->DEACTIVATING write"
     );
-    // StateGuard::drop rolled the state back to ACTIVE (T-039 will make a
-    // partially torn-down teardown end in Degraded instead).
+    // The ACTIVE->DEACTIVATING write fails before any overlay is detached, so
+    // StateGuard::drop correctly rolls the state back to ACTIVE. (A teardown that
+    // fails *after* detaching an overlay ends DEGRADED instead; see the degraded
+    // teardown tests below.)
     assert!(manager.lock().unwrap().current_state().unwrap().is_active());
 }
 

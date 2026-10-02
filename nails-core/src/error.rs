@@ -19,6 +19,15 @@ fn in_file(file: Option<&std::path::Path>) -> String {
         .unwrap_or_default()
 }
 
+/// Comma-joined mount paths for the deactivation-incomplete message.
+fn format_remaining_mounts(mounts: &[std::path::PathBuf]) -> String {
+    mounts
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Comprehensive error types for NAILS operations
 ///
 /// All NAILS operations return Result<T, NailsError> for explicit error handling.
@@ -159,6 +168,24 @@ pub enum NailsError {
     /// kernel failure.
     #[error("Refused to unmount unmanaged mount: {path}")]
     RefusedUnmanagedUnmount { path: std::path::PathBuf },
+
+    /// Deactivation teardown left one or more NAILS mounts live.
+    ///
+    /// After attempting to unmount every tracked overlay, some targets are still
+    /// mounted (a kernel failure that even `MNT_DETACH` could not clear). The
+    /// teardown never remounts what it has already detached and never returns to
+    /// `Active`: the system is recorded as
+    /// [`SystemState::Degraded`](crate::SystemState) so that hidden-session
+    /// writes cannot land on the decoy disk. The operator finishes the job with
+    /// `nails emergency` or `nails recover`.
+    #[error(
+        "Deactivation incomplete: {} NAILS mount(s) still live: {}\nRun `nails emergency` or `nails recover` to finish the teardown.",
+        .remaining_mounts.len(),
+        format_remaining_mounts(.remaining_mounts)
+    )]
+    DeactivationIncomplete {
+        remaining_mounts: Vec<std::path::PathBuf>,
+    },
 
     /// Swap disable failed
     #[error("Swap disable failed")]
