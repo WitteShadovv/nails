@@ -217,13 +217,13 @@ impl<F: Filesystem> NailsManager<F> {
         // Run all checks (always get full results for display)
         let (results, all_passed) = registry.run_all_detailed(&self.filesystem);
 
-        // Display each check result and collect failures
+        // Report each check and collect failures. Progress is emitted as tracing
+        // events only; the subscriber the CLI installs honours `--quiet`/`--json`
+        // and chooses the stream, so the core never prints check results ad hoc
+        // (and never reports the same check twice).
         let mut failed_checks: Vec<(String, String)> = Vec::new();
 
         for (name, result) in &results {
-            // Print each check result to stderr so the user sees progress
-            crate::output::check_result(name, result);
-
             match result {
                 crate::preflight::CheckResult::Pass(msg) => {
                     tracing::info!(check = %name, result = "pass", msg = %msg, "Preflight check passed");
@@ -261,5 +261,58 @@ impl<F: Filesystem> NailsManager<F> {
 
         StateFile::default()
             .save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::OverlayMode;
+    use crate::manager::NailsManager;
+    use crate::{Config, MockFilesystem, NailsError};
+
+    /// Preflight progress now travels on one channel: tracing events the CLI
+    /// subscriber renders under the resolved verbosity. This asserts a failing
+    /// check is reported as a `fail` event and folded into `PreFlightCheckFailed`,
+    /// with no second ad-hoc report (the old `output::check_result` print is gone).
+    #[test]
+    #[tracing_test::traced_test]
+    fn failing_check_is_reported_through_tracing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let hidden_root = temp_dir.path();
+        let state_path = hidden_root.join("state.json");
+
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
+        // Leave the hidden volume unmounted so HiddenVolumeCheck fails.
+        fs.mock_set_mounted(hidden_root, false);
+
+        let config = Config {
+            hidden_volume_root: hidden_root.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            // Explicit mode keeps the check set independent of the host's layout.
+            overlay_mode: OverlayMode::Explicit,
+            ..Config::test_default()
+        };
+
+        let manager = NailsManager::new(fs, config, state_path);
+
+        let err = manager
+            .run_preflight_checks(true)
+            .expect_err("an unmounted hidden volume must fail preflight");
+        match err {
+            NailsError::PreFlightCheckFailed(failures) => {
+                assert!(
+                    failures.iter().any(|(name, _)| name == "hidden-volume"),
+                    "expected the hidden-volume check among {failures:?}"
+                );
+            }
+            other => panic!("expected PreFlightCheckFailed, got {other:?}"),
+        }
+
+        // The failure is reported on the one progress channel (tracing); the old
+        // unconditional `output::check_result` print is gone, so this is the only
+        // report of the check. `logs_contain` is injected by `traced_test`.
+        assert!(logs_contain("Preflight check failed"));
     }
 }

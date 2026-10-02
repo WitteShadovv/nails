@@ -258,22 +258,6 @@ pub fn info(msg: &str) {
     let _ = writeln!(stdout(), "{}", format_info(msg));
 }
 
-/// Print a preflight check result to stderr with its check name.
-///
-/// # Examples
-///
-/// ```no_run
-/// use nails_core::output;
-/// use nails_core::preflight::CheckResult;
-///
-/// let result = CheckResult::Pass("Hidden volume mounted".to_string());
-/// output::check_result("hidden-volume", &result);
-/// // Prints to stderr: "  [hidden-volume] ✓ Hidden volume mounted"
-/// ```
-pub fn check_result(name: &str, result: &crate::preflight::CheckResult) {
-    let _ = writeln!(stderr(), "  [{}] {}", name, result);
-}
-
 /// Resets the global render state on creation and drop, so tests that change
 /// it do not leak into one another. Tests using it must be `#[serial(render_state)]`.
 #[cfg(test)]
