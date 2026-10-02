@@ -147,9 +147,12 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
                         .map(|(name, reason)| FailedCheckJson {
                             name: name.clone(),
                             reason: reason.clone(),
+                            // The per-check `reason` already carries the specific
+                            // remediation (for example "commit a flake.lock"), so
+                            // the generic hint must stay neutral rather than
+                            // assuming every failure is an unmounted hidden volume.
                             fix: Some(
-                                "Review system state and ensure hidden volume is mounted"
-                                    .to_string(),
+                                "Resolve the reported check and retry activation".to_string(),
                             ),
                         })
                         .collect(),
@@ -285,7 +288,7 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
             eprintln!(
                 "\n  {}",
                 err.paint(
-                    "Fix: Review system state and ensure hidden volume is mounted",
+                    "Fix: Resolve the checks listed above and retry activation",
                     Tone::Yellow
                 )
             );
@@ -407,6 +410,31 @@ mod tests {
         assert_eq!(output.message, "Pre-flight checks failed");
         assert_eq!(output.failed_checks.as_ref().map(Vec::len), Some(2));
         assert_eq!(json["type"].as_str(), Some("result"));
+    }
+
+    #[test]
+    fn test_json_preflight_failure_fix_is_not_mount_specific() {
+        // A flake.lock problem is a pre-flight failure that has nothing to do
+        // with mounting the hidden volume, so the remediation hint must not
+        // claim it does; the specific guidance lives in the per-check reason.
+        let manager = make_manager();
+        let err = NailsError::PreFlightCheckFailed(vec![(
+            "nixos-build-target".to_string(),
+            "flake.lock not found in '/tmp/flake-target'. Activation does not run \
+             'nix flake update' automatically; commit a flake.lock and retry activation."
+                .to_string(),
+        )]);
+        let output = build_activate_json_output(&Err(err), 0.1, &manager, None);
+        let checks = output.failed_checks.expect("failed checks present");
+        let fix = checks[0].fix.as_deref().unwrap_or_default();
+        assert!(
+            !fix.contains("hidden volume is mounted"),
+            "remediation hint must not assume a mount problem: {fix:?}"
+        );
+        assert!(
+            fix.contains("retry activation"),
+            "remediation hint should direct the operator to retry: {fix:?}"
+        );
     }
 
     #[test]
