@@ -93,7 +93,9 @@ maintenance guidance.
 
 ## Installation
 
-### Option 1: Use the latest published GitHub release bundle
+NAILS is installed by copying a verified static binary onto the mounted hidden root, and in no other way. [`docs/distribution.md`](docs/distribution.md) lists which channels are supported and why the usual registries and package managers are not.
+
+### Install the verified release binary
 
 Download the latest published bundle from the canonical [GitHub Releases page](https://github.com/WitteShadovv/nails/releases).
 Each release is built from an annotated version tag; `-rc.N` versions are marked as prereleases. Use the newest release line appropriate for your testing or deployment. Mount the hidden storage first, then place the published `nails` executable directly on that hidden root. Do not leave the binary on the decoy filesystem:
@@ -111,7 +113,11 @@ install -m0755 /path/to/downloaded/nails /mnt/hidden-volume/nails
 Verify the download before first use, as [`docs/verify-release.md`](docs/verify-release.md) describes: the checksum, the build provenance, and where to do it without leaving a trace on the decoy system. For higher assurance, rebuild the published source revision and compare it against the bundle using the reproducibility guidance in
 [`docs/release-artifact-reproducibility.md`](docs/release-artifact-reproducibility.md).
 
-### Option 2: Build from source
+### Upgrading from inside a hidden session
+
+The builds below are for upgrading an existing install, not for a first install. Run them only inside an active hidden session: the build caches (`~/.cargo`, `/nix/store`, the `result` GC root) then land on the hidden upper layer, never on the decoy. See [`docs/distribution.md`](docs/distribution.md).
+
+From source:
 
 ```bash
 git clone https://github.com/WitteShadovv/nails /mnt/hidden-volume/src/nails
@@ -120,7 +126,7 @@ cargo build --release
 install -m0755 ./target/release/nails /mnt/hidden-volume/nails
 ```
 
-### Option 3: Build with Nix
+With Nix:
 
 ```bash
 nix build .#nails
@@ -273,6 +279,7 @@ They are related projects, but they are not interchangeable products and do not 
 - [Change history](CHANGELOG.md)
 - [Roadmap](ROADMAP.md)
 - [Storage backends](docs/backends.md)
+- [Distribution channels](docs/distribution.md)
 - [Verify a release](docs/verify-release.md)
 - [Release artifact reproducibility](docs/release-artifact-reproducibility.md)
 

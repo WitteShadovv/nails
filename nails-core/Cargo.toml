@@ -11,6 +11,10 @@ repository.workspace = true
 readme = "../README.md"
 keywords = ["nixos", "anti-forensics", "security", "privacy", "veracrypt"]
 categories = ["filesystem", "os::linux-apis"]
+# Never publish to a registry. A crate on crates.io is a permanent, indexed
+# public record that the tool exists and was built; installing from one would
+# also leave its traces on the decoy. See docs/distribution.md.
+publish = false
 
 [lints]
 workspace = true
