@@ -163,6 +163,8 @@ fn build_preflight_registry(
         config.hidden_volume_root.clone(),
     )));
 
+    registry.add_check(Box::new(MountNamespaceCheck::new()));
+
     registry.add_check(Box::new(SymlinkSupportCheck::new(
         config.hidden_volume_root.clone(),
     )));
@@ -347,7 +349,7 @@ mod tests {
 
         let registry = build_preflight_registry(&RealFilesystem, &config, false);
 
-        assert_eq!(registry.len(), 8);
+        assert_eq!(registry.len(), 9);
     }
 
     #[test]
@@ -361,7 +363,7 @@ mod tests {
 
         let registry = build_preflight_registry(&RealFilesystem, &config, true);
 
-        assert_eq!(registry.len(), 6);
+        assert_eq!(registry.len(), 7);
     }
 
     #[test]
@@ -384,6 +386,6 @@ mod tests {
 
         let registry = build_preflight_registry(&RealFilesystem, &config, false);
 
-        assert_eq!(registry.len(), 8);
+        assert_eq!(registry.len(), 9);
     }
 }

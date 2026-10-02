@@ -76,9 +76,9 @@ impl<F: Filesystem> NailsManager<F> {
     /// ```
     pub fn run_preflight_checks(&self, overlay_only: bool) -> Result<()> {
         use crate::preflight::{
-            HiddenVolumeCheck, NixOSBuildTargetCheck, NixOSConfigCheck, OverlayCompatibilityCheck,
-            PreFlightRegistry, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
-            SymlinkSupportCheck,
+            HiddenVolumeCheck, MountNamespaceCheck, NixOSBuildTargetCheck, NixOSConfigCheck,
+            OverlayCompatibilityCheck, PreFlightRegistry, SpaceCheck, StateCheck,
+            StorageReadinessCheck, SwapCheck, SymlinkSupportCheck,
         };
 
         let mut registry = PreFlightRegistry::new();
@@ -87,6 +87,10 @@ impl<F: Filesystem> NailsManager<F> {
         registry.add_check(Box::new(HiddenVolumeCheck::new(
             self.config.hidden_volume_root.clone(),
         )));
+
+        // Runs before the session kill so a private mount namespace or a
+        // non-shared root is caught while the decoy session is still intact.
+        registry.add_check(Box::new(MountNamespaceCheck::new()));
 
         registry.add_check(Box::new(SymlinkSupportCheck::new(
             self.config.hidden_volume_root.clone(),
