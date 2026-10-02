@@ -592,6 +592,28 @@ fn test_notification_file_has_mode_0o600() {
 }
 
 #[test]
+fn signal_file_create_does_not_follow_a_planted_symlink() {
+    let dir = TempDir::new().unwrap();
+    let victim = dir.path().join("victim");
+    std::fs::write(&victim, "original").unwrap();
+    std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::os::unix::fs::symlink(&victim, dir.path().join("signal.json")).unwrap();
+
+    let (path, mut file) = create_signal_file(dir.path(), "signal").unwrap();
+    file.write_all(b"payload").unwrap();
+
+    // The planted name counts as taken, so the write lands on a fresh suffixed
+    // file and the symlink's target is left exactly as it was.
+    assert_eq!(path, dir.path().join("signal_1.json"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "payload");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "original");
+    let victim_mode = victim.metadata().unwrap().permissions().mode() & 0o777;
+    assert_eq!(victim_mode, 0o644);
+    let mode = path.symlink_metadata().unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
 fn runtime_environment_derives_xdg_runtime_dir_from_uid() {
     let env = build_runtime_environment(Some(1000), None, None);
 

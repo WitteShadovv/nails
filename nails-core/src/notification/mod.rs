@@ -17,7 +17,7 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// Build the environment overrides handed to `notify-send` so it reaches the
@@ -185,16 +185,70 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
         ))
     })?;
 
-    // Create the file exclusively so two notifications written in the same
-    // millisecond with the same title cannot silently overwrite one another; on
-    // a name collision, append an incrementing numeric suffix.
-    const MAX_COLLISION_SUFFIXES: u32 = 10_000;
     let base = format!("{}_{}", timestamp, safe_title);
+    let (path, mut file) = create_signal_file(&dir, &base)?;
+
+    file.write_all(json.as_bytes()).map_err(|e| {
+        crate::NailsError::IoError(std::io::Error::new(
+            e.kind(),
+            format!(
+                "Failed to write notification file {}: {}",
+                path.display(),
+                e
+            ),
+        ))
+    })?;
+
+    // Pin the mode to 0o600 (owner rw only) regardless of the umask. This acts
+    // on the open descriptor, not the path: the directory already belongs to
+    // the operator, so a path-based chmod could be redirected through a symlink
+    // swapped in after the create. The file is chown'd to the target user below
+    // so dispatch_all can read and delete it.
+    if let Err(e) = file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "Failed to set permissions on notification file (non-fatal)"
+        );
+    }
+
+    // Hand the signal file to the operator for the same reason. Operating on the
+    // open file descriptor avoids any symlink race on the path.
+    if let Some(user) = target_user.as_ref()
+        && let Err(e) = fchown_to_user(&file, user)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "Failed to set ownership on notification file (non-fatal)"
+        );
+    }
+
+    tracing::debug!(path = %path.display(), title = %notification.title, "Wrote notification signal file");
+    Ok(())
+}
+
+/// Create a new signal file named `{base}.json` in `dir`, or `{base}_{n}.json`
+/// when that name is taken.
+///
+/// The create is exclusive so two notifications written in the same
+/// millisecond with the same title cannot silently overwrite one another. It
+/// matters for safety too: once the operator owns the directory they can plant
+/// entries in it, and an exclusive create treats a symlink at the name as taken
+/// instead of following it to a file root would then overwrite. The file is
+/// born 0600, so it is never readable by anyone else while it is written.
+fn create_signal_file(dir: &Path, base: &str) -> Result<(PathBuf, std::fs::File)> {
+    const MAX_COLLISION_SUFFIXES: u32 = 10_000;
     let mut path = dir.join(format!("{}.json", base));
     let mut attempt: u32 = 0;
-    let mut file = loop {
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => break file,
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 attempt += 1;
                 if attempt > MAX_COLLISION_SUFFIXES {
@@ -219,43 +273,7 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
                 )));
             }
         }
-    };
-
-    file.write_all(json.as_bytes()).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!(
-                "Failed to write notification file {}: {}",
-                path.display(),
-                e
-            ),
-        ))
-    })?;
-
-    // Set the notification file to 0o600 (owner rw only).
-    // The file is chown'd to the target user below so dispatch_all can delete it.
-    if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
-        tracing::warn!(
-            path = %path.display(),
-            error = %e,
-            "Failed to set permissions on notification file (non-fatal)"
-        );
     }
-
-    // Hand the signal file to the operator for the same reason. Operating on the
-    // open file descriptor avoids any symlink race on the path.
-    if let Some(user) = target_user.as_ref()
-        && let Err(e) = fchown_to_user(&file, user)
-    {
-        tracing::warn!(
-            path = %path.display(),
-            error = %e,
-            "Failed to set ownership on notification file (non-fatal)"
-        );
-    }
-
-    tracing::debug!(path = %path.display(), title = %notification.title, "Wrote notification signal file");
-    Ok(())
 }
 
 /// Change `path`'s ownership to the operator's numeric uid and gid.
