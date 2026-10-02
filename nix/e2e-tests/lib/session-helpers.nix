@@ -39,23 +39,25 @@
     def wait_for_activation_transient_unit():
         import shlex
 
-        machine.wait_until_succeeds(
-            "/bin/sh -lc "
-            + shlex.quote(
-                "case \"$(systemctl list-units --all --plain --no-legend 'nails-activate-*')\" in "
-                + "*nails-activate-*) exit 0 ;; "
-                + "*) exit 1 ;; "
-                + "esac"
-            )
+        # T-066: the detached activation worker no longer names its transient
+        # unit after the product. systemd auto-names it `run-<id>.service` and it
+        # carries a fixed neutral description, so the product string never
+        # reaches the decoy journal. Identify the worker by that description
+        # instead of a product-specific unit name.
+        description = "System maintenance task"
+        finder = (
+            "systemctl list-units --all --plain --no-legend 'run-*.service' "
+            + "| while read -r unit _; do "
+            + "if [ \"$(systemctl show \"$unit\" -p Description --value)\" = "
+            + shlex.quote(description)
+            + " ]; then printf '%s' \"$unit\"; break; fi; "
+            + "done"
         )
-        unit = machine.succeed(
-            "bash -lc "
-            + shlex.quote(
-                "systemctl list-units --all --plain --no-legend 'nails-activate-*' "
-                + "| while read -r unit _; do printf '%s' \"$unit\"; break; done"
-            )
-        ).strip()
-        assert unit.startswith("nails-activate-"), f"Unexpected activation transient unit: {unit!r}"
+        machine.wait_until_succeeds(
+            "bash -lc " + shlex.quote("test -n \"$(" + finder + ")\"")
+        )
+        unit = machine.succeed("bash -lc " + shlex.quote(finder)).strip()
+        assert unit.startswith("run-"), f"Unexpected activation transient unit: {unit!r}"
         return unit
   '';
 

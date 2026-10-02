@@ -66,13 +66,14 @@ in
         )
         return "PATH=/tmp/nails-wrapper/bin:$PATH"
 
-    def journal_last_line_number(unit, pattern):
+    def hidden_log_line_number(pattern):
+        # T-066: the detached worker's stdout/stderr no longer reach the journal;
+        # the hidden-root file log is its only sink. Read the activation-ordering
+        # markers from there instead of journalctl.
         command = (
-            "journalctl -u "
-            + unit
-            + " -b --no-pager -o cat | grep -n "
+            "grep -n -F "
             + __import__("shlex").quote(pattern)
-            + " | cut -d: -f1 | tail -n1"
+            + " /mnt/hidden-volume/logs/nails.log | cut -d: -f1 | tail -n1"
         )
         status, output = machine.execute(command)
         if status != 0:
@@ -149,11 +150,11 @@ in
         assert display_started_after == display_started_before + 1, (
             f"display manager restarted more than once: before={display_started_before} after={display_started_after}"
         )
-        display_restart = journal_last_line_number(activation_unit, "Restarting display manager")
-        switch_marker = journal_last_line_number(activation_unit, "NixOS profile switch complete")
+        display_restart = hidden_log_line_number("Restarting display manager")
+        switch_marker = hidden_log_line_number("NixOS profile switch complete")
         if switch_marker is None:
-            switch_marker = journal_last_line_number(activation_unit, "Running NixOS switch/rebuild")
-        assert display_restart is not None and switch_marker is not None, "expected switch/restart journal markers"
+            switch_marker = hidden_log_line_number("Running NixOS switch/rebuild")
+        assert display_restart is not None and switch_marker is not None, "expected switch/restart log markers"
         assert display_restart < switch_marker, (
             f"session restart should happen before NixOS switch begins: switch={switch_marker} restart={display_restart}"
         )
