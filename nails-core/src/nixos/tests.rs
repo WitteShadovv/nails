@@ -1265,6 +1265,75 @@ fn test_build_and_switch_uses_flake_args_and_succeeds() {
 }
 
 #[test]
+fn test_build_and_switch_legacy_uses_nixos_config_args() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = temp_dir.path().join("configuration.nix");
+    std::fs::write(&config_path, "{}").unwrap();
+
+    let (executor, calls) = RecordingCommandExecutor::with_call_log(
+        vec![Ok((true, String::new(), String::new()))],
+        vec![],
+    );
+    let builder = NixOSBuilder::new_legacy_with_executor(
+        config_path.clone(),
+        temp_dir.path().join("profile"),
+        Box::new(executor),
+    );
+
+    assert!(builder.build_and_switch().is_ok());
+
+    // Legacy builds pass the configuration path through `-I nixos-config=...`
+    // rather than a flake reference, and never clear the Nix search path.
+    assert_eq!(
+        calls.lock().unwrap().clone(),
+        vec![RecordedCall::NixosRebuild {
+            args: vec![
+                "test".to_string(),
+                "-I".to_string(),
+                format!("nixos-config={}", config_path.display()),
+            ],
+        }]
+    );
+}
+
+#[test]
+#[cfg(unix)] // Relies on a result symlink to derive the pseudo-generation.
+fn test_build_profile_uses_build_flake_args() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = temp_dir.path().join("config");
+    std::fs::create_dir_all(&config_path).unwrap();
+    // No cached profile, but a `result` symlink lets build_profile parse a
+    // pseudo-generation once the (recorded) build "succeeds".
+    let target = make_store_target(&temp_dir, "abcd1234-nixos-system-host");
+    std::os::unix::fs::symlink(&target, config_path.join("result")).unwrap();
+
+    let (executor, calls) = RecordingCommandExecutor::with_call_log(
+        vec![Ok((true, String::new(), String::new()))],
+        vec![],
+    );
+    let builder = NixOSBuilder::new_with_executor(
+        config_path.clone(),
+        temp_dir.path().join("profile"),
+        Box::new(executor),
+    );
+
+    assert_eq!(builder.build_profile().unwrap(), "abcd1234");
+
+    assert_eq!(
+        calls.lock().unwrap().clone(),
+        vec![RecordedCall::NixosRebuild {
+            args: vec![
+                "build".to_string(),
+                "--flake".to_string(),
+                config_path.to_string_lossy().into_owned(),
+                "--no-update-lock-file".to_string(),
+                "--impure".to_string(),
+            ],
+        }]
+    );
+}
+
+#[test]
 fn test_build_and_switch_returns_error_when_flake_test_fails() {
     let builder = NixOSBuilder::new_with_executor(
         PathBuf::from("/srv/example-flake"),
