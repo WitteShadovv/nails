@@ -37,6 +37,8 @@ jobs:
   flake-lock:
     name: Update flake.lock
     runs-on: ubuntu-24.04
+    # Scope DEPENDENCY_UPDATE_TOKEN to a dedicated deployment environment.
+    environment: dependency-updates
     timeout-minutes: 20
     permissions:
       contents: write
@@ -82,6 +84,8 @@ jobs:
   pre-commit-autoupdate:
     name: Update pre-commit hooks
     runs-on: ubuntu-24.04
+    # Scope DEPENDENCY_UPDATE_TOKEN to a dedicated deployment environment.
+    environment: dependency-updates
     timeout-minutes: 15
     permissions:
       contents: write

@@ -325,6 +325,10 @@ jobs:
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'lockfile')
     runs-on: ubuntu-24.04
+    # Bind the DEPENDENCY_UPDATE_TOKEN to a dedicated deployment environment so
+    # the secret is scoped (and can carry protection rules) rather than being
+    # readable by every job in the repository.
+    environment: dependency-updates
     timeout-minutes: 20
     permissions:
       contents: write
