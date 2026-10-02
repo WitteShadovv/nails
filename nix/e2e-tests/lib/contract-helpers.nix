@@ -88,15 +88,4 @@
     def assert_ascii_only(text, label):
         assert text.isascii(), f"Expected ASCII-only output for {label}, got: {text!r}"
   '';
-
-  countNonEmptyLinesFn = ''
-    def count_nonempty_lines(text):
-        return sum(1 for line in text.splitlines() if line.strip())
-  '';
-
-  assertNoBlockedSubstringsFn = ''
-    def assert_no_blocked_substrings(text, blocked, label):
-        for needle in blocked:
-            assert needle not in text, f"Found blocked substring {needle!r} in {label}: {text!r}"
-  '';
 }
