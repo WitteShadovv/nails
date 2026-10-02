@@ -96,7 +96,7 @@ maintenance guidance.
 ### Option 1: Use the latest published GitHub release bundle
 
 Download the latest published bundle from the canonical [GitHub Releases page](https://github.com/WitteShadovv/nails/releases).
-GitHub Releases may contain either a manually published stable release for an exact version tag or a tagged prerelease for an immutable prerelease tag. Use the newest release line appropriate for your testing or deployment. Mount the hidden storage first, then place the published `nails` executable directly on that hidden root. Do not leave the binary on the decoy filesystem:
+Each release is built from an annotated version tag; `-rc.N` versions are marked as prereleases. Use the newest release line appropriate for your testing or deployment. Mount the hidden storage first, then place the published `nails` executable directly on that hidden root. Do not leave the binary on the decoy filesystem:
 
 ```bash
 # Open and mount hidden storage first
@@ -108,7 +108,7 @@ sudo mount /dev/mapper/veracrypt-hidden /mnt/hidden-volume
 install -m0755 /path/to/downloaded/nails /mnt/hidden-volume/nails
 ```
 
-Verify the published checksums before first use. For higher assurance, rebuild the published source revision and compare it against the bundle using the reproducibility guidance in
+Verify the download before first use, as [`docs/verify-release.md`](docs/verify-release.md) describes: the checksum, the build provenance, and where to do it without leaving a trace on the decoy system. For higher assurance, rebuild the published source revision and compare it against the bundle using the reproducibility guidance in
 [`docs/release-artifact-reproducibility.md`](docs/release-artifact-reproducibility.md).
 
 ### Option 2: Build from source
@@ -273,6 +273,7 @@ They are related projects, but they are not interchangeable products and do not 
 - [Change history](CHANGELOG.md)
 - [Roadmap](ROADMAP.md)
 - [Storage backends](docs/backends.md)
+- [Verify a release](docs/verify-release.md)
 - [Release artifact reproducibility](docs/release-artifact-reproducibility.md)
 
 ### Contributing and governance
@@ -287,8 +288,7 @@ They are related projects, but they are not interchangeable products and do not 
 
 NAILS is actively maintained and currently released as **alpha** software.
 
-- Stable GitHub releases are created manually from exact stable tags; exact stable tag pushes are verification-only.
-- Suffixed prerelease tags may publish immutable GitHub prereleases directly.
+- Releases are drafted by the release workflow from annotated version tags and published by the maintainer ([RELEASING.md](RELEASING.md)); `-rc.N` versions are prereleases.
 - Interfaces and operator workflows are still subject to change between alpha releases.
 - Use it only after testing your exact hardware, storage backend, activation path, and recovery procedure.
 - Security claims are bounded by the documented threat model and by the checks you perform on your own setup.

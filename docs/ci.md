@@ -9,16 +9,14 @@ This repository is public. The CI and release workflows are written for a public
 | Workflow | Purpose | Triggers |
 |---|---|---|
 | `.github/workflows/ci.yml` | The pull request gate: lint, tests with coverage and doctests, dependency policy, privileged mount tests, the Nix release build and the flake checks, summarised by the single required `gate` job | PRs targeting `main`, push to `main`, manual dispatch |
-| `.github/workflows/scheduled.yml` | Maintenance that never gates a merge: the full-graph dependency policy scan (`just deny-full`), the `deny.toml` ignore expiry check, the crate fetcher canary, Rust cache warming, the stress loop (`just stress`), the benchmarks (compared with the previous run's baseline) and the monthly transitive `Cargo.lock` refresh | Weekly schedule (cache warming twice a week, lockfile refresh monthly), manual dispatch with a `task` input |
+| `.github/workflows/scheduled.yml` | Maintenance that never gates a merge: the full-graph dependency policy scan (`just deny-full`), the `deny.toml` ignore expiry check, the crate fetcher canary, the reproducibility check (`reproducibility.yml`), Rust cache warming, the stress loop (`just stress`), the benchmarks (compared with the previous run's baseline) and the monthly transitive `Cargo.lock` refresh | Weekly schedule (cache warming twice a week, lockfile refresh monthly), manual dispatch with a `task` input |
 | `.github/workflows/pr-title.yml` | Holds the pull request title to the same Conventional Commits grammar as the commit-msg hook, so a squash merge lands a valid subject on `main` | Pull request opened, edited, synchronized or reopened |
 | `.github/workflows/update-flake-lock.yml` | Monthly refresh of the version sources Dependabot has no ecosystem for: `flake.lock` (`nix flake update`) and the pre-commit hook revisions (`pre-commit autoupdate`), each opening its own pull request | Monthly schedule, manual dispatch |
 | `.github/workflows/forensics-eval-regression.yml` | Cheap non-privileged forensics regression lane covering Python tests plus a fixture-backed smoke run | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
 | `.github/workflows/e2e.yml` | The NixOS VM suite on GitHub-hosted runners: affected tests per pull request, the whole suite per push to `main`, every test driver nightly; runner-parameterised, so the same workflow runs on a self-hosted label | PRs targeting `main` (one path filter), push to `main`, nightly schedule, manual dispatch, `workflow_call` |
 | `.github/workflows/forensics-eval-fast.yml` | GitHub-hosted fast `forensics-eval` unittest lane for lightweight evaluator coverage under `nix/forensics-eval/tests` | Push/PR with path filters covering fast tests, related evaluator code, selected docs, and manual dispatch |
-| `.github/workflows/release.yml` | Tag-driven release entrypoint: exact stable tags are verification-only, while suffixed prerelease tags publish immutable GitHub prereleases | Push of `v*` tags |
-| `.github/workflows/publish-release.yml` | Deliberate manual stable-release publisher that requires an exact stable tag input and creates the GitHub release once in final form | Manual dispatch |
-| `.github/workflows/release-core.yml` | Reusable release implementation that builds the canonical bundle, verifies determinism, generates SBOMs, creates attestations, and optionally creates a GitHub release | Called from `release.yml` and `publish-release.yml` |
-| `.github/workflows/reproducibility.yml` | Reusable workflow that performs two independent rebuilds and compares the resulting release bundles | Called from `release-core.yml`, manual dispatch |
+| `.github/workflows/release.yml` | The whole release in one run: tag and version check, from-source build, rebuild on a fresh runner, the full E2E suite, SBOM, attestations and a draft GitHub release whose notes are the `CHANGELOG.md` section (see [Release workflow](#release-workflow)) | Push of `v*` tags, manual dispatch from a tag with a `tag` input |
+| `.github/workflows/reproducibility.yml` | Builds `.#nails-release` from source on fresh runners and compares the results byte for byte: one rebuild against the release build, or two builds against each other | Called from `release.yml` and weekly from `scheduled.yml` |
 
 ## CI policy
 
@@ -100,9 +98,9 @@ One workflow runs the NixOS VM suite in every lane. A `plan` job decides what ru
 | Pull request with the `full-e2e` label | `all` | Every test except the `performance` group. |
 | Push to `main` | `all` | Every test except the `performance` group; a test whose derivation already passed is substituted from the binary cache instead of booting again. |
 | Nightly schedule | `execute` | Every test driver runs directly (`run --execute`), so cached results do not count. The performance tests run here only, in an informational job of their own that never fails the run. |
-| Manual dispatch or `workflow_call` | input | `mode` (`affected`, `ci`, `all`, `execute`), `runner` and `max-shards`. |
+| Manual dispatch or `workflow_call` | input | `mode` (`affected`, `ci`, `all`, `execute`), `runner` and `max-shards`. `release.yml` calls it with `all` for the tagged commit. |
 
-- **One path filter.** The `plan` job compares the change with its base. When nothing under `nails-core/`, `nails-cli/`, `nix/`, `ci/e2e/`, the setup-nix action, this workflow, the flake, the Cargo manifests or `rust-toolchain.toml` changed, no VM boots and `e2e-result` passes. A docs-only pull request therefore costs one short job.
+- **One path filter.** The `plan` job of a pull request or push run compares the change with its base; a dispatch or a call runs the mode it asked for. When nothing under `nails-core/`, `nails-cli/`, `nix/`, `ci/e2e/`, the setup-nix action, this workflow, the flake, the Cargo manifests or `rust-toolchain.toml` changed, no VM boots and `e2e-result` passes. A docs-only pull request therefore costs one short job.
 - **No secrets for untrusted code.** There is no `pull_request_target` and no approval environment. Fork and Dependabot pull requests run like any other and read the binary cache without being able to write to it.
 - **Sharding.** `python3 -m ci.e2e plan --max-shards N --format github-matrix` balances the selected tests over as many shards as hold about 900 weighted seconds each (`SHARD_SECONDS` in `ci/e2e/plan.py`), never more than `max-shards` (10 by default) and never an empty one. Each shard's job timeout is 1.5 times its weighted load plus a 15-minute setup allowance (at least 30 minutes).
 - **Performance tests.** Wall-clock budgets on shared runners cannot gate a merge, so the shards of every mode exclude the `performance` group, and the `performance` job runs it on the selected runner in `execute` mode only. `07-performance.nix` times each sample inside the guest, from the `duration_ms` that nails logs for an activation (`activate --json`) or a teardown and with the guest clock for `status`, and holds the slowest of a few samples to its budget. It times status, overlay-only activation, emergency and one default activation, with `nixos-rebuild` stubbed so the external build stays out of the budget.
@@ -139,8 +137,8 @@ The action also connects the project's public Cachix cache:
   - `vm-test-run-*`: passed VM tests, which later runs fetch instead of booting the test again.
 
   `nails-release-*` is never pushed. Each path goes up with its closure, except what cache.nixos.org already serves. To push more, add a prefix to `PUSH_ALLOW` in `cache_plan.py`.
-- **Who gets the token.** Only `e2e.yml` and the `nix-build` job of `ci.yml` pass it. GitHub withholds secrets from fork pull requests and Dependabot runs, so those stay read-only too.
-- **Release builds.** `release-core.yml` and `reproducibility.yml` set `cache: 'false'` and never read the project cache. `nails` is therefore compiled from source in every release and rebuild job, and nothing from the cache can end up in a release.
+- **Who gets the token.** Only `e2e.yml` (also when `release.yml` calls it) and the `nix-build` job of `ci.yml` pass it. GitHub withholds secrets from fork pull requests and Dependabot runs, so those stay read-only too.
+- **Release builds.** The `build` job of `release.yml` and `reproducibility.yml` set `cache: 'false'` and never read the project cache. `nails` is therefore compiled from source in every release and rebuild job, and nothing from the cache can end up in a release. The release's E2E run reads the cache like any other E2E run; it gates the release but produces none of its files.
 
 Workflows load the action from the checked-out tree, so a run needs a revision that already contains it; rebase older pull requests before running them.
 
@@ -154,76 +152,29 @@ Until the cache name and key are filled in, the action logs `no project cache is
 2. In `.github/actions/setup-nix/action.yml`, set `CACHIX_NAME` to the cache's name and `CACHIX_PUBLIC_KEY` to its public signing key (`<name>.cachix.org-1:...`). Append `# pragma: allowlist secret` to the key line so the secret scanner accepts it.
 3. Create an auth token with write access to that cache and store it as the Actions repository secret `CACHIX_AUTH_TOKEN`. Do not add it as a Dependabot secret.
 
-## Release policy
+## Release workflow
 
-### Release trigger behavior
+A release is one annotated `v*` tag on `main`; [RELEASING.md](../RELEASING.md) is the maintainer checklist. Pushing the tag starts `release.yml`, and the run ends in a draft GitHub release. Publishing the draft is the one manual step. A manual dispatch runs the same pipeline again for an existing tag. It must run from that tag (`gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z`), because the provenance records the ref and commit of the run as the source; every job therefore builds and tests the tagged commit with the workflow and tooling of the tag.
 
-- **Exact stable tags (`v<version>`)**: automatic runs are **verification-only**. They build the canonical bundle, run determinism checks, generate SBOMs/attestations, and do **not** publish a GitHub release.
-- **Suffixed prerelease tags (`v<version>-...`)**: automatic runs build the same canonical bundle and publish an immutable **GitHub prerelease** directly from that prerelease tag.
-- **`publish-release.yml` manual dispatch**: maintainers provide an exact stable tag such as `v0.2.0`; the workflow validates it against `Cargo.toml`, rejects suffixed tags, and creates the stable GitHub release directly without promoting or editing an existing release.
+| Job | Needs | What it does |
+|---|---|---|
+| `version` | | Requires a run on an annotated tag, then runs `python3 -m ci.release check`: the tag must be `v` plus the workspace version, a `-dev` version is refused, every workspace package in `Cargo.lock` must carry the version, and `CHANGELOG.md` must have a non-empty section for it. That section, with a link to [verify-release.md](verify-release.md), becomes the release notes. A mistake fails here, before any build. |
+| `build` | `version` | Builds `.#nails-release` without the project cache, so `nails` is compiled from source, with cargo's `--locked`. Smoke-tests the bundle: the archive `nails-<version>-x86_64-unknown-linux-musl.tar.gz` and its contents, `nails --version` and `checksums.txt`. |
+| `rebuild` | `build` | Calls `reproducibility.yml`, which builds the bundle again on a fresh runner and compares every file with the `build` output byte for byte; a mismatch uploads a diffoscope report. |
+| `e2e` | `version` | Calls `e2e.yml` with mode `all` on the tagged commit. A dispatch can pick the runner with `e2e-runner` and `e2e-max-shards`. |
+| `sbom` | `build` | `cargo cyclonedx` (a checked binary from `taiki-e/install-action`) describes the `nails` binary for `x86_64-unknown-linux-musl`, without build-time dependencies. `python3 -m ci.release sbom-libc` adds the statically linked musl, whose version `build` reads from the pinned nixpkgs, and `cyclonedx validate --fail-on-errors` checks the result against CycloneDX 1.5. |
+| `attest` | all of the above | `actions/attest` signs build provenance for the subjects of `checksums.txt` (the archive and the binary), and a second attestation binds the SBOM to them. Nothing is attested before every gate passed. |
+| `draft-release` | `attest` | `gh release create --draft --verify-tag` with the four assets, marked as a prerelease for an `X.Y.Z-rc.N` version. An existing release is never modified. |
+| `report-status` | every job | Keeps the `CI red: Release` issue in step (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)). |
 
-This is the immutable-release policy: ordinary branch pushes do not trigger the heavy release workflow, exact stable tags are validated automatically, and stable publication only happens through a deliberate manual workflow.
+- **Provenance level.** GitHub artifact attestations are SLSA v1.0 Build Level 2: signed provenance from a hosted build platform. The build does not run in an isolated reusable workflow, so the project does not claim Build Level 3. There is no provenance file among the assets; `gh attestation verify` fetches the attestation from GitHub.
+- **Reproducibility.** The cross-runner comparison of `rebuild` is the evidence that the binary is reproducible. `nix-store --realise --check` is not used: it repeats only the archive packaging, on the same runner and with the same compiled binary. `scheduled.yml` runs `reproducibility.yml` every week on `main` with two independent builds, so a regression shows up before a release does.
+- **Concurrency.** Runs for the same tag queue in the group `release-<tag>`; none cancels another.
+- **Assets.** `nails`, `nails-<version>-x86_64-unknown-linux-musl.tar.gz`, `checksums.txt` and `sbom.cdx.json`.
 
-### What the release workflows do
+## Verifying a release
 
-On every run, the workflow:
-
-1. Builds `.#nails-release` with `accept-flake-config = false`.
-2. Verifies same-runner determinism with `nix-store --realise --check -K`.
-3. Smoke-tests the extracted archive.
-4. Generates and validates a CycloneDX SBOM.
-5. Uploads the canonical release bundle as a workflow artifact.
-6. Calls `reproducibility.yml` to perform two independent rebuild comparisons.
-7. Generates a GitHub artifact attestation when repository visibility supports it.
-
-On release-creation runs (`v<version>-...` prerelease tag pushes or manual `publish-release.yml` stable publication), they also:
-
-8. Generates **SLSA Level 3 provenance** (`nails.intoto.jsonl`).
-9. Creates a GitHub release exactly once with `gh release create --verify-tag`.
-
-### Release assets
-
-Published stable releases and prereleases contain:
-
-- `nails-*.tar.gz`
-- `nails`
-- `checksums.txt`
-- `sbom.cdx.json`
-- `nails.intoto.jsonl`
-
-## Public verification guidance
-
-### Verify the canonical release build locally
-
-```bash
-nix build -L .#nails-release -o result --option accept-flake-config false
-```
-
-### Verify checksums from a published release
-
-```bash
-sha256sum --check checksums.txt
-```
-
-### Verify SLSA provenance for a published release
-
-```bash
-go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
-
-slsa-verifier verify-artifact nails-*.tar.gz \
-  --provenance-path nails.intoto.jsonl \
-  --source-uri github.com/WitteShadovv/nails
-```
-
-The `--source-uri` value must match the repository identity embedded in provenance.
-
-### Verify the GitHub artifact attestation
-
-```bash
-gh attestation verify nails --repo WitteShadovv/nails
-```
-
-GitHub artifact attestations are generated in the release workflow when repository visibility supports them. They complement, but do not replace, the published SLSA provenance file.
+[verify-release.md](verify-release.md) is the single description of how users check a release: `sha256sum --check --ignore-missing checksums.txt`, `gh attestation verify`, and where to do it. [release-artifact-reproducibility.md](release-artifact-reproducibility.md) explains how to rebuild the bundle and compare it with a release.
 
 ## Local commands that mirror CI
 
@@ -248,14 +199,12 @@ A commit runs only the fast, offline pre-commit hooks (formatting, Rust file siz
 - `CODECOV_TOKEN` is optional and only affects Codecov upload from `main` pushes.
 - `CACHIX_AUTH_TOKEN` is optional. With it, `e2e.yml` and the `nix-build` job of `ci.yml` push build results to the project binary cache for trusted events (see [Nix setup and binary cache](#nix-setup-and-binary-cache)). Store it as an Actions secret only.
 - No E2E lane needs any other secret. Nothing uses the `hetzner-pr` approval environment any more; it can be deleted.
-- Release provenance and GitHub attestations use GitHub OIDC permissions; no long-lived signing secret is required.
+- Release attestations are signed with the `attest` job's OIDC identity (`id-token: write`); no long-lived signing secret exists.
 
 ## Operational caveats
 
-- Workflow artifacts are useful for maintainers and contributors, but the **public distribution channel is the immutable GitHub release created from a validated tag**.
-- Exact stable tag pushes are always validation-only.
-- Stable publication requires `publish-release.yml` and an exact stable tag that matches `Cargo.toml`.
-- Automatic prerelease publication is reserved for validated suffixed tags that match the current `Cargo.toml` version.
+- Workflow artifacts are useful for maintainers and contributors, but the **public distribution channel is the published GitHub release**, drafted by `release.yml` from a validated tag.
+- A release run only drafts; a maintainer publishes the draft after reviewing it.
 - E2E validation is a separate workflow with its own required check, `e2e-result`; it is not aggregated into `gate`.
 - Ordinary forensics CI is fixture-backed; there is no live forensics lane.
 
