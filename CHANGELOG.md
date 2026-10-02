@@ -231,6 +231,14 @@ of this changelog for that version becomes the release notes word for word, and
   mounts that cannot be removed are recorded as `Degraded` instead of the state claiming `Inactive`.
 - Preflight results are reported once, through the log output, so they honour `--quiet` and
   `--json` instead of being printed twice.
+- Detached activation and deactivation keep identifying data out of the system journal: transient
+  units are auto-named with a neutral description, worker output goes to the hidden-root log rather
+  than the journal by default (with an opt-in debug escape hatch), the history-cleanup pattern list
+  stays off the log stream, and a panic hook sends crash payloads and source paths to the hidden-root
+  log rather than stderr.
+- The hidden NixOS flake is checked with `nix` only after `/nix` and `/root` are overlaid; the
+  pre-overlay preflight performs static checks only, so the hidden configuration stays off the decoy
+  Nix store, database and root cache, and a broken flake fails with the overlays rolled back.
 
 ### Security
 
