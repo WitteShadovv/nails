@@ -120,6 +120,15 @@ pub struct ActivateOptions {
     ///
     /// Best-effort approach: cleanup failures are logged but don't fail activation.
     pub pre_activation_cleanup: bool,
+
+    /// Skip the real `nix flake metadata`/eval validation of the hidden flake.
+    ///
+    /// That validation is deferred to after the overlays are mounted, so it
+    /// writes to the overlay upper instead of the decoy `/nix/store` and Nix DB.
+    /// It is derived from the genuine `--no-preflight` (and `--overlay-only`)
+    /// choice, not from the detach-handoff skip flag: a detached worker still
+    /// validates the flake post-overlay, while a real `--no-preflight` opts out.
+    pub skip_flake_validation: bool,
 }
 
 impl Default for ActivateOptions {
@@ -139,6 +148,7 @@ impl Default for ActivateOptions {
             skip_process_detection_override: None,
             session_kill_confirmed: false,
             pre_activation_cleanup: DEFAULT_PRE_ACTIVATION_CLEANUP,
+            skip_flake_validation: false,
         }
     }
 }
@@ -344,6 +354,7 @@ mod tests {
             skip_process_detection_override: None,
             session_kill_confirmed: false,
             pre_activation_cleanup: true,
+            skip_flake_validation: false,
         };
         assert!(opts.validate().is_ok());
     }

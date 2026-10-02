@@ -82,6 +82,12 @@ pub fn execute(
         },
         json,
         no_color: !settings.color_stdout,
+        // The real `nix flake metadata`/eval validation is deferred until after
+        // the overlays are mounted, so it never touches the decoy store. Derive
+        // the opt-out from the genuine flags (not the detach-handoff skip flag):
+        // the detached worker re-runs with the same argv, computes the same
+        // value, and so still validates the flake post-overlay.
+        skip_flake_validation: no_preflight || overlay_only,
         ..args.to_activate_options()
     };
 
@@ -246,7 +252,10 @@ pub fn execute(
 
         {
             let mgr = &manager;
-            if let Err(e) = mgr.run_read_only_nixos_preflight(overlay_only) {
+            // Static flake checks only before the session kill and detach: the
+            // real `nix flake metadata`/eval validation is deferred to the
+            // detached, overlaid phase so nothing is copied onto the decoy store.
+            if let Err(e) = mgr.run_static_nixos_preflight(overlay_only) {
                 return report_error(
                     json,
                     "activate",

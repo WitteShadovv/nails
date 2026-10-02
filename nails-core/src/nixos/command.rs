@@ -176,6 +176,52 @@ impl NixOSBuilder {
         self.preflight_flake_reference_read_only()
     }
 
+    /// Static, side-effect-free flake validation safe to run before `/nix` and
+    /// `/root` are overlaid.
+    ///
+    /// It only reads the flake layout from disk — for a local flake, `flake.nix`
+    /// and `flake.lock` must exist and the selected `nixosConfigurations`
+    /// attribute name must be resolvable — and never invokes `nix`. Running
+    /// `nix flake metadata`/`getFlake` here would copy the plaintext hidden
+    /// configuration into the decoy `/nix/store` and Nix DB and seed root's
+    /// fetcher cache, all on the persistent decoy disk before the overlays hide
+    /// it. The real metadata/eval validation is deferred to
+    /// [`preflight_flake_reference_fast`], which activation runs only after the
+    /// overlays are in place.
+    pub(crate) fn preflight_flake_static(&self) -> crate::Result<()> {
+        if !self.is_flake() {
+            return Ok(());
+        }
+
+        let (metadata_flake_ref, selected_fragment) = self.preflight_flake_refs();
+
+        // `flake.nix` (and the flake directory) must exist for a local ref.
+        validate_local_flake_reference(&metadata_flake_ref)?;
+
+        // A local flake must carry a committed `flake.lock`: activation never
+        // runs `nix flake update`, and the deferred metadata check would fail
+        // without one, so catch it here with a clear message and no nix call.
+        if let Some(local_flake_dir) = resolve_local_flake_dir(&metadata_flake_ref)? {
+            let lock_file = local_flake_dir.join("flake.lock");
+            if !lock_file.exists() {
+                return Err(crate::NailsError::NixOSPreflightError {
+                    category: "flake lock",
+                    message: format!(
+                        "flake.lock not found in '{}'. Activation does not run 'nix flake update' automatically; commit a flake.lock and retry activation.",
+                        local_flake_dir.display()
+                    ),
+                });
+            }
+        }
+
+        // The selected `nixosConfigurations` attribute name must resolve (an
+        // explicit `#fragment` or the inferred hostname). This parses only; it
+        // does not evaluate the flake.
+        let _ = selected_nixos_configuration_fragment(selected_fragment.as_deref())?;
+
+        Ok(())
+    }
+
     fn preflight_flake_reference_read_only(&self) -> crate::Result<FlakePreflightSummary> {
         if !self.is_flake() {
             return Ok(FlakePreflightSummary {

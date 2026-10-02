@@ -48,6 +48,32 @@ in
         for path in paths:
             machine.fail(f"/bin/sh -lc 'mountpoint -q {path} && [ \"$(findmnt -n -o FSTYPE {path})\" = overlay ]'")
 
+    # Distinctive string embedded in the hidden flake source. `nix flake
+    # metadata`/`getFlake` copies the flake directory into the Nix store as a
+    # `-source` path and seeds root's fetcher cache; if that ran before `/nix`
+    # and `/root` were overlaid, the canary would land on the decoy's persistent
+    # store and cache and survive deactivation. T-067 defers that validation to
+    # the overlaid phase, so the canary must never reach the lower layer.
+    HIDDEN_FLAKE_CANARY = "NAILS_HIDDEN_FLAKE_CANARY_f067"
+
+    def find_canary_in_decoy(store_dir, canary):
+        # Returns the matching locations on the lower (decoy) layer. Greps the
+        # Nix store (which holds any leaked `-source` copy and thus covers the
+        # DB-registered path content) and root's fetcher cache.
+        hits = machine.succeed(
+            "/bin/sh -lc '"
+            f"grep -rl {canary} {store_dir} 2>/dev/null; "
+            f"grep -rl {canary} /root/.cache/nix 2>/dev/null; "
+            "true'"
+        ).strip()
+        return [line for line in hits.splitlines() if line]
+
+    def assert_hidden_flake_absent_from_decoy(store_dir, context):
+        hits = find_canary_in_decoy(store_dir, HIDDEN_FLAKE_CANARY)
+        assert not hits, (
+            f"hidden flake leaked onto the decoy {context}: {hits!r}"
+        )
+
     def install_nixos_rebuild_wrapper(log_path, marker_path):
         machine.succeed(
             f"""mkdir -p /tmp/nails-wrapper/bin
@@ -68,6 +94,10 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
+    # Resolve the store directory at runtime so the test carries no hard-coded
+    # store path; the forensic greps run against this.
+    nix_store = machine.succeed("nix eval --raw --expr builtins.storeDir").strip()
+
     headless_config = "/tmp/nails-headless.toml"
     flake_ref = "/mnt/hidden-volume/nixos#nails-e2e"
     write_headless_config(headless_config)
@@ -77,6 +107,7 @@ in
         machine.succeed("mkdir -p /mnt/hidden-volume/nixos")
         machine.succeed("""cat > /mnt/hidden-volume/nixos/flake.nix <<'EOF'
     {
+      # NAILS_HIDDEN_FLAKE_CANARY_f067 — forensic canary; see test script.
       description = "NAILS flake override E2E";
       inputs.nixpkgs.url = "path:${nixpkgsPath}";
       outputs = { self, nixpkgs }: {
@@ -98,6 +129,19 @@ in
             "/tmp/nixos-rebuild-flake.log",
             "/etc/nails-flake-marker",
         )
+
+    with subtest("null control: the hidden flake has not touched the decoy store yet"):
+        # Nothing has been activated, so no nix invocation has copied the hidden
+        # flake onto the decoy store or cache.
+        assert_hidden_flake_absent_from_decoy(nix_store, "before any activation")
+
+    with subtest("positive control: the leak detector fires on a planted copy"):
+        planted = f"{nix_store}/nails-leak-canary-test.txt"
+        machine.succeed(f"printf '%s\\n' {HIDDEN_FLAKE_CANARY} > {planted}")
+        assert find_canary_in_decoy(nix_store, HIDDEN_FLAKE_CANARY), \
+            "detector must catch a deliberate hidden-flake copy on the decoy store"
+        machine.succeed(f"rm -f {planted}")
+        assert_hidden_flake_absent_from_decoy(nix_store, "after removing the planted copy")
 
     with subtest("explicit flake override dispatches to nixos-rebuild --flake"):
         machine.succeed(
@@ -121,5 +165,12 @@ in
         assert_no_overlays_local(["/etc", "/home", "/root", "/srv", "/tmp"])
         machine.fail("test -e /etc/nails-flake-marker")
         machine.fail("test -e /etc/nixos/nails/configuration.nix")
+
+    with subtest("activation left no hidden flake copy on the decoy store or cache"):
+        # The deferred flake validation ran `nix flake metadata`/eval only after
+        # `/nix` and `/root` were overlaid, so any `-source` copy and fetcher
+        # cache landed in the overlay upper and vanished with it on deactivation.
+        # The lower layer, now visible again, must not reference the canary.
+        assert_hidden_flake_absent_from_decoy(nix_store, "after an activate/deactivate cycle")
   '';
 }

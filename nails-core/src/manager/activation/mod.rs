@@ -171,6 +171,9 @@ impl<F: Filesystem> NailsManager<F> {
         let options = crate::ActivateOptions {
             kill_session: false,
             no_pivot: false,
+            // `--no-preflight` opts out of the deferred, post-overlay flake
+            // validation as well as the pre-overlay checks.
+            skip_flake_validation: no_preflight,
             ..crate::ActivateOptions::default()
         };
         self.activate_with_options(options, no_preflight)
@@ -338,6 +341,20 @@ impl<F: Filesystem> NailsManager<F> {
             );
         }
         guard.emit_overlay_status_notification(security_status, direct_mounts, pivot_mounts);
+
+        // Step 7.5: Validate the hidden flake now that `/nix` and `/root` are
+        // overlaid. Running `nix flake metadata`/eval here — rather than before
+        // the session kill and mounts — keeps the plaintext hidden configuration
+        // off the decoy `/nix/store`, Nix DB and root cache: the store paths and
+        // caches it creates land in the overlay upper and vanish on
+        // deactivation. A broken hidden flake fails here while `activation_mounts`
+        // is still armed, so the overlays are torn down and the session is never
+        // restarted onto a broken state. A genuine `--no-preflight` (or
+        // `--overlay-only`) run sets `skip_flake_validation` and opts out; the
+        // detached worker leaves it unset so it still validates post-overlay.
+        if !options.skip_flake_validation {
+            guard.run_read_only_nixos_preflight(options.overlay_only)?;
+        }
 
         // Step 8: Restart session / display manager after overlays are in place.
         emit_progress(

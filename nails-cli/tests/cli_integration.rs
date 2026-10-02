@@ -1451,15 +1451,20 @@ fn test_activate_kill_session_fails_before_detach_on_flake_lock_preflight_error(
     std::fs::create_dir_all(&fake_bin).unwrap();
 
     let nix_script = fake_bin.join("nix");
+    let nix_invocation_log = temp_dir.path().join("nix-invocations.log");
     let systemd_run_script = fake_bin.join("systemd-run");
     let systemd_run_log = temp_dir.path().join("systemd-run.log");
 
     let shell_path = locate_shell_path();
+    // A nix that records any invocation and fails loudly. After T-067 the
+    // pre-detach phase must do static checks only, so this must never run before
+    // the overlays are mounted; the test asserts the log stays absent.
     fs::write(
         &nix_script,
         format!(
-            "#!{}\nprintf \"flake 'path:/etc/nixos' requires lock file changes\\n\" 1>&2\nexit 1\n",
-            shell_path.display()
+            "#!{}\nprintf '%s\\n' \"$*\" >> {}\nprintf 'nix must not run before the overlays are mounted\\n' 1>&2\nexit 1\n",
+            shell_path.display(),
+            nix_invocation_log.display()
         ),
     )
     .unwrap();
@@ -1521,10 +1526,16 @@ fn test_activate_kill_session_fails_before_detach_on_flake_lock_preflight_error(
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(4), "stderr={stderr}");
-    assert!(stderr.contains("flake lock"), "stderr={stderr}");
+    // The missing flake.lock is caught by the static pre-detach check, with no
+    // nix invocation against the hidden flake.
+    assert!(stderr.contains("flake.lock not found"), "stderr={stderr}");
     assert!(
         stderr.contains("does not run 'nix flake update' automatically"),
         "stderr={stderr}"
+    );
+    assert!(
+        !nix_invocation_log.exists(),
+        "nix must not be invoked before the overlays are mounted"
     );
     assert!(
         !systemd_run_log.exists()
