@@ -149,43 +149,12 @@ impl<F: Filesystem> NailsManager<F> {
 mod tests {
     use super::*;
     use crate::filesystem::PathKind;
-    use crate::nixos::NixOSBuilder;
+    use crate::nixos::{NixOSBuilder, RealCommandExecutor};
+    use crate::test_support::EnvGuard;
     use crate::{Config, MockFilesystem, StateFile, SystemState};
     use serial_test::serial;
     use std::fs;
     use std::os::unix::fs::{PermissionsExt, symlink};
-
-    fn clear_system_profile_env() {
-        unsafe {
-            std::env::remove_var("NAILS_SYSTEM_PROFILE_PATH");
-        }
-    }
-
-    fn restore_path_env(old_path: Option<std::ffi::OsString>) {
-        if let Some(path) = old_path {
-            unsafe {
-                std::env::set_var("PATH", path);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("PATH");
-            }
-        }
-    }
-
-    fn prepend_path(dir: &std::path::Path, old_path: &Option<std::ffi::OsString>) {
-        let mut paths = vec![dir.to_path_buf()];
-        if let Some(existing) = old_path {
-            paths.extend(std::env::split_paths(existing));
-        }
-
-        unsafe {
-            std::env::set_var(
-                "PATH",
-                std::env::join_paths(paths).expect("failed to compose PATH for test"),
-            );
-        }
-    }
 
     fn write_executable_script(path: &std::path::Path, body: &str) {
         fs::write(path, body).unwrap();
@@ -227,7 +196,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_switch_nixos_profile_wraps_run_current_system_preparation_error() {
-        clear_system_profile_env();
+        let mut env = EnvGuard::lock();
 
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
@@ -243,9 +212,7 @@ mod tests {
         fs.mock_set_path_exists("/run/current-system", true);
         fs.mock_set_path_type("/run/current-system", PathKind::Dir);
 
-        unsafe {
-            std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-        }
+        env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
 
         let builder =
             NixOSBuilder::new(hidden_root.join("config"), hidden_root.join("nails-system"));
@@ -267,15 +234,13 @@ mod tests {
             err.to_string()
                 .contains("/run/current-system exists but is not a symlink")
         );
-
-        clear_system_profile_env();
     }
 
     #[test]
     #[cfg(unix)]
     #[serial]
     fn test_switch_nixos_profile_fast_path_falls_back_and_persists_generation() {
-        clear_system_profile_env();
+        let mut env = EnvGuard::lock();
 
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
@@ -289,9 +254,7 @@ mod tests {
             "#!/usr/bin/env bash\nexit 1\n",
         );
         symlink(&system_generation, &system_profile).unwrap();
-        unsafe {
-            std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-        }
+        env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
 
         let bin_dir = hidden_root.join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
@@ -301,16 +264,14 @@ mod tests {
             &format!("#!/usr/bin/env bash\n: > '{}'\nexit 0\n", marker.display()),
         );
 
-        let old_path = std::env::var_os("PATH");
-        prepend_path(&bin_dir, &old_path);
-
         let fs = MockFilesystem::new();
         fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
         fs.mock_set_path_type(profiles_dir.to_str().unwrap(), PathKind::Dir);
         fs.mock_set_directory_contents(&profiles_dir, vec![system_generation.clone()]);
 
         let builder =
-            NixOSBuilder::new(hidden_root.join("config"), hidden_root.join("nails-system"));
+            NixOSBuilder::new(hidden_root.join("config"), hidden_root.join("nails-system"))
+                .with_executor(Box::new(RealCommandExecutor::with_search_path(&bin_dir)));
         let manager = make_manager(fs.clone(), hidden_root, builder);
 
         manager
@@ -330,16 +291,14 @@ mod tests {
         let saved = StateFile::load(&hidden_root.join("state.json")).unwrap();
         assert_eq!(saved.nixos_generation, Some("123".to_string()));
         assert_eq!(saved.config_fingerprint, Some("new-fp".to_string()));
-
-        restore_path_env(old_path);
-        clear_system_profile_env();
     }
 
     #[test]
     #[cfg(unix)]
     #[serial]
     fn test_switch_nixos_profile_wraps_build_and_switch_nixos_errors() {
-        clear_system_profile_env();
+        let mut env = EnvGuard::lock();
+        env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
@@ -350,11 +309,9 @@ mod tests {
             "#!/usr/bin/env bash\nprintf 'boom\\n' 1>&2\nexit 2\n",
         );
 
-        let old_path = std::env::var_os("PATH");
-        prepend_path(&bin_dir, &old_path);
-
         let builder =
-            NixOSBuilder::new(hidden_root.join("config"), hidden_root.join("nails-system"));
+            NixOSBuilder::new(hidden_root.join("config"), hidden_root.join("nails-system"))
+                .with_executor(Box::new(RealCommandExecutor::with_search_path(&bin_dir)));
         let manager = make_manager(MockFilesystem::new(), hidden_root, builder);
 
         let err = manager
@@ -363,8 +320,5 @@ mod tests {
         let err_text = err.to_string();
         assert!(err_text.contains("NixOS build+switch failed:"));
         assert!(err_text.contains("boom"));
-
-        restore_path_env(old_path);
-        clear_system_profile_env();
     }
 }

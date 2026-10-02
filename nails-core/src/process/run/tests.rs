@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::EnvGuard;
 use serial_test::serial;
 use std::fs;
 use std::path::Component;
@@ -10,32 +11,14 @@ fn write_file(path: &Path, body: &str, mode: u32) {
     fs::set_permissions(path, permissions).unwrap();
 }
 
-/// Prepends to PATH and restores it when dropped, so a failing assertion
-/// cannot leak the change. The original entries stay so that tests running
-/// alongside still find their programs.
-struct PathGuard(Option<OsString>);
-
-impl PathGuard {
-    fn prepend(dir: &Path) -> Self {
-        let original = std::env::var_os("PATH");
-        let mut dirs = vec![dir.to_path_buf()];
-        if let Some(existing) = &original {
-            dirs.extend(std::env::split_paths(existing));
-        }
-        unsafe {
-            std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
-        }
-        Self(original)
+/// Puts `dir` in front of `PATH` until `env` is dropped. The original entries
+/// stay so that a program the test does not stub still resolves.
+fn prepend_path(env: &mut EnvGuard, dir: &Path) {
+    let mut dirs = vec![dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&existing));
     }
-}
-
-impl Drop for PathGuard {
-    fn drop(&mut self) {
-        match &self.0 {
-            Some(path) => unsafe { std::env::set_var("PATH", path) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
-    }
+    env.set("PATH", std::env::join_paths(dirs).unwrap());
 }
 
 fn io_error(err: NailsError) -> std::io::Error {
@@ -47,7 +30,7 @@ fn io_error(err: NailsError) -> std::io::Error {
 
 #[test]
 fn tool_resolves_to_an_absolute_path_inside_the_system_tool_dirs() {
-    let resolved = resolve(&Program::Tool("sh")).unwrap();
+    let resolved = resolve(&Program::Tool("sh"), None).unwrap();
 
     assert!(resolved.is_absolute(), "{}", resolved.display());
     let parent = resolved.parent().unwrap();
@@ -60,7 +43,7 @@ fn tool_resolves_to_an_absolute_path_inside_the_system_tool_dirs() {
 
 #[test]
 fn tool_missing_from_the_system_tool_dirs_is_not_found() {
-    let err = io_error(resolve(&Program::Tool("nails-no-such-tool")).unwrap_err());
+    let err = io_error(resolve(&Program::Tool("nails-no-such-tool"), None).unwrap_err());
 
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     assert!(err.to_string().contains("nails-no-such-tool"));
@@ -76,9 +59,10 @@ fn tool_resolution_ignores_the_caller_path() {
         "#!/bin/sh\n",
         0o755,
     );
-    let _path = PathGuard::prepend(temp_dir.path());
+    let mut env = EnvGuard::lock();
+    prepend_path(&mut env, temp_dir.path());
 
-    let err = io_error(resolve(&Program::Tool("nails-stub-tool")).unwrap_err());
+    let err = io_error(resolve(&Program::Tool("nails-stub-tool"), None).unwrap_err());
 
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 }
@@ -118,10 +102,11 @@ fn caller_path_resolves_through_path() {
     let temp_dir = tempfile::tempdir().unwrap();
     let stub = temp_dir.path().join("nails-stub-tool");
     write_file(&stub, "#!/bin/sh\n", 0o755);
-    let _path = PathGuard::prepend(temp_dir.path());
+    let mut env = EnvGuard::lock();
+    prepend_path(&mut env, temp_dir.path());
 
     assert_eq!(
-        resolve(&Program::CallerPath("nails-stub-tool")).unwrap(),
+        resolve(&Program::CallerPath("nails-stub-tool"), None).unwrap(),
         stub
     );
 }
@@ -135,6 +120,7 @@ fn caller_path_skips_relative_path_entries() {
         "#!/bin/sh\n",
         0o755,
     );
+    let mut env = EnvGuard::lock();
     let cwd = std::env::current_dir().unwrap();
     let depth = cwd
         .components()
@@ -143,19 +129,99 @@ fn caller_path_skips_relative_path_entries() {
     let relative =
         PathBuf::from("../".repeat(depth)).join(temp_dir.path().strip_prefix("/").unwrap());
     assert!(relative.join("nails-stub-tool").is_file());
-    let _path = PathGuard::prepend(&relative);
+    prepend_path(&mut env, &relative);
 
-    let err = io_error(resolve(&Program::CallerPath("nails-stub-tool")).unwrap_err());
+    let err = io_error(resolve(&Program::CallerPath("nails-stub-tool"), None).unwrap_err());
 
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     assert!(err.to_string().contains("not found on PATH"));
 }
 
 #[test]
+fn caller_path_resolves_through_an_injected_search_path() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let stub = temp_dir.path().join("nails-stub-tool");
+    write_file(&stub, "#!/bin/sh\n", 0o755);
+
+    let resolved = resolve(
+        &Program::CallerPath("nails-stub-tool"),
+        Some(temp_dir.path().as_os_str()),
+    );
+
+    assert_eq!(resolved.unwrap(), stub);
+}
+
+#[test]
+#[serial]
+fn injected_search_path_replaces_the_caller_path() {
+    let on_path = tempfile::tempdir().unwrap();
+    write_file(
+        &on_path.path().join("nails-stub-tool"),
+        "#!/bin/sh\n",
+        0o755,
+    );
+    let empty = tempfile::tempdir().unwrap();
+    let mut env = EnvGuard::lock();
+    prepend_path(&mut env, on_path.path());
+
+    let err = io_error(
+        resolve(
+            &Program::CallerPath("nails-stub-tool"),
+            Some(empty.path().as_os_str()),
+        )
+        .unwrap_err(),
+    );
+
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    assert!(err.to_string().contains("not found on the search path"));
+}
+
+#[test]
+fn tool_resolution_ignores_an_injected_search_path() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    write_file(
+        &temp_dir.path().join("nails-stub-tool"),
+        "#!/bin/sh\n",
+        0o755,
+    );
+
+    let err = io_error(
+        resolve(
+            &Program::Tool("nails-stub-tool"),
+            Some(temp_dir.path().as_os_str()),
+        )
+        .unwrap_err(),
+    );
+
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+}
+
+#[test]
+fn real_runner_starts_a_caller_path_program_from_the_search_path_with_the_fixed_path() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    write_file(
+        &temp_dir.path().join("nails-stub-tool"),
+        "#!/bin/sh\nprintf '%s' \"$PATH\"\n",
+        0o755,
+    );
+
+    let (ok, stdout, stderr) = RealProcessRunner
+        .run_text(
+            &ProcessCommand::caller_path("nails-stub-tool")
+                .search_path(temp_dir.path())
+                .allow_in_test_runtime(),
+        )
+        .unwrap();
+
+    assert!(ok, "stub failed: {stderr}");
+    assert_eq!(stdout, SYSTEM_TOOL_DIRS.join(":"));
+}
+
+#[test]
 fn exact_program_resolves_to_itself() {
     let path = PathBuf::from("/nix/var/nix/profiles/system/bin/switch-to-configuration");
 
-    assert_eq!(resolve(&Program::Exact(path.clone())).unwrap(), path);
+    assert_eq!(resolve(&Program::Exact(path.clone()), None).unwrap(), path);
 }
 
 #[test]
@@ -201,30 +267,6 @@ fn real_runner_closes_stdin() {
     assert_eq!(stdout, "eof");
 }
 
-/// Sets an environment variable and restores its previous value on drop, so a
-/// failing assertion cannot leak the change to other serial tests.
-struct EnvGuard {
-    key: &'static str,
-    previous: Option<OsString>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let previous = std::env::var_os(key);
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => unsafe { std::env::set_var(self.key, value) },
-            None => unsafe { std::env::remove_var(self.key) },
-        }
-    }
-}
-
 /// The variable names in the child's environment, read with `env`, which prints
 /// exactly what it inherits and adds nothing of its own.
 fn child_env_keys(command: ProcessCommand) -> Vec<String> {
@@ -241,11 +283,12 @@ fn child_env_keys(command: ProcessCommand) -> Vec<String> {
 fn real_runner_gives_the_child_only_the_allowlisted_environment() {
     // A secret the caller holds (dropped), locale/terminal variables (kept), and
     // NIX_PATH (dropped unless the command opts in).
-    let _secret = EnvGuard::set("NAILS_RUN_SECRET", "leak");
-    let _lang = EnvGuard::set("LANG", "en_US.UTF-8");
-    let _lc_all = EnvGuard::set("LC_ALL", "C");
-    let _term = EnvGuard::set("TERM", "xterm-256color");
-    let _nix_path = EnvGuard::set("NIX_PATH", "nixpkgs=/caller/channel");
+    let mut env = EnvGuard::lock();
+    env.set("NAILS_RUN_SECRET", "leak")
+        .set("LANG", "en_US.UTF-8")
+        .set("LC_ALL", "C")
+        .set("TERM", "xterm-256color")
+        .set("NIX_PATH", "nixpkgs=/caller/channel");
 
     let keys = child_env_keys(ProcessCommand::tool("env").allow_in_test_runtime());
 
@@ -274,7 +317,8 @@ fn real_runner_gives_the_child_only_the_allowlisted_environment() {
 #[serial]
 fn real_runner_sets_a_fixed_path_the_caller_cannot_override() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let _path = PathGuard::prepend(temp_dir.path());
+    let mut env = EnvGuard::lock();
+    prepend_path(&mut env, temp_dir.path());
 
     // allow_env("PATH") must not win over the fixed PATH.
     let (ok, stdout, _) = RealProcessRunner
@@ -293,7 +337,8 @@ fn real_runner_sets_a_fixed_path_the_caller_cannot_override() {
 #[test]
 #[serial]
 fn real_runner_passes_allowed_variables_through() {
-    let _nix_path = EnvGuard::set("NIX_PATH", "nixpkgs=/caller/channel");
+    let mut env = EnvGuard::lock();
+    env.set("NIX_PATH", "nixpkgs=/caller/channel");
 
     let base = ProcessCommand::tool("sh")
         .args(["-c", "printf '%s' \"${NIX_PATH-unset}\""])

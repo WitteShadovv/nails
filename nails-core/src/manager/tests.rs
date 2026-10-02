@@ -1,6 +1,7 @@
 #![allow(clippy::field_reassign_with_default)]
 use super::*;
 use crate::filesystem::{Filesystem, MockOp, PathKind};
+use crate::test_support::EnvGuard;
 use crate::{
     MockFilesystem, OverlayConfig, OverlayInfo, StateFile, Stopwatch, SystemState, TestWorld,
     Verbosity, config::DEFAULT_HIDDEN_VOLUME_ROOT, config::OverlayMode, inject_import_block,
@@ -1121,13 +1122,10 @@ fn test_deactivate_requests_reboot_only_after_successful_teardown() {
         }
     }
 
-    unsafe {
-        std::env::set_var("NAILS_TEST_RUNTIME", "1");
-    }
+    let mut env = EnvGuard::lock();
+    env.set("NAILS_TEST_RUNTIME", "1");
     let result = manager.lock().unwrap().deactivate();
-    unsafe {
-        std::env::remove_var("NAILS_TEST_RUNTIME");
-    }
+    drop(env);
 
     assert!(
         result.is_ok(),
@@ -4116,6 +4114,9 @@ fn test_rollback_tr49_cleanup_fails_remounts_overlays() {
     // The current orchestrator rolls back before any unmount step runs, so this validates the
     // observable contract that users rely on today.
 
+    // Deactivation resolves the history files from HOME, so it stays redirected
+    // for the whole test.
+    let _home = crate::cleanup::test_utils::set_safe_test_home();
     let fs = MockFilesystem::new();
     let (manager, _temp_dir) = create_rollback_test_manager(fs);
     manager
@@ -4126,7 +4127,6 @@ fn test_rollback_tr49_cleanup_fails_remounts_overlays() {
 
     {
         let m = manager.lock().unwrap();
-        crate::cleanup::test_utils::set_safe_test_home();
         let bash_history = Path::new(crate::cleanup::test_utils::TEST_HOME).join(".bash_history");
         let bash_history_str = bash_history.to_str().unwrap();
         crate::cleanup::test_utils::assert_path_is_safe(bash_history_str);
@@ -5617,8 +5617,8 @@ fn test_activation_aborts_when_base_hardware_config_is_dirty() {
     let mock_hidden_vol = temp_dir.path();
     let state_path = mock_hidden_vol.join("state.json");
     let fs = MockFilesystem::new();
-    let home = std::env::var("HOME").expect("HOME must be set for cleanup test");
-    let bash_history = PathBuf::from(home).join(".bash_history");
+    let _home = crate::cleanup::test_utils::set_safe_test_home();
+    let bash_history = Path::new(crate::cleanup::test_utils::TEST_HOME).join(".bash_history");
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
     fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
@@ -5689,8 +5689,8 @@ fn test_activation_aborts_when_base_hardware_config_cannot_be_read() {
     let mock_hidden_vol = temp_dir.path();
     let state_path = mock_hidden_vol.join("state.json");
     let fs = MockFilesystem::new();
-    let home = std::env::var("HOME").expect("HOME must be set for cleanup test");
-    let bash_history = PathBuf::from(home).join(".bash_history");
+    let _home = crate::cleanup::test_utils::set_safe_test_home();
+    let bash_history = Path::new(crate::cleanup::test_utils::TEST_HOME).join(".bash_history");
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
     fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
@@ -5945,22 +5945,13 @@ fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
         std::fs::set_permissions(&rebuild_script, perms).unwrap();
     }
 
-    let old_path = std::env::var_os("PATH");
-    let mut paths = vec![bin_dir.clone()];
-    if let Some(existing) = &old_path {
-        paths.extend(std::env::split_paths(existing));
-    }
-    unsafe {
-        std::env::set_var(
-            "PATH",
-            std::env::join_paths(paths).expect("failed to compose PATH for test"),
-        );
-    }
-
     let builder = crate::nixos::NixOSBuilder::new(
         hidden_root.join("config"),
         hidden_root.join("nails-system"),
-    );
+    )
+    .with_executor(Box::new(
+        crate::nixos::RealCommandExecutor::with_search_path(&bin_dir),
+    ));
 
     let manager = Arc::new(Mutex::new(NailsManager::with_nixos(
         fs.clone(),
@@ -6025,11 +6016,6 @@ fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
         "expected rebuild failure notification in {}",
         notifications_dir.display()
     );
-
-    match old_path {
-        Some(path) => unsafe { std::env::set_var("PATH", path) },
-        None => unsafe { std::env::remove_var("PATH") },
-    }
 }
 
 // ========== Story 14.10: Error Format Validation Test ==========
@@ -6128,22 +6114,13 @@ fn test_run_read_only_nixos_preflight_reports_lock_file_problem_before_activatio
         std::fs::set_permissions(&nix_script, perms).unwrap();
     }
 
-    let old_path = std::env::var_os("PATH");
-    let mut paths = vec![bin_dir.clone()];
-    if let Some(existing) = &old_path {
-        paths.extend(std::env::split_paths(existing));
-    }
-    unsafe {
-        std::env::set_var(
-            "PATH",
-            std::env::join_paths(paths).expect("failed to compose PATH for test"),
-        );
-    }
-
     let builder = crate::nixos::NixOSBuilder::new_with_flake_ref(
         format!("{}#host-alpha", explicit_flake_dir.display()),
         hidden_root.join("nails-system"),
-    );
+    )
+    .with_executor(Box::new(
+        crate::nixos::RealCommandExecutor::with_search_path(&bin_dir),
+    ));
 
     let manager = NailsManager::with_nixos(
         fs,
@@ -6167,11 +6144,6 @@ fn test_run_read_only_nixos_preflight_reports_lock_file_problem_before_activatio
         err_text.contains("does not run 'nix flake update' automatically"),
         "unexpected error: {err_text}"
     );
-
-    match old_path {
-        Some(path) => unsafe { std::env::set_var("PATH", path) },
-        None => unsafe { std::env::remove_var("PATH") },
-    }
 }
 
 #[test]
@@ -6211,22 +6183,13 @@ fn test_run_read_only_nixos_preflight_uses_metadata_and_attr_existence_checks_wi
         std::fs::set_permissions(&nix_script, perms).unwrap();
     }
 
-    let old_path = std::env::var_os("PATH");
-    let mut paths = vec![bin_dir.clone()];
-    if let Some(existing) = &old_path {
-        paths.extend(std::env::split_paths(existing));
-    }
-    unsafe {
-        std::env::set_var(
-            "PATH",
-            std::env::join_paths(paths).expect("failed to compose PATH for test"),
-        );
-    }
-
     let builder = crate::nixos::NixOSBuilder::new_with_flake_ref(
         format!("{}#host-alpha", explicit_flake_dir.display()),
         hidden_root.join("nails-system"),
-    );
+    )
+    .with_executor(Box::new(
+        crate::nixos::RealCommandExecutor::with_search_path(&bin_dir),
+    ));
 
     let manager = NailsManager::with_nixos(
         fs,
@@ -6254,11 +6217,6 @@ fn test_run_read_only_nixos_preflight_uses_metadata_and_attr_existence_checks_wi
         !command_log.contains("config.system.build.toplevel.drvPath"),
         "preflight should not force toplevel drv evaluation: {command_log}"
     );
-
-    match old_path {
-        Some(path) => unsafe { std::env::set_var("PATH", path) },
-        None => unsafe { std::env::remove_var("PATH") },
-    }
 }
 
 #[test]
@@ -6305,22 +6263,13 @@ fn test_activation_non_fatal_switch_failures_do_not_roll_back() {
         std::fs::set_permissions(&rebuild_script, perms).unwrap();
     }
 
-    let old_path = std::env::var_os("PATH");
-    let mut paths = vec![bin_dir.clone()];
-    if let Some(existing) = &old_path {
-        paths.extend(std::env::split_paths(existing));
-    }
-    unsafe {
-        std::env::set_var(
-            "PATH",
-            std::env::join_paths(paths).expect("failed to compose PATH for test"),
-        );
-    }
-
     let builder = crate::nixos::NixOSBuilder::new(
         hidden_root.join("config"),
         hidden_root.join("nails-system"),
-    );
+    )
+    .with_executor(Box::new(
+        crate::nixos::RealCommandExecutor::with_search_path(&bin_dir),
+    ));
 
     let manager = Arc::new(Mutex::new(NailsManager::with_nixos(
         fs.clone(),
@@ -6379,11 +6328,6 @@ fn test_activation_non_fatal_switch_failures_do_not_roll_back() {
         }),
         "non-fatal service restart failures should not emit fatal rebuild notifications"
     );
-
-    match old_path {
-        Some(path) => unsafe { std::env::set_var("PATH", path) },
-        None => unsafe { std::env::remove_var("PATH") },
-    }
 }
 
 #[test]
@@ -7400,8 +7344,18 @@ fn test_parse_system_generation_empty() {
 
 // ========== find_newest_system_profile / select_system_profile Tests ==========
 
+/// Takes the environment lock with `NAILS_SYSTEM_PROFILE_PATH` removed, so the
+/// profile lookup uses the default `/nix/var/nix/profiles/system` even while a
+/// deactivation test elsewhere points it at a stub profile.
+fn default_system_profile_env() -> EnvGuard {
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
+    env
+}
+
 #[test]
 fn test_find_newest_system_profile_directory_not_exist() {
+    let _env = default_system_profile_env();
     let fs = MockFilesystem::new();
     // Profiles dir doesn't exist
     let result = super::helpers::find_newest_system_profile(&fs);
@@ -7411,10 +7365,9 @@ fn test_find_newest_system_profile_directory_not_exist() {
 
 #[test]
 fn test_find_newest_system_profile_picks_highest_generation() {
+    let _env = default_system_profile_env();
     let fs = MockFilesystem::new();
-    // Use runtime value of system_profiles_dir() to stay consistent with any
-    // NAILS_SYSTEM_PROFILE_PATH set by concurrent deactivation tests.
-    let profiles_dir = super::helpers::system_profiles_dir();
+    let profiles_dir = PathBuf::from("/nix/var/nix/profiles");
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
     fs.mock_set_directory_contents(
         &profiles_dir,
@@ -7434,6 +7387,7 @@ fn test_find_newest_system_profile_picks_highest_generation() {
 
 #[test]
 fn test_find_newest_system_profile_no_valid_entries() {
+    let _env = default_system_profile_env();
     let fs = MockFilesystem::new();
     let profiles_dir = PathBuf::from("/nix/var/nix/profiles");
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
@@ -7451,10 +7405,9 @@ fn test_find_newest_system_profile_no_valid_entries() {
 
 #[test]
 fn test_select_system_profile_finds_newest() {
+    let _env = default_system_profile_env();
     let fs = MockFilesystem::new();
-    // Use runtime value of system_profiles_dir() to stay consistent with any
-    // NAILS_SYSTEM_PROFILE_PATH set by concurrent deactivation tests.
-    let profiles_dir = super::helpers::system_profiles_dir();
+    let profiles_dir = PathBuf::from("/nix/var/nix/profiles");
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
     fs.mock_set_directory_contents(
         &profiles_dir,
@@ -7471,9 +7424,10 @@ fn test_select_system_profile_finds_newest() {
 
 #[test]
 fn test_select_system_profile_falls_back_to_system_symlink() {
+    let _env = default_system_profile_env();
     let fs = MockFilesystem::new();
     // No newest generation found, but system symlink exists
-    let system_path = super::helpers::system_profile_path();
+    let system_path = PathBuf::from("/nix/var/nix/profiles/system");
     // profiles dir doesn't exist (so no generations found)
     // but the system symlink itself exists
     fs.mock_set_path_exists(system_path.to_str().unwrap(), true);
@@ -7485,6 +7439,7 @@ fn test_select_system_profile_falls_back_to_system_symlink() {
 
 #[test]
 fn test_select_system_profile_returns_none_when_nothing_found() {
+    let _env = default_system_profile_env();
     let fs = MockFilesystem::new();
     // Neither profiles dir nor system symlink exist
     let result = select_system_profile(&fs).unwrap();

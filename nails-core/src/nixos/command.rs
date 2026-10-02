@@ -13,9 +13,11 @@
 use super::NixOSBuilder;
 use crate::error::Result;
 use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// `nix` or `nixos-rebuild` with `args`, taken from the caller's `PATH`.
+/// `nix` or `nixos-rebuild` with `args`, taken from the caller's `PATH` (see
+/// [`RealCommandExecutor`] for the search-path override).
 ///
 /// Allowed in test runtimes because the builder tests drive both through stub
 /// binaries. The child starts from a cleared environment, so `NIX_PATH` is
@@ -109,8 +111,37 @@ pub(crate) struct FlakePreflightSummary {
 
 /// Real command executor for production use
 ///
-/// A thin wrapper over [`RealProcessRunner`].
-pub struct RealCommandExecutor;
+/// A thin wrapper over [`RealProcessRunner`]. `nix` and `nixos-rebuild` come
+/// from the caller's `PATH` unless the executor was given a search path.
+#[derive(Debug, Clone, Default)]
+pub struct RealCommandExecutor {
+    search_path: Option<OsString>,
+}
+
+impl RealCommandExecutor {
+    /// An executor that looks up `nix` and `nixos-rebuild` only in `dirs`, a
+    /// `PATH`-style list, so a test can point it at stub builds without
+    /// changing the process environment that every other test thread shares.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_search_path(dirs: impl Into<OsString>) -> Self {
+        Self {
+            search_path: Some(dirs.into()),
+        }
+    }
+
+    fn toolchain_command(
+        &self,
+        program: &'static str,
+        args: &[&str],
+        clear_nix_path: bool,
+    ) -> ProcessCommand {
+        let command = nix_toolchain_command(program, args, clear_nix_path);
+        match &self.search_path {
+            Some(dirs) => command.search_path(dirs.clone()),
+            None => command,
+        }
+    }
+}
 
 impl CommandExecutor for RealCommandExecutor {
     fn execute_nixos_rebuild(
@@ -118,15 +149,11 @@ impl CommandExecutor for RealCommandExecutor {
         args: &[&str],
         clear_nix_path: bool,
     ) -> Result<(bool, String, String)> {
-        RealProcessRunner.run_text(&nix_toolchain_command(
-            "nixos-rebuild",
-            args,
-            clear_nix_path,
-        ))
+        RealProcessRunner.run_text(&self.toolchain_command("nixos-rebuild", args, clear_nix_path))
     }
 
     fn execute_nix(&self, args: &[&str], clear_nix_path: bool) -> Result<(bool, String, String)> {
-        RealProcessRunner.run_text(&nix_toolchain_command("nix", args, clear_nix_path))
+        RealProcessRunner.run_text(&self.toolchain_command("nix", args, clear_nix_path))
     }
 
     /// Runs the generation's own script; allowed in test runtimes because the

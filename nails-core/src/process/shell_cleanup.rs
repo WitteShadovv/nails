@@ -263,10 +263,8 @@ pub fn kill_user_shells(protected_pids: &[u32]) -> ShellKillReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::EnvGuard;
     use serial_test::serial;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_shell_names_contains_common_shells() {
@@ -309,34 +307,19 @@ mod tests {
     #[test]
     #[serial]
     fn shell_cleanup_target_uid_prefers_explicit_target_uid() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        unsafe {
-            std::env::set_var(ENV_TARGET_UID, "1001");
-            std::env::set_var("SUDO_UID", "1000");
-        }
+        let mut env = EnvGuard::lock();
+        env.set(ENV_TARGET_UID, "1001").set("SUDO_UID", "1000");
 
         assert_eq!(shell_cleanup_target_uid(), Some(1001));
-
-        unsafe {
-            std::env::remove_var(ENV_TARGET_UID);
-            std::env::remove_var("SUDO_UID");
-        }
     }
 
     #[test]
     #[serial]
     fn shell_cleanup_target_uid_uses_sudo_uid_when_present() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        unsafe {
-            std::env::remove_var(ENV_TARGET_UID);
-            std::env::set_var("SUDO_UID", "1000");
-        }
+        let mut env = EnvGuard::lock();
+        env.remove(ENV_TARGET_UID).set("SUDO_UID", "1000");
 
         assert_eq!(shell_cleanup_target_uid(), Some(1000));
-
-        unsafe {
-            std::env::remove_var("SUDO_UID");
-        }
     }
 
     #[test]

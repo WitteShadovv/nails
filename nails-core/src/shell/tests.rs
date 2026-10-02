@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::MockFilesystem;
+use crate::test_support::EnvGuard;
 
 use serial_test::serial;
 
@@ -19,83 +20,61 @@ fn set_mock_home(fs: &MockFilesystem, home: &str) {
 #[test]
 #[serial]
 fn test_detect_bash_shell() {
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    let mut env = EnvGuard::lock();
+    env.set("SHELL", "/bin/bash");
     let shell = create_test_shell();
     let result = shell.detect_current_shell();
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
     assert_eq!(result, Some(ShellType::Bash));
 }
 
 #[test]
 #[serial]
 fn test_detect_zsh_shell() {
-    unsafe {
-        std::env::set_var("SHELL", "/usr/bin/zsh");
-    }
+    let mut env = EnvGuard::lock();
+    env.set("SHELL", "/usr/bin/zsh");
     let shell = create_test_shell();
     let result = shell.detect_current_shell();
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
     assert_eq!(result, Some(ShellType::Zsh));
 }
 
 #[test]
 #[serial]
 fn test_detect_fish_shell() {
-    unsafe {
-        std::env::set_var("SHELL", "/usr/local/bin/fish");
-    }
+    let mut env = EnvGuard::lock();
+    env.set("SHELL", "/usr/local/bin/fish");
     let shell = create_test_shell();
     let result = shell.detect_current_shell();
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
     assert_eq!(result, Some(ShellType::Fish));
 }
 
 #[test]
 #[serial]
 fn test_detect_unsupported_shell() {
-    unsafe {
-        std::env::set_var("SHELL", "/bin/tcsh");
-    }
+    let mut env = EnvGuard::lock();
+    env.set("SHELL", "/bin/tcsh");
     let shell = create_test_shell();
     let result = shell.detect_current_shell();
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
     assert_eq!(result, None);
 }
 
 #[test]
 #[serial]
 fn test_detect_shell_falls_back_to_home_dir_without_hardcoded_home_prefix() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
     let home = "/srv/users/amnesia";
     set_mock_home(&fs, home);
     fs.mock_set_path_exists(&format!("{home}/.zshrc"), true);
 
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::set_var("USER", "amnesia");
-        std::env::set_var("HOME", home);
-    }
+    env.remove("SHELL")
+        .remove("SUDO_USER")
+        .remove("NAILS_TARGET_USER")
+        .set("USER", "amnesia")
+        .set("HOME", home);
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.detect_current_shell();
-
-    unsafe {
-        std::env::remove_var("USER");
-        std::env::remove_var("HOME");
-    }
 
     assert_eq!(result, Some(ShellType::Zsh));
 }
@@ -103,27 +82,21 @@ fn test_detect_shell_falls_back_to_home_dir_without_hardcoded_home_prefix() {
 #[test]
 #[serial]
 fn test_detect_shell_falls_back_to_fish_config_when_shell_env_is_unset() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
     let home = "/home/amnesia";
     set_mock_home(&fs, home);
     fs.mock_set_path_exists(&format!("{home}/.config/fish/config.fish"), true);
 
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::set_var("USER", "amnesia");
-        std::env::set_var("HOME", home);
-    }
+    env.remove("SHELL")
+        .remove("SUDO_USER")
+        .remove("NAILS_TARGET_USER")
+        .set("USER", "amnesia")
+        .set("HOME", home);
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.detect_current_shell();
-
-    unsafe {
-        std::env::remove_var("USER");
-        std::env::remove_var("HOME");
-    }
 
     assert_eq!(result, Some(ShellType::Fish));
 }
@@ -131,26 +104,20 @@ fn test_detect_shell_falls_back_to_fish_config_when_shell_env_is_unset() {
 #[test]
 #[serial]
 fn test_detect_shell_returns_none_when_no_shell_env_or_rc_files_exist() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
     let home = "/home/amnesia";
     set_mock_home(&fs, home);
 
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::set_var("USER", "amnesia");
-        std::env::set_var("HOME", home);
-    }
+    env.remove("SHELL")
+        .remove("SUDO_USER")
+        .remove("NAILS_TARGET_USER")
+        .set("USER", "amnesia")
+        .set("HOME", home);
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.detect_current_shell();
-
-    unsafe {
-        std::env::remove_var("USER");
-        std::env::remove_var("HOME");
-    }
 
     assert_eq!(result, None);
 }
@@ -158,21 +125,14 @@ fn test_detect_shell_returns_none_when_no_shell_env_or_rc_files_exist() {
 #[test]
 #[serial]
 fn test_resolve_target_username_prefers_sudo_user() {
+    let mut env = EnvGuard::lock();
     let shell = create_test_shell();
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "sudo-user");
-        std::env::set_var("NAILS_TARGET_USER", "target-user");
-        std::env::set_var("USER", "plain-user");
-    }
+    env.set("SUDO_USER", "sudo-user")
+        .set("NAILS_TARGET_USER", "target-user")
+        .set("USER", "plain-user");
 
     let result = shell.resolve_target_username().unwrap();
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::remove_var("USER");
-    }
 
     assert_eq!(result, "sudo-user");
 }
@@ -180,20 +140,14 @@ fn test_resolve_target_username_prefers_sudo_user() {
 #[test]
 #[serial]
 fn test_resolve_target_username_uses_target_user_fallback() {
+    let mut env = EnvGuard::lock();
     let shell = create_test_shell();
 
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::set_var("NAILS_TARGET_USER", "target-user");
-        std::env::set_var("USER", "plain-user");
-    }
+    env.remove("SUDO_USER")
+        .set("NAILS_TARGET_USER", "target-user")
+        .set("USER", "plain-user");
 
     let result = shell.resolve_target_username().unwrap();
-
-    unsafe {
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::remove_var("USER");
-    }
 
     assert_eq!(result, "target-user");
 }
@@ -201,19 +155,14 @@ fn test_resolve_target_username_uses_target_user_fallback() {
 #[test]
 #[serial]
 fn test_resolve_target_username_uses_user_fallback() {
+    let mut env = EnvGuard::lock();
     let shell = create_test_shell();
 
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::set_var("USER", "plain-user");
-    }
+    env.remove("SUDO_USER")
+        .remove("NAILS_TARGET_USER")
+        .set("USER", "plain-user");
 
     let result = shell.resolve_target_username().unwrap();
-
-    unsafe {
-        std::env::remove_var("USER");
-    }
 
     assert_eq!(result, "plain-user");
 }
@@ -221,13 +170,12 @@ fn test_resolve_target_username_uses_user_fallback() {
 #[test]
 #[serial]
 fn test_resolve_target_username_errors_without_any_user_env() {
+    let mut env = EnvGuard::lock();
     let shell = create_test_shell();
 
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::remove_var("USER");
-    }
+    env.remove("SUDO_USER")
+        .remove("NAILS_TARGET_USER")
+        .remove("USER");
 
     let err = shell.resolve_target_username().unwrap_err();
 
@@ -237,38 +185,25 @@ fn test_resolve_target_username_errors_without_any_user_env() {
 #[test]
 #[serial]
 fn test_has_explicit_target_user_context_detects_target_user_env() {
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-    }
+    let mut env = EnvGuard::lock();
+    env.remove("SUDO_USER").remove("NAILS_TARGET_USER");
     assert!(!ShellInstrumentation::<MockFilesystem>::has_explicit_target_user_context());
 
-    unsafe {
-        std::env::set_var("NAILS_TARGET_USER", "amnesia");
-    }
+    env.set("NAILS_TARGET_USER", "amnesia");
     assert!(ShellInstrumentation::<MockFilesystem>::has_explicit_target_user_context());
-
-    unsafe {
-        std::env::remove_var("NAILS_TARGET_USER");
-    }
 }
 
 #[test]
 #[serial]
 fn test_resolve_home_from_current_environment_uses_matching_home() {
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::set_var("HOME", "/srv/users/amnesia");
-    }
+    let mut env = EnvGuard::lock();
+    env.remove("SUDO_USER")
+        .remove("NAILS_TARGET_USER")
+        .set("HOME", "/srv/users/amnesia");
 
     let result = ShellInstrumentation::<MockFilesystem>::resolve_home_from_current_environment(
         Some("amnesia"),
     );
-
-    unsafe {
-        std::env::remove_var("HOME");
-    }
 
     assert_eq!(result, Some(PathBuf::from("/srv/users/amnesia")));
 }
@@ -276,19 +211,14 @@ fn test_resolve_home_from_current_environment_uses_matching_home() {
 #[test]
 #[serial]
 fn test_resolve_home_from_current_environment_rejects_mismatched_home() {
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::set_var("HOME", "/srv/users/other");
-    }
+    let mut env = EnvGuard::lock();
+    env.remove("SUDO_USER")
+        .remove("NAILS_TARGET_USER")
+        .set("HOME", "/srv/users/other");
 
     let result = ShellInstrumentation::<MockFilesystem>::resolve_home_from_current_environment(
         Some("amnesia"),
     );
-
-    unsafe {
-        std::env::remove_var("HOME");
-    }
 
     assert_eq!(result, None);
 }
@@ -296,19 +226,13 @@ fn test_resolve_home_from_current_environment_rejects_mismatched_home() {
 #[test]
 #[serial]
 fn test_resolve_home_from_current_environment_ignores_home_for_explicit_target_context() {
-    unsafe {
-        std::env::set_var("NAILS_TARGET_USER", "amnesia");
-        std::env::set_var("HOME", "/srv/users/amnesia");
-    }
+    let mut env = EnvGuard::lock();
+    env.set("NAILS_TARGET_USER", "amnesia")
+        .set("HOME", "/srv/users/amnesia");
 
     let result = ShellInstrumentation::<MockFilesystem>::resolve_home_from_current_environment(
         Some("amnesia"),
     );
-
-    unsafe {
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::remove_var("HOME");
-    }
 
     assert_eq!(result, None);
 }
@@ -316,21 +240,15 @@ fn test_resolve_home_from_current_environment_ignores_home_for_explicit_target_c
 #[test]
 #[serial]
 fn test_resolve_target_home_dir_prefers_matching_home_env() {
+    let mut env = EnvGuard::lock();
     let shell = create_test_shell();
 
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::set_var("USER", "amnesia");
-        std::env::set_var("HOME", "/srv/users/amnesia");
-    }
+    env.remove("SUDO_USER")
+        .remove("NAILS_TARGET_USER")
+        .set("USER", "amnesia")
+        .set("HOME", "/srv/users/amnesia");
 
     let result = shell.resolve_target_home_dir().unwrap();
-
-    unsafe {
-        std::env::remove_var("USER");
-        std::env::remove_var("HOME");
-    }
 
     assert_eq!(result, PathBuf::from("/srv/users/amnesia"));
 }
@@ -338,21 +256,15 @@ fn test_resolve_target_home_dir_prefers_matching_home_env() {
 #[test]
 #[serial]
 fn test_resolve_target_home_dir_falls_back_to_home_username_path_when_home_mismatched() {
+    let mut env = EnvGuard::lock();
     let shell = create_test_shell();
 
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::set_var("USER", "amnesia");
-        std::env::set_var("HOME", "/tmp/not-amnesia");
-    }
+    env.remove("SUDO_USER")
+        .remove("NAILS_TARGET_USER")
+        .set("USER", "amnesia")
+        .set("HOME", "/tmp/not-amnesia");
 
     let result = shell.resolve_target_home_dir().unwrap();
-
-    unsafe {
-        std::env::remove_var("USER");
-        std::env::remove_var("HOME");
-    }
 
     assert_eq!(result, PathBuf::from("/home/amnesia"));
 }
@@ -360,21 +272,15 @@ fn test_resolve_target_home_dir_falls_back_to_home_username_path_when_home_misma
 #[test]
 #[serial]
 fn test_resolve_target_home_dir_ignores_home_env_when_explicit_target_user_is_set() {
+    let mut env = EnvGuard::lock();
     let shell = create_test_shell();
 
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::set_var("NAILS_TARGET_USER", "amnesia");
-        std::env::remove_var("USER");
-        std::env::set_var("HOME", "/srv/users/amnesia");
-    }
+    env.remove("SUDO_USER")
+        .set("NAILS_TARGET_USER", "amnesia")
+        .remove("USER")
+        .set("HOME", "/srv/users/amnesia");
 
     let result = shell.resolve_target_home_dir().unwrap();
-
-    unsafe {
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::remove_var("HOME");
-    }
 
     assert_eq!(result, PathBuf::from("/home/amnesia"));
 }
@@ -382,14 +288,13 @@ fn test_resolve_target_home_dir_ignores_home_env_when_explicit_target_user_is_se
 #[test]
 #[serial]
 fn test_resolve_target_home_dir_errors_without_any_user_context() {
+    let mut env = EnvGuard::lock();
     let shell = create_test_shell();
 
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::remove_var("USER");
-        std::env::remove_var("HOME");
-    }
+    env.remove("SUDO_USER")
+        .remove("NAILS_TARGET_USER")
+        .remove("USER")
+        .remove("HOME");
 
     let err = shell.resolve_target_home_dir().unwrap_err();
 
@@ -399,27 +304,21 @@ fn test_resolve_target_home_dir_errors_without_any_user_context() {
 #[test]
 #[serial]
 fn test_detect_shell_ignores_mismatched_home_and_falls_back_to_user_home_rc_files() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
     set_mock_home(&fs, "/home/amnesia");
     fs.mock_set_path_exists("/home/amnesia/.zshrc", true);
     fs.mock_set_path_exists("/tmp/not-amnesia", true);
 
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::set_var("USER", "amnesia");
-        std::env::set_var("HOME", "/tmp/not-amnesia");
-    }
+    env.remove("SHELL")
+        .remove("SUDO_USER")
+        .remove("NAILS_TARGET_USER")
+        .set("USER", "amnesia")
+        .set("HOME", "/tmp/not-amnesia");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.detect_current_shell();
-
-    unsafe {
-        std::env::remove_var("USER");
-        std::env::remove_var("HOME");
-    }
 
     assert_eq!(result, Some(ShellType::Zsh));
 }
@@ -427,23 +326,18 @@ fn test_detect_shell_ignores_mismatched_home_and_falls_back_to_user_home_rc_file
 #[test]
 #[serial]
 fn test_detect_shell_defaults_to_bash_for_explicit_target_user_without_rc_files() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
     set_mock_home(&fs, "/home/amnesia");
 
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("USER");
-        std::env::set_var("NAILS_TARGET_USER", "amnesia");
-    }
+    env.remove("SHELL")
+        .remove("SUDO_USER")
+        .remove("USER")
+        .set("NAILS_TARGET_USER", "amnesia");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.detect_current_shell();
-
-    unsafe {
-        std::env::remove_var("NAILS_TARGET_USER");
-    }
 
     assert_eq!(result, Some(ShellType::Bash));
 }
@@ -913,6 +807,7 @@ fn test_write_alias_scripts_idempotent() {
 #[test]
 #[serial]
 fn test_shell_setup_with_bash() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -920,16 +815,10 @@ fn test_shell_setup_with_bash() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to bash
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    env.set("SHELL", "/bin/bash");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     let result = shell.shell_setup();
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Should succeed
     assert!(result.is_ok());
@@ -954,6 +843,7 @@ fn test_shell_setup_with_bash() {
 #[test]
 #[serial]
 fn test_shell_setup_with_zsh() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -961,16 +851,10 @@ fn test_shell_setup_with_zsh() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to zsh
-    unsafe {
-        std::env::set_var("SHELL", "/usr/bin/zsh");
-    }
+    env.set("SHELL", "/usr/bin/zsh");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     let result = shell.shell_setup();
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Should succeed
     assert!(result.is_ok());
@@ -991,6 +875,7 @@ fn test_shell_setup_with_zsh() {
 #[test]
 #[serial]
 fn test_shell_setup_with_fish() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -998,16 +883,10 @@ fn test_shell_setup_with_fish() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to fish
-    unsafe {
-        std::env::set_var("SHELL", "/usr/bin/fish");
-    }
+    env.set("SHELL", "/usr/bin/fish");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     let result = shell.shell_setup();
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Should succeed
     assert!(result.is_ok());
@@ -1028,6 +907,7 @@ fn test_shell_setup_with_fish() {
 #[test]
 #[serial]
 fn test_shell_setup_no_shell_detected() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1035,9 +915,7 @@ fn test_shell_setup_no_shell_detected() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Ensure SHELL is not set (use a custom variable that we know is unset)
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
+    env.remove("SHELL");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.shell_setup();
@@ -1050,6 +928,7 @@ fn test_shell_setup_no_shell_detected() {
 #[test]
 #[serial]
 fn test_shell_setup_without_shell_env_still_sets_up_persistent_integration_for_target_user() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1057,17 +936,10 @@ fn test_shell_setup_without_shell_env_still_sets_up_persistent_integration_for_t
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/amnesia", true);
 
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::set_var("NAILS_TARGET_USER", "amnesia");
-    }
+    env.remove("SHELL").set("NAILS_TARGET_USER", "amnesia");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     let result = shell.shell_setup();
-
-    unsafe {
-        std::env::remove_var("NAILS_TARGET_USER");
-    }
 
     assert!(result.is_ok());
     let setup = result
@@ -1083,6 +955,7 @@ fn test_shell_setup_without_shell_env_still_sets_up_persistent_integration_for_t
 #[test]
 #[serial]
 fn test_shell_setup_returns_warning_without_source_commands_when_script_writes_fail() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     // Pin the root: the default now derives from the binary location, which in a
     // test build is the build directory, not the install mount this test asserts on.
@@ -1097,23 +970,15 @@ fn test_shell_setup_returns_warning_without_source_commands_when_script_writes_f
     fs.mock_set_write_should_fail("/mnt/data/scripts/nails_prompt.bash", true);
     fs.mock_set_write_should_fail("/mnt/data/scripts/nails_alias.sh", true);
 
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-        std::env::set_var("USER", "testuser");
-        std::env::set_var("HOME", "/home/testuser");
-    }
+    env.set("SHELL", "/bin/bash")
+        .set("USER", "testuser")
+        .set("HOME", "/home/testuser");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell
         .shell_setup()
         .unwrap()
         .expect("shell should still be detected");
-
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::remove_var("USER");
-        std::env::remove_var("HOME");
-    }
 
     assert_eq!(result.shell_type, ShellType::Bash);
     assert!(result.instructions.is_empty());
@@ -1125,6 +990,7 @@ fn test_shell_setup_returns_warning_without_source_commands_when_script_writes_f
 #[test]
 #[serial]
 fn test_shell_setup_continues_when_xdg_autostart_write_returns_false() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1136,21 +1002,13 @@ fn test_shell_setup_continues_when_xdg_autostart_write_returns_false() {
         true,
     );
 
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SHELL", "/bin/bash").set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     let result = shell
         .shell_setup()
         .unwrap()
         .expect("setup should continue on best-effort autostart failure");
-
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert_eq!(result.shell_type, ShellType::Bash);
     assert_eq!(result.instructions.len(), 2);
@@ -1161,28 +1019,23 @@ fn test_shell_setup_continues_when_xdg_autostart_write_returns_false() {
 #[test]
 #[serial]
 fn test_shell_setup_continues_when_xdg_autostart_resolution_errors() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-        std::env::remove_var("SUDO_USER");
-        std::env::remove_var("NAILS_TARGET_USER");
-        std::env::remove_var("USER");
-        std::env::remove_var("HOME");
-    }
+    env.set("SHELL", "/bin/bash")
+        .remove("SUDO_USER")
+        .remove("NAILS_TARGET_USER")
+        .remove("USER")
+        .remove("HOME");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell
         .shell_setup()
         .unwrap()
         .expect("setup should continue even when autostart setup errors");
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     assert_eq!(result.shell_type, ShellType::Bash);
     assert_eq!(result.instructions.len(), 2);
@@ -1193,6 +1046,7 @@ fn test_shell_setup_continues_when_xdg_autostart_resolution_errors() {
 #[test]
 #[serial]
 fn test_shell_setup_unsupported_shell() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1200,16 +1054,10 @@ fn test_shell_setup_unsupported_shell() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL to unsupported shell
-    unsafe {
-        std::env::set_var("SHELL", "/bin/tcsh");
-    }
+    env.set("SHELL", "/bin/tcsh");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.shell_setup();
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Should succeed but return None
     assert!(result.is_ok());
@@ -1219,6 +1067,7 @@ fn test_shell_setup_unsupported_shell() {
 #[test]
 #[serial]
 fn test_shell_setup_to_source_commands() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1226,16 +1075,10 @@ fn test_shell_setup_to_source_commands() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to bash
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    env.set("SHELL", "/bin/bash");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.shell_setup();
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Should have Some result
     assert!(matches!(result.as_ref(), Ok(Some(_))));
@@ -1254,6 +1097,7 @@ fn test_shell_setup_to_source_commands() {
 #[test]
 #[serial]
 fn test_shell_cleanup_normal_deactivation() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1261,16 +1105,10 @@ fn test_shell_cleanup_normal_deactivation() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to bash
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    env.set("SHELL", "/bin/bash");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.shell_cleanup(false); // false = no alias removal
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Should have shell type detected
     assert_eq!(result.shell_type, Some(ShellType::Bash));
@@ -1287,6 +1125,7 @@ fn test_shell_cleanup_normal_deactivation() {
 #[test]
 #[serial]
 fn test_shell_cleanup_emergency_deactivation() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1294,16 +1133,10 @@ fn test_shell_cleanup_emergency_deactivation() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to bash
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    env.set("SHELL", "/bin/bash");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.shell_cleanup(true); // true = include alias removal
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Should have shell type detected
     assert_eq!(result.shell_type, Some(ShellType::Bash));
@@ -1317,13 +1150,12 @@ fn test_shell_cleanup_emergency_deactivation() {
 #[test]
 #[serial]
 fn test_shell_cleanup_no_shell_detected() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     // Ensure SHELL is not set
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
+    env.remove("SHELL");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.shell_cleanup(false);
@@ -1342,20 +1174,15 @@ fn test_shell_cleanup_no_shell_detected() {
 #[test]
 #[serial]
 fn test_shell_cleanup_with_fish() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     // Set SHELL to fish
-    unsafe {
-        std::env::set_var("SHELL", "/usr/bin/fish");
-    }
+    env.set("SHELL", "/usr/bin/fish");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.shell_cleanup(true); // emergency with alias removal
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Should have fish shell type
     assert_eq!(result.shell_type, Some(ShellType::Fish));
@@ -1369,6 +1196,7 @@ fn test_shell_cleanup_with_fish() {
 #[test]
 #[serial]
 fn test_shell_setup_result_paths() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config {
         hidden_volume_root: "/test/hidden".into(),
@@ -1379,16 +1207,10 @@ fn test_shell_setup_result_paths() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to bash
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    env.set("SHELL", "/bin/bash");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.shell_setup();
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Should have Some result
     assert!(matches!(result.as_ref(), Ok(Some(_))));
@@ -1420,6 +1242,7 @@ fn test_shell_setup_result_paths() {
 #[test]
 #[serial]
 fn test_shell_setup_color_scheme_enabled() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let mut config = Config::default();
     config.color_scheme.enabled = true;
@@ -1430,16 +1253,10 @@ fn test_shell_setup_color_scheme_enabled() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to bash
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    env.set("SHELL", "/bin/bash");
 
     let shell = ShellInstrumentation::new(fs, config.clone());
     let result = shell.shell_setup();
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Verify setup succeeds
     assert!(result.is_ok());
@@ -1456,6 +1273,7 @@ fn test_shell_setup_color_scheme_enabled() {
 #[test]
 #[serial]
 fn test_shell_setup_color_scheme_disabled() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let mut config = Config::default();
     config.color_scheme.enabled = false;
@@ -1464,16 +1282,10 @@ fn test_shell_setup_color_scheme_disabled() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to bash
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    env.set("SHELL", "/bin/bash");
 
     let shell = ShellInstrumentation::new(fs, config.clone());
     let result = shell.shell_setup();
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Verify setup succeeds
     assert!(result.is_ok());
@@ -1486,6 +1298,7 @@ fn test_shell_setup_color_scheme_disabled() {
 #[test]
 #[serial]
 fn test_shell_cleanup_color_scheme_enabled() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let mut config = Config::default();
     config.color_scheme.enabled = true;
@@ -1495,16 +1308,10 @@ fn test_shell_cleanup_color_scheme_enabled() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to bash
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    env.set("SHELL", "/bin/bash");
 
     let shell = ShellInstrumentation::new(fs, config.clone());
     let result = shell.shell_cleanup(false);
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Verify cleanup succeeds
     assert!(result.shell_type.is_some());
@@ -1520,6 +1327,7 @@ fn test_shell_cleanup_color_scheme_enabled() {
 #[test]
 #[serial]
 fn test_shell_cleanup_color_scheme_disabled() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let mut config = Config::default();
     config.color_scheme.enabled = false;
@@ -1528,16 +1336,10 @@ fn test_shell_cleanup_color_scheme_disabled() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to bash
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    env.set("SHELL", "/bin/bash");
 
     let shell = ShellInstrumentation::new(fs, config.clone());
     let result = shell.shell_cleanup(false);
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Verify cleanup succeeds
     assert!(result.shell_type.is_some());
@@ -1550,6 +1352,7 @@ fn test_shell_cleanup_color_scheme_disabled() {
 #[test]
 #[serial]
 fn test_activation_deactivation_color_scheme_cycle() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let mut config = Config::default();
     config.color_scheme.enabled = true;
@@ -1561,9 +1364,7 @@ fn test_activation_deactivation_color_scheme_cycle() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to bash
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    env.set("SHELL", "/bin/bash");
 
     let shell = ShellInstrumentation::new(fs.clone(), config.clone());
 
@@ -1590,15 +1391,12 @@ fn test_activation_deactivation_color_scheme_cycle() {
 
     // Verify sequences are different (not accidentally generating same thing)
     assert_ne!(hidden_sequences, decoy_sequences);
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 }
 
 #[test]
 #[serial]
 fn test_color_scheme_applied_after_scripts_written() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1606,18 +1404,12 @@ fn test_color_scheme_applied_after_scripts_written() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to bash
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    env.set("SHELL", "/bin/bash");
 
     let shell = ShellInstrumentation::new(fs.clone(), config.clone());
 
     // Run shell_setup which writes scripts first, then applies color scheme
     let result = shell.shell_setup();
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Verify setup succeeded
     assert!(result.is_ok());
@@ -1643,6 +1435,7 @@ fn test_color_scheme_applied_after_scripts_written() {
 #[test]
 #[serial]
 fn test_emergency_deactivation_includes_color_reset() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1650,18 +1443,12 @@ fn test_emergency_deactivation_includes_color_reset() {
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
     // Set SHELL environment variable to bash
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-    }
+    env.set("SHELL", "/bin/bash");
 
     let shell = ShellInstrumentation::new(fs, config.clone());
 
     // Emergency deactivation calls shell_cleanup(true)
     let result = shell.shell_cleanup(true);
-
-    unsafe {
-        std::env::remove_var("SHELL");
-    }
 
     // Verify cleanup completed
     assert!(result.shell_type.is_some());
@@ -1679,6 +1466,7 @@ fn test_emergency_deactivation_includes_color_reset() {
 #[test]
 #[serial]
 fn test_inject_rc_integration_bash_creates_bashrc() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     // Pin the root: the default now derives from the binary location, which in a
     // test build is the build directory, not the install mount this test asserts on.
@@ -1691,20 +1479,12 @@ fn test_inject_rc_integration_bash_creates_bashrc() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SHELL", "/bin/bash").set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config.clone());
 
     // Call inject_rc_integration
     let result = shell.inject_rc_integration(ShellType::Bash);
-
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(result.is_ok());
     assert!(result.unwrap());
@@ -1723,6 +1503,7 @@ fn test_inject_rc_integration_bash_creates_bashrc() {
 #[test]
 #[serial]
 fn test_inject_rc_integration_zsh_creates_zshrc() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     // Pin the root: the default now derives from the binary location, which in a
     // test build is the build directory, not the install mount this test asserts on.
@@ -1735,19 +1516,11 @@ fn test_inject_rc_integration_zsh_creates_zshrc() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SHELL", "/bin/zsh");
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SHELL", "/bin/zsh").set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config.clone());
 
     let result = shell.inject_rc_integration(ShellType::Zsh);
-
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(result.is_ok());
     assert!(result.unwrap());
@@ -1764,6 +1537,7 @@ fn test_inject_rc_integration_zsh_creates_zshrc() {
 #[test]
 #[serial]
 fn test_inject_rc_integration_fish_creates_config_fish() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     // Pin the root: the default now derives from the binary location, which in a
     // test build is the build directory, not the install mount this test asserts on.
@@ -1776,19 +1550,11 @@ fn test_inject_rc_integration_fish_creates_config_fish() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SHELL", "/bin/fish");
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SHELL", "/bin/fish").set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config.clone());
 
     let result = shell.inject_rc_integration(ShellType::Fish);
-
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(result.is_ok());
     assert!(result.unwrap());
@@ -1805,6 +1571,7 @@ fn test_inject_rc_integration_fish_creates_config_fish() {
 #[test]
 #[serial]
 fn test_inject_rc_integration_idempotent() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1812,19 +1579,13 @@ fn test_inject_rc_integration_idempotent() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config.clone());
 
     // Call twice
     let result1 = shell.inject_rc_integration(ShellType::Bash);
     let result2 = shell.inject_rc_integration(ShellType::Bash);
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(result1.is_ok());
     assert!(result2.is_ok());
@@ -1840,6 +1601,7 @@ fn test_inject_rc_integration_idempotent() {
 #[test]
 #[serial]
 fn test_inject_rc_integration_appends_to_existing_bashrc() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1855,16 +1617,10 @@ fn test_inject_rc_integration_appends_to_existing_bashrc() {
         "# Existing config\nexport PATH=/usr/bin:$PATH\n",
     );
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config.clone());
     let result = shell.inject_rc_integration(ShellType::Bash);
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(result.is_ok());
 
@@ -1881,6 +1637,7 @@ fn test_inject_rc_integration_appends_to_existing_bashrc() {
 #[test]
 #[serial]
 fn test_inject_rc_integration_uses_color_scheme_config() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config {
         color_scheme: crate::config::ColorSchemeConfig {
@@ -1897,16 +1654,10 @@ fn test_inject_rc_integration_uses_color_scheme_config() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config.clone());
     let result = shell.inject_rc_integration(ShellType::Bash);
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(result.is_ok());
 
@@ -1921,6 +1672,7 @@ fn test_inject_rc_integration_uses_color_scheme_config() {
 #[test]
 #[serial]
 fn test_inject_rc_integration_falls_back_to_user_env() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1928,18 +1680,11 @@ fn test_inject_rc_integration_falls_back_to_user_env() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/fallbackuser", true);
 
-    unsafe {
-        // No SUDO_USER, should fall back to USER
-        std::env::remove_var("SUDO_USER");
-        std::env::set_var("USER", "fallbackuser");
-    }
+    // No SUDO_USER, should fall back to USER
+    env.remove("SUDO_USER").set("USER", "fallbackuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config.clone());
     let result = shell.inject_rc_integration(ShellType::Bash);
-
-    unsafe {
-        std::env::remove_var("USER");
-    }
 
     assert!(result.is_ok());
 
@@ -1951,6 +1696,7 @@ fn test_inject_rc_integration_falls_back_to_user_env() {
 #[test]
 #[serial]
 fn test_inject_rc_integration_returns_false_on_failure() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1961,16 +1707,10 @@ fn test_inject_rc_integration_returns_false_on_failure() {
     // Make bashrc write fail
     fs.mock_set_write_should_fail("/home/testuser/.bashrc", true);
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config.clone());
     let result = shell.inject_rc_integration(ShellType::Bash);
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     // Should return Ok(false) on best-effort failure
     assert!(result.is_ok());
@@ -1984,6 +1724,7 @@ fn test_inject_rc_integration_returns_false_on_failure() {
 #[test]
 #[serial]
 fn test_write_xdg_autostart_entry_creates_desktop_file() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -1991,16 +1732,10 @@ fn test_write_xdg_autostart_entry_creates_desktop_file() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     let result = shell.write_xdg_autostart_entry();
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(result.is_ok());
     assert!(result.unwrap());
@@ -2022,6 +1757,7 @@ fn test_write_xdg_autostart_entry_creates_desktop_file() {
 #[test]
 #[serial]
 fn test_write_xdg_autostart_entry_creates_autostart_directory() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -2029,9 +1765,7 @@ fn test_write_xdg_autostart_entry_creates_autostart_directory() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
 
@@ -2041,10 +1775,6 @@ fn test_write_xdg_autostart_entry_creates_autostart_directory() {
 
     // Writing should create it
     let result = shell.write_xdg_autostart_entry();
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(result.is_ok());
     assert!(result.unwrap());
@@ -2056,6 +1786,7 @@ fn test_write_xdg_autostart_entry_creates_autostart_directory() {
 #[test]
 #[serial]
 fn test_write_xdg_autostart_entry_uses_user_env_fallback() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -2063,17 +1794,10 @@ fn test_write_xdg_autostart_entry_uses_user_env_fallback() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/fallbackuser", true);
 
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::set_var("USER", "fallbackuser");
-    }
+    env.remove("SUDO_USER").set("USER", "fallbackuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     let result = shell.write_xdg_autostart_entry();
-
-    unsafe {
-        std::env::remove_var("USER");
-    }
 
     assert!(result.is_ok());
     assert!(result.unwrap());
@@ -2086,6 +1810,7 @@ fn test_write_xdg_autostart_entry_uses_user_env_fallback() {
 #[test]
 #[serial]
 fn test_write_xdg_autostart_entry_uses_home_env_without_hardcoded_home_prefix() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
     let home = "/srv/users/fallbackuser";
@@ -2095,19 +1820,12 @@ fn test_write_xdg_autostart_entry_uses_home_env_without_hardcoded_home_prefix() 
     fs.mock_set_path_exists("/srv/users", true);
     fs.mock_set_path_exists(home, true);
 
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::set_var("USER", "fallbackuser");
-        std::env::set_var("HOME", home);
-    }
+    env.remove("SUDO_USER")
+        .set("USER", "fallbackuser")
+        .set("HOME", home);
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     let result = shell.write_xdg_autostart_entry();
-
-    unsafe {
-        std::env::remove_var("USER");
-        std::env::remove_var("HOME");
-    }
 
     assert!(result.is_ok());
     assert!(result.unwrap());
@@ -2119,6 +1837,7 @@ fn test_write_xdg_autostart_entry_uses_home_env_without_hardcoded_home_prefix() 
 #[test]
 #[serial]
 fn test_inject_rc_integration_uses_home_env_without_hardcoded_home_prefix() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
     let home = "/srv/users/fallbackuser";
@@ -2128,19 +1847,12 @@ fn test_inject_rc_integration_uses_home_env_without_hardcoded_home_prefix() {
     fs.mock_set_path_exists("/srv/users", true);
     fs.mock_set_path_exists(home, true);
 
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-        std::env::set_var("USER", "fallbackuser");
-        std::env::set_var("HOME", home);
-    }
+    env.remove("SUDO_USER")
+        .set("USER", "fallbackuser")
+        .set("HOME", home);
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     let result = shell.inject_rc_integration(ShellType::Bash);
-
-    unsafe {
-        std::env::remove_var("USER");
-        std::env::remove_var("HOME");
-    }
 
     assert!(result.is_ok());
     let bashrc_path = PathBuf::from(format!("{home}/.bashrc"));
@@ -2150,6 +1862,7 @@ fn test_inject_rc_integration_uses_home_env_without_hardcoded_home_prefix() {
 #[test]
 #[serial]
 fn test_write_xdg_autostart_entry_idempotent() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -2157,19 +1870,13 @@ fn test_write_xdg_autostart_entry_idempotent() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
 
     // Write twice — should succeed both times
     let result1 = shell.write_xdg_autostart_entry();
     let result2 = shell.write_xdg_autostart_entry();
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(result1.is_ok());
     assert!(result1.unwrap());
@@ -2185,6 +1892,7 @@ fn test_write_xdg_autostart_entry_idempotent() {
 #[test]
 #[serial]
 fn test_write_xdg_autostart_entry_returns_false_on_write_failure() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -2198,16 +1906,10 @@ fn test_write_xdg_autostart_entry_returns_false_on_write_failure() {
         true,
     );
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     let result = shell.write_xdg_autostart_entry();
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     // Should return Ok(false) on best-effort failure
     assert!(result.is_ok());
@@ -2217,6 +1919,7 @@ fn test_write_xdg_autostart_entry_returns_false_on_write_failure() {
 #[test]
 #[serial]
 fn test_write_xdg_autostart_desktop_file_content_format() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -2224,16 +1927,10 @@ fn test_write_xdg_autostart_desktop_file_content_format() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     shell.write_xdg_autostart_entry().unwrap();
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     let desktop_path = PathBuf::from("/home/testuser/.config/autostart/nails-notify.desktop");
     let content = fs.read_file_content(&desktop_path).unwrap();
@@ -2251,6 +1948,7 @@ fn test_write_xdg_autostart_desktop_file_content_format() {
 #[test]
 #[serial]
 fn test_shell_setup_writes_xdg_autostart_entry() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -2258,18 +1956,10 @@ fn test_shell_setup_writes_xdg_autostart_entry() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SHELL", "/bin/bash").set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     let result = shell.shell_setup();
-
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(result.is_ok());
     assert!(result.unwrap().is_some());
@@ -2300,6 +1990,7 @@ const HOME_ON_DECOY_DISK: &str = "36 1 8:2 / /home rw,relatime - ext4 /dev/sda2 
 #[test]
 #[serial]
 fn test_inject_rc_integration_skipped_when_home_not_on_hidden_overlay() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = gate_config();
 
@@ -2307,17 +1998,11 @@ fn test_inject_rc_integration_skipped_when_home_not_on_hidden_overlay() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     shell.set_mountinfo_override(HOME_ON_DECOY_DISK);
     let result = shell.inject_rc_integration(ShellType::Bash);
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     // Gate returns Ok(false) and writes nothing.
     assert!(matches!(result, Ok(false)));
@@ -2328,6 +2013,7 @@ fn test_inject_rc_integration_skipped_when_home_not_on_hidden_overlay() {
 #[test]
 #[serial]
 fn test_write_xdg_autostart_entry_skipped_when_home_not_on_hidden_overlay() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = gate_config();
 
@@ -2335,17 +2021,11 @@ fn test_write_xdg_autostart_entry_skipped_when_home_not_on_hidden_overlay() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     shell.set_mountinfo_override(HOME_ON_DECOY_DISK);
     let result = shell.write_xdg_autostart_entry();
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(matches!(result, Ok(false)));
     let desktop_path = PathBuf::from("/home/testuser/.config/autostart/nails-notify.desktop");
@@ -2355,6 +2035,7 @@ fn test_write_xdg_autostart_entry_skipped_when_home_not_on_hidden_overlay() {
 #[test]
 #[serial]
 fn test_inject_rc_integration_writes_when_home_on_hidden_overlay() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = gate_config();
 
@@ -2362,17 +2043,11 @@ fn test_inject_rc_integration_writes_when_home_on_hidden_overlay() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     shell.set_mountinfo_override(HOME_ON_HIDDEN_OVERLAY);
     let result = shell.inject_rc_integration(ShellType::Bash);
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(matches!(result, Ok(true)));
     let bashrc_path = PathBuf::from("/home/testuser/.bashrc");
@@ -2385,6 +2060,7 @@ fn test_inject_rc_integration_writes_when_home_on_hidden_overlay() {
 #[test]
 #[serial]
 fn test_write_xdg_autostart_entry_writes_neutral_name_when_home_on_hidden_overlay() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = gate_config();
 
@@ -2392,17 +2068,11 @@ fn test_write_xdg_autostart_entry_writes_neutral_name_when_home_on_hidden_overla
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "testuser");
-    }
+    env.set("SUDO_USER", "testuser");
 
     let shell = ShellInstrumentation::new(fs.clone(), config);
     shell.set_mountinfo_override(HOME_ON_HIDDEN_OVERLAY);
     let result = shell.write_xdg_autostart_entry();
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(matches!(result, Ok(true)));
     let desktop_path = PathBuf::from("/home/testuser/.config/autostart/nails-notify.desktop");
@@ -2415,6 +2085,7 @@ fn test_write_xdg_autostart_entry_writes_neutral_name_when_home_on_hidden_overla
 #[test]
 #[serial]
 fn test_inject_rc_integration_owns_file_when_target_user_attached() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -2422,19 +2093,11 @@ fn test_inject_rc_integration_owns_file_when_target_user_attached() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/operator", true);
 
-    unsafe {
-        std::env::set_var("SHELL", "/bin/bash");
-        std::env::set_var("SUDO_USER", "operator");
-    }
+    env.set("SHELL", "/bin/bash").set("SUDO_USER", "operator");
 
     let user = crate::TargetUser::for_test(1000, 100, "operator", "/home/operator", "/bin/bash");
     let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(user);
     let result = shell.inject_rc_integration(ShellType::Bash);
-
-    unsafe {
-        std::env::remove_var("SHELL");
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(matches!(result, Ok(true)));
     let bashrc = PathBuf::from("/home/operator/.bashrc");
@@ -2451,6 +2114,7 @@ fn test_inject_rc_integration_owns_file_when_target_user_attached() {
 #[test]
 #[serial]
 fn test_write_xdg_autostart_entry_owns_dir_and_file_when_target_user_attached() {
+    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -2458,17 +2122,11 @@ fn test_write_xdg_autostart_entry_owns_dir_and_file_when_target_user_attached() 
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/operator", true);
 
-    unsafe {
-        std::env::set_var("SUDO_USER", "operator");
-    }
+    env.set("SUDO_USER", "operator");
 
     let user = crate::TargetUser::for_test(1000, 100, "operator", "/home/operator", "/bin/bash");
     let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(user);
     let result = shell.write_xdg_autostart_entry();
-
-    unsafe {
-        std::env::remove_var("SUDO_USER");
-    }
 
     assert!(matches!(result, Ok(true)));
     let desktop = PathBuf::from("/home/operator/.config/autostart/nails-notify.desktop");

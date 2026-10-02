@@ -27,6 +27,7 @@ pub use types::{
 pub(crate) mod tests_common {
     use super::types::SessionCommandExecutor;
     use crate::Result;
+    use crate::test_support::EnvGuard;
     use std::sync::Mutex;
 
     pub struct MockSessionCommandExecutor {
@@ -230,7 +231,10 @@ pub(crate) mod tests_common {
         }
     }
 
-    pub fn clear_session_env() {
+    /// Takes the environment lock with every session-detection variable
+    /// removed; the guard puts them back when it is dropped.
+    pub fn cleared_session_env() -> EnvGuard {
+        let mut env = EnvGuard::lock();
         for key in [
             "SSH_TTY",
             "SSH_CONNECTION",
@@ -247,9 +251,8 @@ pub(crate) mod tests_common {
             "SUDO_USER",
             "PKEXEC_UID",
         ] {
-            unsafe {
-                std::env::remove_var(key);
-            }
+            env.remove(key);
         }
+        env
     }
 }

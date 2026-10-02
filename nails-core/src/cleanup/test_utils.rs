@@ -9,7 +9,8 @@
 //! REAL home directory of the user running the tests. Instead, tests should:
 //!
 //! 1. Use `TEST_HOME` constant which is a safe fake path
-//! 2. Call `set_safe_test_home()` at the start of any test that involves history files
+//! 2. Hold the guard from `set_safe_test_home()` for the whole of any test that
+//!    involves history files
 //! 3. Use `assert_path_is_safe()` to validate paths before filesystem operations
 //!
 //! # Example
@@ -19,13 +20,15 @@
 //!
 //! #[test]
 //! fn test_history_cleanup() {
-//!     set_safe_test_home();
+//!     let _home = set_safe_test_home();
 //!
-//!     // Now std::env::var("HOME") returns TEST_HOME ("/home/testuser")
+//!     // Until `_home` is dropped, std::env::var("HOME") returns TEST_HOME
 //!     let bash_history = format!("{}/.bash_history", TEST_HOME);
 //!     // ... rest of test
 //! }
 //! ```
+
+use crate::test_support::EnvGuard;
 
 /// Safe fake home directory for tests.
 ///
@@ -46,32 +49,30 @@ pub const UNSAFE_PATH_PREFIXES: &[&str] = &[
     "/home/", // Note: trailing slash means we allow /home/testuser but not /home/realuser
 ];
 
-/// Sets the HOME environment variable to a safe test value.
+/// Sets `HOME` to [`TEST_HOME`] until the returned guard is dropped.
 ///
-/// # Safety
-///
-/// This function modifies a global environment variable, which can cause race
-/// conditions if multiple tests run in parallel. Use `#[serial]` attribute on
-/// tests that call this function.
+/// The guard holds the process-environment lock, so no other test that touches
+/// the environment runs while `HOME` is redirected, and dropping it restores the
+/// real value. `#[serial]` alone would not be enough: it orders a test only
+/// against other `#[serial]` tests, not against unmarked tests that read `HOME`.
+/// Keep the guard for the whole test; extend it with `set`/`remove` when the test
+/// needs more variables.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use serial_test::serial;
 /// use nails_core::cleanup::test_utils::set_safe_test_home;
 ///
 /// #[test]
-/// #[serial]
 /// fn test_with_safe_home() {
-///     set_safe_test_home();
+///     let _home = set_safe_test_home();
 ///     // ... test code
 /// }
 /// ```
-pub fn set_safe_test_home() {
-    // SAFETY: This is only called from tests and we use #[serial] to prevent races
-    unsafe {
-        std::env::set_var("HOME", TEST_HOME);
-    }
+pub fn set_safe_test_home() -> EnvGuard {
+    let mut env = EnvGuard::lock();
+    env.set("HOME", TEST_HOME);
+    env
 }
 
 /// Asserts that a path is safe for test operations.
@@ -103,8 +104,13 @@ pub fn assert_path_is_safe(path: &str) {
 
     // Check if path is absolute and starts with an unsafe prefix
     if path.starts_with('/') {
-        // Get the real HOME to detect if someone accidentally used it
-        if let Ok(real_home) = std::env::var("HOME") {
+        // Get the real HOME to detect if someone accidentally used it. The lock
+        // keeps a test that is redirecting HOME from changing it mid-check.
+        let real_home = {
+            let _env = EnvGuard::lock();
+            std::env::var("HOME")
+        };
+        if let Ok(real_home) = real_home {
             // If the test path starts with the REAL home directory (and real_home != TEST_HOME),
             // this is a test bug
             if real_home != TEST_HOME && path.starts_with(&real_home) {

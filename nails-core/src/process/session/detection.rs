@@ -189,7 +189,6 @@ mod tests {
     use super::super::tests_common::*;
     use super::*;
     use serial_test::serial;
-    use std::env;
 
     #[test]
     fn detect_display_manager_none() {
@@ -257,11 +256,9 @@ mod tests {
     #[test]
     #[serial]
     fn detect_session_context_detects_ssh() {
-        clear_session_env();
-        unsafe {
-            env::set_var("SSH_CONNECTION", "1 2 3 4");
-            env::set_var("NAILS_LOGIND_AVAILABLE", "0");
-        }
+        let mut env = cleared_session_env();
+        env.set("SSH_CONNECTION", "1 2 3 4")
+            .set("NAILS_LOGIND_AVAILABLE", "0");
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
@@ -271,20 +268,16 @@ mod tests {
         assert_eq!(ctx.display_manager, None);
         assert_eq!(ctx.target_uid, None);
         assert!(!ctx.logind_available);
-
-        clear_session_env();
     }
 
     #[test]
     #[serial]
     fn detect_session_context_uses_override_values() {
-        clear_session_env();
-        unsafe {
-            env::set_var("NAILS_SESSION_ID", "c2");
-            env::set_var("NAILS_DISPLAY_MANAGER", "gdm");
-            env::set_var("NAILS_TARGET_UID", "1000");
-            env::set_var("NAILS_TARGET_USER", "alice");
-        }
+        let mut env = cleared_session_env();
+        env.set("NAILS_SESSION_ID", "c2")
+            .set("NAILS_DISPLAY_MANAGER", "gdm")
+            .set("NAILS_TARGET_UID", "1000")
+            .set("NAILS_TARGET_USER", "alice");
 
         let exec = MockSessionCommandExecutor::new(false, true, true);
 
@@ -295,18 +288,14 @@ mod tests {
         assert_eq!(ctx.display_manager, Some("gdm".to_string()));
         assert_eq!(ctx.target_uid, Some(1000));
         assert_eq!(ctx.target_user, Some("alice".to_string()));
-
-        clear_session_env();
     }
 
     #[test]
     #[serial]
     fn detect_session_context_detects_tty_when_not_graphical() {
-        clear_session_env();
-        unsafe {
-            env::set_var("XDG_SESSION_TYPE", "tty");
-            env::set_var("NAILS_LOGIND_AVAILABLE", "0");
-        }
+        let mut env = cleared_session_env();
+        env.set("XDG_SESSION_TYPE", "tty")
+            .set("NAILS_LOGIND_AVAILABLE", "0");
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
@@ -315,19 +304,15 @@ mod tests {
         assert_eq!(ctx.kind, SessionKind::Tty);
         assert_eq!(ctx.display_manager, None);
         assert!(!ctx.logind_available);
-
-        clear_session_env();
     }
 
     #[test]
     #[serial]
     fn detect_session_context_detects_graphical_user_and_display_manager() {
-        clear_session_env();
-        unsafe {
-            env::set_var("DISPLAY", ":0");
-            env::set_var("SUDO_UID", "1000");
-            env::set_var("SUDO_USER", "alice");
-        }
+        let mut env = cleared_session_env();
+        env.set("DISPLAY", ":0")
+            .set("SUDO_UID", "1000")
+            .set("SUDO_USER", "alice");
 
         let exec = ScriptedSessionCommandExecutor::new(
             vec![Ok((true, "active".to_string(), String::new()))],
@@ -340,35 +325,27 @@ mod tests {
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.display_manager, Some("display-manager".to_string()));
         assert!(ctx.target_uid.is_some());
-
-        clear_session_env();
     }
 
     #[test]
     #[serial]
     fn detect_session_context_honors_logind_override() {
-        clear_session_env();
-        unsafe {
-            env::set_var("XDG_SESSION_TYPE", "tty");
-            env::set_var("NAILS_LOGIND_AVAILABLE", "0");
-        }
+        let mut env = cleared_session_env();
+        env.set("XDG_SESSION_TYPE", "tty")
+            .set("NAILS_LOGIND_AVAILABLE", "0");
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
         let ctx = detect_session_context_with_executor(&exec).unwrap();
 
         assert!(!ctx.logind_available);
-
-        clear_session_env();
     }
 
     #[test]
     #[serial]
     fn detect_session_context_uses_executor_logind_availability_when_not_overridden() {
-        clear_session_env();
-        unsafe {
-            env::set_var("XDG_SESSION_TYPE", "tty");
-        }
+        let mut env = cleared_session_env();
+        env.set("XDG_SESSION_TYPE", "tty");
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
@@ -376,19 +353,15 @@ mod tests {
 
         assert_eq!(ctx.kind, SessionKind::Tty);
         assert!(ctx.logind_available);
-
-        clear_session_env();
     }
 
     #[test]
     #[serial]
     fn detect_session_context_uses_xdg_session_id_when_override_missing() {
-        clear_session_env();
-        unsafe {
-            env::set_var("XDG_SESSION_ID", "c7");
-            env::set_var("NAILS_TARGET_UID", "1000");
-            env::set_var("NAILS_DISPLAY_MANAGER", "gdm");
-        }
+        let mut env = cleared_session_env();
+        env.set("XDG_SESSION_ID", "c7")
+            .set("NAILS_TARGET_UID", "1000")
+            .set("NAILS_DISPLAY_MANAGER", "gdm");
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
@@ -397,19 +370,15 @@ mod tests {
         assert_eq!(ctx.session_id, Some("c7".to_string()));
         assert_eq!(ctx.display_manager, Some("gdm".to_string()));
         assert_eq!(ctx.target_uid, Some(1000));
-
-        clear_session_env();
     }
 
     #[test]
     #[serial]
     fn detect_session_context_ignores_invalid_override_target_uid() {
-        clear_session_env();
-        unsafe {
-            env::set_var("NAILS_SESSION_ID", "c2");
-            env::set_var("NAILS_TARGET_UID", "not-a-number");
-            env::set_var("NAILS_TARGET_USER", "alice");
-        }
+        let mut env = cleared_session_env();
+        env.set("NAILS_SESSION_ID", "c2")
+            .set("NAILS_TARGET_UID", "not-a-number")
+            .set("NAILS_TARGET_USER", "alice");
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
@@ -420,19 +389,15 @@ mod tests {
         assert_eq!(ctx.session_id, Some("c2".to_string()));
         assert_eq!(ctx.target_uid, None);
         assert_eq!(ctx.target_user, Some("alice".to_string()));
-
-        clear_session_env();
     }
 
     #[test]
     #[serial]
     fn detect_session_context_detects_dm_when_override_missing() {
-        clear_session_env();
-        unsafe {
-            env::set_var("NAILS_SESSION_ID", "c2");
-            env::set_var("NAILS_TARGET_UID", "1000");
-            env::set_var("NAILS_TARGET_USER", "alice");
-        }
+        let mut env = cleared_session_env();
+        env.set("NAILS_SESSION_ID", "c2")
+            .set("NAILS_TARGET_UID", "1000")
+            .set("NAILS_TARGET_USER", "alice");
 
         let exec = ScriptedSessionCommandExecutor::new(
             vec![Ok((true, "active".to_string(), String::new()))],
@@ -447,19 +412,15 @@ mod tests {
         assert_eq!(ctx.display_manager, Some("display-manager".to_string()));
         assert_eq!(ctx.target_uid, Some(1000));
         assert_eq!(ctx.target_user, Some("alice".to_string()));
-
-        clear_session_env();
     }
 
     #[test]
     #[serial]
     fn detect_session_context_override_without_uid_returns_graphical_root() {
-        clear_session_env();
-        unsafe {
-            env::set_var("NAILS_SESSION_ID", "c5");
-            env::set_var("NAILS_DISPLAY_MANAGER", "sddm");
-            // No NAILS_TARGET_UID set
-        }
+        let mut env = cleared_session_env();
+        // No NAILS_TARGET_UID set
+        env.set("NAILS_SESSION_ID", "c5")
+            .set("NAILS_DISPLAY_MANAGER", "sddm");
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
         let ctx = detect_session_context_with_executor(&exec).unwrap();
@@ -469,19 +430,15 @@ mod tests {
         assert_eq!(ctx.target_uid, None);
         assert_eq!(ctx.session_id, Some("c5".to_string()));
         assert_eq!(ctx.display_manager, Some("sddm".to_string()));
-
-        clear_session_env();
     }
 
     #[test]
     #[serial]
     fn detect_session_context_uses_wayland_display_when_session_type_unset() {
-        clear_session_env();
-        unsafe {
-            env::set_var("WAYLAND_DISPLAY", "wayland-0");
-            env::set_var("SUDO_UID", "1000");
-            env::set_var("SUDO_USER", "alice");
-        }
+        let mut env = cleared_session_env();
+        env.set("WAYLAND_DISPLAY", "wayland-0")
+            .set("SUDO_UID", "1000")
+            .set("SUDO_USER", "alice");
 
         let exec = ScriptedSessionCommandExecutor::new(
             vec![Ok((true, "active".to_string(), String::new()))],
@@ -494,7 +451,5 @@ mod tests {
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.display_manager, Some("display-manager".to_string()));
         assert_eq!(ctx.target_user, Some("alice".to_string()));
-
-        clear_session_env();
     }
 }

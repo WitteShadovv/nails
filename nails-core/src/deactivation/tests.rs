@@ -15,6 +15,7 @@ use crate::DeactivationOrchestrator;
 use crate::cleanup::test_utils::{TEST_HOME, assert_path_is_safe, set_safe_test_home};
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 use crate::filesystem::{Filesystem, PathKind};
+use crate::test_support::EnvGuard;
 use crate::{
     CleanupConfig, CleanupMode, CleanupReport, Config, MockFilesystem, NailsError, NailsManager,
     StateFile, SystemState,
@@ -33,68 +34,20 @@ fn logs_contain(s: &str) -> bool {
     tracing_test::internal::logs_with_scope_contain("", s)
 }
 
-fn clear_system_profile_env() {
-    unsafe {
-        std::env::remove_var("NAILS_SYSTEM_PROFILE_PATH");
+/// Takes the environment lock with the deactivation gate variables pointing at
+/// the given paths, or removed when `None`; dropping the guard restores them.
+fn deactivation_gate_env(gate_path: Option<&Path>, entered_path: Option<&Path>) -> EnvGuard {
+    let mut env = EnvGuard::lock();
+    for (key, value) in [
+        ("NAILS_TEST_DEACTIVATING_GATE_PATH", gate_path),
+        ("NAILS_TEST_DEACTIVATING_ENTERED_PATH", entered_path),
+    ] {
+        match value {
+            Some(path) => env.set(key, path),
+            None => env.remove(key),
+        };
     }
-}
-
-struct DeactivationGateEnvGuard {
-    gate: Option<std::ffi::OsString>,
-    entered: Option<std::ffi::OsString>,
-}
-
-impl DeactivationGateEnvGuard {
-    fn capture() -> Self {
-        Self {
-            gate: std::env::var_os("NAILS_TEST_DEACTIVATING_GATE_PATH"),
-            entered: std::env::var_os("NAILS_TEST_DEACTIVATING_ENTERED_PATH"),
-        }
-    }
-
-    fn clear() {
-        unsafe {
-            std::env::remove_var("NAILS_TEST_DEACTIVATING_GATE_PATH");
-            std::env::remove_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH");
-        }
-    }
-
-    fn set(gate_path: &Path, entered_path: Option<&Path>) {
-        unsafe {
-            std::env::set_var("NAILS_TEST_DEACTIVATING_GATE_PATH", gate_path);
-        }
-
-        match entered_path {
-            Some(path) => unsafe {
-                std::env::set_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH", path);
-            },
-            None => unsafe {
-                std::env::remove_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH");
-            },
-        }
-    }
-}
-
-impl Drop for DeactivationGateEnvGuard {
-    fn drop(&mut self) {
-        match &self.gate {
-            Some(value) => unsafe {
-                std::env::set_var("NAILS_TEST_DEACTIVATING_GATE_PATH", value);
-            },
-            None => unsafe {
-                std::env::remove_var("NAILS_TEST_DEACTIVATING_GATE_PATH");
-            },
-        }
-
-        match &self.entered {
-            Some(value) => unsafe {
-                std::env::set_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH", value);
-            },
-            None => unsafe {
-                std::env::remove_var("NAILS_TEST_DEACTIVATING_ENTERED_PATH");
-            },
-        }
-    }
+    env
 }
 
 fn spawn_deactivation_gate_releaser(
@@ -116,48 +69,20 @@ fn spawn_deactivation_gate_releaser(
     })
 }
 
-/// Restores `NAILS_SYSTEM_PROFILE_PATH` to its previous value when dropped so a
-/// test's override never leaks into the next (serial) test.
-struct SystemProfileEnvGuard {
-    previous: Option<std::ffi::OsString>,
-}
-
-impl SystemProfileEnvGuard {
-    fn set(path: &Path) -> Self {
-        let previous = std::env::var_os("NAILS_SYSTEM_PROFILE_PATH");
-        unsafe {
-            std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", path);
-        }
-        Self { previous }
-    }
-}
-
-impl Drop for SystemProfileEnvGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => unsafe {
-                std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", value);
-            },
-            None => unsafe {
-                std::env::remove_var("NAILS_SYSTEM_PROFILE_PATH");
-            },
-        }
-    }
-}
-
 /// A configured stub system profile for decoy switching. Holds the backing
 /// temp dir and the environment override; both are cleaned up on drop, so the
 /// profile lives exactly as long as the test that owns it.
 struct SystemProfileStub {
     _dir: tempfile::TempDir,
-    _env: SystemProfileEnvGuard,
+    _env: EnvGuard,
 }
 
 /// Helper function to configure a stub system profile for decoy switching.
 fn setup_system_profile_stub(fs: &MockFilesystem) -> SystemProfileStub {
     let profile_root = tempfile::tempdir().expect("tempdir");
     let system_profile_path = profile_root.path().join("system");
-    let env_guard = SystemProfileEnvGuard::set(&system_profile_path);
+    let mut env_guard = EnvGuard::lock();
+    env_guard.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile_path);
 
     let profiles_dir = system_profile_path
         .parent()
@@ -332,8 +257,7 @@ fn test_deactivation_report_new() {
 #[serial]
 fn test_deactivation_gate_returns_immediately_when_disabled() {
     let _gate_guard = DeactivationGateTestGuard::enable();
-    let _env_guard = DeactivationGateEnvGuard::capture();
-    DeactivationGateEnvGuard::clear();
+    let _env = deactivation_gate_env(None, None);
 
     assert!(maybe_block_after_deactivating_state_transition().is_ok());
 }
@@ -342,12 +266,11 @@ fn test_deactivation_gate_returns_immediately_when_disabled() {
 #[serial]
 fn test_deactivation_gate_writes_default_entered_marker() {
     let _gate_guard = DeactivationGateTestGuard::enable();
-    let _env_guard = DeactivationGateEnvGuard::capture();
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let gate_path = temp_dir.path().join("deactivation.gate");
     let entered_path = PathBuf::from(format!("{}.entered", gate_path.display()));
     std::fs::write(&gate_path, []).expect("gate file");
-    DeactivationGateEnvGuard::set(&gate_path, None);
+    let _env = deactivation_gate_env(Some(&gate_path), None);
 
     let releaser = spawn_deactivation_gate_releaser(gate_path.clone(), entered_path.clone());
     maybe_block_after_deactivating_state_transition().expect("gate should be released");
@@ -524,7 +447,8 @@ fn test_successful_deactivation() {
 #[test]
 #[serial]
 fn test_successful_deactivation_unmounts_all_tracked_overlays_in_lifo_order() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     let _profile = setup_system_profile_stub(&fs);
@@ -609,14 +533,13 @@ fn test_successful_deactivation_unmounts_all_tracked_overlays_in_lifo_order() {
     let loaded = StateFile::load(&state_path).unwrap();
     assert_eq!(loaded.state, SystemState::Inactive);
     assert!(loaded.overlay_status.is_empty());
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[serial]
 fn test_deactivation_skips_decoy_restore_when_disabled() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
@@ -710,15 +633,14 @@ fn test_deactivation_restores_decoy_by_symlink_without_running_switch() {
             .unwrap()
     );
     drop(guard);
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[serial]
 fn test_deactivation_returns_error_when_no_decoy_profile_is_available() {
     let manager = setup_active_manager();
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     {
         let m = manager.lock().unwrap();
@@ -943,13 +865,14 @@ fn test_emergency_cleanup_preserves_explicit_config_path() {
 #[serial]
 fn test_cleanup_failure_rollback() {
     let manager = setup_active_manager();
+    // Cleanup resolves the history files from HOME, so it points at the fake
+    // home for the whole test.
+    let _home = set_safe_test_home();
 
     // Configure cleanup to FAIL by making the history file write fail
     // This triggers AC4: cleanup failure → rollback to ACTIVE
     {
         let m = manager.lock().unwrap();
-        // SAFETY: Use a fixed fake home directory to prevent touching real files.
-        set_safe_test_home();
         let bash_history = Path::new(TEST_HOME).join(".bash_history");
         let bash_history_str = bash_history.to_str().unwrap();
 
@@ -1010,6 +933,9 @@ fn test_cleanup_failure_rollback() {
 fn test_cleanup_failure_keeps_overlays_mounted() {
     // Additional test for AC4: verify overlays remain mounted after cleanup failure
     let manager = setup_active_manager();
+    // Cleanup resolves the history files from HOME, so it points at the fake
+    // home for the whole test.
+    let _home = set_safe_test_home();
 
     // Setup overlays as mounted
     {
@@ -1017,8 +943,6 @@ fn test_cleanup_failure_keeps_overlays_mounted() {
         m.filesystem().mock_set_mounted(Path::new("/home"), true);
         m.filesystem().mock_set_mounted(Path::new("/etc"), true);
 
-        // SAFETY: Use a fixed fake home directory to prevent touching real files.
-        set_safe_test_home();
         // Configure cleanup to fail by making write fail
         let bash_history = Path::new(TEST_HOME).join(".bash_history");
         let bash_history_str = bash_history.to_str().unwrap();
@@ -1054,7 +978,8 @@ fn test_cleanup_failure_keeps_overlays_mounted() {
 #[test]
 #[serial]
 fn test_emergency_deactivate_from_inactive_state_returns_error() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
@@ -1151,7 +1076,8 @@ fn test_emergency_deactivate_from_deactivating_state_returns_error_without_unmou
 #[test]
 #[serial]
 fn test_emergency_deactivate_force_unmount_succeeds_after_graceful_failure() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     let _profile = setup_system_profile_stub(&fs);
@@ -1207,14 +1133,13 @@ fn test_emergency_deactivate_force_unmount_succeeds_after_graceful_failure() {
     let loaded =
         StateFile::load(&manager_guard.config().hidden_volume_root.join("state.json")).unwrap();
     assert!(loaded.overlay_status.is_empty());
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[serial]
 fn test_deactivate_returns_error_when_no_system_profile_exists() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
@@ -1255,7 +1180,8 @@ fn test_deactivate_returns_error_when_no_system_profile_exists() {
 #[test]
 #[serial]
 fn test_deactivate_overlay_only_session_succeeds_without_system_profile() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
@@ -1317,14 +1243,13 @@ fn test_deactivate_overlay_only_session_succeeds_without_system_profile() {
     let loaded = StateFile::load(&state_path).unwrap();
     assert_eq!(loaded.state, SystemState::Inactive);
     assert!(loaded.overlay_status.is_empty());
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[serial]
 fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();
@@ -1347,10 +1272,8 @@ fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
     reboot_perms.set_mode(0o755);
     std::fs::set_permissions(&reboot_script, reboot_perms).unwrap();
 
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-        std::env::set_var("NAILS_REBOOT_PATH", &reboot_script);
-    }
+    env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile)
+        .set("NAILS_REBOOT_PATH", &reboot_script);
 
     fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
     fs.mock_set_path_exists(system_profile.parent().unwrap().to_str().unwrap(), true);
@@ -1414,17 +1337,13 @@ fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
         "reboot must not be requested on failure"
     );
     assert!(manager.lock().unwrap().current_state().unwrap().is_active());
-
-    unsafe {
-        std::env::remove_var("NAILS_REBOOT_PATH");
-    }
-    clear_system_profile_env();
 }
 
 #[test]
 #[serial]
 fn test_deactivate_prepares_decoy_symlink_when_restore_is_required() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();
@@ -1440,9 +1359,7 @@ fn test_deactivate_prepares_decoy_symlink_when_restore_is_required() {
     perms.set_mode(0o755);
     std::fs::set_permissions(&switch_script, perms).unwrap();
 
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-    }
+    env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
 
     fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
     fs.mock_set_path_exists(system_profile.parent().unwrap().to_str().unwrap(), true);
@@ -1509,14 +1426,13 @@ fn test_deactivate_prepares_decoy_symlink_when_restore_is_required() {
             .as_deref(),
         Some(profile_root.as_path())
     );
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[serial]
 fn test_deactivate_uses_overlay_metadata_when_active_overlay_list_is_incomplete() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();
@@ -1609,14 +1525,13 @@ fn test_deactivate_uses_overlay_metadata_when_active_overlay_list_is_incomplete(
     let guard = manager.lock().unwrap();
     assert!(!guard.filesystem().is_mounted(Path::new("/home")).unwrap());
     assert!(!guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[serial]
 fn test_emergency_deactivate_restarts_nix_daemon_when_nix_store_unmount_fails() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     let _profile = setup_system_profile_stub(&fs);
@@ -1675,14 +1590,13 @@ fn test_emergency_deactivate_restarts_nix_daemon_when_nix_store_unmount_fails() 
         SystemState::Inactive,
         "deactivation should complete to Inactive once the /nix overlay is unmounted"
     );
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[serial]
 fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();
@@ -1700,9 +1614,7 @@ fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
     let profiles_dir = system_profile.parent().unwrap().to_path_buf();
     let generation_dir = profiles_dir.join("system-1-link");
     std::fs::create_dir_all(&generation_dir).unwrap();
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-    }
+    env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
     fs.mock_set_path_type(profiles_dir.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_directory_contents(&profiles_dir, vec![generation_dir.clone()]);
@@ -1742,14 +1654,13 @@ fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
     let loaded = StateFile::load(&state_path).unwrap();
     assert_eq!(loaded.state, SystemState::Inactive);
     assert!(loaded.overlay_status.is_empty());
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[serial]
 fn test_emergency_deactivate_unmounts_nix_store_when_nix_overlay_present() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     let _profile = setup_system_profile_stub(&fs);
@@ -1808,8 +1719,6 @@ fn test_emergency_deactivate_unmounts_nix_store_when_nix_overlay_present() {
             .is_mounted(Path::new("/nix/store"))
             .unwrap()
     );
-
-    clear_system_profile_env();
 }
 
 // ============================================================================
@@ -1846,6 +1755,9 @@ fn test_deactivation_emits_structured_events() {
 #[tracing_test::traced_test]
 fn test_deactivation_cleanup_event_includes_count() {
     let manager = setup_active_manager();
+    // Cleanup resolves the history files from HOME, so it points at the fake
+    // home for the whole test.
+    let _home = set_safe_test_home();
 
     // Setup overlays as mounted
     {
@@ -1853,8 +1765,6 @@ fn test_deactivation_cleanup_event_includes_count() {
         m.filesystem().mock_set_mounted(Path::new("/home"), true);
         m.filesystem().mock_set_mounted(Path::new("/etc"), true);
 
-        // SAFETY: Use a fixed fake home directory to prevent touching real files.
-        set_safe_test_home();
         // Add some cleanup items
         let bash_history = Path::new(TEST_HOME).join(".bash_history");
         let bash_history_str = bash_history.to_str().unwrap();
@@ -2202,9 +2112,13 @@ fn run_within_timeout<R: Send + 'static>(op: impl FnOnce() -> R + Send + 'static
 /// An ACTIVE manager with no overlays and no decoy profile, so teardown runs the
 /// full state-transition sequence without needing a system profile. State writes
 /// go to a real temporary hidden volume so the save seam governs their outcome.
-fn active_manager_no_profile() -> (Arc<Mutex<NailsManager<MockFilesystem>>>, tempfile::TempDir) {
-    clear_system_profile_env();
-    set_safe_test_home();
+fn active_manager_no_profile() -> (
+    Arc<Mutex<NailsManager<MockFilesystem>>>,
+    tempfile::TempDir,
+    EnvGuard,
+) {
+    let mut env = set_safe_test_home();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
@@ -2228,26 +2142,26 @@ fn active_manager_no_profile() -> (Arc<Mutex<NailsManager<MockFilesystem>>>, tem
         })
         .unwrap();
 
-    (Arc::new(Mutex::new(manager)), temp_dir)
+    (Arc::new(Mutex::new(manager)), temp_dir, env)
 }
 
 /// An ACTIVE manager (with a recorded decoy generation) whose decoy-profile
 /// lookup errors: the profiles directory reports as existing but has no listable
-/// contents, so `select_system_profile` returns `Err`. Returns the profile env
+/// contents, so `select_system_profile` returns `Err`. Returns the environment
 /// guard so the override is restored when the test ends.
 fn active_manager_with_failing_profile_lookup() -> (
     Arc<Mutex<NailsManager<MockFilesystem>>>,
     tempfile::TempDir,
-    SystemProfileEnvGuard,
+    EnvGuard,
 ) {
-    set_safe_test_home();
+    let mut env = set_safe_test_home();
 
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
 
     let profiles_dir = hidden_root.join("profiles");
-    let profile_env = SystemProfileEnvGuard::set(&profiles_dir.join("system"));
+    env.set("NAILS_SYSTEM_PROFILE_PATH", profiles_dir.join("system"));
 
     let fs = MockFilesystem::new();
     // The profiles directory exists but its contents are deliberately left
@@ -2279,7 +2193,7 @@ fn active_manager_with_failing_profile_lookup() -> (
     .unwrap();
 
     let manager = NailsManager::new(fs, config, state_path);
-    (Arc::new(Mutex::new(manager)), temp_dir, profile_env)
+    (Arc::new(Mutex::new(manager)), temp_dir, env)
 }
 
 /// An ACTIVE manager tracking the given overlay targets, each mounted and
@@ -2288,9 +2202,13 @@ fn active_manager_with_failing_profile_lookup() -> (
 /// tracked mount order is exactly `targets`.
 fn active_manager_with_overlays(
     targets: &[&str],
-) -> (Arc<Mutex<NailsManager<MockFilesystem>>>, tempfile::TempDir) {
-    clear_system_profile_env();
-    set_safe_test_home();
+) -> (
+    Arc<Mutex<NailsManager<MockFilesystem>>>,
+    tempfile::TempDir,
+    EnvGuard,
+) {
+    let mut env = set_safe_test_home();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
@@ -2340,13 +2258,13 @@ fn active_manager_with_overlays(
     };
 
     let manager = NailsManager::new(fs, config, state_path);
-    (Arc::new(Mutex::new(manager)), temp_dir)
+    (Arc::new(Mutex::new(manager)), temp_dir, env)
 }
 
 #[test]
 #[serial]
 fn deactivate_degrades_when_a_target_cannot_unmount() {
-    let (manager, _hidden_root) = active_manager_with_overlays(&["/home", "/etc", "/opt"]);
+    let (manager, _hidden_root, _env) = active_manager_with_overlays(&["/home", "/etc", "/opt"]);
     // Fail the middle target; the teardown must still attempt the other two and
     // must NOT remount what it has already detached.
     manager
@@ -2386,7 +2304,7 @@ fn deactivate_degrades_when_a_target_cannot_unmount() {
 #[test]
 #[serial]
 fn emergency_deactivate_degrades_without_remount_when_a_target_cannot_unmount() {
-    let (manager, _hidden_root) = active_manager_with_overlays(&["/home", "/etc", "/opt"]);
+    let (manager, _hidden_root, _env) = active_manager_with_overlays(&["/home", "/etc", "/opt"]);
     manager
         .lock()
         .unwrap()
@@ -2419,7 +2337,7 @@ fn emergency_deactivate_degrades_without_remount_when_a_target_cannot_unmount() 
 fn deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
-    let (manager, _hidden_root) = active_manager_no_profile();
+    let (manager, _hidden_root, _env) = active_manager_no_profile();
     let worker = Arc::clone(&manager);
 
     let result = run_within_timeout(move || {
@@ -2445,7 +2363,7 @@ fn deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
 fn emergency_deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
-    let (manager, _hidden_root) = active_manager_no_profile();
+    let (manager, _hidden_root, _env) = active_manager_no_profile();
     let worker = Arc::clone(&manager);
 
     let result = run_within_timeout(move || {
@@ -2467,7 +2385,7 @@ fn emergency_deactivate_returns_err_within_timeout_when_deactivating_write_fails
 fn deactivate_returns_err_within_timeout_when_inactive_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
-    let (manager, _hidden_root) = active_manager_no_profile();
+    let (manager, _hidden_root, _env) = active_manager_no_profile();
     let worker = Arc::clone(&manager);
 
     let result = run_within_timeout(move || {
@@ -2491,7 +2409,7 @@ fn deactivate_returns_err_within_timeout_when_inactive_write_fails() {
 fn emergency_deactivate_returns_err_within_timeout_when_inactive_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
-    let (manager, _hidden_root) = active_manager_no_profile();
+    let (manager, _hidden_root, _env) = active_manager_no_profile();
     let worker = Arc::clone(&manager);
 
     let result = run_within_timeout(move || {
@@ -2511,7 +2429,7 @@ fn emergency_deactivate_returns_err_within_timeout_when_inactive_write_fails() {
 #[test]
 #[serial]
 fn deactivate_returns_err_within_timeout_when_system_profile_lookup_fails() {
-    let (manager, _hidden_root, _profile_env) = active_manager_with_failing_profile_lookup();
+    let (manager, _hidden_root, _env) = active_manager_with_failing_profile_lookup();
     let worker = Arc::clone(&manager);
 
     let result = run_within_timeout(move || worker.lock().unwrap().deactivate());
@@ -2521,14 +2439,12 @@ fn deactivate_returns_err_within_timeout_when_system_profile_lookup_fails() {
         "deactivate must surface a failing decoy-profile lookup"
     );
     assert!(manager.lock().unwrap().current_state().unwrap().is_active());
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[serial]
 fn emergency_deactivate_returns_err_within_timeout_when_system_profile_lookup_fails() {
-    let (manager, _hidden_root, _profile_env) = active_manager_with_failing_profile_lookup();
+    let (manager, _hidden_root, _env) = active_manager_with_failing_profile_lookup();
     let worker = Arc::clone(&manager);
 
     // Emergency mode has no up-front profile pre-check, so the failing lookup is
@@ -2540,8 +2456,6 @@ fn emergency_deactivate_returns_err_within_timeout_when_system_profile_lookup_fa
         result.is_err(),
         "emergency deactivate must surface a failing decoy-profile lookup"
     );
-
-    clear_system_profile_env();
 }
 
 #[test]
@@ -2549,7 +2463,7 @@ fn emergency_deactivate_returns_err_within_timeout_when_system_profile_lookup_fa
 fn deactivate_returns_err_within_timeout_when_rollback_write_also_fails() {
     use crate::state::save_probe::{self, FailOn};
 
-    let (manager, _hidden_root) = active_manager_no_profile();
+    let (manager, _hidden_root, _env) = active_manager_no_profile();
     let worker = Arc::clone(&manager);
 
     // The exact shape of the original deadlock: the initial state write fails

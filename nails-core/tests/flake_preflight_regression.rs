@@ -1,46 +1,20 @@
+use nails_core::test_support::EnvGuard;
 use nails_core::{Config, MockFilesystem, NailsManager, NixOSBuilder};
 use serial_test::serial;
-use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 
-struct PathEnvGuard {
-    original: Option<OsString>,
-}
-
-impl PathEnvGuard {
-    fn capture() -> Self {
-        Self {
-            original: std::env::var_os("PATH"),
-        }
+/// Puts `dir` in front of `PATH` until `env` is dropped. The builder resolves
+/// `nix` from the caller's `PATH`, which is how these tests substitute a stub.
+fn prepend_path(env: &mut EnvGuard, dir: &Path) {
+    let mut paths = vec![dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
     }
-
-    fn prepend(&self, dir: &Path) {
-        let mut paths = vec![dir.to_path_buf()];
-        if let Some(existing) = &self.original {
-            paths.extend(std::env::split_paths(existing));
-        }
-
-        unsafe {
-            std::env::set_var(
-                "PATH",
-                std::env::join_paths(paths).expect("failed to compose PATH for test"),
-            );
-        }
-    }
-}
-
-impl Drop for PathEnvGuard {
-    fn drop(&mut self) {
-        match &self.original {
-            Some(path) => unsafe {
-                std::env::set_var("PATH", path);
-            },
-            None => unsafe {
-                std::env::remove_var("PATH");
-            },
-        }
-    }
+    env.set(
+        "PATH",
+        std::env::join_paths(paths).expect("failed to compose PATH for test"),
+    );
 }
 
 fn make_flake_manager(hidden_root: &Path) -> NailsManager<MockFilesystem> {
@@ -96,8 +70,8 @@ fn read_only_flake_preflight_uses_read_only_metadata_and_attr_checks_only() {
         ),
     );
 
-    let path_guard = PathEnvGuard::capture();
-    path_guard.prepend(&bin_dir);
+    let mut env = EnvGuard::lock();
+    prepend_path(&mut env, &bin_dir);
 
     let manager = make_flake_manager(hidden_root);
     manager
@@ -159,8 +133,8 @@ fn read_only_flake_preflight_reports_missing_selected_attr_without_mutation() {
         ),
     );
 
-    let path_guard = PathEnvGuard::capture();
-    path_guard.prepend(&bin_dir);
+    let mut env = EnvGuard::lock();
+    prepend_path(&mut env, &bin_dir);
 
     let manager = make_flake_manager(hidden_root);
     let err = manager
@@ -194,8 +168,8 @@ fn overlay_only_skips_read_only_flake_preflight_entirely() {
         ),
     );
 
-    let path_guard = PathEnvGuard::capture();
-    path_guard.prepend(&bin_dir);
+    let mut env = EnvGuard::lock();
+    prepend_path(&mut env, &bin_dir);
 
     let manager = make_flake_manager(hidden_root);
     manager

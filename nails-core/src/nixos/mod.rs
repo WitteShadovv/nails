@@ -136,7 +136,7 @@ impl NixOSBuilder {
         Self {
             config_path,
             profile_path,
-            executor: Box::new(RealCommandExecutorImpl),
+            executor: Box::new(RealCommandExecutorImpl::default()),
             build_mode: NixOSBuildMode::Flake,
             flake_ref: None,
         }
@@ -156,10 +156,20 @@ impl NixOSBuilder {
         Self {
             config_path: config_dir,
             profile_path,
-            executor: Box::new(RealCommandExecutorImpl),
+            executor: Box::new(RealCommandExecutorImpl::default()),
             build_mode: NixOSBuildMode::Legacy { config_path },
             flake_ref: None,
         }
+    }
+
+    /// Replace the command executor of an already configured builder (for testing)
+    #[cfg(test)]
+    pub(crate) fn with_executor(
+        mut self,
+        executor: Box<dyn CommandExecutorTrait + Send + Sync>,
+    ) -> Self {
+        self.executor = executor;
+        self
     }
 
     /// Create a new NixOSBuilder with custom executor (for testing)
@@ -230,7 +240,7 @@ impl NixOSBuilder {
             Self {
                 config_path: PathBuf::from(dir_part),
                 profile_path,
-                executor: Box::new(RealCommandExecutorImpl),
+                executor: Box::new(RealCommandExecutorImpl::default()),
                 build_mode: NixOSBuildMode::Flake,
                 flake_ref: Some(flake_ref),
             }
@@ -238,7 +248,7 @@ impl NixOSBuilder {
             Self {
                 config_path: PathBuf::from(&flake_ref),
                 profile_path,
-                executor: Box::new(RealCommandExecutorImpl),
+                executor: Box::new(RealCommandExecutorImpl::default()),
                 build_mode: NixOSBuildMode::Flake,
                 flake_ref: None,
             }

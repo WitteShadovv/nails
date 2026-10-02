@@ -142,6 +142,7 @@ impl<F: Filesystem> NailsManager<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process::session::tests_common::cleared_session_env;
     use crate::{ActivateOptions, Config, MockFilesystem, process::SessionCommandExecutor};
     use serial_test::serial;
     use std::path::PathBuf;
@@ -176,29 +177,6 @@ mod tests {
         )
     }
 
-    fn clear_session_env() {
-        for key in [
-            "SSH_TTY",
-            "SSH_CONNECTION",
-            "NAILS_LOGIND_AVAILABLE",
-            "XDG_SESSION_ID",
-            "NAILS_SESSION_ID",
-            "NAILS_DISPLAY_MANAGER",
-            "NAILS_TARGET_UID",
-            "NAILS_TARGET_USER",
-            "XDG_SESSION_TYPE",
-            "DISPLAY",
-            "WAYLAND_DISPLAY",
-            "SUDO_UID",
-            "SUDO_USER",
-            "PKEXEC_UID",
-        ] {
-            unsafe {
-                std::env::remove_var(key);
-            }
-        }
-    }
-
     #[test]
     fn handle_session_kill_returns_default_plan_when_disabled() {
         let _manager = make_manager();
@@ -218,11 +196,9 @@ mod tests {
     #[test]
     #[serial]
     fn handle_session_kill_skips_ssh_sessions() {
-        clear_session_env();
-        unsafe {
-            std::env::set_var("SSH_CONNECTION", "1 2 3 4");
-            std::env::set_var("NAILS_LOGIND_AVAILABLE", "0");
-        }
+        let mut env = cleared_session_env();
+        env.set("SSH_CONNECTION", "1 2 3 4")
+            .set("NAILS_LOGIND_AVAILABLE", "0");
 
         let options = ActivateOptions {
             kill_session: true,
@@ -239,17 +215,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan, SessionRestartPlan::default());
-        clear_session_env();
     }
 
     #[test]
     #[serial]
     fn handle_session_kill_skips_tty_sessions() {
-        clear_session_env();
-        unsafe {
-            std::env::set_var("XDG_SESSION_TYPE", "tty");
-            std::env::set_var("NAILS_LOGIND_AVAILABLE", "0");
-        }
+        let mut env = cleared_session_env();
+        env.set("XDG_SESSION_TYPE", "tty")
+            .set("NAILS_LOGIND_AVAILABLE", "0");
 
         let options = ActivateOptions {
             kill_session: true,
@@ -266,6 +239,5 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan, SessionRestartPlan::default());
-        clear_session_env();
     }
 }

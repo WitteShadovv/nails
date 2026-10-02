@@ -1,3 +1,4 @@
+use nails_core::test_support::EnvGuard;
 use nails_core::{Notification, notification};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -145,9 +146,8 @@ fn subprocess_notification_runtime_entrypoint() {
             assert!(err.to_string().contains("Failed to read notifications dir"));
         }
         "sudo-user-fallback-write" => {
-            unsafe {
-                std::env::remove_var("NAILS_TARGET_USER");
-            }
+            let mut env = EnvGuard::lock();
+            env.remove("NAILS_TARGET_USER");
             notification::write_notification(&hidden_root, &make_notification("Queued", "Body"))
                 .unwrap();
             assert_eq!(notification::read_pending(&hidden_root).unwrap().len(), 1);

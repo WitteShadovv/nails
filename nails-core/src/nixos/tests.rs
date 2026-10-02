@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::error::Result;
+use crate::test_support::EnvGuard;
 use serial_test::serial;
 use std::collections::VecDeque;
 use std::fs;
@@ -249,26 +250,6 @@ fn make_system_profile_symlink(system_profile: &Path, target: &Path) {
         std::fs::remove_file(system_profile).unwrap();
     }
     std::os::unix::fs::symlink(target, system_profile).unwrap();
-}
-
-fn clear_system_profile_env() {
-    unsafe {
-        std::env::remove_var("NAILS_SYSTEM_PROFILE_PATH");
-    }
-}
-
-fn prepend_path(dir: &Path, old_path: &Option<std::ffi::OsString>) {
-    let mut paths = vec![dir.to_path_buf()];
-    if let Some(existing) = old_path {
-        paths.extend(std::env::split_paths(existing));
-    }
-
-    unsafe {
-        std::env::set_var(
-            "PATH",
-            std::env::join_paths(paths).expect("failed to compose PATH for test"),
-        );
-    }
 }
 
 fn write_executable_script(path: &Path, body: &str) {
@@ -925,8 +906,8 @@ fn flake_preflight_accepts_dot_relative_flake_ref() {
         )),
     ]);
     let temp_dir = tempfile::tempdir().unwrap();
-    let old_cwd = std::env::current_dir().unwrap();
-    std::env::set_current_dir(temp_dir.path()).unwrap();
+    let mut env = EnvGuard::lock();
+    env.set_current_dir(temp_dir.path());
     std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
 
     let builder = NixOSBuilder {
@@ -938,7 +919,6 @@ fn flake_preflight_accepts_dot_relative_flake_ref() {
     };
 
     let summary = builder.preflight_flake().unwrap();
-    std::env::set_current_dir(old_cwd).unwrap();
 
     assert_eq!(
         summary,
@@ -963,11 +943,11 @@ fn flake_preflight_accepts_dot_slash_relative_flake_ref() {
         )),
     ]);
     let temp_dir = tempfile::tempdir().unwrap();
-    let old_cwd = std::env::current_dir().unwrap();
     let rel_dir = temp_dir.path().join("relative-flake");
     std::fs::create_dir_all(&rel_dir).unwrap();
     std::fs::write(rel_dir.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    std::env::set_current_dir(temp_dir.path()).unwrap();
+    let mut env = EnvGuard::lock();
+    env.set_current_dir(temp_dir.path());
 
     let builder = NixOSBuilder {
         config_path: PathBuf::from("./relative-flake"),
@@ -978,7 +958,6 @@ fn flake_preflight_accepts_dot_slash_relative_flake_ref() {
     };
 
     let summary = builder.preflight_flake().unwrap();
-    std::env::set_current_dir(old_cwd).unwrap();
 
     assert_eq!(
         summary,
@@ -1015,6 +994,8 @@ fn split_flake_ref_separates_base_and_fragment() {
 
 #[test]
 fn local_flake_dir_only_returns_paths_for_local_refs() {
+    // Relative refs resolve against the working directory.
+    let _env = EnvGuard::lock();
     assert_eq!(
         local_flake_dir("/some/dir"),
         Some(PathBuf::from("/some/dir"))
@@ -1408,16 +1389,14 @@ fn test_switch_profile_uses_generation_specific_switch_script_on_success() {
 #[cfg(unix)]
 #[serial]
 fn test_switch_profile_rolls_back_to_current_system_generation_when_switch_fails() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
     let temp_dir = tempfile::tempdir().unwrap();
     let profiles_dir = temp_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
     let system_profile = profiles_dir.join("system");
     let current_generation = make_system_generation_dir(&profiles_dir, "41");
     make_system_profile_symlink(&system_profile, &current_generation);
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-    }
+    env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
 
     let profile_path = temp_dir.path().join("nails-system");
     make_profile_generation_dir(&profile_path, "123");
@@ -1451,24 +1430,20 @@ fn test_switch_profile_rolls_back_to_current_system_generation_when_switch_fails
             args: vec!["test".to_string()],
         }
     );
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[cfg(unix)]
 #[serial]
 fn test_switch_profile_returns_original_error_when_rollback_fails() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
     let temp_dir = tempfile::tempdir().unwrap();
     let profiles_dir = temp_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
     let system_profile = profiles_dir.join("system");
     let current_generation = make_system_generation_dir(&profiles_dir, "41");
     make_system_profile_symlink(&system_profile, &current_generation);
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-    }
+    env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
 
     let profile_path = temp_dir.path().join("nails-system");
     make_profile_generation_dir(&profile_path, "123");
@@ -1490,20 +1465,16 @@ fn test_switch_profile_returns_original_error_when_rollback_fails() {
         .unwrap_err();
     assert!(err.to_string().contains("Switch failed: primary failed"));
     assert_eq!(calls.lock().unwrap().len(), 2);
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[cfg(unix)]
 #[serial]
 fn test_switch_profile_skips_rollback_when_current_system_generation_unavailable() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
     let temp_dir = tempfile::tempdir().unwrap();
     let missing_system_profile = temp_dir.path().join("profiles/system");
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &missing_system_profile);
-    }
+    env.set("NAILS_SYSTEM_PROFILE_PATH", &missing_system_profile);
 
     let profile_path = temp_dir.path().join("nails-system");
     make_profile_generation_dir(&profile_path, "123");
@@ -1522,20 +1493,16 @@ fn test_switch_profile_skips_rollback_when_current_system_generation_unavailable
         .unwrap_err();
     assert!(err.to_string().contains("Switch failed: primary failed"));
     assert_eq!(calls.lock().unwrap().len(), 1);
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[cfg(unix)]
 #[serial]
 fn test_switch_system_generation_returns_error_when_generation_missing() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
     let temp_dir = tempfile::tempdir().unwrap();
     let system_profile = temp_dir.path().join("profiles/system");
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-    }
+    env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
 
     let builder = NixOSBuilder::new_with_executor(
         temp_dir.path().join("config"),
@@ -1547,24 +1514,20 @@ fn test_switch_system_generation_returns_error_when_generation_missing() {
         .switch_system_generation("99", SwitchAction::Test)
         .unwrap_err();
     assert!(err.to_string().contains("System generation not found: 99"));
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[cfg(unix)]
 #[serial]
 fn test_current_system_generation_reads_generation_from_overridden_system_profile() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
     let temp_dir = tempfile::tempdir().unwrap();
     let profiles_dir = temp_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
     let system_profile = profiles_dir.join("system");
     let current_generation = make_system_generation_dir(&profiles_dir, "42");
     make_system_profile_symlink(&system_profile, &current_generation);
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-    }
+    env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
 
     let builder = NixOSBuilder::new_with_executor(
         temp_dir.path().join("config"),
@@ -1576,15 +1539,13 @@ fn test_current_system_generation_reads_generation_from_overridden_system_profil
         builder.current_system_generation().unwrap(),
         Some("42".to_string())
     );
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[cfg(unix)]
 #[serial]
 fn test_current_system_generation_returns_none_for_unparseable_system_target() {
-    clear_system_profile_env();
+    let mut env = EnvGuard::lock();
     let temp_dir = tempfile::tempdir().unwrap();
     let profiles_dir = temp_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -1592,9 +1553,7 @@ fn test_current_system_generation_returns_none_for_unparseable_system_target() {
     let invalid_target = profiles_dir.join("not-a-generation");
     std::fs::create_dir_all(&invalid_target).unwrap();
     make_system_profile_symlink(&system_profile, &invalid_target);
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-    }
+    env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
 
     let builder = NixOSBuilder::new_with_executor(
         temp_dir.path().join("config"),
@@ -1603,36 +1562,30 @@ fn test_current_system_generation_returns_none_for_unparseable_system_target() {
     );
 
     assert_eq!(builder.current_system_generation().unwrap(), None);
-
-    clear_system_profile_env();
 }
 
 #[test]
 #[serial]
 fn test_real_command_executor_execute_nixos_rebuild_uses_path_and_captures_output() {
+    // The default executor resolves the toolchain from the caller's PATH, which
+    // is how the VM tests substitute stub builds, so this one test prepends to
+    // PATH; the others inject a search path instead.
     let temp_dir = tempfile::tempdir().unwrap();
     let script = temp_dir.path().join("nixos-rebuild");
     write_executable_script(
         &script,
         "#!/usr/bin/env bash\nprintf 'rebuilt ok\\n'\nprintf 'warn\\n' 1>&2\nexit 0\n",
     );
+    let mut env = EnvGuard::lock();
+    let mut paths = vec![temp_dir.path().to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    env.set("PATH", std::env::join_paths(paths).unwrap());
 
-    let old_path = std::env::var_os("PATH");
-    prepend_path(temp_dir.path(), &old_path);
-
-    let result = RealCommandExecutor
+    let result = RealCommandExecutor::default()
         .execute_nixos_rebuild(&["test"], false)
         .unwrap();
-
-    if let Some(old_path) = old_path {
-        unsafe {
-            std::env::set_var("PATH", old_path);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("PATH");
-        }
-    }
 
     assert_eq!(
         result,
@@ -1650,22 +1603,9 @@ fn test_real_command_executor_execute_nixos_rebuild_returns_false_on_nonzero_exi
         "#!/usr/bin/env bash\nprintf 'partial out\\n'\nprintf 'build failed\\n' 1>&2\nexit 17\n",
     );
 
-    let old_path = std::env::var_os("PATH");
-    prepend_path(temp_dir.path(), &old_path);
-
-    let result = RealCommandExecutor
+    let result = RealCommandExecutor::with_search_path(temp_dir.path())
         .execute_nixos_rebuild(&[], false)
         .unwrap();
-
-    if let Some(old_path) = old_path {
-        unsafe {
-            std::env::set_var("PATH", old_path);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("PATH");
-        }
-    }
 
     assert_eq!(
         result,
@@ -1681,24 +1621,10 @@ fn test_real_command_executor_execute_nixos_rebuild_returns_false_on_nonzero_exi
 #[serial]
 fn test_real_command_executor_execute_nixos_rebuild_returns_not_found_when_missing() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let old_path = std::env::var_os("PATH");
-    unsafe {
-        std::env::set_var("PATH", temp_dir.path());
-    }
 
-    let err = RealCommandExecutor
+    let err = RealCommandExecutor::with_search_path(temp_dir.path())
         .execute_nixos_rebuild(&[], false)
         .unwrap_err();
-
-    if let Some(old_path) = old_path {
-        unsafe {
-            std::env::set_var("PATH", old_path);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("PATH");
-        }
-    }
 
     match err {
         crate::NailsError::IoError(io) => assert_eq!(io.kind(), std::io::ErrorKind::NotFound),
@@ -1716,7 +1642,7 @@ fn test_real_command_executor_execute_switch_to_configuration_runs_exact_script_
         "#!/usr/bin/env bash\nprintf 'mode=%s\\n' \"$1\"\nprintf 'note\\n' 1>&2\nexit 0\n",
     );
 
-    let result = RealCommandExecutor
+    let result = RealCommandExecutor::default()
         .execute_switch_to_configuration(&script, SwitchAction::Test)
         .unwrap();
 
@@ -1734,27 +1660,12 @@ fn test_real_command_executor_execute_nix_drops_nix_path_only_when_asked() {
         &temp_dir.path().join("nix"),
         "#!/usr/bin/env bash\nprintf '%s' \"${NIX_PATH-unset}\"\n",
     );
+    let executor = RealCommandExecutor::with_search_path(temp_dir.path());
+    let mut env = EnvGuard::lock();
+    env.set("NIX_PATH", "nixpkgs=/caller/channel");
 
-    let old_path = std::env::var_os("PATH");
-    let old_nix_path = std::env::var_os("NIX_PATH");
-    prepend_path(temp_dir.path(), &old_path);
-    unsafe {
-        std::env::set_var("NIX_PATH", "nixpkgs=/caller/channel");
-    }
-
-    let kept = RealCommandExecutor.execute_nix(&["eval"], false);
-    let cleared = RealCommandExecutor.execute_nix(&["eval"], true);
-
-    unsafe {
-        match old_path {
-            Some(path) => std::env::set_var("PATH", path),
-            None => std::env::remove_var("PATH"),
-        }
-        match old_nix_path {
-            Some(nix_path) => std::env::set_var("NIX_PATH", nix_path),
-            None => std::env::remove_var("NIX_PATH"),
-        }
-    }
+    let kept = executor.execute_nix(&["eval"], false);
+    let cleared = executor.execute_nix(&["eval"], true);
 
     assert_eq!(kept.unwrap().1, "nixpkgs=/caller/channel");
     assert_eq!(cleared.unwrap().1, "unset");

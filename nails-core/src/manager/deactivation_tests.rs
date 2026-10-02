@@ -5,6 +5,7 @@ use super::{
 };
 use crate::NailsError;
 use crate::nixos::SwitchAction;
+use crate::test_support::EnvGuard;
 use serial_test::serial;
 use std::cell::Cell;
 use std::ffi::OsStr;
@@ -16,43 +17,6 @@ fn write_executable_script(path: &std::path::Path, body: &str) {
     let mut permissions = fs::metadata(path).expect("stat test script").permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions).expect("chmod test script");
-}
-
-struct EnvGuard {
-    key: &'static str,
-    original: Option<std::ffi::OsString>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-        let original = std::env::var_os(key);
-        unsafe {
-            std::env::set_var(key, value);
-        }
-        Self { key, original }
-    }
-
-    fn remove(key: &'static str) -> Self {
-        let original = std::env::var_os(key);
-        unsafe {
-            std::env::remove_var(key);
-        }
-        Self { key, original }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        if let Some(value) = &self.original {
-            unsafe {
-                std::env::set_var(self.key, value);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
 }
 
 #[test]
@@ -70,8 +34,9 @@ fn request_reboot_uses_configured_systemctl_override() {
         ),
     );
 
-    let _systemctl_override = EnvGuard::set(SYSTEMCTL_REBOOT_OVERRIDE_ENV, &systemctl);
-    let _reboot_override = EnvGuard::remove(REBOOT_BINARY_OVERRIDE_ENV);
+    let mut env = EnvGuard::lock();
+    env.set(SYSTEMCTL_REBOOT_OVERRIDE_ENV, &systemctl)
+        .remove(REBOOT_BINARY_OVERRIDE_ENV);
 
     dispatch_reboot_candidates(reboot_candidates()).expect("override systemctl should be used");
 
@@ -95,8 +60,9 @@ fn request_reboot_falls_back_to_override_reboot_binary_when_systemctl_fails() {
         &format!("#!/usr/bin/env bash\n: > '{}'\nexit 0\n", marker.display()),
     );
 
-    let _systemctl_override = EnvGuard::set(SYSTEMCTL_REBOOT_OVERRIDE_ENV, &systemctl);
-    let _reboot_override = EnvGuard::set(REBOOT_BINARY_OVERRIDE_ENV, &reboot);
+    let mut env = EnvGuard::lock();
+    env.set(SYSTEMCTL_REBOOT_OVERRIDE_ENV, &systemctl)
+        .set(REBOOT_BINARY_OVERRIDE_ENV, &reboot);
 
     dispatch_reboot_candidates(reboot_candidates()).expect("reboot fallback should succeed");
 
@@ -121,8 +87,9 @@ fn reboot_override_never_falls_back_to_real_host_commands() {
         "#!/usr/bin/env bash\nprintf 'override failed\n' >&2\nexit 1\n",
     );
 
-    let _systemctl_override = EnvGuard::set(SYSTEMCTL_REBOOT_OVERRIDE_ENV, &broken_systemctl);
-    let _reboot_override = EnvGuard::remove(REBOOT_BINARY_OVERRIDE_ENV);
+    let mut env = EnvGuard::lock();
+    env.set(SYSTEMCTL_REBOOT_OVERRIDE_ENV, &broken_systemctl)
+        .remove(REBOOT_BINARY_OVERRIDE_ENV);
 
     let err = dispatch_reboot_candidates(reboot_candidates())
         .expect_err("broken override must not fall back to host binaries");

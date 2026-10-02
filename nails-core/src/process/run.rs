@@ -117,12 +117,13 @@ pub const REBOOT_DISPATCH_BUDGET: Duration = Duration::from_secs(10);
 pub enum Program {
     /// A host tool such as `systemctl`, resolved from [`SYSTEM_TOOL_DIRS`].
     Tool(&'static str),
-    /// A binary looked up on the caller's `PATH`.
+    /// A binary looked up on the caller's `PATH`, or on the command's
+    /// [search path](ProcessCommand::search_path) when one is set.
     ///
     /// Only the Nix toolchain (`nix`, `nixos-rebuild`) still resolves this
-    /// way: the builder tests and the VM tests substitute stub builds by
-    /// prepending a directory to `PATH`, so moving it to [`Program::Tool`]
-    /// needs a different stub mechanism first.
+    /// way: the VM tests substitute stub builds by prepending a directory to
+    /// `PATH`, so moving it to [`Program::Tool`] needs a different stub
+    /// mechanism first.
     CallerPath(&'static str),
     /// An exact executable, such as a system generation's
     /// `switch-to-configuration` script.
@@ -144,6 +145,7 @@ pub struct ProcessCommand {
     program: Program,
     args: Vec<OsString>,
     allowed_env: Vec<OsString>,
+    search_path: Option<OsString>,
     allowed_in_test_runtime: bool,
     timeout: Option<Duration>,
 }
@@ -155,6 +157,7 @@ impl ProcessCommand {
             program,
             args: Vec::new(),
             allowed_env: Vec::new(),
+            search_path: None,
             allowed_in_test_runtime: false,
             timeout: None,
         }
@@ -202,6 +205,18 @@ impl ProcessCommand {
     /// `nixos-rebuild`. It cannot override the fixed `PATH`.
     pub fn allow_env(mut self, key: impl AsRef<OsStr>) -> Self {
         self.allowed_env.push(key.as_ref().to_os_string());
+        self
+    }
+
+    /// Resolves a [`Program::CallerPath`] program from `dirs`, a `PATH`-style
+    /// list, instead of the caller's `PATH`.
+    ///
+    /// This changes only where the executable is found: the child still starts
+    /// with the fixed `PATH`, and other kinds of [`Program`] ignore it. Tests use
+    /// it to point a command at stub binaries without changing the process
+    /// environment that every other test thread shares.
+    pub fn search_path(mut self, dirs: impl Into<OsString>) -> Self {
+        self.search_path = Some(dirs.into());
         self
     }
 
@@ -272,7 +287,7 @@ impl ProcessRunner for RealProcessRunner {
             )));
         }
 
-        let executable = resolve(&command.program)?;
+        let executable = resolve(&command.program, command.search_path.as_deref())?;
         tracing::debug!("Running {} ({})", command, executable.display());
 
         match command.timeout {
@@ -437,8 +452,10 @@ pub(crate) fn signal_command(pid: u32, signal: &str) -> ProcessCommand {
         .arg(pid.to_string())
 }
 
-/// Resolves `program` to the absolute path that is executed.
-fn resolve(program: &Program) -> Result<PathBuf> {
+/// Resolves `program` to the absolute path that is executed. A
+/// [`Program::CallerPath`] is looked up in `search_path` when it is given and
+/// on the caller's `PATH` otherwise.
+fn resolve(program: &Program, search_path: Option<&OsStr>) -> Result<PathBuf> {
     match program {
         Program::Tool(name) => find_executable(name, SYSTEM_TOOL_DIRS.iter().map(Path::new))
             .ok_or_else(|| {
@@ -449,14 +466,17 @@ fn resolve(program: &Program) -> Result<PathBuf> {
                 ))
             }),
         Program::CallerPath(name) => {
-            let path = std::env::var_os("PATH").unwrap_or_default();
+            let (path, searched) = match search_path {
+                Some(dirs) => (dirs.to_os_string(), "the search path"),
+                None => (std::env::var_os("PATH").unwrap_or_default(), "PATH"),
+            };
             // Relative entries would make the result depend on the working
             // directory, so only absolute ones are searched.
             let dirs: Vec<PathBuf> = std::env::split_paths(&path)
                 .filter(|dir| dir.is_absolute())
                 .collect();
             find_executable(name, dirs.iter().map(PathBuf::as_path))
-                .ok_or_else(|| not_found(format!("{} not found on PATH", name)))
+                .ok_or_else(|| not_found(format!("{} not found on {}", name, searched)))
         }
         Program::Exact(path) => Ok(path.clone()),
     }
