@@ -248,6 +248,10 @@
           pre-commit
           git
           bash
+          # Shells the prompt-syntax tests shell out to, so `nix develop`
+          # exercises them instead of skipping (bash is above).
+          zsh
+          fish
           coreutils
           gnugrep
           ripgrep

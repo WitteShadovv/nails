@@ -126,10 +126,28 @@ docs-check:
 
 # --- Flaky-test detection ---
 
-# Repeat the suite to surface flaky, order- or timing-dependent tests.
+# Surface flaky, order- or timing-dependent tests: the suite threaded, then
+# single-threaded, then shuffled with a printed seed, then repeated through
+# nextest with no retries so one failure in any pass fails the run. Override
+# the shuffle seed with SHUFFLE_SEED to reproduce a reported ordering.
 stress iterations="10":
     #!/usr/bin/env bash
     set -euo pipefail
+
+    echo "== threaded run =="
+    cargo test --workspace --all-features --locked
+
+    echo "== single-thread run =="
+    cargo test --workspace --all-features --locked -- --test-threads=1
+
+    seed="${SHUFFLE_SEED:-$(( (RANDOM << 15) | RANDOM ))}"
+    echo "== shuffled run (seed ${seed}) =="
+    # The stable harness accepts the unstable shuffle options under
+    # RUSTC_BOOTSTRAP; the explicit seed lets a failure be replayed.
+    RUSTC_BOOTSTRAP=1 cargo test --workspace --all-features --locked -- \
+        -Z unstable-options --shuffle-seed "${seed}"
+
+    echo "== nextest repeat loop ({{ iterations }}x, no retries) =="
     # With no retries, a single failure in any iteration fails the run.
     for i in $(seq 1 {{ iterations }}); do
         echo "stress iteration ${i}/{{ iterations }}"
