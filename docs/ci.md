@@ -4,19 +4,34 @@
 
 This repository is public. The CI and release workflows are written for a public GitHub project while preserving the current supply-chain posture: deterministic Nix builds, SBOM generation, provenance, and release verification.
 
+## Test and CI tiers
+
+Work runs in four tiers. Each is a superset of the one above it in coverage and cost, and each has a time budget enforced by step and job timeouts, so a slow addition shows up as a red run rather than a creeping wait.
+
+| Tier | Runs | Budget | Scope |
+|---|---|---|---|
+| 1. pre-commit | On `git commit`, changed files only | under 10 s | Formatting, Rust file sizes, file and secret checks (`.pre-commit-config.yaml`). |
+| 2. pre-push / `just check` | On `git push`, and on demand | about 90 s | `just fmt-check lint line-count test`: the whole offline Rust gate without coverage or Nix. |
+| 3. PR gate | Every pull request to `main`, and every push to `main` | about 10 min p95 | `ci.yml` (summarised by `gate`), the affected `e2e.yml` run (`e2e-result`) and `pr-title.yml`. These three are the required checks. |
+| 4. Post-merge, nightly, weekly | Schedules and labels, never a pull request | unbounded | The full E2E suite, the full-graph advisory scan, the crate fetcher canary, the stress loop, the benchmarks and the reproducibility check. A release runs on its tag. |
+
+Tier 3 is everything a contributor must pass to merge. Tier 4 catches what a per-PR budget cannot afford (every VM test, the whole dependency graph, timing and determinism) and reports failures into tracking issues instead of a pull request check (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)).
+
 ## Workflow inventory
 
-| Workflow | Purpose | Triggers |
-|---|---|---|
-| `.github/workflows/ci.yml` | The pull request gate: lint, tests with coverage and doctests, dependency policy, privileged mount tests, the Nix release build and the flake checks, summarised by the single required `gate` job | PRs targeting `main`, push to `main`, manual dispatch |
-| `.github/workflows/scheduled.yml` | Maintenance that never gates a merge: the full-graph dependency policy scan (`just deny-full`), the `deny.toml` ignore expiry check, the crate fetcher canary, the reproducibility check (`reproducibility.yml`), Rust cache warming, the stress loop (`just stress`), the benchmarks (compared with the previous run's baseline) and the monthly transitive `Cargo.lock` refresh | Weekly schedule (cache warming twice a week, lockfile refresh monthly), manual dispatch with a `task` input |
-| `.github/workflows/pr-title.yml` | Holds the pull request title to the same Conventional Commits grammar as the commit-msg hook, so a squash merge lands a valid subject on `main` | Pull request opened, edited, synchronized or reopened |
-| `.github/workflows/update-flake-lock.yml` | Monthly refresh of the version sources Dependabot has no ecosystem for: `flake.lock` (`nix flake update`) and the pre-commit hook revisions (`pre-commit autoupdate`), each opening its own pull request | Monthly schedule, manual dispatch |
-| `.github/workflows/forensics-eval-regression.yml` | Cheap non-privileged forensics regression lane covering Python tests plus a fixture-backed smoke run | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
-| `.github/workflows/e2e.yml` | The NixOS VM suite on GitHub-hosted runners: affected tests per pull request, the whole suite per push to `main`, every test driver nightly; runner-parameterised, so the same workflow runs on a self-hosted label | PRs targeting `main` (one path filter), push to `main`, nightly schedule, manual dispatch, `workflow_call` |
-| `.github/workflows/forensics-eval-fast.yml` | GitHub-hosted fast `forensics-eval` unittest lane for lightweight evaluator coverage under `nix/forensics-eval/tests` | Push/PR with path filters covering fast tests, related evaluator code, selected docs, and manual dispatch |
-| `.github/workflows/release.yml` | The whole release in one run: tag and version check, from-source build, rebuild on a fresh runner, the full E2E suite, SBOM, attestations and a draft GitHub release whose notes are the `CHANGELOG.md` section (see [Release workflow](#release-workflow)) | Push of `v*` tags, manual dispatch from a tag with a `tag` input |
-| `.github/workflows/reproducibility.yml` | Builds `.#nails-release` from source on fresh runners and compares the results byte for byte: one rebuild against the release build, or two builds against each other | Called from `release.yml` and weekly from `scheduled.yml` |
+| Workflow | Trigger | Required check | Tier | Runner | Local `just` recipe |
+|---|---|---|---|---|---|
+| `.github/workflows/ci.yml` | PRs to `main`, push to `main`, dispatch | `gate` | 3 | `ubuntu-24.04` | `just ci-rust`, `just deny` |
+| `.github/workflows/pr-title.yml` | Pull request opened, edited, synchronized, reopened | `pr-title` | 3 | `ubuntu-24.04` | the commit-msg hook |
+| `.github/workflows/e2e.yml` | PRs to `main`, push to `main`, nightly, dispatch, `workflow_call` | `e2e-result` | 3 (affected) and 4 (nightly full) | `runner` input, default `ubuntu-24.04` | `just e2e` |
+| `.github/workflows/e2e-hetzner.yml` | Manual dispatch only | — | 4 | a provisioned Hetzner server | `just e2e` on that runner |
+| `.github/workflows/scheduled.yml` | Weekly, twice-weekly and monthly schedules, dispatch with a `task` input | — | 4 | `ubuntu-24.04` | `just deny-full`, `just stress`, `cargo bench` |
+| `.github/workflows/reproducibility.yml` | `workflow_call` from `release.yml`, weekly from `scheduled.yml` | — | 4 | `ubuntu-24.04` | `nix build .#nails-release` |
+| `.github/workflows/release.yml` | Push of `v*` tags, dispatch from a tag | — | release | `ubuntu-24.04` (E2E on the `e2e-runner` input) | `python3 -m ci.release check` |
+
+The composite actions `.github/actions/setup-nix` and `.github/actions/report-status` are shared by these workflows and are not workflows themselves.
+
+`just docs-check` (`ci/docs_check.py`) fails when a workflow file is not in this table, or the table names a workflow that no longer exists; the `ci/tests` suite runs the same check, so the drift also fails CI.
 
 ## CI policy
 
@@ -32,7 +47,7 @@ Every work job runs in parallel. None waits for another; each is gated only on t
 | `deps` | `rust` or `deps` | `just deny bans licenses sources`; advisories and the `deny.toml` ignore expiry check only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changed. |
 | `privileged-mounts` | `rust` | The `#[ignore]`d real-overlayfs tests, built unprivileged and run as root in a private mount namespace. |
 | `nix-build` | `rust` or `nix` | `nix build .#nails-release` (the release derivation) and a smoke test of the archive: contents, `nails --version` and `checksums.txt`. |
-| `lint-misc` | `nix` or `workflows` | The unit tests of the CI and E2E tooling (`scripts/tests`, `ci/tests`) and `nix flake check`: nixfmt, statix, deadnix, shellcheck, actionlint, zizmor and the E2E shard weights. |
+| `lint-misc` | `nix` or `workflows` | The unit tests of the CI and E2E tooling (`scripts/tests`, `ci/tests`, which includes `just docs-check`) and `nix flake check`: nixfmt, statix, deadnix, shellcheck, actionlint, zizmor and the E2E shard weights. |
 | `gate` | always | The one required status. It fails when any job failed or was cancelled and passes when the path filter skipped one. |
 
 ### Important gate behavior
@@ -42,6 +57,7 @@ Every work job runs in parallel. None waits for another; each is gated only on t
 - **One Rust cache.** Every Rust job uses the rust-cache key `ci`; only the `rust` job saves it, and only on `main`. `scheduled.yml` restores the same key twice a week so it does not expire.
 - **Flaky tests.** The nextest `ci` profile (`.config/nextest.toml`) retries a failed test once and kills a test after three 60-second slow periods. A test that passes on its retry is listed as FLAKY in the job summary and flagged with a warning; a red run uploads `target/nextest/ci/junit.xml` as the `junit` artifact. The weekly stress loop in `scheduled.yml` runs without retries.
 - **Fork-safe.** No job in `ci.yml` writes to the pull request, so a fork pull request and any other run with a read-only token pass the gate. Only `report-status` has a write permission (`issues: write`), and it runs only on pushes to `main`.
+- **One coverage threshold.** The line-coverage floor is the `coverage_threshold` in the `justfile` and nowhere else; `just coverage` enforces it locally and in CI, and the percentage goes to the job summary. There is no Codecov step: the external upload added a token and a flaky network call without gating anything, so coverage is enforced only by the threshold and kept as the `coverage-report` artifact.
 - **Advisories gate dependency changes only.** A newly published RustSec advisory does not fail unrelated PRs or `main`; the weekly `just deny-full` run in `scheduled.yml` reports it, including advisories for crates that never ship (other targets, dev-dependencies). See [security-validation.md](security-validation.md#dependency-policy).
 - **E2E tests are not folded into `gate`.** They run in `e2e.yml`, whose `e2e-result` job is the status to require.
 - **Off the pull request path.** The SBOM is generated only by the release workflow; the benchmarks run weekly in `scheduled.yml` (see [Benchmarks](#benchmarks)) and the E2E performance tests nightly in `e2e.yml`. No pull request job checks a timing budget.
@@ -73,21 +89,6 @@ Runs nobody watches end in a job that calls the `.github/actions/report-status` 
 
 Only the reporting jobs get `issues: write`. The rules live in `report_status.py` next to the action and are tested in `scripts/tests/test_report_status.py`.
 
-### `forensics-eval-regression.yml` behavior
-
-- The workflow is the cheap, branch-protection-friendly forensics lane for ordinary push/PR/manual CI.
-- It runs on GitHub-hosted runners without repository secrets or Hetzner provisioning.
-- It executes `python3 -m unittest discover -s nix/forensics-eval/tests -p 'test_*.py'`.
-- It also executes the fixture-backed smoke check `./nix/forensics-eval/checks/smoke-demo.sh`, so the new Python/fixture path is visibly covered in normal CI.
-- This lane is intentionally fixture/demo-only; it does **not** claim live support for graphical or vfat profiles.
-
-### Test ownership split
-
-- Normal E2E owns product behavior and lifecycle validation: activate/deactivate flows, cleanup, verify/preflight paths, state/session handling, and similar end-to-end product behavior.
-- Legacy forensic E2E owns coarse VM-internal forensic spot checks.
-- `forensics-eval` owns staged evidence export, baseline-aware analysis, report generation, and campaign-style forensic evaluation.
-- `forensics-eval` should not duplicate normal E2E coverage. If a check is mainly about product correctness rather than exported evidence and forensic comparisons, it belongs in normal E2E.
-
 ### `e2e.yml` behavior
 
 One workflow runs the NixOS VM suite in every lane. A `plan` job decides what runs, a matrix of `shard` jobs runs it, and `e2e-result` reports the outcome:
@@ -98,7 +99,7 @@ One workflow runs the NixOS VM suite in every lane. A `plan` job decides what ru
 | Pull request with the `full-e2e` label | `all` | Every test except the `performance` group. |
 | Push to `main` | `all` | Every test except the `performance` group; a test whose derivation already passed is substituted from the binary cache instead of booting again. |
 | Nightly schedule | `execute` | Every test driver runs directly (`run --execute`), so cached results do not count. The performance tests run here only, in an informational job of their own that never fails the run. |
-| Manual dispatch or `workflow_call` | input | `mode` (`affected`, `ci`, `all`, `execute`), `runner` and `max-shards`. `release.yml` calls it with `all` for the tagged commit. |
+| Manual dispatch or `workflow_call` | input | `mode` (`affected`, `ci`, `all`, `execute`), `runner` and `max-shards`. `release.yml` calls it with `all` for the tagged commit; `e2e-hetzner.yml` calls it with a provisioned runner. |
 
 - **One path filter.** The `plan` job of a pull request or push run compares the change with its base; a dispatch or a call runs the mode it asked for. When nothing under `nails-core/`, `nails-cli/`, `nix/`, `ci/e2e/`, the setup-nix action, this workflow, the flake, the Cargo manifests or `rust-toolchain.toml` changed, no VM boots and `e2e-result` passes. A docs-only pull request therefore costs one short job.
 - **No secrets for untrusted code.** There is no `pull_request_target` and no approval environment. Fork and Dependabot pull requests run like any other and read the binary cache without being able to write to it.
@@ -106,7 +107,7 @@ One workflow runs the NixOS VM suite in every lane. A `plan` job decides what ru
 - **Performance tests.** Wall-clock budgets on shared runners cannot gate a merge, so the shards of every mode exclude the `performance` group, and the `performance` job runs it on the selected runner in `execute` mode only. `07-performance.nix` times each sample inside the guest, from the `duration_ms` that nails logs for an activation (`activate --json`) or a teardown and with the guest clock for `status`, and holds the slowest of a few samples to its budget. It times status, overlay-only activation, emergency and one default activation, with `nixos-rebuild` stubbed so the external build stays out of the budget.
 - **Runner.** `runner` is the `runs-on` value as JSON and applies to the shards; `plan`, `e2e-result` and the reporting jobs always run on `ubuntu-24.04`. Hosted runners get KVM from setup-nix; a self-hosted runner must provide `/dev/kvm`. A single-use self-hosted runner can serve one job only, so dispatch with `max-shards: 1` for it.
 - **Execution.** Each shard runs its tests with `python3 -m ci.e2e run --retries 1`: one `nix build --keep-going` over all of them (or, in `execute` mode, one driver after another). A test whose output is missing after the build failed. Failed tests run once more; a pass on that retry is listed as FLAKY in the step summary and raises a warning annotation, and the shard stays green. A test that fails twice fails the shard.
-- **Artifacts.** Each shard uploads its per-test durations (`e2e-durations-shard-N`, kept 90 days) and, only when it failed, the logs of its failed tests (`e2e-logs-shard-N`, kept 14 days). Nothing else from the runner is uploaded.
+- **Artifacts.** Each shard uploads its per-test durations (`e2e-durations-shard-N`, kept 90 days) and, only when it failed, the logs of its failed tests (`e2e-logs-shard-N`, kept 14 days). No privileged job uploads `**/*.log`, a performance file or metrics; nothing else from the runner leaves it.
 - **Weights.** Every shard appends a weight-drift report to its summary. The nightly run regenerates `nix/e2e-tests/shard-durations.json` from its durations and offers the result as the `shard-durations` artifact with a diff in the summary; committing it is a deliberate change.
 - **Unattended runs.** Pushes to `main` and nightly runs end in `report-status`, which keeps the `CI red: E2E` issue in step with the latest run (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)).
 - **Concurrency.** A newer push to a pull request cancels its older run; runs on `main` always finish, because each one fills the cache for the next.
@@ -115,19 +116,43 @@ Every test VM gets 2 cores and 2 GB of memory, 4 GB for graphical nodes (`nix/e2
 
 The target is that `mode=all` finishes in at most 10 shards and about 20 minutes on hosted runners. Record the measured shard count and wall-clock time of a full hosted run here once one has completed.
 
-### `forensics-eval-fast.yml` behavior
+### The manual Hetzner lane
 
-- The workflow is a GitHub-hosted fast lane for lightweight `forensics-eval` tests under `nix/forensics-eval/tests`.
-- It intentionally avoids Nix builds, VM-backed E2E execution, and live forensic runs.
-- The lane keeps a minimal `python -m unittest discover -s nix/forensics-eval/tests -p 'test*.py' -v` contract rather than using `pytest`.
-- Path filters cover the fast tests plus closely related evaluator code and workflow/docs inputs: `nix/forensics-eval/tests/**`, `nix/forensics-eval/analyzers/**`, `nix/forensics-eval/runners/**`, `nix/forensics-eval/fixtures/**`, `scripts/run-forensics-eval-tests.sh`, `.github/workflows/forensics-eval-fast.yml`, `nix/forensics-eval/README.md`, and `docs/ci.md`.
-- It is the right place for parser, schema, planner, report, and similar fast analysis tests that fit the unittest lane, but not for duplicating normal E2E behavior coverage or implying full live-suite coverage.
+`e2e-hetzner.yml` is the one lane that runs the suite on a self-hosted Hetzner Cloud server, for when a hosted runner is too small or too slow. It is dispatch-only and gates nothing.
+
+- **Trigger.** `workflow_dispatch` with an exact `ref` input; `provision` refuses a `ref` that does not match the dispatched revision, because a reusable-workflow call always runs the caller's commit. Dispatch at the ref to test: `gh workflow run e2e-hetzner.yml --ref <ref> -f ref=<ref>`.
+- **Provisioning.** One job loops over a short ladder of `(server type, location)` candidates, checks the API is reachable, and creates the first available dedicated-vCPU server (nested KVM needs the `ccx` line). The server boots as a **single-use, ephemeral** GitHub runner from a just-in-time config minted through the API, so no reusable registration token sits in cloud-init.
+- **Run and teardown.** The `e2e` job calls `e2e.yml` with the provisioned runner label; `teardown` deletes the server with `if: always()`, even when the run failed. There is no six-hour budget check and no approval environment.
+- **Secrets.** `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID` and `RUNNER_REGISTRATION` (a fine-grained PAT with repository `administration: write`) live in a `hetzner` deployment environment for secret scoping; the environment carries no required reviewers, so it is not an approval gate. `CACHIX_AUTH_TOKEN` is passed on to `e2e.yml` as usual.
+- **Status.** The server-type ladder, the pinned runner version and KVM nesting need a live dispatch to confirm against current Hetzner inventory; adjust `HCLOUD_CANDIDATES` and `RUNNER_VERSION` in the workflow if a run reports none available.
+
+### Post-merge contract and the red-main rule
+
+Merge queues are not available for a repository owned by a personal account, so the full E2E suite cannot gate the merge itself. A post-merge contract stands in for it:
+
+- Every pull request runs the **affected** E2E selection; the `full-e2e` label forces the whole suite on a pull request before merge when a change is broad.
+- Push to `main` runs the whole suite (`all`), substituting unchanged tests from the cache, and the **nightly** run executes every driver from scratch.
+- A failed `main` or nightly run opens a `ci-red` tracking issue. **Red-main rule:** revert or quarantine the cause within 24 hours; a failure that is an advisory rather than a regression gets an `advisory` issue triaged within 7 days.
+
+## Pinned-input and dependency automation
+
+Dependabot covers the two ecosystems it understands, the Cargo workspace and the GitHub Actions in the workflows (`.github/dependabot.yml`): monthly, grouped into one pull request per ecosystem with the security updates kept separate, titled `build(deps):` / `ci(deps):` so the commit-msg hook and `pr-title.yml` accept them.
+
+The version sources Dependabot has no ecosystem for are refreshed by `scheduled.yml`, each on the first of the month and each opening its own pull request:
+
+- `lockfile` — `cargo update` moves every transitive dependency to its newest allowed version.
+- `flake-lock` — `nix flake update` refreshes the pinned Nix inputs.
+- `pre-commit` — `pre-commit autoupdate` bumps the hook revisions.
+
+`rust-toolchain.toml` is bumped by hand, because the `deny.toml` RUSTSEC ignores are tied to the exact pin. A pull request these jobs open under the default `GITHUB_TOKEN` does not start CI, so they open it under the `DEPENDENCY_UPDATE_TOKEN` secret (scoped to the `dependency-updates` environment) when it is set and fall back to printing the diff otherwise.
 
 ## Nix setup and binary cache
 
 Every workflow that needs Nix uses the composite action `.github/actions/setup-nix`. The installer (`cachix/install-nix-action`) is pinned there once, Dependabot keeps that pin current, and every job gets the same `nix.conf`: KVM, `system-features = nixos-test benchmark big-parallel kvm`, `always-allow-substitutes = true` and `accept-flake-config = false`.
 
-The action also connects the project's public Cachix cache:
+The action also connects the project's public Cachix cache.
+
+### Cache trust rules
 
 - **Reads.** The cache is added as an extra substituter next to cache.nixos.org. Its signing key is pinned in `action.yml`, so no substitute is trusted on first use. Every job reads it unless it sets `cache: 'false'`, including fork pull requests.
 - **Pushes.** A job pushes only when it runs for a trusted event and receives `CACHIX_AUTH_TOKEN`. The trusted events are pushes to `main`, scheduled runs, manual dispatches and pull requests from a branch of this repository. Fork pull requests and every other event stay read-only. The decision lives in `.github/actions/setup-nix/cache_plan.py` and is tested in `scripts/tests/test_setup_nix_cache_plan.py`.
@@ -137,12 +162,11 @@ The action also connects the project's public Cachix cache:
   - `vm-test-run-*`: passed VM tests, which later runs fetch instead of booting the test again.
 
   `nails-release-*` is never pushed. Each path goes up with its closure, except what cache.nixos.org already serves. To push more, add a prefix to `PUSH_ALLOW` in `cache_plan.py`.
-- **Who gets the token.** Only `e2e.yml` (also when `release.yml` calls it) and the `nix-build` job of `ci.yml` pass it. GitHub withholds secrets from fork pull requests and Dependabot runs, so those stay read-only too.
+- **Who gets the token.** Only `e2e.yml` (also when `release.yml` or `e2e-hetzner.yml` call it) and the `nix-build` job of `ci.yml` pass it. GitHub withholds secrets from fork pull requests and Dependabot runs, so those stay read-only too.
 - **Release builds.** The `build` job of `release.yml` and `reproducibility.yml` set `cache: 'false'` and never read the project cache. `nails` is therefore compiled from source in every release and rebuild job, and nothing from the cache can end up in a release. The release's E2E run reads the cache like any other E2E run; it gates the release but produces none of its files.
+- **Trust boundary.** Anyone who can push a branch to this repository can push to the cache: once a run has configured the token, the code under test can read it. Write access already implies that trust, and release artifacts never come from the cache.
 
 Workflows load the action from the checked-out tree, so a run needs a revision that already contains it; rebase older pull requests before running them.
-
-Anyone who can push a branch to this repository can push to the cache: once a run has configured the token, the code under test can read it. Write access already implies that trust, and release artifacts never come from the cache.
 
 ### Setting up the cache
 
@@ -176,29 +200,59 @@ A release is one annotated `v*` tag on `main`; [RELEASING.md](../RELEASING.md) i
 
 [verify-release.md](verify-release.md) is the single description of how users check a release: `sha256sum --check --ignore-missing checksums.txt`, `gh attestation verify`, and where to do it. [release-artifact-reproducibility.md](release-artifact-reproducibility.md) explains how to rebuild the bundle and compare it with a release.
 
+## Where every old job went
+
+The pre-overhaul layout had 14 workflows and about 38 jobs; the mapping below says where each went.
+
+| Old workflow or job | Now |
+|---|---|
+| `ci.yml` with a `schedule:` and a `CI Success` aggregate | `ci.yml` is PR/push only, summarised by `gate`; the schedule moved to `scheduled.yml`. |
+| `nix-pr-verify.yml` | Folded into the `nix-build` and `lint-misc` jobs of `ci.yml`. |
+| `e2e-tests.yml` (dev-branch smoke) | `e2e.yml` in `affected` mode on every pull request. |
+| `e2e-tests-full.yml`, `e2e-tests-full-shard.yml` (`pull_request_target` + `hetzner-pr`) | `e2e.yml` in `all` mode (push, label, nightly); the Hetzner part is `e2e-hetzner.yml`, dispatch-only. |
+| `forensics-eval-fast.yml`, `forensics-eval-regression.yml`, `forensics-eval-full*.yml` | Removed; the decoy disk-image checks move into the E2E suite as ordinary tests. |
+| `release.yml` (verify) + `publish-release.yml` + `release-core.yml` | One `release.yml` on the tag: build, rebuild, E2E, SBOM, attest, draft. |
+| `reproducibility.yml` with duplicated inputs | `reproducibility.yml` declares its inputs once (`workflow_call`) and also runs weekly from `scheduled.yml`. |
+| `update-flake-lock.yml` | The `flake-lock` and `pre-commit` tasks of `scheduled.yml`. |
+| Benchmarks and cargo-geiger in a PR job | `scheduled.yml` benchmarks (alerts, not budgets); geiger replaced by the compile-time `unsafe_code = "deny"` lint. |
+
 ## Local commands that mirror CI
 
 The `justfile` is the single source of these commands; `just --list` shows them all. The `nix develop` shell provides every tool they need and installs the git hooks on first entry.
 
 ```bash
 just check        # formatting, clippy, file sizes and the tests (the pre-push gate)
-just line-count   # the Rust file size check alone
 just ci-rust      # everything the ci.yml Rust jobs run, including coverage
 just coverage     # line coverage; the threshold is defined only in the justfile
+just line-count   # the Rust file size check alone
 just deny         # dependency policy over the shipped graph
+just deny-full    # the full-graph policy scan scheduled.yml runs weekly
 just nix-lint     # nixfmt, deadnix and statix over the tracked Nix files
-nix flake check   # what the lint-misc job runs
+just docs-check   # docs/ci.md lists every workflow
+just stress       # repeat the suite to surface flaky tests
 just e2e ci       # build one E2E target or group
+nix flake check   # what the lint-misc job runs: the Nix, shell and workflow linters
 nix build -L .#nails-release -o result --option accept-flake-config false
 ```
 
-A commit runs only the fast, offline pre-commit hooks (formatting, Rust file sizes, file and secret checks); `just check` runs on push through the pre-push hook.
+A commit runs only the fast, offline pre-commit hooks (formatting, Rust file sizes, file and secret checks); `just check` runs on push through the pre-push hook. See [CONTRIBUTING.md](../CONTRIBUTING.md#testing) for the per-tier test commands, runtimes and prerequisites.
+
+## Maintainer settings checklist
+
+GitHub settings that the workflows assume but cannot set themselves:
+
+- **Required checks.** The `main` branch ruleset requires `gate` (from `ci.yml`), `e2e-result` (from `e2e.yml`) and `pr-title` (from `pr-title.yml`). Make `e2e-result` required only after it has been green for about two weeks.
+- **Tag ruleset.** Protect `v*` tags to annotated tags only, and enable immutable releases.
+- **Environments.** `dependency-updates` holds `DEPENDENCY_UPDATE_TOKEN`; `hetzner` holds `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID` and `RUNNER_REGISTRATION`. Neither needs required reviewers. Delete the retired `hetzner-pr` environment.
+- **Secrets.** `CACHIX_AUTH_TOKEN` as an Actions secret (see [Setting up the cache](#setting-up-the-cache)); never add it as a Dependabot secret.
+- **Schedules.** GitHub disables a workflow's schedule after 60 days without repository activity; a quiet period needs a manual dispatch of `scheduled.yml` (or any push) to re-arm it.
 
 ## Secrets and permissions
 
-- `CODECOV_TOKEN` is optional and only affects Codecov upload from `main` pushes.
 - `CACHIX_AUTH_TOKEN` is optional. With it, `e2e.yml` and the `nix-build` job of `ci.yml` push build results to the project binary cache for trusted events (see [Nix setup and binary cache](#nix-setup-and-binary-cache)). Store it as an Actions secret only.
-- No E2E lane needs any other secret. Nothing uses the `hetzner-pr` approval environment any more; it can be deleted.
+- `DEPENDENCY_UPDATE_TOKEN` is optional and used only by the pinned-input refresh jobs in `scheduled.yml`, so the pull requests they open start CI. Without it they print the diff to the run summary.
+- The Hetzner lane's secrets (`HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID`, `RUNNER_REGISTRATION`) live in the `hetzner` environment and are used by no other lane.
+- No E2E lane on a hosted runner needs any other secret. The retired `hetzner-pr` approval environment is no longer used and can be deleted.
 - Release attestations are signed with the `attest` job's OIDC identity (`id-token: write`); no long-lived signing secret exists.
 
 ## Operational caveats
@@ -206,10 +260,11 @@ A commit runs only the fast, offline pre-commit hooks (formatting, Rust file siz
 - Workflow artifacts are useful for maintainers and contributors, but the **public distribution channel is the published GitHub release**, drafted by `release.yml` from a validated tag.
 - A release run only drafts; a maintainer publishes the draft after reviewing it.
 - E2E validation is a separate workflow with its own required check, `e2e-result`; it is not aggregated into `gate`.
-- Ordinary forensics CI is fixture-backed; there is no live forensics lane.
 
 ## Related documents
 
+- [CONTRIBUTING.md](../CONTRIBUTING.md#testing)
 - [SECURITY.md](../SECURITY.md)
 - [docs/security-validation.md](security-validation.md)
+- [docs/verify-release.md](verify-release.md)
 - [docs/release-artifact-reproducibility.md](release-artifact-reproducibility.md)

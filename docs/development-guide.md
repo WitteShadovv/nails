@@ -4,7 +4,9 @@
 
 This guide covers the local workflows that are not obvious from `cargo` alone.
 The development shell (`nix develop`) provides the pinned toolchain and every
-tool the checks below need.
+tool the checks below need. For the per-tier test commands, runtimes and
+prerequisites, see the [Testing section of CONTRIBUTING.md](../CONTRIBUTING.md#testing);
+for the CI layout, [docs/ci.md](ci.md).
 
 ## Test tiers
 
@@ -16,8 +18,8 @@ A second, privileged tier exercises the real mount path — `RealFilesystem`
 against a live overlayfs, with bind and tmpfs submounts, force-unmount, and
 reverse-order teardown. Those tests live in
 `nails-core/tests/privileged_mounts.rs`, are every one `#[ignore]`d, and are
-skipped by the normal run. CI runs them in a dedicated `Privileged Mount Tests`
-job on every PR.
+skipped by the normal run. CI runs them in the dedicated `privileged-mounts`
+job of `ci.yml` on every PR, which `gate` aggregates.
 
 ## Tests that touch the process environment
 
@@ -93,5 +95,5 @@ sudo unshare --mount --propagation private "$bin" --ignored --test-threads=1
 `--ignored` selects exactly the privileged tests, and `--test-threads=1` keeps
 them serial so each one owns its mount namespace state without racing another.
 
-This is the same command the CI `Privileged Mount Tests` job runs; the job is
-required, so these tests must pass before a PR can merge.
+This is the same command the CI `privileged-mounts` job runs; it is part of the
+required `gate` check, so these tests must pass before a PR can merge.

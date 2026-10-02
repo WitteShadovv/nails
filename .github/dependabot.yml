@@ -4,8 +4,8 @@
 # workspace and the GitHub Actions used by the workflows. The three remaining
 # sources of pinned versions are updated elsewhere, because Dependabot has no
 # ecosystem for them:
-#   - flake.lock (Nix inputs)    -> .github/workflows/update-flake-lock.yml
-#   - .pre-commit-config.yaml    -> the pre-commit-autoupdate job in that file
+#   - flake.lock (Nix inputs)    -> the flake-lock task in scheduled.yml
+#   - .pre-commit-config.yaml    -> the pre-commit task in scheduled.yml
 #   - rust-toolchain.toml        -> bumped by hand; the deny.toml RUSTSEC ignores
 #                                   are tied to the exact pin, so a bump is a
 #                                   reviewed change, not an automated one.

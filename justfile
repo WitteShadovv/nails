@@ -110,6 +110,12 @@ e2e target="ci":
 e2e-debug name:
     ./scripts/run-e2e-tests.sh interactive {{ name }}
 
+# --- Docs ---
+
+# Fail when docs/ci.md does not list every workflow (and no stale one).
+docs-check:
+    python3 ci/docs_check.py
+
 # --- Flaky-test detection ---
 
 # Repeat the suite to surface flaky, order- or timing-dependent tests.

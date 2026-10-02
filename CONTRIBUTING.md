@@ -49,14 +49,12 @@ nix develop
 # Install local hooks if you use pre-commit
 pre-commit install
 
-# Baseline validation
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+# Baseline validation (the justfile is the single source of these commands)
+just check        # formatting, clippy, Rust file sizes and the tests
 nix flake check   # Nix, shell and workflow linters; builds no VM test
 ```
 
-If you are not using the Nix development environment, make sure your local toolchain is compatible with the repository before opening a PR.
+`nix develop` is the only supported development shell: it pins the toolchain and provides every tool the checks and hooks need. If you are not using it, make sure your local toolchain is compatible with the repository before opening a PR.
 
 ### About the pre-commit hooks
 
@@ -70,6 +68,24 @@ pre-commit run --all-files
 ```
 
 Running the full hook set before you open a pull request is the best way to reduce review churn.
+
+## Testing
+
+The suite runs in tiers, each with its own command, runtime and prerequisites. Everything runs inside `nix develop`. [docs/ci.md](docs/ci.md#test-and-ci-tiers) maps each tier to the workflow that enforces it; [docs/development-guide.md](docs/development-guide.md) covers the privileged tier and environment-sensitive tests in depth.
+
+| Tier | Command | Runtime | Prerequisites |
+|---|---|---|---|
+| Format, lint and unit tests (pre-push gate) | `just check` | about 90 s | dev shell |
+| CI parity, with coverage | `just ci-rust` | a few minutes | dev shell |
+| Privileged real-overlay tests | see `docs/development-guide.md` | seconds | root / `CAP_SYS_ADMIN`, an overlayfs-capable kernel |
+| One E2E test | `just e2e basic-workflow` | minutes | KVM (`/dev/kvm`), Nix |
+| E2E smoke group | `just e2e smoke` | minutes | KVM, Nix |
+| Full E2E suite | `just e2e all` | long (nightly in CI) | KVM, Nix |
+
+- **Unprivileged by default.** `just test` (and `just check`) drive the mount and overlay logic through `MockFilesystem` and temporary directories, so they need neither root nor an overlayfs kernel.
+- **Ignored and root-gated tests.** The real-overlay tests in `nails-core/tests/privileged_mounts.rs` are every one `#[ignore]`d and run only in a private mount namespace (the `privileged-mounts` CI job, part of `gate`); `docs/development-guide.md` has the exact build-and-run commands. A handful of other `#[ignore]`d tests invoke real process-kill or mount logic and must not run outside an isolated environment.
+- **`NAILS_UNSAFE_REAL_OPS`.** CLI integration tests that would perform real host actions refuse to run unless `NAILS_UNSAFE_REAL_OPS=1` is set, so a normal `cargo test` skips them rather than touching the host. Set it only inside a disposable VM or container.
+- **Environment-sensitive tests.** All tests in a binary share one process environment; a test that reads or writes an environment variable must hold an `EnvGuard` (see `docs/development-guide.md`). Never call `std::env::set_var`/`remove_var` directly.
 
 ## Contribution Guidelines
 

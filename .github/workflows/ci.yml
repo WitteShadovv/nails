@@ -184,13 +184,6 @@ jobs:
           path: target/coverage/
           retention-days: 30
 
-      - name: Upload coverage to Codecov
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
-        with:
-          files: ./target/coverage/cobertura.xml
-          fail_ci_if_error: false
-
   # Dependency policy over the shipped graph. Advisory results follow the
   # RustSec database rather than this repository, so they only gate a change
   # to the dependencies or their policy; scheduled.yml scans the full graph
