@@ -90,6 +90,7 @@ fn test_state_file_serialization() {
             .with_timezone(&Utc),
         boot_id: None,
         owner_pid: 0,
+        nix_store_init_namespace_bound: false,
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -302,6 +303,7 @@ fn test_save_load_round_trip_with_inactive_state() {
             .with_timezone(&Utc),
         boot_id: None,
         owner_pid: 0,
+        nix_store_init_namespace_bound: false,
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -355,6 +357,7 @@ fn test_save_load_round_trip_with_active_state() {
             .with_timezone(&Utc),
         boot_id: None,
         owner_pid: 0,
+        nix_store_init_namespace_bound: false,
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -410,6 +413,7 @@ fn test_save_load_multiple_overlays() {
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,
+        nix_store_init_namespace_bound: false,
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -460,6 +464,43 @@ fn test_checksum_field_present_when_set() {
     let json = serde_json::to_string(&state).expect("Should serialize");
     assert!(json.contains("\"integrity_sha256\""));
     assert!(json.contains("\"abc123\""));
+}
+
+#[test]
+fn test_nix_store_init_namespace_bound_defaults_false() {
+    let state = StateFile::default();
+    assert!(!state.nix_store_init_namespace_bound);
+}
+
+#[test]
+fn test_nix_store_init_namespace_bound_round_trips() {
+    let state = StateFile {
+        nix_store_init_namespace_bound: true,
+        ..StateFile::default()
+    };
+
+    let json = serde_json::to_string(&state).expect("Should serialize");
+    assert!(json.contains("\"nix_store_init_namespace_bound\":true"));
+
+    let restored: StateFile = serde_json::from_str(&json).expect("Should deserialize");
+    assert!(restored.nix_store_init_namespace_bound);
+}
+
+#[test]
+fn test_nix_store_init_namespace_bound_absent_field_defaults_false() {
+    // A state file written before the field existed must still load, defaulting
+    // the flag to false so teardown never undoes a bind that was never recorded.
+    let legacy = r#"{
+        "version": "0.2.0",
+        "state": "Inactive",
+        "nixos_generation": null,
+        "overlay_status": {},
+        "last_modified": "2025-01-27T10:30:00Z",
+        "owner_pid": 0
+    }"#;
+
+    let loaded: StateFile = serde_json::from_str(legacy).expect("Should deserialize legacy state");
+    assert!(!loaded.nix_store_init_namespace_bound);
 }
 
 #[test]
@@ -562,6 +603,7 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,
+        nix_store_init_namespace_bound: false,
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -643,6 +685,7 @@ fn test_persist_race_condition_handling() {
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,
+        nix_store_init_namespace_bound: false,
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -685,6 +728,7 @@ fn create_test_manager_with_state(
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,
+        nix_store_init_namespace_bound: false,
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -1231,6 +1275,7 @@ fn test_state_file_permissions_are_0600() {
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,
+        nix_store_init_namespace_bound: false,
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -1267,6 +1312,7 @@ fn test_checksum_round_trip_save_load() {
             .with_timezone(&Utc),
         boot_id: None,
         owner_pid: 0,
+        nix_store_init_namespace_bound: false,
         integrity_sha256: None,
         config_fingerprint: None,
     };

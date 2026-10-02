@@ -373,6 +373,10 @@ impl ManagerDeactivationKind {
 struct OverlayContext {
     nix_was_overlaid: bool,
     var_was_overlaid: bool,
+    /// Activation recorded a read-only `/nix/store` self-bind in PID 1's mount
+    /// namespace (set only when the manager and init namespaces differed). The
+    /// manager-namespace unmount cannot reach it, so teardown undoes it directly.
+    nix_store_init_namespace_bound: bool,
 }
 
 fn requires_decoy_restore<F: Filesystem>(manager: &NailsManager<F>) -> Result<bool> {
@@ -422,9 +426,15 @@ fn inspect_overlay_context<F: Filesystem>(manager: &NailsManager<F>) -> Result<O
         .map(|state_file| state_file.overlay_status.keys().cloned().collect())
         .unwrap_or_default();
 
+    let nix_store_init_namespace_bound = cached
+        .as_ref()
+        .map(|state_file| state_file.nix_store_init_namespace_bound)
+        .unwrap_or(false);
+
     Ok(OverlayContext {
         nix_was_overlaid: overlay_paths.iter().any(|p| p == Path::new("/nix")),
         var_was_overlaid: overlay_paths.iter().any(|p| p == Path::new("/var")),
+        nix_store_init_namespace_bound,
     })
 }
 
@@ -450,6 +460,10 @@ fn overlay_context_from_mounts<F: Filesystem>(manager: &NailsManager<F>) -> Resu
     Ok(OverlayContext {
         nix_was_overlaid: mounts.nix_overlay_present,
         var_was_overlaid,
+        // An untrusted-state teardown cannot trust the recorded flag, and the
+        // init-namespace bind is invisible in the manager's mount table, so it is
+        // left for manual recovery rather than guessed at.
+        nix_store_init_namespace_bound: false,
     })
 }
 
@@ -548,6 +562,21 @@ impl<F: Filesystem> NailsManager<F> {
                         "Force /nix/store unmount failed; continuing to overlay teardown and service restart"
                     );
                 }
+            }
+
+            // When activation had to bind /nix/store read-only in PID 1's mount
+            // namespace as well (an invocation preflight normally refuses), the
+            // manager-namespace unmount above cannot reach that bind. Undo exactly
+            // the bind activation recorded; best-effort so a failure never leaves
+            // the decoy without nix-daemon.
+            if overlay_context.nix_store_init_namespace_bound
+                && !crate::runtime_safety::should_skip_host_interaction()
+                && let Err(e) = Self::teardown_nix_store_init_namespace_bind()
+            {
+                tracing::warn!(
+                    error = %e,
+                    "Best-effort init-namespace /nix/store unmount failed; continuing to overlay teardown and service restart"
+                );
             }
         }
 

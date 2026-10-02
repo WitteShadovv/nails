@@ -384,6 +384,7 @@ impl<F: Filesystem> NailsManager<F> {
         if let Some(ref mut state_file) = *cached {
             state_file.overlay_status.clear();
             state_file.failed_overlays.clear();
+            state_file.nix_store_init_namespace_bound = false;
         }
         Ok(())
     }

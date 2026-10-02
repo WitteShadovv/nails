@@ -16,6 +16,7 @@ mod child_exit {
     pub(super) const SETNS: i32 = 12;
     pub(super) const BIND: i32 = 13;
     pub(super) const REMOUNT_RO: i32 = 14;
+    pub(super) const UMOUNT: i32 = 15;
     pub(super) const SYMLINK: i32 = 22;
 }
 
@@ -25,6 +26,7 @@ fn describe_child_exit(code: i32) -> &'static str {
         child_exit::SETNS => "setns(CLONE_NEWNS)",
         child_exit::BIND => "bind mount",
         child_exit::REMOUNT_RO => "read-only remount",
+        child_exit::UMOUNT => "umount",
         child_exit::SYMLINK => "symlinkat",
         _ => "unknown step",
     }
@@ -129,6 +131,35 @@ unsafe fn replace_symlink_child(
     0
 }
 
+/// Child body for removing a bind mount, entered after `fork`.
+///
+/// Async-signal-safe: raw syscalls only. Removes exactly one mount at `target`
+/// (the most recently stacked bind there), which is the read-only self-bind the
+/// matching activation helper created in this namespace.
+///
+/// # Safety
+/// Must be called only in the forked child with `target` pointing at a NUL
+/// terminated string that outlives the call, and `ns_fd` referring to an open
+/// mount-namespace file.
+#[allow(unsafe_code)]
+unsafe fn umount_in_init_namespace_child(ns_fd: RawFd, target: *const nix::libc::c_char) -> i32 {
+    use nix::libc;
+    // SAFETY: the caller guarantees `ns_fd` is an open namespace file and
+    // `target` a live NUL-terminated path; the kernel only reads them.
+    unsafe {
+        if libc::unshare(libc::CLONE_FS) != 0 {
+            return child_exit::UNSHARE_FS;
+        }
+        if libc::setns(ns_fd, libc::CLONE_NEWNS) != 0 {
+            return child_exit::SETNS;
+        }
+        if libc::umount(target) != 0 {
+            return child_exit::UMOUNT;
+        }
+    }
+    0
+}
+
 impl<F: Filesystem> NailsManager<F> {
     /// Whether this process runs in a different mount namespace than PID 1.
     ///
@@ -152,7 +183,12 @@ impl<F: Filesystem> NailsManager<F> {
         Ok((metadata.dev(), metadata.ino()))
     }
 
-    fn restore_nix_store_bind_mount() -> Result<()> {
+    /// Restore the read-only `/nix/store` self-bind(s) after the `/nix` overlay.
+    ///
+    /// Returns `true` when a separate bind had to be made in PID 1's mount
+    /// namespace (only when it differs from the manager's), so the caller can
+    /// record that a teardown must undo it there as well.
+    fn restore_nix_store_bind_mount() -> Result<bool> {
         let nix_store = Path::new("/nix/store");
 
         // Self-bind the already-overlaid /nix/store read-only. A writable remount
@@ -165,13 +201,69 @@ impl<F: Filesystem> NailsManager<F> {
         if Self::init_namespace_differs()? {
             Self::restore_read_only_self_bind_in_init_namespace(nix_store)?;
             tracing::info!("Read-only self-bind on /nix/store restored in init mount namespace");
+            Ok(true)
         } else {
             tracing::debug!(
                 "Manager and init mount namespaces are identical; one /nix/store bind suffices"
             );
+            Ok(false)
+        }
+    }
+
+    /// Undo the read-only `/nix/store` self-bind this process created in PID 1's
+    /// mount namespace during activation.
+    ///
+    /// Called only when activation recorded making that bind (the manager and
+    /// init namespaces differed). The namespaces are re-compared here: if they
+    /// now coincide, the manager-namespace `/nix/store` unmount already removed
+    /// the bind and a second `umount` would instead strip the system's own
+    /// boot-time bind, so this is a no-op in that case.
+    pub(crate) fn teardown_nix_store_init_namespace_bind() -> Result<()> {
+        if !Self::init_namespace_differs()? {
+            tracing::debug!(
+                "Manager and init mount namespaces now coincide; no separate /nix/store bind to undo"
+            );
+            return Ok(());
         }
 
+        Self::undo_read_only_self_bind_in_init_namespace(Path::new("/nix/store"))?;
+        tracing::info!("Removed read-only /nix/store self-bind from init mount namespace");
         Ok(())
+    }
+
+    #[allow(unsafe_code)]
+    fn undo_read_only_self_bind_in_init_namespace(target: &Path) -> Result<()> {
+        // Build everything in the parent so the child allocates nothing.
+        let init_namespace = std::fs::File::open("/proc/1/ns/mnt").map_err(|e| {
+            NailsError::OverlayError(format!("Failed to open init mount namespace: {e}"))
+        })?;
+        let ns_fd = init_namespace.as_raw_fd();
+        let target_c = cstring_for(target)?;
+
+        #[cfg(debug_assertions)]
+        assert_single_threaded_before_fork();
+
+        // SAFETY: the child runs only async-signal-safe code (raw syscalls in
+        // `umount_in_init_namespace_child`, then `_exit`), so it never touches a
+        // lock or an allocator another thread held at fork time.
+        let child = unsafe { fork() }.map_err(|e| {
+            NailsError::OverlayError(format!("Failed to fork init namespace unmount helper: {e}"))
+        })?;
+
+        match child {
+            ForkResult::Child => {
+                // SAFETY: this is the forked child; `ns_fd` stays open and
+                // `target_c` alive until `_exit`, since both were made before the
+                // fork and nothing in the child drops them.
+                let code = unsafe { umount_in_init_namespace_child(ns_fd, target_c.as_ptr()) };
+                // SAFETY: `_exit` skips destructors and atexit handlers, which
+                // must not run on the parent's state copied into the child.
+                unsafe { nix::libc::_exit(code) }
+            }
+            ForkResult::Parent { child } => {
+                Self::wait_for_init_namespace_helper(child, "/nix/store unmount")
+            }
+        }
     }
 
     fn restore_read_only_bind_mount(source: &Path, target: &Path) -> Result<()> {
@@ -390,6 +482,21 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
+    /// Persist whether a `/nix/store` self-bind was created in PID 1's mount
+    /// namespace, so a later teardown undoes exactly that bind and nothing else.
+    fn record_nix_store_init_namespace_bind(&self, bound: bool) -> Result<()> {
+        let mut cached = self.cached_state.borrow_mut();
+        if let Some(ref mut state_file) = *cached {
+            if state_file.nix_store_init_namespace_bound == bound {
+                return Ok(());
+            }
+            state_file.nix_store_init_namespace_bound = bound;
+            drop(cached);
+            self.save_cached_state()?;
+        }
+        Ok(())
+    }
+
     /// Restore NixOS security model after /nix overlay
     pub(super) fn restore_nix_security_model(&self, nix_guard: &mut NixDaemonGuard) -> Result<()> {
         // Step 1: Recreate read-only bind mount on /nix/store
@@ -400,8 +507,15 @@ impl<F: Filesystem> NailsManager<F> {
         if crate::runtime_safety::should_skip_host_interaction() {
             self.filesystem
                 .bind_mount(Path::new("/nix/store"), Path::new("/nix/store"))?;
+            // The test runtime never forks into the init namespace, so there is
+            // never a separate bind to undo at teardown.
+            self.record_nix_store_init_namespace_bind(false)?;
         } else {
-            Self::restore_nix_store_bind_mount()?;
+            let init_namespace_bound = Self::restore_nix_store_bind_mount()?;
+            // Record the outcome either way so a stale flag from a previous
+            // (unusual) differing-namespace activation cannot trigger a spurious
+            // init-namespace unmount at the next teardown.
+            self.record_nix_store_init_namespace_bind(init_namespace_bound)?;
         }
 
         // Step 2: Restart nix-daemon (inherits overlay, creates own rw namespace)

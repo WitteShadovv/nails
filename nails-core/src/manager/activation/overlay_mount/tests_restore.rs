@@ -48,6 +48,56 @@ fn test_restore_nix_security_model_self_binds_nix_store_in_test_runtime() {
 }
 
 #[test]
+fn test_restore_nix_security_model_clears_stale_init_namespace_flag_in_test_runtime() {
+    let hidden_root = tempfile::tempdir().unwrap();
+    let state_path = hidden_root.path().join("state.json");
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/nix/store", true);
+    fs.mock_set_path_type("/nix/store", PathKind::Dir);
+
+    let manager = NailsManager::new(
+        fs.clone(),
+        Config {
+            hidden_volume_root: hidden_root.path().to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![OverlayConfig {
+                name: "nix".to_string(),
+                lower: PathBuf::from("/nix"),
+                upper: hidden_root.path().join("nix-upper"),
+                work: hidden_root.path().join("nix-work"),
+                target: PathBuf::from("/nix"),
+            }],
+            ..Config::test_default()
+        },
+        state_path,
+    );
+
+    // Pre-seed a cached state carrying a stale "bound in the init namespace" flag
+    // from an earlier, differing-namespace activation.
+    *manager.cached_state.borrow_mut() = Some(crate::StateFile {
+        nix_store_init_namespace_bound: true,
+        ..crate::StateFile::default()
+    });
+
+    let mut guard = NixDaemonGuard::new(false);
+    manager.restore_nix_security_model(&mut guard).unwrap();
+
+    // The test runtime never forks into the init namespace, so restore records no
+    // init-namespace bind and clears the stale flag: a later teardown must not try
+    // to undo a bind that does not exist.
+    assert!(
+        !manager
+            .cached_state
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .nix_store_init_namespace_bound,
+        "test-runtime restore must record no init-namespace /nix/store bind"
+    );
+}
+
+#[test]
 fn test_restore_nix_security_model_self_binds_without_any_submount_sources() {
     let hidden_root = tempfile::tempdir().unwrap();
     let state_path = hidden_root.path().join("state.json");

@@ -112,6 +112,18 @@ pub struct StateFile {
     #[serde(default)]
     pub failed_overlays: Vec<FailedOverlayInfo>,
 
+    /// Whether a read-only `/nix/store` self-bind was created in PID 1's mount
+    /// namespace during activation.
+    ///
+    /// This only happens when the manager and init mount namespaces differ (an
+    /// invocation preflight normally refuses). When set, that extra bind lives in
+    /// the init namespace, so the manager-namespace `/nix/store` unmount does not
+    /// reach it and teardown must undo it separately. Recording the fact here lets
+    /// deactivation remove exactly the bind it created — never the system's own
+    /// boot-time `/nix/store` bind. Cleared on deactivation.
+    #[serde(default)]
+    pub nix_store_init_namespace_bound: bool,
+
     /// Timestamp of last state modification
     pub last_modified: DateTime<Utc>,
 
@@ -154,6 +166,7 @@ impl Default for StateFile {
             config_fingerprint: None,
             overlay_status: HashMap::new(),
             failed_overlays: Vec::new(),
+            nix_store_init_namespace_bound: false,
             last_modified: Utc::now(),
             boot_id: None,
             owner_pid: 0,

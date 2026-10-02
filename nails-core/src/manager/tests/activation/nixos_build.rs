@@ -35,6 +35,7 @@ fn test_config_fingerprint_field_persistence() {
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,
+        nix_store_init_namespace_bound: false,
         integrity_sha256: None,
     };
     let state_json = serde_json::to_string_pretty(&initial_state).unwrap();
