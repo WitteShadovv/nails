@@ -36,6 +36,7 @@ pub struct ConfigBuilder {
     overlay_mode: Option<OverlayMode>,
     overlay_exclusions: Option<Vec<PathBuf>>,
     overlay_exclusions_remove: Option<Vec<PathBuf>>,
+    allow_leaky_exclusions: Option<Vec<PathBuf>>,
     clear_history: Option<bool>,
     show_opsec_reminders: Option<bool>,
     log_path: Option<PathBuf>,
@@ -105,6 +106,14 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set the load-bearing directories that may be excluded (Auto mode)
+    ///
+    /// Default: empty list, so excluding a load-bearing directory is refused
+    pub fn allow_leaky_exclusions(mut self, allowed: Vec<PathBuf>) -> Self {
+        self.allow_leaky_exclusions = Some(allowed);
+        self
+    }
+
     /// Set whether to clear shell history during deactivation
     ///
     /// Default: `true`
@@ -168,6 +177,8 @@ impl ConfigBuilder {
 
         let overlay_exclusions_remove = self.overlay_exclusions_remove.unwrap_or_default();
 
+        let allow_leaky_exclusions = self.allow_leaky_exclusions.unwrap_or_default();
+
         let clear_history = self.clear_history.unwrap_or_else(default_clear_history);
 
         let show_opsec_reminders = self
@@ -189,6 +200,7 @@ impl ConfigBuilder {
             overlay_mode,
             overlay_exclusions,
             overlay_exclusions_remove,
+            allow_leaky_exclusions,
             clear_history,
             show_opsec_reminders,
             log_path,

@@ -1257,3 +1257,19 @@ fn test_disk_usage_returns_realistic_values() {
     assert!(usage.total > 0, "Total should come from statvfs");
     assert!(usage.available <= usage.total);
 }
+
+#[test]
+fn canonicalize_resolves_symlinks_and_reports_missing_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    let real = base.join("real");
+    fs::create_dir(&real).unwrap();
+    std::os::unix::fs::symlink(&real, base.join("link")).unwrap();
+
+    let fs_impl = RealFilesystem;
+    assert_eq!(fs_impl.canonicalize(&base.join("link")).unwrap(), real);
+    match fs_impl.canonicalize(&base.join("link/missing")) {
+        Err(NailsError::IoError(e)) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+}

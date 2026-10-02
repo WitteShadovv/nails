@@ -42,10 +42,18 @@ pub enum PathProblem {
     #[error("must not pass through a symlink ({} is one)", .0.display())]
     Symlink(PathBuf),
 
-    /// The hidden volume root lies inside an overlay target, so mounting the
-    /// overlay would hide the volume behind it.
+    /// The path lies inside an overlay target, so mounting the overlay would
+    /// hide the hidden volume, or the file nails keeps on it, behind it.
     #[error("must not lie inside the overlay target {}", .0.display())]
     InsideOverlayTarget(PathBuf),
+
+    /// An Auto-mode exclusion names a directory a normal session writes to,
+    /// so the hidden session's writes there would reach the decoy disk.
+    #[error(
+        "excludes a directory the session writes to, so those writes would reach the decoy disk; \
+         remove it, or list it in allow_leaky_exclusions to accept the leak"
+    )]
+    LeakyExclusion,
 
     /// A path that holds hidden data is not strictly inside the hidden
     /// volume root.
@@ -104,8 +112,12 @@ impl Config {
     /// - Every path is absolute, has no `.` or `..` segment and no newline.
     /// - The hidden volume root, overlay lower, upper and work directories
     ///   and overlay targets contain no `,` or `:`.
-    /// - The hidden volume root is not `/` and does not lie inside an overlay
-    ///   target.
+    /// - The hidden volume root is not `/`, and neither it, the state file nor
+    ///   the log directory lies inside an overlay target.
+    /// - In Auto mode, no exclusion names a load-bearing directory (see
+    ///   [`Config::leaky_exclusions`]) that `allow_leaky_exclusions` does not
+    ///   list. `/tmp` is left to the `overlay-targets` pre-flight check, which
+    ///   can see whether it is a tmpfs.
     /// - The state file, the log directory and the overlay upper and work
     ///   directories lie strictly inside the hidden volume root.
     /// - No existing component of the hidden volume root, or of a path inside
@@ -145,11 +157,42 @@ impl Config {
             }
         }
 
-        if let Some(overlay) = self.overlays.iter().find(|o| root.starts_with(&o.target)) {
+        let held_on_root = [
+            ("hidden_volume_root", root.as_path()),
+            ("state_file_path", self.state_file_path.as_path()),
+            ("log_path", self.log_path.as_path()),
+        ];
+        for (key, path) in held_on_root {
+            if let Some(overlay) = self.overlays.iter().find(|o| path.starts_with(&o.target)) {
+                return Err(reject(
+                    key,
+                    path,
+                    PathProblem::InsideOverlayTarget(overlay.target.clone()),
+                ));
+            }
+        }
+
+        // Report the first offending entry in the order the user wrote them.
+        let leaky = self.leaky_exclusions(true);
+        if let Some((i, path)) = self
+            .overlay_exclusions
+            .iter()
+            .enumerate()
+            .find(|(_, path)| leaky.contains(path))
+        {
             return Err(reject(
-                "hidden_volume_root",
-                root,
-                PathProblem::InsideOverlayTarget(overlay.target.clone()),
+                &format!("overlay_exclusions[{i}]"),
+                path,
+                PathProblem::LeakyExclusion,
+            ));
+        }
+        // Only reachable if a default exclusion were load-bearing, which the
+        // platform layer must never introduce silently.
+        if let Some(path) = leaky.first() {
+            return Err(reject(
+                "overlay_exclusions",
+                path,
+                PathProblem::LeakyExclusion,
             ));
         }
 
@@ -199,6 +242,13 @@ impl Config {
         for (i, path) in self.overlay_exclusions_remove.iter().enumerate() {
             paths.push((
                 format!("overlay_exclusions_remove[{i}]"),
+                path.as_path(),
+                Use::Plain,
+            ));
+        }
+        for (i, path) in self.allow_leaky_exclusions.iter().enumerate() {
+            paths.push((
+                format!("allow_leaky_exclusions[{i}]"),
                 path.as_path(),
                 Use::Plain,
             ));

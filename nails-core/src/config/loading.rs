@@ -264,8 +264,14 @@ fn render_template(root: &Path, title: &str) -> String {
 
 # Auto mode: extra exclusions, and default exclusions to overlay anyway. The
 # default list and the reason for each entry are in docs/configuration.md.
-# overlay_exclusions = ["/srv"]
+# Writes under an excluded directory reach the decoy disk.
+# overlay_exclusions = ["/media"]
 # overlay_exclusions_remove = ["/mnt"]
+
+# Auto mode: directories the session writes to (/home, /root, /etc, /var,
+# /nix, /srv, /opt, and /tmp unless it is a tmpfs) are refused in
+# overlay_exclusions unless they are listed here to accept the leak.
+# allow_leaky_exclusions = []
 
 # Explicit mode: one table per overlay. upper and work must lie inside
 # hidden_volume_root, and no target may contain it.

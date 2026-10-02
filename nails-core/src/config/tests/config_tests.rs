@@ -166,6 +166,7 @@ fn test_builder_with_all_fields_specified() {
         .overlay_mode(OverlayMode::Explicit)
         .overlay_exclusions(vec![PathBuf::from("/srv")])
         .overlay_exclusions_remove(vec![PathBuf::from("/mnt")])
+        .allow_leaky_exclusions(vec![PathBuf::from("/srv")])
         .minimum_space_mb(1000)
         .clear_history(false)
         .show_opsec_reminders(false)
@@ -185,6 +186,7 @@ fn test_builder_with_all_fields_specified() {
         config.overlay_exclusions_remove,
         vec![PathBuf::from("/mnt")]
     );
+    assert_eq!(config.allow_leaky_exclusions, vec![PathBuf::from("/srv")]);
     assert_eq!(config.minimum_space_mb, 1000);
     assert!(!config.clear_history);
     assert!(!config.show_opsec_reminders);
@@ -271,6 +273,7 @@ nixos_flake = "/mnt/test-volume/nixos#host"
 overlay_mode = "auto"
 overlay_exclusions = ["/srv"]
 overlay_exclusions_remove = ["/mnt"]
+allow_leaky_exclusions = ["/srv"]
 
 [color_scheme]
 enabled = false
@@ -302,6 +305,7 @@ reset = false
         config.overlay_exclusions_remove,
         vec![PathBuf::from("/mnt")]
     );
+    assert_eq!(config.allow_leaky_exclusions, vec![PathBuf::from("/srv")]);
     assert!(!config.color_scheme.enabled);
     assert_eq!(config.color_scheme.hidden.background, "#000000");
     // Unset nested keys keep their defaults
@@ -581,7 +585,6 @@ fn test_compute_effective_exclusions_defaults_only() {
     assert!(exclusions.contains(&PathBuf::from("/lib64")));
     assert!(exclusions.contains(&PathBuf::from("/sbin")));
     assert!(exclusions.contains(&PathBuf::from("/lost+found")));
-    assert!(!exclusions.contains(&PathBuf::from("/Downloads")));
 }
 
 #[test]

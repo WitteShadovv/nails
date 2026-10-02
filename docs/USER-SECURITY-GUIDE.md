@@ -391,6 +391,8 @@ Never pass `--allow-discards` when opening the outer or the hidden volume, never
 
 **File containers expose their timestamps.** Using a container read-write, through a cryptsetup loop device or the VeraCrypt application, updates its mtime and ctime in every session. `touch` can restore mtime but sets ctime to the current time, and ctime cannot be restored at all, so the container shows when it was last used.
 
+**Do not open a container file for writing during a hidden session.** The container is a file on an overlaid directory, so writing to it from inside the session makes overlayfs copy the whole file up onto the hidden volume.
+
 **Copy-on-write filesystems and SSDs keep old blocks.** A container on btrfs, zfs or bcachefs is not rewritten in place: old versions of changed blocks stay in free space or in snapshots, and an SSD keeps old copies of remapped blocks. An adversary with one or several disk images can compare the versions and see which parts of the outer volume's "unused" space changed.
 
 **Recommendation:** on a copy-on-write or SSD decoy, put the hidden volume on a whole device or partition instead of in a file container, and disable automatic snapshots (snapper, timeshift, btrbk, zfs auto-snapshot) of every filesystem that holds a container.
@@ -440,7 +442,9 @@ If an adversary can dump memory while the hidden environment is active:
 Before activating the hidden environment:
 
 ```
-[ ] Hidden volume is mounted and writable
+[ ] Hidden volume is mounted and writable, at its own mount point under
+    /mnt or /run/media (an overlay of /media would hide a volume mounted
+    there, so activation refuses it unless /media is excluded)
 [ ] Neither the outer nor the hidden volume was opened with
     --allow-discards
 [ ] Hidden backend is a local Linux filesystem that can host an overlayfs
@@ -497,6 +501,10 @@ To keep the upper small and activation quick:
 - **Exclude bulky directories you do not need hidden.** List them under
   `overlay_exclusions` in `nails.toml` so they are never overlaid and never
   copied up. VM-image and large data directories are the usual candidates.
+  Everything the session writes there reaches the decoy disk, so excluding a
+  directory the session writes to (`/home`, `/root`, `/etc`, `/var`, `/nix`,
+  `/srv`, `/opt`, or a disk-backed `/tmp`) is refused unless you also list it
+  in `allow_leaky_exclusions`.
 - **Put caches on ephemeral tmpfs overlays.** Add directories such as
   `~/.cache` to `extended_overlays` as tmpfs-backed layers: they live in RAM
   during the session and vanish on deactivation, so cache churn never grows the

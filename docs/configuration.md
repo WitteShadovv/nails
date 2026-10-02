@@ -68,8 +68,9 @@ is the `name` key of each `[[overlays]]` table.
 | `state_file_path` | path | `<hidden_volume_root>/state.json` | Activation state file. Must lie inside `hidden_volume_root`. |
 | `log_path` | path | `<hidden_volume_root>/logs` | Directory of `nails.log`. Must lie inside `hidden_volume_root`. `--no-log-file` turns file logging off for one run. |
 | `overlay_mode` | `"auto"` or `"explicit"` | `"auto"` | How overlay targets are chosen; see [Overlay semantics](#overlay-semantics). |
-| `overlay_exclusions` | array of paths | `[]` | Auto mode: top-level directories to leave out in addition to the [default exclusions](#default-exclusions). Writes under them reach the decoy disk. |
+| `overlay_exclusions` | array of paths | `[]` | Auto mode: top-level directories to leave out in addition to the [default exclusions](#default-exclusions). Writes under them reach the decoy disk, so excluding a load-bearing directory is refused unless `allow_leaky_exclusions` lists it. |
 | `overlay_exclusions_remove` | array of paths | `[]` | Auto mode: default exclusions to overlay anyway. It cannot lift the [safety floor](#safety-floor). |
+| `allow_leaky_exclusions` | array of paths | `[]` | Auto mode: load-bearing directories that `overlay_exclusions` may exclude anyway. Without an entry here, excluding one is refused; see the [safety floor](#safety-floor). Writes under them reach the decoy disk. |
 | `overlays` | array of tables | `[]` | Explicit mode: one `[[overlays]]` table per overlay. Ignored in auto mode; explicit mode without any table refuses to activate. |
 | `overlays[].lower` | path | required | Read-only lower layer, normally the same directory as `target`. |
 | `overlays[].name` | string | required | Human-readable label for the overlay. |
@@ -158,6 +159,26 @@ Some limits hold whatever the configuration says:
   nails logs a warning when they are. They are kernel-managed or in-memory
   filesystems: overlaying them fails or breaks running services, and they hold
   nothing that reaches a disk.
-- An explicit overlay whose target contains the hidden volume is rejected: it
-  would cover the very layers it writes to. In auto mode, keep the hidden
-  volume under an excluded directory such as `/mnt`.
+- No overlay target may be equal to or above the hidden volume root, the
+  state file, the log directory or the running `nails` binary, in either mode
+  and with symlinks resolved. overlayfs does not carry other mounts into the
+  overlay, so a hidden volume mounted at VeraCrypt's `/media/veracrypt1` or
+  udisks2's `/media/<user>/<label>` would vanish under an overlay of `/media`,
+  and the layers and the state file would end up inside the overlay. Such a
+  configuration is refused before anything is mounted or any session is
+  killed, also with `--no-preflight`, for example: `hidden root
+  /media/veracrypt1 is under overlay target /media; mount it under /mnt or
+  /run/media, or add /media to overlay_exclusions`. `/mnt` and `/run` are
+  excluded by default, and excluding `/media` is allowed. A binary on the
+  target's own filesystem, such as one in the Nix store under an overlaid
+  `/nix`, stays visible and is accepted.
+- In auto mode, `/home`, `/root`, `/etc`, `/var`, `/nix`, `/srv`, `/opt`, and
+  `/tmp` unless it is a tmpfs, are load-bearing: the hidden session writes to
+  them, so excluding one would send those writes to the decoy disk. Loading the
+  configuration refuses such an exclusion, and the `overlay-targets` pre-flight
+  check (which can see whether `/tmp` is a tmpfs) refuses it again before
+  activation. List the directory in `allow_leaky_exclusions` to accept the leak
+  deliberately; the check then warns on every activation.
+- The hidden volume root must be a mount point of its own (the
+  `hidden-volume` pre-flight check refuses a plain directory), because
+  everything nails writes there would otherwise land on the decoy disk.

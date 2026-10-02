@@ -5364,6 +5364,8 @@ fn test_activate_auto_mode_with_user_exclusions() {
         overlay_mode: OverlayMode::Auto,
         overlay_exclusions: vec![PathBuf::from("/boot"), PathBuf::from("/nix")],
         overlay_exclusions_remove: vec![],
+        // /nix is load-bearing: excluding it is refused unless accepted.
+        allow_leaky_exclusions: vec![PathBuf::from("/nix")],
         overlays: vec![],
         ..Config::test_default()
     };
@@ -5388,6 +5390,75 @@ fn test_activate_auto_mode_with_user_exclusions() {
     } else {
         panic!("Expected Active state, got {:?}", state);
     }
+}
+
+#[test]
+fn test_activate_refuses_hidden_root_under_an_auto_target_before_any_mount() {
+    // The hidden root sits below a top-level directory that Auto mode would
+    // overlay, as with VeraCrypt's /media/veracryptN. The floor holds even
+    // with --no-preflight and nothing is mounted.
+    let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/etc", "/home"]);
+    let hidden_root = temp_dir.path().to_path_buf();
+    let top = PathBuf::from("/").join(
+        hidden_root
+            .components()
+            .nth(1)
+            .expect("tempdir is below a top-level directory"),
+    );
+    fs.mock_set_root_directories(vec![
+        PathBuf::from("/etc"),
+        PathBuf::from("/home"),
+        top.clone(),
+    ]);
+
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
+        overlay_mode: OverlayMode::Auto,
+        overlays: vec![],
+        ..Config::test_default()
+    };
+    let mut manager = NailsManager::new(fs.clone(), config, state_path);
+
+    let err = manager.activate(true).unwrap_err();
+
+    let message = err.to_string();
+    assert!(message.contains("overlay-targets"), "{message}");
+    assert!(
+        message.contains(&format!(
+            "hidden root {} is under overlay target {}",
+            hidden_root.display(),
+            top.display()
+        )),
+        "{message}"
+    );
+    assert!(fs.get_mounted_paths().is_empty(), "nothing may be mounted");
+    assert!(!manager.current_state().unwrap().is_active());
+}
+
+#[test]
+fn test_activate_refuses_a_leaky_exclusion_even_without_preflight() {
+    let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/etc", "/home"]);
+
+    let mut config = Config {
+        hidden_volume_root: temp_dir.path().to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlay_mode: OverlayMode::Auto,
+        overlays: vec![],
+        ..Config::test_default()
+    };
+    // Set directly: loading or building the config would already refuse it.
+    config.overlay_exclusions = vec![PathBuf::from("/home")];
+    let mut manager = NailsManager::new(fs.clone(), config, state_path);
+
+    let message = manager.activate(true).unwrap_err().to_string();
+
+    assert!(
+        message.contains("leaves /home on the decoy disk"),
+        "{message}"
+    );
+    assert!(fs.get_mounted_paths().is_empty(), "nothing may be mounted");
 }
 
 // ========== Story 14.10, Task 13: Integration Tests for Explicit Mode ==========
@@ -6364,6 +6435,8 @@ fn test_activate_auto_mode_all_directories_excluded() {
         PathBuf::from("/etc"),
         PathBuf::from("/var"),
     ];
+    // All three are load-bearing, so the leak has to be accepted explicitly.
+    config.allow_leaky_exclusions = config.overlay_exclusions.clone();
 
     let manager = Arc::new(Mutex::new(NailsManager::new(
         fs.clone(),

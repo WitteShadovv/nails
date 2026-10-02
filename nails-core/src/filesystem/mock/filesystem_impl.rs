@@ -75,6 +75,10 @@ impl Filesystem for MockFilesystem {
         self.is_symlink_impl(path)
     }
 
+    fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
+        self.canonicalize_impl(path)
+    }
+
     fn create_symlink(&self, target: &Path, link: &Path) -> Result<()> {
         self.create_symlink_impl(target, link)
     }

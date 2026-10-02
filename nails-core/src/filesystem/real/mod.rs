@@ -107,6 +107,10 @@ impl Filesystem for RealFilesystem {
         file_ops::is_symlink(path)
     }
 
+    fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
+        file_ops::canonicalize(path)
+    }
+
     fn supports_symlinks(&self, dir: &Path) -> Result<bool> {
         file_ops::supports_symlinks(dir)
     }

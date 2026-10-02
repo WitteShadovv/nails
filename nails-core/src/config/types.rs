@@ -195,16 +195,35 @@ pub struct Config {
     ///
     /// **Default exclusions**: `/proc`, `/sys`, `/dev`, `/run`, `/mnt`, `/bin`, `/usr`, `/lib`, `/lib64`, `/sbin`, `/lost+found`
     ///
-    /// **Use case**: Exclude additional directories you don't want overlaid
-    /// (e.g., `/nix` for Nix store performance). Note: `/boot` is NOT excluded
-    /// by default — vfat partitions are handled via snapshot pivot automatically.
+    /// Everything the hidden session writes under an excluded directory goes
+    /// straight to the decoy disk, so only exclude directories the session
+    /// never writes to. Excluding a directory a normal session writes to
+    /// (see [`LOAD_BEARING_DIRECTORIES`](super::LOAD_BEARING_DIRECTORIES))
+    /// is refused unless it is also listed in `allow_leaky_exclusions`.
+    /// `/boot` is NOT excluded by default — vfat partitions are handled via
+    /// snapshot pivot automatically.
     ///
     /// **Example**:
     /// ```toml
-    /// overlay_exclusions = ["/boot", "/nix"]
+    /// overlay_exclusions = ["/media"]
     /// ```
     #[serde(default)]
     pub overlay_exclusions: Vec<PathBuf>,
+
+    /// Load-bearing directories the user accepts excluding in Auto mode
+    ///
+    /// Excluding `/home`, `/root`, `/etc`, `/var`, `/nix`, `/srv`, `/opt` or a
+    /// `/tmp` that is not a tmpfs sends the hidden session's writes there to
+    /// the decoy disk, so `overlay_exclusions` naming one of them is refused.
+    /// Listing the directory here records that the leak is intended.
+    ///
+    /// **Example**:
+    /// ```toml
+    /// overlay_exclusions = ["/srv"]
+    /// allow_leaky_exclusions = ["/srv"]
+    /// ```
+    #[serde(default)]
+    pub allow_leaky_exclusions: Vec<PathBuf>,
 
     /// User-specified exclusions to REMOVE from defaults
     ///
@@ -303,6 +322,7 @@ pub const CONFIG_KEYS: &[&str] = &[
     "overlay_mode",
     "overlay_exclusions",
     "overlay_exclusions_remove",
+    "allow_leaky_exclusions",
     "overlays",
     "minimum_space_mb",
     "clear_history",

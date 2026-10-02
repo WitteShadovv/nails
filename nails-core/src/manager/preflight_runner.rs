@@ -46,11 +46,13 @@ impl<F: Filesystem> NailsManager<F> {
     /// # Pre-flight Checks Executed (Stories 3.1-3.7, 4.12, 15.2)
     ///
     /// 1. **HiddenVolumeCheck** - Validates hidden volume is mounted
-    /// 2. **StorageReadinessCheck** - Validates directory structure + overlay accessibility
-    /// 3. **NixOSConfigCheck** - Validates NixOS config overlay structure
-    /// 4. **SwapCheck** - Validates swap is disabled
-    /// 5. **SpaceCheck** - Validates sufficient disk space
-    /// 6. **StateCheck** - Validates current state allows activation
+    /// 2. **OverlayTargetsCheck** - Validates no target hides the hidden volume
+    ///    and no exclusion leaks to the decoy disk
+    /// 3. **StorageReadinessCheck** - Validates directory structure + overlay accessibility
+    /// 4. **NixOSConfigCheck** - Validates NixOS config overlay structure
+    /// 5. **SwapCheck** - Validates swap is disabled
+    /// 6. **SpaceCheck** - Validates sufficient disk space
+    /// 7. **StateCheck** - Validates current state allows activation
     ///
     /// # Returns
     ///
@@ -77,8 +79,9 @@ impl<F: Filesystem> NailsManager<F> {
     pub fn run_preflight_checks(&self, overlay_only: bool) -> Result<()> {
         use crate::preflight::{
             BackendDetectCheck, HiddenVolumeCheck, MountNamespaceCheck, NixOSBuildTargetCheck,
-            NixOSConfigCheck, OverlayCompatibilityCheck, PreFlightRegistry, SpaceCheck, StateCheck,
-            StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
+            NixOSConfigCheck, OverlayCompatibilityCheck, OverlayTargetsCheck, PreFlightRegistry,
+            SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck, SymlinkSupportCheck,
+            UpperFsCapabilityCheck,
         };
 
         let mut registry = PreFlightRegistry::new();
@@ -87,6 +90,11 @@ impl<F: Filesystem> NailsManager<F> {
         registry.add_check(Box::new(HiddenVolumeCheck::new(
             self.config.hidden_volume_root.clone(),
         )));
+
+        // Refuses an overlay target that would hide the hidden volume, its
+        // state file, its logs or the binary, and an exclusion that leaks to
+        // the decoy disk, while the decoy session is still intact.
+        registry.add_check(Box::new(OverlayTargetsCheck::new(self.config.clone())));
 
         // Runs before the session kill so a private mount namespace or a
         // non-shared root is caught while the decoy session is still intact.

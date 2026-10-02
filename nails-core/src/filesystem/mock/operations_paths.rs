@@ -2,7 +2,7 @@ use super::MockFilesystem;
 use super::state::DEFAULT_MOCK_FREE_SPACE_BYTES;
 use crate::filesystem::DiskUsage;
 use crate::{NailsError, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 impl MockFilesystem {
     pub(super) fn path_exists_impl(&self, path: &Path) -> Result<bool> {
@@ -42,6 +42,44 @@ impl MockFilesystem {
     pub(super) fn is_symlink_impl(&self, path: &Path) -> Result<bool> {
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths.get(path).map(|info| info.is_symlink).unwrap_or(false))
+    }
+
+    /// Resolve the symlinks recorded by `create_symlink`, component by
+    /// component. Unlike the real call this never reports a missing path: the
+    /// mock does not track existence for most paths, and resolving to the
+    /// lexical path is what a fully existing, link-free path does anyway.
+    pub(super) fn canonicalize_impl(&self, path: &Path) -> Result<PathBuf> {
+        // The kernel's own limit on links followed during one lookup.
+        const MAX_HOPS: usize = 40;
+
+        let links = self
+            .symlink_targets
+            .lock()
+            .expect("MockFilesystem mutex poisoned");
+        let mut current = path.to_path_buf();
+        for _ in 0..MAX_HOPS {
+            let components: Vec<_> = current.components().collect();
+            let mut prefix = PathBuf::new();
+            let mut next = None;
+            for (i, component) in components.iter().enumerate() {
+                prefix.push(component);
+                if let Some(target) = links.get(&prefix) {
+                    let base = prefix.parent().unwrap_or(Path::new("/"));
+                    let mut resolved = base.join(target);
+                    resolved.extend(&components[i + 1..]);
+                    next = Some(resolved);
+                    break;
+                }
+            }
+            match next {
+                Some(resolved) => current = resolved,
+                None => return Ok(current),
+            }
+        }
+        Err(NailsError::IoError(std::io::Error::other(format!(
+            "too many levels of symbolic links: {}",
+            path.display()
+        ))))
     }
 
     pub(super) fn supports_symlinks_impl(&self, dir: &Path) -> Result<bool> {

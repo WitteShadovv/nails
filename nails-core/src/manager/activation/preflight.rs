@@ -4,6 +4,7 @@
 
 use crate::cleanup::history::HistoryCleaner;
 use crate::cleanup::patterns;
+use crate::preflight::OverlayTargetsCheck;
 use crate::{
     Filesystem, NailsError, NailsManager, PreFlightCheck, Result, Stopwatch,
     SuspiciousNailsReferenceCheck, Verbosity,
@@ -25,6 +26,12 @@ impl<F: Filesystem> NailsManager<F> {
         verbosity: Verbosity,
         pre_activation_cleanup: bool,
     ) -> Result<()> {
+        // The overlay-target floor holds even with --no-preflight, and runs
+        // before every side effect below (symlink probe, history cleanup,
+        // config staging) and before any session kill: an overlay that would
+        // hide the hidden volume or a leaky exclusion is never worth starting.
+        self.enforce_overlay_target_floor()?;
+
         // Step 2.5: Probe symlink support on hidden volume before staging.
         // Catches FAT32/exFAT volumes early with a clear error message.
         match self
@@ -135,6 +142,18 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         Ok(())
+    }
+
+    /// Refuse activation when the `overlay-targets` check fails.
+    fn enforce_overlay_target_floor(&self) -> Result<()> {
+        let check = OverlayTargetsCheck::new(self.config.clone());
+        match check.run(&self.filesystem)? {
+            crate::CheckResult::Pass(_) | crate::CheckResult::Warn(_) => Ok(()),
+            crate::CheckResult::Fail(message) => Err(NailsError::PreFlightCheckFailed(vec![(
+                <OverlayTargetsCheck as PreFlightCheck<F>>::name(&check).to_string(),
+                message,
+            )])),
+        }
     }
 
     /// Run pre-activation history cleanup (best-effort)

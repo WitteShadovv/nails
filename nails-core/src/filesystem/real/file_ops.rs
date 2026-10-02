@@ -27,6 +27,10 @@ pub(super) fn is_symlink(path: &Path) -> Result<bool> {
     Ok(path.is_symlink())
 }
 
+pub(super) fn canonicalize(path: &Path) -> Result<PathBuf> {
+    Ok(std::fs::canonicalize(path)?)
+}
+
 pub(super) fn supports_symlinks(dir: &Path) -> Result<bool> {
     let probe = dir.join(".nails_symlink_probe");
     let _ = std::fs::remove_file(&probe);

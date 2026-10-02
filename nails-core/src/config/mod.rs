@@ -55,6 +55,9 @@ pub use types::{
     get_default_hidden_volume_root,
 };
 
+// Re-exports for public API - leaky exclusion floor
+pub use dynamic::{LOAD_BEARING_DIRECTORIES, TMP_DIRECTORY};
+
 // Re-exports for public API - builder
 pub use builder::ConfigBuilder;
 

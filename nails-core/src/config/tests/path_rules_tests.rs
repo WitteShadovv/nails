@@ -329,3 +329,132 @@ fn uninspectable_component_is_refused() {
         "a component that cannot be inspected must not be assumed safe"
     );
 }
+
+fn build_with_state_and_log_under(target: &str, state: &str, log: &str) -> Result<Config> {
+    ConfigBuilder::new()
+        .hidden_volume_root(PathBuf::from("/mnt/hv"))
+        .state_file_path(PathBuf::from(state))
+        .log_path(PathBuf::from(log))
+        .overlay_mode(OverlayMode::Explicit)
+        .overlays(vec![overlay(
+            target,
+            "/mnt/hv/upper",
+            "/mnt/hv/.work/upper",
+            target,
+        )])
+        .build()
+}
+
+#[test]
+fn state_file_inside_an_explicit_target_is_rejected() {
+    let result =
+        build_with_state_and_log_under("/mnt/hv/data", "/mnt/hv/data/state.json", "/mnt/hv/logs");
+    let (key, problem) = rejection(result);
+
+    assert_eq!(key, "state_file_path");
+    assert_eq!(
+        problem,
+        PathProblem::InsideOverlayTarget(PathBuf::from("/mnt/hv/data"))
+    );
+}
+
+#[test]
+fn log_directory_equal_to_an_explicit_target_is_rejected() {
+    let result =
+        build_with_state_and_log_under("/mnt/hv/logs", "/mnt/hv/state.json", "/mnt/hv/logs");
+    let (key, problem) = rejection(result);
+
+    assert_eq!(key, "log_path");
+    assert_eq!(
+        problem,
+        PathProblem::InsideOverlayTarget(PathBuf::from("/mnt/hv/logs"))
+    );
+}
+
+fn build_auto_with_exclusions(exclusions: &[&str], allowed: &[&str]) -> Result<Config> {
+    ConfigBuilder::new()
+        .hidden_volume_root(PathBuf::from("/mnt/hv"))
+        .overlay_mode(OverlayMode::Auto)
+        .overlay_exclusions(exclusions.iter().map(PathBuf::from).collect())
+        .allow_leaky_exclusions(allowed.iter().map(PathBuf::from).collect())
+        .build()
+}
+
+#[test]
+fn each_load_bearing_exclusion_is_rejected_in_auto_mode() {
+    for dir in crate::config::LOAD_BEARING_DIRECTORIES {
+        let (key, problem) = rejection(build_auto_with_exclusions(&["/media", dir], &[]));
+
+        assert_eq!(key, "overlay_exclusions[1]", "{dir}");
+        assert_eq!(problem, PathProblem::LeakyExclusion, "{dir}");
+    }
+}
+
+#[test]
+fn allowed_load_bearing_exclusion_is_accepted() {
+    for dir in crate::config::LOAD_BEARING_DIRECTORIES {
+        let config = build_auto_with_exclusions(&[dir], &[dir])
+            .unwrap_or_else(|e| panic!("{dir} listed in allow_leaky_exclusions: {e}"));
+        assert_eq!(config.overlay_exclusions, vec![PathBuf::from(dir)]);
+    }
+}
+
+#[test]
+fn first_leaky_exclusion_is_reported_in_file_order() {
+    let (key, _) = rejection(build_auto_with_exclusions(&["/var", "/etc"], &[]));
+
+    assert_eq!(key, "overlay_exclusions[0]");
+}
+
+#[test]
+fn tmp_exclusion_is_left_to_the_preflight_check() {
+    build_auto_with_exclusions(&["/tmp"], &[]).expect("validation cannot see the /tmp filesystem");
+}
+
+#[test]
+fn leaky_exclusions_are_ignored_in_explicit_mode() {
+    ConfigBuilder::new()
+        .hidden_volume_root(PathBuf::from("/mnt/hv"))
+        .overlay_mode(OverlayMode::Explicit)
+        .overlays(vec![overlay(
+            "/home",
+            "/mnt/hv/home",
+            "/mnt/hv/.work/home",
+            "/home",
+        )])
+        .overlay_exclusions(vec![PathBuf::from("/var")])
+        .build()
+        .expect("explicit mode does not use exclusions");
+}
+
+#[test]
+fn relative_allow_leaky_exclusion_is_rejected() {
+    let (key, problem) = rejection(build_auto_with_exclusions(&[], &["nix"]));
+
+    assert_eq!(key, "allow_leaky_exclusions[0]");
+    assert_eq!(problem, PathProblem::NotAbsolute);
+}
+
+#[test]
+fn leaky_exclusion_in_a_file_names_the_key_and_the_escape_hatch() {
+    let (_file, result) = load(
+        r#"
+hidden_volume_root = "/mnt/hv"
+overlay_exclusions = ["/media", "/nix"]
+"#,
+    );
+    let message = result.unwrap_err().to_string();
+
+    assert!(message.contains("overlay_exclusions[1]"), "{message}");
+    assert!(message.contains("\"/nix\""), "{message}");
+    assert!(message.contains("allow_leaky_exclusions"), "{message}");
+
+    let (_file, accepted) = load(
+        r#"
+hidden_volume_root = "/mnt/hv"
+overlay_exclusions = ["/media", "/nix"]
+allow_leaky_exclusions = ["/nix"]
+"#,
+    );
+    accepted.expect("an accepted leak loads");
+}

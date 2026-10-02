@@ -178,6 +178,7 @@ impl Default for Config {
             overlay_mode: OverlayMode::Auto,
             overlay_exclusions: vec![],
             overlay_exclusions_remove: vec![],
+            allow_leaky_exclusions: vec![],
             clear_history: default_clear_history(),
             show_opsec_reminders: default_show_opsec_reminders(),
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root

@@ -144,3 +144,53 @@ fn test_write_user_file_creates_user_owned_parents() {
     assert_eq!(fs.mock_get_owner(path), Some((1000, 100)));
     assert_eq!(fs.mock_get_permissions(path), Some(0o644));
 }
+
+#[test]
+fn canonicalize_without_links_returns_the_path() {
+    let fs = MockFilesystem::new();
+    assert_eq!(
+        fs.canonicalize(Path::new("/mnt/hv/state.json")).unwrap(),
+        Path::new("/mnt/hv/state.json")
+    );
+}
+
+#[test]
+fn canonicalize_follows_recorded_links_in_any_component() {
+    let fs = MockFilesystem::new();
+    fs.create_symlink(Path::new("/media/veracrypt1"), Path::new("/mnt/hv"))
+        .unwrap();
+    fs.create_symlink(Path::new("/mnt/hv"), Path::new("/srv/link"))
+        .unwrap();
+
+    assert_eq!(
+        fs.canonicalize(Path::new("/mnt/hv/logs")).unwrap(),
+        Path::new("/media/veracrypt1/logs")
+    );
+    // A chain of links resolves to the final target.
+    assert_eq!(
+        fs.canonicalize(Path::new("/srv/link")).unwrap(),
+        Path::new("/media/veracrypt1")
+    );
+}
+
+#[test]
+fn canonicalize_resolves_relative_link_targets_against_the_link_directory() {
+    let fs = MockFilesystem::new();
+    fs.create_symlink(Path::new("real"), Path::new("/media/alias"))
+        .unwrap();
+
+    assert_eq!(
+        fs.canonicalize(Path::new("/media/alias/state.json"))
+            .unwrap(),
+        Path::new("/media/real/state.json")
+    );
+}
+
+#[test]
+fn canonicalize_refuses_a_link_loop() {
+    let fs = MockFilesystem::new();
+    fs.create_symlink(Path::new("/b"), Path::new("/a")).unwrap();
+    fs.create_symlink(Path::new("/a"), Path::new("/b")).unwrap();
+
+    assert!(fs.canonicalize(Path::new("/a/x")).is_err());
+}

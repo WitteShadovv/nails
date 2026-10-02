@@ -179,6 +179,14 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Check if a path is a symbolic link.
     fn is_symlink(&self, path: &Path) -> Result<bool>;
 
+    /// Resolve every symlink in `path` and return the absolute result, like
+    /// `realpath(3)`.
+    ///
+    /// Fails with an `IoError` of kind `NotFound` when a component does not
+    /// exist, so callers that resolve paths created later can walk up to the
+    /// deepest existing ancestor.
+    fn canonicalize(&self, path: &Path) -> Result<PathBuf>;
+
     /// Create a symbolic link at `link` pointing to `target` (idempotent).
     fn create_symlink(&self, target: &Path, link: &Path) -> Result<()>;
 

@@ -35,6 +35,17 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
+        // A target that covers the hidden volume (for example through a
+        // symlink the lexical config check cannot see) would hide the layers
+        // it writes to.
+        let targets: Vec<PathBuf> = self
+            .config
+            .overlays
+            .iter()
+            .map(|overlay| overlay.target.clone())
+            .collect();
+        crate::preflight::ensure_targets_clear(&self.filesystem, &self.config, &targets)?;
+
         let nix_in_targets = self
             .config
             .overlays

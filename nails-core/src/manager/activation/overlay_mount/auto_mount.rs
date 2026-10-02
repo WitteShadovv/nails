@@ -20,6 +20,9 @@ impl<F: Filesystem> NailsManager<F> {
     ) -> Result<()> {
         // Auto mode: enumerate root + apply exclusions, create overlays dynamically
         let overlay_targets = build_overlay_targets(&self.filesystem, &self.config)?;
+        // Checked again on the exact list about to be mounted: a top-level
+        // directory created since the pre-flight checks is a new target.
+        crate::preflight::ensure_targets_clear(&self.filesystem, &self.config, &overlay_targets)?;
 
         // Pre-overlay: stop nix-daemon if /nix will be overlaid
         // Must happen BEFORE Phase 1 detection so nix-daemon doesn't appear
