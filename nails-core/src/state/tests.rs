@@ -9,15 +9,15 @@ fn test_overlay_info_creation() {
     let overlay = OverlayInfo {
         mount_path: PathBuf::from("/home"),
         lower_dir: PathBuf::from("/home"),
-        upper_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
-        work_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+        upper_dir: PathBuf::from("/mnt/data/overlays/home/upper"),
+        work_dir: PathBuf::from("/mnt/data/overlays/home/work"),
         mounted_at: Utc::now(),
     };
 
     assert_eq!(overlay.mount_path, PathBuf::from("/home"));
     assert_eq!(
         overlay.upper_dir,
-        PathBuf::from("/mnt/hidden-volume/overlays/home/upper")
+        PathBuf::from("/mnt/data/overlays/home/upper")
     );
 }
 
@@ -26,8 +26,8 @@ fn test_overlay_info_serialization() {
     let overlay = OverlayInfo {
         mount_path: PathBuf::from("/home"),
         lower_dir: PathBuf::from("/home"),
-        upper_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
-        work_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+        upper_dir: PathBuf::from("/mnt/data/overlays/home/upper"),
+        work_dir: PathBuf::from("/mnt/data/overlays/home/work"),
         mounted_at: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
             .unwrap()
             .with_timezone(&Utc),
@@ -66,8 +66,8 @@ fn test_state_file_serialization() {
         OverlayInfo {
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/home"),
-            upper_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
-            work_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+            upper_dir: PathBuf::from("/mnt/data/overlays/home/upper"),
+            work_dir: PathBuf::from("/mnt/data/overlays/home/work"),
             mounted_at: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
@@ -119,7 +119,7 @@ fn test_save_valid_path_in_hidden_volume() {
 
     let _state_path = hidden_vol_path.join("state.json");
 
-    // This will fail because temp_dir is not actually /mnt/hidden-volume
+    // This will fail because temp_dir is not actually /mnt/data
     // For real test, we'd need to mock or use a test-specific constant
     // Let's test the is_on_hidden_volume function directly instead
 }
@@ -129,15 +129,15 @@ fn test_hidden_volume_validation_valid_path() {
     // Test that paths within hidden volume are accepted
     use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
     assert!(is_on_hidden_volume(
-        Path::new("/mnt/hidden-volume/state.json"),
+        Path::new("/mnt/data/state.json"),
         DEFAULT_HIDDEN_VOLUME_ROOT
     ));
     assert!(is_on_hidden_volume(
-        Path::new("/mnt/hidden-volume/subdir/state.json"),
+        Path::new("/mnt/data/subdir/state.json"),
         DEFAULT_HIDDEN_VOLUME_ROOT
     ));
     assert!(is_on_hidden_volume(
-        Path::new("/mnt/hidden-volume/a/b/c/state.json"),
+        Path::new("/mnt/data/a/b/c/state.json"),
         DEFAULT_HIDDEN_VOLUME_ROOT
     ));
 }
@@ -155,7 +155,7 @@ fn test_hidden_volume_validation_invalid_paths() {
         DEFAULT_HIDDEN_VOLUME_ROOT
     ));
     assert!(!is_on_hidden_volume(
-        Path::new("/mnt/hidden-volume-fake/state.json"),
+        Path::new("/mnt/data-fake/state.json"),
         DEFAULT_HIDDEN_VOLUME_ROOT
     ));
     assert!(!is_on_hidden_volume(
@@ -169,11 +169,11 @@ fn test_hidden_volume_validation_traversal_attack() {
     // Test that path traversal attacks are rejected
     use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
     assert!(!is_on_hidden_volume(
-        Path::new("/mnt/hidden-volume/../etc/state.json"),
+        Path::new("/mnt/data/../etc/state.json"),
         DEFAULT_HIDDEN_VOLUME_ROOT
     ));
     assert!(!is_on_hidden_volume(
-        Path::new("/mnt/hidden-volume/../../tmp/state.json"),
+        Path::new("/mnt/data/../../tmp/state.json"),
         DEFAULT_HIDDEN_VOLUME_ROOT
     ));
 }
@@ -285,7 +285,7 @@ fn test_load_wrong_schema_returns_default() {
 
 #[test]
 fn test_save_load_round_trip_with_inactive_state() {
-    // Note: We can't actually save to /mnt/hidden-volume in tests,
+    // Note: We can't actually save to /mnt/data in tests,
     // but we can test the serialization/deserialization logic
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
     let state_dir = temp_dir.path();
@@ -331,8 +331,8 @@ fn test_save_load_round_trip_with_active_state() {
         OverlayInfo {
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/home"),
-            upper_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
-            work_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+            upper_dir: PathBuf::from("/mnt/data/overlays/home/upper"),
+            work_dir: PathBuf::from("/mnt/data/overlays/home/work"),
             mounted_at: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
@@ -387,8 +387,8 @@ fn test_save_load_multiple_overlays() {
             OverlayInfo {
                 mount_path: PathBuf::from(mount),
                 lower_dir: PathBuf::from(mount),
-                upper_dir: PathBuf::from(format!("/mnt/hidden-volume/overlays/{}/upper", name)),
-                work_dir: PathBuf::from(format!("/mnt/hidden-volume/overlays/{}/work", name)),
+                upper_dir: PathBuf::from(format!("/mnt/data/overlays/{}/upper", name)),
+                work_dir: PathBuf::from(format!("/mnt/data/overlays/{}/work", name)),
                 mounted_at: Utc::now(),
             },
         );
@@ -486,7 +486,7 @@ fn test_path_validation_with_non_canonical_paths() {
     // These test the non-canonical path logic (line 70-111)
     use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
     assert!(!is_on_hidden_volume(
-        Path::new("/mnt/hidden-volume/../etc/state.json"),
+        Path::new("/mnt/data/../etc/state.json"),
         DEFAULT_HIDDEN_VOLUME_ROOT
     ));
     assert!(!is_on_hidden_volume(
@@ -500,15 +500,15 @@ fn test_path_validation_with_non_canonical_paths() {
 
     // Valid path with redundant components should still work
     assert!(is_on_hidden_volume(
-        Path::new("/mnt/hidden-volume/./subdir/state.json"),
+        Path::new("/mnt/data/./subdir/state.json"),
         DEFAULT_HIDDEN_VOLUME_ROOT
     ));
     assert!(is_on_hidden_volume(
-        Path::new("/mnt/hidden-volume/nested/../other/state.json"),
+        Path::new("/mnt/data/nested/../other/state.json"),
         DEFAULT_HIDDEN_VOLUME_ROOT
     ));
     assert!(is_on_hidden_volume(
-        Path::new("/mnt/hidden-volume/subdir/../state.json"),
+        Path::new("/mnt/data/subdir/../state.json"),
         DEFAULT_HIDDEN_VOLUME_ROOT
     ));
 }
@@ -517,21 +517,21 @@ fn test_path_validation_with_non_canonical_paths() {
 fn test_custom_hidden_volume_root_tmp_validation() {
     // AC3: When hidden_volume_root is configured as /tmp,
     // state file at /tmp/state.json passes validation,
-    // and /mnt/hidden-volume/state.json fails
+    // and /mnt/data/state.json fails
     use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 
     // Test 1: /tmp/state.json should pass with /tmp as root
     assert!(is_on_hidden_volume(Path::new("/tmp/state.json"), "/tmp"));
 
-    // Test 2: /mnt/hidden-volume/state.json should FAIL with /tmp as root
+    // Test 2: /mnt/data/state.json should FAIL with /tmp as root
     assert!(!is_on_hidden_volume(
-        Path::new("/mnt/hidden-volume/state.json"),
+        Path::new("/mnt/data/state.json"),
         "/tmp"
     ));
 
     // Test 3: Validate default behavior still works
     assert!(is_on_hidden_volume(
-        Path::new("/mnt/hidden-volume/state.json"),
+        Path::new("/mnt/data/state.json"),
         DEFAULT_HIDDEN_VOLUME_ROOT
     ));
 
@@ -1588,8 +1588,8 @@ fn test_version_migration_preserves_data() {
         OverlayInfo {
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/home"),
-            upper_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
-            work_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/work"),
+            upper_dir: PathBuf::from("/mnt/data/overlays/home/upper"),
+            work_dir: PathBuf::from("/mnt/data/overlays/home/work"),
             mounted_at: DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
                 .unwrap()
                 .with_timezone(&Utc),

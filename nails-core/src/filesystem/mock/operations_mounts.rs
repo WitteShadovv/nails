@@ -1,4 +1,4 @@
-use super::super::{MountInfo, verify_mount_preconditions};
+use super::super::{MountInfo, MountSource, verify_mount_preconditions};
 use super::{MockFilesystem, MockOp};
 use crate::{NailsError, Result};
 use std::path::Path;
@@ -152,6 +152,15 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .get(target)
+            .cloned())
+    }
+
+    pub(super) fn mount_source_impl(&self, mount_point: &Path) -> Result<Option<MountSource>> {
+        Ok(self
+            .mount_sources
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(mount_point)
             .cloned())
     }
 

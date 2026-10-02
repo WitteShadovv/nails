@@ -207,7 +207,7 @@ fn example_config_is_valid_as_is_and_fully_uncommented() {
     assert_eq!(config.overlays.len(), 1);
     assert_eq!(
         config.nixos_flake.as_deref(),
-        Some("/mnt/hidden-volume/nixos#my-host")
+        Some("/mnt/data/nixos#my-host")
     );
 }
 

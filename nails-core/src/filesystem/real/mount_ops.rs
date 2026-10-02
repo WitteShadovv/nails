@@ -4,9 +4,14 @@ use super::RealFilesystem;
 use crate::filesystem::mountinfo::{
     NailsMounts, escape_overlay_path, parse_overlay_opts, read_mountinfo,
 };
-use crate::filesystem::{Filesystem, MountInfo, verify_mount_preconditions};
+use crate::filesystem::{Filesystem, MountInfo, MountSource, verify_mount_preconditions};
 use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
+
+/// Where udev records a symlink per filesystem label, named by the label.
+const DEV_BY_LABEL: &str = "/dev/disk/by-label";
+/// Whole block devices by kernel name; device-mapper devices live here.
+const SYS_BLOCK: &str = "/sys/block";
 
 /// Canonicalize the single queried target, falling back to the literal path.
 ///
@@ -180,6 +185,69 @@ pub(super) fn get_mount_info(target: &Path) -> Option<MountInfo> {
     None
 }
 
+/// Identify the device, device-mapper name and filesystem label behind the
+/// mount at `mount_point`.
+///
+/// Returns `None` when `mount_point` is not itself a mount point. The dm name
+/// comes from the source (`/dev/mapper/<name>` directly, `/dev/dm-N` via
+/// `/sys/block/dm-N/dm/name`) and the label from the `/dev/disk/by-label`
+/// symlink that resolves to the same device. Every attribute is best-effort:
+/// an absent dm layer or label is left `None`, never an error.
+pub(super) fn mount_source(mount_point: &Path) -> Result<Option<MountSource>> {
+    let canonical = canonical_target(mount_point);
+    let Some(entry) = read_mountinfo()?
+        .into_iter()
+        .find(|e| e.mount_point == canonical)
+    else {
+        return Ok(None);
+    };
+
+    let device = entry.source.to_string_lossy().into_owned();
+    let dm_name = dm_name_for(&entry.source);
+    let label = label_for(&entry.source);
+
+    Ok(Some(MountSource {
+        device: Some(device),
+        dm_name,
+        label,
+    }))
+}
+
+/// The device-mapper name behind a mount source, if it is a dm device.
+///
+/// `/dev/mapper/<name>` already carries the name; `/dev/dm-N` is resolved
+/// through `/sys/block/dm-N/dm/name`. Anything else is not a dm device.
+fn dm_name_for(source: &Path) -> Option<String> {
+    let name = source.file_name()?.to_str()?;
+    if source.starts_with("/dev/mapper") {
+        return Some(name.to_string());
+    }
+    if name.starts_with("dm-") && name[3..].chars().all(|c| c.is_ascii_digit()) {
+        let dm_name =
+            std::fs::read_to_string(Path::new(SYS_BLOCK).join(name).join("dm/name")).ok()?;
+        let dm_name = dm_name.trim();
+        if !dm_name.is_empty() {
+            return Some(dm_name.to_string());
+        }
+    }
+    None
+}
+
+/// The filesystem label of a mount source, if `/dev/disk/by-label` holds a
+/// symlink that resolves to the same device.
+///
+/// The source is resolved to its canonical device node first, because a label
+/// symlink and a `/dev/mapper` source both point at the underlying `/dev/dm-N`.
+fn label_for(source: &Path) -> Option<String> {
+    let device = source.canonicalize().ok()?;
+    for entry in std::fs::read_dir(DEV_BY_LABEL).ok()?.flatten() {
+        if entry.path().canonicalize().ok().as_deref() == Some(device.as_path()) {
+            return entry.file_name().to_str().map(str::to_string);
+        }
+    }
+    None
+}
+
 /// Mount a tmpfs filesystem.
 pub(super) fn mount_tmpfs(target: &Path, size: &str) -> Result<()> {
     let temp_dir = crate::config::EphemeralOverlayDir {
@@ -284,7 +352,8 @@ pub(super) fn unmount_bind(fs: &RealFilesystem, target: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::overlay_mount_options;
+    use super::{dm_name_for, overlay_mount_options};
+    use std::path::Path;
 
     #[test]
     fn overlay_options_disable_index_metacopy_and_redirect_dir() {
@@ -301,5 +370,20 @@ mod tests {
             opts,
             "lowerdir=/a:/b,upperdir=/up,workdir=/work,index=off,metacopy=off,redirect_dir=off"
         );
+    }
+
+    #[test]
+    fn dm_name_reads_straight_off_a_mapper_source() {
+        // `/dev/mapper/<name>` carries the name directly — no sysfs read.
+        assert_eq!(
+            dm_name_for(Path::new("/dev/mapper/veracrypt-hidden")),
+            Some("veracrypt-hidden".to_string())
+        );
+    }
+
+    #[test]
+    fn dm_name_is_none_for_a_plain_partition() {
+        // A real block device is not a device-mapper device.
+        assert_eq!(dm_name_for(Path::new("/dev/sdb1")), None);
     }
 }

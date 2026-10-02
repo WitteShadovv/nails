@@ -21,7 +21,7 @@ mod system_ops;
 #[cfg(test)]
 pub(crate) use submount::parse_submount_sources;
 
-use super::{Filesystem, MountInfo};
+use super::{Filesystem, MountInfo, MountSource};
 use crate::Result;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
@@ -81,6 +81,10 @@ impl Filesystem for RealFilesystem {
 
     fn get_mount_info(&self, target: &Path) -> Option<MountInfo> {
         mount_ops::get_mount_info(target)
+    }
+
+    fn mount_source(&self, mount_point: &Path) -> Result<Option<MountSource>> {
+        mount_ops::mount_source(mount_point)
     }
 
     fn swap_is_enabled(&self) -> Result<bool> {

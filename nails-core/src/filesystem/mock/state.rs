@@ -1,4 +1,4 @@
-use super::super::MountInfo;
+use super::super::{MountInfo, MountSource};
 use chrono::{DateTime, Utc};
 use nix::errno::Errno;
 use std::collections::{HashMap, HashSet};
@@ -85,6 +85,9 @@ pub struct MockFilesystem {
     #[allow(clippy::type_complexity)]
     pub(super) files_with_pattern: Arc<Mutex<HashMap<(PathBuf, String), Vec<PathBuf>>>>,
     pub(super) mounted_overlays: Arc<Mutex<HashMap<PathBuf, MountInfo>>>,
+    /// Device, dm name and label backing a mount point, keyed by mount point.
+    /// Lets tests drive the hidden-volume name check without a real mount table.
+    pub(super) mount_sources: Arc<Mutex<HashMap<PathBuf, MountSource>>>,
     /// Mounts NAILS is considered to own and may therefore unmount. Mirrors the
     /// real ownership gate: `unmount` of a mounted-but-unowned path (e.g. a plain
     /// ext4 `/home` set up with `mock_set_mount_unmanaged`) is refused. Every
@@ -151,6 +154,7 @@ impl MockFilesystem {
             file_contents: Arc::new(Mutex::new(HashMap::new())),
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
             mounted_overlays: Arc::new(Mutex::new(HashMap::new())),
+            mount_sources: Arc::new(Mutex::new(HashMap::new())),
             nails_owned_mounts: Arc::new(Mutex::new(HashSet::new())),
             tmpfs_mounts: Arc::new(Mutex::new(HashSet::new())),
             bind_mounts: Arc::new(Mutex::new(HashMap::new())),
@@ -221,6 +225,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.mounted_overlays
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.mount_sources
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();

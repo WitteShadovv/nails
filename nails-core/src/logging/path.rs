@@ -124,7 +124,7 @@ mod tests {
     fn test_clean_path_trailing_slash() {
         use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
         assert_eq!(
-            clean_path(Path::new("/mnt/hidden-volume/")),
+            clean_path(&PathBuf::from(format!("{DEFAULT_HIDDEN_VOLUME_ROOT}/"))),
             PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
         );
     }

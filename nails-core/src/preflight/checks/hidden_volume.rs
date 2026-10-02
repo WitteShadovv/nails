@@ -4,14 +4,36 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result, config::get_default_hidden_volume_root};
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
+
+/// Words that hint at hidden storage. One shared list so the mount path, the
+/// device-mapper name and the filesystem label are all judged the same way.
+///
+/// A match is a leak, not a failure: the name survives in the leftover
+/// mount-point directory, in generated systemd `.mount`/`.device` unit names, in
+/// `/dev/disk/by-label` and in kernel and sudo journal lines, where anyone who
+/// reads them learns that hidden storage exists. Matching is case-insensitive
+/// and on substrings, so `veracrypt-hidden`, `MyNailsVol` and `decoy0` all hit.
+const SUSPICIOUS_STORAGE_TOKENS: &[&str] = &["hidden", "nails", "veracrypt", "tcrypt", "decoy"];
+
+/// The first [`SUSPICIOUS_STORAGE_TOKENS`] entry contained in `name`, if any.
+fn suspicious_token(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    SUSPICIOUS_STORAGE_TOKENS
+        .iter()
+        .copied()
+        .find(|token| lower.contains(token))
+}
 
 /// Pre-flight check that validates the hidden volume is mounted and accessible
 ///
-/// This check performs three-step validation:
+/// This check performs three-step validation and then one name audit:
 /// 1. **Path Existence**: Hidden volume path must exist
 /// 2. **Mount Status**: Path must be mounted (not just exist as an empty directory)
 /// 3. **Write Permission**: Path must be writable to store overlay directories
+/// 4. **Neutral naming**: once mounted and writable, the mount path, the
+///    device-mapper name and the filesystem label are scanned for words that
+///    betray hidden storage, and a match is reported as a non-blocking warning
 ///
 /// # Failure Guidance
 ///
@@ -28,12 +50,12 @@ use std::path::PathBuf;
 /// use std::path::PathBuf;
 ///
 /// let fs = MockFilesystem::new();
-/// let check = HiddenVolumeCheck::new(PathBuf::from("/mnt/hidden-volume"));
+/// let check = HiddenVolumeCheck::new(PathBuf::from("/mnt/data"));
 ///
 /// // Set up mock state
-/// fs.mock_set_path_exists("/mnt/hidden-volume", true);
-/// fs.mock_set_mounted(std::path::Path::new("/mnt/hidden-volume"), true);
-/// fs.mock_set_writable("/mnt/hidden-volume", true);
+/// fs.mock_set_path_exists("/mnt/data", true);
+/// fs.mock_set_mounted(std::path::Path::new("/mnt/data"), true);
+/// fs.mock_set_writable("/mnt/data", true);
 ///
 /// let result = check.run(&fs).unwrap();
 /// assert!(result.is_pass());
@@ -97,6 +119,24 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
             )));
         }
 
+        // Step 4: Audit names for words that betray hidden storage. This never
+        // blocks activation — the volume is usable — it only warns so the
+        // operator can rename before the name leaks off the box.
+        let hints = self.naming_hints(fs);
+        if !hints.is_empty() {
+            return Ok(CheckResult::Warn(format!(
+                "Hidden volume mounted at {}, but a name here hints at hidden storage: {}. \
+                 Such a name survives in the leftover mount-point directory, in generated \
+                 mount unit names, in /dev/disk/by-label and in kernel and sudo journal \
+                 lines. Use neutral names that reveal nothing (for example a \"data\" \
+                 mapper, a /mnt/data mountpoint and a plain label). These names also leak \
+                 before NAILS runs; see the pre-activation residue section of \
+                 docs/USER-SECURITY-GUIDE.md.",
+                self.hidden_volume_root.display(),
+                hints.join("; ")
+            )));
+        }
+
         Ok(CheckResult::Pass(format!(
             "Hidden volume mounted at {}",
             self.hidden_volume_root.display()
@@ -104,12 +144,70 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
     }
 }
 
+impl HiddenVolumeCheck {
+    /// Collect every way the mounted volume's names hint at hidden storage.
+    ///
+    /// Scans the mount path's own components, the device-mapper name behind the
+    /// mount source and the filesystem label. The mount source is read through
+    /// [`Filesystem::mount_source`]; a source that cannot be read contributes no
+    /// hints rather than failing the check, exactly as the backend detector
+    /// treats an unreadable mount table.
+    fn naming_hints<F: Filesystem>(&self, fs: &F) -> Vec<String> {
+        let mut hints = Vec::new();
+
+        // (a) The mount path itself. One mention is enough, so stop at the first
+        // component that matches.
+        for component in self.hidden_volume_root.components() {
+            if let Component::Normal(part) = component {
+                let part = part.to_string_lossy();
+                if let Some(token) = suspicious_token(&part) {
+                    hints.push(format!(
+                        "the mount path component \"{part}\" contains \"{token}\""
+                    ));
+                    break;
+                }
+            }
+        }
+
+        // (b) and (c) The device-mapper name and filesystem label behind the
+        // mount source.
+        if let Some(source) = fs.mount_source(&self.hidden_volume_root).ok().flatten() {
+            if let Some(name) = source.dm_name.as_deref()
+                && let Some(token) = suspicious_token(name)
+            {
+                hints.push(format!(
+                    "the device-mapper name \"{name}\" contains \"{token}\""
+                ));
+            }
+            if let Some(label) = source.label.as_deref()
+                && let Some(token) = suspicious_token(label)
+            {
+                hints.push(format!(
+                    "the filesystem label \"{label}\" contains \"{token}\""
+                ));
+            }
+        }
+
+        hints
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
-    use crate::filesystem::MockFilesystem;
+    use crate::filesystem::{MockFilesystem, MountSource};
     use std::path::Path;
+
+    /// A neutral root, used wherever a check must pass without a naming warning.
+    const NEUTRAL_ROOT: &str = "/mnt/data";
+
+    /// Mark `root` as existing, mounted and writable.
+    fn mount_ok(fs: &MockFilesystem, root: &str) {
+        fs.mock_set_path_exists(root, true);
+        fs.mock_set_mounted(Path::new(root), true);
+        fs.mock_set_writable(root, true);
+    }
 
     #[test]
     fn test_hidden_volume_check_default_path() {
@@ -117,6 +215,15 @@ mod tests {
         assert_eq!(
             check.hidden_volume_root,
             PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
+        );
+    }
+
+    #[test]
+    fn default_root_is_neutral() {
+        // The built-in fallback must not itself read as hidden storage.
+        assert!(
+            suspicious_token(DEFAULT_HIDDEN_VOLUME_ROOT).is_none(),
+            "the default hidden root '{DEFAULT_HIDDEN_VOLUME_ROOT}' hints at hidden storage"
         );
     }
 
@@ -144,35 +251,29 @@ mod tests {
     #[test]
     fn test_hidden_volume_check_pass_when_mounted_and_writable() {
         let fs = MockFilesystem::new();
-        let check = HiddenVolumeCheck::default();
+        let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
 
-        // Set up: volume exists, is mounted, and writable
-        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-        fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
-        fs.mock_set_writable(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+        mount_ok(&fs, NEUTRAL_ROOT);
 
         let result = check.run(&fs).unwrap();
-        assert!(result.is_pass());
-        assert_eq!(
-            result.message(),
-            "Hidden volume mounted at /mnt/hidden-volume"
-        );
+        assert!(result.is_pass(), "got {result:?}");
+        assert_eq!(result.message(), "Hidden volume mounted at /mnt/data");
     }
 
     #[test]
     fn test_hidden_volume_check_fail_when_path_does_not_exist() {
         let fs = MockFilesystem::new();
-        let check = HiddenVolumeCheck::default();
+        let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
 
         // Volume path does not exist
-        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, false);
+        fs.mock_set_path_exists(NEUTRAL_ROOT, false);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
         assert!(
             result
                 .message()
-                .contains("Hidden volume not found at /mnt/hidden-volume")
+                .contains("Hidden volume not found at /mnt/data")
         );
         assert!(result.message().contains("Mount volume before activation"));
     }
@@ -180,11 +281,11 @@ mod tests {
     #[test]
     fn test_hidden_volume_check_fail_when_not_mounted() {
         let fs = MockFilesystem::new();
-        let check = HiddenVolumeCheck::default();
+        let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
 
         // Volume exists but is NOT mounted
-        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-        fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), false);
+        fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+        fs.mock_set_mounted(Path::new(NEUTRAL_ROOT), false);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
@@ -203,12 +304,12 @@ mod tests {
     #[test]
     fn test_hidden_volume_check_fail_when_not_writable() {
         let fs = MockFilesystem::new();
-        let check = HiddenVolumeCheck::default();
+        let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
 
         // Volume exists and is mounted but NOT writable
-        fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-        fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
-        fs.mock_set_writable(DEFAULT_HIDDEN_VOLUME_ROOT, false);
+        fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+        fs.mock_set_mounted(Path::new(NEUTRAL_ROOT), true);
+        fs.mock_set_writable(NEUTRAL_ROOT, false);
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
@@ -222,10 +323,7 @@ mod tests {
         let custom_path = PathBuf::from("/custom/volume");
         let check = HiddenVolumeCheck::new(custom_path.clone());
 
-        // Set up custom path
-        fs.mock_set_path_exists("/custom/volume", true);
-        fs.mock_set_mounted(Path::new("/custom/volume"), true);
-        fs.mock_set_writable("/custom/volume", true);
+        mount_ok(&fs, "/custom/volume");
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_pass());
@@ -237,5 +335,119 @@ mod tests {
         let check = HiddenVolumeCheck::default();
         let cloned = check.clone();
         assert_eq!(check.hidden_volume_root, cloned.hidden_volume_root);
+    }
+
+    // ------------------------------------------------------------------------
+    // Neutral-naming audit
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn suspicious_token_is_case_insensitive_substring() {
+        assert_eq!(suspicious_token("MyVeraCryptVol"), Some("veracrypt"));
+        assert_eq!(suspicious_token("DECOY0"), Some("decoy"));
+        assert_eq!(suspicious_token("nails-store"), Some("nails"));
+        assert_eq!(suspicious_token("data"), None);
+    }
+
+    #[test]
+    fn warns_when_root_path_hints_at_hidden_storage() {
+        let fs = MockFilesystem::new();
+        let root = "/mnt/hidden-volume";
+        let check = HiddenVolumeCheck::new(PathBuf::from(root));
+        mount_ok(&fs, root);
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_warn(), "got {result:?}");
+        let msg = result.message();
+        assert!(msg.contains("mount path component"), "{msg}");
+        assert!(msg.contains("\"hidden\""), "{msg}");
+        // The volume is still reported as usable and the message routes the
+        // operator to the residue guidance.
+        assert!(msg.contains("/mnt/hidden-volume"), "{msg}");
+        assert!(msg.contains("pre-activation residue"), "{msg}");
+    }
+
+    #[test]
+    fn warns_when_dm_name_hints_at_hidden_storage() {
+        let fs = MockFilesystem::new();
+        let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
+        mount_ok(&fs, NEUTRAL_ROOT);
+        fs.mock_set_mount_source(
+            Path::new(NEUTRAL_ROOT),
+            MountSource {
+                device: Some("/dev/mapper/veracrypt-hidden".to_string()),
+                dm_name: Some("veracrypt-hidden".to_string()),
+                label: None,
+            },
+        );
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_warn(), "got {result:?}");
+        let msg = result.message();
+        assert!(msg.contains("device-mapper name"), "{msg}");
+        assert!(msg.contains("veracrypt-hidden"), "{msg}");
+    }
+
+    #[test]
+    fn warns_when_filesystem_label_hints_at_hidden_storage() {
+        let fs = MockFilesystem::new();
+        let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
+        mount_ok(&fs, NEUTRAL_ROOT);
+        fs.mock_set_mount_source(
+            Path::new(NEUTRAL_ROOT),
+            MountSource {
+                device: Some("/dev/sdb1".to_string()),
+                dm_name: None,
+                label: Some("decoy-vault".to_string()),
+            },
+        );
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_warn(), "got {result:?}");
+        let msg = result.message();
+        assert!(msg.contains("filesystem label"), "{msg}");
+        assert!(msg.contains("decoy-vault"), "{msg}");
+    }
+
+    #[test]
+    fn warns_report_every_offending_name_at_once() {
+        let fs = MockFilesystem::new();
+        let root = "/mnt/nails-store";
+        let check = HiddenVolumeCheck::new(PathBuf::from(root));
+        mount_ok(&fs, root);
+        fs.mock_set_mount_source(
+            Path::new(root),
+            MountSource {
+                device: Some("/dev/mapper/tcrypt0".to_string()),
+                dm_name: Some("tcrypt0".to_string()),
+                label: Some("hidden".to_string()),
+            },
+        );
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_warn(), "got {result:?}");
+        let msg = result.message();
+        assert!(msg.contains("mount path component"), "{msg}");
+        assert!(msg.contains("device-mapper name"), "{msg}");
+        assert!(msg.contains("filesystem label"), "{msg}");
+    }
+
+    #[test]
+    fn passes_when_every_name_is_neutral() {
+        let fs = MockFilesystem::new();
+        let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
+        mount_ok(&fs, NEUTRAL_ROOT);
+        fs.mock_set_mount_source(
+            Path::new(NEUTRAL_ROOT),
+            MountSource {
+                device: Some("/dev/mapper/data".to_string()),
+                dm_name: Some("data".to_string()),
+                label: Some("data".to_string()),
+            },
+        );
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_pass(), "got {result:?}");
+        assert_eq!(result.message(), "Hidden volume mounted at /mnt/data");
     }
 }

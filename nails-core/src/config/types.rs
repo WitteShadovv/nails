@@ -7,12 +7,18 @@ use super::colors::ColorSchemeConfig;
 use super::overlay::{OverlayConfig, OverlayMode};
 use crate::process::RiskyServicePolicy;
 
-/// Default hidden volume root path (single source of truth).
+/// Neutral placeholder hidden volume root path (single source of truth).
 ///
 /// Production code should use the `Config::hidden_volume_root` field, which is
-/// auto-derived from the binary location; this constant is the final fallback
-/// used when no path can be derived or configured.
-pub const DEFAULT_HIDDEN_VOLUME_ROOT: &str = "/mnt/hidden-volume";
+/// auto-derived from the binary location or set in `nails.toml`; this constant
+/// is only the last-resort default and the value tests build paths from.
+///
+/// The value is deliberately neutral: a default that read as "hidden" would end
+/// up in the leftover mount-point directory, in generated mount unit names and in
+/// journal lines, so it must reveal nothing. `HiddenVolumeCheck` warns when a
+/// configured root, mapper name or label hints at hidden storage; the default
+/// must never trip that warning.
+pub const DEFAULT_HIDDEN_VOLUME_ROOT: &str = "/mnt/data";
 
 /// Default hidden volume root path as an owned `String`.
 #[allow(dead_code)]
@@ -129,8 +135,8 @@ mod tests {
 ///
 /// // Or create custom config
 /// let config = Config {
-///     hidden_volume_root: PathBuf::from("/mnt/hidden-volume"),
-///     state_file_path: PathBuf::from("/mnt/hidden-volume").join("state.json"),
+///     hidden_volume_root: PathBuf::from("/mnt/data"),
+///     state_file_path: PathBuf::from("/mnt/data").join("state.json"),
 ///     overlays: vec![],
 ///     ..Config::default()
 /// };
@@ -141,7 +147,9 @@ pub struct Config {
     /// Root of hidden volume
     ///
     /// Derived from the binary location when the config file does not set it.
-    /// Priority: config file value > binary-derived > DEFAULT_HIDDEN_VOLUME_ROOT
+    /// Priority: config file value > binary-derived > `DEFAULT_HIDDEN_VOLUME_ROOT`
+    /// (a neutral placeholder; a real deployment should set or derive a name
+    /// that does not hint at hidden storage)
     #[serde(default = "super::defaults::default_hidden_volume_root")]
     pub hidden_volume_root: PathBuf,
 
@@ -255,13 +263,13 @@ pub struct Config {
     ///
     /// When set, this value is passed directly to `nixos-rebuild --flake <value>`
     /// instead of auto-detecting the flake path. Supports full flake references
-    /// with attribute selection (e.g., `/mnt/hidden-volume/nixos#my-host`).
+    /// with attribute selection (e.g., `/mnt/data/nixos#my-host`).
     ///
     /// **Precedence**: CLI `--flake` flag > config `nixos_flake` > auto-discovery
     ///
     /// **Example**:
     /// ```toml
-    /// nixos_flake = "/mnt/hidden-volume/nixos#my-host"
+    /// nixos_flake = "/mnt/data/nixos#my-host"
     /// ```
     #[serde(default)]
     pub nixos_flake: Option<String>,

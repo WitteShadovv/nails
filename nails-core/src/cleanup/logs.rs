@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn test_with_log_path() {
         let fs = MockFilesystem::new();
-        let custom_path = PathBuf::from("/mnt/hidden-volume/custom/logs");
+        let custom_path = PathBuf::from("/mnt/data/custom/logs");
         let cleaner = LogCleaner::new(fs).with_log_path(custom_path.clone());
 
         assert_eq!(cleaner.log_path, custom_path);
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn test_cleanup_removes_only_nails_logs() {
         let fs = MockFilesystem::new();
-        let log_dir = PathBuf::from("/mnt/hidden-volume/logs");
+        let log_dir = PathBuf::from("/mnt/data/logs");
 
         // Set up mock directory
         fs.mock_set_path_exists(log_dir.to_str().unwrap(), true);
@@ -394,7 +394,7 @@ mod tests {
     fn test_missing_log_directory() {
         let fs = MockFilesystem::new();
         // Don't set up log directory to exist
-        fs.mock_set_path_exists("/mnt/hidden-volume/logs", false);
+        fs.mock_set_path_exists("/mnt/data/logs", false);
 
         let cleaner = LogCleaner::new(fs);
 
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn test_empty_log_directory() {
         let fs = MockFilesystem::new();
-        let log_dir = PathBuf::from("/mnt/hidden-volume/logs");
+        let log_dir = PathBuf::from("/mnt/data/logs");
 
         fs.mock_set_path_exists(log_dir.to_str().unwrap(), true);
         fs.mock_set_directory_contents(&log_dir, vec![]); // Empty directory
@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn test_cleanup_continues_on_permission_error() {
         let fs = MockFilesystem::new();
-        let log_dir = PathBuf::from("/mnt/hidden-volume/logs");
+        let log_dir = PathBuf::from("/mnt/data/logs");
 
         fs.mock_set_path_exists(log_dir.to_str().unwrap(), true);
         fs.mock_set_directory_contents(
@@ -439,7 +439,7 @@ mod tests {
         );
 
         // Make first file fail to remove
-        fs.mock_set_remove_should_fail("/mnt/hidden-volume/logs/nails.log", true);
+        fs.mock_set_remove_should_fail("/mnt/data/logs/nails.log", true);
 
         let cleaner = LogCleaner::new(fs.clone());
 
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn test_cleanup_with_only_exact_nails_log() {
         let fs = MockFilesystem::new();
-        let log_dir = PathBuf::from("/mnt/hidden-volume/logs");
+        let log_dir = PathBuf::from("/mnt/data/logs");
 
         fs.mock_set_path_exists(log_dir.to_str().unwrap(), true);
         fs.mock_set_directory_contents(&log_dir, vec![log_dir.join("nails.log")]);
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn test_cleanup_preserves_non_nails_logs() {
         let fs = MockFilesystem::new();
-        let log_dir = PathBuf::from("/mnt/hidden-volume/logs");
+        let log_dir = PathBuf::from("/mnt/data/logs");
 
         fs.mock_set_path_exists(log_dir.to_str().unwrap(), true);
         fs.mock_set_directory_contents(

@@ -9,7 +9,7 @@ use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 #[test]
 fn test_new_sets_default_max_log_size() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     assert_eq!(manager.max_log_size_mb, 10);
@@ -18,7 +18,7 @@ fn test_new_sets_default_max_log_size() {
 #[test]
 fn test_new_sets_default_retention_days() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     assert_eq!(manager.retention_days, 7);
@@ -26,7 +26,7 @@ fn test_new_sets_default_retention_days() {
 
 #[test]
 fn test_new_stores_log_path() {
-    let log_path = PathBuf::from("/mnt/hidden-volume/logs");
+    let log_path = PathBuf::from("/mnt/data/logs");
     let manager = LoggingManager::new(log_path.clone(), PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT));
     assert_eq!(manager.log_path, log_path);
 }
@@ -34,14 +34,14 @@ fn test_new_stores_log_path() {
 #[test]
 fn test_new_stores_hidden_volume_root() {
     let hidden = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
-    let manager = LoggingManager::new(PathBuf::from("/mnt/hidden-volume/logs"), hidden.clone());
+    let manager = LoggingManager::new(PathBuf::from("/mnt/data/logs"), hidden.clone());
     assert_eq!(manager.hidden_volume_root, hidden);
 }
 
 #[test]
 fn test_new_is_cloneable() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let cloned = manager.clone();
@@ -52,7 +52,7 @@ fn test_new_is_cloneable() {
 #[test]
 fn test_new_is_debuggable() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let debug_str = format!("{:?}", manager);
@@ -66,7 +66,7 @@ fn test_new_is_debuggable() {
 #[test]
 fn test_validate_log_path_valid() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     assert!(manager.validate_log_path().is_ok());
@@ -75,7 +75,7 @@ fn test_validate_log_path_valid() {
 #[test]
 fn test_validate_log_path_nested_valid() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     assert!(manager.validate_log_path().is_ok());
@@ -100,7 +100,7 @@ fn test_validate_log_path_outside_hidden_volume() {
 #[test]
 fn test_validate_log_path_traversal_attack() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/../var/log"),
+        PathBuf::from("/mnt/data/../var/log"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let err = manager.validate_log_path().unwrap_err();
@@ -114,9 +114,9 @@ fn test_validate_log_path_traversal_attack() {
 
 #[test]
 fn test_validate_log_path_similar_prefix() {
-    // "/mnt/hidden-volume-fake" should NOT be treated as within DEFAULT_HIDDEN_VOLUME_ROOT
+    // "/mnt/data-fake" should NOT be treated as within DEFAULT_HIDDEN_VOLUME_ROOT
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume-fake/logs"),
+        PathBuf::from("/mnt/data-fake/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let err = manager.validate_log_path().unwrap_err();
@@ -141,7 +141,7 @@ fn test_validate_log_path_exact_match() {
 #[test]
 fn test_validate_log_path_double_traversal() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/../../etc"),
+        PathBuf::from("/mnt/data/../../etc"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     assert!(manager.validate_log_path().is_err());
@@ -160,7 +160,7 @@ fn test_validate_log_path_empty_path() {
 #[test]
 fn test_init_graceful_degradation_when_hidden_volume_not_mounted() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let fs = MockFilesystem::new();
@@ -195,31 +195,28 @@ fn test_init_fails_when_path_outside_hidden_volume() {
 #[test]
 fn test_init_creates_log_directory_when_missing() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-    fs.mock_set_path_exists("/mnt/hidden-volume/logs", false);
+    fs.mock_set_path_exists("/mnt/data/logs", false);
     fs.mock_set_writable(DEFAULT_HIDDEN_VOLUME_ROOT, true);
 
     let result = manager.init(&fs);
     assert!(result.is_ok());
-    assert!(
-        fs.path_exists(&PathBuf::from("/mnt/hidden-volume/logs"))
-            .unwrap()
-    );
+    assert!(fs.path_exists(&PathBuf::from("/mnt/data/logs")).unwrap());
 }
 
 #[test]
 fn test_init_succeeds_when_log_directory_exists() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-    fs.mock_set_path_exists("/mnt/hidden-volume/logs", true);
+    fs.mock_set_path_exists("/mnt/data/logs", true);
 
     let result = manager.init(&fs);
     assert!(result.is_ok());
@@ -228,12 +225,12 @@ fn test_init_succeeds_when_log_directory_exists() {
 #[test]
 fn test_init_returns_correct_log_file_path() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-    fs.mock_set_path_exists("/mnt/hidden-volume/logs", true);
+    fs.mock_set_path_exists("/mnt/data/logs", true);
 
     let config = manager
         .init(&fs)
@@ -241,14 +238,14 @@ fn test_init_returns_correct_log_file_path() {
         .expect("Expected Some(LoggingConfig)");
     assert_eq!(
         config.log_file_path,
-        PathBuf::from("/mnt/hidden-volume/logs/nails.log")
+        PathBuf::from("/mnt/data/logs/nails.log")
     );
 }
 
 #[test]
 fn test_init_with_traversal_path_fails() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/../var/log"),
+        PathBuf::from("/mnt/data/../var/log"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let fs = MockFilesystem::new();
@@ -270,13 +267,13 @@ fn test_init_with_traversal_path_fails() {
 #[test]
 fn test_init_fails_when_log_path_is_symlink() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-    fs.mock_set_path_exists("/mnt/hidden-volume/logs", true);
-    fs.mock_set_is_symlink("/mnt/hidden-volume/logs", true);
+    fs.mock_set_path_exists("/mnt/data/logs", true);
+    fs.mock_set_is_symlink("/mnt/data/logs", true);
 
     let err = manager.init(&fs).unwrap_err();
     match &err {
@@ -294,13 +291,13 @@ fn test_init_fails_when_log_path_is_symlink() {
 #[test]
 fn test_init_succeeds_when_path_is_not_symlink() {
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
-    fs.mock_set_path_exists("/mnt/hidden-volume/logs", true);
-    fs.mock_set_is_symlink("/mnt/hidden-volume/logs", false);
+    fs.mock_set_path_exists("/mnt/data/logs", true);
+    fs.mock_set_is_symlink("/mnt/data/logs", false);
 
     let result = manager.init(&fs);
     assert!(result.is_ok());
@@ -335,7 +332,7 @@ fn test_init_graceful_degradation_returns_ok_none() {
     // AC #3: When hidden volume is genuinely not mounted, graceful degradation
     // returns Ok(None) instead of an error
     let manager = LoggingManager::new(
-        PathBuf::from("/mnt/hidden-volume/logs"),
+        PathBuf::from("/mnt/data/logs"),
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
     );
     let fs = MockFilesystem::new();
@@ -391,14 +388,14 @@ fn test_init_with_realistic_custom_hidden_volume_root() {
 #[test]
 fn test_should_rotate_delegates_to_rotation_helper() {
     let manager = LoggingManager {
-        log_path: PathBuf::from("/mnt/hidden-volume/logs"),
+        log_path: PathBuf::from("/mnt/data/logs"),
         hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
         max_log_size_mb: 10,
         retention_days: 7,
     };
     let fs = MockFilesystem::new();
-    fs.mock_set_path_exists("/mnt/hidden-volume/logs/nails.log", true);
-    fs.mock_set_file_size("/mnt/hidden-volume/logs/nails.log", 11_000_000);
+    fs.mock_set_path_exists("/mnt/data/logs/nails.log", true);
+    fs.mock_set_file_size("/mnt/data/logs/nails.log", 11_000_000);
 
     assert!(manager.should_rotate(&fs).unwrap());
 }
@@ -406,42 +403,42 @@ fn test_should_rotate_delegates_to_rotation_helper() {
 #[test]
 fn test_rotate_logs_delegates_to_rotation_helper() {
     let manager = LoggingManager {
-        log_path: PathBuf::from("/mnt/hidden-volume/logs"),
+        log_path: PathBuf::from("/mnt/data/logs"),
         hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
         max_log_size_mb: 10,
         retention_days: 3,
     };
     let fs = MockFilesystem::new();
 
-    fs.mock_set_path_exists("/mnt/hidden-volume/logs", true);
-    fs.mock_set_path_type("/mnt/hidden-volume/logs", "directory");
-    fs.mock_set_path_exists("/mnt/hidden-volume/logs/nails.log", true);
-    fs.mock_set_file_size("/mnt/hidden-volume/logs/nails.log", 11_000_000);
-    fs.mock_set_file_content("/mnt/hidden-volume/logs/nails.log", "current");
-    fs.mock_set_path_exists("/mnt/hidden-volume/logs/nails.log.1", true);
-    fs.mock_set_file_content("/mnt/hidden-volume/logs/nails.log.1", "older");
+    fs.mock_set_path_exists("/mnt/data/logs", true);
+    fs.mock_set_path_type("/mnt/data/logs", "directory");
+    fs.mock_set_path_exists("/mnt/data/logs/nails.log", true);
+    fs.mock_set_file_size("/mnt/data/logs/nails.log", 11_000_000);
+    fs.mock_set_file_content("/mnt/data/logs/nails.log", "current");
+    fs.mock_set_path_exists("/mnt/data/logs/nails.log.1", true);
+    fs.mock_set_file_content("/mnt/data/logs/nails.log.1", "older");
     fs.mock_set_directory_contents(
-        &PathBuf::from("/mnt/hidden-volume/logs"),
+        &PathBuf::from("/mnt/data/logs"),
         vec![
-            PathBuf::from("/mnt/hidden-volume/logs/nails.log"),
-            PathBuf::from("/mnt/hidden-volume/logs/nails.log.1"),
+            PathBuf::from("/mnt/data/logs/nails.log"),
+            PathBuf::from("/mnt/data/logs/nails.log.1"),
         ],
     );
 
     manager.rotate_logs(&fs).unwrap();
 
     assert_eq!(
-        fs.read_file_content(PathBuf::from("/mnt/hidden-volume/logs/nails.log.1").as_path())
+        fs.read_file_content(PathBuf::from("/mnt/data/logs/nails.log.1").as_path())
             .unwrap(),
         "current"
     );
     assert_eq!(
-        fs.read_file_content(PathBuf::from("/mnt/hidden-volume/logs/nails.log.2").as_path())
+        fs.read_file_content(PathBuf::from("/mnt/data/logs/nails.log.2").as_path())
             .unwrap(),
         "older"
     );
     assert_eq!(
-        fs.read_file_content(PathBuf::from("/mnt/hidden-volume/logs/nails.log").as_path())
+        fs.read_file_content(PathBuf::from("/mnt/data/logs/nails.log").as_path())
             .unwrap(),
         ""
     );
@@ -450,21 +447,21 @@ fn test_rotate_logs_delegates_to_rotation_helper() {
 #[test]
 fn test_enforce_retention_delegates_to_rotation_helper() {
     let manager = LoggingManager {
-        log_path: PathBuf::from("/mnt/hidden-volume/logs"),
+        log_path: PathBuf::from("/mnt/data/logs"),
         hidden_volume_root: PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
         max_log_size_mb: 10,
         retention_days: 7,
     };
     let fs = MockFilesystem::new();
-    let old_log = PathBuf::from("/mnt/hidden-volume/logs/nails.log.8");
-    let fresh_log = PathBuf::from("/mnt/hidden-volume/logs/nails.log.1");
+    let old_log = PathBuf::from("/mnt/data/logs/nails.log.8");
+    let fresh_log = PathBuf::from("/mnt/data/logs/nails.log.1");
 
-    fs.mock_set_path_exists("/mnt/hidden-volume/logs", true);
-    fs.mock_set_path_type("/mnt/hidden-volume/logs", "directory");
+    fs.mock_set_path_exists("/mnt/data/logs", true);
+    fs.mock_set_path_type("/mnt/data/logs", "directory");
     fs.mock_set_path_exists(old_log.to_str().unwrap(), true);
     fs.mock_set_path_exists(fresh_log.to_str().unwrap(), true);
     fs.mock_set_directory_contents(
-        &PathBuf::from("/mnt/hidden-volume/logs"),
+        &PathBuf::from("/mnt/data/logs"),
         vec![fresh_log.clone(), old_log.clone()],
     );
     fs.mock_set_modified_time(&old_log, chrono::Utc::now() - chrono::Duration::days(10));

@@ -28,6 +28,29 @@ impl DiskUsage {
     }
 }
 
+/// How the kernel and udev name the device a mount is backed by.
+///
+/// Returned by [`Filesystem::mount_source`] for a single mount point. Every
+/// field is optional because a bind mount, a pseudo-filesystem or an unlabelled
+/// device supplies only some of them. The names matter on their own: a mapper
+/// name, a filesystem label or a mount path that reads as "hidden" survives in
+/// the leftover mount-point directory, in generated systemd unit names, in
+/// `/dev/disk/by-label` and in kernel and sudo journal lines, so preflight scans
+/// them for words that would betray hidden storage to anyone who reads them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MountSource {
+    /// The mount source as it appears in `/proc/self/mountinfo`
+    /// (`/dev/mapper/data`, `/dev/dm-2`, `/dev/sdb1`, a bind source, ...).
+    pub device: Option<String>,
+    /// The device-mapper name behind the source, when the source is a dm device
+    /// (`/dev/mapper/<name>`, or `/dev/dm-N` resolved via
+    /// `/sys/block/dm-N/dm/name`).
+    pub dm_name: Option<String>,
+    /// The filesystem label, when `/dev/disk/by-label` holds a symlink that
+    /// resolves to the source device.
+    pub label: Option<String>,
+}
+
 // ============================================================================
 // Core Filesystem Trait
 // ============================================================================
@@ -91,6 +114,15 @@ pub trait Filesystem: Send + Sync + Clone {
     ///
     /// Retrieves mount metadata (lower, upper, work, target paths) for rollback support.
     fn get_mount_info(&self, target: &Path) -> Option<MountInfo>;
+
+    /// Identify the device, device-mapper name and filesystem label backing the
+    /// mount at `mount_point`.
+    ///
+    /// Returns `Ok(None)` when `mount_point` is not itself a mount point. This is
+    /// a read-only query used to warn about names that hint at hidden storage; a
+    /// missing optional attribute (no dm layer, no label) is left `None` rather
+    /// than reported as an error.
+    fn mount_source(&self, mount_point: &Path) -> Result<Option<MountSource>>;
 
     // ------------------------------------------------------------------------
     // Swap Management

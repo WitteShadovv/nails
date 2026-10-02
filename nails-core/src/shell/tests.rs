@@ -1089,8 +1089,8 @@ fn test_shell_setup_returns_warning_without_source_commands_when_script_writes_f
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
-    fs.mock_set_write_should_fail("/mnt/hidden-volume/scripts/nails_prompt.bash", true);
-    fs.mock_set_write_should_fail("/mnt/hidden-volume/scripts/nails_alias.sh", true);
+    fs.mock_set_write_should_fail("/mnt/data/scripts/nails_prompt.bash", true);
+    fs.mock_set_write_should_fail("/mnt/data/scripts/nails_alias.sh", true);
 
     unsafe {
         std::env::set_var("SHELL", "/bin/bash");
@@ -1704,8 +1704,8 @@ fn test_inject_rc_integration_bash_creates_bashrc() {
     let content = fs.read_file_content(&bashrc_path).unwrap();
 
     assert!(content.contains("# >>> managed shell integration"));
-    assert!(content.contains("source /mnt/hidden-volume/scripts/nails_prompt.bash"));
-    assert!(content.contains("source /mnt/hidden-volume/scripts/nails_alias.sh"));
+    assert!(content.contains("source /mnt/data/scripts/nails_prompt.bash"));
+    assert!(content.contains("source /mnt/data/scripts/nails_alias.sh"));
     assert!(content.contains("printf '\\e]11;#1a1a2e\\a\\e]10;#e0e0e0\\a'"));
     assert!(content.contains("# <<< managed shell integration <<<"));
 }
@@ -1742,8 +1742,8 @@ fn test_inject_rc_integration_zsh_creates_zshrc() {
     let content = fs.read_file_content(&zshrc_path).unwrap();
 
     assert!(content.contains("# >>> managed shell integration"));
-    assert!(content.contains("source /mnt/hidden-volume/scripts/nails_prompt.zsh"));
-    assert!(content.contains("source /mnt/hidden-volume/scripts/nails_alias.sh"));
+    assert!(content.contains("source /mnt/data/scripts/nails_prompt.zsh"));
+    assert!(content.contains("source /mnt/data/scripts/nails_alias.sh"));
 }
 
 #[test]
@@ -1778,8 +1778,8 @@ fn test_inject_rc_integration_fish_creates_config_fish() {
     let content = fs.read_file_content(&fish_config_path).unwrap();
 
     assert!(content.contains("# >>> managed shell integration"));
-    assert!(content.contains("source /mnt/hidden-volume/scripts/nails_prompt.fish"));
-    assert!(content.contains("source /mnt/hidden-volume/scripts/nails_alias.fish"));
+    assert!(content.contains("source /mnt/data/scripts/nails_prompt.fish"));
+    assert!(content.contains("source /mnt/data/scripts/nails_alias.fish"));
 }
 
 #[test]
@@ -2267,13 +2267,13 @@ fn test_shell_setup_writes_xdg_autostart_entry() {
 
 fn gate_config() -> Config {
     Config {
-        hidden_volume_root: "/mnt/hidden-volume".into(),
+        hidden_volume_root: "/mnt/data".into(),
         ..Default::default()
     }
 }
 
 const HOME_ON_HIDDEN_OVERLAY: &str = "36 1 0:40 / /home rw,relatime - overlay overlay \
-     rw,lowerdir=/home,upperdir=/mnt/hidden-volume/home,workdir=/mnt/hidden-volume/.work/home";
+     rw,lowerdir=/home,upperdir=/mnt/data/home,workdir=/mnt/data/.work/home";
 
 const HOME_ON_DECOY_DISK: &str = "36 1 8:2 / /home rw,relatime - ext4 /dev/sda2 rw";
 

@@ -1,4 +1,4 @@
-use super::super::{Filesystem, MountInfo};
+use super::super::{Filesystem, MountInfo, MountSource};
 use super::MockFilesystem;
 use crate::Result;
 use crate::target_user::TargetUser;
@@ -33,6 +33,10 @@ impl Filesystem for MockFilesystem {
 
     fn get_mount_info(&self, target: &Path) -> Option<MountInfo> {
         self.get_mount_info_impl(target)
+    }
+
+    fn mount_source(&self, mount_point: &Path) -> Result<Option<MountSource>> {
+        self.mount_source_impl(mount_point)
     }
 
     fn swap_is_enabled(&self) -> Result<bool> {

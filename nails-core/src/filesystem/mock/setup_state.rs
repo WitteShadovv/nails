@@ -1,4 +1,4 @@
-use super::super::MountInfo;
+use super::super::{MountInfo, MountSource};
 use super::MockFilesystem;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -137,6 +137,17 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .insert(path.to_path_buf(), fstype.to_string());
+    }
+
+    /// Set the device, dm name and label backing a mount point.
+    ///
+    /// Drives [`Filesystem::mount_source`](crate::Filesystem::mount_source) so a
+    /// test can exercise the hidden-volume name check without a real mount table.
+    pub fn mock_set_mount_source(&self, path: &Path, source: MountSource) {
+        self.mount_sources
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf(), source);
     }
 
     /// Set whether copy_tree should fail for a source path
