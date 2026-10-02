@@ -32,6 +32,7 @@
 //!     has_open_fds_in_target: false,
 //!     has_mmap_in_target: false,
 //!     service_name: None,
+//!     is_interactive: false,
 //! };
 //!
 //! let strategy = classify_process(&proc, Path::new("/home"));
@@ -39,7 +40,24 @@
 //! ```
 
 use crate::process::detection::ProcessInfo;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// What to do with processes classified as `Risky` to restart (services such as
+/// NetworkManager, dbus-daemon or the audio server) when they still reference an
+/// overlay target.
+///
+/// Leaving a risky service running keeps it writing to the decoy lower tree, so
+/// the choice is a security trade-off the operator must make deliberately. It is
+/// surfaced as the `risky_services` config key and the `--risky-services` flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskyServicePolicy {
+    /// Restart the risky services so they no longer reference the decoy.
+    Restart,
+    /// Leave them running; they are reported as surviving writers.
+    Skip,
+}
 
 /// Restart strategy for a process
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +120,7 @@ pub enum RestartStrategy {
 ///     has_open_fds_in_target: true,
 ///     has_mmap_in_target: false,
 ///     service_name: Some("systemd-journald".to_string()),
+///     is_interactive: false,
 /// };
 ///
 /// let strategy = classify_process(&proc, Path::new("/var"));

@@ -3,14 +3,14 @@
 //! Provides configuration options and result types for the universal
 //! overlay mounting algorithm.
 
+use crate::process::RiskyServicePolicy;
+
 /// Options for controlling overlay mounting strategy
 ///
 /// Controls how the universal overlay mounting algorithm behaves regarding:
 /// - Process restart decisions (safe/risky)
-/// - User prompts for risky operations
+/// - Whether interactive user processes may be force-terminated
 /// - Pivot mount fallback policy
-///
-/// Part of Story 4.15: User Prompts and CLI Flags for Overlay Strategy
 ///
 /// # Examples
 ///
@@ -20,12 +20,14 @@
 /// // Interactive mode (default) - prompt for risky operations
 /// let opts = OverlayStrategyOptions::default();
 /// assert_eq!(opts.auto_restart_safe, true);
-/// assert_eq!(opts.prompt_for_risky, true);
+/// assert_eq!(opts.risky_services, None); // None means "prompt on a terminal"
 ///
-/// // Automated mode - restart safe processes, skip risky prompts
+/// // Automated mode - restart safe processes, restart risky services
+/// use nails_core::RiskyServicePolicy;
 /// let opts = OverlayStrategyOptions {
 ///     auto_restart_safe: true,
-///     prompt_for_risky: false,
+///     risky_services: Some(RiskyServicePolicy::Restart),
+///     terminate_interactive: false,
 ///     allow_pivot: true,
 ///     auto_accept_pivot: true,
 ///     skip_process_detection: false,
@@ -55,15 +57,26 @@ pub struct OverlayStrategyOptions {
     /// Examples: systemd-journald, nix-daemon, systemd-resolved
     pub auto_restart_safe: bool,
 
-    /// Prompt user before restarting processes classified as "Risky"
+    /// What to do with processes classified as "Risky" to restart.
     ///
-    /// Risky processes may cause brief service disruption:
-    /// - NetworkManager (brief network drop)
-    /// - dbus-daemon (affects desktop notifications)
-    /// - pulseaudio/pipewire (audio interruption)
+    /// Risky processes are services that may cause brief disruption when
+    /// restarted (NetworkManager, dbus-daemon, pulseaudio/pipewire) but keep
+    /// writing to the decoy if left running.
     ///
-    /// If false, skip risky process restarts (may require pivot mount)
-    pub prompt_for_risky: bool,
+    /// - `Some(Restart)` restarts them automatically.
+    /// - `Some(Skip)` leaves them running; they are reported as survivors.
+    /// - `None` prompts on a terminal (the interactive default); without a
+    ///   terminal the caller must resolve `None` to an explicit choice before
+    ///   mounting.
+    pub risky_services: Option<RiskyServicePolicy>,
+
+    /// Allow force-terminating interactive, non-service user processes.
+    ///
+    /// A process attached to a terminal is almost always one a user is working
+    /// in. When false (the secure default), the strategy refuses to SIGKILL such
+    /// a process and aborts before mounting, listing the offenders. Set to true
+    /// only when the operator has explicitly opted in.
+    pub terminate_interactive: bool,
 
     /// Allow pivot mount fallback when direct mount fails
     ///
@@ -89,7 +102,8 @@ impl Default for OverlayStrategyOptions {
     fn default() -> Self {
         Self {
             auto_restart_safe: true,       // Always restart safe processes
-            prompt_for_risky: true,        // Interactive by default
+            risky_services: None,          // Prompt on a terminal by default
+            terminate_interactive: false,  // Never SIGKILL a user's terminal program
             allow_pivot: true,             // Allow pivot as last resort
             auto_accept_pivot: false,      // Prompt by default for security awareness
             skip_process_detection: false, // Don't skip process detection by default
@@ -112,22 +126,42 @@ pub enum MountMethod {
     Pivot,
 }
 
+/// A write-capable process still referencing an overlay target after Phase 2.
+///
+/// These are the processes that could not be, or were not, restarted. Each keeps
+/// resolving and writing to the decoy lower tree regardless of the mount method,
+/// so the set is the security-relevant signal. Keeping the identity (not just a
+/// count) lets the outcome, the notification and `nails status` name exactly what
+/// is still leaking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurvivingWriter {
+    /// Process name (from `/proc/{pid}/comm`).
+    pub name: String,
+    /// Systemd service backing the process, if any.
+    pub service: Option<String>,
+}
+
 /// Full result of universal overlay mounting algorithm
 ///
-/// Includes the mount method, the services stopped during Phase 2, and the count
-/// of writer processes that survived Phase 2 still referencing the target.
+/// Includes the mount method, the services stopped during Phase 2, and the
+/// writer processes that survived Phase 2 still referencing the target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountResult {
     /// Which mount method was used
     pub method: MountMethod,
     /// Service names that were stopped in Phase 2 (should be restarted post-mount)
     pub stopped_services: Vec<String>,
-    /// Count of write-capable processes still referencing the target after Phase 2
-    /// (processes that could not be, or were not, restarted). Such a process keeps
-    /// resolving and writing to the decoy lower tree regardless of mount method, so
-    /// a non-zero count is a leak that degrades the security posture. Read-only
+    /// Write-capable processes still referencing the target after Phase 2. A
+    /// non-empty list is a leak that degrades the security posture. Read-only
     /// ("Skip") processes are excluded because they cannot write to the decoy.
-    pub surviving_writers: usize,
+    pub survivors: Vec<SurvivingWriter>,
+}
+
+impl MountResult {
+    /// Number of write-capable processes still referencing the target.
+    pub fn surviving_writers(&self) -> usize {
+        self.survivors.len()
+    }
 }
 
 #[cfg(test)]
@@ -138,7 +172,8 @@ mod tests {
     fn test_overlay_strategy_options_default() {
         let opts = OverlayStrategyOptions::default();
         assert!(opts.auto_restart_safe);
-        assert!(opts.prompt_for_risky);
+        assert_eq!(opts.risky_services, None);
+        assert!(!opts.terminate_interactive);
         assert!(opts.allow_pivot);
         assert!(!opts.auto_accept_pivot);
         assert!(!opts.skip_process_detection);
@@ -148,13 +183,15 @@ mod tests {
     fn test_overlay_strategy_options_custom() {
         let opts = OverlayStrategyOptions {
             auto_restart_safe: false,
-            prompt_for_risky: false,
+            risky_services: Some(RiskyServicePolicy::Skip),
+            terminate_interactive: true,
             allow_pivot: false,
             auto_accept_pivot: true,
             skip_process_detection: true,
         };
         assert!(!opts.auto_restart_safe);
-        assert!(!opts.prompt_for_risky);
+        assert_eq!(opts.risky_services, Some(RiskyServicePolicy::Skip));
+        assert!(opts.terminate_interactive);
         assert!(!opts.allow_pivot);
         assert!(opts.auto_accept_pivot);
         assert!(opts.skip_process_detection);
@@ -172,10 +209,11 @@ mod tests {
         let result = MountResult {
             method: MountMethod::Direct,
             stopped_services: vec!["systemd-journald".to_string()],
-            surviving_writers: 0,
+            survivors: Vec::new(),
         };
         assert_eq!(result.method, MountMethod::Direct);
         assert_eq!(result.stopped_services.len(), 1);
-        assert_eq!(result.surviving_writers, 0);
+        assert_eq!(result.surviving_writers(), 0);
+        assert!(result.survivors.is_empty());
     }
 }

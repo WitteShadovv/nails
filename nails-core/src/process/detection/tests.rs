@@ -14,6 +14,7 @@ fn test_processinfo_struct() {
         has_open_fds_in_target: false,
         has_mmap_in_target: true,
         service_name: None,
+        is_interactive: false,
     };
 
     assert_eq!(info.pid, 1234);
@@ -35,6 +36,7 @@ fn test_processinfo_with_systemd_service() {
         has_open_fds_in_target: true,
         has_mmap_in_target: false,
         service_name: Some("systemd-journald".to_string()),
+        is_interactive: false,
     };
 
     assert_eq!(info.service_name, Some("systemd-journald".to_string()));
@@ -270,4 +272,40 @@ fn test_detect_processes_using_excludes_current_pid_for_root_target() {
     let result = detect_processes_using(Path::new("/")).unwrap();
 
     assert!(result.iter().all(|proc| proc.pid != std::process::id()));
+}
+
+#[test]
+fn is_terminal_device_recognizes_ttys_and_ptys() {
+    assert!(is_terminal_device(Path::new("/dev/pts/3")));
+    assert!(is_terminal_device(Path::new("/dev/tty1")));
+    assert!(is_terminal_device(Path::new("/dev/tty")));
+    assert!(is_terminal_device(Path::new("/dev/console")));
+
+    assert!(!is_terminal_device(Path::new("/dev/null")));
+    assert!(!is_terminal_device(Path::new("/home/user/log.txt")));
+    assert!(!is_terminal_device(Path::new("/var/log/syslog")));
+}
+
+#[test]
+fn check_interactive_detects_a_pty_on_stdin() {
+    let dir = tempfile::tempdir().unwrap();
+    let proc_path = dir.path();
+    let fd_dir = proc_path.join("fd");
+    std::fs::create_dir(&fd_dir).unwrap();
+    // fd 0 points at a pty; detection reads the symlink target, so the target
+    // need not be a real device node.
+    symlink("/dev/pts/7", fd_dir.join("0")).unwrap();
+
+    assert!(check_interactive(proc_path));
+}
+
+#[test]
+fn check_interactive_is_false_for_non_terminal_fds() {
+    let dir = tempfile::tempdir().unwrap();
+    let proc_path = dir.path();
+    let fd_dir = proc_path.join("fd");
+    std::fs::create_dir(&fd_dir).unwrap();
+    symlink("/var/log/app.log", fd_dir.join("1")).unwrap();
+
+    assert!(!check_interactive(proc_path));
 }

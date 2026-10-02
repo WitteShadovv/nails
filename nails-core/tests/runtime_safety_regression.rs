@@ -25,6 +25,7 @@ fn make_process(name: &str, pid: u32) -> ProcessInfo {
         has_open_fds_in_target: false,
         has_mmap_in_target: false,
         service_name: None,
+        is_interactive: false,
     }
 }
 

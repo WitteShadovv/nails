@@ -14,6 +14,9 @@ use std::path::Path;
 use super::pivot::{pivot_overlay_mount, snapshot_pivot_overlay_mount};
 use super::types::{MountMethod, MountResult, OverlayStrategyOptions};
 
+mod process_phase;
+use process_phase::run_process_phase;
+
 #[cfg(test)]
 mod tests;
 
@@ -78,7 +81,7 @@ fn restart_services_after_failure(services: &[String]) {
 /// direct and a pivot mount; a direct mount does not give those pre-existing
 /// processes a "unified view". The algorithm therefore minimises leakage by
 /// restarting writers in Phase 2, and reports any writer it could not restart
-/// via [`MountResult::surviving_writers`]. A pivot mount is only accepted after
+/// via [`MountResult::survivors`]. A pivot mount is only accepted after
 /// explicit user consent because it is the point at which a busy, still-referenced
 /// target is overlaid anyway.
 ///
@@ -105,10 +108,10 @@ fn restart_services_after_failure(services: &[String]) {
 ///     MountMethod::Direct => println!("Mounted directly"),
 ///     MountMethod::Pivot => println!("Mounted via the pivot fallback"),
 /// }
-/// if result.surviving_writers > 0 {
+/// if result.surviving_writers() > 0 {
 ///     println!(
 ///         "⚠️  {} writer(s) still reference the decoy",
-///         result.surviving_writers
+///         result.surviving_writers()
 ///     );
 /// }
 /// # Ok::<(), nails_core::NailsError>(())
@@ -121,12 +124,8 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     target: &Path,
     options: &OverlayStrategyOptions,
 ) -> Result<MountResult> {
-    use crate::process::{
-        RestartStrategy, classify_process, detect_processes_using, restart_processes,
-    };
-    use crate::prompts::{
-        display_abort_message, prompt_pivot_mount_acceptance, prompt_risky_process_restart,
-    };
+    use crate::process::detect_processes_using;
+    use crate::prompts::{display_abort_message, prompt_pivot_mount_acceptance};
 
     // ========== Pre-check: Filesystem compatibility ==========
     //
@@ -168,7 +167,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
             stopped_services: Vec::new(),
             // Snapshot pivot is used for filesystems with no active writers, so
             // there is nothing left referencing the target.
-            surviving_writers: 0,
+            survivors: Vec::new(),
         });
     }
 
@@ -183,7 +182,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
                     stopped_services: Vec::new(),
                     // Process detection is skipped in this mode, so no survivors
                     // are tracked.
-                    surviving_writers: 0,
+                    survivors: Vec::new(),
                 });
             }
             Err(e) => {
@@ -201,11 +200,6 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     );
 
     let blocking = detect_processes_using(target)?;
-    let mut stopped_services: Vec<String> = Vec::new();
-    // Count of write-capable processes left referencing the target after Phase 2.
-    // These keep writing to the decoy lower tree regardless of the mount method,
-    // so this — not Direct-vs-Pivot — is what degrades the security posture.
-    let mut surviving_writers = 0usize;
 
     if blocking.is_empty() {
         tracing::info!("  Found 0 processes ✓");
@@ -218,118 +212,16 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     }
 
     // ========== Phase 2: Classify and Restart Processes ==========
-
-    if !blocking.is_empty() {
-        tracing::info!("[Phase 2: Classify] Analyzing restart safety...");
-
-        let mut to_restart_safe = Vec::new();
-        let mut to_restart_risky = Vec::new();
-        let mut cannot_restart = Vec::new();
-        let mut skip_count = 0;
-
-        for proc in blocking {
-            match classify_process(&proc, target) {
-                RestartStrategy::Safe => {
-                    tracing::info!(name = %proc.name, pid = proc.pid, "  → {} (PID {}) - Safe to restart", proc.name, proc.pid);
-                    to_restart_safe.push(proc);
-                }
-                RestartStrategy::Risky => {
-                    tracing::info!(name = %proc.name, pid = proc.pid, "  → {} (PID {}) - Risky to restart", proc.name, proc.pid);
-                    to_restart_risky.push(proc);
-                }
-                RestartStrategy::NoRestart => {
-                    // Don't print each one - just count them
-                    cannot_restart.push(proc);
-                }
-                RestartStrategy::Skip => {
-                    // Process uses target but doesn't block mount — leave it alone
-                    // Don't print each one - just count them
-                    skip_count += 1;
-                }
-            }
-        }
-
-        // Print summary for non-actionable processes
-        if !cannot_restart.is_empty() {
-            tracing::info!(
-                count = cannot_restart.len(),
-                "  {} processes cannot be restarted",
-                cannot_restart.len()
-            );
-        }
-        if skip_count > 0 {
-            tracing::info!(
-                count = skip_count,
-                "  {} processes skipped (read-only, no action needed)",
-                skip_count
-            );
-        }
-
-        // Restart Safe processes automatically. A safe process that is restarted
-        // stops writing to the decoy; one that fails to stop, or is left running
-        // because auto-restart is disabled, keeps writing and counts as a survivor.
-        if !to_restart_safe.is_empty() {
-            if options.auto_restart_safe {
-                tracing::info!(
-                    count = to_restart_safe.len(),
-                    "  Restarting {} safe processes...",
-                    to_restart_safe.len()
-                );
-                let results = restart_processes(&to_restart_safe)?;
-                for result in &results {
-                    if result.stopped_successfully {
-                        if let Some(ref svc) = result.info.service_name {
-                            stopped_services.push(svc.clone());
-                        }
-                    } else {
-                        surviving_writers += 1;
-                    }
-                }
-            } else {
-                surviving_writers += to_restart_safe.len();
-            }
-        }
-
-        // Prompt for Risky processes. Declining the prompt (or disabling it) leaves
-        // the risky writers running, so they also count as survivors.
-        if !to_restart_risky.is_empty() {
-            let restart_risky =
-                options.prompt_for_risky && prompt_risky_process_restart(&to_restart_risky)?;
-            if restart_risky {
-                tracing::info!(
-                    count = to_restart_risky.len(),
-                    "  Restarting {} risky processes...",
-                    to_restart_risky.len()
-                );
-                let results = restart_processes(&to_restart_risky)?;
-                for result in &results {
-                    if result.stopped_successfully {
-                        if let Some(ref svc) = result.info.service_name {
-                            stopped_services.push(svc.clone());
-                        }
-                    } else {
-                        surviving_writers += 1;
-                    }
-                }
-            } else {
-                surviving_writers += to_restart_risky.len();
-                tracing::info!("  Risky processes remain active (not restarted)");
-            }
-        }
-
-        // Processes that cannot be restarted at all keep writing to the decoy.
-        if !cannot_restart.is_empty() {
-            surviving_writers += cannot_restart.len();
-            tracing::warn!(
-                count = cannot_restart.len(),
-                "  ⚠️  {} processes cannot be restarted",
-                cannot_restart.len()
-            );
-            tracing::warn!(
-                "  These writers will keep referencing the decoy lower tree after the mount."
-            );
-        }
-    }
+    //
+    // Classification, the interactive-termination guard and the actual restarts
+    // live in `run_process_phase` so they can be unit-tested with a scripted
+    // command executor. An aborting guard returns here before any mount.
+    let (stopped_services, survivors) = run_process_phase(
+        blocking,
+        target,
+        options,
+        &crate::process::restart::RealCommandExecutor,
+    )?;
 
     // ========== Phase 3: Attempt Direct Overlay Mount ==========
     // (fs_incompatible targets already returned via pivot above)
@@ -350,7 +242,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
             return Ok(MountResult {
                 method: MountMethod::Direct,
                 stopped_services,
-                surviving_writers,
+                survivors,
             });
         }
         Err(e) => match &e {
@@ -434,6 +326,6 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     Ok(MountResult {
         method: MountMethod::Pivot,
         stopped_services,
-        surviving_writers,
+        survivors,
     })
 }

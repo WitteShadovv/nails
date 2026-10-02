@@ -11,6 +11,7 @@ fn make_test_process(name: &str, pid: u32, has_cwd: bool) -> ProcessInfo {
         has_open_fds_in_target: false,
         has_mmap_in_target: false,
         service_name: None,
+        is_interactive: false,
     }
 }
 

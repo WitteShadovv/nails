@@ -50,7 +50,7 @@ pub mod session;
 pub mod shell_cleanup;
 
 // Re-export public API
-pub use classification::{RestartStrategy, classify_process};
+pub use classification::{RestartStrategy, RiskyServicePolicy, classify_process};
 pub use detection::{ProcessInfo, detect_processes_using};
 pub use restart::{RestartMethod, RestartedProcess, restart_processes};
 pub use run::{ProcessCommand, ProcessRunner, Program, RealProcessRunner};

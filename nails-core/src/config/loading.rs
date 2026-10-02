@@ -252,6 +252,12 @@ fn render_template(root: &Path, title: &str) -> String {
 # NixOS flake reference for the hidden environment. Unset: auto-detected.
 # nixos_flake = {flake_value}
 
+# What to do with risky services (NetworkManager, dbus, the audio server) that
+# still reference a target at activation: "restart" them or "skip" (leave them
+# running as reported survivors). Unset: restart when the session is killed,
+# prompt on a terminal otherwise. Overridden by --risky-services.
+# risky_services = "restart"
+
 # Overlay target selection. "auto" overlays every top-level directory except
 # the exclusions; "explicit" overlays only the [[overlays]] tables below.
 # overlay_mode = "auto"

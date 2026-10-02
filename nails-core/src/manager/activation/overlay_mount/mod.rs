@@ -43,10 +43,13 @@ impl<F: Filesystem> NailsManager<F> {
         // Tracker will be committed only after full activation succeeds.
         let mut tracker = MountTracker::new(&self.filesystem);
 
-        // Build OverlayStrategyOptions from ActivateOptions (Story 4.15, AC8)
+        // Build OverlayStrategyOptions from ActivateOptions. The risky-service
+        // choice is resolved up front so a non-interactive run that keeps the
+        // session fails fast (before anything is mounted) when no choice was made.
         let strategy_options = crate::overlay::OverlayStrategyOptions {
-            auto_restart_safe: true,        // Always restart safe processes automatically
-            prompt_for_risky: !options.yes, // Skip risky prompts if --yes flag
+            auto_restart_safe: true, // Always restart safe processes automatically
+            risky_services: options.resolve_risky_services()?,
+            terminate_interactive: options.terminate_interactive,
             allow_pivot: !options.no_pivot, // Respect --no-pivot flag
             auto_accept_pivot: options.accept_pivot_risks, // Auto-accept if --accept-pivot-risks
             skip_process_detection: options
@@ -147,14 +150,14 @@ impl<F: Filesystem> NailsManager<F> {
         // The security-relevant signal: a target still referenced by surviving
         // writers leaks hidden-session activity into the decoy lower tree, and it
         // does so under either mount method.
-        if mount_result.surviving_writers > 0 {
+        if !mount_result.survivors.is_empty() {
             leaking_targets.push(overlay.target.clone());
             if verbosity >= Verbosity::Verbose {
                 tracing::warn!(
-                    writers = mount_result.surviving_writers,
+                    writers = mount_result.surviving_writers(),
                     "  ⚠️  {} has {} surviving writer(s) leaking to the decoy",
                     overlay.target.display(),
-                    mount_result.surviving_writers
+                    mount_result.surviving_writers()
                 );
             }
         }

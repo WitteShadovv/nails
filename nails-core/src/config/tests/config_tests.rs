@@ -1,5 +1,6 @@
 //! Tests for main Config struct and ConfigBuilder
 
+use crate::RiskyServicePolicy;
 use crate::config::{
     CliOverrides, Config, ConfigBuilder, DEFAULT_HIDDEN_VOLUME_ROOT, OverlayConfig, OverlayMode,
     derive_hidden_volume_root,
@@ -136,6 +137,7 @@ fn test_config_toml_serialization_round_trip() {
 fn test_config_keys_match_serialized_fields() {
     let config = Config {
         nixos_flake: Some("/flake#host".to_string()),
+        risky_services: Some(RiskyServicePolicy::Restart),
         ..Config::test_default()
     };
     let table = toml::Table::try_from(&config).unwrap();
@@ -760,4 +762,21 @@ fn test_discover_config_path_without_override_is_binary_relative_toml() {
         .unwrap()
         .to_path_buf();
     assert_eq!(result, exe_dir.join("config").join("nails.toml"));
+}
+
+#[test]
+fn risky_services_parses_restart_and_skip() {
+    let restart: Config = toml::from_str("risky_services = \"restart\"").unwrap();
+    assert_eq!(restart.risky_services, Some(RiskyServicePolicy::Restart));
+
+    let skip: Config = toml::from_str("risky_services = \"skip\"").unwrap();
+    assert_eq!(skip.risky_services, Some(RiskyServicePolicy::Skip));
+
+    let unset: Config = toml::from_str("").unwrap();
+    assert_eq!(unset.risky_services, None);
+}
+
+#[test]
+fn risky_services_rejects_unknown_value() {
+    assert!(toml::from_str::<Config>("risky_services = \"ignore\"").is_err());
 }

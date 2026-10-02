@@ -163,6 +163,7 @@ fn make_test_process(name: &str, pid: u32, service: Option<String>) -> ProcessIn
         has_open_fds_in_target: true,
         has_mmap_in_target: false,
         service_name: service,
+        is_interactive: false,
     }
 }
 
@@ -203,16 +204,16 @@ fn test_restart_systemd_service_failure() {
 }
 
 #[test]
-fn test_restart_via_signal_success() {
+fn test_terminate_success() {
     let proc = make_test_process("some-daemon", 345, None);
     let executor = MockCommandExecutor {
         systemctl_success: false,
         kill_success: true,
     };
 
-    let result = restart_via_signal(&proc, &executor).unwrap();
+    let result = terminate(&proc, &executor).unwrap();
 
-    assert_eq!(result.restart_method, RestartMethod::Signal);
+    assert_eq!(result.restart_method, RestartMethod::Terminate);
     // Note: In test, process_exists() might return true since we're not actually killing
     // In production, this would check actual process state
 }
@@ -237,7 +238,7 @@ fn test_restart_processes_with_executor() {
 
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].restart_method, RestartMethod::Systemd);
-    assert_eq!(results[1].restart_method, RestartMethod::Signal);
+    assert_eq!(results[1].restart_method, RestartMethod::Terminate);
 }
 
 #[test]
@@ -255,8 +256,8 @@ fn test_restart_processes_with_executor_empty_input_returns_empty() {
 #[test]
 fn test_restart_method_enum() {
     assert_eq!(RestartMethod::Systemd, RestartMethod::Systemd);
-    assert_eq!(RestartMethod::Signal, RestartMethod::Signal);
-    assert_ne!(RestartMethod::Systemd, RestartMethod::Signal);
+    assert_eq!(RestartMethod::Terminate, RestartMethod::Terminate);
+    assert_ne!(RestartMethod::Systemd, RestartMethod::Terminate);
 }
 
 #[test]
@@ -264,12 +265,12 @@ fn test_restarted_process_struct() {
     let proc = make_test_process("test", 123, None);
     let restarted = RestartedProcess {
         info: proc.clone(),
-        restart_method: RestartMethod::Signal,
+        restart_method: RestartMethod::Terminate,
         stopped_successfully: true,
     };
 
     assert_eq!(restarted.info.pid, 123);
-    assert_eq!(restarted.restart_method, RestartMethod::Signal);
+    assert_eq!(restarted.restart_method, RestartMethod::Terminate);
     assert!(restarted.stopped_successfully);
 }
 
@@ -284,27 +285,27 @@ fn test_process_exists() {
 }
 
 #[test]
-fn test_restart_via_signal_term_only_when_pid_already_absent() {
+fn test_terminate_term_only_when_pid_already_absent() {
     let pid = 99_999_999;
     let proc = make_test_process("missing-proc", pid, None);
     let executor = RecordingKillExecutor::new(true, true);
 
-    let result = restart_via_signal(&proc, &executor).unwrap();
+    let result = terminate(&proc, &executor).unwrap();
 
-    assert_eq!(result.restart_method, RestartMethod::Signal);
+    assert_eq!(result.restart_method, RestartMethod::Terminate);
     assert!(result.stopped_successfully);
     assert_eq!(executor.kill_calls(), vec![(pid, "TERM".to_string())]);
 }
 
 #[test]
-fn test_restart_via_signal_escalates_to_kill_when_process_still_exists() {
+fn test_terminate_escalates_to_kill_when_process_still_exists() {
     let pid = std::process::id();
     let proc = make_test_process("current-proc", pid, None);
     let executor = RecordingKillExecutor::new(true, true);
 
-    let result = restart_via_signal(&proc, &executor).unwrap();
+    let result = terminate(&proc, &executor).unwrap();
 
-    assert_eq!(result.restart_method, RestartMethod::Signal);
+    assert_eq!(result.restart_method, RestartMethod::Terminate);
     assert!(result.stopped_successfully);
     assert_eq!(
         executor.kill_calls(),
@@ -313,14 +314,14 @@ fn test_restart_via_signal_escalates_to_kill_when_process_still_exists() {
 }
 
 #[test]
-fn test_restart_via_signal_goes_to_kill_when_term_command_fails() {
+fn test_terminate_goes_to_kill_when_term_command_fails() {
     let pid = 42_424;
     let proc = make_test_process("term-fails", pid, None);
     let executor = RecordingKillExecutor::new(false, true);
 
-    let result = restart_via_signal(&proc, &executor).unwrap();
+    let result = terminate(&proc, &executor).unwrap();
 
-    assert_eq!(result.restart_method, RestartMethod::Signal);
+    assert_eq!(result.restart_method, RestartMethod::Terminate);
     assert!(result.stopped_successfully);
     assert_eq!(
         executor.kill_calls(),

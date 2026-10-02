@@ -5,7 +5,9 @@
 //! # Restart Strategy
 //!
 //! 1. **Systemd services**: Use `systemctl stop` if `service_name` is present
-//! 2. **Non-systemd processes**: Use `SIGTERM` followed by `SIGKILL` if necessary
+//! 2. **Non-systemd processes**: `terminate` them with `SIGTERM` followed by
+//!    `SIGKILL`. This path never restarts anything, so it is named honestly:
+//!    the caller is responsible for not terminating interactive user processes.
 //!
 //! # Example
 //!
@@ -23,6 +25,7 @@
 //!         has_open_fds_in_target: true,
 //!         has_mmap_in_target: false,
 //!         service_name: Some("systemd-journald".to_string()),
+//!         is_interactive: false,
 //!     },
 //! ];
 //!
@@ -37,13 +40,14 @@ use crate::error::Result;
 use crate::process::detection::ProcessInfo;
 use crate::process::run::{ProcessRunner, RealProcessRunner, signal_command, systemctl_command};
 
-/// Method used to restart a process
+/// Method used to stop a process
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestartMethod {
     /// Stopped via systemctl
     Systemd,
-    /// Stopped via signal (SIGTERM/SIGKILL)
-    Signal,
+    /// Terminated via signal (SIGTERM then SIGKILL). This stops the process; it
+    /// does not restart it, which is why the method is named `Terminate`.
+    Terminate,
 }
 
 /// Result of restarting a process
@@ -115,6 +119,7 @@ impl CommandExecutor for RealCommandExecutor {
 ///         has_open_fds_in_target: true,
 ///         has_mmap_in_target: false,
 ///         service_name: Some("systemd-journald".to_string()),
+///         is_interactive: false,
 ///     },
 /// ];
 ///
@@ -138,7 +143,7 @@ pub fn restart_processes_with_executor(
             restart_systemd_service(proc, service_name, executor)?
         } else {
             // Use signals
-            restart_via_signal(proc, executor)?
+            terminate(proc, executor)?
         };
 
         results.push(result);
@@ -180,11 +185,12 @@ fn restart_systemd_service(
     })
 }
 
-/// Restart process via signals
-fn restart_via_signal(
-    proc: &ProcessInfo,
-    executor: &dyn CommandExecutor,
-) -> Result<RestartedProcess> {
+/// Terminate a process via signals (SIGTERM, then SIGKILL if it survives).
+///
+/// This only stops the process; it never restarts it. Callers must not pass an
+/// interactive user process here without explicit consent — force-killing a
+/// user's editor or `tail` loses their work silently.
+fn terminate(proc: &ProcessInfo, executor: &dyn CommandExecutor) -> Result<RestartedProcess> {
     // Try SIGTERM first (graceful)
     let term_success = executor.execute_kill(proc.pid, "TERM")?;
 
@@ -200,7 +206,7 @@ fn restart_via_signal(
         if !process_exists(proc.pid) {
             return Ok(RestartedProcess {
                 info: proc.clone(),
-                restart_method: RestartMethod::Signal,
+                restart_method: RestartMethod::Terminate,
                 stopped_successfully: true,
             });
         }
@@ -211,7 +217,7 @@ fn restart_via_signal(
 
     Ok(RestartedProcess {
         info: proc.clone(),
-        restart_method: RestartMethod::Signal,
+        restart_method: RestartMethod::Terminate,
         stopped_successfully: kill_success,
     })
 }

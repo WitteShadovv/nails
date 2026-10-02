@@ -354,3 +354,178 @@ fn test_busy_direct_mount_with_auto_accept_enters_pivot_fallback() {
         "auto-accepted pivot must not short-circuit as InvalidState"
     );
 }
+
+// ── Phase 2 process handling (run_process_phase) ────────────────────────────
+
+use crate::process::restart::CommandExecutor;
+use crate::process::{ProcessInfo, RiskyServicePolicy};
+
+/// Command executor that records every systemctl and kill call so tests can
+/// assert exactly what the phase did (and, crucially, what it did not do).
+struct RecordingExecutor {
+    systemctl_calls: std::sync::Mutex<Vec<Vec<String>>>,
+    kill_calls: std::sync::Mutex<Vec<(u32, String)>>,
+    systemctl_success: bool,
+    kill_success: bool,
+}
+
+impl RecordingExecutor {
+    fn new() -> Self {
+        Self {
+            systemctl_calls: std::sync::Mutex::new(Vec::new()),
+            kill_calls: std::sync::Mutex::new(Vec::new()),
+            systemctl_success: true,
+            kill_success: true,
+        }
+    }
+
+    fn kill_calls(&self) -> Vec<(u32, String)> {
+        self.kill_calls.lock().unwrap().clone()
+    }
+
+    fn systemctl_calls(&self) -> Vec<Vec<String>> {
+        self.systemctl_calls.lock().unwrap().clone()
+    }
+}
+
+impl CommandExecutor for RecordingExecutor {
+    fn execute_systemctl(&self, args: &[&str]) -> crate::error::Result<(bool, String, String)> {
+        self.systemctl_calls
+            .lock()
+            .unwrap()
+            .push(args.iter().map(|s| s.to_string()).collect());
+        Ok((self.systemctl_success, String::new(), String::new()))
+    }
+
+    fn execute_kill(&self, pid: u32, signal: &str) -> crate::error::Result<bool> {
+        self.kill_calls
+            .lock()
+            .unwrap()
+            .push((pid, signal.to_string()));
+        Ok(self.kill_success)
+    }
+}
+
+fn proc(name: &str, pid: u32, service: Option<&str>, interactive: bool) -> ProcessInfo {
+    ProcessInfo {
+        pid,
+        name: name.to_string(),
+        cmdline: format!("/usr/bin/{name}"),
+        cwd: std::path::PathBuf::from("/"),
+        has_cwd_in_target: false,
+        has_open_fds_in_target: true,
+        has_mmap_in_target: false,
+        service_name: service.map(str::to_string),
+        is_interactive: interactive,
+    }
+}
+
+#[test]
+fn run_process_phase_restarts_risky_services_when_policy_restart() {
+    let options = OverlayStrategyOptions {
+        risky_services: Some(RiskyServicePolicy::Restart),
+        ..Default::default()
+    };
+    let executor = RecordingExecutor::new();
+
+    let blocking = vec![proc("NetworkManager", 500, Some("NetworkManager"), false)];
+    let (stopped, survivors) =
+        run_process_phase(blocking, std::path::Path::new("/var"), &options, &executor).unwrap();
+
+    assert_eq!(stopped, vec!["NetworkManager".to_string()]);
+    assert!(survivors.is_empty());
+    // Service stopped through systemctl, never by signal.
+    assert!(executor.kill_calls().is_empty());
+    assert!(
+        executor
+            .systemctl_calls()
+            .iter()
+            .any(|c| c == &vec!["stop".to_string(), "NetworkManager".to_string()])
+    );
+}
+
+#[test]
+fn run_process_phase_skip_policy_lists_risky_as_survivors() {
+    let options = OverlayStrategyOptions {
+        risky_services: Some(RiskyServicePolicy::Skip),
+        ..Default::default()
+    };
+    let executor = RecordingExecutor::new();
+
+    let blocking = vec![proc("NetworkManager", 500, Some("NetworkManager"), false)];
+    let (stopped, survivors) =
+        run_process_phase(blocking, std::path::Path::new("/var"), &options, &executor).unwrap();
+
+    assert!(stopped.is_empty());
+    assert_eq!(survivors.len(), 1);
+    assert_eq!(survivors[0].name, "NetworkManager");
+    assert_eq!(survivors[0].service.as_deref(), Some("NetworkManager"));
+    // Skipping must not touch the process at all.
+    assert!(executor.kill_calls().is_empty());
+    assert!(executor.systemctl_calls().is_empty());
+}
+
+#[test]
+fn run_process_phase_aborts_on_interactive_process_without_opt_in() {
+    // A serviceless, terminal-attached user program on /var classifies Safe, so
+    // without the gate it would be SIGKILLed. The gate must abort first.
+    let options = OverlayStrategyOptions {
+        risky_services: Some(RiskyServicePolicy::Restart),
+        terminate_interactive: false,
+        ..Default::default()
+    };
+    let executor = RecordingExecutor::new();
+
+    let blocking = vec![proc("tail", 4242, None, true)];
+    let result = run_process_phase(blocking, std::path::Path::new("/var"), &options, &executor);
+
+    let err = result.expect_err("interactive process must abort the phase");
+    let message = err.to_string();
+    assert!(
+        message.contains("tail"),
+        "error names the process: {message}"
+    );
+    assert!(message.contains("4242"), "error names the pid: {message}");
+    // No signal was sent — the user's program was left alone.
+    assert!(executor.kill_calls().is_empty());
+}
+
+#[test]
+fn run_process_phase_terminates_interactive_process_when_opted_in() {
+    let options = OverlayStrategyOptions {
+        risky_services: Some(RiskyServicePolicy::Restart),
+        terminate_interactive: true,
+        ..Default::default()
+    };
+    let executor = RecordingExecutor::new();
+
+    // A PID that does not exist, so the SIGTERM path reports a clean stop.
+    let blocking = vec![proc("tail", 99_999_999, None, true)];
+    let (stopped, survivors) =
+        run_process_phase(blocking, std::path::Path::new("/var"), &options, &executor).unwrap();
+
+    assert!(stopped.is_empty(), "a serviceless process stops no service");
+    assert!(survivors.is_empty());
+    // Opting in does send the terminating signal.
+    assert_eq!(
+        executor.kill_calls(),
+        vec![(99_999_999, "TERM".to_string())]
+    );
+}
+
+#[test]
+fn run_process_phase_counts_unrestartable_processes_as_survivors() {
+    let options = OverlayStrategyOptions::default();
+    let executor = RecordingExecutor::new();
+
+    // A browser on /home classifies NoRestart: it cannot be restarted and keeps
+    // writing to the decoy, so it is a survivor and nothing is signalled.
+    let blocking = vec![proc("firefox", 700, None, false)];
+    let (stopped, survivors) =
+        run_process_phase(blocking, std::path::Path::new("/home"), &options, &executor).unwrap();
+
+    assert!(stopped.is_empty());
+    assert_eq!(survivors.len(), 1);
+    assert_eq!(survivors[0].name, "firefox");
+    assert!(executor.kill_calls().is_empty());
+}

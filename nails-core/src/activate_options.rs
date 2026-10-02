@@ -3,6 +3,7 @@
 //! Provides configuration structures for controlling activation behavior, including
 //! user prompts, process restart strategies, and pivot mount policies.
 
+use crate::process::RiskyServicePolicy;
 use crate::{NailsError, Result};
 
 /// Options for controlling activation behavior
@@ -80,6 +81,21 @@ pub struct ActivateOptions {
     /// Skip NixOS profile build and switch (overlay mounts only)
     pub overlay_only: bool,
 
+    /// What to do with risky services still referencing a target (the
+    /// `risky_services` config key / `--risky-services` flag).
+    ///
+    /// `None` leaves the decision to be derived at mount time: restart when the
+    /// session is being killed, prompt on a terminal otherwise, and refuse in a
+    /// non-interactive run that keeps the session (an explicit choice is then
+    /// required).
+    pub risky_services: Option<RiskyServicePolicy>,
+
+    /// Allow force-terminating interactive, non-service user processes.
+    ///
+    /// Off by default: activation refuses to SIGKILL a program a user is working
+    /// in (a shell, editor or `tail -f`) and aborts before mounting instead.
+    pub terminate_interactive: bool,
+
     /// Override skip_process_detection behavior (for testing)
     ///
     /// This field is hidden from public documentation and is intended for
@@ -118,9 +134,34 @@ impl Default for ActivateOptions {
             json: false,
             no_color: false,
             overlay_only: false,
+            risky_services: None,
+            terminate_interactive: false,
             skip_process_detection_override: None,
             session_kill_confirmed: false,
             pre_activation_cleanup: DEFAULT_PRE_ACTIVATION_CLEANUP,
+        }
+    }
+}
+
+impl ActivateOptions {
+    /// Resolve the risky-service choice for the given interactivity.
+    ///
+    /// Returns the explicit policy when one was set. When it was not:
+    /// - killing the session restarts them (there is no session left to disrupt
+    ///   and leaving them running would leak to the decoy);
+    /// - otherwise an interactive run defers to a terminal prompt (`None`);
+    /// - a non-interactive run that keeps the session has no safe default, so it
+    ///   is an error — the operator must choose `restart` or `skip`.
+    pub fn resolve_risky_services(&self) -> Result<Option<RiskyServicePolicy>> {
+        match self.risky_services {
+            Some(policy) => Ok(Some(policy)),
+            None if self.kill_session => Ok(Some(RiskyServicePolicy::Restart)),
+            None if self.yes => Err(NailsError::InvalidArgument(
+                "keeping the session non-interactively needs an explicit risky-service \
+                 choice: pass --risky-services restart|skip (or set risky_services in nails.toml)"
+                    .into(),
+            )),
+            None => Ok(None),
         }
     }
 }
@@ -298,11 +339,62 @@ mod tests {
             json: true,
             no_color: true,
             overlay_only: false,
+            risky_services: Some(RiskyServicePolicy::Restart),
+            terminate_interactive: true,
             skip_process_detection_override: None,
             session_kill_confirmed: false,
             pre_activation_cleanup: true,
         };
         assert!(opts.validate().is_ok());
+    }
+
+    #[test]
+    fn test_resolve_risky_services_explicit_choice_is_kept() {
+        let opts = ActivateOptions {
+            risky_services: Some(RiskyServicePolicy::Skip),
+            kill_session: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            opts.resolve_risky_services().unwrap(),
+            Some(RiskyServicePolicy::Skip)
+        );
+    }
+
+    #[test]
+    fn test_resolve_risky_services_defaults_to_restart_when_killing_session() {
+        let opts = ActivateOptions {
+            risky_services: None,
+            kill_session: true,
+            yes: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            opts.resolve_risky_services().unwrap(),
+            Some(RiskyServicePolicy::Restart)
+        );
+    }
+
+    #[test]
+    fn test_resolve_risky_services_prompts_when_interactive_and_keeping_session() {
+        let opts = ActivateOptions {
+            risky_services: None,
+            kill_session: false,
+            yes: false,
+            ..Default::default()
+        };
+        assert_eq!(opts.resolve_risky_services().unwrap(), None);
+    }
+
+    #[test]
+    fn test_resolve_risky_services_errs_when_noninteractive_and_keeping_session() {
+        let opts = ActivateOptions {
+            risky_services: None,
+            kill_session: false,
+            yes: true,
+            ..Default::default()
+        };
+        assert!(opts.resolve_risky_services().is_err());
     }
 
     #[test]

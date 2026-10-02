@@ -76,6 +76,24 @@ pub enum PivotPolicy {
     Ask,
 }
 
+/// What to do with risky services still referencing a target at activation.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiskyServicesArg {
+    /// Restart them so they no longer reference the decoy.
+    Restart,
+    /// Leave them running; they are reported as surviving writers.
+    Skip,
+}
+
+impl From<RiskyServicesArg> for nails_core::RiskyServicePolicy {
+    fn from(arg: RiskyServicesArg) -> Self {
+        match arg {
+            RiskyServicesArg::Restart => nails_core::RiskyServicePolicy::Restart,
+            RiskyServicesArg::Skip => nails_core::RiskyServicePolicy::Skip,
+        }
+    }
+}
+
 /// When to emit ANSI colour.
 #[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ColorChoice {
@@ -190,6 +208,22 @@ pub struct ActivateArgs {
     /// Mount overlays only, skip NixOS profile switch
     #[arg(long)]
     pub overlay_only: bool,
+
+    /// What to do with risky services still referencing a target (overrides the
+    /// `risky_services` config key)
+    ///
+    /// Unset: restart when the session is killed, prompt on a terminal
+    /// otherwise, and refuse a non-interactive run that keeps the session.
+    #[arg(long = "risky-services", value_enum, value_name = "POLICY")]
+    pub risky_services: Option<RiskyServicesArg>,
+
+    /// Force-terminate interactive user programs (shells, editors, `tail -f`)
+    /// holding a target instead of aborting
+    ///
+    /// Off by default: activation refuses to SIGKILL a program a user is working
+    /// in and aborts before mounting. This flag ends them anyway.
+    #[arg(long)]
+    pub terminate_interactive: bool,
 }
 
 impl ActivateArgs {
@@ -207,6 +241,8 @@ impl ActivateArgs {
             no_pivot: self.pivot == PivotPolicy::Refuse,
             yes: self.yes,
             overlay_only: self.overlay_only,
+            risky_services: self.risky_services.map(Into::into),
+            terminate_interactive: self.terminate_interactive,
             ..nails_core::ActivateOptions::default()
         }
     }

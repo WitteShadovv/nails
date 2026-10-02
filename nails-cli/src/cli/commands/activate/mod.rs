@@ -63,6 +63,8 @@ pub fn execute(
         ref nixos_flake,
         dry_run,
         overlay_only,
+        risky_services: _,
+        terminate_interactive: _,
     } = *args;
     let verbosity = settings.verbosity;
     let json = settings.is_json();
@@ -105,6 +107,12 @@ pub fn execute(
     };
     loaded.apply_cli_overrides(&cli_overrides);
     let config = loaded.into_config();
+
+    // The --risky-services flag (already mapped into options) wins; otherwise
+    // fall back to the config key, leaving None to be resolved at mount time.
+    if options.risky_services.is_none() {
+        options.risky_services = config.risky_services;
+    }
 
     // TEST SAFETY GUARD (Layer 1): Check if real operations are allowed
     if let Err(msg) = check_real_ops(&config.hidden_volume_root) {

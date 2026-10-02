@@ -13,6 +13,7 @@ fn make_test_process(pid: u32, name: &str, cmdline: &str, service: Option<String
         has_open_fds_in_target: false,
         has_mmap_in_target: false,
         service_name: service,
+        is_interactive: false,
     }
 }
 

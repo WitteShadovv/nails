@@ -20,6 +20,7 @@ fn sample_process() -> ProcessInfo {
         has_open_fds_in_target: true,
         has_mmap_in_target: false,
         service_name: Some("sample.service".to_string()),
+        is_interactive: false,
     }
 }
 
@@ -172,7 +173,8 @@ fn subprocess_notification_dispatch_entrypoint() {
                 Path::new("/srv"),
                 &OverlayStrategyOptions {
                     auto_restart_safe: true,
-                    prompt_for_risky: true,
+                    risky_services: None,
+                    terminate_interactive: false,
                     allow_pivot: true,
                     auto_accept_pivot: false,
                     skip_process_detection: false,

@@ -71,7 +71,7 @@ mod tests;
 // Re-export public API from submodules
 
 // Core types
-pub use types::{MountMethod, MountResult, OverlayStrategyOptions};
+pub use types::{MountMethod, MountResult, OverlayStrategyOptions, SurvivingWriter};
 
 // Mount information structures
 pub use mount_info::{EphemeralMountInfo, PivotMountInfo};

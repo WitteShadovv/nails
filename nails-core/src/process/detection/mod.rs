@@ -47,6 +47,14 @@ pub struct ProcessInfo {
     pub has_mmap_in_target: bool,
     /// Systemd service name (if applicable)
     pub service_name: Option<String>,
+    /// Process is attached to a controlling terminal (stdin/stdout/stderr points
+    /// at a tty or pty).
+    ///
+    /// An interactive process is almost always a program a user is working in
+    /// (a shell, an editor, `tail -f`). Terminating it by signal loses their
+    /// work without warning, so activation refuses to force-terminate an
+    /// interactive, non-service process unless the operator opts in.
+    pub is_interactive: bool,
 }
 
 /// Detect all processes using a target directory
@@ -129,6 +137,7 @@ pub fn detect_processes_using(target: &Path) -> Result<Vec<ProcessInfo>> {
 
             let cmdline = read_cmdline(&proc_path).unwrap_or_else(|_| String::new());
             let service_name = extract_service_name(&proc_path).ok().flatten();
+            let is_interactive = check_interactive(&proc_path);
 
             let info = ProcessInfo {
                 pid,
@@ -139,6 +148,7 @@ pub fn detect_processes_using(target: &Path) -> Result<Vec<ProcessInfo>> {
                 has_open_fds_in_target: has_open_fds,
                 has_mmap_in_target: has_mmap,
                 service_name,
+                is_interactive,
             };
 
             blocking.push(info);
@@ -222,6 +232,30 @@ fn check_fds_in_target(proc_path: &Path, target: &Path) -> bool {
     }
 
     false
+}
+
+/// Check whether a process is attached to a controlling terminal.
+///
+/// A process counts as interactive when any of its standard streams (fd 0, 1 or
+/// 2) resolves to a terminal device (`/dev/pts/*`, `/dev/tty*` or `/dev/console`).
+/// This is the signal that a user is working in the program, so activation must
+/// not force-terminate it without consent.
+fn check_interactive(proc_path: &Path) -> bool {
+    let fd_dir = proc_path.join("fd");
+    for fd in ["0", "1", "2"] {
+        if let Ok(link) = fs::read_link(fd_dir.join(fd))
+            && is_terminal_device(&link)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether a resolved fd path points at a terminal device node.
+fn is_terminal_device(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    text.starts_with("/dev/pts/") || text.starts_with("/dev/tty") || text == "/dev/console"
 }
 
 /// Check if process has memory-mapped files from target

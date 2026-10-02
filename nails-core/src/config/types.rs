@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use super::colors::ColorSchemeConfig;
 use super::overlay::{OverlayConfig, OverlayMode};
+use crate::process::RiskyServicePolicy;
 
 /// Default hidden volume root path (single source of truth).
 ///
@@ -264,6 +265,23 @@ pub struct Config {
     /// ```
     #[serde(default)]
     pub nixos_flake: Option<String>,
+
+    /// What to do with risky services (NetworkManager, dbus-daemon, the audio
+    /// server) that still reference an overlay target at activation.
+    ///
+    /// Leaving one running keeps it writing to the decoy, so this is a security
+    /// trade-off. Unset (the default) defers the decision to activation: restart
+    /// when the session is killed, prompt on a terminal otherwise. The
+    /// `--risky-services` flag overrides this key.
+    ///
+    /// **Values**: `"restart"` or `"skip"`
+    ///
+    /// **Example**:
+    /// ```toml
+    /// risky_services = "restart"
+    /// ```
+    #[serde(default)]
+    pub risky_services: Option<RiskyServicePolicy>,
 }
 
 /// Every top-level key `nails.toml` accepts, in the order they are documented
@@ -283,5 +301,6 @@ pub const CONFIG_KEYS: &[&str] = &[
     "show_opsec_reminders",
     "prompt_label",
     "nixos_flake",
+    "risky_services",
     "color_scheme",
 ];

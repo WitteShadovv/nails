@@ -196,6 +196,7 @@ impl ConfigBuilder {
             color_scheme,
             prompt_label: String::new(),
             nixos_flake: None,
+            risky_services: None,
         };
         config.validate_paths()?;
         Ok(config)

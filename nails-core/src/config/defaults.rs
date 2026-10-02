@@ -202,6 +202,7 @@ impl Default for Config {
             color_scheme: ColorSchemeConfig::default(),
             prompt_label: String::new(),
             nixos_flake: None,
+            risky_services: None,
         }
     }
 }
