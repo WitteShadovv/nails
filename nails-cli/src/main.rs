@@ -16,6 +16,24 @@ fn stdout_format_for(command: &Commands, settings: &OutputSettings) -> StdoutFor
     }
 }
 
+/// Whether a command may write a log file onto the hidden volume.
+///
+/// Only the commands that act on an attached hidden volume do. Read-only
+/// commands (`status`, `verify`, `notify-dispatch`, `config`) and `init` — which
+/// runs before the volume holds any NAILS structure — never create a log
+/// directory or file, so running them from the decoy or a download directory
+/// leaves nothing behind there. The attach gate is still the backstop: even a
+/// writing command logs to a file only when the hidden volume is really mounted.
+fn command_writes_logs(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Activate(_)
+            | Commands::Deactivate(_)
+            | Commands::Emergency(_)
+            | Commands::ResetUpper(_)
+    )
+}
+
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse_checked();
 
@@ -23,9 +41,10 @@ fn main() -> std::process::ExitCode {
     let settings = OutputSettings::detect(&cli.global);
     settings.install();
 
+    let log_file = !cli.global.no_log_file && command_writes_logs(&cli.command);
     nails::cli::logging::init_subscriber(
         &settings,
-        !cli.global.no_log_file,
+        log_file,
         cli.global.config.as_deref(),
         stdout_format_for(&cli.command, &settings),
     );
@@ -68,5 +87,37 @@ mod tests {
     fn other_commands_with_json_keep_tracing_on_stderr() {
         let verify = Commands::Verify(VerifyArgs::default());
         assert_eq!(stdout_format_for(&verify, &json()), StdoutFormat::Human);
+    }
+
+    #[test]
+    fn writing_commands_enable_the_log_file() {
+        use nails::cli::args::ResetUpperArgs;
+        use std::path::PathBuf;
+
+        assert!(command_writes_logs(&Commands::Activate(
+            ActivateArgs::default()
+        )));
+        assert!(command_writes_logs(&Commands::Deactivate(
+            Default::default()
+        )));
+        assert!(command_writes_logs(&Commands::ResetUpper(ResetUpperArgs {
+            target: PathBuf::from("/home"),
+            yes: true,
+        })));
+    }
+
+    #[test]
+    fn read_only_and_setup_commands_never_create_log_files() {
+        use nails::cli::args::InitArgs;
+        use std::path::PathBuf;
+
+        assert!(!command_writes_logs(&Commands::Verify(
+            VerifyArgs::default()
+        )));
+        assert!(!command_writes_logs(&Commands::Status(Default::default())));
+        assert!(!command_writes_logs(&Commands::Init(InitArgs {
+            path: PathBuf::from("/mnt/data"),
+        })));
+        assert!(!command_writes_logs(&Commands::NotifyDispatch));
     }
 }

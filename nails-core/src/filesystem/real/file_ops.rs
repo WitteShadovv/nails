@@ -14,6 +14,15 @@ pub(super) fn is_directory(path: &Path) -> Result<bool> {
     Ok(path.is_dir())
 }
 
+pub(super) fn device_id(path: &Path) -> Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+    // `metadata` follows symlinks, which is what we want: the attach gate asks
+    // about the filesystem the path resolves to, not about a link inode.
+    std::fs::metadata(path)
+        .map(|meta| meta.dev())
+        .map_err(NailsError::IoError)
+}
+
 pub(super) fn is_symlink(path: &Path) -> Result<bool> {
     Ok(path.is_symlink())
 }

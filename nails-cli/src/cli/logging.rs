@@ -176,14 +176,16 @@ fn init_file_layer(
         }
     };
 
-    // Open log file for appending
+    // Open log file for appending. Mode 0600: the log lives on the hidden volume
+    // and names the operator's activity, so only its owner may read it, and a
+    // group- or world-readable log is never created even for a moment.
     #[cfg(unix)]
     let log_file_result = {
         use std::os::unix::fs::OpenOptionsExt;
         OpenOptions::new()
             .create(true)
             .append(true)
-            .mode(0o644) // Owner read/write, others read
+            .mode(0o600)
             .open(&logging_config.log_file_path)
     };
     #[cfg(not(unix))]
@@ -206,6 +208,21 @@ fn init_file_layer(
             return Ok(None);
         }
     };
+
+    // `.mode()` above only applies when the file is created; a log left behind by
+    // an older build at 0644 would keep its looser mode. Tighten any existing
+    // file to 0600 on reopen so a group- or world-readable log never persists.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = log_file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+            emit_logging_init_message(
+                settings,
+                false,
+                &format!("Failed to tighten log file permissions to 0600: {e}"),
+            );
+        }
+    }
 
     // Build JSON file layer that captures ALL events
     let file_writer = std::sync::Mutex::new(log_file);

@@ -91,6 +91,9 @@ pub mod constants;
 // Target-user resolution (who a privileged run acts on behalf of).
 pub mod target_user;
 
+// Attach gate: write nothing unless the hidden root is positively mounted.
+pub mod hidden_root;
+
 mod runtime_safety;
 
 // Re-export for convenience
@@ -100,6 +103,7 @@ pub use config::{
 };
 pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
+pub use hidden_root::{AttachState, HiddenRoot};
 pub use manager::deactivation::{DeactivationMode, DeactivationOrchestrator};
 pub use manager::{
     MountInfo, MountTracker, MountType, NailsManager, ResetUpperPlan, apply_exclusion_filter,

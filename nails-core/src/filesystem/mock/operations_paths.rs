@@ -10,6 +10,27 @@ impl MockFilesystem {
         Ok(paths.get(path).map(|info| info.exists).unwrap_or(false))
     }
 
+    pub(super) fn device_id_impl(&self, path: &Path) -> Result<u64> {
+        if let Some(id) = self
+            .device_ids
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+            .copied()
+        {
+            return Ok(id);
+        }
+        // Default: a stable, per-path distinct id so an unmapped path reads as a
+        // mounted filesystem of its own (different from `/`). A test that wants a
+        // path to look unattached maps it onto `/`'s id with `mock_set_device_id`.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        path.hash(&mut hasher);
+        // Keep it clear of 0 so callers never confuse it with "unset".
+        Ok(hasher.finish() | 1)
+    }
+
     pub(super) fn is_directory_impl(&self, path: &Path) -> Result<bool> {
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths

@@ -150,6 +150,20 @@ impl MockFilesystem {
             .insert(path.to_path_buf(), source);
     }
 
+    /// Set the device id reported for a path by
+    /// [`Filesystem::device_id`](crate::Filesystem::device_id).
+    ///
+    /// Map a path onto the same id as `/` to make the attach gate treat it as an
+    /// unmounted mount point; give it a distinct id to simulate a mounted hidden
+    /// volume. Unset paths already report distinct ids, so only the "shares a
+    /// device with /" case needs an explicit call.
+    pub fn mock_set_device_id(&self, path: &Path, device_id: u64) {
+        self.device_ids
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf(), device_id);
+    }
+
     /// Set whether copy_tree should fail for a source path
     pub fn mock_set_copy_tree_should_fail(&self, src: &Path) {
         self.copy_tree_should_fail

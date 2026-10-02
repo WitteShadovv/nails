@@ -130,11 +130,18 @@ impl LoggingManager {
         // Validate log path is within hidden volume (AR26)
         self.validate_log_path()?;
 
-        // Verify hidden volume is mounted (FR36)
-        // Graceful degradation: if hidden volume is not mounted, return None (stderr-only mode)
-        if !fs.path_exists(&self.hidden_volume_root)? {
-            output::warn("Hidden volume not available, file logging disabled");
-            return Ok(None);
+        // Verify the hidden volume is positively attached: present and on its own
+        // device, not merely a directory that exists. A path that only exists —
+        // an unmounted mount point, or the binary's own directory on the system
+        // disk — would otherwise collect identifying logs, so degrade to
+        // stderr-only (Ok(None)) rather than writing there.
+        match crate::hidden_root::HiddenRoot::verify_attached(fs, &self.hidden_volume_root, false)?
+        {
+            crate::hidden_root::AttachState::Attached => {}
+            crate::hidden_root::AttachState::Unattached(reason) => {
+                output::warn(&format!("File logging disabled: {reason}"));
+                return Ok(None);
+            }
         }
 
         if fs.path_exists(&self.log_path)? {

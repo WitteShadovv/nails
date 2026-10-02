@@ -67,6 +67,10 @@ impl Filesystem for MockFilesystem {
         self.is_directory_impl(path)
     }
 
+    fn device_id(&self, path: &Path) -> Result<u64> {
+        self.device_id_impl(path)
+    }
+
     fn is_symlink(&self, path: &Path) -> Result<bool> {
         self.is_symlink_impl(path)
     }

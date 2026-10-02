@@ -174,7 +174,13 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
-        .env("NAILS_LOGGING_SUBPROCESS_CASE", case);
+        .env("NAILS_LOGGING_SUBPROCESS_CASE", case)
+        // The attach gate refuses a hidden root that shares a device with `/`,
+        // which every temp directory does. The test binary is built with the
+        // attach-gate test hook compiled in, so this env var makes the gate skip
+        // the device comparison and judge the temp root attached by existence
+        // alone, exercising the real file-logging path.
+        .env("NAILS_TEST_FORCE_ATTACHED", "1");
 
     if let Some(path) = config_path {
         command.env("NAILS_LOGGING_SUBPROCESS_CONFIG", path);
@@ -415,32 +421,11 @@ fn emit_logging_init_message_no_color_error_uses_unicode_without_ansi() {
     assert!(!stderr.contains("\u{001b}"), "stderr={stderr}");
 }
 
-#[test]
-fn init_file_layer_returns_some_for_existing_hidden_volume() {
-    use std::io::Write;
-
-    let temp_dir = tempfile::TempDir::new().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    let log_dir = hidden_root.join("logs");
-    let config_path = temp_dir.path().join("nails.toml");
-
-    std::fs::create_dir_all(&hidden_root).unwrap();
-    std::fs::create_dir_all(&log_dir).unwrap();
-
-    let mut config_file = std::fs::File::create(&config_path).unwrap();
-    writeln!(
-        config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
-        hidden_root.display(),
-        log_dir.display(),
-    )
-    .unwrap();
-
-    let file_layer =
-        super::init_file_layer(Some(&config_path), &OutputSettings::default()).unwrap();
-    assert!(file_layer.is_some());
-    assert!(log_dir.join("nails.log").exists());
-}
+// The attached happy path (init_file_layer returns Some and writes the log) is
+// covered deterministically by the subprocess file-layer tests above, which can
+// set NAILS_TEST_FORCE_ATTACHED per child process. An in-process equivalent
+// cannot: a temp directory may or may not share `/`'s device depending on the
+// host, and mutating the environment from one test thread would race the others.
 
 #[test]
 fn init_file_layer_gracefully_returns_none_for_missing_hidden_volume() {

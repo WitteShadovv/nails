@@ -175,6 +175,29 @@ fn test_init_graceful_degradation_when_hidden_volume_not_mounted() {
 }
 
 #[test]
+fn test_init_returns_none_when_root_shares_device_with_root_filesystem() {
+    // The hidden root directory exists but sits on the same device as `/`, i.e.
+    // nothing is mounted there. init() must degrade to stderr-only (Ok(None))
+    // rather than writing logs onto the system disk.
+    use std::path::Path;
+
+    let manager = LoggingManager::new(
+        PathBuf::from("/mnt/data/logs"),
+        PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+    );
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+    fs.mock_set_device_id(Path::new("/"), 1);
+    fs.mock_set_device_id(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 1);
+
+    let result = manager.init(&fs).unwrap();
+    assert!(
+        result.is_none(),
+        "Expected None (stderr-only) when the hidden root shares a device with /"
+    );
+}
+
+#[test]
 fn test_init_fails_when_path_outside_hidden_volume() {
     let manager = LoggingManager::new(
         PathBuf::from("/var/log"),

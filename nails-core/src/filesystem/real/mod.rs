@@ -99,6 +99,10 @@ impl Filesystem for RealFilesystem {
         file_ops::is_directory(path)
     }
 
+    fn device_id(&self, path: &Path) -> Result<u64> {
+        file_ops::device_id(path)
+    }
+
     fn is_symlink(&self, path: &Path) -> Result<bool> {
         file_ops::is_symlink(path)
     }

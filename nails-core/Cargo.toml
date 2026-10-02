@@ -16,6 +16,13 @@ categories = ["filesystem", "os::linux-apis"]
 name = "nails_core"
 path = "src/lib.rs"
 
+[features]
+# Compile in test-only escape hatches (such as the attach-gate device-check
+# bypass keyed on NAILS_TEST_FORCE_ATTACHED) so integration tests can exercise
+# real write paths against temp directories. Off in release builds, so the
+# hooks never exist in a shipped binary.
+afs-test-hooks-compile-time = []
+
 [dependencies]
 # Use workspace versions for consistency
 thiserror = { workspace = true }

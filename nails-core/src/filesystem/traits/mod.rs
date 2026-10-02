@@ -167,6 +167,15 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Check if a path is a directory.
     fn is_directory(&self, path: &Path) -> Result<bool>;
 
+    /// The id of the device that holds `path` (the `st_dev` of its inode).
+    ///
+    /// Two paths share a device id only when they sit on the same mounted
+    /// filesystem, so comparing a candidate hidden root against `/` tells the
+    /// attach gate ([`crate::hidden_root::HiddenRoot::verify_attached`]) whether
+    /// anything is actually mounted at that path: an unmounted mount point still
+    /// reports its parent's device, a mounted volume reports its own.
+    fn device_id(&self, path: &Path) -> Result<u64>;
+
     /// Check if a path is a symbolic link.
     fn is_symlink(&self, path: &Path) -> Result<bool>;
 

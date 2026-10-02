@@ -88,6 +88,12 @@ pub struct MockFilesystem {
     /// Device, dm name and label backing a mount point, keyed by mount point.
     /// Lets tests drive the hidden-volume name check without a real mount table.
     pub(super) mount_sources: Arc<Mutex<HashMap<PathBuf, MountSource>>>,
+    /// Device ids reported by [`Filesystem::device_id`](crate::Filesystem::device_id),
+    /// keyed by path. Unset paths fall back to a per-path distinct id (see
+    /// [`MockFilesystem::device_id_impl`]), so by default a path differs from `/`
+    /// and only reads as unattached when a test maps it onto `/`'s id with
+    /// [`mock_set_device_id`](Self::mock_set_device_id).
+    pub(super) device_ids: Arc<Mutex<HashMap<PathBuf, u64>>>,
     /// Mounts NAILS is considered to own and may therefore unmount. Mirrors the
     /// real ownership gate: `unmount` of a mounted-but-unowned path (e.g. a plain
     /// ext4 `/home` set up with `mock_set_mount_unmanaged`) is refused. Every
@@ -155,6 +161,7 @@ impl MockFilesystem {
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
             mounted_overlays: Arc::new(Mutex::new(HashMap::new())),
             mount_sources: Arc::new(Mutex::new(HashMap::new())),
+            device_ids: Arc::new(Mutex::new(HashMap::new())),
             nails_owned_mounts: Arc::new(Mutex::new(HashSet::new())),
             tmpfs_mounts: Arc::new(Mutex::new(HashSet::new())),
             bind_mounts: Arc::new(Mutex::new(HashMap::new())),
@@ -229,6 +236,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.mount_sources
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.device_ids
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();
