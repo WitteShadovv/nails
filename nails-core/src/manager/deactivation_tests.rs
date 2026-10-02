@@ -1,7 +1,8 @@
-use super::{
+use super::merge_protected_pids;
+use super::reboot::{
     PostDeactivationReboot, REBOOT_BINARY_OVERRIDE_ENV, SYSTEMCTL_REBOOT_OVERRIDE_ENV,
-    dispatch_reboot_candidates, merge_protected_pids, reboot_candidates,
-    reboot_then_restore_decoy_on_failure, request_reboot,
+    dispatch_reboot_candidates, reboot_candidates, reboot_then_restore_decoy_on_failure,
+    request_reboot,
 };
 use crate::NailsError;
 use crate::nixos::SwitchAction;
