@@ -295,16 +295,25 @@ impl SessionOwnerSource for SystemSessionOwner {
     }
 }
 
-/// Run `loginctl` with the given arguments and return trimmed stdout on success.
+/// Run `loginctl` with the given arguments and return stdout on success.
+///
+/// Routed through the shared runner so it resolves `loginctl` from the fixed
+/// system directories, starts from a cleared environment, and carries a deadline:
+/// a hung `loginctl` cannot stall target-user resolution.
 fn run_loginctl(args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("loginctl")
-        .args(args)
-        .output()
+    use crate::process::run::{LOGINCTL_BUDGET, ProcessCommand, ProcessRunner, RealProcessRunner};
+
+    let (success, stdout, _stderr) = RealProcessRunner
+        .run_text(
+            &ProcessCommand::tool("loginctl")
+                .args(args)
+                .deadline(LOGINCTL_BUDGET),
+        )
         .ok()?;
-    if !output.status.success() {
+    if !success {
         return None;
     }
-    String::from_utf8(output.stdout).ok()
+    Some(stdout)
 }
 
 #[cfg(test)]

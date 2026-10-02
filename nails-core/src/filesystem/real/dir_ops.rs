@@ -1,5 +1,6 @@
 //! Directory listing, enumeration, copy, size, and submount operations.
 
+use crate::process::run::COPY_BUDGET;
 use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
 use crate::{NailsError, Result};
 use std::collections::HashSet;
@@ -147,11 +148,15 @@ fn copy_tree_with(runner: &dyn ProcessRunner, src: &Path, dst: &Path) -> Result<
     let mut source = src.as_os_str().to_os_string();
     source.push("/.");
     // The copy only touches the paths the caller chose, so it may run in tests.
+    // A snapshot of a very large tree can take minutes, so the budget is generous;
+    // it exists only so a `cp` wedged on bad storage cannot hang activation
+    // forever.
     let command = ProcessCommand::tool("cp")
         .arg("-a")
         .arg("--")
         .arg(&source)
         .arg(dst)
+        .deadline(COPY_BUDGET)
         .allow_in_test_runtime();
 
     let output = runner.run(&command).map_err(|err| match err {
@@ -257,6 +262,7 @@ mod tests {
             vec![
                 ProcessCommand::tool("cp")
                     .args(["-a", "--", "/boot/.", "/run/nails/snap"])
+                    .deadline(COPY_BUDGET)
                     .allow_in_test_runtime()
             ]
         );

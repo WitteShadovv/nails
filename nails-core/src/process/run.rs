@@ -40,8 +40,11 @@
 //! - **Streaming** (the default, no deadline): the command runs to completion.
 //!   This is the only safe mode for `nixos-rebuild build/test` and
 //!   `switch-to-configuration` — killing a half-finished switch would leave the
-//!   system in an undefined state — so those must never carry a deadline. A long
-//!   build reports progress at its call site instead of here.
+//!   system in an undefined state — so those must never carry a deadline. For a
+//!   long step that must not be killed, [`ProcessRunner::run_streaming`] runs it
+//!   to completion while calling back with the elapsed time at a fixed interval,
+//!   so the call site can report "still building, 2m10s" without ever bounding
+//!   the command.
 //! - **Deadline** ([`ProcessCommand::deadline`]): used for probes and
 //!   idempotent control commands (`systemctl is-active`, `nix store ping`,
 //!   reboot dispatch, …). The child is spawned in its own process group; if the
@@ -103,14 +106,17 @@ pub const NIX_STORE_PING_BUDGET: Duration = Duration::from_secs(5);
 pub const LOGINCTL_BUDGET: Duration = Duration::from_secs(10);
 /// `ldd` shared-library resolution.
 pub const LDD_BUDGET: Duration = Duration::from_secs(10);
-/// `nix-store -qR` closure queries.
-pub const NIX_STORE_QUERY_BUDGET: Duration = Duration::from_secs(30);
-/// `cp`/`du` over overlay directories, which can be large.
+/// `cp` of an overlay snapshot, which can be large.
 pub const COPY_BUDGET: Duration = Duration::from_secs(300);
-/// `chown` over a restored tree.
-pub const CHOWN_BUDGET: Duration = Duration::from_secs(120);
 /// Dispatching a reboot (`systemctl reboot`, `reboot`).
 pub const REBOOT_DISPATCH_BUDGET: Duration = Duration::from_secs(10);
+
+/// How often [`ProcessRunner::run_streaming`] reports progress for a long step.
+///
+/// Build and switch steps have no deadline, so this only governs how often the
+/// operator is told the step is still alive; 30 s is frequent enough to reassure
+/// without flooding the log.
+pub const BUILD_PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
 
 /// The executable a [`ProcessCommand`] starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,6 +277,45 @@ pub trait ProcessRunner {
             String::from_utf8_lossy(&output.stderr).into_owned(),
         ))
     }
+
+    /// Runs `command` to completion, reporting elapsed progress while it runs.
+    ///
+    /// Unlike [`run`](Self::run), this never applies a deadline and never kills
+    /// the child: it is for long steps that must finish or fail on their own —
+    /// `nixos-rebuild build/test` and `switch-to-configuration` — where killing a
+    /// half-finished switch would leave the system in an undefined state. While
+    /// the child runs, `on_progress` is called with the total elapsed time about
+    /// every `progress_interval`, so a caller can show the operator that a slow
+    /// step is still alive.
+    ///
+    /// The default implementation ignores progress and defers to
+    /// [`run`](Self::run); the real runner overrides it, and a recording mock
+    /// inherits the default so tests need not model timing.
+    fn run_streaming(
+        &self,
+        command: &ProcessCommand,
+        progress_interval: Duration,
+        on_progress: &mut dyn FnMut(Duration),
+    ) -> Result<Output> {
+        let _ = (progress_interval, on_progress);
+        self.run(command)
+    }
+
+    /// [`run_streaming`](Self::run_streaming) with the output decoded lossily as
+    /// UTF-8, the streaming counterpart of [`run_text`](Self::run_text).
+    fn run_streaming_text(
+        &self,
+        command: &ProcessCommand,
+        progress_interval: Duration,
+        on_progress: &mut dyn FnMut(Duration),
+    ) -> Result<(bool, String, String)> {
+        let output = self.run_streaming(command, progress_interval, on_progress)?;
+        Ok((
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ))
+    }
 }
 
 /// Runner that starts real processes on the host.
@@ -294,6 +339,30 @@ impl ProcessRunner for RealProcessRunner {
             None => run_to_completion(&executable, command),
             Some(budget) => run_with_deadline(&executable, command, budget),
         }
+    }
+
+    fn run_streaming(
+        &self,
+        command: &ProcessCommand,
+        progress_interval: Duration,
+        on_progress: &mut dyn FnMut(Duration),
+    ) -> Result<Output> {
+        if !command.allowed_in_test_runtime && crate::runtime_safety::should_skip_host_interaction()
+        {
+            return Err(NailsError::InvalidState(format!(
+                "Refusing to run {} from a test/test-like runtime context; use a mock process runner or executor instead",
+                command.program
+            )));
+        }
+
+        debug_assert!(
+            command.timeout.is_none(),
+            "streaming mode must never carry a deadline: build/switch run to completion"
+        );
+
+        let executable = resolve(&command.program, command.search_path.as_deref())?;
+        tracing::debug!("Streaming {} ({})", command, executable.display());
+        run_streaming_to_completion(&executable, command, progress_interval, on_progress)
     }
 }
 
@@ -407,6 +476,68 @@ fn run_with_deadline(
         }
 
         std::thread::sleep(DEADLINE_POLL_INTERVAL.min(budget));
+    }
+}
+
+/// Runs the command to completion, reporting progress and never killing it.
+///
+/// Used only for `nixos-rebuild build/test` and `switch-to-configuration`, which
+/// must not be interrupted; `on_progress` is called with the total elapsed time
+/// roughly every `progress_interval` so the operator sees a slow step is alive.
+/// Output is drained on reader threads to avoid a pipe-buffer deadlock, as in the
+/// deadline path.
+fn run_streaming_to_completion(
+    executable: &Path,
+    command: &ProcessCommand,
+    progress_interval: Duration,
+    on_progress: &mut dyn FnMut(Duration),
+) -> Result<Output> {
+    let mut child = base_command(executable, command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| start_failed(executable, err))?;
+
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+
+    let start = Instant::now();
+    let mut last_report = start;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Ok(Output {
+                    status,
+                    stdout: collect(stdout),
+                    stderr: collect(stderr),
+                });
+            }
+            Ok(None) => {}
+            Err(err) => return Err(start_failed(executable, err)),
+        }
+
+        if last_report.elapsed() >= progress_interval {
+            on_progress(start.elapsed());
+            last_report = Instant::now();
+        }
+
+        std::thread::sleep(DEADLINE_POLL_INTERVAL);
+    }
+}
+
+/// Formats `elapsed` as a compact progress label: `45s`, `2m10s`, or `1h02m03s`.
+pub(crate) fn format_elapsed(elapsed: Duration) -> String {
+    let total = elapsed.as_secs();
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    if hours > 0 {
+        format!("{hours}h{minutes:02}m{seconds:02}s")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds:02}s")
+    } else {
+        format!("{seconds}s")
     }
 }
 

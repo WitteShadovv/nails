@@ -102,8 +102,19 @@ fn switch_to_decoy_for_session<F: Filesystem>(
         )));
     }
 
+    // No deadline and a progress heartbeat: a `switch-to-configuration` must run
+    // to completion, never be killed part-way.
     let command = ProcessCommand::exact(&switch_script).arg(SwitchAction::Test.as_arg());
-    let (succeeded, _stdout, stderr) = runner.run_text(&command)?;
+    let (succeeded, _stdout, stderr) = runner.run_streaming_text(
+        &command,
+        crate::process::run::BUILD_PROGRESS_INTERVAL,
+        &mut |elapsed| {
+            tracing::info!(
+                "still restoring the decoy configuration, {}",
+                crate::process::run::format_elapsed(elapsed)
+            );
+        },
+    )?;
     if succeeded {
         Ok(())
     } else {

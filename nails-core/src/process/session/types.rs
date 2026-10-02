@@ -2,7 +2,8 @@
 
 use crate::Result;
 use crate::process::run::{
-    ProcessCommand, ProcessRunner, RealProcessRunner, signal_command, systemctl_command,
+    LOGINCTL_BUDGET, ProcessCommand, ProcessRunner, RealProcessRunner, SYSTEMCTL_ACTION_BUDGET,
+    SYSTEMCTL_PROBE_BUDGET, signal_command, systemctl_command,
 };
 use std::time::Duration;
 
@@ -110,11 +111,15 @@ pub struct RealSessionCommandExecutor;
 
 impl SessionCommandExecutor for RealSessionCommandExecutor {
     fn execute_systemctl(&self, args: &[&str]) -> Result<(bool, String, String)> {
-        RealProcessRunner.run_text(&systemctl_command(args))
+        RealProcessRunner.run_text(&systemctl_command(args).deadline(systemctl_budget(args)))
     }
 
     fn execute_loginctl(&self, args: &[&str]) -> Result<(bool, String, String)> {
-        RealProcessRunner.run_text(&ProcessCommand::tool("loginctl").args(args))
+        RealProcessRunner.run_text(
+            &ProcessCommand::tool("loginctl")
+                .args(args)
+                .deadline(LOGINCTL_BUDGET),
+        )
     }
 
     fn execute_kill(&self, pid: u32, signal: &str) -> Result<bool> {
@@ -127,8 +132,27 @@ impl SessionCommandExecutor for RealSessionCommandExecutor {
     /// True when `loginctl` could be started; its exit status does not matter.
     fn loginctl_available(&self) -> bool {
         RealProcessRunner
-            .run(&ProcessCommand::tool("loginctl").arg("--version"))
+            .run(
+                &ProcessCommand::tool("loginctl")
+                    .arg("--version")
+                    .deadline(LOGINCTL_BUDGET),
+            )
             .is_ok()
+    }
+}
+
+/// The deadline a `systemctl` invocation carries, by verb.
+///
+/// Read-only probes get the shorter probe budget; anything that changes unit
+/// state (start/stop/restart/daemon-reload/…) gets the longer action budget. A
+/// hung probe or action can no longer freeze session detection or teardown.
+fn systemctl_budget(args: &[&str]) -> Duration {
+    match args.first().copied() {
+        Some(
+            "is-active" | "is-enabled" | "is-failed" | "status" | "show" | "cat" | "list-units"
+            | "list-unit-files" | "list-sockets" | "get-default",
+        ) => SYSTEMCTL_PROBE_BUDGET,
+        _ => SYSTEMCTL_ACTION_BUDGET,
     }
 }
 
@@ -151,6 +175,26 @@ mod tests {
         );
         assert_refused_in_test_runtime(executor.execute_kill(UNUSED_PID, "0"), "kill");
         assert!(!executor.loginctl_available());
+    }
+
+    #[test]
+    fn systemctl_budget_separates_probes_from_actions() {
+        assert_eq!(
+            systemctl_budget(&["is-active", "gdm.service"]),
+            SYSTEMCTL_PROBE_BUDGET
+        );
+        assert_eq!(systemctl_budget(&["show", "gdm"]), SYSTEMCTL_PROBE_BUDGET);
+        assert_eq!(
+            systemctl_budget(&["stop", "gdm.service"]),
+            SYSTEMCTL_ACTION_BUDGET
+        );
+        assert_eq!(
+            systemctl_budget(&["daemon-reload"]),
+            SYSTEMCTL_ACTION_BUDGET
+        );
+        // An empty argument list is treated as a state change (the safer, longer
+        // budget) rather than a probe.
+        assert_eq!(systemctl_budget(&[]), SYSTEMCTL_ACTION_BUDGET);
     }
 
     #[test]

@@ -144,12 +144,18 @@ impl RealCommandExecutor {
 }
 
 impl CommandExecutor for RealCommandExecutor {
+    /// Runs the build to completion with a progress heartbeat and no deadline: a
+    /// build may legitimately take many minutes, and killing it part-way serves
+    /// no one.
     fn execute_nixos_rebuild(
         &self,
         args: &[&str],
         clear_nix_path: bool,
     ) -> Result<(bool, String, String)> {
-        RealProcessRunner.run_text(&self.toolchain_command("nixos-rebuild", args, clear_nix_path))
+        run_long_step(
+            &self.toolchain_command("nixos-rebuild", args, clear_nix_path),
+            "building",
+        )
     }
 
     fn execute_nix(&self, args: &[&str], clear_nix_path: bool) -> Result<(bool, String, String)> {
@@ -157,18 +163,37 @@ impl CommandExecutor for RealCommandExecutor {
     }
 
     /// Runs the generation's own script; allowed in test runtimes because the
-    /// switch tests point it at stub scripts.
+    /// switch tests point it at stub scripts. Streamed with a heartbeat and never
+    /// a deadline — interrupting `switch-to-configuration` would leave the system
+    /// in an undefined state.
     fn execute_switch_to_configuration(
         &self,
         script_path: &Path,
         action: SwitchAction,
     ) -> Result<(bool, String, String)> {
-        RealProcessRunner.run_text(
+        run_long_step(
             &ProcessCommand::exact(script_path)
                 .args([action.as_arg()])
                 .allow_in_test_runtime(),
+            "activating the configuration",
         )
     }
+}
+
+/// Runs a long, uninterruptible step through the streaming runner, logging
+/// "still {activity}, 2m10s" at a steady interval so the operator can see a slow
+/// build or switch is still alive. Never applies a deadline.
+fn run_long_step(command: &ProcessCommand, activity: &str) -> Result<(bool, String, String)> {
+    RealProcessRunner.run_streaming_text(
+        command,
+        crate::process::run::BUILD_PROGRESS_INTERVAL,
+        &mut |elapsed| {
+            tracing::info!(
+                "still {activity}, {}",
+                crate::process::run::format_elapsed(elapsed)
+            );
+        },
+    )
 }
 
 impl NixOSBuilder {

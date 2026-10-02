@@ -475,6 +475,54 @@ fn deadline_closes_child_stdin() {
 }
 
 #[test]
+fn run_streaming_reports_progress_and_returns_output() {
+    // Runs a little longer than one progress interval so at least one heartbeat
+    // fires, then exits successfully with output.
+    let command = ProcessCommand::tool("sh")
+        .args(["-c", "sleep 0.3; printf done"])
+        .allow_in_test_runtime();
+
+    let mut ticks: Vec<Duration> = Vec::new();
+    let output = RealProcessRunner
+        .run_streaming(&command, Duration::from_millis(100), &mut |elapsed| {
+            ticks.push(elapsed);
+        })
+        .unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"done");
+    assert!(
+        !ticks.is_empty(),
+        "expected at least one progress heartbeat, got none"
+    );
+    // Progress carries the total elapsed time, which only grows.
+    assert!(ticks.windows(2).all(|w| w[1] >= w[0]), "{ticks:?}");
+}
+
+#[test]
+fn run_streaming_never_fires_progress_for_a_quick_command() {
+    let command = ProcessCommand::tool("sh")
+        .args(["-c", "printf quick"])
+        .allow_in_test_runtime();
+
+    let mut ticks = 0usize;
+    let (ok, stdout, _) = RealProcessRunner
+        .run_streaming_text(&command, Duration::from_secs(30), &mut |_| ticks += 1)
+        .unwrap();
+
+    assert!(ok);
+    assert_eq!(stdout, "quick");
+    assert_eq!(ticks, 0, "a sub-second command must not report progress");
+}
+
+#[test]
+fn format_elapsed_is_compact_and_scales() {
+    assert_eq!(format_elapsed(Duration::from_secs(5)), "5s");
+    assert_eq!(format_elapsed(Duration::from_secs(130)), "2m10s");
+    assert_eq!(format_elapsed(Duration::from_secs(3723)), "1h02m03s");
+}
+
+#[test]
 fn commands_carry_no_deadline_unless_one_is_set() {
     assert_eq!(
         ProcessCommand::tool("systemctl").arg("status").timeout,

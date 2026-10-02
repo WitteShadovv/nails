@@ -13,6 +13,7 @@ use crate::deactivation::{DeactivationReport, PostUnmountCleanupReport};
 use crate::nixos::SwitchAction;
 #[cfg(not(test))]
 use crate::process::kill_user_shells;
+use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
 use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError, Result,
     StateGuard, SystemState,
@@ -230,19 +231,31 @@ fn switch_to_decoy_for_session<F: Filesystem>(filesystem: &F) -> Result<()> {
         )));
     }
 
-    let output = std::process::Command::new(&switch_script)
-        .arg(SwitchAction::Test.as_arg())
-        .output()
+    // Run the generation's own script through the shared runner with a progress
+    // heartbeat and no deadline: a `switch-to-configuration` must never be killed
+    // part-way, or the live system is left in an undefined state.
+    let command = ProcessCommand::exact(&switch_script).arg(SwitchAction::Test.as_arg());
+    let (succeeded, _stdout, stderr) = RealProcessRunner
+        .run_streaming_text(
+            &command,
+            crate::process::run::BUILD_PROGRESS_INTERVAL,
+            &mut |elapsed| {
+                tracing::info!(
+                    "still restoring the decoy configuration, {}",
+                    crate::process::run::format_elapsed(elapsed)
+                );
+            },
+        )
         .map_err(|e| {
             NailsError::NixOSError(format!("Decoy session switch failed to start: {}", e))
         })?;
 
-    if output.status.success() {
+    if succeeded {
         Ok(())
     } else {
         Err(NailsError::NixOSError(format!(
             "Decoy session switch failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            stderr
         )))
     }
 }
