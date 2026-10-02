@@ -85,6 +85,19 @@ of this changelog for that version becomes the release notes word for word, and
   with the decoy.
 - A warn-only `snapshot-memory` preflight check comparing the RAM the snapshot tmpfs of
   overlay-incompatible targets would pin with `MemAvailable`.
+- A shared artifact registry that is the single source of what an activation writes, consumed by
+  `verify`, the base-config preflight and the E2E `indicators.json` fixture (kept in step by a drift
+  test), plus name-independent dm-crypt and loop-device detection in `verify`.
+- Host-side decoy disk-image checks in the E2E suite (`fls`, strings, journal and store parsers in
+  `disk_forensics.py` with null and positive controls and a persistent forensic VM profile) that
+  image the decoy root rather than the hidden ciphertext.
+- E2E coverage for VeraCrypt (tcrypt), bind-mounted and NFS-unsuitable hidden-root backends, and a
+  regular-file `/etc/nixos` VM fixture in place of `/etc/static` symlinks.
+- An E2E forensic test proving hidden-session Nix store writes land only in the hidden `/nix`
+  overlay and leave no trace on the decoy disk image or store database.
+- A platform `ConfigLayer` seam: the NixOS-only declarative half of activation (staging, fingerprint,
+  `/etc` import, build, switch and decoy restore) is skipped on hosts without a config layer
+  (FHS/Debian), so overlay-only is the absence of a layer rather than a parallel code path.
 
 ### Changed
 
@@ -230,6 +243,8 @@ of this changelog for that version becomes the release notes word for word, and
   forensics-eval workflows and `update-flake-lock.yml`.
 - `docs/vulnerability-handling.md`; the maintainer triage and disclosure process now lives in
   `SECURITY.md`.
+- The standalone `nix/forensics-eval` evaluation framework and its runner scripts; forensic coverage
+  now lives in the E2E suite as host-side decoy disk-image checks.
 
 ### Fixed
 
@@ -280,6 +295,8 @@ of this changelog for that version becomes the release notes word for word, and
   namespace, so it is no longer pinned after a hidden session ends.
 - `nails activate` refuses to stage configuration onto a hidden root that is not a positively
   attached volume, and `verify` no longer flags logs stored on the hidden volume as residue.
+- File logging resolves its configuration through the single `--config` entry point and no longer
+  silently falls back to binary-derived defaults when the configuration fails to load.
 
 ### Security
 

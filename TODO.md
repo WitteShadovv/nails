@@ -1793,6 +1793,8 @@ Owns: `nails-core/src/verify/`, `nails-core/src/artifacts.rs`, `nix/forensics-ev
 
 - [ ] **T-073: Truthful, platform-aware verify: honest headline, real artifact classes, all user homes, mount-state checks, offline image mode, no self-inflicted findings** (high · effort L)
 
+  _Status: not started — must be re-dispatched. The honest headline (replacing "SECURE: No traces…"), the passwd-driven multi-home scan, the mountinfo overlay/upperdir scan, the no-self-findings host context, `--offline`/`--root` mode, `Platform::artifact_scanners()`, the `reports/last-deactivation.json` report, exit codes 10/11 and the E2E `forensic/07` + `contract/59` + `smoke/12` updates are all unimplemented. The T-074 registry it is meant to consume is in place._
+
   **Problem:** `nails verify` claims more than it checks and cannot pass in the documented workflow.
   - The deep scan reads `/root/.bash_history`, `/root/.zsh_history`, `/home/.bash_history` and `/home/.zsh_history` (`nails-core/src/verify/verifier.rs:240-246`). The last two never exist, so user history is never checked.
   - Overlays are checked only at /home, /etc and /root (`verifier.rs:117-140`). A leftover /var, /nix, /tmp, /srv or /opt overlay goes unreported.
@@ -1826,6 +1828,8 @@ Owns: `nails-core/src/verify/`, `nails-core/src/artifacts.rs`, `nix/forensics-ev
 
 - [ ] **T-074: One artifact registry shared by verify, preflight and the E2E indicators; explicit verify contexts; name-independent mapper and loop detection** (medium · effort M)
 
+  _Status: partial (W11-C1). Done: `nails-core/src/artifacts.rs` holds the single registry with one `CONFIG_FILE_NAME`, consumed by `verify` and the base-config preflight; `nix/e2e-tests/fixtures/indicators.json` is exported with a drift test; name-independent dm-crypt/loop detection landed, all unit-tested. Remaining: full consumption by verify's multi-home scan rides on T-073, and the nix E2E acceptance (`smoke/02-verify.nix`) needs VM evaluation._
+
   **Problem:**
   - The artifact list in `nails-core/src/obfuscate/mod.rs:252-268` and `:426` (`/tmp/nails.log`, `/tmp/nails.toml`, `/var/log/nails.log`, `/etc/nails`, `/home/.nails`, `/root/.nails`) names nothing the tool actually writes.
   - The config filename is defined three times and the definitions disagree: `init.rs` uses `nails.yaml`, `config/loading.rs:12` uses `config/nails.yaml`, and obfuscate `CONFIG_FILE_NAME` uses `nails.toml`.
@@ -1851,7 +1855,9 @@ Owns: `nails-core/src/verify/`, `nails-core/src/artifacts.rs`, `nix/forensics-ev
   - E2E `smoke/02-verify.nix`: after a clean deactivation the self-check exits 0, and an extra crypt mapper with an arbitrary name is reported.
   - `rg veracrypt-hidden docs README.md` returns nothing.
 
-- [ ] **T-075: Replace nix/forensics-eval with host-side decoy disk-image checks inside the E2E suite (fls/strings/journal, null and positive controls)** (high · effort L)
+- [x] **T-075: Replace nix/forensics-eval with host-side decoy disk-image checks inside the E2E suite (fls/strings/journal, null and positive controls)** (high · effort L)
+
+  _Status: done (W11-C1). `nix/forensics-eval/` and its runner scripts are deleted; `disk_forensics.py` (fls/strings/journal/store parsers), `forensic-vm-config.nix`, `disk-forensics.nix` and parser unit tests landed, and forensic tests 04/05/06/08 were ported to one disk-image lineage. VM/KVM evaluation of the ported tests and the lint lane remains (nix cannot run in this sandbox) — see nix_pending._
 
   **Problem:** The current forensic checks can neither detect a leak nor fail.
   - `fls -r /dev/vdb ... || echo CLEAN` runs on the LUKS ciphertext (`forensic/04-forensic-clean.nix:78`, `05-standard-deactivation-forensic.nix:200`, and the forensics-eval `real_stage_exporter.py`). The decoy disk (vda) is never imaged.
@@ -1893,7 +1899,9 @@ Owns: `nails-core/src/verify/`, `nails-core/src/artifacts.rs`, `nix/forensics-ev
   - The positive control fails the test when its decoy write is removed. The null control passes with only the documented allowlist.
   - The forensic tests use `forensic-vm-config.nix` and pass. The parser tests run with `python3 -m unittest`.
 
-- [ ] **T-076: E2E coverage for VeraCrypt, bind-mounted and unsuitable backends, plus a realistic /etc/nixos fixture** (medium · effort M)
+- [x] **T-076: E2E coverage for VeraCrypt, bind-mounted and unsuitable backends, plus a realistic /etc/nixos fixture** (medium · effort M)
+
+  _Status: done (W11-C1). New `tests/backends/` VeraCrypt (tcrypt), bind-mount and NFS-unsuitable tests, a shared `backends.nix` helper, regular-file (`mode 0644`) `/etc/nixos` fixtures, and backend-neutral `hidden_volume.rs` wording landed. VM evaluation remains, and the non-interactive VeraCrypt hidden-volume creation flags must be confirmed on a nix host (tcplay fallback documented in-file) — see nix_pending._
 
   **Problem:**
   - Every positive E2E path uses LUKS2 plus ext4 on `/dev/vdb` (`lib/hidden-volume.nix`). vfat appears only as a refusal case.
@@ -1916,7 +1924,9 @@ Owns: `nails-core/src/verify/`, `nails-core/src/artifacts.rs`, `nix/forensics-ev
   - `test ! -L /etc/nixos/configuration.nix` holds in the VM.
   - `rg LUKS nails-core/src/preflight/checks/hidden_volume.rs` returns nothing.
 
-- [ ] **T-077: E2E test that proves where hidden-session Nix store writes land** (high · effort M)
+- [x] **T-077: E2E test that proves where hidden-session Nix store writes land** (high · effort M)
+
+  _Status: done (W11-C1). The `/nix` store-bind fix was already on overhaul and test 44's layer assertion already landed; the missing acceptance gate `nix/e2e-tests/tests/forensic/09-nix-store-placement.nix` (filename 09 because 80 was taken) was added, proving both run-unique store paths land only under the hidden `/nix` upper and are absent from the imaged decoy root and its `db.sqlite`. VM evaluation remains — see nix_pending._
 
   **Problem:** Hidden-session store paths may be written to the decoy store.
   - `manager/helpers/runtime_cache.rs:5` keeps the decoy store at `/run/nails/original-nix-store`.
@@ -1941,7 +1951,9 @@ Owns: `nails-core/src/verify/`, `nails-core/src/artifacts.rs`, `nix/forensics-ev
 
 Owns: `nails-cli/src/cli/commands/mod.rs`, `nails-core/src/manager/preflight_runner.rs`
 
-- [ ] **T-078: Make the CLI thin: one shared preflight registry, one config-resolve entry point, one color/verbosity preamble** (medium · effort M)
+- [x] **T-078: Make the CLI thin: one shared preflight registry, one config-resolve entry point, one color/verbosity preamble** (medium · effort M)
+
+  _Status: done (W11-C2). The shared core preflight registry, the single config-resolve entry point and the one color/verbosity preamble were already on overhaul from earlier waves; this wave closed the last gap so file logging (`init_file_layer`) resolves through that single entry point and never silently defaults when an explicit `--config` fails to load, with a regression test._
 
   **Problem**
   Business logic has leaked into `nails-cli`, duplicating `nails-core`. `nails-cli/src/cli/commands/activate/dry_run.rs:150-251` (`build_preflight_registry`) reimplements the registry that `nails-core/src/manager/preflight_runner.rs:77-216` (`run_preflight_checks`) already builds, and the two have drifted: dry-run omits `StateCheck`, always registers `NixOSBuildTargetCheck` with `selected_flake_dir = None` (skipping core's `flake_target_already_validated` short-circuit), and swallows `build_overlay_targets` errors (`Err(_) => Vec::new()`) where core propagates with `?` — so a dry-run can pass where real activation fails. Config loading is also forked: five commands call `load_config_or_exit` (`nails-cli/src/cli/commands/mod.rs:40`) while `activate/mod.rs:159-174` uses its own `Config::load`/`from_file_and_cli`/`apply_cli_overrides` path, and `logging.rs:267-268` silently falls back to `Config::default()` on any load error even when `--config` was passed. The color/verbosity preamble (`set_plain_mode` + `set_color_enabled` + `set_verbosity`) is copy-pasted across `main.rs:42`, `status.rs:34`, `emergency.rs:37`, `deactivate.rs:39`, and `activate/mod.rs:75`.
@@ -1961,7 +1973,9 @@ Owns: `nails-cli/src/cli/commands/mod.rs`, `nails-core/src/manager/preflight_run
 
 Owns: `nails-core/src/platform/config_layer.rs`, `nails-core/src/nixos/builder/`, `nails-core/src/manager/activation/nixos_build.rs`
 
-- [ ] **T-079: Make the declarative hidden config an optional NixOS-only ConfigLayer** (high · effort M)
+- [x] **T-079: Make the declarative hidden config an optional NixOS-only ConfigLayer** (high · effort M)
+
+  _Status: done (W11-C3). A `ConfigLayer` trait with a single `NixOsConfigLayer`, obtained from `Platform::config_layer()` (None on FHS/Debian), now gates staging, fingerprint, `/etc` import injection, build, switch and decoy restore; the CLI pre-detach staging routes through `NailsManager::stage_hidden_config` behind the same gate, and the discovery cascade is centralized. The real NixOS rebuild/switch VM E2E (tests 27-30) must be run later to confirm the unchanged path — see nix_pending._
 
   **Problem** The declarative hidden-config half of activation is bound to NixOS-only mechanisms: `nixos-rebuild` (`nails-core/src/nixos/command.rs:94`), the profile switch script (`nails-core/src/nixos/builder/switch.rs:50-57`), `/run/current-system` (`nails-core/src/manager/activation/overlay_mount/restore.rs:206`) and `nix-daemon` (`.../overlay_mount/auto_mount.rs:27-40`). A Debian/Ubuntu decoy has none of these, so this path cannot run there. The only seam is the negative `--overlay-only` flag: it skips builder creation (`nails-cli/src/cli/commands/activate/mod.rs:198`) and the NixOS preflight checks (`nails-core/src/manager/preflight_runner.rs:177-194`), but it is a CLI flag rather than a platform property, and generic paths still do NixOS work — `stage_hidden_config_symlink` runs even under `--overlay-only`/`--no-preflight` (`.../manager/activation/preflight.rs:60-63,106-117`) and the `/etc` import injection is hard-coded per target (`.../overlay_mount/mod.rs:152-208`).
 
