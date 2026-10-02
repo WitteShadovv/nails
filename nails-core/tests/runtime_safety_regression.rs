@@ -7,10 +7,25 @@ use std::process::Command;
 
 const SUBPROCESS_TEST_NAME: &str = "subprocess_runtime_safety_entrypoint";
 
+/// Opt this test binary into test-runtime mode.
+///
+/// The runtime-safety skip is no longer inferred from the executable's path; a
+/// build carrying the test hooks honours it only when `NAILS_TEST_RUNTIME` is
+/// set. The `Once` keeps it to a single process-wide write before any test reads
+/// the environment.
+fn ensure_test_runtime() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| unsafe {
+        std::env::set_var("NAILS_TEST_RUNTIME", "1");
+    });
+}
+
 fn run_subprocess(case: &str) -> std::process::Output {
     Command::new(std::env::current_exe().unwrap())
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_RUNTIME_SAFETY_SUBPROCESS_CASE", case)
+        .env("NAILS_TEST_RUNTIME", "1")
         .output()
         .expect("failed to run runtime safety subprocess")
 }
@@ -31,6 +46,7 @@ fn make_process(name: &str, pid: u32) -> ProcessInfo {
 
 #[test]
 fn detect_processes_using_returns_empty_in_test_like_runtime() {
+    ensure_test_runtime();
     let detected = detect_processes_using(Path::new("/home"))
         .expect("test-like runtime should bypass host /proc inspection");
 
@@ -42,6 +58,7 @@ fn detect_processes_using_returns_empty_in_test_like_runtime() {
 
 #[test]
 fn risky_process_prompt_auto_declines_in_test_like_runtime() {
+    ensure_test_runtime();
     let decision = prompt_risky_process_restart(&[make_process("pipewire", 6790)])
         .expect("test-like runtime should not block on risky-process prompt");
 
@@ -50,6 +67,7 @@ fn risky_process_prompt_auto_declines_in_test_like_runtime() {
 
 #[test]
 fn pivot_prompt_auto_declines_in_test_like_runtime() {
+    ensure_test_runtime();
     let decision =
         prompt_pivot_mount_acceptance(Path::new("/home"), &[make_process("pipewire-pulse", 6791)])
             .expect("test-like runtime should not block on pivot prompt");
@@ -62,6 +80,7 @@ fn pivot_prompt_auto_declines_in_test_like_runtime() {
 
 #[test]
 fn session_kill_prompt_auto_declines_in_test_like_runtime() {
+    ensure_test_runtime();
     let ctx = SessionContext {
         kind: SessionKind::GraphicalUser,
         session_id: Some("c2".to_string()),

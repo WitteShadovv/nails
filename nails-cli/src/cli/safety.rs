@@ -30,6 +30,14 @@
 ///
 /// - `Ok(())` if operations are allowed
 /// - `Err(message)` if operations are blocked for safety
+#[cfg(not(any(test, feature = "test-hooks")))]
+pub fn check_real_operations_allowed(_hidden_volume_root: &std::path::Path) -> Result<(), String> {
+    // Shipped builds carry no build-directory heuristic: the hidden-volume attach
+    // check guards real operations at runtime, so the path never gates them here.
+    Ok(())
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
 pub fn check_real_operations_allowed(hidden_volume_root: &std::path::Path) -> Result<(), String> {
     // Check for explicit opt-in via environment variable
     if std::env::var("NAILS_UNSAFE_REAL_OPS").unwrap_or_default() == "1" {

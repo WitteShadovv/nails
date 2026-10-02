@@ -7,6 +7,20 @@ use nails_core::{
 use std::path::Path;
 use tempfile::TempDir;
 
+/// Opt this test binary into test-runtime mode.
+///
+/// `nails-core` is linked here as a plain dependency, so its `cfg(test)` is not
+/// active and the runtime-safety skip is keyed solely on `NAILS_TEST_RUNTIME`.
+/// Tests that drive a real activation (and therefore the host preflight checks)
+/// set it so those checks are bypassed, exactly as the E2E harness does.
+fn ensure_test_runtime() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| unsafe {
+        std::env::set_var("NAILS_TEST_RUNTIME", "1");
+    });
+}
+
 fn write_test_base_hardware_config(tmp: &TempDir) -> std::path::PathBuf {
     let path = tmp
         .path()
@@ -192,6 +206,7 @@ fn test_init_idempotent() {
 
 #[test]
 fn test_init_generated_config_is_preflight_ready_for_activation() {
+    ensure_test_runtime();
     let tmp = TempDir::new().unwrap();
     let base_hardware_config = write_test_base_hardware_config(&tmp);
     execute_with_base_hardware_config(
@@ -267,6 +282,7 @@ fn test_init_generated_config_is_preflight_ready_for_activation() {
 
 #[test]
 fn test_init_generated_config_activates_with_minimal_mock_filesystem_setup() {
+    ensure_test_runtime();
     let tmp = TempDir::new().unwrap();
     let base_hardware_config = write_test_base_hardware_config(&tmp);
     execute_with_base_hardware_config(

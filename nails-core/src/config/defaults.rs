@@ -70,29 +70,12 @@ pub fn derive_hidden_volume_root() -> PathBuf {
             // Extract parent directory
             match canonical_path.parent() {
                 Some(parent) => {
+                    // The derived root is the binary's parent directory. Writes are
+                    // guarded at runtime by the hidden-volume attach check, so there
+                    // is no path-substring heuristic here: an operator who installs
+                    // the binary under an unusual path (including one that merely
+                    // looks like a build directory) still gets a usable default.
                     let parent_path = parent.to_path_buf();
-
-                    // TEST SAFETY GUARD (Layer 4): Detect build directories
-                    // Prevents tests from treating target/debug/ as a valid hidden volume
-                    // This is a defense-in-depth measure to protect against accidental
-                    // system operations during test execution.
-                    let path_str = parent_path.to_string_lossy();
-                    if path_str.contains("/target/debug")
-                        || path_str.contains("/target/release")
-                        || path_str.contains("/target/llvm-cov-target")
-                        || path_str.starts_with("/nix/store")
-                    {
-                        let fallback = get_default_hidden_volume_root();
-                        tracing::warn!(
-                            "Binary path not suitable for deriving hidden volume (build/store location): {}. \
-                             Refusing to derive hidden volume root from build artifacts. \
-                             Falling back to {}",
-                            parent_path.display(),
-                            fallback
-                        );
-                        return PathBuf::from(fallback);
-                    }
-
                     tracing::debug!(
                         "Derived hidden volume root from binary location: {}",
                         parent_path.display()

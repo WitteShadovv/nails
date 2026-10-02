@@ -1084,7 +1084,12 @@ fn test_shell_setup_without_shell_env_still_sets_up_persistent_integration_for_t
 #[serial]
 fn test_shell_setup_returns_warning_without_source_commands_when_script_writes_fail() {
     let fs = MockFilesystem::new();
-    let config = Config::default();
+    // Pin the root: the default now derives from the binary location, which in a
+    // test build is the build directory, not the install mount this test asserts on.
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/data"),
+        ..Default::default()
+    };
 
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
     fs.mock_set_path_exists("/home", true);
@@ -1675,7 +1680,12 @@ fn test_emergency_deactivation_includes_color_reset() {
 #[serial]
 fn test_inject_rc_integration_bash_creates_bashrc() {
     let fs = MockFilesystem::new();
-    let config = Config::default();
+    // Pin the root: the default now derives from the binary location, which in a
+    // test build is the build directory, not the install mount this test asserts on.
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/data"),
+        ..Default::default()
+    };
 
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
     fs.mock_set_path_exists("/home", true);
@@ -1714,7 +1724,12 @@ fn test_inject_rc_integration_bash_creates_bashrc() {
 #[serial]
 fn test_inject_rc_integration_zsh_creates_zshrc() {
     let fs = MockFilesystem::new();
-    let config = Config::default();
+    // Pin the root: the default now derives from the binary location, which in a
+    // test build is the build directory, not the install mount this test asserts on.
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/data"),
+        ..Default::default()
+    };
 
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
     fs.mock_set_path_exists("/home", true);
@@ -1750,7 +1765,12 @@ fn test_inject_rc_integration_zsh_creates_zshrc() {
 #[serial]
 fn test_inject_rc_integration_fish_creates_config_fish() {
     let fs = MockFilesystem::new();
-    let config = Config::default();
+    // Pin the root: the default now derives from the binary location, which in a
+    // test build is the build directory, not the install mount this test asserts on.
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/data"),
+        ..Default::default()
+    };
 
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
     fs.mock_set_path_exists("/home", true);

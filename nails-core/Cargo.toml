@@ -17,11 +17,15 @@ name = "nails_core"
 path = "src/lib.rs"
 
 [features]
-# Compile in test-only escape hatches (such as the attach-gate device-check
-# bypass keyed on NAILS_TEST_FORCE_ATTACHED) so integration tests can exercise
-# real write paths against temp directories. Off in release builds, so the
-# hooks never exist in a shipped binary.
-afs-test-hooks-compile-time = []
+# The single switch for every test-only hook and heuristic bypass: the runtime
+# host-interaction skip, the attach-gate device-check bypass (keyed on
+# NAILS_TEST_FORCE_ATTACHED), the activation/deactivation gates, the reboot and
+# systemctl path overrides, the shell-cleanup protected-PID handoff and the
+# service exemption. Off by default, so none of these hooks (nor the NAILS_TEST_*
+# environment strings) exist in a shipped binary. This crate's own unit tests get
+# it implicitly through cfg(test); integration tests, nails-cli and the packaged
+# nails-e2e build turn it on through this feature.
+test-hooks = []
 # Exposes the in-crate test fixtures (`Config::test_default`, `TestWorld`) to
 # downstream test code in `nails-cli` and this crate's integration tests. Off by
 # default; the fixtures also compile for this crate's own tests via `cfg(test)`.
@@ -52,6 +56,11 @@ proptest = { workspace = true }
 tracing-test = "0.2.5"
 serial_test = "3.5"
 criterion = { version = "0.8", features = ["html_reports"] }
+# Self dev-dependency: turns the test-only hooks on for this crate's integration
+# tests (`tests/`), examples and benches, which compile the library as a plain
+# dependency without `cfg(test)`. The shipped library never pulls in
+# dev-dependencies, so the hooks still stay out of release builds.
+nails-core = { path = ".", features = ["test-hooks", "test-support"] }
 
 [[bench]]
 name = "performance"

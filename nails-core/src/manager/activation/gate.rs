@@ -1,4 +1,6 @@
-use crate::{NailsError, Result};
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::NailsError;
+use crate::Result;
 
 #[cfg(test)]
 thread_local! {
@@ -29,6 +31,13 @@ impl Drop for ActivationGateTestGuard {
     }
 }
 
+/// Block after the Activating transition when the E2E harness has armed the gate.
+///
+/// The gate exists only to let the E2E suite pause an activation mid-flight. It is
+/// compiled in solely under the `test-hooks` feature (and this crate's own
+/// `cfg(test)` builds); a shipped binary gets the no-op variant below and never
+/// reads the `NAILS_TEST_ACTIVATING_*` environment.
+#[cfg(any(test, feature = "test-hooks"))]
 pub(super) fn maybe_block_after_activating_state_transition() -> Result<()> {
     #[cfg(test)]
     if !ACTIVATION_GATE_TEST_ENABLED.with(|enabled| enabled.get()) {
@@ -71,5 +80,10 @@ pub(super) fn maybe_block_after_activating_state_transition() -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
+    Ok(())
+}
+
+#[cfg(not(any(test, feature = "test-hooks")))]
+pub(super) fn maybe_block_after_activating_state_transition() -> Result<()> {
     Ok(())
 }

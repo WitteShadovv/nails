@@ -1,15 +1,18 @@
-use crate::{NailsError, Result};
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::NailsError;
+use crate::Result;
 
+#[cfg(test)]
 thread_local! {
     static DEACTIVATION_GATE_TEST_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) struct DeactivationGateTestGuard {
     previous: bool,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 impl DeactivationGateTestGuard {
     pub(crate) fn enable() -> Self {
         let previous = DEACTIVATION_GATE_TEST_ENABLED.with(|enabled| {
@@ -28,6 +31,13 @@ impl Drop for DeactivationGateTestGuard {
     }
 }
 
+/// Block after the Deactivating transition when the E2E harness has armed the gate.
+///
+/// Like the activation gate, this exists only to pause a deactivation mid-flight
+/// for the E2E suite. It is compiled in solely under the `test-hooks` feature (and
+/// this crate's own `cfg(test)` builds); a shipped binary gets the no-op variant
+/// and never reads the `NAILS_TEST_DEACTIVATING_*` environment.
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn maybe_block_after_deactivating_state_transition() -> Result<()> {
     #[cfg(test)]
     if !DEACTIVATION_GATE_TEST_ENABLED.with(|enabled| enabled.get()) {
@@ -73,13 +83,23 @@ pub(crate) fn maybe_block_after_deactivating_state_transition() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-hooks")))]
+pub(crate) fn maybe_block_after_deactivating_state_transition() -> Result<()> {
+    Ok(())
+}
+
+/// Whether shell cleanup must be skipped so the deactivation gate can engage first.
+///
+/// Only meaningful for the E2E harness (a non-test build carrying `test-hooks`
+/// with the gate armed). In this crate's own tests, and in shipped builds, it is
+/// always false and reads no environment.
+#[cfg(all(not(test), feature = "test-hooks"))]
 #[allow(dead_code)]
 pub(crate) fn should_skip_shell_cleanup_before_deactivation_gate() -> bool {
     std::env::var_os("NAILS_TEST_DEACTIVATING_GATE_PATH").is_some()
 }
 
-#[cfg(test)]
+#[cfg(not(all(not(test), feature = "test-hooks")))]
 #[allow(dead_code)]
 pub(crate) fn should_skip_shell_cleanup_before_deactivation_gate() -> bool {
     false

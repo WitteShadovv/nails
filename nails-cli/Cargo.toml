@@ -20,6 +20,12 @@ path = "src/lib.rs"
 name = "nails"
 path = "src/main.rs"
 
+[features]
+# Mirror of nails-core's switch for the CLI's own test-only hooks (the detach
+# systemd-run override and refusal, the real-operations guard). Off by default so
+# the shipped binary carries none of them; pulls in nails-core's hooks too.
+test-hooks = ["nails-core/test-hooks"]
+
 [dependencies]
 # Workspace dependencies
 clap = { workspace = true, features = ["derive", "cargo"] }
@@ -43,13 +49,19 @@ criterion = { version = "0.8", features = ["html_reports"] }
 # Pull in nails-core's test-only extras for the CLI test/bench builds. The
 # shipped binary (`cargo build`) never pulls in dev-dependencies, so neither
 # feature reaches release builds:
-#   - afs-test-hooks-compile-time: compile the attach-gate test hooks so the
-#     integration tests can drive file logging against temp directories.
+#   - test-hooks: compile the test hooks (attach-gate bypass, runtime skip,
+#     override env vars) so the integration tests can drive real write paths
+#     against temp directories.
 #   - test-support: the shared test fixtures (`Config::test_default`, `TestWorld`).
 nails-core = { path = "../nails-core", features = [
-    "afs-test-hooks-compile-time",
+    "test-hooks",
     "test-support",
 ] }
+# Self dev-dependency: turns the CLI's own `test-hooks` feature on for the
+# integration tests and for the `nails` binary that `cargo test` builds and
+# `assert_cmd` drives. Dev-dependencies never reach `cargo build`, so the shipped
+# binary stays hook-free.
+nails-cli = { path = ".", features = ["test-hooks"] }
 
 [[bench]]
 name = "startup"

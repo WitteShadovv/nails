@@ -10,6 +10,20 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
+/// Opt this test binary into test-runtime mode (see runtime_safety_regression).
+///
+/// The in-process guard tests below assert the test-like-runtime behaviour, which
+/// is now keyed on `NAILS_TEST_RUNTIME` rather than the executable path. The
+/// subprocess tests that exercise the real path strip the variable from the
+/// child, so a process-wide set here never leaks into them.
+fn ensure_test_runtime() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| unsafe {
+        std::env::set_var("NAILS_TEST_RUNTIME", "1");
+    });
+}
+
 fn sample_process() -> ProcessInfo {
     ProcessInfo {
         pid: 4242,
@@ -62,7 +76,10 @@ fn run_notification_subprocess(
         command
             .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
             .env("NAILS_RUNTIME_GUARD_SUBPROCESS_CASE", case)
-            .env("NAILS_RUNTIME_GUARD_SUBPROCESS_ROOT", hidden_root);
+            .env("NAILS_RUNTIME_GUARD_SUBPROCESS_ROOT", hidden_root)
+            // These cases exercise the real (non-test) dispatch and mount paths,
+            // so the child must not inherit a test-runtime opt-in from the parent.
+            .env_remove("NAILS_TEST_RUNTIME");
 
         if let Some(path) = path_override {
             command.env("PATH", path);
@@ -107,28 +124,33 @@ fn install_successful_notify_send(bin_dir: &Path) {
 
 #[test]
 fn prompt_yes_no_auto_answers_in_test_like_runtime() {
+    ensure_test_runtime();
     assert!(prompt_yes_no("Proceed?", false).unwrap());
     assert!(!prompt_yes_no("Proceed?", true).unwrap());
 }
 
 #[test]
 fn risky_process_prompt_auto_declines_in_test_like_runtime() {
+    ensure_test_runtime();
     assert!(!prompt_risky_process_restart(&[sample_process()]).unwrap());
 }
 
 #[test]
 fn pivot_prompt_auto_declines_in_test_like_runtime() {
+    ensure_test_runtime();
     assert!(!prompt_pivot_mount_acceptance(Path::new("/home"), &[sample_process()]).unwrap());
 }
 
 #[test]
 fn detect_processes_using_skips_host_proc_in_test_like_runtime() {
+    ensure_test_runtime();
     let detected = detect_processes_using(Path::new("/home")).unwrap();
     assert!(detected.is_empty());
 }
 
 #[test]
 fn dispatch_all_returns_zero_without_touching_pending_notifications_in_test_like_runtime() {
+    ensure_test_runtime();
     let dir = tempfile::tempdir().unwrap();
     write_notification(dir.path(), &sample_notification()).unwrap();
 

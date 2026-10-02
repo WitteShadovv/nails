@@ -12,9 +12,15 @@ use nails_core::{NailsError, SessionContext, SessionKind, detect_session_context
 
 const ACTIVATE_UNIT_PREFIX: &str = "nails-activate-";
 const DEACTIVATE_UNIT_PREFIX: &str = "nails-deactivate-";
-const TEST_RUNTIME_ENV: &str = "NAILS_TEST_RUNTIME";
+
+// Test-only override hooks. Compiled in only under the `test-hooks` feature (and
+// this crate's own `cfg(test)` builds), so a shipped binary neither reads them
+// nor carries the strings.
+#[cfg(any(test, feature = "test-hooks"))]
 const SYSTEMD_RUN_OVERRIDE_ENV: &str = "NAILS_SYSTEMD_RUN_PATH";
+#[cfg(any(test, feature = "test-hooks"))]
 const DEACTIVATE_UNIT_NAME_OVERRIDE_ENV: &str = "NAILS_DEACTIVATE_UNIT_NAME";
+#[cfg(any(test, feature = "test-hooks"))]
 const SHELL_CLEANUP_PROTECTED_PIDS_ENV: &str = "NAILS_SHELL_CLEANUP_PROTECTED_PIDS";
 
 /// The process-exit chokepoint.
@@ -79,21 +85,14 @@ fn should_skip_detach() -> bool {
     env::var_os(ENV_SKIP_DETACH).is_some()
 }
 
-fn binary_looks_like_test_runtime() -> bool {
-    if env::var_os(TEST_RUNTIME_ENV).is_some() {
-        return true;
-    }
-
-    env::current_exe().ok().is_some_and(|exe| {
-        let exe_display = exe.to_string_lossy();
-        exe.components()
-            .any(|component| component.as_os_str() == Path::new("deps").as_os_str())
-            || exe_display.contains("/target/debug/")
-            || exe_display.contains("/target/release/")
-            || exe_display.contains("/target/llvm-cov-target/")
-    })
-}
-
+/// Resolve the `systemd-run` program to execute for a detach handoff.
+///
+/// Shipped builds always use the real `systemd-run`. Test and E2E builds instead
+/// honour `NAILS_SYSTEMD_RUN_PATH` (a fake recorder) or `NAILS_UNSAFE_REAL_OPS=1`
+/// (an explicit opt-in to the real binary), and otherwise refuse to start a
+/// transient unit at all — so a bare `cargo test` can never spawn one even though
+/// the hooks are compiled in.
+#[cfg(any(test, feature = "test-hooks"))]
 fn systemd_run_program() -> Result<OsString, NailsError> {
     if let Some(path) = env::var_os(SYSTEMD_RUN_OVERRIDE_ENV) {
         return Ok(path);
@@ -103,13 +102,14 @@ fn systemd_run_program() -> Result<OsString, NailsError> {
         return Ok(OsString::from("systemd-run"));
     }
 
-    if binary_looks_like_test_runtime() {
-        return Err(NailsError::InvalidState(format!(
-            "Refusing to start transient systemd units from a test/test-like runtime; set {} to a fake systemd-run, set {}=1 to bypass detach, or set NAILS_UNSAFE_REAL_OPS=1 to allow real host operations",
-            SYSTEMD_RUN_OVERRIDE_ENV, ENV_SKIP_DETACH
-        )));
-    }
+    Err(NailsError::InvalidState(format!(
+        "Refusing to start transient systemd units from a test runtime; set {} to a fake systemd-run, set {}=1 to bypass detach, or set NAILS_UNSAFE_REAL_OPS=1 to allow real host operations",
+        SYSTEMD_RUN_OVERRIDE_ENV, ENV_SKIP_DETACH
+    )))
+}
 
+#[cfg(not(any(test, feature = "test-hooks")))]
+fn systemd_run_program() -> Result<OsString, NailsError> {
     Ok(OsString::from("systemd-run"))
 }
 
@@ -123,6 +123,12 @@ fn set_target_identity_from_environment(cmd: &mut Command) {
     }
 }
 
+/// Forward the test-only protected-PID handoff across the `systemd-run` boundary.
+///
+/// Nothing sets `NAILS_SHELL_CLEANUP_PROTECTED_PIDS` in production, so this is a
+/// no-op in shipped builds; the tests use it to inject the PIDs that shell
+/// cleanup must spare.
+#[cfg(any(test, feature = "test-hooks"))]
 fn propagate_shell_cleanup_protection(cmd: &mut Command) {
     if let Some(protected) = env::var_os(SHELL_CLEANUP_PROTECTED_PIDS_ENV) {
         cmd.arg(format!(
@@ -132,6 +138,9 @@ fn propagate_shell_cleanup_protection(cmd: &mut Command) {
         ));
     }
 }
+
+#[cfg(not(any(test, feature = "test-hooks")))]
+fn propagate_shell_cleanup_protection(_cmd: &mut Command) {}
 
 fn is_already_detached() -> bool {
     env::var_os(ENV_DETACHED).is_some()
@@ -305,8 +314,11 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
     })?;
 
     let argv: Vec<OsString> = std::env::args_os().collect();
-    let unit_name = env::var(DEACTIVATE_UNIT_NAME_OVERRIDE_ENV)
-        .unwrap_or_else(|_| format!("{}{}.service", DEACTIVATE_UNIT_PREFIX, std::process::id()));
+    let default_unit_name = format!("{}{}.service", DEACTIVATE_UNIT_PREFIX, std::process::id());
+    #[cfg(any(test, feature = "test-hooks"))]
+    let unit_name = env::var(DEACTIVATE_UNIT_NAME_OVERRIDE_ENV).unwrap_or(default_unit_name);
+    #[cfg(not(any(test, feature = "test-hooks")))]
+    let unit_name = default_unit_name;
 
     let mut cmd = Command::new(systemd_run_program()?);
     cmd.arg("--unit")

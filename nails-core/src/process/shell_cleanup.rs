@@ -16,15 +16,27 @@ use std::path::Path;
 /// Names of shell processes to kill
 const SHELL_NAMES: &[&str] = &["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh"];
 
-/// Service-scoped shell processes that should never be killed.
+/// Service-scoped shell processes that must never be killed, named by the E2E
+/// harness through a test-hooks-only environment variable.
 ///
-/// `backdoor.service` is the NixOS test-driver guest agent. Killing it severs
-/// test harness communication and makes emergency E2E validation impossible,
-/// but it does not exist in production deployments.
-#[cfg(not(test))]
-const SKIPPED_SERVICE_NAMES: &[&str] = &["backdoor"];
+/// The NixOS test-driver guest agent (its unit carries the test harness
+/// connection) must survive cleanup for emergency E2E validation to work, but it
+/// does not exist in production deployments. Shipped builds therefore skip no
+/// services and read no such variable: the whole mechanism is compiled out.
+#[cfg(all(not(test), feature = "test-hooks"))]
+fn protected_service_names() -> Vec<String> {
+    std::env::var("NAILS_SHELL_CLEANUP_PROTECTED_SERVICES")
+        .map(|value| {
+            value
+                .split(',')
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
-#[cfg(not(test))]
+#[cfg(all(not(test), feature = "test-hooks"))]
 fn read_service_name(pid: u32) -> Option<String> {
     let cgroup_path = Path::new("/proc").join(pid.to_string()).join("cgroup");
     let content = fs::read_to_string(cgroup_path).ok()?;
@@ -205,8 +217,11 @@ pub fn kill_user_shells(protected_pids: &[u32]) -> ShellKillReport {
                 continue;
             }
 
+            #[cfg(feature = "test-hooks")]
             if let Some(service_name) = read_service_name(pid)
-                && SKIPPED_SERVICE_NAMES.contains(&service_name.as_str())
+                && protected_service_names()
+                    .iter()
+                    .any(|name| name == &service_name)
             {
                 tracing::debug!(pid = pid, comm = %comm, service = %service_name, "Skipping protected shell process");
                 report.skipped.push(pid);

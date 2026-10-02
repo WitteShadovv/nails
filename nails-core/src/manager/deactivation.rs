@@ -19,9 +19,17 @@ use crate::{
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+// Test-only reboot-dispatch overrides. Compiled in only under the `test-hooks`
+// feature (and this crate's own `cfg(test)` builds), so a shipped binary carries
+// neither the strings nor the branch that reads them, and always dispatches the
+// real reboot commands.
+#[cfg(any(test, feature = "test-hooks"))]
 const SYSTEMCTL_REBOOT_OVERRIDE_ENV: &str = "NAILS_SYSTEMCTL_PATH";
+#[cfg(any(test, feature = "test-hooks"))]
 const REBOOT_BINARY_OVERRIDE_ENV: &str = "NAILS_REBOOT_PATH";
-#[cfg(not(test))]
+// The protected-PID handoff is a test-only injection point; nothing sets it in
+// production, so it is compiled in only alongside the other hooks.
+#[cfg(all(not(test), feature = "test-hooks"))]
 const SHELL_CLEANUP_PROTECTED_PIDS_ENV: &str = "NAILS_SHELL_CLEANUP_PROTECTED_PIDS";
 
 #[derive(Debug, Clone)]
@@ -64,21 +72,24 @@ impl RebootCommand {
 }
 
 fn reboot_candidates() -> Vec<RebootCommand> {
-    let systemctl_override = std::env::var_os(SYSTEMCTL_REBOOT_OVERRIDE_ENV);
-    let reboot_override = std::env::var_os(REBOOT_BINARY_OVERRIDE_ENV);
+    #[cfg(any(test, feature = "test-hooks"))]
+    {
+        let systemctl_override = std::env::var_os(SYSTEMCTL_REBOOT_OVERRIDE_ENV);
+        let reboot_override = std::env::var_os(REBOOT_BINARY_OVERRIDE_ENV);
 
-    if systemctl_override.is_some() || reboot_override.is_some() {
-        let mut candidates = Vec::new();
+        if systemctl_override.is_some() || reboot_override.is_some() {
+            let mut candidates = Vec::new();
 
-        if let Some(path) = systemctl_override {
-            candidates.push(RebootCommand::systemctl(path));
+            if let Some(path) = systemctl_override {
+                candidates.push(RebootCommand::systemctl(path));
+            }
+
+            if let Some(path) = reboot_override {
+                candidates.push(RebootCommand::reboot(path));
+            }
+
+            return candidates;
         }
-
-        if let Some(path) = reboot_override {
-            candidates.push(RebootCommand::reboot(path));
-        }
-
-        return candidates;
     }
 
     vec![
@@ -189,10 +200,14 @@ fn merge_protected_pids(mut ancestry: Vec<u32>, handoff: Option<&std::ffi::OsStr
 /// [`kill_user_shells`], replacing the previous global environment variable.
 #[cfg(not(test))]
 fn collect_protected_shell_pids() -> Vec<u32> {
-    merge_protected_pids(
-        current_process_ancestry(),
-        std::env::var_os(SHELL_CLEANUP_PROTECTED_PIDS_ENV).as_deref(),
-    )
+    // The handoff env var exists only in test-hooks builds; shipped builds protect
+    // the teardown's own process tree and nothing else.
+    #[cfg(feature = "test-hooks")]
+    let handoff = std::env::var_os(SHELL_CLEANUP_PROTECTED_PIDS_ENV);
+    #[cfg(not(feature = "test-hooks"))]
+    let handoff: Option<std::ffi::OsString> = None;
+
+    merge_protected_pids(current_process_ancestry(), handoff.as_deref())
 }
 
 #[cfg(not(test))]

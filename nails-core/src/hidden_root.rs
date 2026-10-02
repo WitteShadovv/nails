@@ -136,12 +136,12 @@ impl HiddenRoot {
 /// comparison is skipped and existence (plus any required marker) decides. The
 /// hook is compiled out of release builds entirely, so production always runs
 /// the real device check regardless of the environment.
-#[cfg(any(test, feature = "afs-test-hooks-compile-time"))]
+#[cfg(any(test, feature = "test-hooks"))]
 fn attach_device_check_bypassed() -> bool {
     std::env::var_os("NAILS_TEST_FORCE_ATTACHED").is_some()
 }
 
-#[cfg(not(any(test, feature = "afs-test-hooks-compile-time")))]
+#[cfg(not(any(test, feature = "test-hooks")))]
 fn attach_device_check_bypassed() -> bool {
     false
 }
