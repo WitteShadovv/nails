@@ -98,6 +98,9 @@ pub mod target_user;
 // Attach gate: write nothing unless the hidden root is positively mounted.
 pub mod hidden_root;
 
+// Platform seam: host detection and per-platform behaviour (NixOS / FHS / refused).
+pub mod platform;
+
 mod runtime_safety;
 
 // Test helpers shared across modules and with downstream test code (the
@@ -115,10 +118,15 @@ pub use config::{
 pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, PathKind, RealFilesystem};
 pub use hidden_root::{AttachState, HiddenRoot};
+// Platform seam exports
 pub use manager::deactivation::{DeactivationMode, DeactivationOrchestrator};
 pub use manager::{
     MountInfo, MountTracker, MountType, NailsManager, RegistryInputs, ResetUpperPlan,
     apply_exclusion_filter, build_overlay_targets, build_registry,
+};
+pub use platform::{
+    HostProfile, HostTarget, OverlayPolicy, Platform, PlatformKind, RestoreOutcome, detect,
+    detect_platform, discover_host_target, platform_for,
 };
 pub use target_user::TargetUser;
 

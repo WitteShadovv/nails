@@ -110,6 +110,16 @@ pub struct NailsManager<F: Filesystem> {
     /// If None, activation will skip NixOS build/switch steps
     nixos_builder: Option<crate::nixos::NixOSBuilder>,
 
+    /// Host facts from the platform seam, detected once (or injected by a test).
+    ///
+    /// The platform backend is derived from this on demand (see
+    /// [`NailsManager::platform`]); backends are zero-sized, so nothing larger is
+    /// stored. `None` until [`initialize_platform`](NailsManager::initialize_platform)
+    /// or [`set_host_profile`](NailsManager::set_host_profile) runs, which keeps
+    /// every existing constructor working while call sites are rewired onto the
+    /// seam.
+    host_profile: Option<crate::platform::HostProfile>,
+
     /// Verbosity level for progress output
     verbosity: crate::verbosity::Verbosity,
 }
@@ -125,6 +135,10 @@ impl<F: Filesystem> std::fmt::Debug for NailsManager<F> {
             .field(
                 "nixos_builder",
                 &self.nixos_builder.as_ref().map(|_| "<NixOSBuilder>"),
+            )
+            .field(
+                "host_profile",
+                &self.host_profile.as_ref().map(|profile| profile.kind),
             )
             .field("verbosity", &self.verbosity)
             .finish()
@@ -165,6 +179,7 @@ impl<F: Filesystem> NailsManager<F> {
             state_file_path,
             cached_state: RefCell::new(None),
             nixos_builder: None,
+            host_profile: None,
             verbosity: crate::verbosity::Verbosity::default(),
         }
     }
@@ -213,6 +228,7 @@ impl<F: Filesystem> NailsManager<F> {
             state_file_path,
             cached_state: RefCell::new(None),
             nixos_builder: Some(nixos_builder),
+            host_profile: None,
             verbosity: crate::verbosity::Verbosity::default(),
         }
     }
@@ -239,6 +255,43 @@ impl<F: Filesystem> NailsManager<F> {
     /// ```
     pub fn set_verbosity(&mut self, verbosity: crate::verbosity::Verbosity) {
         self.verbosity = verbosity;
+    }
+
+    /// Detect the host through this manager's filesystem and store the profile.
+    ///
+    /// Runs the platform seam's [`detect`](crate::platform::detect) once and
+    /// caches the result; the platform backend is derived from it on demand by
+    /// [`platform`](Self::platform). Idempotent: a later call re-detects and
+    /// replaces the stored profile.
+    pub fn initialize_platform(&mut self) -> Result<()> {
+        self.host_profile = Some(crate::platform::detect(&self.filesystem)?);
+        Ok(())
+    }
+
+    /// Store host facts detected elsewhere (or injected by a test), bypassing
+    /// [`initialize_platform`](Self::initialize_platform).
+    pub fn set_host_profile(&mut self, profile: crate::platform::HostProfile) {
+        self.host_profile = Some(profile);
+    }
+
+    /// The detected host facts, if the platform seam has been initialised.
+    pub fn host_profile(&self) -> Option<&crate::platform::HostProfile> {
+        self.host_profile.as_ref()
+    }
+
+    /// The platform backend for the detected host, derived from
+    /// [`host_profile`](Self::host_profile).
+    ///
+    /// Backends are zero-sized, so deriving one per call is free. Returns `None`
+    /// until a profile has been set. The returned trait object refuses on an
+    /// unsupported host.
+    pub fn platform(&self) -> Option<Box<dyn crate::platform::Platform<F> + Send + Sync>>
+    where
+        F: 'static,
+    {
+        self.host_profile
+            .as_ref()
+            .map(crate::platform::platform_for::<F>)
     }
 
     /// Unmount overlays in reverse order (LIFO)
@@ -364,5 +417,75 @@ impl<F: Filesystem> NailsManager<F> {
     /// Get current verbosity level for internal orchestration flows.
     pub(crate) fn verbosity(&self) -> crate::verbosity::Verbosity {
         self.verbosity
+    }
+}
+
+#[cfg(test)]
+mod platform_wiring_tests {
+    use crate::filesystem::MockFilesystem;
+    use crate::platform::PlatformKind;
+    use crate::{Config, NailsManager, NixOSBuilder};
+    use std::path::PathBuf;
+
+    /// A mock host with a readable os-release and systemd PID 1, so detection
+    /// needs no real /etc files.
+    fn fhs_host() -> MockFilesystem {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file("/etc/os-release", "ID=debian\nVERSION_ID=\"12\"\n");
+        fs.mock_add_file("/proc/1/comm", "systemd");
+        fs
+    }
+
+    fn manager(fs: MockFilesystem) -> NailsManager<MockFilesystem> {
+        NailsManager::new(fs, Config::default(), PathBuf::from("/tmp/state.json"))
+    }
+
+    #[test]
+    fn platform_is_none_until_initialised() {
+        let m = manager(fhs_host());
+        assert!(m.host_profile().is_none());
+        assert!(m.platform().is_none());
+    }
+
+    #[test]
+    fn initialize_platform_detects_and_derives_backend() {
+        let mut m = manager(fhs_host());
+        m.initialize_platform().unwrap();
+
+        assert_eq!(m.host_profile().unwrap().kind, PlatformKind::Fhs);
+        let backend = m.platform().expect("platform derived from profile");
+        assert_eq!(backend.kind(), PlatformKind::Fhs);
+    }
+
+    #[test]
+    fn set_host_profile_injects_without_fixtures() {
+        // No /etc/nixos (or any fixture): inject a NixOS profile directly.
+        let fs = MockFilesystem::new();
+        fs.mock_add_file("/etc/os-release", "ID=nixos\n");
+        fs.mock_add_file("/proc/1/comm", "systemd");
+        let profile = crate::platform::detect(&fs).unwrap();
+
+        let mut m = manager(MockFilesystem::new());
+        m.set_host_profile(profile);
+        assert_eq!(m.platform().unwrap().kind(), PlatformKind::NixOs);
+    }
+
+    #[test]
+    fn platform_seam_coexists_with_nixos_builder() {
+        // The seam is additive: a NixOS-builder manager still assembles and the
+        // host profile threads through alongside it.
+        let fs = fhs_host();
+        let builder = NixOSBuilder::new(
+            PathBuf::from("/mnt/hidden/nixos"),
+            PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        );
+        let mut m = NailsManager::with_nixos(
+            fs,
+            Config::default(),
+            PathBuf::from("/tmp/state.json"),
+            builder,
+        );
+        m.initialize_platform().unwrap();
+        assert_eq!(m.host_profile().unwrap().kind, PlatformKind::Fhs);
     }
 }

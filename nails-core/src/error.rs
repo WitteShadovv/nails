@@ -260,6 +260,16 @@ pub enum NailsError {
         budget: std::time::Duration,
     },
 
+    /// The host is not one NAILS can operate on.
+    ///
+    /// Raised by the platform seam when host detection resolves to an
+    /// unsupported target (an ostree / image-based system, or a host whose PID 1
+    /// is not systemd). The refusal is deliberate: these hosts cannot be given a
+    /// hidden overlay environment safely, so NAILS declines before touching any
+    /// state. `reason` is an actionable, human-readable explanation.
+    #[error("Unsupported host: {reason}")]
+    UnsupportedPlatform { reason: String },
+
     /// I/O error (transparently converted from std::io::Error)
     ///
     /// This variant has #[from] attribute, enabling automatic conversion
