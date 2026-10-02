@@ -996,6 +996,47 @@ fn test_verify_detects_config_overlay_mounts_and_log_files() {
 }
 
 #[test]
+fn test_verify_does_not_flag_logs_inside_the_hidden_volume() {
+    use crate::config::Config;
+    use std::path::PathBuf;
+
+    // The log directory sits on the hidden volume (its intended, on-volume
+    // location). Running `verify` from the hidden environment must not report
+    // those logs as residue: they belong there and are only reachable while the
+    // volume is mounted, which the hidden-volume-path finding already covers.
+    let fs = MockFilesystem::new();
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/data"),
+        log_path: PathBuf::from("/mnt/data/logs"),
+        overlays: vec![],
+        ..Config::default()
+    };
+
+    fs.mock_set_path_exists("/mnt/data/logs", true);
+    fs.mock_set_path_type("/mnt/data/logs", PathKind::Dir);
+    fs.mock_set_files_with_pattern(
+        "/mnt/data/logs",
+        "nails",
+        &[std::path::Path::new("/mnt/data/logs/nails.log")],
+    );
+
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+
+    let log_findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| {
+            f.category == "config" && f.message.contains("Log file found in config log directory")
+        })
+        .collect();
+    assert!(
+        log_findings.is_empty(),
+        "on-volume logs must not be flagged as residue: {log_findings:?}"
+    );
+}
+
+#[test]
 fn test_verify_state_active_is_critical() {
     use crate::SystemState;
     use crate::state::StateFile;

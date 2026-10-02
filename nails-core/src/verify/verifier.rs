@@ -336,10 +336,24 @@ impl<F: Filesystem> Verifier<F> {
             );
         }
 
-        // 3. Check log directory for remaining logs
+        // 3. Check log directory for remaining logs.
+        //
+        // A log directory that sits on the hidden volume is the intended,
+        // on-volume log location, not decoy-disk residue: those logs live where
+        // they belong and are only reachable while the volume is mounted, which
+        // the hidden-volume-path finding above already reports. Flagging them
+        // here would turn the active log dir into a permanent false positive
+        // every time `verify` runs from the hidden environment. Logs whose
+        // directory sits outside the hidden root are a real leak onto the decoy
+        // disk and are still flagged.
         let log_path = &config.log_path;
         paths_checked += 1;
-        if self.filesystem.path_exists(log_path)? && self.filesystem.is_directory(log_path)? {
+        let log_is_on_hidden_volume =
+            !hidden_vol.as_os_str().is_empty() && log_path.starts_with(hidden_vol);
+        if !log_is_on_hidden_volume
+            && self.filesystem.path_exists(log_path)?
+            && self.filesystem.is_directory(log_path)?
+        {
             let log_files = self.filesystem.find_files_with_pattern(log_path, "nails")?;
             for log_file in log_files {
                 findings.push(

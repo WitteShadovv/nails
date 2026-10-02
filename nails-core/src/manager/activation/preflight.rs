@@ -6,8 +6,8 @@ use crate::cleanup::history::HistoryCleaner;
 use crate::cleanup::patterns;
 use crate::preflight::OverlayTargetsCheck;
 use crate::{
-    Filesystem, NailsError, NailsManager, PreFlightCheck, Result, Stopwatch,
-    SuspiciousNailsReferenceCheck, Verbosity,
+    AttachState, Filesystem, HiddenRoot, NailsError, NailsManager, PreFlightCheck, Result,
+    Stopwatch, SuspiciousNailsReferenceCheck, Verbosity,
 };
 
 fn suspicious_check_name<F: Filesystem>() -> String {
@@ -66,14 +66,41 @@ impl<F: Filesystem> NailsManager<F> {
                 self.run_pre_activation_cleanup(verbosity);
             }
 
-            if let Err(e) = crate::stage_hidden_config_symlink(
+            // --no-preflight waives the pre-flight registry, but it must not waive
+            // the attach gate: staging a config symlink onto an unmounted mount
+            // point would drop identifying files onto the decoy disk, which is the
+            // exact harm this chunk exists to prevent. Honour the gate here too,
+            // as a best-effort skip (every step in this branch is best-effort):
+            // stage only when the hidden root is positively attached, otherwise
+            // warn and leave the directory untouched.
+            match HiddenRoot::verify_attached(
                 &self.filesystem,
                 &self.config.hidden_volume_root,
+                false,
             ) {
-                tracing::warn!(
-                    error = %e,
-                    "Skipping staged config failure due to --no-preflight (activation may not use hidden config)"
-                );
+                Ok(AttachState::Attached) => {
+                    if let Err(e) = crate::stage_hidden_config_symlink(
+                        &self.filesystem,
+                        &self.config.hidden_volume_root,
+                    ) {
+                        tracing::warn!(
+                            error = %e,
+                            "Skipping staged config failure due to --no-preflight (activation may not use hidden config)"
+                        );
+                    }
+                }
+                Ok(AttachState::Unattached(reason)) => {
+                    tracing::warn!(
+                        %reason,
+                        "Hidden root is not attached; skipping config staging (--no-preflight)"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Could not verify hidden-root attach state; skipping config staging (--no-preflight)"
+                    );
+                }
             }
 
             if verbosity >= Verbosity::Normal {
@@ -109,6 +136,19 @@ impl<F: Filesystem> NailsManager<F> {
                 )]));
             }
         }
+
+        // Attach gate: nothing below this line may write until the hidden root is
+        // a positively attached volume. An unmounted mount point on the
+        // persistent disk reports `/`'s device, so staging a `configuration.nix`
+        // or symlink there would seed the decoy disk; the registry's
+        // `hidden-volume` check runs only after staging, so it cannot prevent
+        // that. This gate is the same one that keeps file logging on stderr when
+        // nothing is mounted, so staging now happens strictly after the hidden
+        // volume has been confirmed attached. `require_marker` is cleared for
+        // parity with the logging gate: the device difference is what proves a
+        // mount, and a first `activate` on a freshly mounted volume may precede
+        // the state file.
+        self.enforce_hidden_root_attached()?;
 
         // Step 2.8: Pre-activation history cleanup (runs after early safety gates)
         // Security feature: Clean shell history BEFORE overlays are mounted to remove
@@ -183,6 +223,26 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         Ok(())
+    }
+
+    /// Refuse activation unless the hidden root is a positively attached volume.
+    ///
+    /// Delegates to [`HiddenRoot::verify_attached`], the single gate every write
+    /// path consults, and turns an unattached verdict into a
+    /// [`NailsError::PreFlightCheckFailed`] under the `hidden-root` name so the
+    /// operator sees why nothing was written. `require_marker` is cleared: the
+    /// `st_dev` difference is what proves the volume is mounted, and a first
+    /// `activate` on a freshly mounted volume may legitimately precede the state
+    /// file.
+    fn enforce_hidden_root_attached(&self) -> Result<()> {
+        match HiddenRoot::verify_attached(&self.filesystem, &self.config.hidden_volume_root, false)?
+        {
+            AttachState::Attached => Ok(()),
+            AttachState::Unattached(reason) => Err(NailsError::PreFlightCheckFailed(vec![(
+                "hidden-root".to_string(),
+                reason,
+            )])),
+        }
     }
 
     /// Refuse activation when the `overlay-targets` check fails.
@@ -272,6 +332,142 @@ mod tests {
     fn captured_logs() -> String {
         String::from_utf8(tracing_test::internal::global_buf().lock().unwrap().clone())
             .expect("captured logs are valid UTF-8")
+    }
+
+    // ------------------------------------------------------------------------
+    // Hidden-root attach gate
+    // ------------------------------------------------------------------------
+
+    /// Build a manager rooted at `root`, wiring the mock so the attach gate sees
+    /// the requested device layout. `root` exists and is writable; `/` reports
+    /// `slash_device` and `root` reports `root_device`. Returns the manager and a
+    /// clone of its filesystem for assertions. Overlays are empty under explicit
+    /// mode so the overlay-target floor passes without extra setup.
+    fn attach_gate_manager(
+        root: &std::path::Path,
+        root_device: u64,
+        slash_device: u64,
+    ) -> (NailsManager<MockFilesystem>, MockFilesystem) {
+        use std::path::Path;
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(root.to_str().unwrap(), true);
+        fs.mock_set_writable(root.to_str().unwrap(), true);
+        fs.mock_set_device_id(Path::new("/"), slash_device);
+        fs.mock_set_device_id(root, root_device);
+
+        let config = Config {
+            hidden_volume_root: root.to_path_buf(),
+            state_file_path: root.join("state.json"),
+            overlay_mode: crate::OverlayMode::Explicit,
+            overlays: vec![],
+            ..Config::test_default()
+        };
+        let state_path = config.state_file_path.clone();
+        let manager = NailsManager::new(fs.clone(), config, state_path);
+        (manager, fs)
+    }
+
+    /// A hidden root that shares `/`'s device is an unmounted mount point, not a
+    /// mounted volume, so the gate refuses it under the `hidden-root` name.
+    #[test]
+    fn attach_gate_rejects_a_root_that_shares_slash_device() {
+        let root = std::path::PathBuf::from("/mnt/data");
+        let (manager, _fs) = attach_gate_manager(&root, 7, 7);
+
+        match manager.enforce_hidden_root_attached().unwrap_err() {
+            NailsError::PreFlightCheckFailed(failures) => {
+                assert!(
+                    failures.iter().any(|(name, _)| name == "hidden-root"),
+                    "expected a hidden-root failure, got {failures:?}"
+                );
+            }
+            other => panic!("expected PreFlightCheckFailed, got {other:?}"),
+        }
+    }
+
+    /// A hidden root on its own device is a mounted volume, so the gate accepts it.
+    #[test]
+    fn attach_gate_accepts_a_root_on_its_own_device() {
+        let root = std::path::PathBuf::from("/mnt/data");
+        let (manager, _fs) = attach_gate_manager(&root, 42, 7);
+        manager
+            .enforce_hidden_root_attached()
+            .expect("a root on its own device is attached");
+    }
+
+    /// A normal `activate` must refuse an unattached root before anything is
+    /// written: the preflight phase errors with `hidden-root` and no config is
+    /// staged into the hidden `/etc/nixos` tree.
+    #[test]
+    fn preflight_phase_refuses_before_staging_when_root_is_unattached() {
+        let root = std::path::PathBuf::from("/mnt/data");
+        let (manager, fs) = attach_gate_manager(&root, 7, 7);
+        let staged = root.join("etc/nixos/nails/configuration.nix");
+
+        match manager
+            .run_preflight_phase(false, true, Verbosity::Normal, false)
+            .unwrap_err()
+        {
+            NailsError::PreFlightCheckFailed(failures) => {
+                assert!(
+                    failures.iter().any(|(name, _)| name == "hidden-root"),
+                    "expected a hidden-root failure, got {failures:?}"
+                );
+            }
+            other => panic!("expected PreFlightCheckFailed, got {other:?}"),
+        }
+
+        assert!(
+            !fs.is_symlink(&staged).unwrap(),
+            "no config may be staged onto an unattached hidden root"
+        );
+    }
+
+    /// `--no-preflight` waives the registry but not the attach gate: an unattached
+    /// root is left untouched (best-effort skip), and the phase still succeeds.
+    #[test]
+    fn preflight_phase_skips_staging_for_unattached_root_under_no_preflight() {
+        let root = std::path::PathBuf::from("/mnt/data");
+        let (manager, fs) = attach_gate_manager(&root, 7, 7);
+        let staged = root.join("etc/nixos/nails/configuration.nix");
+
+        manager
+            .run_preflight_phase(true, true, Verbosity::Normal, false)
+            .expect("--no-preflight never fails the preflight phase");
+
+        assert!(
+            !fs.is_symlink(&staged).unwrap(),
+            "an unattached root must not be staged even with --no-preflight"
+        );
+    }
+
+    /// With `--no-preflight` and an attached root, staging proceeds: the gate's
+    /// positive branch is reached and the hidden config symlink is created. This
+    /// proves the skip above is the gate acting, not staging failing anyway.
+    #[test]
+    fn preflight_phase_stages_for_attached_root_under_no_preflight() {
+        use crate::filesystem::PathKind;
+
+        let root = std::path::PathBuf::from("/mnt/data");
+        let (manager, fs) = attach_gate_manager(&root, 42, 7);
+
+        // Pre-create the hidden layout dirs so staging only has to create the
+        // symlink; this keeps the test off the mock's parent-creation rules.
+        for dir in ["/mnt/data/config/nixos", "/mnt/data/etc/nixos/nails"] {
+            fs.mock_set_path_exists(dir, true);
+            fs.mock_set_path_type(dir, PathKind::Dir);
+            fs.mock_set_writable(dir, true);
+        }
+
+        let staged = root.join("etc/nixos/nails/configuration.nix");
+        manager
+            .run_preflight_phase(true, true, Verbosity::Normal, false)
+            .expect("an attached root passes the preflight phase");
+
+        assert!(
+            fs.is_symlink(&staged).unwrap(),
+            "an attached root must be staged under --no-preflight"
+        );
     }
 
     /// The matched patterns and the per-file results name the very commands this
