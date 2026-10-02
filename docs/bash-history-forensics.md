@@ -25,7 +25,7 @@ history-protection scheme is only as strong as the surface it forgets about.
 | Systemd journal | `journalctl _UID=<uid>` | Session and (where configured) command logging that outlives the shell. |
 | Audit log | `auditd` / `/var/log/audit/` | `execve` records when audit rules are active. |
 | Process accounting | `/var/log/account/pacct` | Per-command accounting when `acct` is enabled. |
-| TTY / script capture | `script`, `ttyrec`, agent recorders | Captures the full terminal stream. |
+| TTY / script capture | `script`, `ttyrec`, session recorders | Captures the full terminal stream. |
 
 NAILS layers the hidden environment over the decoy with OverlayFS, so writes
 made inside the session land on the hidden upper, not the decoy lower. The risk
