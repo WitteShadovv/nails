@@ -48,6 +48,12 @@ during the current alpha phase.
   `docs/backends.md` with the backend support matrix and per-backend deniability notes.
 - GitHub issue forms for bug reports and feature requests that require an OPSEC acknowledgement and
   no longer ask for `nails status` output.
+- `nails status` reports hidden-volume disk usage (used, total and free) from a single `statvfs`
+  call, and a new `nails reset-upper <target>` clears a target's persistent overlay upper (allowed
+  only while inactive and unmounted, with a confirmation prompt and a warning when the target is
+  `/nix`).
+- Preflight now warns when the hidden-volume mount path, device-mapper name or filesystem label
+  contains a word that hints at hidden storage, and the built-in default root name is neutral.
 
 ### Changed
 
@@ -161,6 +167,13 @@ during the current alpha phase.
   unmounted, including deactivation after a failed `/nix/store` unmount and activation rollback.
 - The init-namespace store bind is skipped when NAILS already shares PID 1's mount namespace, and
   its forked helper uses only async-signal-safe calls.
+- Deactivation now attempts every overlay unmount and ends in a `Degraded` state that reports the
+  remaining mounts, instead of claiming a remount that never happened and returning to `Active`.
+- Overlay opaque-marker handling runs in-process and only on NAILS-managed paths (`/etc/nixos`), so
+  preflight and `activate --dry-run` no longer write to the hidden volume, hidden-session whiteouts
+  in user data and `/nix` survive, and the `attr` package is no longer required.
+- Shell and editor history cleanup now targets the operator's real home plus `/root` instead of
+  root's home alone, so under `sudo` and the detached unit the operator's history files are reached.
 
 ### Security
 
@@ -171,6 +184,10 @@ during the current alpha phase.
   in an overlay path are each rejected with a specific error.
 - Vulnerabilities are reported through GitHub private vulnerability reporting first, with
   `security@nails.run` as the PGP-capable fallback.
+- Files NAILS writes into user home paths (shell rc block, autostart entry) and notification signal
+  files are written through a symlink-safe open (`openat2` with `RESOLVE_NO_SYMLINKS`/`RESOLVE_BENEATH`
+  and an `O_EXCL`/`O_NOFOLLOW` temporary) and owned by the operator with the correct numeric gid,
+  closing a symlink-redirect (CWE-59) write as root.
 
 ## [0.2.0] - 2026-05-08
 
