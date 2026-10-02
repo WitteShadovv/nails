@@ -1,0 +1,23 @@
+# cargo-nextest settings. Local runs (`just test`, `just coverage`) use the
+# default profile; the rust job in ci.yml selects `ci` by setting
+# NEXTEST_PROFILE=ci, so CI runs the same justfile recipes as a developer.
+
+[profile.ci]
+# Run the whole suite after a failure, so one run reports every broken test.
+fail-fast = false
+# A test that fails and then passes on its single retry is reported as FLAKY
+# rather than failing the gate. The job summary lists it, so it still gets
+# fixed; the scheduled stress loop runs without retries.
+retries = 1
+# Mark a test slow after 60 s and kill it after three periods, so a hung test
+# fails in minutes instead of running into the job timeout.
+slow-timeout = { period = "60s", terminate-after = 3 }
+status-level = "skip"
+final-status-level = "flaky"
+# Print each failure as it happens and again at the end of the log.
+failure-output = "immediate-final"
+
+[profile.ci.junit]
+# Written to target/nextest/ci/junit.xml: nextest keeps its store under the
+# workspace root, also when cargo-llvm-cov builds into another target dir.
+path = "junit.xml"

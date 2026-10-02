@@ -159,10 +159,10 @@ jobs:
           echo "Downloading ${#crates[@]} crates again"
           nix-store --realise --check "${crates[@]}" > /dev/null
 
-  # Restores the Rust caches that ci.yml saves on main. A restore counts as an
-  # access, so the caches survive weeks without a push to main.
+  # Restores the Rust cache that ci.yml saves on main. A restore counts as an
+  # access, so the cache survives weeks without a push to main.
   cache-warm:
-    name: Warm Rust cache (${{ matrix.key }})
+    name: Warm Rust cache
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'cache-warm')
     runs-on: ubuntu-24.04
@@ -172,22 +172,6 @@ jobs:
     env:
       RUST_BACKTRACE: 1
       CARGO_TERM_COLOR: always
-    strategy:
-      fail-fast: false
-      matrix:
-        # The shared-key of every ci.yml job that runs on a push to main
-        key:
-          - lint
-          - audit
-          - test-shard-1
-          - test-shard-2
-          - test-shard-3
-          - test-shard-4
-          - coverage
-          - sbom
-          - geiger
-          - benchmarks
-          - privileged-mounts
 
     steps:
       - name: Checkout code
@@ -204,17 +188,17 @@ jobs:
         id: restore
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
-          shared-key: ${{ matrix.key }}
+          # The one shared-key of ci.yml
+          shared-key: ci
           save-if: false
 
       # A miss is not an error (main may not have saved this key yet), but it
       # means this job warmed nothing, so it shows up in the run summary.
       - name: Record the result
         env:
-          KEY: ${{ matrix.key }}
           HIT: ${{ steps.restore.outputs.cache-hit }}
         run: |
-          echo "rust-cache '$KEY': exact match ${HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
+          echo "rust-cache 'ci': exact match ${HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
 
   # Flaky-test hunt: the whole suite ten times through nextest, no retries.
   stress:
@@ -248,8 +232,7 @@ jobs:
         run: just stress
 
   # Informational: the Criterion report is uploaded for comparison, but a slow
-  # or failing run never turns the workflow red or opens an issue. The budgets
-  # that gate merges live in ci.yml.
+  # or failing run never turns the workflow red or opens an issue.
   benchmarks:
     name: Benchmarks (informational)
     needs: tasks

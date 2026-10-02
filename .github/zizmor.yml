@@ -14,19 +14,13 @@ rules:
   # gone; never add one for new code.
   artipacked:
     ignore:
-      - ci.yml
       - forensics-eval-regression.yml
   dependabot-cooldown:
     ignore:
       - dependabot.yml
-  excessive-permissions:
-    ignore:
-      - ci.yml
   superfluous-actions:
     ignore:
-      - ci.yml
       - release-core.yml
   template-injection:
     ignore:
-      - ci.yml
       - release-core.yml

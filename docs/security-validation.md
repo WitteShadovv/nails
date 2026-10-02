@@ -11,10 +11,8 @@ This guide documents the security validation mechanisms that are actually in use
 The primary CI workflow performs:
 
 - the dependency policy over the shipped dependency graph (`just deny`): bans, licenses and sources on every run; RustSec advisories and the `deny.toml` ignore expiry check when `Cargo.toml`, `Cargo.lock` or `deny.toml` change
-- CycloneDX SBOM generation with `cargo sbom`
-- SBOM schema validation with `cyclonedx-cli`
-- `cargo geiger` unsafe-code reporting
-- test, coverage, and burn-in execution that support security-sensitive change control
+- the test suite with an enforced line-coverage threshold, the doctests and the privileged real-overlayfs tests, which support security-sensitive change control
+- the canonical Nix build of `.#nails-release` with an archive smoke test
 
 ### Weekly (`.github/workflows/scheduled.yml`)
 
@@ -53,7 +51,6 @@ cyclonedx validate --input-file sbom.cdx.json --input-format json
 
 | Source | Asset | Notes |
 |---|---|---|
-| CI workflow artifacts | `sbom-cyclonedx` | Produced by `ci.yml` |
 | Published GitHub releases and prereleases | `sbom.cdx.json` | Produced by `release-core.yml` |
 
 ### Example downstream use
@@ -118,7 +115,7 @@ nix build -L .#nails-release -o result --option accept-flake-config false
 - same-runner rebuilds are stable
 - two additional rebuilds match the canonical output byte-for-byte
 
-For PRs and pushes, `nix-pr-verify.yml` validates the same release derivation used by the release workflow.
+For PRs and pushes, the `nix-build` job of `ci.yml` validates the same release derivation used by the release workflow.
 
 ## SLSA provenance
 

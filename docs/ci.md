@@ -8,14 +8,13 @@ This repository is public. The CI and release workflows are written for a public
 
 | Workflow | Purpose | Triggers |
 |---|---|---|
-| `.github/workflows/ci.yml` | Primary quality gate for Rust code, coverage, dependency policy, SBOM generation, flaky-test detection, and benchmark enforcement | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
+| `.github/workflows/ci.yml` | The pull request gate: lint, tests with coverage and doctests, dependency policy, privileged mount tests, the Nix release build and the flake checks, summarised by the single required `gate` job | PRs targeting `main`, push to `main`, manual dispatch |
 | `.github/workflows/scheduled.yml` | Maintenance that never gates a merge: the full-graph dependency policy scan (`just deny-full`), the `deny.toml` ignore expiry check, the crate fetcher canary, Rust cache warming, the stress loop (`just stress`), informational benchmarks, an opt-in geiger report and the monthly transitive `Cargo.lock` refresh | Weekly schedule (cache warming twice a week, lockfile refresh monthly), manual dispatch with a `task` input |
 | `.github/workflows/pr-title.yml` | Holds the pull request title to the same Conventional Commits grammar as the commit-msg hook, so a squash merge lands a valid subject on `main` | Pull request opened, edited, synchronized or reopened |
 | `.github/workflows/update-flake-lock.yml` | Monthly refresh of the version sources Dependabot has no ecosystem for: `flake.lock` (`nix flake update`) and the pre-commit hook revisions (`pre-commit autoupdate`), each opening its own pull request | Monthly schedule, manual dispatch |
 | `.github/workflows/forensics-eval-regression.yml` | Cheap non-privileged forensics regression lane covering Python tests plus a fixture-backed smoke run | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
 | `.github/workflows/e2e.yml` | The NixOS VM suite on GitHub-hosted runners: affected tests per pull request, the whole suite per push to `main`, every test driver nightly; runner-parameterised, so the same workflow runs on a self-hosted label | PRs targeting `main` (one path filter), push to `main`, nightly schedule, manual dispatch, `workflow_call` |
 | `.github/workflows/forensics-eval-fast.yml` | GitHub-hosted fast `forensics-eval` unittest lane for lightweight evaluator coverage under `nix/forensics-eval/tests` | Push/PR with path filters covering fast tests, related evaluator code, selected docs, and manual dispatch |
-| `.github/workflows/nix-pr-verify.yml` | Verifies the canonical `.#nails-release` derivation on pushes and PRs | Push to `main`/`dev`, PRs targeting `main`/`dev`, manual dispatch |
 | `.github/workflows/release.yml` | Tag-driven release entrypoint: exact stable tags are verification-only, while suffixed prerelease tags publish immutable GitHub prereleases | Push of `v*` tags |
 | `.github/workflows/publish-release.yml` | Deliberate manual stable-release publisher that requires an exact stable tag input and creates the GitHub release once in final form | Manual dispatch |
 | `.github/workflows/release-core.yml` | Reusable release implementation that builds the canonical bundle, verifies determinism, generates SBOMs, creates attestations, and optionally creates a GitHub release | Called from `release.yml` and `publish-release.yml` |
@@ -25,27 +24,29 @@ This repository is public. The CI and release workflows are written for a public
 
 ### `ci.yml` quality gate
 
-The main CI workflow runs these jobs:
+Every work job runs in parallel. None waits for another; each is gated only on the path filter of the `changes` job:
 
-1. **Lint & Format** — `cargo fmt`, `cargo clippy`, the Rust file length check, and the unit tests for the E2E tooling in `scripts/tests/`.
-2. **Dependency Policy** — `just deny` (cargo-deny over the shipped dependency graph): bans, licenses and sources on every run; advisories and the `deny.toml` ignore expiry check only when `Cargo.toml`, `Cargo.lock` or `deny.toml` change, or on manual runs.
-3. **Tests** — `cargo nextest run` across four shards.
-4. **Coverage Enforcement** — `just coverage` (cargo-llvm-cov over nextest); the line-coverage threshold is defined once, in the `justfile`.
-5. **SBOM Generation** — CycloneDX 1.6 JSON via `cargo sbom`, validated with `cyclonedx-cli`.
-6. **Unsafe Code Audit** — `cargo geiger` report upload.
-7. **Burn-In Loop** — ten full test iterations on PRs and manual dispatch; the weekly stress loop runs in `scheduled.yml`.
-8. **Benchmarks** — enforced Criterion budgets on `main` and manual runs.
-9. **`ci-success`** — final aggregate status check.
+| Job | Runs when | What it does |
+|---|---|---|
+| `changes` | always | `python3 -m ci.changes` decides which filters the change matches (`rust`, `deps`, `nix`, `workflows`). The path rules live in `ci/changes.py` and nowhere else. |
+| `lint` | `rust` | Fails on a `Cargo.lock` that does not match the manifests (`cargo metadata --locked`), then `just fmt-check`, `just lint` (clippy with `--locked -D warnings`), the Rust file length check and the orphan module check. |
+| `rust` | `rust` | `just coverage` (cargo-llvm-cov over nextest with the `ci` profile) and `just doctest`. The line-coverage threshold is defined once, in the `justfile`, and the figure goes to the job summary. The tests run against a private `TMPDIR` that must be empty afterwards. |
+| `deps` | `rust` or `deps` | `just deny bans licenses sources`; advisories and the `deny.toml` ignore expiry check only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changed. |
+| `privileged-mounts` | `rust` | The `#[ignore]`d real-overlayfs tests, built unprivileged and run as root in a private mount namespace. |
+| `nix-build` | `rust` or `nix` | `nix build .#nails-release` (the release derivation) and a smoke test of the archive: contents, `nails --version` and `checksums.txt`. |
+| `lint-misc` | `nix` or `workflows` | The unit tests of the CI and E2E tooling (`scripts/tests`, `ci/tests`) and `nix flake check`: nixfmt, statix, deadnix, shellcheck, actionlint, zizmor and the E2E shard weights. |
+| `gate` | always | The one required status. It fails when any job failed or was cancelled and passes when the path filter skipped one. |
 
 ### Important gate behavior
 
-- `ci-success` is the branch-protection-friendly summary job.
-- **Burn-in** and **benchmarks** are intentionally conditional. A skipped job does not fail `ci-success`; a failed conditional job does.
+- **Require `gate`, not the individual jobs.** `gate` replaced the former `CI Success` check; the branch ruleset for `main` must list `gate` as its required check from this workflow (a maintainer setting).
+- **Path filter.** Only pull requests are filtered; a pull request is compared with the first parent of its merge commit. Pushes to `main` and manual runs run every job, and so does a change to `ci.yml` or `ci/changes.py`. A docs-only pull request runs `changes` and `gate` and nothing else.
+- **One Rust cache.** Every Rust job uses the rust-cache key `ci`; only the `rust` job saves it, and only on `main`. `scheduled.yml` restores the same key twice a week so it does not expire.
+- **Flaky tests.** The nextest `ci` profile (`.config/nextest.toml`) retries a failed test once and kills a test after three 60-second slow periods. A test that passes on its retry is listed as FLAKY in the job summary and flagged with a warning; a red run uploads `target/nextest/ci/junit.xml` as the `junit` artifact. The weekly stress loop in `scheduled.yml` runs without retries.
+- **Fork-safe.** No job in `ci.yml` writes to the pull request, so a fork pull request and any other run with a read-only token pass the gate. Only `report-status` has a write permission (`issues: write`), and it runs only on pushes to `main`.
 - **Advisories gate dependency changes only.** A newly published RustSec advisory does not fail unrelated PRs or `main`; the weekly `just deny-full` run in `scheduled.yml` reports it, including advisories for crates that never ship (other targets, dev-dependencies). See [security-validation.md](security-validation.md#dependency-policy).
-- **E2E tests are not folded into `ci-success`.** They run in `e2e.yml`, whose `e2e-result` job is the status to require.
-- **Nix release-path verification is also separate.** `nix-pr-verify.yml` is the dedicated check for the exact release derivation used by the release workflow.
-
-This split is deliberate: the repository keeps fast, broadly applicable CI in `ci.yml` while preserving deeper release-path and NixOS validation in dedicated workflows.
+- **E2E tests are not folded into `gate`.** They run in `e2e.yml`, whose `e2e-result` job is the status to require.
+- **Off the pull request path.** The SBOM is generated only by the release workflow; benchmarks and the geiger report run in `scheduled.yml` and never gate.
 
 ### Tracking issues for unattended runs
 
@@ -120,7 +121,7 @@ The action also connects the project's public Cachix cache:
   - `vm-test-run-*`: passed VM tests, which later runs fetch instead of booting the test again.
 
   `nails-release-*` is never pushed. Each path goes up with its closure, except what cache.nixos.org already serves. To push more, add a prefix to `PUSH_ALLOW` in `cache_plan.py`.
-- **Who gets the token.** Only `e2e.yml` and `nix-pr-verify.yml` pass it. GitHub withholds secrets from fork pull requests and Dependabot runs, so those stay read-only too.
+- **Who gets the token.** Only `e2e.yml` and the `nix-build` job of `ci.yml` pass it. GitHub withholds secrets from fork pull requests and Dependabot runs, so those stay read-only too.
 - **Release builds.** `release-core.yml` and `reproducibility.yml` set `cache: 'false'` and never read the project cache. `nails` is therefore compiled from source in every release and rebuild job, and nothing from the cache can end up in a release.
 
 Workflows load the action from the checked-out tree, so a run needs a revision that already contains it; rebase older pull requests before running them.
@@ -216,6 +217,7 @@ just ci-rust      # everything the ci.yml Rust jobs run, including coverage
 just coverage     # line coverage; the threshold is defined only in the justfile
 just deny         # dependency policy over the shipped graph
 just nix-lint     # nixfmt, deadnix and statix over the tracked Nix files
+nix flake check   # what the lint-misc job runs
 just e2e ci       # build one E2E target or group
 nix build -L .#nails-release -o result --option accept-flake-config false
 ```
@@ -225,7 +227,7 @@ A commit runs only the fast, offline pre-commit hooks (formatting, file and secr
 ## Secrets and permissions
 
 - `CODECOV_TOKEN` is optional and only affects Codecov upload from `main` pushes.
-- `CACHIX_AUTH_TOKEN` is optional. With it, `e2e.yml` and `nix-pr-verify.yml` push build results to the project binary cache for trusted events (see [Nix setup and binary cache](#nix-setup-and-binary-cache)). Store it as an Actions secret only.
+- `CACHIX_AUTH_TOKEN` is optional. With it, `e2e.yml` and the `nix-build` job of `ci.yml` push build results to the project binary cache for trusted events (see [Nix setup and binary cache](#nix-setup-and-binary-cache)). Store it as an Actions secret only.
 - No E2E lane needs any other secret. Nothing uses the `hetzner-pr` approval environment any more; it can be deleted.
 - Release provenance and GitHub attestations use GitHub OIDC permissions; no long-lived signing secret is required.
 
@@ -235,7 +237,7 @@ A commit runs only the fast, offline pre-commit hooks (formatting, file and secr
 - Exact stable tag pushes are always validation-only.
 - Stable publication requires `publish-release.yml` and an exact stable tag that matches `Cargo.toml`.
 - Automatic prerelease publication is reserved for validated suffixed tags that match the current `Cargo.toml` version.
-- E2E validation and Nix release-path verification are separate workflows and should be treated as part of the overall release posture even though they are not aggregated into `ci-success`.
+- E2E validation is a separate workflow with its own required check, `e2e-result`; it is not aggregated into `gate`.
 - Ordinary forensics CI is fixture-backed; there is no live forensics lane.
 
 ## Related documents

@@ -39,8 +39,7 @@ coverage:
     #!/usr/bin/env bash
     set -euo pipefail
     # Every report lands under target/coverage, so nothing is written outside
-    # the build directory. In CI the percentage is exported for the job summary
-    # and the pull-request comment.
+    # the build directory. In CI the percentage also goes to the job summary.
     out=target/coverage
     mkdir -p "$out"
     cargo llvm-cov --no-report nextest --workspace --all-features --locked
@@ -56,12 +55,6 @@ coverage:
     }
     pct=$(awk "BEGIN { printf \"%.2f\", ${rate} * 100 }")
     echo "Line coverage: ${pct}% (threshold {{ coverage_threshold }}%)"
-    if [ -n "${GITHUB_ENV:-}" ]; then
-        {
-            echo "COVERAGE_PCT=${pct}"
-            echo "COVERAGE_THRESHOLD={{ coverage_threshold }}"
-        } >> "$GITHUB_ENV"
-    fi
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         echo "Line coverage: ${pct}% (threshold {{ coverage_threshold }}%)" >> "$GITHUB_STEP_SUMMARY"
     fi

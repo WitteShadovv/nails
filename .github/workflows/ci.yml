@@ -1,217 +1,181 @@
 name: CI
 
+# The pull request gate. The work jobs run in parallel, each gated only on the
+# path filter in `changes`, and `gate` is the one status to require: it fails
+# when a job failed or was cancelled and passes when the filter skipped one.
+# Pushes to main run every job and report a red run through report-status.
+# The commands live in the justfile, so `just ci-rust` reproduces the Rust
+# jobs locally; the E2E suite has its own workflow and required check.
+
 on:
-  push:
-    branches:
-      - main
-      - dev
   pull_request:
-    branches:
-      - main
-      - dev
-  # Scheduled checks (advisories, the crate fetcher canary, the stress loop)
-  # live in scheduled.yml.
+    branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # A new push supersedes a pull request's run; runs on main always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# rust-cache hashes every CARGO* and RUST* variable into its key, so the
+# cache-warm job in scheduled.yml repeats these two.
 env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  # Stage 1: Lint and format checks
+  # The path rules live in ci/changes.py. A pull request is compared with the
+  # first parent of its merge commit; every other event runs everything.
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      deps: ${{ steps.filter.outputs.deps }}
+      nix: ${{ steps.filter.outputs.nix }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 2 # the merge commit and both of its parents
+          persist-credentials: false
+
+      - name: Select the jobs this change needs
+        id: filter
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+        run: python3 -m ci.changes ${BASE:+--base "$BASE"} >> "$GITHUB_OUTPUT"
+
   lint:
-    name: Lint & Format
+    name: lint
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
 
-      - name: Test E2E and CI tooling
-        run: |
-          python3 -m unittest discover -s scripts/tests -v
-          python3 -m unittest discover -s ci/tests -t . -v
-
-      # No arguments: rustup installs the channel, components and targets from rust-toolchain.toml
+      # No arguments: rustup installs the channel, components and targets from
+      # rust-toolchain.toml.
       - name: Install Rust toolchain
         run: rustup toolchain install
 
-      - name: Setup Rust cache
+      # One cache for the whole workflow, saved only by the rust job on main.
+      - name: Restore Rust cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
-          shared-key: "lint"
+          shared-key: ci
+          save-if: false
+
+      - name: Install just
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: just@1.49.0
+          fallback: none
+
+      # A manifest change (a version bump, a new dependency) without the
+      # matching Cargo.lock update fails here, before anything is built.
+      - name: Check that Cargo.lock is current
+        run: cargo metadata --locked --format-version 1 > /dev/null
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: just fmt-check
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: just lint
 
-      - name: Enforce 500-line limit on Rust files
+      - name: Check Rust file length
         run: ./scripts/check-line-count.sh
 
       - name: Check for orphan (undeclared) modules
         run: ./scripts/check-orphan-modules.sh
 
-  # Stage 2: Dependency policy (cargo-deny) over the shipped dependency graph.
-  # The full graph, dev-dependencies and other targets included, is scanned
-  # weekly by scheduled.yml and never gates a merge.
-  audit:
-    name: Dependency Policy
+  rust:
+    name: rust
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    needs: lint
-    permissions:
-      contents: read
+    timeout-minutes: 15
+    env:
+      # The ci profile in .config/nextest.toml: one retry, a hang limit and a
+      # JUnit report at target/nextest/ci/junit.xml.
+      NEXTEST_PROFILE: ci
 
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          # Full history, so a push can be diffed against its previous tip
-          fetch-depth: 0
           persist-credentials: false
 
-      # No arguments: rustup installs the channel, components and targets from rust-toolchain.toml
       - name: Install Rust toolchain
         run: rustup toolchain install
 
-      - name: Setup Rust cache
+      - name: Set up Rust cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
-          shared-key: "audit"
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Install policy tools
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
-        with:
-          tool: cargo-deny@0.19.1,just@1.49.0
-          fallback: none
-
-      # Advisory results follow the RustSec database, not this repository, so
-      # only a change to the dependencies or their policy is gated on them.
-      # An unknown base (new branch, force push, manual run) counts as a
-      # change.
-      - name: Detect dependency changes
-        id: deps
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PUSH_BEFORE: ${{ github.event.before }}
-        run: |
-          case "$EVENT_NAME" in
-            pull_request) base=HEAD^1 ;; # first parent of the PR merge commit
-            push) base=$PUSH_BEFORE ;;
-            *) base= ;;
-          esac
-          if [ -n "$base" ] && git rev-parse -q --verify "$base^{commit}" >/dev/null &&
-            git diff --quiet "$base" HEAD -- Cargo.lock deny.toml ':(glob)**/Cargo.toml'; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check bans, licenses and sources
-        run: just deny bans licenses sources
-
-      - name: Test the deny.toml ignore expiry check
-        run: python3 -m unittest discover -s ci/tests -t .
-
-      - name: Check advisories
-        if: steps.deps.outputs.changed == 'true'
-        run: just deny advisories
-
-      - name: Check deny.toml ignore expiry
-        if: steps.deps.outputs.changed == 'true'
-        run: python3 ci/deny_ignores.py
-
-  # Stage 3: Test execution with parallel sharding
-  test:
-    name: Test (Shard ${{ matrix.shard }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    needs: lint
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-
-      # No arguments: rustup installs the channel, components and targets from rust-toolchain.toml
-      - name: Install Rust toolchain
-        run: rustup toolchain install
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
-        with:
-          shared-key: "test-shard-${{ matrix.shard }}"
-
-      - name: Install cargo-nextest
-        run: cargo install cargo-nextest@0.9.72 --locked
-
-      - name: Install shells for prompt syntax tests
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y zsh fish
-
-      - name: Run tests (shard ${{ matrix.shard }}/4)
-        run: |
-          cargo nextest run \
-            --partition count:${{ matrix.shard }}/4 \
-            --no-fail-fast \
-            --status-level all
-
-      - name: Check the test suite leaves no temp files behind
-        if: matrix.shard == 1
-        run: ./scripts/check-test-hermetic.sh
-
-      - name: Upload test results on failure
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: test-results-shard-${{ matrix.shard }}
-          path: |
-            target/nextest/**/*.xml
-            target/debug/**/*.log
-          retention-days: 30
-
-  # Stage 4: Coverage enforcement (85% required for TDD)
-  coverage:
-    name: Coverage Enforcement
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    needs: test
-    permissions:
-      contents: read
-      pull-requests: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-
-      # No arguments: rustup installs the channel, components and targets from rust-toolchain.toml
-      - name: Install Rust toolchain
-        run: rustup toolchain install
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
-        with:
-          shared-key: "coverage"
-          cache-targets: "true"
-          cache-all-crates: "true"
-
-      - name: Install coverage tooling
+      - name: Install test tools
         uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
         with:
           tool: cargo-llvm-cov@0.8.4,cargo-nextest@0.9.72,just@1.49.0
           fallback: none
 
-      # The threshold and the report paths live in the justfile recipe, so the
-      # gate is identical locally (`just coverage`) and in CI.
-      - name: Run coverage
+      # The prompt syntax tests skip a shell that is not installed.
+      - name: Install shells for prompt syntax tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh fish
+
+      # The tests run against an empty private TMPDIR that must still be empty
+      # afterwards: a test that leaks temp files makes the suite order-dependent.
+      - name: Give the tests a private TMPDIR
+        run: echo "TMPDIR=$(mktemp -d "$RUNNER_TEMP/tests.XXXXXX")" >> "$GITHUB_ENV"
+
+      # The threshold lives in the justfile; the figure goes to the job summary.
+      - name: Run tests with coverage
         run: just coverage
+
+      - name: Run doctests
+        run: just doctest
+
+      - name: Check that the tests left no temp files
+        run: |
+          leftovers=$(find "$TMPDIR" -mindepth 1)
+          if [ -n "$leftovers" ]; then
+            echo "::error::The tests left files in TMPDIR; hold a tempfile::TempDir guard instead of calling keep() or mem::forget."
+            printf '%s\n' "$leftovers"
+            exit 1
+          fi
+
+      - name: List failed and FLAKY tests
+        if: ${{ !cancelled() }}
+        run: python3 -m ci.junit_summary target/nextest/ci/junit.xml
+
+      - name: Upload the JUnit report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: junit
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
 
       - name: Upload coverage report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -227,386 +191,176 @@ jobs:
           files: ./target/coverage/cobertura.xml
           fail_ci_if_error: false
 
-      - name: Post coverage comment to PR
-        if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0
-        with:
-          header: coverage
-          message: |
-            ## Code Coverage Report
-
-            **Coverage:** ${{ env.COVERAGE_PCT }}%
-            **Threshold:** ${{ env.COVERAGE_THRESHOLD }}%
-
-            ${{ env.COVERAGE_PCT >= env.COVERAGE_THRESHOLD && 'Coverage meets requirements' || 'Coverage below threshold' }}
-
-            [View full report](../actions/runs/${{ github.run_id }})
-
-  # Stage 5: SBOM Generation (CycloneDX)
-  sbom:
-    name: SBOM Generation
+  # Dependency policy over the shipped graph. Advisory results follow the
+  # RustSec database rather than this repository, so they only gate a change
+  # to the dependencies or their policy; scheduled.yml scans the full graph
+  # weekly and never gates a merge.
+  deps:
+    name: deps
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    needs: test
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
 
-      # No arguments: rustup installs the channel, components and targets from rust-toolchain.toml
+      # cargo-deny reads the graph through `cargo metadata`.
       - name: Install Rust toolchain
         run: rustup toolchain install
 
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - name: Install policy tools
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
         with:
-          shared-key: "sbom"
+          tool: cargo-deny@0.19.1,just@1.49.0
+          fallback: none
 
-      - name: Install cargo-sbom
-        run: cargo install cargo-sbom@0.10.0 --locked
+      - name: Check bans, licenses and sources
+        run: just deny bans licenses sources
 
-      - name: Generate CycloneDX SBOM
-        run: |
-          mkdir -p sbom
-          cargo sbom --output-format cyclone_dx_json_1_6 > sbom/sbom.cdx.json
+      - name: Check advisories
+        if: needs.changes.outputs.deps == 'true'
+        run: just deny advisories
 
-      - name: Install CycloneDX CLI for validation
-        run: |
-          curl -sSfL https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.27.1/cyclonedx-linux-x64 -o /tmp/cyclonedx-cli
-          chmod +x /tmp/cyclonedx-cli
+      - name: Check deny.toml ignore expiry
+        if: needs.changes.outputs.deps == 'true'
+        run: python3 ci/deny_ignores.py
 
-      - name: Validate SBOM format
-        run: /tmp/cyclonedx-cli validate --input-file sbom/sbom.cdx.json --input-format json
-
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: sbom-cyclonedx
-          path: sbom/
-          retention-days: 90
-
-  # Stage 6: Unsafe code audit (cargo-geiger)
-  geiger:
-    name: Unsafe Code Audit
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    needs: lint
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-
-      # No arguments: rustup installs the channel, components and targets from rust-toolchain.toml
-      - name: Install Rust toolchain
-        run: rustup toolchain install
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
-        with:
-          shared-key: "geiger"
-
-      - name: Install cargo-geiger
-        run: cargo install cargo-geiger@0.13.0 --locked
-
-      - name: Run unsafe code audit
-        run: |
-          echo "=== Unsafe Code Usage Report ==="
-          cargo geiger --all-features --all-targets 2>&1 | tee target/geiger-report.txt || true
-          echo "=== Report complete ==="
-          echo "Note: This is an informational audit. Review unsafe usage above."
-
-      - name: Upload geiger report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: geiger-report
-          path: target/geiger-report.txt
-          retention-days: 30
-
-  # Stage 7: Burn-in loop for flaky test detection
-  burn-in:
-    name: Burn-In Loop (Flaky Detection)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    needs: coverage
-    if: |
-      (github.event_name == 'pull_request' && contains(fromJson('["main", "dev"]'), github.base_ref)) ||
-      github.event_name == 'workflow_dispatch'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-
-      # No arguments: rustup installs the channel, components and targets from rust-toolchain.toml
-      - name: Install Rust toolchain
-        run: rustup toolchain install
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
-        with:
-          shared-key: "burn-in"
-
-      - name: Run burn-in loop (10 iterations)
-        run: |
-          for i in {1..10}; do
-            echo "Burn-in iteration $i/10"
-            if ! cargo test --all-features --workspace; then
-              echo "FLAKY TEST DETECTED on iteration $i/10"
-              exit 1
-            fi
-          done
-          echo "All 10 iterations passed - no flaky tests detected"
-
-      - name: Upload failure artifacts
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: burn-in-failures
-          path: |
-            target/debug/**/*.log
-            target/tmp/**
-          retention-days: 30
-
-  # Stage 7: Performance benchmarks (Criterion)
-  benchmarks:
-    name: Performance Benchmarks
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    needs: test
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-
-      # No arguments: rustup installs the channel, components and targets from rust-toolchain.toml
-      - name: Install Rust toolchain
-        run: rustup toolchain install
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
-        with:
-          shared-key: "benchmarks"
-
-      - name: Run benchmarks
-        run: |
-          cargo bench -p nails-core --bench performance --all-features
-          cargo bench -p nails-cli --bench startup --all-features
-
-      - name: Check benchmark budgets
-        run: |
-          # Budget thresholds in nanoseconds (generous initial values)
-          declare -A BUDGETS=(
-            ["config_default"]=1000000            # 1 ms
-            ["config_builder"]=2000000            # 2 ms
-            ["state_file_default"]=1000000        # 1 ms
-            ["state_serialize_json"]=5000000      # 5 ms
-            ["state_deserialize_json"]=5000000    # 5 ms
-            ["state_save_load_roundtrip"]=10000000 # 10 ms
-            ["manager_new_mock"]=5000000          # 5 ms
-            ["status_query_current_state"]=5000000 # 5 ms
-            ["status"]=10000000                   # 10 ms
-            ["activate_subsequent"]=50000000      # 50 ms
-            ["emergency_cleanup"]=50000000        # 50 ms
-            ["state_transition_inactive_to_activating"]=1000000  # 1 ms
-            ["state_transition_full_cycle"]=2000000              # 2 ms
-            ["build_overlay_targets"]=5000000     # 5 ms
-            ["apply_exclusion_filter_50dirs"]=1000000             # 1 ms
-            ["cli_parse_time"]=5000000            # 5 ms
-          )
-
-          failed=0
-          for bench_name in "${!BUDGETS[@]}"; do
-            estimates_file="target/criterion/${bench_name}/new/estimates.json"
-            if [ ! -f "$estimates_file" ]; then
-              echo "SKIP: ${bench_name} (no results found)"
-              continue
-            fi
-
-            # Extract mean point_estimate (nanoseconds)
-            mean_ns=$(python3 -c "
-          import json, sys
-          with open('${estimates_file}') as f:
-              data = json.load(f)
-          print(int(data['mean']['point_estimate']))
-          ")
-            budget_ns=${BUDGETS[$bench_name]}
-            mean_ms=$(python3 -c "print(f'{${mean_ns}/1e6:.3f}')")
-            budget_ms=$(python3 -c "print(f'{${budget_ns}/1e6:.3f}')")
-
-            if [ "$mean_ns" -gt "$budget_ns" ]; then
-              echo "FAIL: ${bench_name}: ${mean_ms}ms > budget ${budget_ms}ms"
-              failed=1
-            else
-              echo "PASS: ${bench_name}: ${mean_ms}ms <= budget ${budget_ms}ms"
-            fi
-          done
-
-          if [ "$failed" -eq 1 ]; then
-            echo "Benchmark budget check FAILED"
-            exit 1
-          fi
-          echo "All benchmark budgets passed"
-
-      - name: Upload benchmark results
-        if: success()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: benchmark-results
-          path: target/criterion/
-          retention-days: 90
-
-  # Stage 8: Privileged mount integration tier (real overlayfs in a private
-  # mount namespace). The suite is #[ignore]'d, so the sharded test job never
-  # runs it; this job builds it unprivileged and runs it under `sudo unshare`.
+  # Real overlayfs in a private mount namespace. The suite is #[ignore]'d, so
+  # the rust job never runs it; it is built unprivileged and run as root.
   privileged-mounts:
-    name: Privileged Mount Tests
+    name: privileged-mounts
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    needs: lint
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
 
-      # No arguments: rustup installs the channel, components and targets from rust-toolchain.toml
       - name: Install Rust toolchain
         run: rustup toolchain install
 
-      - name: Setup Rust cache
+      - name: Restore Rust cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
-          shared-key: "privileged-mounts"
+          shared-key: ci
+          save-if: false
 
-      # Build unprivileged: AppArmor on ubuntu-24.04 blocks unprivileged user
-      # namespaces, so only the run step is elevated.
+      # AppArmor on ubuntu-24.04 blocks unprivileged user namespaces, so only
+      # the run step is elevated.
       - name: Build privileged test binary
         id: build
         run: |
-          bin=$(cargo test -p nails-core --test privileged_mounts --no-run \
-            --message-format=json \
-            | python3 -c '
-          import json, sys
-          for line in sys.stdin:
-              line = line.strip()
-              if not line:
-                  continue
-              try:
-                  msg = json.loads(line)
-              except json.JSONDecodeError:
-                  continue
-              target = msg.get("target") or {}
-              if (
-                  msg.get("reason") == "compiler-artifact"
-                  and target.get("name") == "privileged_mounts"
-                  and msg.get("executable")
-              ):
-                  print(msg["executable"])
-          ')
-          if [ -z "$bin" ]; then
-            echo "Could not locate the privileged_mounts test binary" >&2
-            exit 1
-          fi
-          echo "Test binary: $bin"
+          bin=$(cargo test -p nails-core --test privileged_mounts --no-run --locked --message-format=json |
+            jq -r 'select(.reason == "compiler-artifact" and .target.name == "privileged_mounts") | .executable // empty')
+          test -n "$bin" || { echo "::error::No privileged_mounts test binary was built"; exit 1; }
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
 
-      # A private mount namespace keeps every mount invisible to the host and
+      # The private mount namespace keeps every mount invisible to the host and
       # discards them all when the process exits.
       - name: Run privileged mount tests
         env:
           BIN: ${{ steps.build.outputs.bin }}
-        run: |
-          sudo unshare --mount --propagation private \
-            "$BIN" --ignored --test-threads=1
+        run: sudo unshare --mount --propagation private "$BIN" --ignored --test-threads=1
 
-  # Final status check
-  ci-success:
-    name: CI Success
+  # The canonical release derivation and a smoke test of its archive.
+  nix-build:
+    name: nix-build
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.nix == 'true'
     runs-on: ubuntu-24.04
-    needs:
-      [
-        lint,
-        audit,
-        test,
-        coverage,
-        sbom,
-        geiger,
-        burn-in,
-        benchmarks,
-        privileged-mounts,
-      ]
-    if: always()
+    timeout-minutes: 15
 
     steps:
-      - name: Check all jobs passed
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          # Fork pull requests receive no secrets, and the action pushes only
+          # for trusted events, so the token needs no environment.
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
+
+      - name: Build the release bundle
+        run: nix build -L .#nails-release -o result --option accept-flake-config false
+
+      - name: Smoke-test the release archive
         run: |
-          if [[ "${{ needs.lint.result }}" != "success" ]]; then
-            echo "Lint job failed"
-            exit 1
-          fi
+          smoke=$(mktemp -d)
+          tar -xzf result/nails-*.tar.gz -C "$smoke"
+          dir=$(find "$smoke" -mindepth 1 -maxdepth 1 -type d -name 'nails-*')
+          test -f "$dir/LICENSE"
+          test -f "$dir/README.md"
+          "$dir/nails" --version
+          cd result && sha256sum --check --strict checksums.txt
 
-          if [[ "${{ needs.audit.result }}" != "success" ]]; then
-            echo "Dependency policy check failed"
-            exit 1
-          fi
+  # The CI tooling tests and the cheap flake checks: nixfmt, statix, deadnix,
+  # shellcheck, actionlint, zizmor and the E2E shard weights.
+  lint-misc:
+    name: lint-misc
+    needs: changes
+    if: needs.changes.outputs.nix == 'true' || needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
-          if [[ "${{ needs.test.result }}" != "success" ]]; then
-            echo "Test job failed"
-            exit 1
-          fi
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
 
-          if [[ "${{ needs.coverage.result }}" != "success" ]]; then
-            echo "Coverage job failed (85% required)"
-            exit 1
-          fi
+      - name: Test the CI and E2E tooling
+        run: |
+          python3 -m unittest discover -s scripts/tests -v
+          python3 -m unittest discover -s ci/tests -t . -v
 
-          if [[ "${{ needs.sbom.result }}" != "success" ]]; then
-            echo "SBOM generation failed"
-            exit 1
-          fi
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
-          if [[ "${{ needs.privileged-mounts.result }}" != "success" ]]; then
-            echo "Privileged mount tests failed"
-            exit 1
-          fi
+      - name: Run the flake checks
+        run: nix flake check -L --option accept-flake-config false
 
-          if [[ "${{ needs.geiger.result }}" == "failure" ]]; then
-            echo "Unsafe code audit failed"
-            exit 1
-          fi
-
-          # burn-in and benchmarks are conditional (may be skipped)
-          if [[ "${{ needs.burn-in.result }}" == "failure" ]]; then
-            echo "Burn-in detected flaky tests"
-            exit 1
-          fi
-
-          if [[ "${{ needs.benchmarks.result }}" == "failure" ]]; then
-            echo "Benchmarks failed"
-            exit 1
-          fi
-
-          echo "All CI checks passed"
-
-  # A push to main runs unattended: a red one opens or comments on the
-  # 'CI red: main' issue, and the next push where every job passes closes it.
-  # burn-in is left out because it never runs on a push.
-  report-status:
-    name: Report status
+  # The one required status. A job the path filter skipped counts as passed.
+  gate:
+    name: gate
+    needs: [changes, lint, rust, deps, privileged-mounts, nix-build, lint-misc]
+    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs:
-      [
-        lint,
-        audit,
-        test,
-        coverage,
-        sbom,
-        geiger,
-        benchmarks,
-        privileged-mounts,
-      ]
+    outputs:
+      # report-status reads the results of the work jobs through this.
+      needs: ${{ toJSON(needs) }}
+
+    steps:
+      - name: Check the outcome
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "- \(.key): \(.value.result)"' <<< "$NEEDS" >> "$GITHUB_STEP_SUMMARY"
+          red=$(jq -r '[to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key] | join(", ")' <<< "$NEEDS")
+          if [ -n "$red" ]; then
+            echo "::error::Failed or cancelled: $red"
+            exit 1
+          fi
+
+  # A push to main runs unattended: a red run opens or comments on the
+  # 'CI red: main' issue, and the next run where every job passes closes it.
+  report-status:
+    name: report-status
+    needs: gate
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       contents: read
       issues: write # open, comment on and close the tracking issue
@@ -621,5 +375,5 @@ jobs:
       - name: Report status
         uses: ./.github/actions/report-status
         with:
-          needs: ${{ toJSON(needs) }}
+          needs: ${{ needs.gate.outputs.needs }}
           title: "CI red: main"
