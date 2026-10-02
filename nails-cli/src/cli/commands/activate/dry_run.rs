@@ -254,6 +254,7 @@ fn build_preflight_registry(
 mod tests {
     use super::{build_preflight_registry, execute_dry_run};
     use nails_core::output::Style;
+    use nails_core::test_support::EnvGuard;
     use nails_core::{Config, OverlayConfig, OverlayMode, RealFilesystem};
 
     const ASCII: Style = Style {
@@ -270,6 +271,7 @@ mod tests {
         // child, so the directory is cleaned up when this guard drops after the
         // child exits, instead of leaking a fixed `/tmp` path.
         let hidden_root = tempfile::tempdir().expect("create dry-run hidden-root tempdir");
+        let _env = EnvGuard::lock();
         std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
             .env("NAILS_DRY_RUN_SUBPROCESS_CASE", case)

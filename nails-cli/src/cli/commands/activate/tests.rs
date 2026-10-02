@@ -1,6 +1,7 @@
 use super::execute;
 use crate::cli::args::{ActivateArgs, SessionPolicy};
 use crate::cli::output::OutputSettings;
+use nails_core::test_support::EnvGuard;
 use std::path::PathBuf;
 
 const SUBPROCESS_TEST_NAME: &str = "cli::commands::activate::tests::subprocess_activate_entrypoint";
@@ -15,6 +16,7 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
         command.env("NAILS_ACTIVATE_SUBPROCESS_CONFIG", path);
     }
 
+    let _env = EnvGuard::lock();
     command
         .output()
         .expect("failed to run activate subprocess test")

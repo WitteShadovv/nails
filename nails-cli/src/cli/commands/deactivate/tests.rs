@@ -4,6 +4,7 @@ use crate::cli::output::deactivate::DEACTIVATE_RECOVERY_GUIDANCE;
 use crate::cli::output::{OutputMode, OutputSettings};
 use nails_core::Verbosity;
 use nails_core::constants::{ENV_FORCE_DETACH, ENV_SKIP_DETACH};
+use nails_core::test_support::EnvGuard;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -32,6 +33,7 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
         command.env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", path);
     }
 
+    let _env = EnvGuard::lock();
     command
         .output()
         .expect("failed to run deactivate subprocess test")
@@ -56,6 +58,7 @@ fn run_runtime_subprocess(
         command.env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", path);
     }
 
+    let _env = EnvGuard::lock();
     for attempt in 0..5 {
         match command.output() {
             Ok(output) => return output,
@@ -280,6 +283,7 @@ fn execute_deactivate_reports_detach_error_as_json() {
     )
     .unwrap();
 
+    let _env = EnvGuard::lock();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", "detach-error-json")
@@ -317,6 +321,7 @@ fn execute_deactivate_reports_detach_error_in_human_output() {
     )
     .unwrap();
 
+    let _env = EnvGuard::lock();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", "detach-error-human")
@@ -348,6 +353,7 @@ fn execute_deactivate_blocks_disallowed_real_operations_before_manager_creation(
     )
     .unwrap();
 
+    let _env = EnvGuard::lock();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", "real-ops-blocked")
@@ -378,6 +384,7 @@ fn execute_deactivate_blocks_disallowed_real_operations_in_quiet_mode() {
     )
     .unwrap();
 
+    let _env = EnvGuard::lock();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", "real-ops-blocked-quiet")
@@ -405,6 +412,7 @@ fn execute_deactivate_blocks_disallowed_real_operations_with_verbose_mode() {
     )
     .unwrap();
 
+    let _env = EnvGuard::lock();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env(

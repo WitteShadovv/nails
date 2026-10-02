@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use super::{StdoutFormat, logging_init_line};
 use crate::cli::output::OutputSettings;
 use nails_core::Verbosity;
+use nails_core::test_support::EnvGuard;
 
 #[derive(Clone, Default)]
 struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
@@ -186,6 +187,7 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
         command.env("NAILS_LOGGING_SUBPROCESS_CONFIG", path);
     }
 
+    let _env = EnvGuard::lock();
     command
         .output()
         .expect("failed to run logging subprocess test")

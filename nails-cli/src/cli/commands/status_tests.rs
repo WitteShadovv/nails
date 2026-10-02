@@ -2,6 +2,7 @@ use super::{execute, status_exit_code};
 use crate::cli::args::StatusArgs;
 use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
 use nails_core::status::SecurityPosture;
+use nails_core::test_support::EnvGuard;
 use std::path::PathBuf;
 
 #[test]
@@ -53,6 +54,7 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
         command.env("NAILS_STATUS_SUBPROCESS_CONFIG", path);
     }
 
+    let _env = EnvGuard::lock();
     command
         .output()
         .expect("failed to run status subprocess test")

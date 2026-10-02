@@ -140,6 +140,7 @@ mod tests {
     };
     use crate::cli::args::EmergencyArgs;
     use crate::cli::output::{OutputMode, OutputSettings};
+    use nails_core::test_support::EnvGuard;
     use std::path::PathBuf;
 
     const SUBPROCESS_TEST_NAME: &str =
@@ -155,6 +156,7 @@ mod tests {
             command.env("NAILS_EMERGENCY_SUBPROCESS_CONFIG", path);
         }
 
+        let _env = EnvGuard::lock();
         command
             .output()
             .expect("failed to run emergency subprocess test")
