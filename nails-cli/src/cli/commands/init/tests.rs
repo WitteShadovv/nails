@@ -5,7 +5,9 @@ use nails_core::{
     Config, Filesystem, MockFilesystem, NailsManager, StateFile, SystemState,
     stage_hidden_config_symlink,
 };
-use std::path::Path;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 /// Opt the calling test into test-runtime mode until the guard is dropped.
@@ -22,7 +24,7 @@ fn test_runtime_env() -> EnvGuard {
     env
 }
 
-fn write_test_base_hardware_config(tmp: &TempDir) -> std::path::PathBuf {
+fn write_test_base_hardware_config(tmp: &TempDir) -> PathBuf {
     let path = tmp
         .path()
         .join("decoy/etc/nixos/hardware-configuration.nix");
@@ -33,6 +35,40 @@ fn write_test_base_hardware_config(tmp: &TempDir) -> std::path::PathBuf {
     )
     .unwrap();
     path
+}
+
+/// Arguments that initialise a real temp directory: the target is not a separate
+/// mount (a `TempDir` shares `/`'s device), so `--allow-unmounted` is required,
+/// and the base hardware config is pinned so the run never consults the host.
+fn real_init_args(path: &Path, base_hardware_config: &Path) -> InitArgs {
+    InitArgs {
+        path: path.to_path_buf(),
+        allow_unmounted: true,
+        hardware_config: Some(base_hardware_config.to_path_buf()),
+        no_hardware_config: false,
+    }
+}
+
+/// Run a full init against a real temp directory, asserting success.
+fn init_real(tmp: &TempDir, base_hardware_config: &Path) {
+    let status = run(
+        &OutputSettings::default(),
+        &RealFilesystem,
+        &real_init_args(tmp.path(), base_hardware_config),
+    );
+    assert_eq!(status, ExitStatus::Ok);
+}
+
+/// A mock whose `root` reads as a mounted, writable, symlink-capable directory.
+fn attached_mock(root: &Path) -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_path_type(root.to_str().unwrap(), PathKind::Dir);
+    fs.mock_set_writable(root.to_str().unwrap(), true);
+    fs.mock_set_supports_symlinks(root, true);
+    // The default mock device id for an unmapped path is distinct from `/`'s, so
+    // `root` already reads as a mounted volume of its own.
+    fs
 }
 
 /// Load the config `nails init` generated under `root`.
@@ -97,11 +133,8 @@ fn mock_minimal_activation_prereqs(fs: &MockFilesystem) {
 fn test_init_creates_directory_structure() {
     let tmp = TempDir::new().unwrap();
     let base_hardware_config = write_test_base_hardware_config(&tmp);
-    let args = InitArgs {
-        path: tmp.path().to_path_buf(),
-    };
 
-    execute_with_base_hardware_config(args, &base_hardware_config).unwrap();
+    init_real(&tmp, &base_hardware_config);
 
     for dir_name in SUBDIRS {
         let dir = tmp.path().join(dir_name);
@@ -110,6 +143,10 @@ fn test_init_creates_directory_structure() {
         assert_eq!(meta.permissions().mode() & 0o777, 0o700);
     }
     assert!(!tmp.path().join("state").exists());
+    assert!(
+        !tmp.path().join("overlays").exists(),
+        "the unused overlays/ directory must not be created"
+    );
 
     let state_file = tmp.path().join("state.json");
     assert!(state_file.is_file());
@@ -184,25 +221,267 @@ fn test_init_creates_directory_structure() {
 #[test]
 fn test_init_nonexistent_path() {
     let args = InitArgs {
-        path: std::path::PathBuf::from("/tmp/nails-test-nonexistent-path-xyz"),
+        path: PathBuf::from("/tmp/nails-test-nonexistent-path-xyz"),
+        ..Default::default()
     };
-    let result = execute(args);
-    assert!(result.is_err());
+    let status = execute(&OutputSettings::default(), &args, None);
+    assert_ne!(status, ExitStatus::Ok);
 }
 
 #[test]
 fn test_init_idempotent() {
     let tmp = TempDir::new().unwrap();
     let base_hardware_config = write_test_base_hardware_config(&tmp);
-    let args1 = InitArgs {
-        path: tmp.path().to_path_buf(),
-    };
-    execute_with_base_hardware_config(args1, &base_hardware_config).unwrap();
+    init_real(&tmp, &base_hardware_config);
+    init_real(&tmp, &base_hardware_config);
+}
 
-    let args2 = InitArgs {
-        path: tmp.path().to_path_buf(),
+#[test]
+fn rerun_reports_already_present_and_creates_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let base_hardware_config = write_test_base_hardware_config(&tmp);
+    let args = real_init_args(tmp.path(), &base_hardware_config);
+    let fs = RealFilesystem;
+
+    let first = apply(&fs, tmp.path(), plan(&fs, &args).unwrap()).unwrap();
+    assert!(
+        first
+            .items
+            .iter()
+            .any(|item| item.status == ItemStatus::Created),
+        "the first run must create something"
+    );
+
+    let second = apply(&fs, tmp.path(), plan(&fs, &args).unwrap()).unwrap();
+    assert!(
+        second
+            .items
+            .iter()
+            .all(|item| item.status == ItemStatus::AlreadyPresent),
+        "a re-run must report everything already present: {:?}",
+        second.items
+    );
+    assert!(!tmp.path().join("overlays").exists());
+}
+
+#[test]
+fn global_config_flag_is_rejected() {
+    let args = InitArgs {
+        path: PathBuf::from("/mnt/data"),
+        ..Default::default()
     };
-    execute_with_base_hardware_config(args2, &base_hardware_config).unwrap();
+    let status = execute(
+        &OutputSettings::default(),
+        &args,
+        Some(Path::new("/tmp/other-config.toml")),
+    );
+    assert_eq!(status, ExitStatus::Config);
+}
+
+#[test]
+fn unmounted_target_refused_with_zero_writes() {
+    let root = Path::new("/mnt/data");
+    let fs = attached_mock(root);
+    // Share a device with `/`, so nothing is mounted at the target.
+    fs.mock_set_device_id(Path::new("/"), 7);
+    fs.mock_set_device_id(root, 7);
+
+    let args = InitArgs {
+        path: root.to_path_buf(),
+        allow_unmounted: false,
+        hardware_config: None,
+        no_hardware_config: true,
+    };
+
+    let status = run(&OutputSettings::default(), &fs, &args);
+    assert_eq!(status, ExitStatus::PreflightRefused);
+
+    for rel in SUBDIRS {
+        assert!(
+            !fs.path_exists(&root.join(rel)).unwrap(),
+            "{rel} must not be created when the target is refused"
+        );
+    }
+    assert!(
+        !fs.path_exists(&root.join("config").join(CONFIG_FILE_NAME))
+            .unwrap()
+    );
+}
+
+#[test]
+fn same_device_target_reports_the_mount_reason() {
+    let root = Path::new("/mnt/data");
+    let fs = attached_mock(root);
+    fs.mock_set_device_id(Path::new("/"), 7);
+    fs.mock_set_device_id(root, 7);
+
+    let args = InitArgs {
+        path: root.to_path_buf(),
+        allow_unmounted: false,
+        hardware_config: None,
+        no_hardware_config: true,
+    };
+
+    match plan(&fs, &args) {
+        Err(InitFailure::Preconditions(failures)) => assert!(
+            failures
+                .iter()
+                .any(|reason| reason.contains("shares a device with /")),
+            "{failures:?}"
+        ),
+        other => panic!("expected a precondition failure, got {:?}", other.is_ok()),
+    }
+}
+
+#[test]
+fn allow_unmounted_proceeds_with_a_warning() {
+    let root = Path::new("/mnt/data");
+    let fs = attached_mock(root);
+    fs.mock_set_device_id(Path::new("/"), 7);
+    fs.mock_set_device_id(root, 7);
+
+    let args = InitArgs {
+        path: root.to_path_buf(),
+        allow_unmounted: true,
+        hardware_config: None,
+        no_hardware_config: true,
+    };
+
+    let plan = plan(&fs, &args).expect("--allow-unmounted should pass validation");
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|warning| warning.contains("--allow-unmounted")),
+        "{:?}",
+        plan.warnings
+    );
+}
+
+#[test]
+fn missing_hardware_config_fails_before_any_write() {
+    let root = Path::new("/mnt/data");
+    let fs = attached_mock(root);
+    // A NixOS host, but the default base hardware config is absent.
+    fs.mock_set_path_exists("/etc/NIXOS", true);
+
+    let args = InitArgs {
+        path: root.to_path_buf(),
+        allow_unmounted: false,
+        hardware_config: None,
+        no_hardware_config: false,
+    };
+
+    match plan(&fs, &args) {
+        Err(InitFailure::Preconditions(failures)) => assert!(
+            failures
+                .iter()
+                .any(|reason| reason.contains("hardware configuration")),
+            "{failures:?}"
+        ),
+        other => panic!("expected a precondition failure, got {:?}", other.is_ok()),
+    }
+}
+
+#[test]
+fn non_nixos_host_skips_the_layout() {
+    let root = Path::new("/mnt/data");
+    let fs = attached_mock(root);
+    // No /etc/NIXOS marker: not a NixOS host.
+
+    let args = InitArgs {
+        path: root.to_path_buf(),
+        allow_unmounted: false,
+        hardware_config: None,
+        no_hardware_config: false,
+    };
+
+    let plan = plan(&fs, &args).expect("non-NixOS host should still pass");
+    match plan.bootstrap {
+        HardwareBootstrap::Skip(reason) => assert!(reason.contains("not NixOS"), "{reason}"),
+        HardwareBootstrap::From(path) => panic!("expected a skip, got From({})", path.display()),
+    }
+}
+
+#[test]
+fn no_hardware_config_skips_bootstrap_on_a_real_volume() {
+    let tmp = TempDir::new().unwrap();
+    let args = InitArgs {
+        path: tmp.path().to_path_buf(),
+        allow_unmounted: true,
+        hardware_config: None,
+        no_hardware_config: true,
+    };
+    let fs = RealFilesystem;
+
+    let report = apply(&fs, tmp.path(), plan(&fs, &args).unwrap()).unwrap();
+
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("--no-hardware-config")),
+        "{:?}",
+        report.warnings
+    );
+    assert!(tmp.path().join("logs").is_dir());
+    assert!(tmp.path().join("config").join(CONFIG_FILE_NAME).is_file());
+    assert!(tmp.path().join("state.json").is_file());
+    assert!(
+        !tmp.path()
+            .join("etc/nixos/hardware-configuration.nix")
+            .exists()
+    );
+    assert!(!tmp.path().join("config/nixos/configuration.nix").exists());
+    assert!(!tmp.path().join("etc/nixos/nails").exists());
+}
+
+#[test]
+fn full_validation_passes_on_a_mock_nixos_volume() {
+    let root = Path::new("/mnt/data");
+    let fs = attached_mock(root);
+    fs.mock_set_path_exists("/etc/NIXOS", true);
+    fs.mock_set_path_exists(DEFAULT_HARDWARE_CONFIG, true);
+    fs.mock_set_readable(DEFAULT_HARDWARE_CONFIG, true);
+
+    let args = InitArgs {
+        path: root.to_path_buf(),
+        allow_unmounted: false,
+        hardware_config: None,
+        no_hardware_config: false,
+    };
+
+    let plan = plan(&fs, &args).expect("a mounted NixOS volume should validate");
+    assert!(plan.warnings.is_empty());
+    assert!(matches!(plan.bootstrap, HardwareBootstrap::From(_)));
+}
+
+#[test]
+fn json_report_lists_each_item_and_its_status() {
+    let report = InitReport {
+        root: "/mnt/data".to_string(),
+        items: vec![
+            InitItem {
+                path: "/mnt/data/logs".to_string(),
+                status: ItemStatus::Created,
+            },
+            InitItem {
+                path: "/mnt/data/config/nails.toml".to_string(),
+                status: ItemStatus::AlreadyPresent,
+            },
+        ],
+        warnings: Vec::new(),
+        next_steps: vec!["activate".to_string()],
+    };
+
+    let line = Envelope::success("init", &report).to_line();
+    let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(value["command"], "init");
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["data"]["root"], "/mnt/data");
+    assert_eq!(value["data"]["items"][0]["path"], "/mnt/data/logs");
+    assert_eq!(value["data"]["items"][0]["status"], "created");
+    assert_eq!(value["data"]["items"][1]["status"], "already_present");
+    assert_eq!(value["data"]["next_steps"][0], "activate");
 }
 
 #[test]
@@ -210,13 +489,7 @@ fn test_init_generated_config_is_preflight_ready_for_activation() {
     let _env = test_runtime_env();
     let tmp = TempDir::new().unwrap();
     let base_hardware_config = write_test_base_hardware_config(&tmp);
-    execute_with_base_hardware_config(
-        InitArgs {
-            path: tmp.path().to_path_buf(),
-        },
-        &base_hardware_config,
-    )
-    .unwrap();
+    init_real(&tmp, &base_hardware_config);
 
     let config = load_generated_config(tmp.path());
 
@@ -286,13 +559,7 @@ fn test_init_generated_config_activates_with_minimal_mock_filesystem_setup() {
     let _env = test_runtime_env();
     let tmp = TempDir::new().unwrap();
     let base_hardware_config = write_test_base_hardware_config(&tmp);
-    execute_with_base_hardware_config(
-        InitArgs {
-            path: tmp.path().to_path_buf(),
-        },
-        &base_hardware_config,
-    )
-    .unwrap();
+    init_real(&tmp, &base_hardware_config);
 
     let config = load_generated_config(tmp.path());
 

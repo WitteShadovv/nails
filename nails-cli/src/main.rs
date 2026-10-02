@@ -117,6 +117,7 @@ mod tests {
         assert!(!command_writes_logs(&Commands::Status(Default::default())));
         assert!(!command_writes_logs(&Commands::Init(InitArgs {
             path: PathBuf::from("/mnt/data"),
+            ..Default::default()
         })));
         assert!(!command_writes_logs(&Commands::NotifyDispatch));
     }

@@ -55,5 +55,18 @@ in
         contents = machine.succeed("cat /mnt/hidden-volume/config")
         assert contents == "do-not-overwrite\n", contents
         machine.fail("test -e /mnt/hidden-volume/config/nails.toml")
+
+    with subtest("init refuses an unmounted target and leaves it empty"):
+        # A plain directory on the root filesystem shares /'s device, so nothing
+        # is mounted there. init must refuse before writing anything.
+        machine.succeed("rm -rf /root/nails-unmounted && mkdir -p /root/nails-unmounted")
+        machine.succeed(
+            "bash -lc 'set +e; nails init /root/nails-unmounted > /tmp/init-unmounted.stdout 2>/tmp/init-unmounted.stderr; printf \"%s\" \"$?\" > /tmp/init-unmounted.rc'"
+        )
+        rc = int(machine.succeed("cat /tmp/init-unmounted.rc").strip())
+        combined = machine.succeed("cat /tmp/init-unmounted.stdout /tmp/init-unmounted.stderr")
+        assert rc != 0, f"init unexpectedly accepted an unmounted directory: {combined!r}"
+        assert "mount the hidden volume first" in combined, combined
+        machine.succeed('test -z "$(ls -A /root/nails-unmounted)"')
   '';
 }

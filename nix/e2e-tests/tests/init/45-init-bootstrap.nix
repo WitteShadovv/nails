@@ -23,7 +23,6 @@ in
     machine.wait_for_unit("multi-user.target")
 
     expected_dirs = [
-        "/mnt/hidden-volume/overlays",
         "/mnt/hidden-volume/logs",
         "/mnt/hidden-volume/config",
         "/mnt/hidden-volume/config/nixos",
@@ -61,7 +60,9 @@ in
         machine.succeed("mount --bind /tmp/init-bootstrap-etc-nixos /etc/nixos")
 
     with subtest("run init bootstrap"):
-        machine.succeed("nails init /mnt/hidden-volume")
+        init_output = machine.succeed("nails init /mnt/hidden-volume")
+        assert "Next steps:" in init_output, init_output
+        assert "nails activate" in init_output, init_output
 
     with subtest("assert directory skeleton and permissions"):
         for path in expected_dirs:
@@ -69,6 +70,7 @@ in
             perms = machine.succeed(f"stat -c %a {path}").strip()
             assert perms == "700", f"Expected 0700 on {path}, got {perms}"
         machine.fail("test -e /mnt/hidden-volume/state")
+        machine.fail("test -e /mnt/hidden-volume/overlays")
 
     with subtest("assert generated files and symlink staging"):
         for path, expected_perm in expected_files.items():

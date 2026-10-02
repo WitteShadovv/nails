@@ -31,13 +31,7 @@ pub fn execute_command(cli: Cli, settings: &OutputSettings) -> ExitStatus {
         }
         Commands::Status(args) => commands::status::execute(settings, &args, config),
         Commands::Verify(args) => commands::verify::execute(settings, &args, config),
-        Commands::Init(args) => match commands::init::execute(args) {
-            Ok(()) => ExitStatus::Ok,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitStatus::Failed
-            }
-        },
+        Commands::Init(args) => commands::init::execute(settings, &args, config),
         Commands::ResetUpper(args) => {
             commands::reset_upper::execute(settings, &args, config, check_real_operations_allowed)
         }

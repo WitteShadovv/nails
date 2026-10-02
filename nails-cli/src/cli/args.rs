@@ -324,10 +324,30 @@ pub enum ConfigCommand {
 }
 
 /// `nails init` arguments
-#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct InitArgs {
-    /// Path to the hidden volume mount point
+    /// Path to the mounted hidden volume to initialise
     pub path: PathBuf,
+
+    /// Initialise a path that is not a mounted volume of its own
+    ///
+    /// By default `init` refuses a target that shares a device with `/`, because
+    /// writing the NAILS layout onto the decoy disk is exactly the mistake that
+    /// leaves an identifying tree where the real volume later hides it. Pass this
+    /// for a directory-style backend that is deliberately not a separate mount.
+    #[arg(long)]
+    pub allow_unmounted: bool,
+
+    /// Base hardware configuration to seed the hidden NixOS layout from
+    ///
+    /// Overrides the default `/etc/nixos/hardware-configuration.nix`. On a
+    /// non-NixOS host the layout is skipped unless this is given.
+    #[arg(long, value_name = "PATH", conflicts_with = "no_hardware_config")]
+    pub hardware_config: Option<PathBuf>,
+
+    /// Do not create the hidden NixOS layout at all
+    #[arg(long)]
+    pub no_hardware_config: bool,
 }
 
 /// `nails reset-upper` arguments

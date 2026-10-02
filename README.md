@@ -102,10 +102,10 @@ GitHub Releases may contain either a manually published stable release for an ex
 # Open and mount hidden storage first
 sudo cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden \
   "$HOME/Downloads/family_photos" veracrypt-hidden
-sudo mount /dev/mapper/veracrypt-hidden /mnt/hidden
+sudo mount /dev/mapper/veracrypt-hidden /mnt/hidden-volume
 
 # Install the release binary onto hidden storage
-install -m0755 /path/to/downloaded/nails /mnt/hidden/nails
+install -m0755 /path/to/downloaded/nails /mnt/hidden-volume/nails
 ```
 
 Verify the published checksums before first use. For higher assurance, rebuild the published source revision and compare it against the bundle using the reproducibility guidance in
@@ -114,17 +114,17 @@ Verify the published checksums before first use. For higher assurance, rebuild t
 ### Option 2: Build from source
 
 ```bash
-git clone https://github.com/WitteShadovv/nails /mnt/hidden/src/nails
-cd /mnt/hidden/src/nails
+git clone https://github.com/WitteShadovv/nails /mnt/hidden-volume/src/nails
+cd /mnt/hidden-volume/src/nails
 cargo build --release
-install -m0755 ./target/release/nails /mnt/hidden/nails
+install -m0755 ./target/release/nails /mnt/hidden-volume/nails
 ```
 
 ### Option 3: Build with Nix
 
 ```bash
 nix build .#nails
-install -m0755 ./result/bin/nails /mnt/hidden/nails
+install -m0755 ./result/bin/nails /mnt/hidden-volume/nails
 ```
 
 > [!NOTE]
