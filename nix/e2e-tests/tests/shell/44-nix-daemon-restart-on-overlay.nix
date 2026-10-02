@@ -205,6 +205,32 @@ let
       fi
       echo MARKER:daemon-restarted
 
+      # Write-landing probe: add a store path with unique, unpredictable content
+      # through the daemon while /nix is overlaid. With the store self-bound into
+      # the overlay this must land in the hidden upper; a pre-fix build resolves
+      # the daemon's writable remount to the decoy backing store instead.
+      hidden_probe_id=$("$busybox_bin" cat /proc/sys/kernel/random/uuid | "$busybox_bin" tr -d '-')
+      hidden_probe_name="nails-leak-probe-$hidden_probe_id"
+      hidden_probe_file="/tmp/$hidden_probe_name"
+      printf 'unique-hidden-session-content-%s\n' "$hidden_probe_id" > "$hidden_probe_file"
+      hidden_store_path=$(run_nix --extra-experimental-features nix-command store add --store daemon "$hidden_probe_file")
+      case "$hidden_store_path" in
+        ${nixStorePrefix}*) ;;
+        *) echo "unexpected hidden store path: $hidden_store_path" >&2; exit 1 ;;
+      esac
+      hidden_store_basename=''${hidden_store_path##*/}
+      if [ ! -e "/mnt/hidden-volume${nixStorePrefix}$hidden_store_basename" ]; then
+        echo "hidden-session store path did not land in the hidden upper: $hidden_store_path" >&2
+        exit 1
+      fi
+      if [ -e /run/nails/systemctl-cache ]; then
+        echo "systemctl-cache tmpfs artifact should never exist after activation" >&2
+        exit 1
+      fi
+      printf 'MARKER:hidden-store-path=%s\n' "$hidden_store_path"
+      echo MARKER:hidden-upper-present
+      echo MARKER:no-systemctl-cache
+
     '';
 in
 {
@@ -250,11 +276,32 @@ in
         assert "MARKER:daemon-active-after-activation" in console_log, console_log
         assert "MARKER:daemon-restarted" in console_log, console_log
         assert "MARKER:nix-usable-after-activation" in console_log, console_log
+        assert "MARKER:hidden-upper-present" in console_log, console_log
+        assert "MARKER:no-systemctl-cache" in console_log, console_log
+
+        hidden_store_path = None
+        for line in console_log.splitlines():
+            prefix = "MARKER:hidden-store-path="
+            if line.startswith(prefix):
+                hidden_store_path = line[len(prefix):].strip()
+        assert hidden_store_path and hidden_store_path.startswith(
+            "${nixStorePrefix}"
+        ), console_log
 
         canonical_deactivate(config_path, unit_name="nails-deactivate-nix-daemon-overlay")
 
         assert machine.succeed("systemctl is-active nix-daemon.socket").strip() == "active"
         assert_nix_usable()
         assert machine.execute("mountpoint -q /nix")[0] != 0
+
+        # Disk-image leak check: the hidden-session store path must be absent from
+        # the decoy /nix after deactivation (it lived only in the hidden upper).
+        # Fails on pre-fix builds that leaked the write onto the decoy backing.
+        assert (
+            machine.execute("test -e %s" % hidden_store_path)[0] != 0
+        ), "hidden-session store path leaked onto the decoy /nix: %s" % hidden_store_path
+        assert (
+            machine.execute("test -e /run/nails/systemctl-cache")[0] != 0
+        ), "systemctl-cache tmpfs artifact should never exist"
   '';
 }
