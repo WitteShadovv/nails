@@ -54,6 +54,9 @@ during the current alpha phase.
   `/nix`).
 - Preflight now warns when the hidden-volume mount path, device-mapper name or filesystem label
   contains a word that hints at hidden storage, and the built-in default root name is neutral.
+- The strict `allow_leaky_exclusions` key, which lists the load-bearing directories (`/home`,
+  `/root`, `/etc`, `/var`, `/nix`, `/srv`, `/opt` and a disk-backed `/tmp`) an Auto-mode overlay
+  exclusion is permitted to send to the decoy disk; any other exclusion of one of these is refused.
 
 ### Changed
 
@@ -123,6 +126,19 @@ during the current alpha phase.
   documents the discard, timestamp and copy-on-write hazards of each backend.
 - `.gitignore` no longer lists personal or planning paths and its packaging patterns are anchored;
   the shell-history forensics page is trimmed to what NAILS does about each history surface.
+- `nails init` validates that the target is a mounted volume of its own, writable and
+  symlink-capable, and that any hardware config is readable, before writing anything, and writes
+  nothing on refusal; it adds `--allow-unmounted`, `--hardware-config` and `--no-hardware-config`,
+  supports `--json`, reports each item as created or already present, drops the unused `overlays/`
+  directory, rejects a global `--config`, and ends with numbered next steps.
+- Standard deactivation no longer reinstalls the decoy configuration: the redundant
+  `switch-to-configuration switch` on the real disk is gone (the reboot already boots the decoy),
+  switch actions are a non-installing enum that can only request `test`, and a failed reboot falls
+  back to `test`, so the bootloader, ESP and EFI NVRAM are left untouched.
+- CI is now a lean parallel pull-request gate with a single required `gate` check and a path filter
+  that lets docs-only changes skip the Rust and Nix jobs; the nextest `ci` profile retries a failed
+  test once and reports FLAKY tests, `nix-pr-verify.yml` is folded into `ci.yml`, and the branch
+  ruleset should require `gate` instead of `CI Success`.
 
 ### Removed
 
@@ -174,6 +190,8 @@ during the current alpha phase.
   in user data and `/nix` survive, and the `attr` package is no longer required.
 - Shell and editor history cleanup now targets the operator's real home plus `/root` instead of
   root's home alone, so under `sudo` and the detached unit the operator's history files are reached.
+- The `just coverage` recipe no longer dies with a SIGPIPE error when the coverage report is large;
+  it reads only the root coverage element and fails with a message when the report has no line rate.
 
 ### Security
 
@@ -196,6 +214,13 @@ during the current alpha phase.
   allowlist — a fixed, root-owned PATH plus `LANG`/`LC_*`/`TERM` — so a caller's PATH or `NIX_*`
   can no longer steer which binaries a root child runs; `NIX_PATH` is passed through only for
   channel-based `nixos-rebuild`.
+- The release binary no longer carries any test-detection heuristic or test hook: these compile only
+  under a non-default `test-hooks` feature (or each crate's own test build), so no executable path,
+  environment variable or service exemption can disable real host operations in a shipped build.
+- An overlay-targets safety floor refuses, in both modes, any overlay target that would cover the
+  hidden volume root, state file, log directory or the running binary (symlinks resolved), so the
+  hidden volume can no longer disappear under an Auto-mode `/media` overlay and the hidden session's
+  state and logs cannot be written through to the decoy disk.
 
 ## [0.2.0] - 2026-05-08
 
