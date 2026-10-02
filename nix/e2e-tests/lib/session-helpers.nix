@@ -12,6 +12,29 @@
         return int(value)
   '';
 
+  # Wait until a unit has been started again after a baseline taken with
+  # read_systemd_active_enter_monotonic(). `systemctl is-active` cannot tell the
+  # instance that existed before a restart from the new one, so it passes before
+  # the restart has even begun; the activation timestamp only moves forward once
+  # the new instance is up. Needs readSystemdActiveEnterMonotonicFn.
+  waitForUnitRestartedFn = ''
+    def wait_for_unit_restarted(unit, before, timeout=180):
+        import shlex
+
+        quoted = shlex.quote(unit)
+        machine.wait_until_succeeds(
+            "systemctl is-active --quiet "
+            + quoted
+            + " && [ \"$(systemctl show "
+            + quoted
+            + " -p ActiveEnterTimestampMonotonic --value)\" -gt "
+            + str(int(before))
+            + " ]",
+            timeout=timeout,
+        )
+        return read_systemd_active_enter_monotonic(unit)
+  '';
+
   waitForActivationTransientUnitFn = ''
     def wait_for_activation_transient_unit():
         import shlex

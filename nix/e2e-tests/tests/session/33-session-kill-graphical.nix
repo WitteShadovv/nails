@@ -30,6 +30,7 @@ in
     ${assertions.assertOverlayMountedFn}
     ${assertions.assertNoOverlaysFn}
     ${sessionHelpers.readSystemdActiveEnterMonotonicFn}
+    ${sessionHelpers.waitForUnitRestartedFn}
     ${sessionHelpers.waitForActivationTransientUnitFn}
     ${sessionHelpers.assertUnitInSystemSliceFn}
     ${shellHelpers.runCommandCaptureFn}
@@ -125,14 +126,19 @@ in
         assert_unit_in_system_slice(activation_unit)
 
     with subtest("display manager and user manager are restarted after overlays mount but before nixos switch"):
-        machine.wait_until_succeeds("systemctl is-active display-manager.service")
-        machine.wait_until_succeeds("systemctl is-active user@1000.service")
+        # The activation runs in a detached unit, so the pre-kill display and
+        # user managers may still be up here; wait for fresh activation
+        # timestamps rather than `is-active`. LightDM autologin recreates the
+        # user manager a moment after the display manager starts, independently
+        # of the activation finishing.
+        display_manager_after = wait_for_unit_restarted(
+            "display-manager.service", display_manager_before
+        )
+        user_manager_after = wait_for_unit_restarted("user@1000.service", user_manager_before)
         machine.wait_until_succeeds(
             "/bin/sh -lc 'mountpoint -q /home && [ \"$(findmnt -n -o FSTYPE /home)\" = overlay ]'"
         )
         wait_for_status_state("active", config_path=headless_config)
-        display_manager_after = read_systemd_active_enter_monotonic("display-manager.service")
-        user_manager_after = read_systemd_active_enter_monotonic("user@1000.service")
         assert display_manager_after > display_manager_before, (
             f"display-manager.service did not restart: before={display_manager_before} after={display_manager_after}"
         )
