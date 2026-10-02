@@ -198,14 +198,17 @@ fn test_explicit_nix_overlay_restores_nix_store_bind_mount() {
 }
 
 #[test]
-fn session_restart_phase_uses_pre_switch_restart_for_nixos_activation() {
+fn session_restart_phase_runs_after_overlay_mounts_for_any_plan() {
     let plan = crate::process::SessionRestartPlan {
         display_manager: Some("display-manager.service".to_string()),
         target_uid: Some(1000),
     };
 
+    // A non-default plan always restarts after the overlay mounts, regardless of
+    // overlay-only vs. NixOS activation: the phase is a function of the plan
+    // alone.
     assert_eq!(
-        determine_session_restart_phase(&plan, false, true),
+        determine_session_restart_phase(&plan),
         SessionRestartPhase::AfterOverlayMounts
     );
 }
@@ -230,39 +233,9 @@ fn activation_progress_describes_requested_ordering() {
 }
 
 #[test]
-fn session_restart_phase_uses_restart_after_overlay_mounts_for_overlay_only_activation() {
-    let plan = crate::process::SessionRestartPlan {
-        display_manager: Some("display-manager.service".to_string()),
-        target_uid: Some(1000),
-    };
-
-    assert_eq!(
-        determine_session_restart_phase(&plan, true, true),
-        SessionRestartPhase::AfterOverlayMounts
-    );
-}
-
-#[test]
-fn session_restart_phase_uses_restart_after_overlay_mounts_when_nixos_switch_unavailable() {
-    let plan = crate::process::SessionRestartPlan {
-        display_manager: Some("display-manager.service".to_string()),
-        target_uid: Some(1000),
-    };
-
-    assert_eq!(
-        determine_session_restart_phase(&plan, false, false),
-        SessionRestartPhase::AfterOverlayMounts
-    );
-}
-
-#[test]
 fn session_restart_phase_is_none_without_restart_plan() {
     assert_eq!(
-        determine_session_restart_phase(
-            &crate::process::SessionRestartPlan::default(),
-            false,
-            true
-        ),
+        determine_session_restart_phase(&crate::process::SessionRestartPlan::default()),
         SessionRestartPhase::None
     );
 }
@@ -387,6 +360,45 @@ fn rollback_test_manager() -> (
 
     let manager = NailsManager::new(fs.clone(), config, state_path);
     (manager, fs, temp_dir)
+}
+
+#[test]
+fn activation_refuses_an_unsupported_host_before_any_state_write() {
+    let (mut manager, fs, _tmp) = rollback_test_manager();
+
+    let state_before = manager.current_state().expect("state");
+    manager.set_host_profile(crate::platform::HostProfile {
+        kind: crate::platform::PlatformKind::Unsupported,
+        id: Some("fedora".to_string()),
+        id_like: vec![],
+        version_id: None,
+        is_systemd: true,
+        is_ostree: true,
+        has_current_system: false,
+        unsupported_reason: Some("ostree / image-based host".to_string()),
+    });
+
+    let result = manager.activate(true);
+    assert!(
+        matches!(result, Err(crate::NailsError::UnsupportedPlatform { .. })),
+        "an unsupported host must be refused, got {result:?}"
+    );
+    // Nothing was staged, mounted or written: state is untouched and no overlays
+    // exist.
+    assert_eq!(manager.current_state().expect("state"), state_before);
+    assert!(
+        fs.get_mounted_paths().is_empty(),
+        "refusal must happen before any overlay is mounted"
+    );
+}
+
+#[test]
+fn activation_without_a_host_profile_is_not_gated() {
+    // A manager whose platform was never detected (the common unit-test path)
+    // still activates: the gate is a no-op until a profile is injected.
+    let (mut manager, _fs, _tmp) = rollback_test_manager();
+    assert!(manager.host_profile().is_none());
+    manager.activate(true).expect("activation should succeed");
 }
 
 #[test]

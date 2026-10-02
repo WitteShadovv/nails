@@ -45,6 +45,30 @@ fn profile_summary_detects_a_flake_in_the_hidden_volume() {
 }
 
 #[test]
+fn profile_summary_reports_legacy_for_a_lone_system_profile() {
+    // The drift this fixes: `--dry-run`/`check` used to omit the system-profile
+    // probe and report "no profile switch" where activation does a legacy build.
+    // Sharing `discover_host_target` makes the summary agree: a lone system
+    // profile is a legacy build target.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/vault"),
+        nixos_flake: None,
+        ..Config::default()
+    };
+
+    let profile = profile_summary(false, &config, &fs);
+    assert_eq!(profile.mode, "legacy");
+    assert!(
+        profile
+            .detail
+            .unwrap()
+            .contains("/etc/nixos/configuration.nix")
+    );
+}
+
+#[test]
 fn profile_summary_is_none_without_any_nixos_target() {
     let fs = MockFilesystem::new();
     let config = Config {

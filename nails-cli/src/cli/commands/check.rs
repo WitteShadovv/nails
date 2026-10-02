@@ -9,7 +9,7 @@
 //! for this command, so the two always agree.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use nails_core::{
     CliOverrides, Config, Filesystem, OverlayMode, SessionKind, build_overlay_targets,
@@ -149,47 +149,46 @@ fn session_summary() -> SessionSummary {
     }
 }
 
-/// Describe which NixOS profile activation would build, mirroring the discovery
-/// cascade in [`super::build_nixos_manager`].
+/// Describe which NixOS profile activation would build.
+///
+/// Resolves the target through the one shared
+/// [`discover_host_target`](nails_core::discover_host_target), the same function
+/// [`super::build_nixos_manager`] and the `nixos-build-target` pre-flight check
+/// use, so `--dry-run` can never report a different target than activation would
+/// pick. In particular a lone system profile is reported as a legacy build here,
+/// matching activation, rather than as "no profile switch".
 fn profile_summary<F: Filesystem>(overlay_only: bool, config: &Config, fs: &F) -> ProfileSummary {
-    if overlay_only {
-        return ProfileSummary {
+    use nails_core::{HostTarget, discover_host_target};
+
+    let target = discover_host_target(
+        fs,
+        &config.hidden_volume_root,
+        config.nixos_flake.as_deref(),
+        overlay_only,
+    )
+    .unwrap_or(HostTarget::None);
+
+    match target {
+        HostTarget::OverlayOnly => ProfileSummary {
             mode: "overlay-only",
             detail: Some("overlay-only mode: the NixOS profile switch is skipped".into()),
-        };
-    }
-
-    if let Some(flake) = &config.nixos_flake {
-        return ProfileSummary {
+        },
+        HostTarget::ExplicitFlake(flake) => ProfileSummary {
             mode: "flake",
             detail: Some(format!("NixOS flake: {flake}")),
-        };
-    }
-
-    let hidden_flake = config.hidden_volume_root.join("nixos/flake.nix");
-    let etc_flake = PathBuf::from("/etc/nixos/flake.nix");
-    let legacy_config = PathBuf::from("/etc/nixos/configuration.nix");
-
-    if fs.path_exists(&hidden_flake).unwrap_or(false) {
-        ProfileSummary {
+        },
+        HostTarget::Flake(dir) => ProfileSummary {
             mode: "flake",
-            detail: Some("NixOS flake found in the hidden volume".into()),
-        }
-    } else if fs.path_exists(&etc_flake).unwrap_or(false) {
-        ProfileSummary {
-            mode: "flake",
-            detail: Some("NixOS flake found at /etc/nixos".into()),
-        }
-    } else if fs.path_exists(&legacy_config).unwrap_or(false) {
-        ProfileSummary {
+            detail: Some(format!("NixOS flake found at {}", dir.display())),
+        },
+        HostTarget::Legacy(path) => ProfileSummary {
             mode: "legacy",
-            detail: Some("legacy /etc/nixos/configuration.nix found".into()),
-        }
-    } else {
-        ProfileSummary {
+            detail: Some(format!("legacy build target: {}", path.display())),
+        },
+        HostTarget::None => ProfileSummary {
             mode: "none",
             detail: None,
-        }
+        },
     }
 }
 

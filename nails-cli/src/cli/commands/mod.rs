@@ -94,45 +94,53 @@ pub(crate) fn load_config_or_defaults(config_override: Option<&Path>) -> LoadedC
 /// Build a [`NailsManager`](nails_core::NailsManager) with the NixOS build target
 /// activation would pick for the same configuration.
 ///
-/// The discovery cascade is: overlay-only (no builder) → explicit
-/// `config.nixos_flake` → a flake in the hidden volume → `/etc/nixos/flake.nix` →
-/// a legacy `/etc/nixos/configuration.nix` or system profile → no NixOS. The
-/// `check`/`doctor` command uses it so its pre-flight registry matches the one
-/// activation would run; keeping it in one place lets a later platform/host-profile
-/// seam replace the cascade in a single spot.
+/// The target is resolved by the shared
+/// [`discover_host_target`](nails_core::discover_host_target): overlay-only (no
+/// builder) → explicit `config.nixos_flake` → a flake in the hidden volume →
+/// `/etc/nixos/flake.nix` → a legacy `/etc/nixos/configuration.nix` or system
+/// profile → no NixOS. Activation, the `check`/`doctor` command (which also uses
+/// this to build its pre-flight registry) and the `nixos-build-target` check all
+/// go through that one function, so none of them can report a different build
+/// target than the others.
 pub(crate) fn build_nixos_manager(
     config: nails_core::Config,
     state_path: PathBuf,
     overlay_only: bool,
 ) -> nails_core::NailsManager<nails_core::RealFilesystem> {
-    use nails_core::{NailsManager, NixOSBuilder, RealFilesystem};
+    use nails_core::{
+        HostTarget, NailsManager, NixOSBuilder, RealFilesystem, discover_host_target,
+    };
 
     let filesystem = RealFilesystem;
     let nails_profile = PathBuf::from("/nix/var/nix/profiles/nails-system");
 
-    if overlay_only {
-        NailsManager::new(filesystem, config, state_path)
-    } else if let Some(flake_ref) = config.nixos_flake.clone() {
-        let builder = NixOSBuilder::new_with_flake_ref(flake_ref, nails_profile);
-        NailsManager::with_nixos(filesystem, config, state_path, builder)
-    } else {
-        let nixos_flake_dir = config.hidden_volume_root.join("nixos");
-        let nixos_flake = nixos_flake_dir.join("flake.nix");
-        let etc_flake = PathBuf::from("/etc/nixos/flake.nix");
-        let legacy_config = PathBuf::from("/etc/nixos/configuration.nix");
-        let system_profile = PathBuf::from("/nix/var/nix/profiles/system");
+    // One discovery cascade, shared with activation, the `check`/`--dry-run`
+    // profile summary and the `nixos-build-target` pre-flight check, so the build
+    // target they report can never drift from the one built here. Every probe
+    // goes through the filesystem trait rather than `std::path::Path::exists`.
+    let target = discover_host_target(
+        &filesystem,
+        &config.hidden_volume_root,
+        config.nixos_flake.as_deref(),
+        overlay_only,
+    )
+    .unwrap_or(HostTarget::None);
 
-        if nixos_flake.exists() {
-            let builder = NixOSBuilder::new(nixos_flake_dir, nails_profile);
-            NailsManager::with_nixos(filesystem, config, state_path, builder)
-        } else if etc_flake.exists() {
-            let builder = NixOSBuilder::new(PathBuf::from("/etc/nixos"), nails_profile);
-            NailsManager::with_nixos(filesystem, config, state_path, builder)
-        } else if legacy_config.exists() || system_profile.exists() {
-            let builder = NixOSBuilder::new_legacy(legacy_config, nails_profile);
-            NailsManager::with_nixos(filesystem, config, state_path, builder)
-        } else {
+    match target {
+        HostTarget::OverlayOnly | HostTarget::None => {
             NailsManager::new(filesystem, config, state_path)
+        }
+        HostTarget::ExplicitFlake(flake_ref) => {
+            let builder = NixOSBuilder::new_with_flake_ref(flake_ref, nails_profile);
+            NailsManager::with_nixos(filesystem, config, state_path, builder)
+        }
+        HostTarget::Flake(dir) => {
+            let builder = NixOSBuilder::new(dir, nails_profile);
+            NailsManager::with_nixos(filesystem, config, state_path, builder)
+        }
+        HostTarget::Legacy(path) => {
+            let builder = NixOSBuilder::new_legacy(path, nails_profile);
+            NailsManager::with_nixos(filesystem, config, state_path, builder)
         }
     }
 }

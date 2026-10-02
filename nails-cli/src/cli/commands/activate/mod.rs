@@ -15,10 +15,7 @@ use crate::cli::detach::maybe_detach_for_session_kill;
 use crate::cli::output::envelope::{ErrorBody, report_error};
 use crate::cli::output::{self, ExitStatus, OutputSettings};
 
-use nails_core::{
-    ActivateOptions, CliOverrides, Filesystem, NailsManager, NixOSBuilder, PreFlightCheck,
-    RealFilesystem, Verbosity,
-};
+use nails_core::{ActivateOptions, CliOverrides, Filesystem, PreFlightCheck, Verbosity};
 use std::io::IsTerminal;
 use std::time::Instant;
 
@@ -171,46 +168,24 @@ pub fn execute(
     // `config` (and the clone above) are moved into the manager below.
     let lock_state_path = state_path.clone();
 
-    // Create NailsManager with real filesystem (enable NixOS switching when flake is present)
-    let filesystem = RealFilesystem;
-    let nails_profile = std::path::PathBuf::from("/nix/var/nix/profiles/nails-system");
-
-    let mut manager = if overlay_only {
-        // --overlay-only: skip NixOS builder creation entirely
-        tracing::info!("Overlay-only mode: skipping NixOS profile switch");
-        NailsManager::new(filesystem, config, state_path)
-    } else if let Some(ref flake_ref) = config.nixos_flake {
-        // Explicit flake reference from --flake flag or config nixos_flake
-        // Skip auto-discovery and use the provided reference directly
-        tracing::info!(
-            flake_ref = %flake_ref,
-            "Using explicit NixOS flake reference"
-        );
-        let builder = NixOSBuilder::new_with_flake_ref(flake_ref.clone(), nails_profile);
-        NailsManager::with_nixos(filesystem, config, state_path, builder)
-    } else {
-        // Auto-discovery cascade: hidden volume → /etc/nixos → legacy → no NixOS
-        let nixos_flake_dir = config.hidden_volume_root.join("nixos");
-        let nixos_flake = nixos_flake_dir.join("flake.nix");
-        let etc_flake = std::path::PathBuf::from("/etc/nixos/flake.nix");
-        let legacy_config = std::path::PathBuf::from("/etc/nixos/configuration.nix");
-        let system_profile = std::path::PathBuf::from("/nix/var/nix/profiles/system");
-        if nixos_flake.exists() {
-            let builder = NixOSBuilder::new(nixos_flake_dir, nails_profile);
-            NailsManager::with_nixos(filesystem, config, state_path, builder)
-        } else if etc_flake.exists() {
-            let builder = NixOSBuilder::new(std::path::PathBuf::from("/etc/nixos"), nails_profile);
-            NailsManager::with_nixos(filesystem, config, state_path, builder)
-        } else if legacy_config.exists() || system_profile.exists() {
-            let builder = NixOSBuilder::new_legacy(legacy_config, nails_profile);
-            NailsManager::with_nixos(filesystem, config, state_path, builder)
-        } else {
-            NailsManager::new(filesystem, config, state_path)
-        }
-    };
+    // Build the manager with the NixOS build target activation would pick,
+    // through the one discovery cascade shared with `check`/`--dry-run` and the
+    // `nixos-build-target` pre-flight check, so no path can drift.
+    let mut manager = super::build_nixos_manager(config, state_path, overlay_only);
 
     // Set verbosity level
     manager.set_verbosity(verbosity);
+
+    // Detect the host so the activation path can refuse an unsupported one
+    // (ostree / image-based, or a non-systemd PID 1). The refusal itself is
+    // enforced inside `activate_with_options`, before any state is written, so it
+    // runs in whichever process actually activates and never pre-empts the
+    // session-kill detach handoff. A detection failure is non-fatal: the gate
+    // then sees no profile and proceeds, matching the prior no-detection
+    // behaviour. The detached worker re-detects the same host when it re-runs.
+    if let Err(e) = manager.initialize_platform() {
+        tracing::debug!(error = %e, "platform detection failed; continuing without a host profile");
+    }
 
     // Detect a graphical session up front: it decides both whether we detach
     // and whether we must confirm the session kill, and that confirmation has
@@ -450,11 +425,12 @@ pub fn execute(
         );
     }
 
-    // Return the appropriate exit status: a pre-flight refusal from the attached
-    // path is distinguished from an ordinary activation failure.
+    // Return the appropriate exit status: a pre-flight refusal and an unsupported
+    // host are each distinguished from an ordinary activation failure.
     match result {
         Ok(_) => ExitStatus::Ok,
         Err(nails_core::NailsError::PreFlightCheckFailed(_)) => ExitStatus::PreflightRefused,
+        Err(nails_core::NailsError::UnsupportedPlatform { .. }) => ExitStatus::Unsupported,
         Err(_) => ExitStatus::Failed,
     }
 }

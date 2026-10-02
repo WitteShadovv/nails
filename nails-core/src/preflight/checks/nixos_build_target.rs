@@ -118,46 +118,38 @@ impl NixOSBuildTargetCheck {
         )))
     }
 
-    /// Probe auto-discovery locations for NixOS configuration
+    /// Probe auto-discovery locations for NixOS configuration.
+    ///
+    /// Shares [`discover_host_target`](crate::platform::discover_host_target) with
+    /// activation and the `check`/`--dry-run` summary, so the pre-flight check can
+    /// never disagree with the target activation would actually build. In
+    /// particular a lone system profile resolves to the same legacy build target
+    /// here as it does on the activation path, instead of this check failing while
+    /// activation proceeds.
     fn check_auto_discovery<F: Filesystem>(&self, fs: &F) -> Result<CheckResult> {
-        // Probe 1: Hidden volume flake
-        let hidden_flake = self.hidden_volume_root.join("nixos/flake.nix");
-        if fs.path_exists(&hidden_flake)? {
-            return Ok(CheckResult::Pass(format!(
-                "Auto-discovered flake at {}",
-                self.hidden_volume_root.join("nixos").display()
-            )));
-        }
+        use crate::platform::{HostTarget, discover_host_target};
 
-        // Probe 2: /etc/nixos/flake.nix
-        let etc_flake = PathBuf::from("/etc/nixos/flake.nix");
-        if fs.path_exists(&etc_flake)? {
-            return Ok(CheckResult::Pass(
-                "Auto-discovered flake at /etc/nixos".to_string(),
-            ));
-        }
-
-        // Probe 3: /etc/nixos/configuration.nix (legacy)
-        let legacy_config = PathBuf::from("/etc/nixos/configuration.nix");
-        if fs.path_exists(&legacy_config)? {
-            return Ok(CheckResult::Pass(
-                "Auto-discovered legacy config at /etc/nixos/configuration.nix".to_string(),
-            ));
-        }
-
-        // Probe 4: /nix/var/nix/profiles/system
-        let system_profile = PathBuf::from("/nix/var/nix/profiles/system");
-        if fs.path_exists(&system_profile)? {
-            return Ok(CheckResult::Pass(
-                "Auto-discovered NixOS via system profile at /nix/var/nix/profiles/system"
-                    .to_string(),
-            ));
-        }
-
-        // Nothing found
-        Ok(CheckResult::Fail(
-            "No NixOS configuration found. Provide --flake or ensure /etc/nixos contains flake.nix or configuration.nix.".to_string()
-        ))
+        let target = discover_host_target(fs, &self.hidden_volume_root, None, false)?;
+        Ok(match target {
+            HostTarget::Flake(dir) => {
+                CheckResult::Pass(format!("Auto-discovered flake at {}", dir.display()))
+            }
+            HostTarget::Legacy(path) => CheckResult::Pass(format!(
+                "Auto-discovered legacy config at {}",
+                path.display()
+            )),
+            // `None`/`false` arguments never yield these, but mapping them keeps
+            // the check total and in step with the shared cascade.
+            HostTarget::ExplicitFlake(flake_ref) => {
+                CheckResult::Pass(format!("Auto-discovered flake reference {flake_ref}"))
+            }
+            HostTarget::OverlayOnly => {
+                CheckResult::Pass("Overlay-only: no NixOS build target".to_string())
+            }
+            HostTarget::None => CheckResult::Fail(
+                "No NixOS configuration found. Provide --flake or ensure /etc/nixos contains flake.nix or configuration.nix.".to_string()
+            ),
+        })
     }
 }
 
@@ -435,7 +427,9 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_discovery_system_profile() {
+    fn test_auto_discovery_system_profile_resolves_to_legacy_build_target() {
+        // A lone system profile resolves to the same legacy build target the
+        // activation path picks, so the check passes instead of diverging.
         let fs = MockFilesystem::new();
         fs.mock_set_path_exists("/mnt/hidden/nixos/flake.nix", false);
         fs.mock_set_path_exists("/etc/nixos/flake.nix", false);
@@ -446,7 +440,8 @@ mod tests {
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_pass());
-        assert!(result.message().contains("system profile"));
+        assert!(result.message().contains("legacy config"));
+        assert!(result.message().contains("/etc/nixos/configuration.nix"));
     }
 
     #[test]

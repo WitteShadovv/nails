@@ -33,6 +33,9 @@ pub enum ExitStatus {
     InvalidState,
     /// The system is degraded or a reboot is required to finish.
     DegradedReboot,
+    /// The host is not one NAILS can operate on (ostree / image-based, or a
+    /// non-systemd PID 1), so the command refused before touching any state.
+    Unsupported,
     /// `verify` found warnings.
     VerifyWarning,
     /// `verify` found critical artifacts.
@@ -51,6 +54,7 @@ impl ExitStatus {
             ExitStatus::NeedsRoot => 5,
             ExitStatus::InvalidState => 6,
             ExitStatus::DegradedReboot => 7,
+            ExitStatus::Unsupported => 8,
             ExitStatus::VerifyWarning => 10,
             ExitStatus::VerifyCritical => 11,
         }
@@ -76,6 +80,7 @@ mod tests {
         assert_eq!(ExitStatus::NeedsRoot.code(), 5);
         assert_eq!(ExitStatus::InvalidState.code(), 6);
         assert_eq!(ExitStatus::DegradedReboot.code(), 7);
+        assert_eq!(ExitStatus::Unsupported.code(), 8);
         assert_eq!(ExitStatus::VerifyWarning.code(), 10);
         assert_eq!(ExitStatus::VerifyCritical.code(), 11);
     }

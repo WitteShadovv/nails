@@ -50,11 +50,11 @@ enum SessionRestartPhase {
 
 fn determine_session_restart_phase(
     restart_plan: &crate::process::SessionRestartPlan,
-    overlay_only: bool,
-    has_nixos_switch: bool,
 ) -> SessionRestartPhase {
-    let _ = (overlay_only, has_nixos_switch);
-
+    // The session restart always runs after the overlay mounts: a process still
+    // holding the decoy session would otherwise keep writing to the lower tree.
+    // The restart is skipped only when there is no plan to act on. The overlay /
+    // NixOS-switch distinction no longer changes the phase, so it is not an input.
     if restart_plan == &crate::process::SessionRestartPlan::default() {
         return SessionRestartPhase::None;
     }
@@ -220,6 +220,15 @@ impl<F: Filesystem> NailsManager<F> {
         // Validate options first.
         options.validate()?;
 
+        // Refuse an unsupported host before anything is staged, mounted or
+        // switched. Detection is wired by the caller via `initialize_platform`;
+        // when no profile was detected (unit tests, or a caller that skips
+        // detection) this is a no-op, so activation stays testable without a
+        // host-profile fixture.
+        if let Some(profile) = self.host_profile.as_ref() {
+            profile.require_supported()?;
+        }
+
         // Step 1: Capture current state and context once.
         let previous_state = self.current_state()?;
         let verbosity = self.verbosity;
@@ -275,8 +284,7 @@ impl<F: Filesystem> NailsManager<F> {
         // to drive (and fail) the after-overlay restart path.
         #[cfg(test)]
         let restart_plan = guards::test_hooks::override_plan(restart_plan);
-        let restart_phase =
-            determine_session_restart_phase(&restart_plan, options.overlay_only, false);
+        let restart_phase = determine_session_restart_phase(&restart_plan);
 
         // Auto-restart the session if we exit early with an error after killing it.
         let mut session_restart_guard = SessionRestartGuard::new(restart_plan.clone());
