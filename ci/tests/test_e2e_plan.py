@@ -250,13 +250,13 @@ class LoadSamplesTest(TempDirTestCase):
             plan.load_samples([path])
 
     def test_invalid_records_are_rejected(self) -> None:
-        records = [
-            ["[1, 2]", "expected a JSON object"],
-            [{"result": "pass", "seconds": 1}, "missing test name"],
-            [{"test": "a", "result": "skip", "seconds": 1}, "result must be"],
-            [{"test": "a", "result": "pass", "seconds": "60"}, "non-negative integer"],
-            [{"test": "a", "result": "pass", "seconds": -1}, "non-negative integer"],
-            [{"test": "a", "result": "pass", "seconds": True}, "non-negative integer"],
+        records: list[tuple[object, str]] = [
+            ("[1, 2]", "expected a JSON object"),
+            ({"result": "pass", "seconds": 1}, "missing test name"),
+            ({"test": "a", "result": "skip", "seconds": 1}, "result must be"),
+            ({"test": "a", "result": "pass", "seconds": "60"}, "non-negative integer"),
+            ({"test": "a", "result": "pass", "seconds": -1}, "non-negative integer"),
+            ({"test": "a", "result": "pass", "seconds": True}, "non-negative integer"),
         ]
         for record, message in records:
             with self.subTest(record=record):

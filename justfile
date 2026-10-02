@@ -110,6 +110,14 @@ e2e target="ci":
 e2e-debug name:
     ./scripts/run-e2e-tests.sh interactive {{ name }}
 
+# --- Python ---
+
+# The ci/ package's unittest suite, ruff and mypy (CI's `ci-python` check).
+ci-python:
+    python3 -m unittest discover -s ci/tests -t .
+    ruff check ci
+    mypy ci
+
 # --- Docs ---
 
 # Fail when docs/ci.md does not list every workflow (and no stale one).

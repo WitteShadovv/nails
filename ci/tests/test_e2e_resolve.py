@@ -95,7 +95,7 @@ class ChangedLeafTestsTest(unittest.TestCase):
         self.assertEqual(evaluate.call_count, 2)
 
     def test_a_base_that_does_not_evaluate_changes_everything(self) -> None:
-        def evaluate(ref, tests):  # type: ignore[no-untyped-def]
+        def evaluate(ref, tests):
             if ref == ".":
                 return {test: f"/nix/store/{test}.drv" for test in tests}
             raise subprocess.CalledProcessError(1, ["nix"], stderr="error: boom\n")

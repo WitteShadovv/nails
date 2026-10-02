@@ -171,7 +171,7 @@ class RetryTest(unittest.TestCase):
     ) -> tuple[int, list[dict[str, object]], list[list[str]]]:
         built: list[list[str]] = []
 
-        def fake_build(tests, *_args):  # type: ignore[no-untyped-def]
+        def fake_build(tests, *_args):
             built.append(list(tests))
             return builds.pop(0)
 
@@ -253,7 +253,7 @@ class RetryTest(unittest.TestCase):
 
 class MissingOutputsTest(unittest.TestCase):
     def test_a_test_with_an_invalid_output_is_missing(self) -> None:
-        def fake_run(command, **_kwargs):  # type: ignore[no-untyped-def]
+        def fake_run(command, **_kwargs):
             if command[:3] == ["nix-store", "--query", "--outputs"]:
                 name = command[3].removeprefix("/nix/store/").removesuffix(".drv")
                 stdout = f"/nix/store/out-{name}\n"
@@ -332,7 +332,7 @@ class RunDriversTest(unittest.TestCase):
         reported: dict[str, run.TestOutcome] = {}
         logs = self.tmp / "logs"
 
-        def report(_tests, outcomes):  # type: ignore[no-untyped-def]
+        def report(_tests, outcomes):
             reported.update(outcomes)
 
         with (
@@ -385,7 +385,7 @@ class RunCommandTest(unittest.TestCase):
         )
         captured: dict[str, object] = {}
 
-        def fake_build(tests, **kwargs):  # type: ignore[no-untyped-def]
+        def fake_build(tests, **kwargs):
             captured["tests"] = list(tests)
             return 0
 

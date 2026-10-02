@@ -103,6 +103,30 @@ in
     touch "$out"
   '';
 
+  # The cheap Python gate: the ci/ package's unittest suite, ruff and a
+  # non-strict mypy, exactly what `just ci-python` runs locally. It is seconds,
+  # not the VM tests. The stand-alone scripts/ are not covered yet; they join
+  # once the forensics runners that still fail ruff are removed.
+  ci-python = lint "ci-python" {
+    files = fs.unions [
+      ../ci
+      ../pyproject.toml
+    ];
+    tools = [
+      pkgs.python3
+      pkgs.ruff
+      pkgs.mypy
+    ];
+    script = ''
+      # ruff and mypy write their caches under HOME; the copied source is the
+      # only writable tree in the build sandbox.
+      export HOME="$PWD"
+      python3 -m unittest discover -s ci/tests -t .
+      ruff check ci
+      mypy ci
+    '';
+  };
+
   # Validates the checked-in shard weights against the timeouts the test
   # derivations really use. Evaluating the metadata also runs the assertions
   # in nix/e2e-tests/default.nix without building any VM test.

@@ -298,7 +298,8 @@ jobs:
           cd result && sha256sum --check --strict checksums.txt
 
   # The CI tooling tests and the cheap flake checks: nixfmt, statix, deadnix,
-  # shellcheck, actionlint, zizmor and the E2E shard weights.
+  # shellcheck, actionlint, zizmor, the ci/ Python lints and the E2E shard
+  # weights.
   lint-misc:
     name: lint-misc
     needs: changes

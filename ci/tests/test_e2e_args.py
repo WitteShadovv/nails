@@ -61,7 +61,7 @@ class RoutingTest(unittest.TestCase):
     def test_a_bare_target_is_an_implicit_run(self) -> None:
         captured: dict[str, object] = {}
 
-        def fake_build(tests, **kwargs):  # type: ignore[no-untyped-def]
+        def fake_build(tests, **kwargs):
             captured["tests"] = list(tests)
             return 0
 
@@ -73,7 +73,7 @@ class RoutingTest(unittest.TestCase):
     def test_no_arguments_runs_the_default_target(self) -> None:
         captured: dict[str, object] = {}
 
-        def fake_build(tests, **kwargs):  # type: ignore[no-untyped-def]
+        def fake_build(tests, **kwargs):
             captured["tests"] = list(tests)
             return 0
 
@@ -174,7 +174,7 @@ class RunOptionsTest(unittest.TestCase):
     def test_execute_runs_the_drivers_with_retries_and_a_summary(self) -> None:
         captured: dict[str, object] = {}
 
-        def fake_drivers(tests, timeouts, **kwargs):  # type: ignore[no-untyped-def]
+        def fake_drivers(tests, timeouts, **kwargs):
             captured.update(tests=list(tests), timeouts=dict(timeouts), **kwargs)
             kwargs["report"](tests, {"a": cli.run.TestOutcome("pass", 31, flaky=True)})
             return 0

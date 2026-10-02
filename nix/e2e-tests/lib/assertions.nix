@@ -67,13 +67,4 @@
         machine.succeed(f"test -e {shlex.quote(full_path)}")
         return full_path
   '';
-
-  assertVerifyCleanFn = ''
-    def assert_verify_clean(config_path=None, deep=False):
-        verify_args = "--deep" if deep else ""
-        status, payload = run_verify(args=verify_args, config_path=config_path)
-        findings = payload.get("findings", [])
-        assert findings == [], f"Expected clean verify result, got: {payload}"
-        return status, payload
-  '';
 }

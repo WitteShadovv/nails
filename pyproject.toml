@@ -1,7 +1,8 @@
-# Lint and type-check configuration for the repository's Python: the ci/
-# package, the in-VM nails_e2e helpers, and the stand-alone scripts. There is
-# no build backend here; nothing is packaged or published. CI passes the paths
-# to check explicitly (`ruff check ci scripts`, `mypy ci scripts`).
+# Lint and type-check configuration for the repository's Python. There is no
+# build backend here; nothing is packaged or published. CI passes the paths to
+# check explicitly: the `ci-python` flake check and `just ci-python` gate the
+# ci/ package (`ruff check ci`, `mypy ci`). The stand-alone scripts/ join once
+# the forensics runners that still fail ruff are removed.
 
 [tool.ruff]
 line-length = 88
