@@ -17,14 +17,13 @@ in
     };
 
   testScript = _: ''
-    import json
-
     ${notificationHelpers.writeNotificationConfigFn}
     ${notificationHelpers.installNotifySendStubFn}
     ${notificationHelpers.writeNotificationSignalFn}
     ${notificationHelpers.writeRawNotificationFileFn}
     ${notificationHelpers.runCommandCaptureFn}
     ${notificationHelpers.readStubCallsFn}
+    ${notificationHelpers.dispatchResultFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -34,7 +33,6 @@ in
     stub_log = "/tmp/notify-send.log"
     bad_path = "/mnt/hidden-volume/notifications/20260101T000000000_bad.json"
     good_path = "/mnt/hidden-volume/notifications/20260101T000000001_good.json"
-    testuser_group = machine.succeed("id -gn testuser").strip()
 
     with subtest("prepare signals and safe notify-send stub"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
@@ -47,7 +45,6 @@ in
             body="Processed after malformed peer",
             urgency="low",
         )
-        machine.succeed(f"chown -R testuser:{testuser_group} {stub_dir.rsplit('/', 1)[0]} {stub_log} /mnt/hidden-volume/notifications")
         machine.succeed(f"test -f {bad_path}")
         machine.succeed(f"test -f {good_path}")
         assert read_stub_calls(stub_log) == [], "notify-send stub should be untouched before dispatch"
@@ -59,8 +56,8 @@ in
         )
         assert result["rc"] == 0, result
 
-        payload = json.loads(result["stdout"].strip())
-        assert payload == {"dispatched": 1, "status": "ok"}, payload
+        data = dispatch_result(result["stdout"])
+        assert data == {"dispatched": 1, "status": "ok"}, data
         assert "Skipping malformed notification file" in result["stderr"], result["stderr"]
 
         calls = read_stub_calls(stub_log)

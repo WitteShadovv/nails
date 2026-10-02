@@ -43,6 +43,20 @@
             )
   '';
 
+  # Assert `path` (not following a final symlink) is owned by `owner` given as
+  # "user:group" and has octal permission bits `mode` (e.g. "644").
+  # Ownership is compared by name after stat resolves the numeric ids, so a
+  # file left to root, or chowned to a per-user group the account does not
+  # have (NixOS isNormalUser accounts have the primary group `users`), fails.
+  assertOwnedByFn = ''
+    def assert_owned_by(path, owner, mode):
+        import shlex
+
+        actual = machine.succeed("stat -c '%U:%G %a' " + shlex.quote(path)).strip()
+        expected = f"{owner} {mode}"
+        assert actual == expected, f"{path}: expected {expected!r}, got {actual!r}"
+  '';
+
   assertHiddenVolumeHasFn = ''
     def assert_hidden_volume_has(path):
         import os

@@ -20,11 +20,10 @@ in
     };
 
   testScript = _: ''
-    import json
-
     ${notificationHelpers.writeNotificationConfigFn}
     ${notificationHelpers.writeNotificationSignalFn}
     ${notificationHelpers.runCommandCaptureFn}
+    ${notificationHelpers.dispatchResultFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -32,7 +31,6 @@ in
     config_path = "/tmp/nails-notify.toml"
     signal_path = "/mnt/hidden-volume/notifications/20260101T000000000_missing-notify-send.json"
     nails_path = machine.succeed("command -v nails").strip()
-    testuser_group = machine.succeed("id -gn testuser").strip()
 
     with subtest("prepare one pending notification without notify-send in PATH"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
@@ -42,7 +40,6 @@ in
             title="No notify-send",
             body="Dispatcher should degrade cleanly",
         )
-        machine.succeed(f"chown -R testuser:{testuser_group} /mnt/hidden-volume/notifications")
 
     with subtest("dispatcher exits cleanly and preserves pending file"):
         result = run_command_capture(
@@ -51,8 +48,8 @@ in
         )
         assert result["rc"] == 0, result
 
-        payload = json.loads(result["stdout"].strip())
-        assert payload == {"dispatched": 0, "status": "ok"}, payload
+        data = dispatch_result(result["stdout"])
+        assert data == {"dispatched": 0, "status": "ok"}, data
         assert "notify-send not found in PATH; skipping desktop notifications" in result["stderr"], result["stderr"]
         machine.succeed(f"test -f {signal_path}")
   '';

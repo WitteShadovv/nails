@@ -26,6 +26,7 @@ in
     ${shellHelpers.canonicalDeactivateForUserFn}
     ${assertions.assertStatusStateFn}
     ${testHelpers.readStatusJsonFn}
+    ${assertions.assertOwnedByFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -33,13 +34,18 @@ in
     config_path = "/tmp/nails-headless.toml"
     shell_path = "/run/current-system/sw/bin/bash"
     rc_path = "/home/testuser/.bashrc"
+    autostart_dir = "/home/testuser/.config/autostart"
+    desktop_path = autostart_dir + "/nails-notify.desktop"
     expected_lower = "# lower bashrc\nexport LOWER_BASH_RC=1\n"
     write_headless_config(config_path)
 
     with subtest("prepare lower rc file and activate"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+        # The lower rc file is the operator's own, with a deliberately
+        # non-default mode: rewriting it must keep both its owner and mode.
         machine.succeed("cat > " + rc_path + " <<'EOF'\n" + expected_lower + "EOF")
         machine.succeed("chown testuser:users " + rc_path)
+        machine.succeed("chmod 0640 " + rc_path)
         activate_for_user(config_path, shell_path)
         assert_status_state("active", config_path=config_path)
 
@@ -49,6 +55,11 @@ in
         assert "# >>> managed shell integration" in rc_contents, rc_contents
         assert "source /mnt/hidden-volume/scripts/nails_prompt.bash" in rc_contents, rc_contents
         assert "source /mnt/hidden-volume/scripts/nails_alias.sh" in rc_contents, rc_contents
+
+    with subtest("files written into the overlaid home belong to the operator"):
+        assert_owned_by(rc_path, "testuser:users", "640")
+        assert_owned_by(autostart_dir, "testuser:users", "700")
+        assert_owned_by(desktop_path, "testuser:users", "644")
 
     with subtest("deactivation restores lower bashrc without integration block"):
         canonical_deactivate_for_user(
