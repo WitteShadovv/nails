@@ -134,6 +134,18 @@ fn find_suspicious_marker(
         }
     }
 
+    // Registry-driven content markers (the staged `/etc/nixos` import line and
+    // any other substring NAILS writes into a file on the decoy side). Taking
+    // these from the shared artifact registry keeps this check in step with what
+    // activation actually writes, rather than re-hardcoding the import line here.
+    for artifact in crate::artifacts::ARTIFACTS {
+        if artifact.kind == crate::artifacts::ArtifactKind::ContentMarker
+            && content_lower.contains(&artifact.value.to_lowercase())
+        {
+            return Some("staged NAILS content marker");
+        }
+    }
+
     if contains_bounded_ascii_token(content_lower, "hidden") {
         return Some("'hidden' keyword");
     }

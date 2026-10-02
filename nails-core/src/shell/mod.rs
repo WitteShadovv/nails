@@ -41,7 +41,7 @@ pub mod alias;
 pub mod color_scheme;
 mod overlay_guard;
 pub mod prompt;
-mod rc_integration;
+pub(crate) mod rc_integration;
 mod setup;
 
 #[cfg(test)]

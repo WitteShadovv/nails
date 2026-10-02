@@ -12,7 +12,8 @@ use super::{ShellInstrumentation, ShellType, color_scheme};
 ///
 /// Deliberately product-free: the block is written into the overlaid home and
 /// removed on deactivation, so it must not name the tool on screen or on disk.
-const RC_BEGIN: &str = "# >>> managed shell integration (auto-removed on deactivation) >>>";
+pub(crate) const RC_BEGIN: &str =
+    "# >>> managed shell integration (auto-removed on deactivation) >>>";
 
 /// Closing marker for the managed shell integration block.
 const RC_END: &str = "# <<< managed shell integration <<<";

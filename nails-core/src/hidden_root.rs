@@ -18,13 +18,17 @@
 use crate::{Filesystem, Result};
 use std::path::Path;
 
-/// State-file marker that marks a directory as an initialised NAILS hidden root.
-pub const MARKER_STATE_FILE: &str = "state.json";
+// The marker names come from the artifact registry, the single source of what
+// NAILS writes, so the attach gate and the registry can never disagree about the
+// names that identify an initialised hidden root.
 
-/// Config-file marker (`config/nails.toml`) relative to the hidden root.
-pub const MARKER_CONFIG_DIR: &str = "config";
+/// State-file marker that marks a directory as an initialised NAILS hidden root.
+pub const MARKER_STATE_FILE: &str = crate::artifacts::STATE_FILE_NAME;
+
+/// Config directory (holding `nails.toml`) relative to the hidden root.
+pub const MARKER_CONFIG_DIR: &str = crate::artifacts::CONFIG_DIR_NAME;
 /// Config-file name inside [`MARKER_CONFIG_DIR`].
-pub const MARKER_CONFIG_FILE: &str = "nails.toml";
+pub const MARKER_CONFIG_FILE: &str = crate::artifacts::CONFIG_FILE_NAME;
 
 /// Whether a candidate hidden root is a mounted hidden volume we may write to.
 #[derive(Debug, Clone, PartialEq, Eq)]

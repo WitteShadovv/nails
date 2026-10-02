@@ -7,11 +7,10 @@ use super::effective::LoadedConfig;
 use super::types::{Config, DEFAULT_HIDDEN_VOLUME_ROOT};
 use crate::error::{NailsError, Result};
 
-/// Directory next to the binary that holds the configuration file.
-pub const CONFIG_DIR_NAME: &str = "config";
-
-/// File name of the configuration file inside [`CONFIG_DIR_NAME`].
-pub const CONFIG_FILE_NAME: &str = "nails.toml";
+// The configuration directory and file names live in the artifact registry, the
+// single source of what NAILS writes. Re-exported here so existing callers keep
+// using `config::CONFIG_FILE_NAME` without the literal being repeated.
+pub use crate::artifacts::{CONFIG_DIR_NAME, CONFIG_FILE_NAME};
 
 /// Discover the configuration file path
 ///

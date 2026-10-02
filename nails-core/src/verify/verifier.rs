@@ -1,19 +1,17 @@
 //! Forensic validation verifier implementation
 
 use super::types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
+use crate::artifacts::{self, ArtifactKind, ArtifactScope, ArtifactSeverity};
 use crate::config::Config;
 use crate::state::StateFile;
 use crate::{Filesystem, Result};
+use std::path::Path;
 
-/// Common locations where leftover artifact files would reveal prior activity.
-const ARTIFACT_PATHS: &[&str] = &[
-    "/tmp/nails.log",
-    "/tmp/nails.toml",
-    "/var/log/nails.log",
-    "/etc/nails",
-    "/home/.nails",
-    "/root/.nails",
-];
+/// `/sys/block`, enumerated for open dm-crypt mappers and loop devices.
+const SYS_BLOCK_DIR: &str = "/sys/block";
+
+/// Kernel mount table, read to find the device backing the hidden volume.
+const SELF_MOUNTINFO: &str = "/proc/self/mountinfo";
 
 /// Forensic validation verifier
 ///
@@ -76,6 +74,9 @@ impl<F: Filesystem> Verifier<F> {
 
         // 4. Check memory status
         findings.extend(self.check_memory_status()?);
+
+        // 4b. Name-independent open crypt mapper / loop device detection
+        findings.extend(self.check_block_devices()?);
 
         // 5. Config-aware checks (if config is available)
         if let Some(ref config) = self.config {
@@ -149,25 +150,154 @@ impl<F: Filesystem> Verifier<F> {
         Ok(findings)
     }
 
-    /// Check for artifact files in common locations
+    /// Check for leftover NAILS artifacts drawn from the shared registry.
+    ///
+    /// Iterates [`artifacts::ARTIFACTS`] and flags every entry that resolves to a
+    /// single filesystem path and still exists. Absolute paths (runtime and
+    /// decoy traces) are always checked; hidden-root paths are checked against
+    /// the configured hidden volume root when a config is available. Content
+    /// markers and bare basenames do not map to one path — they are covered by
+    /// the base-config pre-flight check and the disk-image harness instead.
     fn check_artifact_files(&self) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
+        let hidden_root = self
+            .config
+            .as_ref()
+            .map(|config| config.hidden_volume_root.as_path());
 
-        for &path in ARTIFACT_PATHS {
-            let path_buf = std::path::PathBuf::from(path);
-            if self.filesystem.path_exists(&path_buf)? {
+        for artifact in artifacts::ARTIFACTS {
+            let resolved = match artifact.kind {
+                ArtifactKind::HiddenRootPath => {
+                    hidden_root.and_then(|root| artifact.resolve_path(root))
+                }
+                _ => artifact.resolve_path(Path::new("")),
+            };
+            let Some(path) = resolved else {
+                continue;
+            };
+
+            if self.filesystem.path_exists(&path)? {
                 findings.push(
                     Finding::new(
-                        Severity::Warn,
+                        map_artifact_severity(artifact.severity),
                         "file",
-                        format!("Artifact file found: {}", path),
+                        format!("Artifact file found: {}", path.display()),
                     )
-                    .with_fix_guidance(format!("Delete file: rm {}", path)),
+                    .with_fix_guidance(artifact_fix_guidance(artifact.scope, &path)),
                 );
             }
         }
 
         Ok(findings)
+    }
+
+    /// Name-independent detection of open dm-crypt mappers and loop devices.
+    ///
+    /// Reads `/sys/block`: a `dm-*` device whose `dm/uuid` begins with `CRYPT-`
+    /// is a dm-crypt mapper, and a `loop*` device with a non-empty
+    /// `loop/backing_file` is an attached loop device. The device that backs the
+    /// hidden volume (and therefore the running binary) is reported at Info level
+    /// — "close it before handing over the machine" — while any *other* open
+    /// crypt mapper or loop device is a warning, because it can expose a second
+    /// hidden volume regardless of the neutral name it was given.
+    ///
+    /// When `/sys/block` cannot be read (an offline scan, a container, or a mock
+    /// without the fixture) this reports nothing rather than erroring.
+    fn check_block_devices(&self) -> Result<Vec<Finding>> {
+        let mut findings = Vec::new();
+
+        let entries = match self.filesystem.list_directory(Path::new(SYS_BLOCK_DIR)) {
+            Ok(entries) => entries,
+            Err(_) => return Ok(findings),
+        };
+
+        let own_sources = self.hidden_volume_backing_sources();
+
+        for entry in entries {
+            let Some(name) = entry.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+
+            if name.starts_with("dm-") {
+                let uuid = match self.filesystem.read_file_content(&entry.join("dm/uuid")) {
+                    Ok(uuid) => uuid,
+                    Err(_) => continue,
+                };
+                if !uuid.trim().starts_with("CRYPT-") {
+                    continue;
+                }
+                let mapper_name = self
+                    .filesystem
+                    .read_file_content(&entry.join("dm/name"))
+                    .map(|name| name.trim().to_string())
+                    .unwrap_or_else(|_| name.to_string());
+                let node = format!("/dev/mapper/{mapper_name}");
+                let is_own = own_sources
+                    .iter()
+                    .any(|source| source == &node || source.ends_with(&format!("/{mapper_name}")));
+                findings.push(block_device_finding(
+                    is_own,
+                    "dm-crypt mapper",
+                    &mapper_name,
+                    &node,
+                ));
+            } else if name.starts_with("loop") {
+                let backing = match self
+                    .filesystem
+                    .read_file_content(&entry.join("loop/backing_file"))
+                {
+                    Ok(backing) => backing.trim().to_string(),
+                    Err(_) => continue,
+                };
+                if backing.is_empty() {
+                    continue;
+                }
+                let node = format!("/dev/{name}");
+                let is_own = own_sources
+                    .iter()
+                    .any(|source| source == &node || source == &backing);
+                findings.push(block_device_finding(is_own, "loop device", &backing, &node));
+            }
+        }
+
+        Ok(findings)
+    }
+
+    /// The source device(s) that `/proc/self/mountinfo` reports for the
+    /// configured hidden volume root, used to tell the hidden volume's own
+    /// backing device apart from any other open crypt mapper or loop device.
+    fn hidden_volume_backing_sources(&self) -> Vec<String> {
+        let Some(config) = self.config.as_ref() else {
+            return Vec::new();
+        };
+        let root = config.hidden_volume_root.as_path();
+        if root.as_os_str().is_empty() {
+            return Vec::new();
+        }
+
+        let Ok(mountinfo) = self.filesystem.read_file_content(Path::new(SELF_MOUNTINFO)) else {
+            return Vec::new();
+        };
+
+        let mut sources = Vec::new();
+        for line in mountinfo.lines() {
+            let Some((pre, post)) = line.split_once(" - ") else {
+                continue;
+            };
+            // mountinfo pre-separator field 5 (index 4) is the mount point.
+            let Some(mount_point) = pre.split(' ').nth(4) else {
+                continue;
+            };
+            if Path::new(mount_point) != root {
+                continue;
+            }
+            // Post-separator fields: fstype, source, super_opts.
+            if let Some(source) = post.split(' ').nth(1) {
+                sources.push(source.to_string());
+            }
+        }
+
+        sources
     }
 
     /// Check for nails-related processes
@@ -466,5 +596,57 @@ impl<F: Filesystem> Verifier<F> {
         }
 
         Ok(findings)
+    }
+}
+
+/// Map a registry severity hint onto a verification severity.
+fn map_artifact_severity(severity: ArtifactSeverity) -> Severity {
+    match severity {
+        ArtifactSeverity::Info => Severity::Info,
+        ArtifactSeverity::Warn => Severity::Warn,
+        ArtifactSeverity::Critical => Severity::Critical,
+    }
+}
+
+/// Fix guidance for a leftover artifact, tailored to where it lives.
+fn artifact_fix_guidance(scope: ArtifactScope, path: &Path) -> String {
+    match scope {
+        ArtifactScope::Runtime => format!(
+            "Runtime leftover from an incomplete teardown; run 'nails deactivate' (then confirm {} is gone)",
+            path.display()
+        ),
+        ArtifactScope::Decoy => {
+            format!(
+                "Trace on the decoy filesystem; remove it: rm -rf {}",
+                path.display()
+            )
+        }
+        ArtifactScope::HiddenRoot => format!(
+            "Expected on the hidden volume while mounted; unmount it before handing over the machine ({})",
+            path.display()
+        ),
+    }
+}
+
+/// Build a finding for an open crypt mapper or loop device.
+fn block_device_finding(is_own: bool, kind: &str, label: &str, node: &str) -> Finding {
+    if is_own {
+        Finding::new(
+            Severity::Info,
+            "block-device",
+            format!("Open {kind} backing the hidden volume: {label} ({node})"),
+        )
+        .with_fix_guidance(
+            "Close it before handing over the machine (cryptsetup close / losetup -d)",
+        )
+    } else {
+        Finding::new(
+            Severity::Warn,
+            "block-device",
+            format!("Open {kind} not backing the hidden volume: {label} ({node})"),
+        )
+        .with_fix_guidance(format!(
+            "An unexpected {kind} is open; close it if it is not in use ({node})"
+        ))
     }
 }

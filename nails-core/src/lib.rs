@@ -29,6 +29,9 @@
 // Error handling module
 pub mod error;
 
+// Artifact registry: the single source of what an activation can leave behind
+pub mod artifacts;
+
 // Filesystem operations module
 pub mod filesystem;
 
@@ -113,6 +116,9 @@ mod runtime_safety;
 pub mod test_support;
 
 // Re-export for convenience
+pub use artifacts::{
+    ARTIFACTS, Artifact, ArtifactKind, ArtifactScope, ArtifactSeverity, indicators_json,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use config::TestWorld;
 pub use config::{

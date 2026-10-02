@@ -104,7 +104,7 @@ fn test_comprehensive_scan_with_all_check_types() {
 
     // Set up findings from all check types
     fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true); // mount
-    fs.mock_set_path_exists("/tmp/nails.log", true); // file
+    fs.mock_set_path_exists("/run/nails", true); // file (runtime artifact)
     fs.mock_set_swap_enabled(true); // memory
     fs.mock_set_path_exists("/root/.bash_history", true); // deep scan
 
@@ -222,9 +222,9 @@ fn test_artifact_file_detection() {
     let fs = MockFilesystem::new();
     let verifier = Verifier::new(fs.clone());
 
-    // Set up artifact files
-    fs.mock_set_path_exists("/tmp/nails.log", true);
-    fs.mock_set_path_exists("/tmp/nails.toml", true);
+    // Set up leftover runtime artifacts from the shared registry.
+    fs.mock_set_path_exists("/run/nails", true);
+    fs.mock_set_path_exists("/mnt/nails-pivot", true);
 
     let result = verifier.run(false).unwrap();
     assert_eq!(result.status, VerifyStatus::Warning);
@@ -348,7 +348,7 @@ fn test_status_determination_priority() {
 
     // Set up both critical and warning findings
     fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true); // Critical
-    fs.mock_set_path_exists("/tmp/nails.log", true); // Warning
+    fs.mock_set_path_exists("/run/nails", true); // Warning (runtime artifact)
 
     let result = verifier.run(false).unwrap();
     // Critical takes precedence over Warning
@@ -407,22 +407,26 @@ fn test_ac9_overlay_mounted_critical_exit_1() {
 
 #[test]
 fn test_ac9_artifact_file_found_critical_with_guidance() {
-    // AC: Given verify runs and finds artifact files
-    // Then output includes fix guidance
+    // AC: Given verify runs and finds a decoy-side artifact
+    // Then the finding is critical and includes fix guidance
     let fs = MockFilesystem::new();
     let verifier = Verifier::new(fs.clone());
 
-    fs.mock_set_path_exists("/tmp/nails.log", true);
+    // The staged /etc/nixos symlink is a decoy-side, critical leak.
+    fs.mock_set_path_exists("/etc/nixos/nails/configuration.nix", true);
 
     let result = verifier.run(false).unwrap();
 
     let file_findings: Vec<_> = result
         .findings
         .iter()
-        .filter(|f| f.category == "file" && f.message.contains("nails.log"))
+        .filter(|f| {
+            f.category == "file" && f.message.contains("/etc/nixos/nails/configuration.nix")
+        })
         .collect();
 
     assert_eq!(file_findings.len(), 1);
+    assert_eq!(file_findings[0].severity, Severity::Critical);
     assert!(file_findings[0].fix_guidance.is_some());
     assert!(
         file_findings[0]
@@ -463,7 +467,7 @@ fn test_ac9_json_output_valid() {
     let fs = MockFilesystem::new();
     let verifier = Verifier::new(fs.clone());
 
-    fs.mock_set_path_exists("/tmp/nails.log", true);
+    fs.mock_set_path_exists("/run/nails", true);
 
     let result = verifier.run(false).unwrap();
 
@@ -492,8 +496,8 @@ fn test_ac9_multiple_findings_all_reported() {
     // Set up multiple findings
     fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true);
     fs.mock_set_overlay_mounted(std::path::Path::new("/etc"), true);
-    fs.mock_set_path_exists("/tmp/nails.log", true);
-    fs.mock_set_path_exists("/tmp/nails.toml", true);
+    fs.mock_set_path_exists("/run/nails", true);
+    fs.mock_set_path_exists("/mnt/nails-pivot", true);
 
     let result = verifier.run(false).unwrap();
 
@@ -828,41 +832,130 @@ fn test_non_overlay_mounts_are_not_reported_as_overlay_findings() {
 }
 
 #[test]
-fn test_check_all_artifact_paths() {
-    // Test that all artifact paths are checked
+fn test_verify_flags_every_registry_path_artifact() {
+    // Every artifact in the shared registry that resolves to a filesystem path
+    // and the activation path creates must be flagged by verify when it is left
+    // behind. Absolute paths plus hidden-root paths (resolved against the
+    // configured hidden volume root) are all covered here.
+    use crate::artifacts;
+    use crate::config::Config;
+    use std::path::PathBuf;
+
     let fs = MockFilesystem::new();
-    let verifier = Verifier::new(fs.clone());
+    let hidden_root = PathBuf::from("/mnt/data");
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        ..Config::default()
+    };
 
-    // Set up all artifact paths
-    let artifact_paths = [
-        "/tmp/nails.log",
-        "/tmp/nails.toml",
-        "/var/log/nails.log",
-        "/etc/nails",
-        "/home/.nails",
-        "/root/.nails",
-    ];
-
-    for path in &artifact_paths {
-        fs.mock_set_path_exists(path, true);
+    let mut expected: Vec<PathBuf> = Vec::new();
+    for artifact in artifacts::ARTIFACTS {
+        if let Some(path) = artifact.resolve_path(&hidden_root) {
+            fs.mock_set_path_exists(path.to_str().unwrap(), true);
+            expected.push(path);
+        }
     }
+    assert!(
+        !expected.is_empty(),
+        "registry must contain path-type artifacts"
+    );
 
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
     let result = verifier.run(false).unwrap();
 
-    // Should find all artifact files
-    let artifact_findings: Vec<_> = result
+    for path in &expected {
+        let display = path.display().to_string();
+        assert!(
+            result.findings.iter().any(|f| f.message.contains(&display)),
+            "verify did not flag registry artifact at {display}"
+        );
+    }
+}
+
+#[test]
+fn test_block_device_scan_is_silent_without_sysblock() {
+    // When /sys/block is unavailable (offline scan, container, or a mock without
+    // the fixture) the crypt/loop scan must stay quiet rather than erroring.
+    let fs = MockFilesystem::new();
+    let verifier = Verifier::new(fs);
+
+    let result = verifier.run(false).unwrap();
+    assert!(result.findings.iter().all(|f| f.category != "block-device"));
+}
+
+#[test]
+fn test_block_device_scan_flags_foreign_crypt_and_reports_own_as_info() {
+    use crate::config::Config;
+    use std::path::{Path, PathBuf};
+
+    let fs = MockFilesystem::new();
+    let hidden_root = PathBuf::from("/mnt/data");
+    let config = Config {
+        hidden_volume_root: hidden_root,
+        ..Config::default()
+    };
+
+    // The hidden volume is backed by /dev/mapper/data.
+    fs.mock_set_file_content(
+        "/proc/self/mountinfo",
+        "36 35 254:0 / /mnt/data rw,relatime shared:1 - ext4 /dev/mapper/data rw\n",
+    );
+
+    // /sys/block lists two crypt mappers and one loop device.
+    fs.mock_set_directory_contents(
+        Path::new("/sys/block"),
+        vec![
+            PathBuf::from("/sys/block/dm-0"),
+            PathBuf::from("/sys/block/dm-1"),
+            PathBuf::from("/sys/block/loop0"),
+        ],
+    );
+    // dm-0 = the hidden volume's own mapper ("data").
+    fs.mock_set_file_content("/sys/block/dm-0/dm/uuid", "CRYPT-LUKS2-abc-data\n");
+    fs.mock_set_file_content("/sys/block/dm-0/dm/name", "data\n");
+    // dm-1 = an unrelated crypt mapper with an arbitrary neutral name.
+    fs.mock_set_file_content("/sys/block/dm-1/dm/uuid", "CRYPT-LUKS2-def-vault\n");
+    fs.mock_set_file_content("/sys/block/dm-1/dm/name", "vault\n");
+    // loop0 = an unrelated attached loop device.
+    fs.mock_set_file_content(
+        "/sys/block/loop0/loop/backing_file",
+        "/home/user/other.img\n",
+    );
+
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+
+    let block_findings: Vec<_> = result
         .findings
         .iter()
-        .filter(|f| f.category == "file" && f.message.contains("Artifact file found"))
+        .filter(|f| f.category == "block-device")
         .collect();
-    assert_eq!(artifact_findings.len(), artifact_paths.len());
+    assert_eq!(block_findings.len(), 3);
 
-    // All should be warnings with fix guidance containing "rm"
-    for finding in artifact_findings {
-        assert_eq!(finding.severity, Severity::Warn);
-        assert!(finding.fix_guidance.is_some());
-        assert!(finding.fix_guidance.as_ref().unwrap().contains("rm"));
-    }
+    let own = block_findings
+        .iter()
+        .find(|f| f.message.contains("/dev/mapper/data"))
+        .expect("own mapper reported");
+    assert_eq!(own.severity, Severity::Info);
+    assert!(own.message.contains("backing the hidden volume"));
+
+    let foreign_crypt = block_findings
+        .iter()
+        .find(|f| f.message.contains("/dev/mapper/vault"))
+        .expect("foreign mapper reported");
+    assert_eq!(foreign_crypt.severity, Severity::Warn);
+    assert!(
+        foreign_crypt
+            .message
+            .contains("not backing the hidden volume")
+    );
+
+    let foreign_loop = block_findings
+        .iter()
+        .find(|f| f.message.contains("/dev/loop0"))
+        .expect("foreign loop device reported");
+    assert_eq!(foreign_loop.severity, Severity::Warn);
+    assert!(foreign_loop.message.contains("other.img"));
 }
 
 // ========================================================================

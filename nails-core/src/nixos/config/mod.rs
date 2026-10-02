@@ -172,5 +172,5 @@ pub(crate) fn strip_nix_comments(input: &str) -> String {
 /// This ignores comment-only references to avoid false positives.
 pub fn contains_nails_import(content: &str) -> bool {
     let stripped = strip_nix_comments(content);
-    stripped.contains("./nails/configuration.nix")
+    stripped.contains(crate::artifacts::NIXOS_IMPORT_MARKER)
 }

@@ -127,7 +127,7 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
 
         // Check 5: Modified hardware-configuration.nix has relative import to hidden config
         let content = fs.read_file_content(&modified_config)?;
-        let expected_import = "./nails/configuration.nix";
+        let expected_import = crate::artifacts::NIXOS_IMPORT_MARKER;
         if !crate::nixos::contains_nails_import(&content) {
             return Ok(CheckResult::Fail(format!(
                 "Modified hardware-configuration.nix missing hidden import. Add: imports = [ ... {} ];",

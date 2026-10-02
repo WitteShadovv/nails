@@ -1,0 +1,105 @@
+{
+  "schema": "nails-artifact-indicators/v1",
+  "note": "Generated from nails-core/src/artifacts.rs. Do not edit by hand; run `cargo test -p nails-core artifacts -- --ignored regenerate_indicators_json`.",
+  "artifacts": [
+    {
+      "id": "config-file",
+      "kind": "hidden-root-path",
+      "scope": "hidden-root",
+      "severity": "info",
+      "value": "config/nails.toml",
+      "image_token": "nails.toml",
+      "description": "Per-volume configuration file on the hidden root."
+    },
+    {
+      "id": "state-file",
+      "kind": "hidden-root-path",
+      "scope": "hidden-root",
+      "severity": "info",
+      "value": "state.json",
+      "image_token": "state.json",
+      "description": "Activation state file on the hidden root."
+    },
+    {
+      "id": "log-file",
+      "kind": "hidden-root-path",
+      "scope": "hidden-root",
+      "severity": "info",
+      "value": "logs/nails.log",
+      "image_token": "nails.log",
+      "description": "Operation log on the hidden root."
+    },
+    {
+      "id": "deactivation-reports",
+      "kind": "hidden-root-path",
+      "scope": "hidden-root",
+      "severity": "info",
+      "value": "reports",
+      "image_token": "reports",
+      "description": "Deactivation self-check reports directory on the hidden root."
+    },
+    {
+      "id": "nixos-module-source",
+      "kind": "hidden-root-path",
+      "scope": "hidden-root",
+      "severity": "info",
+      "value": "etc/nixos/nails/configuration.nix",
+      "image_token": "configuration.nix",
+      "description": "Staged hidden NixOS module source on the hidden root."
+    },
+    {
+      "id": "runtime-dir",
+      "kind": "absolute-path",
+      "scope": "runtime",
+      "severity": "warn",
+      "value": "/run/nails",
+      "image_token": "nails",
+      "description": "Per-activation runtime directory on the decoy root; removed on deactivation."
+    },
+    {
+      "id": "pivot-staging",
+      "kind": "absolute-path",
+      "scope": "runtime",
+      "severity": "warn",
+      "value": "/mnt/nails-pivot",
+      "image_token": "nails-pivot",
+      "description": "Overlay pivot staging base; removed on deactivation."
+    },
+    {
+      "id": "nixos-staged-link",
+      "kind": "absolute-path",
+      "scope": "decoy",
+      "severity": "critical",
+      "value": "/etc/nixos/nails/configuration.nix",
+      "image_token": "configuration.nix",
+      "description": "Symlink into the hidden NixOS module; must be absent from the decoy /etc/nixos after deactivation."
+    },
+    {
+      "id": "nixos-import-marker",
+      "kind": "content-marker",
+      "scope": "decoy",
+      "severity": "critical",
+      "value": "./nails/configuration.nix",
+      "image_token": "./nails/configuration.nix",
+      "description": "Import line added to hardware-configuration.nix; must be absent from the decoy base config after deactivation."
+    },
+    {
+      "id": "autostart-notify",
+      "kind": "basename",
+      "scope": "decoy",
+      "severity": "warn",
+      "value": "nails-notify.desktop",
+      "image_token": "nails-notify.desktop",
+      "description": "XDG autostart entry written into the overlaid home."
+    },
+    {
+      "id": "shell-rc-marker",
+      "kind": "content-marker",
+      "scope": "decoy",
+      "severity": "warn",
+      "value": "# >>> managed shell integration (auto-removed on deactivation) >>>",
+      "image_token": "# >>> managed shell integration (auto-removed on deactivation) >>>",
+      "description": "Managed shell-integration block marker appended to a login shell rc file."
+    }
+  ]
+}

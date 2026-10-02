@@ -86,7 +86,7 @@ pub fn prepare_nixos_config_overlay<F: Filesystem>(
 
     // Validate modified config contains relative import to hidden config via nails/ symlink
     let content = fs.read_file_content(&hardware_config)?;
-    let expected_import = "./nails/configuration.nix";
+    let expected_import = crate::artifacts::NIXOS_IMPORT_MARKER;
 
     if !super::contains_nails_import(&content) {
         return Err(NailsError::NixOSError(format!(

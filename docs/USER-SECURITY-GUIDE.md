@@ -336,6 +336,13 @@ pgrep -f nails
 findmnt /mnt/data  # Should fail or print nothing
 test ! -e /dev/mapper/data
 
+# 4b. Name-independent check: no crypt mapper or loop device is left open.
+#     These do not rely on the mapping being called "data", so they also catch a
+#     second hidden volume opened under any neutral name.
+findmnt -S /dev/mapper -o TARGET,SOURCE  # Any row backed by /dev/mapper is suspect
+dmsetup ls --target crypt                # Should print "No devices found"
+losetup -a                               # Should list no unexpected backing files
+
 # 5. Check recently-used files (GNOME)
 cat ~/.local/share/recently-used.xbel | grep -i hidden
 cat ~/.local/share/recently-used.xbel | grep -i veracrypt
