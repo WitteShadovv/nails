@@ -1,4 +1,4 @@
-# Test 23: Preflight Upper-Filesystem Capability
+# Test 24: Preflight Upper-Filesystem Capability
 #
 # A FAT upper cannot back an overlayfs upper layer (no trusted xattrs), so the
 # upper-fs-capability check must refuse activation before anything is mounted,
