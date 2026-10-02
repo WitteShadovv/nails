@@ -57,9 +57,12 @@ impl<F: Filesystem> NailsManager<F> {
         let mut nix_overlay_succeeded = false;
 
         for overlay in &self.config.overlays {
-            // Strip opaque xattrs from upper layer to prevent previous activation
-            // cycles from hiding lower-layer contents (e.g., flake.nix under /etc/nixos)
-            let stripped = crate::overlay::opaque::strip_opaque_xattrs(&overlay.upper);
+            // Clear stale opaque markers on NAILS-managed dirs (currently
+            // /etc/nixos) so a previous cycle cannot hide lower-layer contents
+            // (e.g. flake.nix under /etc/nixos). Scoped: user uppers and /nix are
+            // never touched, so intended whiteouts survive.
+            let stripped =
+                crate::overlay::opaque::strip_managed_opaque(&overlay.upper, &overlay.target);
             if stripped > 0 {
                 tracing::warn!(
                     upper = %overlay.upper.display(),

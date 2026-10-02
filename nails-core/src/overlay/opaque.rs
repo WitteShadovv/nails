@@ -1,139 +1,242 @@
-//! Overlayfs opaque directory detection and cleanup
+//! Overlayfs opaque-marker handling for NAILS-managed paths.
 //!
 //! When a directory is deleted and recreated through an active overlayfs mount,
 //! the kernel sets `trusted.overlay.opaque=y` on the upper-layer directory.
-//! This makes the upper directory completely **replace** (instead of merge with)
-//! the lower-layer directory — hiding all lower-layer contents.
+//! This makes the upper directory completely **replace** (instead of merge
+//! with) the lower-layer directory, hiding every lower-layer entry.
 //!
-//! This is a problem for NAILS because the upper layer (hidden volume) typically
-//! contains only a few files (e.g., `hardware-configuration.nix`), while the
-//! lower layer (base system) contains many more. An opaque upper directory hides
-//! the base system contents, breaking things like `nixos-rebuild` which expects
-//! to find `flake.nix` from the lower layer.
+//! That marker is only a problem on the one directory NAILS populates itself:
+//! `/etc/nixos`. NAILS writes `hardware-configuration.nix` into the upper there,
+//! and an opaque marker on it would hide the decoy's `flake.nix` from the lower
+//! layer, breaking `nixos-rebuild`. Clearing the marker restores the merged
+//! view.
 //!
-//! This module provides functions to detect and strip opaque xattrs from upper
-//! layer directories before mounting overlays.
+//! Everything else is deliberately left alone. If the hidden user runs
+//! `rm -rf ~/dir && mkdir ~/dir`, the kernel sets the opaque marker on that
+//! user upper on purpose, and clearing it would resurface the decoy's data.
+//! `/nix` is likewise never touched. So the handling here is scoped to an
+//! explicit allow-list of managed directories rather than walking whole uppers.
+//!
+//! The marker is read and cleared with `rustix`'s `l*xattr` calls, which issue
+//! the syscalls directly (no dependency on the external `attr` package) and do
+//! not follow symlinks in the final path component.
 
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-/// Strip `trusted.overlay.opaque` xattr from all directories under `upper`.
-///
-/// This is idempotent — directories without the xattr are silently skipped.
-/// Requires root privileges (trusted.* xattrs are root-only).
-///
-/// # Arguments
-///
-/// * `upper` - Root of the overlay upper layer directory
-///
-/// # Returns
-///
-/// Number of directories that had the opaque xattr stripped.
-pub fn strip_opaque_xattrs(upper: &Path) -> usize {
-    let opaque = find_opaque_dirs(upper);
-    let count = opaque.len();
+/// The overlayfs opaque marker set by the kernel on a replaced upper directory.
+pub const OPAQUE_XATTR: &str = "trusted.overlay.opaque";
 
-    for dir in &opaque {
-        let _ = Command::new("setfattr")
-            .args(["-x", "trusted.overlay.opaque"])
-            .arg(dir)
-            .stderr(std::process::Stdio::null())
-            .status();
+/// NAILS-managed directories inside `upper` whose opaque marker may be cleared.
+///
+/// Only `/etc/nixos` qualifies: it is the single path NAILS writes into, so a
+/// stale marker there hides the lower `flake.nix`. User-data uppers and `/nix`
+/// return nothing, so their intended whiteouts are preserved.
+fn managed_opaque_dirs(upper: &Path, target: &Path) -> Vec<PathBuf> {
+    if target == Path::new("/etc") {
+        vec![upper.join("nixos")]
+    } else {
+        Vec::new()
     }
-
-    count
 }
 
-/// Find directories in the upper layer that have `trusted.overlay.opaque` set.
+/// Whether `dir` carries extended attribute `name` (no symlink following).
 ///
-/// Returns an empty Vec if `getfattr` is not available or `upper` doesn't exist.
+/// A missing attribute (`ENODATA`), an unsupported filesystem (`ENOTSUP`) and a
+/// missing directory (`ENOENT`) all count as "not present". Any other error is
+/// also reported as "not present" so that this read-only probe never panics; the
+/// write path logs real failures separately.
+fn has_opaque(dir: &Path, name: &str) -> bool {
+    // A zero-length buffer turns lgetxattr into a presence/length query.
+    let mut probe: [u8; 0] = [];
+    rustix::fs::lgetxattr(dir, name, &mut probe[..]).is_ok()
+}
+
+/// Remove extended attribute `name` from `dir` (no symlink following).
 ///
-/// # Arguments
-///
-/// * `upper` - Root of the overlay upper layer directory
-pub fn find_opaque_dirs(upper: &Path) -> Vec<PathBuf> {
-    if !upper.exists() {
-        return vec![];
+/// Returns `Ok(true)` when a marker was removed, `Ok(false)` when there was
+/// nothing to remove (`ENODATA`), the filesystem does not support xattrs
+/// (`ENOTSUP`) or the directory is absent (`ENOENT`), and `Err` for any real
+/// failure (for example `EPERM` when not privileged for `trusted.*`).
+fn strip_opaque(dir: &Path, name: &str) -> io::Result<bool> {
+    use rustix::io::Errno;
+    match rustix::fs::lremovexattr(dir, name) {
+        Ok(()) => Ok(true),
+        Err(Errno::NODATA | Errno::NOTSUP | Errno::NOENT) => Ok(false),
+        Err(e) => Err(e.into()),
     }
+}
 
-    // List all directories under upper
-    let find_output = Command::new("find")
-        .arg(upper)
-        .args(["-type", "d"])
-        .output();
+/// Clear the opaque marker from every NAILS-managed directory under `upper`.
+///
+/// This is the single place NAILS strips opaque markers and is run once, in the
+/// mount step. Returns the number of markers removed. Real failures are logged
+/// as warnings that name the path and otherwise ignored, so a single bad
+/// directory cannot abort activation.
+pub fn strip_managed_opaque(upper: &Path, target: &Path) -> usize {
+    strip_managed_opaque_named(upper, target, OPAQUE_XATTR)
+}
 
-    let dirs: Vec<PathBuf> = match find_output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(PathBuf::from)
-            .collect(),
-        _ => return vec![],
-    };
-
-    // Check each directory for the opaque xattr
-    let mut opaque = Vec::new();
-    for dir in dirs {
-        let result = Command::new("getfattr")
-            .args(["-n", "trusted.overlay.opaque"])
-            .arg(&dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-
-        if let Ok(status) = result
-            && status.success()
-        {
-            opaque.push(dir);
+pub(crate) fn strip_managed_opaque_named(upper: &Path, target: &Path, name: &str) -> usize {
+    let mut removed = 0;
+    for dir in managed_opaque_dirs(upper, target) {
+        match strip_opaque(&dir, name) {
+            Ok(true) => removed += 1,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(
+                    path = %dir.display(),
+                    error = %e,
+                    "Could not clear overlay opaque marker on {}: {}",
+                    dir.display(),
+                    e
+                );
+            }
         }
     }
+    removed
+}
 
-    opaque
+/// Report NAILS-managed directories under `upper` that currently carry the
+/// opaque marker.
+///
+/// Read-only: it performs no writes, so it is safe to call from preflight and
+/// `--dry-run` without changing the hidden volume.
+pub fn report_managed_opaque(upper: &Path, target: &Path) -> Vec<PathBuf> {
+    report_managed_opaque_named(upper, target, OPAQUE_XATTR)
+}
+
+pub(crate) fn report_managed_opaque_named(upper: &Path, target: &Path, name: &str) -> Vec<PathBuf> {
+    managed_opaque_dirs(upper, target)
+        .into_iter()
+        .filter(|dir| has_opaque(dir, name))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustix::fs::XattrFlags;
     use std::fs;
 
-    #[test]
-    fn test_find_opaque_dirs_nonexistent_path() {
-        let result = find_opaque_dirs(Path::new("/nonexistent/path/that/doesnt/exist"));
-        assert!(result.is_empty());
+    /// A `user.*` xattr name so unit tests can exercise the real syscalls
+    /// without the root privilege that `trusted.*` requires. The production
+    /// marker (`trusted.overlay.opaque`) is covered by the root VM E2E tests.
+    const TEST_XATTR: &str = "user.nails.test.opaque";
+
+    /// Set a marker on `dir`, returning false if the temp filesystem rejects
+    /// `user.*` xattrs (some tmpfs configurations do), so callers can self-skip.
+    fn try_set_marker(dir: &Path) -> bool {
+        rustix::fs::lsetxattr(dir, TEST_XATTR, b"y", XattrFlags::empty()).is_ok()
     }
 
     #[test]
-    fn test_strip_opaque_xattrs_nonexistent_path() {
-        let count = strip_opaque_xattrs(Path::new("/nonexistent/path/that/doesnt/exist"));
+    fn managed_dirs_only_cover_etc_nixos() {
+        let upper = PathBuf::from("/mnt/hidden/etc");
+        assert_eq!(
+            managed_opaque_dirs(&upper, Path::new("/etc")),
+            vec![upper.join("nixos")]
+        );
+    }
+
+    #[test]
+    fn managed_dirs_never_touch_user_or_nix_uppers() {
+        for target in ["/home", "/nix", "/var", "/root"] {
+            let upper = PathBuf::from("/mnt/hidden").join(target.trim_start_matches('/'));
+            assert!(
+                managed_opaque_dirs(&upper, Path::new(target)).is_empty(),
+                "{target} must not be a managed opaque path"
+            );
+        }
+    }
+
+    #[test]
+    fn report_is_empty_for_missing_path() {
+        let report = report_managed_opaque(
+            Path::new("/nonexistent/path/that/does/not/exist/etc"),
+            Path::new("/etc"),
+        );
+        assert!(report.is_empty());
+    }
+
+    #[test]
+    fn strip_is_zero_for_missing_path() {
+        let count = strip_managed_opaque(
+            Path::new("/nonexistent/path/that/does/not/exist/etc"),
+            Path::new("/etc"),
+        );
         assert_eq!(count, 0);
     }
 
     #[test]
-    fn test_find_opaque_dirs_existing_empty_directory_returns_empty() {
-        let temp_dir = tempfile::tempdir().unwrap();
+    fn report_is_empty_for_marker_free_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let upper = temp.path().join("etc");
+        fs::create_dir_all(upper.join("nixos")).unwrap();
 
-        let result = find_opaque_dirs(temp_dir.path());
-
-        assert!(result.is_empty());
+        assert!(report_managed_opaque(&upper, Path::new("/etc")).is_empty());
     }
 
     #[test]
-    fn test_find_opaque_dirs_existing_tree_without_xattrs_returns_empty() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(temp_dir.path().join("nested/child")).unwrap();
+    fn strip_is_zero_for_marker_free_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let upper = temp.path().join("etc");
+        fs::create_dir_all(upper.join("nixos")).unwrap();
 
-        let result = find_opaque_dirs(temp_dir.path());
-
-        assert!(result.is_empty());
+        assert_eq!(strip_managed_opaque(&upper, Path::new("/etc")), 0);
     }
 
     #[test]
-    fn test_strip_opaque_xattrs_existing_tree_without_xattrs_returns_zero() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(temp_dir.path().join("upper/etc/nixos")).unwrap();
+    fn report_and_strip_round_trip_on_managed_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let upper = temp.path().join("etc");
+        let managed = upper.join("nixos");
+        fs::create_dir_all(&managed).unwrap();
 
-        let count = strip_opaque_xattrs(temp_dir.path());
+        if !try_set_marker(&managed) {
+            // tmpfs without user-xattr support: the real round-trip is proven
+            // by the root VM E2E test instead.
+            return;
+        }
 
-        assert_eq!(count, 0);
+        // The marker is seen by the read-only report.
+        assert_eq!(
+            report_managed_opaque_named(&upper, Path::new("/etc"), TEST_XATTR),
+            vec![managed.clone()]
+        );
+
+        // Stripping removes it and reports one removal.
+        assert_eq!(
+            strip_managed_opaque_named(&upper, Path::new("/etc"), TEST_XATTR),
+            1
+        );
+
+        // A second strip is a no-op and the report is now empty.
+        assert_eq!(
+            strip_managed_opaque_named(&upper, Path::new("/etc"), TEST_XATTR),
+            0
+        );
+        assert!(report_managed_opaque_named(&upper, Path::new("/etc"), TEST_XATTR).is_empty());
+    }
+
+    #[test]
+    fn marker_on_unmanaged_dir_is_left_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        // An opaque marker on a user upper (here /home) must never be reported
+        // or stripped, so a hidden-session whiteout survives.
+        let upper = temp.path().join("home");
+        fs::create_dir_all(&upper).unwrap();
+
+        if !try_set_marker(&upper) {
+            return;
+        }
+
+        assert!(report_managed_opaque_named(&upper, Path::new("/home"), TEST_XATTR).is_empty());
+        assert_eq!(
+            strip_managed_opaque_named(&upper, Path::new("/home"), TEST_XATTR),
+            0
+        );
+        // The marker is still there.
+        assert!(has_opaque(&upper, TEST_XATTR));
     }
 }

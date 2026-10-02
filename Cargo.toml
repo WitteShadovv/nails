@@ -25,6 +25,10 @@ tracing-subscriber = { version = "0.3.22", features = ["json"] }
 # Filesystem operations (AR9)
 nix = { version = "0.30.1", features = ["mount", "sched"] }
 
+# Direct syscalls for extended attributes (overlay opaque markers): rustix's
+# l*xattr functions give us no-follow semantics without spawning attr binaries.
+rustix = { version = "1", features = ["fs"] }
+
 # Serialization (AR10)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

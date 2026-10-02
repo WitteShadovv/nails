@@ -693,6 +693,7 @@ dependencies = [
  "nix",
  "predicates",
  "proptest",
+ "rustix",
  "serde",
  "serde_json",
  "serial_test",

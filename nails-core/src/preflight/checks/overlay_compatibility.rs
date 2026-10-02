@@ -3,8 +3,10 @@
 //! Validates that:
 //! 1. Overlay-incompatible filesystem targets (vfat, exfat, ntfs) are small enough
 //!    to be snapshot-pivoted into RAM.
-//! 2. Upper layer directories don't have `trusted.overlay.opaque` xattrs that would
-//!    hide lower-layer contents after a previous activation cycle.
+//! 2. NAILS-managed upper directories don't carry a `trusted.overlay.opaque`
+//!    xattr that would hide lower-layer contents after a previous activation
+//!    cycle. This check only reports such markers; the mount step clears them,
+//!    so preflight and `--dry-run` make no writes.
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::overlay::OVERLAY_INCOMPATIBLE_FSTYPES;
@@ -21,12 +23,17 @@ const DEFAULT_MAX_SNAPSHOT_BYTES: u64 = 1_073_741_824;
 /// 1. **Incompatible filesystems**: Targets on vfat/exfat/ntfs that need snapshot pivot.
 ///    Warns if small enough, fails if too large for RAM.
 ///
-/// 2. **Opaque upper-layer directories**: Upper directories marked opaque from a previous
-///    activation cycle. These are auto-fixed (xattr stripped) and a warning is emitted.
+/// 2. **Opaque managed directories**: NAILS-managed upper directories (currently
+///    `/etc/nixos`) marked opaque from a previous activation cycle. These are
+///    reported as a warning only; the mount step clears them, so this check
+///    never writes.
 pub struct OverlayCompatibilityCheck {
     persistent_overlay_targets: Vec<PathBuf>,
     hidden_volume_root: PathBuf,
     max_snapshot_bytes: u64,
+    /// Xattr name probed for opaque markers. Production uses the real overlay
+    /// marker; tests override it with a `user.*` name they can set unprivileged.
+    opaque_xattr: &'static str,
 }
 
 impl OverlayCompatibilityCheck {
@@ -36,7 +43,16 @@ impl OverlayCompatibilityCheck {
             persistent_overlay_targets,
             hidden_volume_root,
             max_snapshot_bytes: DEFAULT_MAX_SNAPSHOT_BYTES,
+            opaque_xattr: crate::overlay::opaque::OPAQUE_XATTR,
         }
+    }
+
+    /// Override the probed xattr name (test seam for unprivileged `user.*`
+    /// markers).
+    #[cfg(test)]
+    fn with_opaque_xattr(mut self, name: &'static str) -> Self {
+        self.opaque_xattr = name;
+        self
     }
 }
 
@@ -101,9 +117,11 @@ impl<F: Filesystem> PreFlightCheck<F> for OverlayCompatibilityCheck {
             ));
         }
 
-        // Check 2: Opaque upper-layer directories
-        // These hide lower-layer contents and are a common source of broken overlays.
-        // Auto-fix by stripping the xattr, then warn.
+        // Check 2: Opaque markers on NAILS-managed directories.
+        // These hide lower-layer contents (e.g. the lower flake.nix under
+        // /etc/nixos) and are a common source of broken overlays. This is a
+        // read-only report: the mount step clears the marker, so preflight and
+        // --dry-run never write to the hidden volume.
         for target in &self.persistent_overlay_targets {
             let dir_name = match target.file_name() {
                 Some(n) => n.to_string_lossy().to_string(),
@@ -111,12 +129,21 @@ impl<F: Filesystem> PreFlightCheck<F> for OverlayCompatibilityCheck {
             };
             let upper = self.hidden_volume_root.join(&dir_name);
 
-            let stripped = crate::overlay::opaque::strip_opaque_xattrs(&upper);
-            if stripped > 0 {
+            let marked = crate::overlay::opaque::report_managed_opaque_named(
+                &upper,
+                target,
+                self.opaque_xattr,
+            );
+            if !marked.is_empty() {
+                let paths = marked
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 warnings.push(format!(
-                    "Fixed {} opaque dir(s) in upper layer for {} \
-                     (previous activation left stale overlay markers)",
-                    stripped,
+                    "Stale overlay opaque marker on {} for {} \
+                     (a previous activation left it; the mount step will clear it)",
+                    paths,
                     target.display(),
                 ));
             }
@@ -136,7 +163,12 @@ impl<F: Filesystem> PreFlightCheck<F> for OverlayCompatibilityCheck {
 mod tests {
     use super::*;
     use crate::filesystem::MockFilesystem;
+    use rustix::fs::XattrFlags;
     use std::path::Path;
+
+    /// `user.*` marker so the test can set it without root (`trusted.*` needs
+    /// CAP_SYS_ADMIN). Production probes the real overlay marker.
+    const TEST_XATTR: &str = "user.nails.test.opaque";
 
     #[test]
     fn test_pass_no_incompatible_targets() {
@@ -215,6 +247,56 @@ mod tests {
         let result = check.run(&fs).unwrap();
         assert!(result.is_warn());
         assert!(result.message().contains("/boot"));
+    }
+
+    #[test]
+    fn test_opaque_marker_reported_not_stripped() {
+        // A real hidden root so Check 2 exercises the actual syscalls.
+        let hidden = tempfile::tempdir().unwrap();
+        let managed = hidden.path().join("etc").join("nixos");
+        std::fs::create_dir_all(&managed).unwrap();
+
+        // Self-skip when the temp filesystem rejects user.* xattrs.
+        if rustix::fs::lsetxattr(&managed, TEST_XATTR, b"y", XattrFlags::empty()).is_err() {
+            return;
+        }
+
+        let fs = MockFilesystem::new();
+        let check = OverlayCompatibilityCheck::new(
+            vec![PathBuf::from("/etc")],
+            hidden.path().to_path_buf(),
+        )
+        .with_opaque_xattr(TEST_XATTR);
+
+        let result = check.run(&fs).unwrap();
+
+        // The marker is reported as a warning that names the managed path...
+        assert!(result.is_warn(), "Expected Warn, got: {:?}", result);
+        assert!(result.message().contains("/etc"));
+        assert!(result.message().contains(&managed.display().to_string()));
+
+        // ...but the check is read-only: the marker is still present afterwards.
+        let mut probe: [u8; 0] = [];
+        assert!(
+            rustix::fs::lgetxattr(&managed, TEST_XATTR, &mut probe[..]).is_ok(),
+            "Check 2 must not strip the marker"
+        );
+    }
+
+    #[test]
+    fn test_no_opaque_marker_passes() {
+        let hidden = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(hidden.path().join("etc").join("nixos")).unwrap();
+
+        let fs = MockFilesystem::new();
+        let check = OverlayCompatibilityCheck::new(
+            vec![PathBuf::from("/etc")],
+            hidden.path().to_path_buf(),
+        )
+        .with_opaque_xattr(TEST_XATTR);
+
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_pass(), "Expected Pass, got: {:?}", result);
     }
 
     #[test]
