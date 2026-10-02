@@ -38,6 +38,9 @@ pub fn execute_command(cli: Cli, settings: &OutputSettings) -> ExitStatus {
                 ExitStatus::Failed
             }
         },
+        Commands::ResetUpper(args) => {
+            commands::reset_upper::execute(settings, &args, config, check_real_operations_allowed)
+        }
         Commands::Config(command) => commands::config::execute(settings, config, &command),
         Commands::NotifyDispatch => commands::notify_dispatch::execute(settings, config),
     }

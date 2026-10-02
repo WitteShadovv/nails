@@ -19,6 +19,7 @@ pub mod deactivate;
 pub mod emergency;
 pub mod init;
 pub mod notify_dispatch;
+pub mod reset_upper;
 pub mod status;
 pub mod verify;
 

@@ -346,6 +346,29 @@ pub fn build_overlay_targets<F: Filesystem>(fs: &F, config: &Config) -> Result<V
 /// # // Example only: create_overlay_config is an internal helper.
 /// # // Use NailsManager::activate() to mount overlays in normal code.
 /// ```
+/// Derive the persistent upper and work directories for a target on the hidden
+/// volume.
+///
+/// The layout is single-sourced here so overlay creation and `reset-upper`
+/// always agree: the upper lives at `<hidden_root>/<dir>` and the work directory
+/// at `<hidden_root>/.work/<dir>`, where `<dir>` is the target's final path
+/// component.
+pub(crate) fn derive_upper_work_paths(
+    target: &Path,
+    hidden_volume_root: &Path,
+) -> Result<(PathBuf, PathBuf)> {
+    let dir_name = target.file_name().ok_or_else(|| {
+        NailsError::ConfigError(format!(
+            "Cannot extract directory name from target: {}",
+            target.display()
+        ))
+    })?;
+
+    let upper = hidden_volume_root.join(dir_name);
+    let work = hidden_volume_root.join(".work").join(dir_name);
+    Ok((upper, work))
+}
+
 pub(crate) fn create_overlay_config<F: Filesystem>(
     fs: &F,
     target: &Path,
@@ -359,10 +382,9 @@ pub(crate) fn create_overlay_config<F: Filesystem>(
         ))
     })?;
 
-    // Build upper and work paths
-    let upper = hidden_volume_root.join(dir_name);
+    // Build upper and work paths from the single-sourced layout
+    let (upper, work) = derive_upper_work_paths(target, hidden_volume_root)?;
     let work_parent = hidden_volume_root.join(".work");
-    let work = work_parent.join(dir_name);
 
     // Create directories if they don't exist (Story 14.10, Task 6)
     // First create .work parent directory (may not exist yet)

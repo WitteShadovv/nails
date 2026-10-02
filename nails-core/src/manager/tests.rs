@@ -7531,3 +7531,115 @@ fn test_ensure_run_current_system_symlink_rejects_non_symlink() {
     let result = ensure_run_current_system_symlink(&fs, &target);
     assert!(result.is_err());
 }
+
+// ========== reset-upper ==========
+
+/// Build a manager over a MockFilesystem with a real temp hidden root and the
+/// given state. Returns the temp dir (kept alive), the hidden root path, a
+/// clone of the mock (shared state, for seeding), and the manager.
+fn reset_upper_setup(
+    state: SystemState,
+) -> (
+    tempfile::TempDir,
+    PathBuf,
+    MockFilesystem,
+    NailsManager<MockFilesystem>,
+) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let hidden_root = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden_root).expect("create hidden root");
+    let state_path = hidden_root.join("state.json");
+
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let fs = MockFilesystem::new();
+    let mut manager = NailsManager::new(fs.clone(), config, state_path);
+    manager.force_state(state).expect("force state");
+    (dir, hidden_root, fs, manager)
+}
+
+#[test]
+fn test_reset_upper_refuses_when_active() {
+    let (_dir, _hidden_root, _fs, manager) = reset_upper_setup(SystemState::Active {
+        activated_at: Utc::now(),
+        overlays: vec![PathBuf::from("/home")],
+    });
+
+    let err = manager
+        .plan_reset_upper(Path::new("/home"))
+        .expect_err("reset-upper must refuse while Active");
+    assert!(matches!(err, NailsError::InvalidState(_)), "got {err:?}");
+}
+
+#[test]
+fn test_reset_upper_refuses_when_target_mounted() {
+    let (_dir, _hidden_root, fs, manager) = reset_upper_setup(SystemState::Inactive);
+    fs.mock_set_mounted(Path::new("/home"), true);
+
+    let err = manager
+        .plan_reset_upper(Path::new("/home"))
+        .expect_err("reset-upper must refuse a mounted target");
+    assert!(matches!(err, NailsError::InvalidState(_)), "got {err:?}");
+}
+
+#[test]
+fn test_reset_upper_plan_alone_removes_nothing() {
+    let (_dir, hidden_root, fs, manager) = reset_upper_setup(SystemState::Inactive);
+    let upper = hidden_root.join("home");
+    let work = hidden_root.join(".work").join("home");
+    fs.mock_set_path_exists(upper.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work.to_str().unwrap(), true);
+
+    // Planning (the step before a declined prompt) must not delete anything.
+    let plan = manager.plan_reset_upper(Path::new("/home")).expect("plan");
+    assert!(plan.upper_exists && plan.work_exists);
+    assert!(fs.path_exists(&upper).unwrap());
+    assert!(fs.path_exists(&work).unwrap());
+}
+
+#[test]
+fn test_reset_upper_removes_upper_and_work() {
+    let (_dir, hidden_root, fs, manager) = reset_upper_setup(SystemState::Inactive);
+    let upper = hidden_root.join("home");
+    let work = hidden_root.join(".work").join("home");
+    fs.mock_set_path_exists(upper.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work.to_str().unwrap(), true);
+
+    let plan = manager.plan_reset_upper(Path::new("/home")).expect("plan");
+    assert_eq!(plan.upper, upper);
+    assert_eq!(plan.work, work);
+    assert_eq!(plan.removals(), vec![upper.as_path(), work.as_path()]);
+    assert!(!plan.resets_nix_store);
+
+    manager.apply_reset_upper(&plan).expect("apply");
+    assert!(!fs.path_exists(&upper).unwrap(), "upper should be removed");
+    assert!(!fs.path_exists(&work).unwrap(), "work should be removed");
+}
+
+#[test]
+fn test_reset_upper_skips_absent_directories() {
+    let (_dir, hidden_root, fs, manager) = reset_upper_setup(SystemState::Inactive);
+    let upper = hidden_root.join("srv");
+
+    // Neither upper nor work exists: the plan is empty and apply is a no-op.
+    let plan = manager.plan_reset_upper(Path::new("/srv")).expect("plan");
+    assert!(plan.is_empty());
+    assert!(plan.removals().is_empty());
+    manager.apply_reset_upper(&plan).expect("apply");
+    assert!(!fs.path_exists(&upper).unwrap());
+}
+
+#[test]
+fn test_reset_upper_flags_nix_store() {
+    let (_dir, _hidden_root, _fs, manager) = reset_upper_setup(SystemState::Inactive);
+    let plan = manager.plan_reset_upper(Path::new("/nix")).expect("plan");
+    assert!(
+        plan.resets_nix_store,
+        "resetting /nix must flag the Nix store warning"
+    );
+}

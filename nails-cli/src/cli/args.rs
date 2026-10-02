@@ -159,6 +159,9 @@ pub enum Commands {
     Verify(VerifyArgs),
     /// Initialize NAILS directory structure on a hidden volume
     Init(InitArgs),
+    /// Delete a target's persistent overlay upper on the hidden volume
+    #[command(name = "reset-upper")]
+    ResetUpper(ResetUpperArgs),
     /// Inspect and check the configuration file (nails.toml)
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -327,6 +330,20 @@ pub struct InitArgs {
     pub path: PathBuf,
 }
 
+/// `nails reset-upper` arguments
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct ResetUpperArgs {
+    /// Overlay target whose persistent upper to delete (e.g. /home, /etc, /nix)
+    pub target: PathBuf,
+
+    /// Proceed without the confirmation prompt
+    ///
+    /// Without this flag reset-upper lists what it would delete and confirms on
+    /// a terminal, refusing to run without one.
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +355,32 @@ mod tests {
     #[test]
     fn cli_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn reset_upper_parses_target_and_yes() {
+        let cli = parse(&["reset-upper", "/home", "-y"]).expect("should parse");
+        match cli.command {
+            Commands::ResetUpper(args) => {
+                assert_eq!(args.target, PathBuf::from("/home"));
+                assert!(args.yes);
+            }
+            other => panic!("expected reset-upper, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reset_upper_requires_a_target() {
+        assert!(parse(&["reset-upper"]).is_err());
+    }
+
+    #[test]
+    fn reset_upper_defaults_to_prompting() {
+        let cli = parse(&["reset-upper", "/nix"]).expect("should parse");
+        match cli.command {
+            Commands::ResetUpper(args) => assert!(!args.yes),
+            other => panic!("expected reset-upper, got {other:?}"),
+        }
     }
 
     #[test]

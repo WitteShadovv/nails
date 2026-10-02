@@ -57,6 +57,7 @@ mod tests;
 
 // Re-export key types for convenience
 pub use mount_tracker::{MountInfo, MountTracker, MountType};
+pub use state_management::ResetUpperPlan;
 
 // Re-export public functions from helpers
 pub use helpers::{apply_exclusion_filter, build_overlay_targets};

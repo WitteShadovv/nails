@@ -99,7 +99,8 @@ pub use error::{NailsError, Result};
 pub use filesystem::{Filesystem, MockFilesystem, RealFilesystem};
 pub use manager::deactivation::{DeactivationMode, DeactivationOrchestrator};
 pub use manager::{
-    MountInfo, MountTracker, MountType, NailsManager, apply_exclusion_filter, build_overlay_targets,
+    MountInfo, MountTracker, MountType, NailsManager, ResetUpperPlan, apply_exclusion_filter,
+    build_overlay_targets,
 };
 
 // State management exports

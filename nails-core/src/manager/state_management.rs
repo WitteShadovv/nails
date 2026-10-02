@@ -10,7 +10,62 @@
 use super::NailsManager;
 use crate::{Filesystem, NailsError, Result, StateFile, SystemState};
 use chrono::Utc;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// What a `reset-upper` would delete for a single target.
+///
+/// OverlayFS copies lower files up on first write, and the persistent upper and
+/// work directories on the hidden volume keep every session's copy-ups and
+/// whiteouts. `reset-upper` deletes them so the target falls back to its decoy
+/// lower on the next activation. This plan is computed first so the caller can
+/// show the operator exactly what will be removed before anything is deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetUpperPlan {
+    /// The overlay target whose upper is being reset (e.g. `/home`).
+    pub target: PathBuf,
+    /// The upper directory on the hidden volume (`<root>/<dir>`).
+    pub upper: PathBuf,
+    /// The work directory on the hidden volume (`<root>/.work/<dir>`).
+    pub work: PathBuf,
+    /// Whether the upper directory currently exists.
+    pub upper_exists: bool,
+    /// Whether the work directory currently exists.
+    pub work_exists: bool,
+    /// True when the target is `/nix`: resetting it drops the hidden Nix
+    /// database and store paths, so the caller must warn especially loudly.
+    pub resets_nix_store: bool,
+}
+
+impl ResetUpperPlan {
+    /// The directories that actually exist and would therefore be removed.
+    pub fn removals(&self) -> Vec<&Path> {
+        let mut removals = Vec::new();
+        if self.upper_exists {
+            removals.push(self.upper.as_path());
+        }
+        if self.work_exists {
+            removals.push(self.work.as_path());
+        }
+        removals
+    }
+
+    /// True when neither directory exists, so there is nothing to remove.
+    pub fn is_empty(&self) -> bool {
+        !self.upper_exists && !self.work_exists
+    }
+}
+
+/// A short, human-readable label for the current system state, used in the
+/// `reset-upper` refusal message.
+fn state_label(state: &SystemState) -> &'static str {
+    match state {
+        SystemState::Inactive => "Inactive",
+        SystemState::Activating { .. } => "Activating",
+        SystemState::Active { .. } => "Active",
+        SystemState::Deactivating { .. } => "Deactivating",
+        SystemState::Degraded { .. } => "Degraded",
+    }
+}
 
 impl<F: Filesystem> NailsManager<F> {
     /// Get current system state with lazy loading
@@ -329,6 +384,61 @@ impl<F: Filesystem> NailsManager<F> {
         if let Some(ref mut state_file) = *cached {
             state_file.overlay_status.clear();
             state_file.failed_overlays.clear();
+        }
+        Ok(())
+    }
+
+    /// Plan a `reset-upper` for `target`: validate it is safe, derive the upper
+    /// and work directories, and record which of them exist.
+    ///
+    /// Refuses unless the system is `Inactive` and `target` is not currently
+    /// mounted, so a reset can never delete a layer out from under a live
+    /// overlay. The returned [`ResetUpperPlan`] lists what would be deleted;
+    /// nothing is removed until [`apply_reset_upper`](Self::apply_reset_upper).
+    pub fn plan_reset_upper(&self, target: &Path) -> Result<ResetUpperPlan> {
+        let state = self.current_state()?;
+        if !matches!(state, SystemState::Inactive) {
+            return Err(NailsError::InvalidState(format!(
+                "reset-upper requires the system to be Inactive, but it is {}; \
+                 deactivate before resetting an upper",
+                state_label(&state)
+            )));
+        }
+
+        if self.filesystem.is_mounted(target)? {
+            return Err(NailsError::InvalidState(format!(
+                "{} is currently mounted; unmount it before resetting its upper",
+                target.display()
+            )));
+        }
+
+        let (upper, work) =
+            super::helpers::derive_upper_work_paths(target, &self.config.hidden_volume_root)?;
+        let upper_exists = self.filesystem.path_exists(&upper)?;
+        let work_exists = self.filesystem.path_exists(&work)?;
+
+        Ok(ResetUpperPlan {
+            resets_nix_store: target == Path::new("/nix"),
+            target: target.to_path_buf(),
+            upper,
+            work,
+            upper_exists,
+            work_exists,
+        })
+    }
+
+    /// Apply a [`ResetUpperPlan`]: remove the upper and work directories that
+    /// exist.
+    ///
+    /// Only directories the plan found are removed, so a stale plan never
+    /// deletes something that reappeared. This performs no whiteout pruning and
+    /// touches nothing but the two derived directories.
+    pub fn apply_reset_upper(&self, plan: &ResetUpperPlan) -> Result<()> {
+        if plan.upper_exists {
+            self.filesystem.remove_dir_all(&plan.upper)?;
+        }
+        if plan.work_exists {
+            self.filesystem.remove_dir_all(&plan.work)?;
         }
         Ok(())
     }
