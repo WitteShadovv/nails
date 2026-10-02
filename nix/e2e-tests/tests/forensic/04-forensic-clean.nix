@@ -1,5 +1,5 @@
 # Test 04: Forensic Cleanliness Validation
-# Tests that no forensic artifacts remain after deactivation - NFR19
+# Tests that no forensic artifacts remain after deactivation
 
 { self, ... }:
 let

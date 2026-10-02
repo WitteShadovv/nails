@@ -5,7 +5,7 @@ use std::path::Path;
 
 #[test]
 fn test_space_check_struct_with_fields() {
-    // AC 1: Create SpaceCheck struct with minimum_space_mb and hidden_volume_root fields
+    // Create SpaceCheck struct with minimum_space_mb and hidden_volume_root fields
     let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 2048);
     assert_eq!(
         check.hidden_volume_root,
@@ -16,7 +16,7 @@ fn test_space_check_struct_with_fields() {
 
 #[test]
 fn test_space_check_default_values() {
-    // AC 1: Default trait provides 1024 MB minimum and default path
+    // Default trait provides 1024 MB minimum and default path
     let check = SpaceCheck::default();
     assert_eq!(
         check.hidden_volume_root,
@@ -27,7 +27,7 @@ fn test_space_check_default_values() {
 
 #[test]
 fn test_space_check_trait_metadata() {
-    // AC 2: Implements PreFlightCheck trait with name() and description()
+    // Implements PreFlightCheck trait with name() and description()
     let check = SpaceCheck::default();
 
     assert_eq!(
@@ -42,7 +42,7 @@ fn test_space_check_trait_metadata() {
 
 #[test]
 fn test_space_check_pass_plenty_of_space() {
-    // AC 3, 6: Given 2GB available with 1GB minimum, returns Pass with 2x multiplier
+    // Given 2GB available with 1GB minimum, returns Pass with 2x multiplier
     let fs = MockFilesystem::new();
     let check = SpaceCheck::default(); // 1024 MB minimum
 
@@ -60,7 +60,7 @@ fn test_space_check_pass_plenty_of_space() {
 
 #[test]
 fn test_space_check_pass_exactly_at_minimum() {
-    // AC 6: Exactly at minimum (1024 MB) -> Pass
+    // Exactly at minimum (1024 MB) -> Pass
     let fs = MockFilesystem::new();
     let check = SpaceCheck::default(); // 1024 MB minimum
 
@@ -75,7 +75,7 @@ fn test_space_check_pass_exactly_at_minimum() {
 
 #[test]
 fn test_space_check_warn_low_space() {
-    // AC 4, 6: Given 800MB available with 1GB minimum, returns Warn
+    // Given 800MB available with 1GB minimum, returns Warn
     let fs = MockFilesystem::new();
     let check = SpaceCheck::default(); // 1024 MB minimum
 
@@ -95,7 +95,7 @@ fn test_space_check_warn_low_space() {
 
 #[test]
 fn test_space_check_warn_at_50_percent_boundary() {
-    // AC 6: At 50% boundary (512 MB with 1024 minimum) -> Warn
+    // At 50% boundary (512 MB with 1024 minimum) -> Warn
     let fs = MockFilesystem::new();
     let check = SpaceCheck::default(); // 1024 MB minimum
 
@@ -109,7 +109,7 @@ fn test_space_check_warn_at_50_percent_boundary() {
 
 #[test]
 fn test_space_check_fail_below_50_percent() {
-    // AC 5, 6: Given 300MB available with 1GB minimum, returns Fail
+    // Given 300MB available with 1GB minimum, returns Fail
     let fs = MockFilesystem::new();
     let check = SpaceCheck::default(); // 1024 MB minimum
 
@@ -128,7 +128,7 @@ fn test_space_check_fail_below_50_percent() {
 
 #[test]
 fn test_space_check_fail_just_below_50_percent_boundary() {
-    // AC 6: Just below 50% (511 MB with 1024 minimum) -> Fail
+    // Just below 50% (511 MB with 1024 minimum) -> Fail
     let fs = MockFilesystem::new();
     let check = SpaceCheck::default(); // 1024 MB minimum
 
@@ -142,7 +142,7 @@ fn test_space_check_fail_just_below_50_percent_boundary() {
 
 #[test]
 fn test_space_check_fail_critically_low() {
-    // AC 6: Critically low space (10% of minimum) -> Fail
+    // Critically low space (10% of minimum) -> Fail
     let fs = MockFilesystem::new();
     let check = SpaceCheck::default(); // 1024 MB minimum
 
@@ -156,7 +156,7 @@ fn test_space_check_fail_critically_low() {
 
 #[test]
 fn test_space_check_fail_zero_space() {
-    // AC 6: Zero space -> Fail
+    // Zero space -> Fail
     let fs = MockFilesystem::new();
     let check = SpaceCheck::default(); // 1024 MB minimum
 
@@ -170,7 +170,7 @@ fn test_space_check_fail_zero_space() {
 
 #[test]
 fn test_space_check_custom_minimum() {
-    // AC 6: Custom minimum value works
+    // Custom minimum value works
     let fs = MockFilesystem::new();
     let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 2048); // 2GB minimum
 
@@ -187,7 +187,7 @@ fn test_space_check_custom_minimum() {
 
 #[test]
 fn test_space_check_custom_minimum_warn_threshold() {
-    // AC 6: Custom minimum affects warn threshold (50% rule)
+    // Custom minimum affects warn threshold (50% rule)
     let fs = MockFilesystem::new();
     let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 2048); // 2GB minimum
 

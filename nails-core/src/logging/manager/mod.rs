@@ -216,10 +216,10 @@ impl LoggingManager {
     ///
     /// # AC Compliance
     ///
-    /// - AC #1: No-op if size <= max_log_size_mb
-    /// - AC #2: Rotates in sequence, logs rotation event
-    /// - AC #3: Calls `enforce_retention()` after rotation
-    /// - AC #4: Logs warning on permission denied, continues with degraded functionality
+    /// - No-op if size <= max_log_size_mb
+    /// - Rotates in sequence, logs rotation event
+    /// - Calls `enforce_retention()` after rotation
+    /// - Logs warning on permission denied, continues with degraded functionality
     pub fn rotate_logs<F: Filesystem>(&self, fs: &F) -> Result<()> {
         rotate_logs(
             &self.log_path,
@@ -248,9 +248,9 @@ impl LoggingManager {
     ///
     /// # AC Compliance
     ///
-    /// - AC #3: Checks file modification timestamps
-    /// - AC #3: Deletes logs older than retention_days (default 7)
-    /// - AC #3: Logs each deletion with age information
+    /// - Checks file modification timestamps
+    /// - Deletes logs older than retention_days (default 7)
+    /// - Logs each deletion with age information
     pub fn enforce_retention<F: Filesystem>(&self, fs: &F) -> Result<()> {
         enforce_retention(&self.log_path, self.retention_days, fs)
     }

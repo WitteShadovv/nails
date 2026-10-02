@@ -81,14 +81,14 @@ mod tests {
 
     #[test]
     fn test_swap_check_default_trait() {
-        // AC 1: SwapCheck implements Default
+        // SwapCheck implements Default
         let _check = SwapCheck;
     }
 
     #[test]
     fn test_swap_check_trait_metadata() {
-        // AC 1: Verifies SwapCheck implements PreFlightCheck trait
-        // AC 2: Verifies name() returns "swap" and description() is correct
+        // Verifies SwapCheck implements PreFlightCheck trait
+        // Verifies name() returns "swap" and description() is correct
         let check = SwapCheck::new();
 
         assert_eq!(
@@ -103,8 +103,8 @@ mod tests {
 
     #[test]
     fn test_swap_check_pass_when_swap_disabled() {
-        // AC 3: Given swap is disabled, When SwapCheck runs, Then returns Pass
-        // AC 5: Given MockFilesystem simulates swap disabled, Then test verifies Pass
+        // Given swap is disabled, When SwapCheck runs, Then returns Pass
+        // Given MockFilesystem simulates swap disabled, Then test verifies Pass
         let fs = MockFilesystem::new();
         fs.mock_set_swap_enabled(false);
 
@@ -117,8 +117,8 @@ mod tests {
 
     #[test]
     fn test_swap_check_fail_when_swap_enabled() {
-        // AC 4: Given swap is enabled, When SwapCheck runs, Then returns Fail with fix guidance
-        // AC 6: Given MockFilesystem simulates swap enabled, Then test verifies Fail with command
+        // Given swap is enabled, When SwapCheck runs, Then returns Fail with fix guidance
+        // Given MockFilesystem simulates swap enabled, Then test verifies Fail with command
         let fs = MockFilesystem::new();
         fs.mock_set_swap_enabled(true);
 

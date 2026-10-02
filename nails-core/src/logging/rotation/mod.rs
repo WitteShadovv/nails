@@ -85,17 +85,17 @@ pub fn should_rotate<F: Filesystem>(log_path: &Path, max_log_size_mb: u64, fs: &
 ///
 /// # AC Compliance
 ///
-/// - AC #1: No-op if size <= max_log_size_mb
-/// - AC #2: Rotates in sequence, logs rotation event
-/// - AC #3: Calls `enforce_retention()` after rotation
-/// - AC #4: Logs warning on permission denied, continues with degraded functionality
+/// - No-op if size <= max_log_size_mb
+/// - Rotates in sequence, logs rotation event
+/// - Calls `enforce_retention()` after rotation
+/// - Logs warning on permission denied, continues with degraded functionality
 pub fn rotate_logs<F: Filesystem>(
     log_path: &Path,
     max_log_size_mb: u64,
     retention_days: u64,
     fs: &F,
 ) -> Result<()> {
-    // Check if rotation is needed (AC #1)
+    // Check if rotation is needed
     match should_rotate(log_path, max_log_size_mb, fs) {
         Ok(false) => return Ok(()), // No-op
         Err(e) => {
@@ -149,7 +149,7 @@ pub fn rotate_logs<F: Filesystem>(
             rotation_completed = true;
         }
         Err(e) => {
-            // Log specific permission denied message per AC #4
+            // Log specific permission denied message
             if is_permission_denied(&e) {
                 tracing::warn!(
                     "Log rotation failed: permission denied renaming {}",
@@ -189,11 +189,11 @@ pub fn rotate_logs<F: Filesystem>(
         }
     }
 
-    // Only log rotation event if it actually completed (AC #2)
+    // Only log rotation event if it actually completed
     if rotation_completed && new_log_created {
         tracing::info!("Rotated logs: nails.log -> nails.log.1");
 
-        // Enforce retention policy (AC #3)
+        // Enforce retention policy
         let _ = enforce_retention(log_path, retention_days, fs);
     }
 
@@ -221,9 +221,9 @@ pub fn rotate_logs<F: Filesystem>(
 ///
 /// # AC Compliance
 ///
-/// - AC #3: Checks file modification timestamps
-/// - AC #3: Deletes logs older than retention_days (default 7)
-/// - AC #3: Logs each deletion with age information
+/// - Checks file modification timestamps
+/// - Deletes logs older than retention_days (default 7)
+/// - Logs each deletion with age information
 pub fn enforce_retention<F: Filesystem>(
     log_path: &Path,
     retention_days: u64,

@@ -105,13 +105,13 @@ mod tests {
 
     #[test]
     fn test_state_check_new_constructor() {
-        // AC 1: StateCheck::new() constructor accepting current state
+        // StateCheck::new() constructor accepting current state
         let _check = StateCheck::new(SystemState::Inactive);
     }
 
     #[test]
     fn test_state_check_trait_metadata() {
-        // AC 1, 2: StateCheck implements PreFlightCheck trait with correct name and description
+        // StateCheck implements PreFlightCheck trait with correct name and description
         let check = StateCheck::new(SystemState::Inactive);
 
         assert_eq!(
@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn test_state_check_inactive_state_pass() {
-        // AC 3: Given current state is Inactive, When StateCheck runs, Then returns Pass
+        // Given current state is Inactive, When StateCheck runs, Then returns Pass
         let fs = MockFilesystem::new();
         let check = StateCheck::new(SystemState::Inactive);
 
@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn test_state_check_active_state_fail() {
-        // AC 4: Given current state is Active, When StateCheck runs, Then returns Fail with deactivate guidance
+        // Given current state is Active, When StateCheck runs, Then returns Fail with deactivate guidance
         let fs = MockFilesystem::new();
         let check = StateCheck::new(SystemState::Active {
             activated_at: Utc::now(),
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn test_state_check_activating_state_fail() {
-        // AC 5: Given current state is Activating, When StateCheck runs, Then returns Fail with wait/reboot guidance
+        // Given current state is Activating, When StateCheck runs, Then returns Fail with wait/reboot guidance
         let fs = MockFilesystem::new();
         let check = StateCheck::new(SystemState::Activating {
             started_at: Utc::now(),
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_state_check_deactivating_state_fail() {
-        // AC 2: Deactivating state should also fail (not in story AC but in implementation requirements)
+        // Deactivating state should also fail
         let fs = MockFilesystem::new();
         let check = StateCheck::new(SystemState::Deactivating {
             started_at: Utc::now(),
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_state_check_all_states_coverage() {
-        // AC 7: Write unit tests for all 5 state variants
+        // Covers all 5 state variants
         let fs = MockFilesystem::new();
 
         // Inactive -> Pass

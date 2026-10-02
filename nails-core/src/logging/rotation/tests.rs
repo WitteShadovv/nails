@@ -4,7 +4,7 @@ use crate::filesystem::PathKind;
 use std::path::PathBuf;
 
 // ========================================================================
-// rotate_logs() tests (AC #1, #2)
+// rotate_logs() tests
 // ========================================================================
 
 #[test]
@@ -157,7 +157,7 @@ fn test_rotate_logs_handles_nonexistent_log_file() {
 }
 
 // ========================================================================
-// enforce_retention() tests (AC #3)
+// enforce_retention() tests
 // ========================================================================
 
 #[test]
@@ -238,7 +238,7 @@ fn test_enforce_retention_handles_no_old_logs() {
 }
 
 // ========================================================================
-// should_rotate() tests (AC #1)
+// should_rotate() tests
 // ========================================================================
 
 #[test]
@@ -299,7 +299,7 @@ fn test_should_rotate_handles_missing_file() {
 }
 
 // ========================================================================
-// Overflow safety tests (AC #6)
+// Overflow safety tests
 // ========================================================================
 
 #[test]
@@ -326,7 +326,7 @@ fn test_rotation_uses_checked_mul_for_size_calculation() {
 }
 
 // ========================================================================
-// Permission denied tests (AC #4)
+// Permission denied tests
 // ========================================================================
 
 #[test]

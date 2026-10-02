@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 /// Check if an error indicates permission was denied
 ///
 /// Helper for detecting permission-related failures to log
-/// appropriate warning messages per AC #4.
+/// appropriate warning messages.
 pub(crate) fn is_permission_denied(err: &NailsError) -> bool {
     match err {
         NailsError::IoError(io) => {

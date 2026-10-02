@@ -736,7 +736,7 @@ fn test_activation_emits_structured_events_with_state_fields() {
     let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
 
-    // Verify structured events with state fields (AC#1)
+    // Verify structured events with state fields
     assert!(logs_contain("Activation started"));
     assert!(logs_contain("activation_started"));
     assert!(logs_contain("state_from"));
@@ -799,7 +799,7 @@ fn test_activation_error_emits_structured_error_fields() {
     let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_err(), "Activate should fail due to mount failure");
 
-    // Verify structured error event fields (AC#2)
+    // Verify structured error event fields
     assert!(logs_contain("error"));
     assert!(logs_contain("rollback") || logs_contain("Rollback"));
 }
@@ -841,7 +841,7 @@ fn test_overlays_mounted_event_includes_overlay_list() {
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
 
     // With no overlays, the mount event won't fire, but activation complete will
-    // This test verifies the logging infrastructure works (AC#1)
+    // This test verifies the logging infrastructure works
     assert!(logs_contain("Activation complete"));
     assert!(logs_contain("state_to"));
 }

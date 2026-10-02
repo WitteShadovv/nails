@@ -183,7 +183,7 @@ impl<F: Filesystem> NailsManager<F> {
         self.run_preflight_checks(overlay_only)?;
 
         if verbosity >= Verbosity::Normal {
-            // AC #1: Pre-flight checks event with duration_ms field
+            // Pre-flight checks event with duration_ms field
             tracing::info!(
                 duration_ms = step_timer.elapsed().as_millis() as u64,
                 "Pre-flight checks passed"

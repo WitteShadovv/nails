@@ -1744,7 +1744,7 @@ fn test_deactivation_emits_structured_events() {
     let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_ok(), "Deactivation should succeed");
 
-    // Verify structured deactivation events (AC#3)
+    // Verify structured deactivation events
     assert!(logs_contain("Deactivation started"));
     assert!(logs_contain("phase"));
     assert!(logs_contain("Deactivation complete"));
@@ -1783,7 +1783,7 @@ fn test_deactivation_cleanup_event_includes_count() {
     let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_ok(), "Deactivation should succeed");
 
-    // Verify cleanup event includes count (AC#3)
+    // Verify cleanup event includes count
     assert!(logs_contain("Cleanup complete") || logs_contain("cleaned_items"));
 }
 
@@ -1805,7 +1805,7 @@ fn test_deactivation_unmount_event_includes_overlay_list() {
     let result = orchestrator.run(&mut manager.lock().unwrap());
     assert!(result.is_ok(), "Deactivation should succeed");
 
-    // Verify unmount event includes overlay list (AC#3)
+    // Verify unmount event includes overlay list
     assert!(logs_contain("Overlays unmounted") || logs_contain("overlays"));
     assert!(logs_contain("count") || logs_contain("unmounted"));
 }

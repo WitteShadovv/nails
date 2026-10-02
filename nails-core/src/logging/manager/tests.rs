@@ -333,7 +333,7 @@ fn test_init_succeeds_when_path_is_not_symlink() {
 
 #[test]
 fn test_init_respects_configured_path_no_false_positive() {
-    // AC #1: When hidden volume IS mounted at a non-default path (e.g., /tmp),
+    // When hidden volume IS mounted at a non-default path (e.g., /tmp),
     // no false "CRITICAL: Hidden volume not mounted" should occur
     let manager = LoggingManager::new(
         PathBuf::from("/tmp/logs"),
@@ -353,7 +353,7 @@ fn test_init_respects_configured_path_no_false_positive() {
 
 #[test]
 fn test_init_graceful_degradation_returns_ok_none() {
-    // AC #3: When hidden volume is genuinely not mounted, graceful degradation
+    // When hidden volume is genuinely not mounted, graceful degradation
     // returns Ok(None) instead of an error
     let manager = LoggingManager::new(
         PathBuf::from("/mnt/data/logs"),
@@ -375,7 +375,7 @@ fn test_init_graceful_degradation_returns_ok_none() {
 
 #[test]
 fn test_init_with_custom_hidden_volume_root() {
-    // AC #4: LoggingConfigBuilder receives hidden_volume_root from config
+    // LoggingConfigBuilder receives hidden_volume_root from config
     let custom_root = PathBuf::from("/mnt/custom-secret");
     let manager = LoggingManager::new(custom_root.join("logs"), custom_root.clone());
     let fs = MockFilesystem::new();

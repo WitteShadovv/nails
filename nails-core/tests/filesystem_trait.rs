@@ -523,11 +523,12 @@ fn test_is_writable_returns_false_for_readonly_path() {
 }
 
 // ============================================================================
-// P1: Generic NailsManager<F: Filesystem> Compilation Test (AR44)
+// P1: Generic NailsManager<F: Filesystem> Compilation Test
 // ============================================================================
 
 /// This test verifies that generic NailsManager<F: Filesystem> compiles
-/// as required by AR44. The test doesn't need to run any logic - just compile.
+/// so the manager stays testable without root. The test doesn't need to run
+/// any logic - just compile.
 #[test]
 fn test_generic_nails_manager_compiles_with_mock_filesystem() {
     // GIVEN: A generic struct that accepts any Filesystem implementation

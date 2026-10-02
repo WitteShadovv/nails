@@ -89,7 +89,7 @@ fn test_activate_command_force_flag() {
         .stdout(predicates::str::contains("Skip pre-flight checks"));
 }
 
-/// Test that deactivate command accepts new flags (Story 5.7)
+/// Test that deactivate command accepts new flags
 #[test]
 fn test_deactivate_command_flags_help() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
@@ -103,7 +103,7 @@ fn test_deactivate_command_flags_help() {
         .stdout(predicates::str::contains("--color <WHEN>"));
 }
 
-/// Test that emergency command accepts new flags (Story 6.4)
+/// Test that emergency command accepts new flags
 #[test]
 fn test_emergency_command_flags_help() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
@@ -117,7 +117,7 @@ fn test_emergency_command_flags_help() {
         .stdout(predicates::str::contains("--color <WHEN>"));
 }
 
-/// Test that emergency command no longer has --delay flag (AR33: fixed 3s countdown)
+/// Test that emergency command no longer has --delay flag (fixed 3s countdown)
 #[test]
 fn test_emergency_command_no_delay_flag() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
@@ -361,7 +361,7 @@ fn test_notify_dispatch_with_config() {
         .success();
 }
 
-/// Test that deactivate command executes (idempotent when inactive - AC7/FR62)
+/// Test that deactivate command executes (idempotent when inactive)
 #[test]
 fn test_deactivate_command_executes() {
     if !check_unsafe_ops_allowed("test_deactivate_command_executes") {
@@ -375,7 +375,7 @@ fn test_deactivate_command_executes() {
         .code(2);
 }
 
-/// Test that deactivate command with --no-clear-history flag executes (AC6)
+/// Test that deactivate command with --no-clear-history flag executes
 #[test]
 fn test_deactivate_command_executes_with_no_clear_history() {
     if !check_unsafe_ops_allowed("test_deactivate_command_executes_with_no_clear_history") {
@@ -389,7 +389,7 @@ fn test_deactivate_command_executes_with_no_clear_history() {
         .code(2);
 }
 
-/// Test that deactivate command with --json flag produces JSON output (AC7)
+/// Test that deactivate command with --json flag produces JSON output
 #[test]
 fn test_deactivate_json_output() {
     if !check_unsafe_ops_allowed("test_deactivate_json_output") {
@@ -476,7 +476,7 @@ fn test_deactivate_color_never_flag() {
         .code(2);
 }
 
-/// Test that deactivate command exit code is 0 on success (AC3)
+/// Test that deactivate command exit code is 0 on success
 #[test]
 fn test_deactivate_exit_code_success() {
     if !check_unsafe_ops_allowed("test_deactivate_exit_code_success") {
@@ -1688,9 +1688,9 @@ fn test_activate_respects_no_color_env() {
         .code(2);
 }
 
-/// Test backward compatibility: CLI works when config file doesn't exist (AC6)
+/// Test backward compatibility: CLI works when config file doesn't exist
 ///
-/// This verifies the behavior specified in AC6:
+/// This verifies that:
 /// - When config file is missing, defaults are used
 /// - Then CLI overrides are applied
 /// - Existing users without config files should see no behavior change
@@ -1723,7 +1723,7 @@ fn test_backward_compatibility_without_config_file() {
     // Note: We don't modify this process's HOME, only the subprocess's
 }
 
-/// Test that --config flag is accepted globally (Story 14.1 - AC5)
+/// Test that --config flag is accepted globally
 #[test]
 fn test_config_flag_accepted() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
@@ -1734,7 +1734,7 @@ fn test_config_flag_accepted() {
         .stdout(predicates::str::contains("Path to the configuration file"));
 }
 
-// ========== Story 14.1 Config Discovery Helper ==========
+// ========== Config Discovery Helper ==========
 
 /// Helper function to create a test config file with custom volume path
 /// Reduces duplication across config-related tests
@@ -1790,7 +1790,7 @@ fn test_config_flag_global_after_subcommand() {
         .success(); // Status command should work with custom config
 }
 
-/// Test that binary works without config file in binary-relative location (Story 14.1 - AC3)
+/// Test that binary works without config file in binary-relative location
 /// This verifies graceful defaults when config doesn't exist
 #[test]
 fn test_binary_relative_config_graceful_defaults() {
@@ -1803,7 +1803,7 @@ fn test_binary_relative_config_graceful_defaults() {
         .stdout(predicates::str::contains("NAILS Status Report"));
 }
 
-/// Integration test for binary-relative config loading (Story 14.1 - AC7)
+/// Integration test for binary-relative config loading
 /// Tests that the discover_config_path function correctly resolves paths.
 ///
 /// This test verifies the path resolution logic works correctly by:
@@ -1950,7 +1950,7 @@ fn test_explicit_config_valid_succeeds() {
         .success();
 }
 
-/// Test that CLI --config flag overrides binary-relative config discovery (AC5)
+/// Test that CLI --config flag overrides binary-relative config discovery
 /// Priority: --config flag > binary-relative > defaults
 #[test]
 fn test_config_flag_overrides_binary_relative() {
