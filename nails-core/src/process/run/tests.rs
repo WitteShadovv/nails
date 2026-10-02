@@ -247,6 +247,118 @@ fn real_runner_reports_spawn_failures_with_the_executable_path() {
     assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
 }
 
+/// Whether `pid` is gone or already a zombie, i.e. no longer the running
+/// `sleep` it started as. Reading `/proc/<pid>/stat` works whether or not an
+/// init reaps the orphan: a missing entry or state `Z` both mean dead, while a
+/// recycled PID shows a different `comm`. Polls briefly so a reaper that has not
+/// run yet does not fail the check.
+fn sleep_pid_is_gone(pid: i32) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match sleep_pid_state(pid) {
+            None | Some('Z') => return true,
+            _ if Instant::now() >= deadline => return false,
+            _ => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
+/// The scheduler state of `pid` while it is still a `sleep` process, or `None`
+/// once its `/proc` entry is gone or the PID has been recycled.
+fn sleep_pid_state(pid: i32) -> Option<char> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let open = stat.find('(')?;
+    let close = stat.rfind(')')?;
+    if &stat[open + 1..close] != "sleep" {
+        return None;
+    }
+    stat[close + 1..].split_whitespace().next()?.chars().next()
+}
+
+#[test]
+#[serial]
+fn deadline_kills_the_whole_process_group() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let pid_file = temp_dir.path().join("grandchild.pid");
+    // Background a sleep (the grandchild), record its PID, then block in the
+    // foreground so the deadline fires while the whole group is alive.
+    let script = format!("sleep 60 & echo $! > '{}'; sleep 60", pid_file.display());
+    let command = ProcessCommand::tool("sh")
+        .arg("-c")
+        .arg(&script)
+        .deadline(Duration::from_millis(200))
+        .allow_in_test_runtime();
+
+    let start = Instant::now();
+    let err = RealProcessRunner.run(&command).unwrap_err();
+    let elapsed = start.elapsed();
+
+    match err {
+        NailsError::Timeout { command, budget } => {
+            assert!(command.contains("sh -c"), "{command}");
+            assert_eq!(budget, Duration::from_millis(200));
+        }
+        other => panic!("expected Timeout, got {other:?}"),
+    }
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "returned after {elapsed:?}"
+    );
+
+    let pid: i32 = fs::read_to_string(&pid_file)
+        .expect("script should have recorded the grandchild PID")
+        .trim()
+        .parse()
+        .expect("recorded PID should be an integer");
+    assert!(
+        sleep_pid_is_gone(pid),
+        "grandchild {pid} survived the deadline"
+    );
+}
+
+#[test]
+fn deadline_returns_output_when_the_command_finishes_in_time() {
+    let command = ProcessCommand::tool("sh")
+        .args(["-c", "printf out; printf err 1>&2; exit 2"])
+        .deadline(Duration::from_secs(5))
+        .allow_in_test_runtime();
+
+    let output = RealProcessRunner.run(&command).unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.stdout, b"out");
+    assert_eq!(output.stderr, b"err");
+}
+
+#[test]
+fn deadline_closes_child_stdin() {
+    let command = ProcessCommand::tool("sh")
+        .args([
+            "-c",
+            "if read -r line; then printf read; else printf eof; fi",
+        ])
+        .deadline(Duration::from_secs(5))
+        .allow_in_test_runtime();
+
+    let (_, stdout, _) = RealProcessRunner.run_text(&command).unwrap();
+
+    assert_eq!(stdout, "eof");
+}
+
+#[test]
+fn commands_carry_no_deadline_unless_one_is_set() {
+    assert_eq!(
+        ProcessCommand::tool("systemctl").arg("status").timeout,
+        None
+    );
+    assert_eq!(
+        ProcessCommand::tool("nix")
+            .deadline(NIX_STORE_PING_BUDGET)
+            .timeout,
+        Some(NIX_STORE_PING_BUDGET)
+    );
+}
+
 #[test]
 fn command_display_joins_the_program_and_its_arguments() {
     assert_eq!(

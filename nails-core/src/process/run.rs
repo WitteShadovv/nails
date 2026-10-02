@@ -10,7 +10,27 @@
 //! - **whether it may run at all**: commands are refused in test and test-like
 //!   runtimes unless they opt in, so a test that reaches the real runner gets
 //!   an error instead of stopping services or signalling host processes;
-//! - **how the child starts**: stdin is closed and stdout/stderr are captured.
+//! - **how the child starts**: stdin is closed and stdout/stderr are captured;
+//! - **how long it may run**: a command may carry a [deadline](ProcessCommand::deadline).
+//!
+//! # Deadlines
+//!
+//! A command runs in one of two modes:
+//!
+//! - **Streaming** (the default, no deadline): the command runs to completion.
+//!   This is the only safe mode for `nixos-rebuild build/test` and
+//!   `switch-to-configuration` — killing a half-finished switch would leave the
+//!   system in an undefined state — so those must never carry a deadline. A long
+//!   build reports progress at its call site instead of here.
+//! - **Deadline** ([`ProcessCommand::deadline`]): used for probes and
+//!   idempotent control commands (`systemctl is-active`, `nix store ping`,
+//!   reboot dispatch, …). The child is spawned in its own process group; if the
+//!   budget elapses the whole group is killed and [`NailsError::Timeout`] is
+//!   returned. Killing the group — not just the immediate child — stops any
+//!   helper the command forked. A D-state (uninterruptible) descendant cannot be
+//!   removed by any signal, so a deadline cannot recover from one; it still
+//!   reaps the direct child and reports the timeout. Named budgets for the known
+//!   call sites live in this module (e.g. [`SYSTEMCTL_PROBE_BUDGET`]).
 //!
 //! Call sites describe a command with [`ProcessCommand`]; unit tests substitute
 //! a recording runner.
@@ -18,9 +38,13 @@
 use crate::{NailsError, Result};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Output, Stdio};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// Directories searched, in order, for [`Program::Tool`].
 ///
@@ -34,6 +58,39 @@ pub const SYSTEM_TOOL_DIRS: &[&str] = &[
     "/sbin",
     "/bin",
 ];
+
+/// How often [`ProcessCommand::deadline`] checks whether the child has exited.
+///
+/// Small enough that a probe returns promptly once its command finishes, large
+/// enough that waiting out a full budget costs only a handful of wakeups.
+const DEADLINE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Budgets for external *control* commands that run under a deadline.
+///
+/// These bound probes and idempotent emergency-path commands only. None of them
+/// may wrap `nixos-rebuild build/test` or `switch-to-configuration`, which run
+/// in the default (no-deadline) mode: a deadline that killed a half-finished
+/// switch would leave the system in an undefined state. Call sites pass the
+/// matching budget to [`ProcessCommand::deadline`].
+///
+/// `systemctl is-active` and other read-only probes.
+pub const SYSTEMCTL_PROBE_BUDGET: Duration = Duration::from_secs(10);
+/// `systemctl start/stop/daemon-reload` and other state changes.
+pub const SYSTEMCTL_ACTION_BUDGET: Duration = Duration::from_secs(30);
+/// `nix store ping` reachability check.
+pub const NIX_STORE_PING_BUDGET: Duration = Duration::from_secs(5);
+/// `loginctl` session probes.
+pub const LOGINCTL_BUDGET: Duration = Duration::from_secs(10);
+/// `ldd` shared-library resolution.
+pub const LDD_BUDGET: Duration = Duration::from_secs(10);
+/// `nix-store -qR` closure queries.
+pub const NIX_STORE_QUERY_BUDGET: Duration = Duration::from_secs(30);
+/// `cp`/`du` over overlay directories, which can be large.
+pub const COPY_BUDGET: Duration = Duration::from_secs(300);
+/// `chown` over a restored tree.
+pub const CHOWN_BUDGET: Duration = Duration::from_secs(120);
+/// Dispatching a reboot (`systemctl reboot`, `reboot`).
+pub const REBOOT_DISPATCH_BUDGET: Duration = Duration::from_secs(10);
 
 /// The executable a [`ProcessCommand`] starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +125,7 @@ pub struct ProcessCommand {
     args: Vec<OsString>,
     removed_env: Vec<OsString>,
     allowed_in_test_runtime: bool,
+    timeout: Option<Duration>,
 }
 
 impl ProcessCommand {
@@ -78,6 +136,7 @@ impl ProcessCommand {
             args: Vec::new(),
             removed_env: Vec::new(),
             allowed_in_test_runtime: false,
+            timeout: None,
         }
     }
 
@@ -129,6 +188,19 @@ impl ProcessCommand {
         self.allowed_in_test_runtime = true;
         self
     }
+
+    /// Runs the command under a deadline of `budget`.
+    ///
+    /// The real runner spawns the child in its own process group; if the budget
+    /// elapses it kills the whole group and returns [`NailsError::Timeout`]. Use
+    /// it only for probes and idempotent control commands — never for
+    /// `nixos-rebuild build/test` or `switch-to-configuration` (see the module
+    /// documentation). The named budgets in this module (e.g.
+    /// [`SYSTEMCTL_PROBE_BUDGET`]) are the intended arguments.
+    pub fn deadline(mut self, budget: Duration) -> Self {
+        self.timeout = Some(budget);
+        self
+    }
 }
 
 impl fmt::Display for ProcessCommand {
@@ -177,19 +249,128 @@ impl ProcessRunner for RealProcessRunner {
         let executable = resolve(&command.program)?;
         tracing::debug!("Running {} ({})", command, executable.display());
 
-        let mut child = std::process::Command::new(&executable);
-        child.args(&command.args);
-        for key in &command.removed_env {
-            child.env_remove(key);
+        match command.timeout {
+            None => run_to_completion(&executable, command),
+            Some(budget) => run_with_deadline(&executable, command, budget),
+        }
+    }
+}
+
+/// Builds the `std::process::Command` shared by both run modes: the resolved
+/// executable, the arguments, and the requested environment removals.
+fn base_command(executable: &Path, command: &ProcessCommand) -> std::process::Command {
+    let mut child = std::process::Command::new(executable);
+    child.args(&command.args);
+    for key in &command.removed_env {
+        child.env_remove(key);
+    }
+    child
+}
+
+/// Wraps a spawn/`wait` failure with the executable path for context.
+fn start_failed(executable: &Path, err: std::io::Error) -> NailsError {
+    NailsError::IoError(std::io::Error::new(
+        err.kind(),
+        format!("failed to start {}: {}", executable.display(), err),
+    ))
+}
+
+/// Runs the command to completion (the default, no-deadline mode).
+fn run_to_completion(executable: &Path, command: &ProcessCommand) -> Result<Output> {
+    base_command(executable, command)
+        .output()
+        .map_err(|err| start_failed(executable, err))
+}
+
+/// Runs the command under `budget`, killing its whole process group on expiry.
+fn run_with_deadline(
+    executable: &Path,
+    command: &ProcessCommand,
+    budget: Duration,
+) -> Result<Output> {
+    let mut child = base_command(executable, command)
+        // Own process group so the deadline tears down the whole tree, not just
+        // the immediate child.
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| start_failed(executable, err))?;
+
+    // Drain stdout/stderr on their own threads: a child that fills a pipe buffer
+    // while we wait would otherwise deadlock, never exiting and never letting us
+    // read it.
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Ok(Output {
+                    status,
+                    stdout: collect(stdout),
+                    stderr: collect(stderr),
+                });
+            }
+            Ok(None) => {}
+            Err(err) => return Err(start_failed(executable, err)),
         }
 
-        child.output().map_err(|err| {
-            NailsError::IoError(std::io::Error::new(
-                err.kind(),
-                format!("failed to start {}: {}", executable.display(), err),
-            ))
-        })
+        if start.elapsed() >= budget {
+            // The child may have exited during the final sleep; prefer its real
+            // result over a spurious timeout.
+            if let Ok(Some(status)) = child.try_wait() {
+                return Ok(Output {
+                    status,
+                    stdout: collect(stdout),
+                    stderr: collect(stderr),
+                });
+            }
+            kill_group(&mut child);
+            // The killed group closes the pipes, so the reader threads finish;
+            // the captured output is discarded on timeout.
+            let _ = collect(stdout);
+            let _ = collect(stderr);
+            return Err(NailsError::Timeout {
+                command: command.to_string(),
+                budget,
+            });
+        }
+
+        std::thread::sleep(DEADLINE_POLL_INTERVAL.min(budget));
     }
+}
+
+/// Reads a child pipe to EOF on a background thread.
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<Vec<u8>> {
+    let mut pipe = pipe.expect("stdout/stderr were piped for the deadline path");
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let _ = pipe.read_to_end(&mut buffer);
+        buffer
+    })
+}
+
+/// Joins a [`drain`] thread, yielding what it read (empty if it panicked).
+fn collect(handle: JoinHandle<Vec<u8>>) -> Vec<u8> {
+    handle.join().unwrap_or_default()
+}
+
+/// Sends `SIGKILL` to the child's whole process group, then reaps the child.
+///
+/// `child` was spawned with `process_group(0)`, so it leads a new group whose
+/// PGID equals its PID; signalling that group reaches every descendant that has
+/// not escaped it with its own `setsid`. A D-state descendant survives — no
+/// signal can remove one.
+fn kill_group(child: &mut std::process::Child) {
+    use nix::sys::signal::{Signal, killpg};
+    use nix::unistd::Pid;
+
+    let group = Pid::from_raw(child.id() as i32);
+    let _ = killpg(group, Signal::SIGKILL);
+    let _ = child.wait();
 }
 
 /// `systemctl <args>`, shared by the restart and session executors.

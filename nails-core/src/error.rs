@@ -246,6 +246,20 @@ pub enum NailsError {
     #[error("Failed to fork emergency process: {0}")]
     ForkFailed(String),
 
+    /// An external control command was killed for running past its deadline.
+    ///
+    /// Only probes and idempotent control commands run under a deadline;
+    /// `nixos-rebuild build/test` and `switch-to-configuration` never do, so
+    /// this never interrupts a half-finished switch. `budget` is the deadline
+    /// that elapsed. The command's whole process group is killed before this is
+    /// returned, so no descendant is left running, except a D-state
+    /// (uninterruptible) descendant, which no signal can remove.
+    #[error("command timed out after {budget:?}: {command}")]
+    Timeout {
+        command: String,
+        budget: std::time::Duration,
+    },
+
     /// I/O error (transparently converted from std::io::Error)
     ///
     /// This variant has #[from] attribute, enabling automatic conversion
@@ -358,6 +372,14 @@ mod tests {
             err.to_string(),
             "another nails operation is running (pid 4242)"
         );
+
+        let err = NailsError::Timeout {
+            command: "systemctl is-active gdm.service".into(),
+            budget: std::time::Duration::from_secs(10),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("command timed out after 10s"), "{msg}");
+        assert!(msg.contains("systemctl is-active gdm.service"), "{msg}");
     }
 
     #[test]
@@ -466,6 +488,10 @@ mod tests {
             path: PathBuf::from("/test"),
         };
         let _err21 = NailsError::OperationInProgress { pid: 1234 };
+        let _err22 = NailsError::Timeout {
+            command: "nix store ping".into(),
+            budget: std::time::Duration::from_secs(5),
+        };
     }
 
     #[test]
