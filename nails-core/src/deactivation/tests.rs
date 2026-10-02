@@ -2178,3 +2178,279 @@ fn test_normal_mode_is_idempotent_on_inactive() {
     assert!(result.is_ok());
     assert!(result.unwrap().was_already_inactive);
 }
+
+// ---------------------------------------------------------------------------
+// State-write failures during teardown must return promptly, never hang.
+//
+// A state write can fail mid-teardown for real reasons: ENOSPC on the hidden
+// volume (every overlay upper lives there), EROFS after `errors=remount-ro`, or
+// EIO on a failing backend. An earlier design held the manager behind an
+// `Arc<Mutex>` and `StateGuard::drop` re-locked it, so any such failure on a `?`
+// path dropped the guard while the caller still held it and the process hung
+// forever. The manager is now borrowed by `&mut`, which makes that self-deadlock
+// unrepresentable; these tests pin the no-hang property at each teardown `?`
+// site, in both Normal and Emergency mode, by running the call on a worker thread
+// and failing loudly if no result arrives within five seconds.
+// ---------------------------------------------------------------------------
+
+/// Run `op` on a worker thread and return its value, panicking if it does not
+/// finish within five seconds. A reintroduced `StateGuard::drop` self-deadlock
+/// would block the worker here and turn into a loud failure rather than a hung
+/// CI run.
+fn run_within_timeout<R: Send + 'static>(op: impl FnOnce() -> R + Send + 'static) -> R {
+    use std::sync::mpsc::{self, RecvTimeoutError};
+
+    let (tx, rx) = mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let _ = tx.send(op());
+    });
+
+    match rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(value) => {
+            handle.join().expect("deactivation worker thread panicked");
+            value
+        }
+        Err(RecvTimeoutError::Timeout) => panic!(
+            "deactivation did not return within 5s - possible self-deadlock in StateGuard::drop"
+        ),
+        Err(RecvTimeoutError::Disconnected) => match handle.join() {
+            Err(payload) => std::panic::resume_unwind(payload),
+            Ok(()) => panic!("deactivation worker exited without a result"),
+        },
+    }
+}
+
+/// An ACTIVE manager with no overlays and no decoy profile, so teardown runs the
+/// full state-transition sequence without needing a system profile. State writes
+/// go to a real temporary hidden volume so the save seam governs their outcome.
+fn active_manager_no_profile() -> (Arc<Mutex<NailsManager<MockFilesystem>>>, tempfile::TempDir) {
+    clear_system_profile_env();
+    set_safe_test_home();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+
+    let fs = MockFilesystem::new();
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
+        overlays: vec![],
+        clear_history: false,
+        ..Config::test_default()
+    };
+
+    let mut manager = NailsManager::new(fs, config, state_path);
+    manager
+        .force_state(SystemState::Active {
+            activated_at: chrono::Utc::now(),
+            overlays: vec![],
+        })
+        .unwrap();
+
+    (Arc::new(Mutex::new(manager)), temp_dir)
+}
+
+/// An ACTIVE manager (with a recorded decoy generation) whose decoy-profile
+/// lookup errors: the profiles directory reports as existing but has no listable
+/// contents, so `select_system_profile` returns `Err`. Returns the profile env
+/// guard so the override is restored when the test ends.
+fn active_manager_with_failing_profile_lookup() -> (
+    Arc<Mutex<NailsManager<MockFilesystem>>>,
+    tempfile::TempDir,
+    SystemProfileEnvGuard,
+) {
+    set_safe_test_home();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+
+    let profiles_dir = hidden_root.join("profiles");
+    let profile_env = SystemProfileEnvGuard::set(&profiles_dir.join("system"));
+
+    let fs = MockFilesystem::new();
+    // The profiles directory exists but its contents are deliberately left
+    // unconfigured, so `list_directory` returns Err and the lookup fails.
+    fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
+    fs.mock_set_path_type(profiles_dir.to_str().unwrap(), "directory");
+
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
+        overlays: vec![],
+        clear_history: false,
+        ..Config::test_default()
+    };
+
+    // A recorded decoy generation makes the teardown attempt a decoy restore,
+    // which is what reaches the failing profile lookup. Written to disk before
+    // the manager is built so its first state read picks it up.
+    StateFile {
+        state: SystemState::Active {
+            activated_at: chrono::Utc::now(),
+            overlays: vec![],
+        },
+        nixos_generation: Some("1".to_string()),
+        ..StateFile::default()
+    }
+    .save_with_custom_root(&state_path, &hidden_root)
+    .unwrap();
+
+    let manager = NailsManager::new(fs, config, state_path);
+    (Arc::new(Mutex::new(manager)), temp_dir, profile_env)
+}
+
+#[test]
+#[serial]
+fn deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
+    use crate::state::save_probe::{self, FailOn};
+
+    let (manager, _hidden_root) = active_manager_no_profile();
+    let worker = Arc::clone(&manager);
+
+    let result = run_within_timeout(move || {
+        save_probe::arm(&[FailOn::Deactivating]);
+        let outcome = worker.lock().unwrap().deactivate();
+        save_probe::disarm();
+        outcome
+    });
+
+    assert!(
+        result.is_err(),
+        "deactivate must surface the failed ACTIVE->DEACTIVATING write"
+    );
+    // StateGuard::drop rolled the state back to ACTIVE (T-039 will make a
+    // partially torn-down teardown end in Degraded instead).
+    assert!(manager.lock().unwrap().current_state().unwrap().is_active());
+}
+
+#[test]
+#[serial]
+fn emergency_deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
+    use crate::state::save_probe::{self, FailOn};
+
+    let (manager, _hidden_root) = active_manager_no_profile();
+    let worker = Arc::clone(&manager);
+
+    let result = run_within_timeout(move || {
+        save_probe::arm(&[FailOn::Deactivating]);
+        let outcome = worker.lock().unwrap().emergency_deactivate();
+        save_probe::disarm();
+        outcome
+    });
+
+    assert!(
+        result.is_err(),
+        "emergency deactivate must surface the failed ACTIVE->DEACTIVATING write"
+    );
+    assert!(manager.lock().unwrap().current_state().unwrap().is_active());
+}
+
+#[test]
+#[serial]
+fn deactivate_returns_err_within_timeout_when_inactive_write_fails() {
+    use crate::state::save_probe::{self, FailOn};
+
+    let (manager, _hidden_root) = active_manager_no_profile();
+    let worker = Arc::clone(&manager);
+
+    let result = run_within_timeout(move || {
+        // The ACTIVE->DEACTIVATING write succeeds; only the final
+        // DEACTIVATING->INACTIVE write fails, exercising the late `?` site.
+        save_probe::arm(&[FailOn::Inactive]);
+        let outcome = worker.lock().unwrap().deactivate();
+        save_probe::disarm();
+        outcome
+    });
+
+    assert!(
+        result.is_err(),
+        "deactivate must surface the failed DEACTIVATING->INACTIVE write"
+    );
+    assert!(manager.lock().unwrap().current_state().unwrap().is_active());
+}
+
+#[test]
+#[serial]
+fn emergency_deactivate_returns_err_within_timeout_when_inactive_write_fails() {
+    use crate::state::save_probe::{self, FailOn};
+
+    let (manager, _hidden_root) = active_manager_no_profile();
+    let worker = Arc::clone(&manager);
+
+    let result = run_within_timeout(move || {
+        save_probe::arm(&[FailOn::Inactive]);
+        let outcome = worker.lock().unwrap().emergency_deactivate();
+        save_probe::disarm();
+        outcome
+    });
+
+    assert!(
+        result.is_err(),
+        "emergency deactivate must surface the failed DEACTIVATING->INACTIVE write"
+    );
+    assert!(manager.lock().unwrap().current_state().unwrap().is_active());
+}
+
+#[test]
+#[serial]
+fn deactivate_returns_err_within_timeout_when_system_profile_lookup_fails() {
+    let (manager, _hidden_root, _profile_env) = active_manager_with_failing_profile_lookup();
+    let worker = Arc::clone(&manager);
+
+    let result = run_within_timeout(move || worker.lock().unwrap().deactivate());
+
+    assert!(
+        result.is_err(),
+        "deactivate must surface a failing decoy-profile lookup"
+    );
+    assert!(manager.lock().unwrap().current_state().unwrap().is_active());
+
+    clear_system_profile_env();
+}
+
+#[test]
+#[serial]
+fn emergency_deactivate_returns_err_within_timeout_when_system_profile_lookup_fails() {
+    let (manager, _hidden_root, _profile_env) = active_manager_with_failing_profile_lookup();
+    let worker = Arc::clone(&manager);
+
+    // Emergency mode has no up-front profile pre-check, so the failing lookup is
+    // reached inside the guarded run, after the state is already INACTIVE; the
+    // guard's drop then rolls back without hanging.
+    let result = run_within_timeout(move || worker.lock().unwrap().emergency_deactivate());
+
+    assert!(
+        result.is_err(),
+        "emergency deactivate must surface a failing decoy-profile lookup"
+    );
+
+    clear_system_profile_env();
+}
+
+#[test]
+#[serial]
+fn deactivate_returns_err_within_timeout_when_rollback_write_also_fails() {
+    use crate::state::save_probe::{self, FailOn};
+
+    let (manager, _hidden_root) = active_manager_no_profile();
+    let worker = Arc::clone(&manager);
+
+    // The exact shape of the original deadlock: the initial state write fails
+    // AND the rollback write that StateGuard::drop then attempts also fails. The
+    // drop must log and return rather than block.
+    let result = run_within_timeout(move || {
+        save_probe::arm(&[FailOn::Deactivating, FailOn::Active]);
+        let outcome = worker.lock().unwrap().deactivate();
+        save_probe::disarm();
+        outcome
+    });
+
+    assert!(
+        result.is_err(),
+        "deactivate must surface the failed write even when rollback also fails"
+    );
+}

@@ -53,6 +53,11 @@ pub use file::{LoadOutcome, LoadResult, StateFile};
 pub use guard::StateGuard;
 pub use lock::{EMERGENCY_LOCK_TIMEOUT, StateLock};
 
+// Test-only save-failure seam, reachable crate-wide for the deactivation
+// regression tests even though `file` is a private module.
+#[cfg(test)]
+pub(crate) use file::save_probe;
+
 /// Check if a path is within the hidden volume
 ///
 /// Validates that the given path is within the hidden volume root to prevent

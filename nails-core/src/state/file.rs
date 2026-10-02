@@ -254,6 +254,12 @@ impl StateFile {
 
     /// Internal save implementation (shared by test and production).
     fn save_internal(&self, path: &Path) -> Result<()> {
+        // Test-only: let a regression test force this save to fail at a precise
+        // target state, standing in for an ENOSPC/EROFS write failure without a
+        // read-only filesystem. Compiled out of the production path entirely.
+        #[cfg(test)]
+        save_probe::check(&self.state)?;
+
         // 1. Stamp write-time provenance onto a working copy.
         let mut final_state = self.clone();
         final_state.boot_id = read_boot_id();
@@ -546,5 +552,82 @@ pub(crate) mod sync_probe {
 
     pub(crate) fn dir_syncs() -> usize {
         DIR_SYNCS.load(Ordering::SeqCst)
+    }
+}
+
+/// Test-only seam to force a state save to fail at a chosen target state.
+///
+/// Mirrors [`sync_probe`]: compiled only under `cfg(test)`, so the production
+/// save path never consults it. It lets the deactivation regression tests make
+/// [`StateFile::save_internal`] fail at a precise `?` site — the save of a given
+/// target state — reproducing an ENOSPC/EROFS write failure without needing a
+/// real read-only filesystem, and so without perturbing the earlier saves that
+/// must succeed to reach that site.
+///
+/// The arming flag is thread-local: a test arms it on the same worker thread
+/// that runs the deactivation (and therefore the save), so concurrent `serial`
+/// tests and the harness's own saves on other threads are never affected.
+#[cfg(test)]
+pub(crate) mod save_probe {
+    use crate::{NailsError, Result, SystemState};
+    use std::cell::Cell;
+
+    /// A target state whose save should fail on the current thread. Several may be
+    /// armed at once so a single run can fail an early write *and* the rollback
+    /// write that `StateGuard::drop` then attempts — the exact shape of the
+    /// original self-deadlock.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(crate) enum FailOn {
+        /// Fail the `ACTIVE -> DEACTIVATING` write (the first guarded `?` site).
+        Deactivating,
+        /// Fail the `DEACTIVATING -> INACTIVE` write (after unmount).
+        Inactive,
+        /// Fail the rollback write back to `ACTIVE` performed by `StateGuard::drop`.
+        Active,
+    }
+
+    const BIT_DEACTIVATING: u8 = 1 << 0;
+    const BIT_INACTIVE: u8 = 1 << 1;
+    const BIT_ACTIVE: u8 = 1 << 2;
+
+    thread_local! {
+        static FAIL_BITS: Cell<u8> = const { Cell::new(0) };
+    }
+
+    fn bit(target: FailOn) -> u8 {
+        match target {
+            FailOn::Deactivating => BIT_DEACTIVATING,
+            FailOn::Inactive => BIT_INACTIVE,
+            FailOn::Active => BIT_ACTIVE,
+        }
+    }
+
+    /// Arm the seam so every save whose state matches one of `targets` returns
+    /// `Err`. Replaces any previously armed set on this thread.
+    pub(crate) fn arm(targets: &[FailOn]) {
+        let bits = targets.iter().fold(0u8, |acc, &t| acc | bit(t));
+        FAIL_BITS.with(|cell| cell.set(bits));
+    }
+
+    /// Disarm the seam on the current thread.
+    pub(crate) fn disarm() {
+        FAIL_BITS.with(|cell| cell.set(0));
+    }
+
+    /// Return `Err` when the state being written matches an armed target.
+    pub(crate) fn check(state: &SystemState) -> Result<()> {
+        let bits = FAIL_BITS.with(|cell| cell.get());
+        let hit = match state {
+            SystemState::Deactivating { .. } => bits & BIT_DEACTIVATING != 0,
+            SystemState::Inactive => bits & BIT_INACTIVE != 0,
+            SystemState::Active { .. } => bits & BIT_ACTIVE != 0,
+            _ => false,
+        };
+        if hit {
+            return Err(NailsError::IoError(std::io::Error::other(
+                "injected state-save failure (test seam)",
+            )));
+        }
+        Ok(())
     }
 }

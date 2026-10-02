@@ -241,6 +241,18 @@ impl<F: Filesystem> Drop for StateGuard<'_, F> {
     /// - **FR50**: Automatic rollback on activation failure
     /// - **FR52**: Log warning "Rolling back to previous state: {:?}"
     /// - **NFR24**: Works even during panic (Drop during stack unwinding)
+    ///
+    /// # Invariant: no lock acquisition
+    ///
+    /// Rollback goes through `force_state`, which takes `&mut NailsManager`
+    /// through the guard's own exclusive borrow. It must never acquire a lock the
+    /// unwinding caller might already hold: an earlier design kept the manager
+    /// behind an `Arc<Mutex>` and re-locked it here, so a state write failing on a
+    /// deactivation `?` path dropped the guard while the caller still held the
+    /// guard — and the drop then blocked forever on the same mutex. Holding the
+    /// manager by `&mut` makes that class of self-deadlock unrepresentable.
+    /// `force_state` must also keep any interior borrow (the cached-state
+    /// `RefCell`) scoped so it is released before this returns.
     fn drop(&mut self) {
         if !self.committed {
             tracing::warn!("Rolling back to previous state: {:?}", self.previous_state);
