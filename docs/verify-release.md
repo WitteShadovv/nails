@@ -24,7 +24,7 @@ browser's download history, the shell history and the GitHub CLI's login token i
   volume there, and download into it.
 - **Updates:** download from inside an active hidden session, into the hidden volume.
 
-The examples assume the hidden volume is mounted at `/mnt/hidden-volume` and the release is
+The examples assume the hidden volume is mounted at `/mnt/data` and the release is
 `v0.3.0`.
 
 ## 1. Download
@@ -32,7 +32,7 @@ The examples assume the hidden volume is mounted at `/mnt/hidden-volume` and the
 Only the files you want to check are needed; for most people that is `nails` and `checksums.txt`:
 
 ```bash
-cd /mnt/hidden-volume
+cd /mnt/data
 gh release download v0.3.0 --repo WitteShadovv/nails --pattern nails --pattern checksums.txt
 ```
 

@@ -7,8 +7,8 @@ protects.
 ## Where the file lives
 
 - By default nails reads `config/nails.toml` next to its own binary, after
-  resolving symlinks. A binary at `/mnt/hidden-volume/nails`, or a symlink to
-  it, reads `/mnt/hidden-volume/config/nails.toml`, so the configuration
+  resolving symlinks. A binary at `/mnt/data/nails`, or a symlink to
+  it, reads `/mnt/data/config/nails.toml`, so the configuration
   always travels with the binary on the hidden volume.
 - `--config PATH` reads any TOML file instead. A file named by `--config` must
   exist; a missing file at the default location means "use the defaults".
@@ -42,7 +42,7 @@ location.
 Every path is checked when the file is loaded, before anything is mounted.
 A path that breaks a rule is rejected with one line that names the file, the
 key and the rule, for example
-`invalid config /mnt/hidden-volume/config/nails.toml: overlays[0].upper = "/mnt/hidden-volume/a,b": must not contain ','`.
+`invalid config /mnt/data/config/nails.toml: overlays[0].upper = "/mnt/data/a,b": must not contain ','`.
 
 - Every path is absolute, with no `.` or `..` segment and no newline.
 - `hidden_volume_root` and the `overlays[]` paths contain no `,` or `:`:
@@ -64,7 +64,7 @@ is the `name` key of each `[[overlays]]` table.
 <!-- BEGIN config-keys -->
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `hidden_volume_root` | path | derived from the binary location | Root of the hidden volume; overlay layers, the state file and logs live under it. Unset, it is the directory holding the `nails` binary (symlinks resolved), or `/mnt/hidden-volume` when the binary runs from a build directory or the Nix store. Leave it unset so the file keeps working when the volume is mounted somewhere else. See [Path rules](#path-rules). |
+| `hidden_volume_root` | path | derived from the binary location | Root of the hidden volume; overlay layers, the state file and logs live under it. Unset, it is the directory holding the `nails` binary (symlinks resolved). nails writes nothing under it until a separate volume is mounted there. Leave it unset so the file keeps working when the volume is mounted somewhere else. See [Path rules](#path-rules). |
 | `state_file_path` | path | `<hidden_volume_root>/state.json` | Activation state file. Must lie inside `hidden_volume_root`. |
 | `log_path` | path | `<hidden_volume_root>/logs` | Directory of `nails.log`. Must lie inside `hidden_volume_root`. `--no-log-file` turns file logging off for one run. |
 | `overlay_mode` | `"auto"` or `"explicit"` | `"auto"` | How overlay targets are chosen; see [Overlay semantics](#overlay-semantics). |
@@ -81,7 +81,7 @@ is the `name` key of each `[[overlays]]` table.
 | `clear_history` | boolean | `true` | Clear shell history files during deactivation. `--no-clear-history` on `activate` or `deactivate` turns it off for that run; emergency teardown always clears them. |
 | `show_opsec_reminders` | boolean | `true` | Show reminders in `nails status` once the hidden environment has been active for 6, 12 and 24 hours. |
 | `prompt_label` | string | `""` | Text prepended to the shell prompt while the hidden environment is active. Empty shows nothing; any label is visible on screen and in screenshots. |
-| `nixos_flake` | string (flake reference) | unset | Flake passed to `nixos-rebuild --flake` for the hidden system, for example `/mnt/hidden-volume/nixos#my-host`. Unset, the flake is discovered automatically. `activate --flake` overrides it. |
+| `nixos_flake` | string (flake reference) | unset | Flake passed to `nixos-rebuild --flake` for the hidden system, for example `/mnt/data/nixos#my-host`. Unset, the flake is discovered automatically. `activate --flake` overrides it. |
 | `risky_services` | `"restart"` or `"skip"` | unset | What to do with risky services (NetworkManager, dbus-daemon, the audio server) still referencing a target at activation: `restart` them, or `skip` and leave them running as reported survivors. Unset, activation restarts them when the session is killed and prompts on a terminal otherwise, and a non-interactive run that keeps the session must choose. `activate --risky-services` overrides it. |
 | `color_scheme.decoy.reset` | boolean | `true` | Reset the terminal colours when returning to the decoy environment. |
 | `color_scheme.enabled` | boolean | `true` | Change the terminal colours while the hidden environment is active. Like `prompt_label`, the change is visible on screen and in screenshots. |
@@ -139,7 +139,7 @@ no table reach the decoy disk, so auto mode is the safer choice.
 | `/sys` | Kernel device and driver interface (sysfs). The kernel generates it; it cannot be overlaid and holds nothing on disk. |
 | `/dev` | Device nodes, kept in memory by the kernel and udev (devtmpfs). |
 | `/run` | Runtime state on a tmpfs that running services depend on. It is lost at shutdown, so writes never reach a disk. |
-| `/mnt` | Holds the hidden volume's default mount point, `/mnt/hidden-volume`. Overlaying it would stack an overlay on the volume that stores the overlay layers. |
+| `/mnt` | Holds the hidden volume's default mount point, `/mnt/data`. Overlaying it would stack an overlay on the volume that stores the overlay layers. |
 | `/bin` | Holds the shell (`/bin/sh`), or is a symlink to `/usr/bin`. Part of the [safety floor](#safety-floor). |
 | `/usr` | System programs and libraries. Part of the [safety floor](#safety-floor). Software the hidden session installs into `/usr` is written to the decoy disk. |
 | `/lib` | Shared libraries and the dynamic loader, or a symlink to `/usr/lib`. System files, not session data. |

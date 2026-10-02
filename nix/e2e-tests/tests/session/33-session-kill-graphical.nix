@@ -73,7 +73,7 @@ in
         command = (
             "grep -n -F "
             + __import__("shlex").quote(pattern)
-            + " /mnt/hidden-volume/logs/nails.log | cut -d: -f1 | tail -n1"
+            + " /mnt/data/logs/nails.log | cut -d: -f1 | tail -n1"
         )
         status, output = machine.execute(command)
         if status != 0:
