@@ -315,6 +315,29 @@ pub fn build_overlay_targets<F: Filesystem>(fs: &F, config: &Config) -> Result<V
     }
 }
 
+/// Derive the persistent upper and work directories for a target on the hidden
+/// volume.
+///
+/// The layout is single-sourced here so overlay creation and `reset-upper`
+/// always agree: the upper lives at `<hidden_root>/<dir>` and the work directory
+/// at `<hidden_root>/.work/<dir>`, where `<dir>` is the target's final path
+/// component.
+pub(crate) fn derive_upper_work_paths(
+    target: &Path,
+    hidden_volume_root: &Path,
+) -> Result<(PathBuf, PathBuf)> {
+    let dir_name = target.file_name().ok_or_else(|| {
+        NailsError::ConfigError(format!(
+            "Cannot extract directory name from target: {}",
+            target.display()
+        ))
+    })?;
+
+    let upper = hidden_volume_root.join(dir_name);
+    let work = hidden_volume_root.join(".work").join(dir_name);
+    Ok((upper, work))
+}
+
 /// Create overlay configuration for a target directory (Story 14.10)
 ///
 /// Generates an OverlayConfig with auto-created upper/work directories
@@ -346,29 +369,6 @@ pub fn build_overlay_targets<F: Filesystem>(fs: &F, config: &Config) -> Result<V
 /// # // Example only: create_overlay_config is an internal helper.
 /// # // Use NailsManager::activate() to mount overlays in normal code.
 /// ```
-/// Derive the persistent upper and work directories for a target on the hidden
-/// volume.
-///
-/// The layout is single-sourced here so overlay creation and `reset-upper`
-/// always agree: the upper lives at `<hidden_root>/<dir>` and the work directory
-/// at `<hidden_root>/.work/<dir>`, where `<dir>` is the target's final path
-/// component.
-pub(crate) fn derive_upper_work_paths(
-    target: &Path,
-    hidden_volume_root: &Path,
-) -> Result<(PathBuf, PathBuf)> {
-    let dir_name = target.file_name().ok_or_else(|| {
-        NailsError::ConfigError(format!(
-            "Cannot extract directory name from target: {}",
-            target.display()
-        ))
-    })?;
-
-    let upper = hidden_volume_root.join(dir_name);
-    let work = hidden_volume_root.join(".work").join(dir_name);
-    Ok((upper, work))
-}
-
 pub(crate) fn create_overlay_config<F: Filesystem>(
     fs: &F,
     target: &Path,
