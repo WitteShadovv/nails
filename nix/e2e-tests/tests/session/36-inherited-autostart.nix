@@ -41,8 +41,12 @@ in
 
     config_path = "/tmp/nails-mask.toml"
     autostart_entry = "/home/testuser/.config/autostart/decoy-sync.desktop"
-    user_wants = "/home/testuser/.config/systemd/user/timers.target.wants"
+    user_unit_dir = "/home/testuser/.config/systemd/user"
+    user_wants = user_unit_dir + "/timers.target.wants"
     user_timer_link = user_wants + "/decoy-sync.timer"
+    # The unit load path the /dev/null mask is written to (systemd masks a unit by
+    # its name here, not by its *.wants enable symlink).
+    user_timer_unit = user_unit_dir + "/decoy-sync.timer"
 
     def write_mask_config(path):
         machine.succeed(
@@ -146,6 +150,7 @@ in
         seed_decoy_persona()
         write_mask_config(config_path)
         autostart_hash_before = hash_path(autostart_entry)
+        timer_unit_hash_before = hash_path(user_timer_unit)
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
         display_manager_before = read_systemd_active_enter_monotonic("display-manager.service")
         wrapper_env = install_nixos_rebuild_wrapper()
@@ -168,18 +173,20 @@ in
         # The autostart entry is shadowed by a Hidden=true override.
         override = machine.succeed("cat " + autostart_entry)
         assert "Hidden=true" in override, override
-        # The user timer is masked with a /dev/null symlink.
-        link_target = machine.succeed("readlink " + user_timer_link).strip()
+        # The user timer is masked with a /dev/null symlink at its unit load path.
+        link_target = machine.succeed("readlink " + user_timer_unit).strip()
         assert link_target == "/dev/null", link_target
 
     with subtest("deactivate and confirm the decoy home is unchanged"):
         canonical_deactivate(config_path, unit_name="nails-deactivate-inherited-autostart")
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
         assert_status_state("inactive", config_path=config_path)
-        # The masks lived only in the upper layer, so the decoy autostart entry is
-        # byte-for-byte what it was before activation, and the timer enable symlink
-        # points back at the real unit rather than /dev/null.
+        # The masks lived only in the upper layer, so both the decoy autostart entry
+        # and the decoy user unit are byte-for-byte what they were before activation
+        # (the unit file is a real file again, not the /dev/null mask), and the
+        # *.wants enable symlink still points at the real unit.
         assert hash_path(autostart_entry) == autostart_hash_before, "decoy autostart entry changed"
+        assert hash_path(user_timer_unit) == timer_unit_hash_before, "decoy user unit changed"
         restored_target = machine.succeed("readlink " + user_timer_link).strip()
         assert restored_target == "../decoy-sync.timer", restored_target
   '';
