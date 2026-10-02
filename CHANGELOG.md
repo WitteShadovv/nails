@@ -6,10 +6,10 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and the project
 uses [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) for commit history.
 
-GitHub Releases use immutable tag-based publication. Exact stable tags are verified automatically
-and published later by a deliberate manual workflow; suffixed prerelease tags may publish immutable
-GitHub prereleases directly. This changelog remains the source of truth for ongoing project changes
-during the current alpha phase.
+Each release is one annotated `v*` tag: a single workflow builds, rebuilds, tests and attests it
+and drafts the GitHub release, which a maintainer then publishes (see `RELEASING.md`). The section
+of this changelog for that version becomes the release notes word for word, and
+`docs/verify-release.md` explains how to verify the assets.
 
 ## [Unreleased]
 
@@ -57,6 +57,17 @@ during the current alpha phase.
 - The strict `allow_leaky_exclusions` key, which lists the load-bearing directories (`/home`,
   `/root`, `/etc`, `/var`, `/nix`, `/srv`, `/opt` and a disk-backed `/tmp`) an Auto-mode overlay
   exclusion is permitted to send to the decoy disk; any other exclusion of one of these is refused.
+- `nails check` (alias `doctor`), a read-only readiness report built from the same preflight
+  registry as activation: it prints each check's result plus the effective configuration, overlay
+  targets, session handling and NixOS profile, supports the `--json` envelope, writes nothing and
+  exits 4 when any check fails. `activate --dry-run` is now an alias for it.
+- A warn-only binary-location preflight that flags a running binary, or a `PATH` symlink to it,
+  outside the hidden volume; the generated hidden `configuration.nix` is now a commented template
+  of hidden-session settings instead of a one-package stub.
+- `docs/distribution.md` (supported and unsupported install channels and platform tiers),
+  `docs/verify-release.md` (the single release verification guide) and `RELEASING.md` (the release
+  checklist).
+- A manual `e2e-hetzner.yml` workflow that runs the E2E suite on one single-use Hetzner runner.
 
 ### Changed
 
@@ -139,6 +150,26 @@ during the current alpha phase.
   that lets docs-only changes skip the Rust and Nix jobs; the nextest `ci` profile retries a failed
   test once and reports FLAKY tests, `nix-pr-verify.yml` is folded into `ci.yml`, and the branch
   ruleset should require `gate` instead of `CI Success`.
+- Releases run from one tag-triggered workflow that checks the tag against the version,
+  `Cargo.lock` and `CHANGELOG.md`, builds from source and rebuilds on a fresh runner, runs the full
+  E2E suite, attests the assets and an SBOM that includes musl, and drafts the release with the
+  changelog section as notes; the archive is now `nails-<version>-x86_64-unknown-linux-musl.tar.gz`
+  and the build runs cargo with `--locked`.
+- CI is consolidated into seven workflows (`ci`, `e2e`, `e2e-hetzner`, `scheduled`, `release`,
+  `reproducibility`, `pr-title`); flake-lock and pre-commit updates and the weekly reproducibility
+  rebuild run from `scheduled.yml`, and `docs/ci.md` documents the test and CI tiers, checked
+  against the workflows by `just docs-check`.
+- Unsafe code is denied at compile time through workspace lints (each remaining site carries a
+  scoped allow and a `SAFETY` comment), clippy size lints are enabled, and the Rust file-size check
+  is a sub-second script with no exemptions shared by pre-commit, `just check` and CI.
+- Benchmarks run weekly against the previous run's baseline (slowdowns warn, a missing result
+  fails), and the E2E performance test times nails' own `duration_ms` inside the guest and runs
+  only nightly.
+- Neither crate can be published to a registry (`publish = false`), and the README's only first
+  install is the verified release binary; source and Nix builds are documented for upgrades from
+  inside a hidden session.
+- Preflight checks no longer write: activation stages the hidden NixOS configuration before the
+  checks run, and the storage check only reports what activation would create when run read-only.
 
 ### Removed
 
@@ -161,6 +192,9 @@ during the current alpha phase.
 - The unused `.github/scripts/package-release.sh`; the flake's `nails-release` builds the release.
 - The copy of the systemd closure into `/run/nails/systemctl-cache` on every activation; systemctl
   runs through the existing read-only store bind instead.
+- The placeholder benchmarks and the PR benchmark-budget job, the cargo-geiger report, the Codecov
+  upload, `publish-release.yml`, `release-core.yml` and the slsa-github-generator provenance, the
+  forensics-eval workflows and `update-flake-lock.yml`.
 
 ### Fixed
 
@@ -192,6 +226,11 @@ during the current alpha phase.
   root's home alone, so under `sudo` and the detached unit the operator's history files are reached.
 - The `just coverage` recipe no longer dies with a SIGPIPE error when the coverage report is large;
   it reads only the root coverage element and fails with a message when the report has no line rate.
+- A failure after the overlays are mounted (the session restart or the final state write) now
+  unmounts them before the state is rolled back and before the session restarts onto the decoy;
+  mounts that cannot be removed are recorded as `Degraded` instead of the state claiming `Inactive`.
+- Preflight results are reported once, through the log output, so they honour `--quiet` and
+  `--json` instead of being printed twice.
 
 ### Security
 

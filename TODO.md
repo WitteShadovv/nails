@@ -385,7 +385,7 @@ Owns: `nails-core/src/manager/activation/rollback.rs`, `nails-core/src/emergency
 
 - [ ] **T-018: Delete dead modules and the non-functional in-memory history clear, and tighten visibility so the dead_code lint works** (low · effort M)
 
-  _Status: partially done in wave 2 — the emergency re-export wrapper and the non-working in-memory history clear are gone. `rollback.rs` stays until T-063 wires it into production (the `MountTracker` commit disarms its Drop, so it is not dead in intent); the remaining production `allow(dead_code)` sites wait for T-063 and T-001_
+  _Status: partially done in wave 2 — the emergency re-export wrapper and the non-working in-memory history clear are gone. `activation/rollback.rs` is now live production code with no `allow(dead_code)` (T-063, W8-C3). Remaining: the production `allow(dead_code)` sites in `manager/helpers/service_controller.rs` (2), `deactivation/test_gate.rs` (2), `config/types.rs` and `nixos/mod.rs`_
 
   **Problem**
   Several modules ship unreachable or non-working code kept alive only by `#[allow(dead_code)]` or by tests:
@@ -685,7 +685,7 @@ Owns: `.github/workflows/`, `scripts/`, `ci/`, `rust-toolchain.toml`
 
 - [ ] **T-026: One reusable, runner-parameterised E2E workflow: hosted smoke per PR and push, full suite nightly or on demand, Hetzner as a single manual lane** (high · effort L)
 
-  _Status: mostly done (wave 3, W3-C3 owns the Rust side; W3-C2 owns the workflow). `e2e.yml` replaces the six old E2E/forensics workflows: runner-parameterised, a git-diff path filter, `affected` on PRs, `all` on push to main, `execute` nightly, shards with per-shard timeouts, retry-once with FLAKY marking, report-status on main/schedule, no `pull_request_target`. `ci.e2e` run/plan/resolve bugs fixed (failed builds no longer recorded as passes; `--affected` pins a git+file ref; `--execute` runs each driver in a scratch TMPDIR). VM base memory dropped to 2048 MB (4096 MB graphical). Remaining: `e2e-hetzner.yml` (the single manual, deduplicated Hetzner lane) is not written and needs a separate follow-up; hosted-runner shard-count/wall-clock measurements, the first regenerated `shard-durations.json` commit, and the maintainer "required check" step are pending. Nix evaluation pending (see nix_pending)._
+  _Status: mostly done (wave 3, W3-C3 owns the Rust side; W3-C2 owns the workflow). `e2e.yml` replaces the six old E2E/forensics workflows: runner-parameterised, a git-diff path filter, `affected` on PRs, `all` on push to main, `execute` nightly, shards with per-shard timeouts, retry-once with FLAKY marking, report-status on main/schedule, no `pull_request_target`. `ci.e2e` run/plan/resolve bugs fixed (failed builds no longer recorded as passes; `--affected` pins a git+file ref; `--execute` runs each driver in a scratch TMPDIR). VM base memory dropped to 2048 MB (4096 MB graphical). Remaining: `e2e-hetzner.yml` (the single manual Hetzner lane) landed with T-059 (W8-C1) but needs one live dispatch to confirm the hcloud server types, runner version and nested KVM; hosted-runner shard-count/wall-clock measurements, the first regenerated `shard-durations.json` commit, and the maintainer "required check" step are pending. Nix evaluation pending (see nix_pending)._
 
   **Problem**
   - `e2e-tests.yml` is the only hosted, secret-free lane: 6-9 `ci` tests in 405-659 s on ubuntu-24.04 with KVM. It triggers only on the deleted `dev` branch (l.8, l.20), so no E2E has run automatically since 2026-04-27. `docs/ci.md:13` and `:64-75` still describe it.
@@ -1296,7 +1296,7 @@ Owns: `.github/workflows/ci.yml`, `.config/nextest.toml`
 
   _Partial (T-009): the dependency-policy job now detects Cargo.toml/Cargo.lock/deny.toml changes and gates advisories only on those PRs, and cargo-audit no longer duplicates `cargo deny check advisories`; the full ci.yml rewrite remains._
 
-  _Status (W7-C3): ci.yml is rewritten into a lean parallel gate — parallel lint/rust/deps/privileged-mounts/nix-build/lint-misc jobs gated on a `ci/changes.py` path filter, one required `gate` job, one rust-cache key saved only on main, a nextest `ci` profile (one retry, hang limit, JUnit, FLAKY reporting), doctests in the rust job, nix-pr-verify folded into nix-build, and the SIGPIPE bug in the just coverage recipe fixed; nix-build and lint-misc run `nix build .#nails-release` and `nix flake check` (see nix_pending). Remaining (W8/forensics-eval removal): the scheduled.yml stress/shuffle lane, zsh+fish in the flake devShell, the release-core.yml cyclonedx checksum (T-058), deleting the forensics-eval workflows, the branch-ruleset change from `CI Success` to `gate`, and the warm-cache gate-time measurement (T-059)._
+  _Status (W7-C3): ci.yml is rewritten into a lean parallel gate — parallel lint/rust/deps/privileged-mounts/nix-build/lint-misc jobs gated on a `ci/changes.py` path filter, one required `gate` job, one rust-cache key saved only on main, a nextest `ci` profile (one retry, hang limit, JUnit, FLAKY reporting), doctests in the rust job, nix-pr-verify folded into nix-build, and the SIGPIPE bug in the just coverage recipe fixed; nix-build and lint-misc run `nix build .#nails-release` and `nix flake check` (see nix_pending). Remaining: the scheduled.yml stress/shuffle lane, zsh+fish in the flake devShell, the branch-ruleset change from `CI Success` to `gate`, and the warm-cache gate-time measurement. The release-core.yml cyclonedx checksum and the forensics-eval workflows went away with T-058/T-059 (W8-C1)._
 
   **Problem:** `.github/workflows/ci.yml` (506 lines) runs 12 jobs chained by `needs:` that pass no data between them (audit/test/geiger need lint at l.58/102/285, coverage/sbom/benchmarks need test, burn-in needs coverage at l.324). Criterion benchmarks set the critical path: 6.2 min warm and 9.6 min cold, for about 2 min of real work. Each PR compiles the workspace about 9 times across 11 rust-cache keys. Tools are built with `cargo install` (l.123/170/258/302, 777 s on a cold cache). There is no `concurrency:` and no path filter, so docs-only PRs run everything. The `dev` triggers are dead (l.7/11/327), and `toolchain: 1.93.0` repeats what rust-toolchain.toml already says. geiger ends in `|| true` (l.307), so the gate's geiger check (l.490) can never fire. cargo-audit repeats `cargo deny check advisories`. No step uses `--locked`, which is how v0.2.0 shipped a stale Cargo.lock. There is no `.config/nextest.toml`, so the failure upload of `target/nextest/**/*.xml` (l.138) is always empty. Doctests run only in burn-in (l.343), which is skipped on push to main. The sticky coverage comment needs `pull-requests: write` (l.148-150, 221-234). Fork PRs only get a read-only token, so it fails with 403 and takes `CI Success` down with it. ci.yml and e2e-tests.yml have no top-level `permissions:`. ci.yml:268 and release-core.yml:253 download cyclonedx-cli with curl and run it without a checksum.
 
@@ -1355,7 +1355,9 @@ Owns: `.github/workflows/ci.yml`, `.config/nextest.toml`
 
 Owns: `.github/workflows/`, `benches/`, `clippy.toml`, `docs/ci.md`
 
-- [ ] **T-056: Replace the line-count cap and geiger with compile-time lint policy and split the giant manager test file** (low · effort M)
+- [x] **T-056: Replace the line-count cap and geiger with compile-time lint policy and split the giant manager test file** (low · effort M)
+
+  _Status (W8-C1): done. `[workspace.lints]` denies `unsafe_code` (scoped `#[allow(unsafe_code)]` plus `// SAFETY:` on every remaining site; shell_cleanup uses the safe `nix::sys::signal::kill`) and enables `undocumented_unsafe_blocks`, `too_many_lines` (170) and `cognitive_complexity` (32) from `clippy.toml`, with two `#[expect]` outliers. `scripts/check-line-count.sh` is a find+awk check shared by pre-commit, `just line-count` and CI (warn 500, fail 850 because `manager/deactivation.rs` has 803 code lines; tests warn at 1500). The geiger job is gone and `manager/tests.rs` is split into `manager/tests/` (largest file 1,278 lines). Follow-up: lower the thresholds and the 850 limit as the large files are split._
 
   **Problem**
   - `scripts/check-line-count.sh` (219 lines, `MAX_LINES=500` at l.7) hard-codes two exemptions: `manager/activation/mod.rs` (521 lines) and `manager/deactivation.rs` (555).
@@ -1380,7 +1382,9 @@ Owns: `.github/workflows/`, `benches/`, `clippy.toml`, `docs/ci.md`
   - The line-count script has no exemptions, needs no `rg`, runs in under 1 s, and behaves the same locally and in CI.
   - The geiger job is gone, `manager/mod.rs` has no `#[path]`, and no test file under `nails-core/src/manager` exceeds about 2,000 lines.
 
-- [ ] **T-057: Fix benchmarks and perf tests: no absolute budget gate, own temp dirs, delete placeholders, move statistical loops out of the PR lane** (medium · effort M)
+- [x] **T-057: Fix benchmarks and perf tests: no absolute budget gate, own temp dirs, delete placeholders, move statistical loops out of the PR lane** (medium · effort M)
+
+  _Status (W8-C1): done. Placeholder benches and the PR budget job are gone; the core benches own their temp dirs, use `[profile.bench] lto = "thin"` and run weekly in scheduled.yml against the previous main baseline via critcmp (25% warning, a missing result fails). 07 times nails' own `duration_ms` in the guest without crash or re-format, adds a timed default activation (nixos-rebuild stubbed) and runs only in the nightly lane; 05 runs one extra cycle; 78 bounds the in-guest `duration_ms`. Follow-ups: 07 switches to the prebuilt hidden closure once W14-C1 adds it; deterministic-count guards for the /proc scan need production instrumentation and are not added; pin critcmp after the first scheduled run; the VM tests await evaluation (see nix_pending)._
 
   **Problem**
   - `nails-core/benches/performance.rs` claims 'Validates RQ2: 2-5 second switching' (l.3), but every bench runs on `MockFilesystem`.
@@ -1416,7 +1420,9 @@ Owns: `.github/workflows/`, `benches/`, `clippy.toml`, `docs/ci.md`
   - `perf.nix` has no p95 function. 07 has no `machine.crash()` or re-format, times a non-overlay-only activation, and is excluded from the PR lane.
   - 05 runs at most one extra cycle.
 
-- [ ] **T-058: Collapse the release into one tag-triggered workflow (build, E2E gate, rebuild, attestation, draft notes) and fix release hygiene** (medium · effort L)
+- [x] **T-058: Collapse the release into one tag-triggered workflow (build, E2E gate, rebuild, attestation, draft notes) and fix release hygiene** (medium · effort L)
+
+  _Status (W8-C1): implementation complete. One `release.yml` (tag push or dispatch from the tag) checks tag, version, Cargo.lock and CHANGELOG via `ci/release.py`, builds, rebuilds on a fresh runner (`diff -r`), runs E2E mode all, builds a musl SBOM with cargo-cyclonedx, attests provenance and SBOM, and drafts the release; publish-release.yml, release-core.yml and slsa-github-generator are gone, reproducibility.yml runs weekly from scheduled.yml, the archive is `nails-<version>-x86_64-unknown-linux-musl.tar.gz` and cargo builds `--locked`; RELEASING.md and docs/verify-release.md added. Pending outside this sandbox: a dispatch dry-run from an rc tag, the verify-release commands against the v0.2.0 assets, the stale-lock `nix build` check (see nix_pending), and the one-time repository steps in RELEASING.md (delete `list`/`listr` and the `v0.1.0-git.*` prereleases, tag ruleset, immutable releases). `main` is not bumped to `-dev` yet._
 
   **Problem**
   - A stable release takes two runs: `release.yml` verify, then a manual `publish-release.yml`. Both call `release-core.yml`, which adds up to 6 musl compiles and two provenance mechanisms: `actions/attest` (l.332) and slsa-github-generator (l.346).
@@ -1461,7 +1467,9 @@ Owns: `.github/workflows/`, `benches/`, `clippy.toml`, `docs/ci.md`
   - The verify-release commands pass against the v0.2.0 assets with only `nails` downloaded.
   - No doc calls `--check` binary determinism, and `git check-ignore docs/ci.md` prints nothing.
 
-- [ ] **T-059: Document the CI tier model, workflow layout and contributor test tiers, and do the final workflow consolidation sweep** (high · effort M)
+- [x] **T-059: Document the CI tier model, workflow layout and contributor test tiers, and do the final workflow consolidation sweep** (high · effort M)
+
+  _Status (W8-C1): done. `.github/workflows` holds exactly ci, e2e, e2e-hetzner, scheduled, release, reproducibility and pr-title (forensics-eval workflows deleted, update-flake-lock folded into scheduled.yml, new manual dispatch-only `e2e-hetzner.yml`), Codecov is removed so the justfile threshold is the only coverage gate, docs/ci.md is rewritten around the four tiers with the job mapping and settings checklist and checked by `just docs-check` (`ci/docs_check.py`), and CONTRIBUTING.md has the tier table. Not done: the ~10-line inline `run:` limit enforced from `nix/checks.nix` needs the long e2e.yml/scheduled.yml blocks moved into `ci/*.py` first; the measured shard count and wall-clock time, and one live `e2e-hetzner.yml` dispatch, still need hosted runs._
 
   **Problem**
   - The repo has 14 workflows, 38 jobs and ~3,700 lines, about half of it inline `run:` script. Nothing defines what runs per PR, after merge, nightly or at release.
@@ -1508,7 +1516,9 @@ Owns: `.github/workflows/`, `benches/`, `clippy.toml`, `docs/ci.md`
   - No privileged job uploads `**/*.log`.
   - `CONTRIBUTING.md` has the tier table.
 
-- [ ] **T-060: Document supported distribution channels, block crates.io publishing, and remove decoy-side first-install paths from the README** (medium · effort S)
+- [x] **T-060: Document supported distribution channels, block crates.io publishing, and remove decoy-side first-install paths from the README** (medium · effort S)
+
+  _Status (W8-C1): done. Both crates set `publish = false`, `docs/distribution.md` lists the supported and unsupported channels and the platform tiers, and the README keeps the verified release binary as the only first install, with source and Nix builds under 'Upgrading from inside a hidden session'. Naming and crate descriptions are left to the naming item._
 
   **Problem**
   - No manifest sets `publish`. `nails-core` has no path dependencies, so it could be published to crates.io by accident.
@@ -1537,6 +1547,8 @@ Owns: `nails-cli/src/cli/output/`, `nails-cli/src/cli/commands/check.rs`, `nails
 
 - [ ] **T-061: Consolidate output into one Ui/Theme layer and stop the core library printing ad hoc** (medium · effort L)
 
+  _Status (W8-C2): the single themed status renderer, one NO_COLOR resolution, stderr prompts, per-stream `with_ansi` and the shared config loader for activate had already landed in earlier waves; `output/deactivate.rs` is now the live typed-envelope renderer for deactivate/emergency and stays. W8-C2 removed the core's ad hoc preflight print (`output::check_result`), so checks report once through tracing and honour `--quiet`/`--json`. Remaining: the `DEBUG: Already detached` eprintln in `nails-cli/src/cli/detach.rs` (T-066, W9-C2), Reporter-based core progress (T-087, W13-C1), and evaluating contract E2E 61-64 (see nix_pending)._
+
   **Problem**
   The status report is rendered three times (`status/human.rs` `print_status_human` + `print_status_no_color`, `status/mod.rs` `print_status_ascii`, ~130 duplicated lines each) and the error path builds two more headers that disagree (`commands/status.rs:104-124`: `=== NAILS Status Report ===` vs the box-drawing variant). Symbols drift: `[WARN]` vs `ReminderSeverity::to_plain`'s `[WARNING]`, logging's `X`/`!` vs the Unicode marks. `output/activate.rs` branches on `no_color` at ~14 sites though `colored` already honours `set_override`. The NO_COLOR check is copied in five places (`logging.rs:169`, `main.rs:46`, `commands/status.rs:38`, `activate/mod.rs:79`, `deactivate.rs:43`) and all use `.is_ok()`, treating empty `NO_COLOR` as set (contrary to no-color.org). `output/deactivate.rs` is a 255-line dead renderer kept alive only by the coverage gate. The core prints out-of-band: `nails-core/src/output.rs` (writeln at 4 sites), `preflight_runner.rs:213` prints every check result regardless of `--quiet`/`--json` and re-logs it via tracing (double report); `detach.rs:152` emits `eprintln!("DEBUG: Already detached, continuing...")` into the journal; prompts (`prompts/mod.rs`) write to stdout.
 
@@ -1550,6 +1562,8 @@ Owns: `nails-cli/src/cli/output/`, `nails-cli/src/cli/commands/check.rs`, `nails
   - NO_COLOR handling matches no-color.org (empty = unset) in one place; prompts go to stderr; contract E2E 61/62/63 pass.
 
 - [ ] **T-062: Read-only nails check (alias doctor) built from the shared preflight registry; replace the diverging dry-run** (medium · effort M)
+
+  _Status (W8-C2): implemented. `build_registry`/`NailsManager::preflight_registry` is shared by activation and the new read-only `nails check` (alias `doctor`); `dry_run.rs` is deleted and `activate --dry-run` calls `check`; the registry adds StateCheck, the suspicious-reference check and a warn-only binary-location check; NixOSConfigCheck no longer creates files (activation stages them via `stage_hidden_nixos_config`), StorageReadinessCheck has a read-only mode, and the generated `configuration.nix` is a commented hidden-session template. Unit tests cover identical check lists and no writes. Remaining: run as non-root, privilege-blocked checks still report a Fail with the raw error (overlay-compatibility shows `Permission denied` reading /boot) instead of being named as skipped; fold this into T-088's CheckResult rework. The 29 and 45 VM tests await evaluation (see nix_pending)._
 
   **Problem**
   The only readiness check is `activate --dry-run`, which hand-copies the preflight registry (`commands/activate/dry_run.rs`, 386 lines, "mirrors NailsManager::run_preflight_checks"). The copy has drifted: it lacks `StateCheck` (`preflight_runner.rs:203`), the suspicious-reference check, the read-only NixOS preflight the default path runs (`activate/mod.rs`), and the `NixOSBuildTargetCheck` skip logic (`preflight_runner.rs:171-193`). It always exits 0 even after failures, ignores `--json` and colour, and is gated by activate's flag validation. It is also not read-only: `NixOSConfigCheck` creates hidden files (`preflight/checks/nixos_config/mod.rs:100-116`) and `OverlayCompatibilityCheck` strips opaque xattrs. There is no doctor command for non-experts, and the generated hidden config is a one-package ripgrep stub (`nails-core/src/nixos/config/mod.rs:46-47`).
@@ -1569,7 +1583,9 @@ Owns: `nails-cli/src/cli/output/`, `nails-cli/src/cli/commands/check.rs`, `nails
 
 Owns: `nails-core/src/manager/activation/guards.rs`, `nails-core/src/manager/mount_tracker.rs`, `nails-core/src/manager/activation/rollback.rs`
 
-- [ ] **T-063: If activation fails after mounting, unmount the overlays before the state is rolled back (wire in the dead rollback code)** (high · effort M)
+- [x] **T-063: If activation fails after mounting, unmount the overlays before the state is rolled back (wire in the dead rollback code)** (high · effort M)
+
+  _Status (W8-C3): done. `mount_overlays` hands its mounts to the caller (`MountTracker::take_mounts`) instead of committing; the new `ActivationMounts` guard in `activation/rollback.rs` (no `allow(dead_code)`) is declared after `StateGuard`, so a later failure unmounts the overlays, then writes the rolled-back state, then restarts the session onto the decoy. Mounts rollback cannot remove make StateGuard persist `Degraded` listing them, and per-mount state saves are hard errors. Unit tests cover the Active-write, session-restart and unmount-failure cases; the masked-display-manager subtest in 53 awaits evaluation (see nix_pending)._
 
   **Problem**
   `mount_overlays` commits the `MountTracker` before returning (`nails-core/src/manager/activation/overlay_mount/mod.rs:108`), so RAII rollback is disarmed the instant mounts succeed — contradicting its own comments at `overlay_mount/mod.rs:30` and `:41`. Activation continues past that point and can still fail at `restart_session_after_success` (`activation/mod.rs:379`) or `update_state(Active)` (`activation/mod.rs:476-481`). On failure, `StateGuard::drop` (`nails-core/src/state/guard.rs:227-264`) calls `force_state(previous_state)`; when the previous state is `Inactive`, `force_state` clears `overlay_status` and `nixos_generation` (`state_management.rs:185-196`) while the overlays stay mounted and are no longer recorded anywhere. `SessionRestartGuard` is disarmed only after `guard.commit()` (`activation/mod.rs:489`), so its drop (`activation/guards.rs:30-61`) restarts the display manager onto the still-mounted overlays. The real cleanup, `rollback_overlay_mounts_after_activation_failure` (`activation/rollback.rs:57`), is `#[allow(dead_code)]` and reached only from tests. Per-mount and generation state saves swallow errors at Debug verbosity (`overlay_mount/mod.rs:229-234`, `:344-349`), so mount tracking can silently be missing on disk.
