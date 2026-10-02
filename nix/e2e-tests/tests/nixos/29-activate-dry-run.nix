@@ -126,5 +126,30 @@ in
         machine.fail("test -e /mnt/data/etc/nixos/nails/configuration.nix")
         machine.fail("test -e /mnt/data/etc/nixos/hardware-configuration.nix")
         machine.fail("test -e /etc/nixos/nails/configuration.nix")
+
+    with subtest("dry-run reports an opaque marker without clearing it"):
+        # Plant a stale opaque marker on the one NAILS-managed upper dir
+        # (/etc/nixos), as a previous activation cycle would leave behind. It is
+        # set in-process with os.setxattr so the test needs no `attr` package,
+        # matching the production strip path.
+        machine.succeed("mkdir -p /mnt/data/etc/nixos")
+        machine.succeed(
+            "python3 -c 'import os; "
+            "os.setxattr(\"/mnt/data/etc/nixos\", \"trusted.overlay.opaque\", b\"y\")'"
+        )
+
+        _, opaque_stdout, _ = run_command_capture(
+            "activate-dry-run-opaque",
+            f"{wrapper_env} nails --config {headless_config} activate --dry-run --session keep --flake {flake_ref}",
+        )
+        # The read-only overlay-compatibility check names the stale marker...
+        assert "opaque marker" in opaque_stdout, \
+            f"Expected the stale-marker warning in dry-run output, got: {opaque_stdout!r}"
+        # ...but writes nothing: the marker is still present afterwards. os.getxattr
+        # exits non-zero (ENODATA) if the attribute was cleared.
+        machine.succeed(
+            "python3 -c 'import os; "
+            "os.getxattr(\"/mnt/data/etc/nixos\", \"trusted.overlay.opaque\")'"
+        )
   '';
 }
