@@ -103,6 +103,23 @@ in
     touch "$out"
   '';
 
+  # The released binary must carry none of the test-only hook strings: the
+  # test-detection env vars, the reboot/systemctl path overrides, the
+  # unsafe-ops opt-in, the build-directory heuristic or the backdoor
+  # exemption. They compile only under the non-default `test-hooks` feature,
+  # which the release build never enables; this asserts it over the shipped
+  # artifact (the `nails-e2e` package carries them on purpose and is not
+  # checked here).
+  nails-release-hygiene = pkgs.runCommandLocal "nails-release-hygiene" { } ''
+    forbidden='NAILS_TEST_|NAILS_SYSTEMCTL_PATH|NAILS_REBOOT_PATH|NAILS_SYSTEMD_RUN_PATH|NAILS_UNSAFE_REAL_OPS|/target/debug|/target/release|llvm-cov-target|backdoor'
+    if LC_ALL=C grep -a -E -q "$forbidden" ${nails}/bin/nails; then
+      echo "release binary contains test-only hook strings:" >&2
+      LC_ALL=C grep -a -E -o "$forbidden" ${nails}/bin/nails | sort -u >&2 || true
+      exit 1
+    fi
+    touch "$out"
+  '';
+
   # The cheap Python gate: the ci/ package's unittest suite, ruff and a
   # non-strict mypy, exactly what `just ci-python` runs locally. It is seconds,
   # not the VM tests. The stand-alone scripts/ are not covered yet; they join

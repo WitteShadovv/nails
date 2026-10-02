@@ -159,6 +159,22 @@
         };
       };
 
+      # The same static binary with the test-only hooks compiled in, for the
+      # E2E gate and override subtests only. The release `nails` above carries
+      # none of them (checks.nails-release-hygiene asserts this), so the gate
+      # tests that drive `NAILS_TEST_*_GATE_PATH` and the reboot/systemctl path
+      # overrides must run against this build instead. Never released.
+      nails-e2e = nails.overrideAttrs (old: {
+        pname = "nails-e2e";
+        cargoBuildFlags = old.cargoBuildFlags ++ [
+          "--features"
+          "test-hooks"
+        ];
+        meta = old.meta // {
+          description = "nails built with the non-default test-hooks feature, for the E2E gate tests";
+        };
+      });
+
       nails-release =
         pkgs.runCommand "nails-release-${workspaceVersion}"
           {
@@ -224,7 +240,7 @@
     in
     {
       packages.${system} = {
-        inherit nails nails-release;
+        inherit nails nails-e2e nails-release;
         default = nails;
       };
 

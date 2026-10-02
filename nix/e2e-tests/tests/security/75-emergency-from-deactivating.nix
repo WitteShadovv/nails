@@ -17,8 +17,10 @@ in
     { ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
+      # This test drives the deactivation gate (NAILS_TEST_*_GATE_PATH), which
+      # exists only in the test-hooks build, so it runs the nails-e2e package.
       environment.systemPackages = [
-        self.packages.x86_64-linux.nails
+        self.packages.x86_64-linux.nails-e2e
         pkgs.python3
       ];
     };

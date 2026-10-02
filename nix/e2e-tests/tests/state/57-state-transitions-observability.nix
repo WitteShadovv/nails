@@ -23,7 +23,9 @@ in
     { ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+      # Drives the activation/deactivation gates (NAILS_TEST_*_GATE_PATH), a
+      # test-hooks-only hook, so it runs the nails-e2e package.
+      environment.systemPackages = [ self.packages.x86_64-linux.nails-e2e ];
     };
 
   testScript = _: ''
