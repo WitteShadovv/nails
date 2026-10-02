@@ -30,6 +30,16 @@ during the current alpha phase.
   human or `--json` form, and `show --example` prints every key.
 - `docs/configuration.md`, a configuration reference kept in step with the code by a test, listing
   every key with its type, default and effect and documenting the overlay exclusion rules.
+- A stable CLI machine interface: one typed JSON envelope on stdout (`schema_version`, `command`,
+  `ok`, and `data` or `error`), state and verification as tagged snake_case objects, a documented
+  exit-code table returned from `main` (verify warnings and critical exit 10 and 11, preflight
+  refusals 4), and an opt-in `status --exit-status`.
+- The `risky_services` config key and the `--risky-services`/`--terminate-interactive` activate
+  flags; non-interactive activation no longer silently skips risky-service restarts or
+  force-terminates interactive user processes, and surviving decoy writers are tracked by identity.
+- A scheduled maintenance workflow (crate fetcher canary, Rust cache warming, stress loop and a
+  task-dispatch input) and a `report-status` action that tracks red runs of `main`, scheduled jobs
+  and releases in `ci-red`/advisory issues.
 
 ### Changed
 
@@ -69,6 +79,31 @@ during the current alpha phase.
   keys are rejected with a did-you-mean hint, and a missing or invalid `--config` file makes
   `activate`, `status`, `verify` and the `config` subcommands print a single error line and exit 3,
   while `emergency` and `deactivate` warn once and continue with binary-derived defaults.
+- Output, verbosity and config flags (`-c`, `-v`/`-q`, `--color auto|always|never`, `--ascii`,
+  `--json`, `--no-log-file`) are global and accepted before or after the subcommand; `status -v` is
+  now `--details`; colour is resolved once per stream (terminal, `TERM`, `CLICOLOR_FORCE`, with an
+  empty `NO_COLOR` treated as unset) and never colours piped output, and DECOY shows an uncoloured
+  neutral mark distinct from CRITICAL.
+- Redesigned the `nails activate`/`deactivate` flags (`--session kill|keep`, `--pivot
+  refuse|allow|ask`, `-y`), made the session-kill and deactivate-reboot confirmations reachable, and
+  reported the detached activation outcome.
+- `NailsManager` activation and deactivation run over an owned `&mut` context; the `Arc<Mutex>`
+  state cache and the separate deactivation orchestrator layer are removed.
+- NixOS `hardware-configuration.nix` is wrapped (the original is preserved as
+  `hardware-configuration.base.nix`) instead of text-patched, and a `nix-instantiate --parse`
+  preflight gate rejects an unparseable config before any overlay is mounted.
+- E2E tests run from one workflow (`e2e.yml`) on GitHub-hosted runners (affected tests per PR, the
+  full suite on push to main, every driver nightly, Hetzner reserved for a manual lane); failed
+  tests are retried once and retry-passes are reported as FLAKY. The bash E2E runners and the
+  shard-weight script are replaced by the tested `ci.e2e` Python package (`python3 -m ci.e2e`).
+- The Rust toolchain is single-sourced from `rust-toolchain.toml`, the flake devShell is the only
+  dev environment, a `justfile` is the single source of local and CI commands, incremental dev and
+  test builds are re-enabled, and pre-commit hooks split into a fast offline stage and a pre-push
+  `just check`.
+- Dependency automation reworked (grouped monthly Dependabot with correct Conventional Commit
+  titles, a PR-title check, and flake/pre-commit auto-update and monthly `Cargo.lock` refresh
+  workflows); the shipped dependency footprint is trimmed (`signal-hook` removed, chrono built
+  without default features).
 
 ### Removed
 
@@ -85,6 +120,9 @@ during the current alpha phase.
   alias, the `nails config show --no-preflight` preview, and the `default_verbosity`, `color_output`,
   `milestone_tips`, `verify_on_deactivate`, `preflight_checks`, `max_log_size_mb` and `retention_days`
   keys (none of which had any effect); `/Downloads` is also no longer a default overlay exclusion.
+- The `--plain`, `--no-color` and `--no-logs` flags and the `NAILS_NO_COLOR` environment variable,
+  replaced by `--color` and `--ascii`; the six separate E2E and forensics-eval workflows,
+  `scripts/ci-local.sh`, `scripts/burn-in.sh` and `shell.nix`.
 
 ### Fixed
 
@@ -97,6 +135,9 @@ during the current alpha phase.
   diagnostics after a 300 s power-off deadline instead of hanging for the driver's full hour; shard
   weights no longer include two recorded one-hour hangs, and full-suite shards upload per-test
   durations with a non-blocking weight-drift report.
+- The E2E runner recorded a failed `nix build` as a pass and passed a bare revision to `--affected`
+  as a flake reference; outcomes are now read from the store and `--affected` pins a `git+file`
+  revision, evaluating both sides in one `nix eval`.
 
 ### Security
 

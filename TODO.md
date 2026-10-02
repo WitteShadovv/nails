@@ -433,7 +433,9 @@ Owns: `nails-core/src/filesystem/mock/operations_profiles.rs`, `nails-core/src/f
 
 Owns: `nails-core/src/manager/mod.rs`, `nails-core/src/manager/activation/mod.rs`, `nails-core/src/manager/deactivation.rs`, `nails-core/src/manager/state_management.rs`
 
-- [ ] **T-020: Simplify NailsManager orchestration: step functions over owned context, drop Arc<Mutex>, remove runtime set_var** (medium · effort L)
+- [x] **T-020: Simplify NailsManager orchestration: step functions over owned context, drop Arc<Mutex>, remove runtime set_var** (medium · effort L)
+
+  _Status: done in wave 3 (W3-C1). The state cache is now `RefCell<Option<StateFile>>`, `activate_with_options` runs over one `&mut` borrow via named step functions with a `StateGuard` that derefs to the manager, the `deactivation/orchestrator` module is merged into a single `DeactivationOrchestrator` in `manager/deactivation.rs`, protected shell PIDs are passed explicitly (the `unsafe set_var` guard is gone; `detach.rs` keeps only the cross-process handoff), and no `Arc<Mutex>`/`LockPoisoned` remains in production manager code (test harnesses still use a local `Mutex` adapter). The merged `manager/deactivation.rs` is ~969 lines, deliberately over the 500-line hook gate (kept in the SKIP set)._
 
   **Problem:** `activate_with_options` (`nails-core/src/manager/activation/mod.rs:156`-521) is a single ~370-line procedure that calls `manager_arc.lock()` 10 times, re-reading the cached state between steps. The `Arc<Mutex>` state cache (`manager/mod.rs:85`-87, documented single-threaded under AR47, no production `thread::spawn`) forces 31 `LockPoisoned` closures across non-test manager code. `StateGuard::new(Arc::clone(&manager_arc), ...)` (`activation/mod.rs:245`) keeps an Arc clone only to roll back on drop. `ProtectedShellPidEnvGuard` (`manager/deactivation.rs:158`-209) uses `unsafe std::env::set_var`/`remove_var` to hand protected PIDs to `kill_user_shells` (`process/shell_cleanup.rs:79`,128) even though both run in-process. Deactivation is split across two layers: `manager/deactivation.rs` (555 lines) and the `nails-core/src/deactivation/orchestrator` module. `preflight_runner.rs:3` shows modules were carved by a 500-line gate, not by responsibility.
 
@@ -450,9 +452,11 @@ Owns: `nails-core/src/manager/mod.rs`, `nails-core/src/manager/activation/mod.rs
 
 Owns: `.github/workflows/`, `scripts/`, `ci/`, `rust-toolchain.toml`
 
-- [ ] **T-021: Single-source the Rust toolchain from rust-toolchain.toml and make the flake devShell the only dev environment** (medium · effort M)
+- [x] **T-021: Single-source the Rust toolchain from rust-toolchain.toml and make the flake devShell the only dev environment** (medium · effort M)
 
   _Partial (T-009): `serial_test` moved to 3.5 to drop `scc`, the RUSTSEC-2026-0205 ignore is gone, and `cargo-audit` is out of both dev shells with `just` added; the toolchain single-sourcing remains._
+
+  _Status: done in wave 3 (W3-C2). All pinned `dtolnay/rust-toolchain` steps and the SBOM step now `rustup toolchain install` from `rust-toolchain.toml`; `flake.nix` reads the channel via `lib.importTOML`, the devShell is the only dev environment (`shell.nix` removed) and installs the git hooks via a shellHook; resolver 3. The channel/`serial_test` 4.x bump was deliberately not taken (its goal is already met at 1.93.0 and it is unbuildable here). Nix devShell/`nix build` evaluation is pending (see nix_pending)._
 
   **Problem**
   - The toolchain version `1.93.0` is hard-coded 13 times:
@@ -489,6 +493,8 @@ Owns: `.github/workflows/`, `scripts/`, `ci/`, `rust-toolchain.toml`
   - Entering the devShell in a fresh clone installs all three git hooks.
 
 - [ ] **T-022: Replace the bash E2E runners and in-Nix Python helpers with one tested, importable Python planner and runner package** (medium · effort L)
+
+  _Status: partial (wave 3, W3-C2). The tested, importable `ci.e2e` package (`python3 -m ci.e2e`: list/resolve/plan/run/regen-weights/interactive/check/drift) replaced the shard-weight script and the bash runners (`scripts/run-e2e-tests.sh` is now a thin wrapper); `nix/checks.nix` and the drift step were repointed; `--help`/`interactive` work with no nix on PATH. Still out of W3-C2's owned paths (pick up later): the `nix/e2e-tests/py/nails_e2e` in-VM helper package, dedup of the 4 `run_command_capture`/8 `install_nixos_rebuild_wrapper` copies and deletion of the 3 dead nix helpers, session-test migration, and a fast ci-python flake check (unittest+ruff+mypy). Deleting `scripts/run-forensics-eval*.sh` is deferred to the forensics removal (T-074) since they are still referenced by `nix/forensics-eval/`._
 
   **Problem**
   - Duplicated runners:
@@ -539,7 +545,9 @@ Owns: `.github/workflows/`, `scripts/`, `ci/`, `rust-toolchain.toml`
   - The session tests use the package and stay green.
   - Both forensics runner scripts are deleted.
 
-- [ ] **T-023: Fast local loop: re-enable incremental builds, split pre-commit from pre-push, add a justfile CI also calls** (high · effort M)
+- [x] **T-023: Fast local loop: re-enable incremental builds, split pre-commit from pre-push, add a justfile CI also calls** (high · effort M)
+
+  _Status: done in wave 3 (W3-C2). `.cargo/config.toml` no longer forces `incremental = false` (the release derivation still sets `CARGO_INCREMENTAL=0`); the `justfile` is the single command source (fmt-check, lint, test, doctest, coverage, check, ci-rust, deny/deny-full, nix-lint, e2e, stress) with the 85 coverage threshold defined once; pre-commit is fast/offline/changed-files and the heavy clippy/test/coverage moved to a pre-push `just check`; `ci.yml` coverage runs `just coverage`; `scripts/ci-local.sh` and `scripts/burn-in.sh` are deleted._
 
   _Partial (T-009): a `justfile` now exists with `deny` and `deny-full` recipes that CI also calls, and the cargo-audit pre-commit hook is gone; the incremental-build and pre-commit/pre-push split remain._
 
@@ -582,7 +590,9 @@ Owns: `.github/workflows/`, `scripts/`, `ci/`, `rust-toolchain.toml`
   - After a one-line nails-core edit, `cargo test --no-run` rebuilds incrementally.
   - `scripts/ci-local.sh`, `scripts/burn-in.sh` and the cargo-audit hook are gone.
 
-- [ ] **T-024: Add a scheduled maintenance workflow and a report-status action that tracks red main, nightly and release runs in an issue** (high · effort M)
+- [x] **T-024: Add a scheduled maintenance workflow and a report-status action that tracks red main, nightly and release runs in an issue** (high · effort M)
+
+  _Status: done in wave 3 (W3-C2). New `.github/actions/report-status` composite action (takes `toJSON(needs)`, opens/comments/closes a labelled issue; `issues: write` only on report jobs, called with `if: !cancelled()`); `scheduled.yml` gained a `task` dispatch input and jobs for the crate fetcher-canary, rust-cache warming, stress loop and benchmarks/geiger; `ci.yml` dropped its `schedule:` and gained a report-status job on push to main; `release.yml` got one too. Sibling follow-ups noted on T-025/T-026 and the CI docs item (W8-C1)._
 
   _Partial (T-009): `.github/workflows/scheduled.yml` now runs the weekly full advisory scan (`just deny-full`) and the deny.toml ignore-expiry check; the report-status action and `advisory`-labelled issue reporting remain._
 
@@ -619,7 +629,9 @@ Owns: `.github/workflows/`, `scripts/`, `ci/`, `rust-toolchain.toml`
   - `fetcher-canary` builds nails-release without the project cache and fails when crate vendoring breaks.
   - ci.yml has no `schedule:` trigger, and actionlint and zizmor are clean on both new files.
 
-- [ ] **T-025: Rework dependency automation (grouped Dependabot, Conventional Commit titles) and trim the shipped dependency footprint** (medium · effort S)
+- [x] **T-025: Rework dependency automation (grouped Dependabot, Conventional Commit titles) and trim the shipped dependency footprint** (medium · effort S)
+
+  _Status: done in wave 3 (W3-C2). `dependabot.yml` reduced to the two supported ecosystems (cargo, github-actions), monthly with grouped + security PRs and correct `build(deps):` titles; new `pr-title.yml` and `update-flake-lock.yml` (flake.lock + pre-commit autoupdate) workflows; a monthly `lockfile` task in `scheduled.yml` opens a `cargo update` PR; `signal-hook` removed from nails-core and chrono built without default features. The "five ecosystems in dependabot.yml" done-when is impossible (no nix/pre-commit/toolchain ecosystem) so those are covered by `update-flake-lock.yml` + a manual toolchain bump. Maintainer steps (secret, PR-creation permission, required check) and the new action SHAs still need GitHub-side verification._
 
   **Problem**
   - `.github/dependabot.yml` covers only cargo (l.22) and github-actions (l.113), weekly. Version updates only bump direct dependencies, but #54's fixes were transitive lockfile bumps.
@@ -672,6 +684,8 @@ Owns: `.github/workflows/`, `scripts/`, `ci/`, `rust-toolchain.toml`
   - After the TOML migration, Cargo.lock has no serde-saphyr.
 
 - [ ] **T-026: One reusable, runner-parameterised E2E workflow: hosted smoke per PR and push, full suite nightly or on demand, Hetzner as a single manual lane** (high · effort L)
+
+  _Status: mostly done (wave 3, W3-C3 owns the Rust side; W3-C2 owns the workflow). `e2e.yml` replaces the six old E2E/forensics workflows: runner-parameterised, a git-diff path filter, `affected` on PRs, `all` on push to main, `execute` nightly, shards with per-shard timeouts, retry-once with FLAKY marking, report-status on main/schedule, no `pull_request_target`. `ci.e2e` run/plan/resolve bugs fixed (failed builds no longer recorded as passes; `--affected` pins a git+file ref; `--execute` runs each driver in a scratch TMPDIR). VM base memory dropped to 2048 MB (4096 MB graphical). Remaining: `e2e-hetzner.yml` (the single manual, deduplicated Hetzner lane) is not written and needs a separate follow-up; hosted-runner shard-count/wall-clock measurements, the first regenerated `shard-durations.json` commit, and the maintainer "required check" step are pending. Nix evaluation pending (see nix_pending)._
 
   **Problem**
   - `e2e-tests.yml` is the only hosted, secret-free lane: 6-9 `ci` tests in 405-659 s on ubuntu-24.04 with KVM. It triggers only on the deleted `dev` branch (l.8, l.20), so no E2E has run automatically since 2026-04-27. `docs/ci.md:13` and `:64-75` still describe it.
@@ -733,7 +747,9 @@ Owns: `.github/workflows/`, `scripts/`, `ci/`, `rust-toolchain.toml`
 
 Owns: `nails-cli/src/cli/args.rs`, `nails-cli/src/cli/commands/`, `nails-cli/src/cli/output/`, `nails-cli/src/main.rs`
 
-- [ ] **T-027: One global flag set (GlobalArgs/OutputSettings) with correct TTY, colour, ASCII and status-symbol handling** (medium · effort L)
+- [x] **T-027: One global flag set (GlobalArgs/OutputSettings) with correct TTY, colour, ASCII and status-symbol handling** (medium · effort L)
+
+  _Status: done in wave 3 (W3-C3). A flattened `GlobalArgs` makes `-c`, `-v/-q`, `--color auto|always|never`, `--ascii`, `--json` and `--no-log-file` work before or after the subcommand; `status -v` is now `--details`; `--plain`/`--no-color`/`--no-logs`/`NAILS_NO_COLOR` are removed. `OutputSettings` is resolved once (colour decided per stream, empty `NO_COLOR` treated as unset, `CLICOLOR_FORCE`, `TERM=dumb`/non-UTF-8 ASCII fallback) and the log filter now follows `-v/-vv/-q` on every command. `nails-core::output` holds one mark table; DECOY renders an uncoloured neutral mark distinct from CRITICAL; prompts go to stderr (proven by a subprocess test)._
 
   **Problem**
   Root `-v`/`-q`/`--no-logs` are not global (`nails-cli/src/cli/args.rs:20-30`), so `nails status -q` is rejected while `nails -q status` works. Subcommand `-v`/`-q` reach `Verbosity`/`CliOverrides` but never the tracing filter (`main.rs:54-62`), so `activate -vv` enables no debug tracing and `-q` still prints INFO; `-vv` and `-vvv` are identical. `status -v` means "details". `--json`/`--no-color`/`--plain` are redeclared on four subcommands (`args.rs:52-62,125-135,151-161,165-175`); verify only has `--json`. `NO_COLOR` is read in 8 places, each treating an empty value as set. Tracing `with_ansi` depends only on render mode (`cli/logging.rs:136,205`), so pipes and the journal get escape codes; `TERM=dumb` is ignored and `colored` decides from stdout even for stderr. Status shares the red-circle glyph between DECOY and CRITICAL.
@@ -744,7 +760,9 @@ Owns: `nails-cli/src/cli/args.rs`, `nails-cli/src/cli/commands/`, `nails-cli/src
   **Done when**
   `nails status -q`, `nails -q status`, and both `--json` orderings are accepted and behave identically (assert_cmd). Unit test: `activate -vv`→TRACE, `-q`→quiet filter. `rg NO_COLOR nails-cli/src nails-core/src` matches only the resolver; no subcommand struct declares json/no_color/plain/verbose/quiet. `nails status 2>&1 | cat -A` has no escapes; `TERM=dumb`+`LANG=C` is ASCII-only; empty `NO_COLOR=` keeps colour on a TTY. Captured-IO test proves prompts never write stdout. DECOY and CRITICAL render distinctly. e2e contract 61-65, notification 48/50/51, preflight 13/17, session 34/35, smoke 12 and `lib/session-helpers.nix` use the new flags and pass; clippy `-D warnings` and `cargo test` pass.
 
-- [ ] **T-028: Stable machine interface: a typed JSON envelope on stdout and one documented exit-code table returned from main** (medium · effort L)
+- [x] **T-028: Stable machine interface: a typed JSON envelope on stdout and one documented exit-code table returned from main** (medium · effort L)
+
+  _Status: done in wave 3 (W3-C3). New `output/{exit,envelope,dto}.rs`: an `ExitStatus` enum mapped to `ExitCode` (verify warnings/critical 10/11, preflight 4, config 3, needs-root 5, invalid-state 6, degraded 7), one `Envelope<T>` (`schema_version`, `command`, `ok`, `data`|`error{code,message,hint}`), and tagged snake_case state/verification DTOs. Every handler returns `ExitStatus`; `main` returns `ExitCode`; the only `process::exit` is the detach chokepoint; status/verify/deactivate/emergency/activate drop their hand-built JSON and Debug-formatted state; opt-in `status --exit-status`. Guarded by `tests/machine_interface.rs` and `tests/source_guards.rs`._
 
   **Problem**
   `status --json` prints Rust Debug strings: `"state": "Active { ... }"` and `"overlay_verification": "Mismatch { ... }"` (`nails-cli/src/cli/output/status/json.rs:66,92`); human output has the same line. Casing is mixed: verify enums are PascalCase and verify's state is `format!("{:?}").to_uppercase()` (`commands/verify.rs:50`). Error JSON is hand-built without escaping (`deactivate.rs:89,117`, emergency, status), and `NailsError::MountBusy`/`UnmountError` contain literal newlines (`nails-core/src/error.rs`), so failures emit invalid JSON on stderr while success JSON goes to stdout. Config/lock/safety-guard errors print plain text even with `--json`. There is no `schema_version`, a typed deactivate renderer is dead code, and only exit 0/1/2 are used through ~34 `process::exit` calls (code 2 overloaded; preflight failure exits 2 detached / 1 attached; verify maps Warning and Critical both to 1).
@@ -755,7 +773,9 @@ Owns: `nails-cli/src/cli/args.rs`, `nails-cli/src/cli/commands/`, `nails-cli/src
   **Done when**
   `status --json` for an Active state returns `state` as an object with kind `"active"`; no module formats state/verification with `{:?}` (grep). Every `--json` path (config-load failure, safety guard, lock error, a MountBusy case) prints one parseable document (NDJSON for activate) on stdout with `schema_version`/`command`/`ok`. `rg 'process::exit' nails-cli/src` matches only the detach parent; no hand-built JSON remains. assert_cmd pins usage 2, bad config 3, preflight 4 on both activate paths, verify warning 10, verify critical 11. Fixture schemas require `schema_version` and enumerate `state.kind`; cargo tests validate against them; contract 58/59/60 pass. `output/deactivate.rs` has no `#[allow(dead_code)]`; no Debug-quoted errors remain.
 
-- [ ] **T-029: Redesign activate flags (--session/--pivot/-y), make the session-kill confirmation reachable, report the detached outcome, confirm before deactivate reboots** (high · effort L)
+- [x] **T-029: Redesign activate flags (--session/--pivot/-y), make the session-kill confirmation reachable, report the detached outcome, confirm before deactivate reboots** (high · effort L)
+
+  _Status: done in wave 3 (W3-C3). `--session kill|keep`, `--pivot refuse|allow|ask` and `-y/--yes` replace the old `--kill-session`/`--accept-pivot-risks`/`--interactive`/`--no-clear-history` flags (`--flake` now conflicts with `--overlay-only`); `ActivateOptions::default()` flips to the secure CLI defaults and the test-convenience `activate()` stays non-killing. A confirmation gate refuses off-TTY runs without `-y` before any side effect (detached workers neither prompt nor refuse), the session-kill confirmation runs ahead of staging, the detached activation outcome is reported (human "sudo nails status", JSON "detached" envelope), and deactivate prints recovery guidance and confirms before the reboot handoff._
 
   **Problem**
   `--kill-session`, `--no-pivot` and `-y` are parsed then discarded (`nails-cli/src/cli/mod.rs:32-36`); effective values come from negating the opposite flag (`activate/mod.rs:96-98`). `nails activate --interactive` wrongly exits 2 with a `--kill-session` message (`activate/mod.rs:116-120`), and the pivot guard at `:121-126` is unreachable so `prompt_pivot_mount_acceptance` never fires. `activate --no-clear-history` is a no-op (only deactivation reads it). `execute` takes 15 positional parameters, and `ActivateOptions::default()` (`nails-core/src/activate_options.rs:104-121`) is the opposite of the CLI defaults. On the default kill path `yes` is always true, so `prompt_session_kill_confirmation` returns immediately (`nails-core/src/process/session/management/mod.rs:48-50`): `sudo nails activate` ends the graphical session without asking. The confirmation text duplicates a step. After detaching, the parent prints "Handoff complete" and exits 0 with no follow-up command and no final JSON (`cli/detach.rs`). deactivate reboots without confirmation and prints recovery guidance only after requesting the reboot (`commands/deactivate.rs:95-111`); its help does not mention the reboot. 57 e2e files pass `--no-kill-session`.
@@ -767,6 +787,8 @@ Owns: `nails-cli/src/cli/args.rs`, `nails-cli/src/cli/commands/`, `nails-cli/src
   `activate --help` shows `--session` (default kill), `--pivot` (default refuse) and `-y`; clap rejects all removed flags. Unit test: `ActivateOptions::default()` equals options built from empty `ActivateArgs`. With a TTY and no `-y` the kill path shows the confirmation (no duplicate step) before detaching and answering `n` leaves state/mounts/session untouched; off-TTY without `-y`, activate and deactivate exit non-zero before any change. `--pivot ask` reaches the prompt; `--pivot refuse` aborts naming the target needing a pivot. The detached parent prints `sudo <absolute path> status` and `--json` yields `data.status "detached"`. deactivate prints guidance before the reboot request (call-order test) and its help mentions the reboot. `rg -- '--no-kill-session|--interactive|--accept-pivot-risks|--kill-session|--no-pivot' nix/e2e-tests nails-cli` returns nothing and the updated suite passes.
 
 - [ ] **T-030: Non-interactive activation must not silently skip risky service restarts or SIGKILL interactive user processes; always report survivors** (medium · effort S)
+
+  _Status: partial (wave 3, W3-C3). The headline safety fixes landed: `restart_via_signal`/`RestartMethod::Signal` renamed to `terminate`/`Terminate`; `ProcessInfo.is_interactive` is detected from `/proc/<pid>/fd`; an explicit `RiskyServicePolicy` (strict TOML `risky_services` key plus `--risky-services`/`--terminate-interactive` flags) replaces the implicit `prompt_for_risky=!yes`, erroring rather than silently skipping on a non-interactive keep-session run; the strategy refuses to force-terminate an interactive non-service process before any mount or signal unless `--terminate-interactive`; `MountResult` now carries survivor identities. Remaining: thread those identities out of `mount_overlays` into the activation outcome, the desktop notification and the `nails status` "writers still on the decoy" line (was blocked on W3-C1 owning `manager/activation/mod.rs`; the data is ready), and add the e2e check (a TTY `tail -f` on `/var` blocking non-interactive activation) under `nix/e2e-tests`._
 
   **Problem**
   `activate/mod.rs:97` sets `let yes = !interactive`, `overlay_mount/mod.rs:47` sets `prompt_for_risky: !options.yes`, and `overlay/strategy/mod.rs:263` restarts Risky processes only `if ... && options.prompt_for_risky` with no else branch. Under default flags, NetworkManager (`process/classification/mod.rs:161`), dbus-daemon (`:175`) and pulseaudio/pipewire (`:200`) are never restarted and keep pre-mount references into the decoy, yet status still reports OPTIMAL. Meanwhile any non-systemd process classified Safe (the `_ => Safe` arms) is "restarted" by `restart_via_signal`, which sends SIGTERM then SIGKILL (`process/restart/mod.rs:218-244`) and never restarts anything, so a user's `tail -f /var/log/x` or an editor with a file open in /etc is killed without warning.
@@ -781,7 +803,9 @@ Owns: `nails-cli/src/cli/args.rs`, `nails-cli/src/cli/commands/`, `nails-cli/src
 
 Owns: `nails-core/src/nixos/config/inject.rs`, `nails-core/src/nixos/config/prepare.rs`, `nails-core/src/nixos/config/mod.rs`
 
-- [ ] **T-031: Stop text-patching hardware-configuration.nix: generate a wrapper that imports the original plus the NAILS module, and parse-check it in preflight** (medium · effort S)
+- [x] **T-031: Stop text-patching hardware-configuration.nix: generate a wrapper that imports the original plus the NAILS module, and parse-check it in preflight** (medium · effort S)
+
+  _Status: done in wave 3 (W3-C4). The original `hardware-configuration.nix` is preserved verbatim as `hardware-configuration.base.nix` and the live file becomes a constant wrapper importing the base plus `./nails/configuration.nix`, so it is always valid Nix regardless of the original (no-imports, `lib.optionals`, etc.); staging is idempotent and the dead `ensure_nails_import_block`/`find_imports_bracket`/`contains_active_path` helpers are gone. A new `NixParser`/`RealNixParser` and a preflight parse gate run `nix-instantiate --parse` over the composed config and fail before any mount on a syntax error; the rebuild fingerprint now includes the base file. e2e test 32 rewritten for the no-imports case (nix evaluation pending)._
 
   **Problem:** We inject the hidden import by editing Nix source text. When no `imports` list is found, `ensure_nails_import_block` (`nails-core/src/nixos/config/inject.rs:11-27`, no-imports branch 24-27) prepends a bare `imports = [ ./nails/configuration.nix ];`. In front of a `{ ... }: { ... }` function that is invalid Nix (`nix-instantiate --parse` -> `syntax error, unexpected =`), yet `tests.rs:253-272` asserts exactly this. The same path bootstraps the hidden copy (`prepare.rs:209`). `nixos-generate-config` always emits an `imports` attribute, so only hand-written files or forms like `imports = lib.optionals ... ++ [ ]` hit it, and when they do the rebuild fails after overlays are already mounted and the user is live on the decoy generation. No preflight parses the composed config; `preflight/checks/nixos_config/mod.rs:72-145` checks structure only (`contains_nails_import`).
 
