@@ -50,9 +50,8 @@ pub mod mount_tracker;
 pub mod preflight_runner;
 pub mod state_management;
 
-// Tests are kept in a separate module file
+// Tests live in tests/, one file per production module
 #[cfg(test)]
-#[path = "tests.rs"]
 mod tests;
 
 // Re-export key types for convenience
