@@ -52,25 +52,36 @@
   # Several activation/preflight tests exercise the product's current
   # contract around base configuration discovery and hidden hardware-config
   # bootstrapping, so the VM fixture must expose these files up front.
+  #
+  # An explicit mode makes NixOS copy these as regular files into /etc. Without
+  # it, environment.etc stores the content under /etc/static and links /etc/nixos
+  # entries to it, which a real install never does and which some tests (and the
+  # forensic baseline) must not see: a stock /etc/nixos/*.nix is a plain file.
   environment.etc = {
-    "nixos/configuration.nix".text = ''
-      { ... }: {
-        imports = [ /etc/nixos/hardware-configuration.nix ];
-        boot.loader.grub.enable = false;
-        documentation.nixos.enable = false;
-        fileSystems."/" = {
-          device = "/dev/disk/by-label/nixos";
-          fsType = "ext4";
-        };
-        system.stateVersion = "25.11";
-      }
-    '';
+    "nixos/configuration.nix" = {
+      mode = "0644";
+      text = ''
+        { ... }: {
+          imports = [ /etc/nixos/hardware-configuration.nix ];
+          boot.loader.grub.enable = false;
+          documentation.nixos.enable = false;
+          fileSystems."/" = {
+            device = "/dev/disk/by-label/nixos";
+            fsType = "ext4";
+          };
+          system.stateVersion = "25.11";
+        }
+      '';
+    };
 
-    "nixos/hardware-configuration.nix".text = ''
-      { ... }: {
-        imports = [ ];
-      }
-    '';
+    "nixos/hardware-configuration.nix" = {
+      mode = "0644";
+      text = ''
+        { ... }: {
+          imports = [ ];
+        }
+      '';
+    };
   };
 
   # Mirror the normal legacy NixOS rebuild environment so tests exercising

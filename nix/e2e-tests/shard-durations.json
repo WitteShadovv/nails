@@ -2,7 +2,9 @@
   "activate-dry-run": 176,
   "activate-flake-override": 408,
   "activate-full-rebuild": 186,
+  "backend-nfs-unsuitable": 300,
   "basic-workflow": 207,
+  "bind-mounted-root": 250,
   "cleanup-fast-mode": 68,
   "config-exclusions": 120,
   "config-explicit-overlays": 254,
@@ -71,6 +73,7 @@
   "state-missing-file": 104,
   "state-transitions-observability": 161,
   "status-verify": 103,
+  "tcrypt-veracrypt-hidden": 700,
   "uefi-esp-nvram-invariant": 300,
   "verify": 120,
   "verify-base-config-clean": 64

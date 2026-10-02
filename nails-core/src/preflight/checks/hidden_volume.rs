@@ -296,8 +296,10 @@ mod tests {
                 .contains("Unlock the hidden storage backend and mount its filesystem")
         );
         // The guidance applies to every backend, so it names none of them.
-        for backend in ["LUKS", "VeraCrypt", "tcrypt", "cryptsetup"] {
-            assert!(!result.message().contains(backend), "names {backend}");
+        // Matched case-insensitively so any spelling of a backend name trips it.
+        let message = result.message().to_lowercase();
+        for backend in ["luks", "veracrypt", "tcrypt", "cryptsetup"] {
+            assert!(!message.contains(backend), "names {backend}");
         }
     }
 
