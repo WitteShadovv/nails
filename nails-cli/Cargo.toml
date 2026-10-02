@@ -48,8 +48,7 @@ nails-core = { path = "../nails-core" }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = "3"
-criterion = { version = "0.8", features = ["html_reports"] }
-# Pull in nails-core's test-only extras for the CLI test/bench builds. The
+# Pull in nails-core's test-only extras for the CLI test builds. The
 # shipped binary (`cargo build`) never pulls in dev-dependencies, so neither
 # feature reaches release builds:
 #   - test-hooks: compile the test hooks (attach-gate bypass, runtime skip,
@@ -65,7 +64,3 @@ nails-core = { path = "../nails-core", features = [
 # `assert_cmd` drives. Dev-dependencies never reach `cargo build`, so the shipped
 # binary stays hook-free.
 nails-cli = { path = ".", features = ["test-hooks"] }
-
-[[bench]]
-name = "startup"
-harness = false

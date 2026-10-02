@@ -73,3 +73,9 @@ cognitive_complexity = "warn"
 [profile.release]
 strip = true
 lto = true
+
+# The bench profile inherits release, and fat LTO there costs well over a
+# minute of compile time on every benchmark run. Thin LTO keeps the
+# cross-crate inlining the measurements depend on at a fraction of the cost.
+[profile.bench]
+lto = "thin"

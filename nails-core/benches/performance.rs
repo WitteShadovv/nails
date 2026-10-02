@@ -1,8 +1,12 @@
-// Performance benchmarks for NAILS
+// Micro-benchmarks of nails-core code paths: config creation, state
+// serialization and persistence, manager construction, status queries, the
+// idempotent activation fast path and the emergency orchestration.
 //
-// Validates RQ2: 2-5 second switching performance
-// Exercises real code paths: config creation, state serialization,
-// state persistence, manager construction, and status queries.
+// Every filesystem operation outside the state file goes through
+// MockFilesystem, so these numbers say nothing about real switching time; the
+// E2E performance test measures that. They exist to catch relative
+// regressions: the scheduled workflow compares each run with the previous
+// one's baseline.
 
 use chrono::Utc;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
@@ -15,10 +19,22 @@ use std::collections::HashMap;
 use std::hint::black_box;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tempfile::TempDir;
 
-fn create_subsequent_activation_manager() -> NailsManager<MockFilesystem> {
+/// A benchmark subject together with the temporary hidden root it reads from.
+///
+/// Owning the `TempDir` removes the tree when the fixture is dropped, so a
+/// run leaves nothing behind in the system temp directory. Fields drop in
+/// declaration order: the subject goes before the directory it points into.
+struct Fixture<T> {
+    subject: T,
+    _hidden_root: TempDir,
+}
+
+fn subsequent_activation_fixture() -> Fixture<NailsManager<MockFilesystem>> {
     let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.keep();
+    let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
 
     let fs = MockFilesystem::new();
@@ -40,12 +56,15 @@ fn create_subsequent_activation_manager() -> NailsManager<MockFilesystem> {
         ..Config::default()
     };
 
-    NailsManager::new(fs, config, state_path)
+    Fixture {
+        subject: NailsManager::new(fs, config, state_path),
+        _hidden_root: temp_dir,
+    }
 }
 
-fn create_status_command() -> StatusCommand<MockFilesystem> {
+fn status_command_fixture() -> Fixture<StatusCommand<MockFilesystem>> {
     let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.keep();
+    let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
 
     let fs = MockFilesystem::new();
@@ -81,13 +100,16 @@ fn create_status_command() -> StatusCommand<MockFilesystem> {
         ..Config::default()
     };
 
-    StatusCommand::new(fs, config, state_path)
+    Fixture {
+        subject: StatusCommand::new(fs, config, state_path),
+        _hidden_root: temp_dir,
+    }
 }
 
 #[allow(unsafe_code)]
-fn create_emergency_orchestrator() -> (NailsManager<MockFilesystem>, DeactivationOrchestrator) {
+fn emergency_fixture() -> Fixture<(NailsManager<MockFilesystem>, DeactivationOrchestrator)> {
     let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.keep();
+    let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
 
     let fs = MockFilesystem::new();
@@ -165,7 +187,10 @@ fn create_emergency_orchestrator() -> (NailsManager<MockFilesystem>, Deactivatio
     let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default())
         .with_mode(DeactivationMode::Emergency)
         .with_decoy_profile_restore(false);
-    (manager, orchestrator)
+    Fixture {
+        subject: (manager, orchestrator),
+        _hidden_root: temp_dir,
+    }
 }
 
 /// Benchmark Config::default() creation
@@ -264,35 +289,46 @@ fn benchmark_status_query(c: &mut Criterion) {
 
 /// Benchmark direct status command execution against persisted active state.
 fn benchmark_status_command(c: &mut Criterion) {
-    let command = create_status_command();
+    let fixture = status_command_fixture();
 
     c.bench_function("status", |b| {
         b.iter(|| {
-            let report = command.run().unwrap();
+            let report = fixture.subject.run().unwrap();
             black_box(report);
         });
     });
 }
 
 /// Benchmark subsequent activation via the idempotent fast path.
+///
+/// The routine hands its fixture back so Criterion drops it, and with it the
+/// temporary tree, after the timed section rather than inside it.
 fn benchmark_activate_subsequent(c: &mut Criterion) {
     c.bench_function("activate_subsequent", |b| {
         b.iter_batched(
-            create_subsequent_activation_manager,
-            |mut manager| black_box(manager.activate(true)).unwrap(),
+            subsequent_activation_fixture,
+            |mut fixture| {
+                black_box(fixture.subject.activate(true)).unwrap();
+                fixture
+            },
             BatchSize::SmallInput,
         );
     });
 }
 
 /// Benchmark emergency cleanup orchestration without host-destructive side effects.
+///
+/// As above, the fixture is returned so its temporary tree is removed outside
+/// the timed section.
 fn benchmark_emergency(c: &mut Criterion) {
     c.bench_function("emergency_cleanup", |b| {
         b.iter_batched(
-            create_emergency_orchestrator,
-            |(mut manager, orchestrator)| {
-                let report = orchestrator.run(&mut manager).unwrap();
+            emergency_fixture,
+            |mut fixture| {
+                let (manager, orchestrator) = &mut fixture.subject;
+                let report = orchestrator.run(manager).unwrap();
                 black_box(report);
+                fixture
             },
             BatchSize::SmallInput,
         );
@@ -364,20 +400,32 @@ fn benchmark_exclusion_filter(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    benchmark_config_default,
-    benchmark_config_builder,
-    benchmark_state_default,
-    benchmark_state_serialization,
-    benchmark_state_save_load,
-    benchmark_manager_construction,
-    benchmark_status_query,
-    benchmark_status_command,
-    benchmark_activate_subsequent,
-    benchmark_emergency,
-    benchmark_state_transitions,
-    benchmark_overlay_targets,
-    benchmark_exclusion_filter,
-);
+/// Short, fixed sampling. The run is compared with the previous one rather
+/// than read on its own, so a stable sample count matters more than a tight
+/// confidence interval, and the whole suite stays around a minute.
+fn criterion_config() -> Criterion {
+    Criterion::default()
+        .warm_up_time(Duration::from_secs(1))
+        .measurement_time(Duration::from_secs(2))
+        .sample_size(20)
+}
+
+criterion_group! {
+    name = benches;
+    config = criterion_config();
+    targets =
+        benchmark_config_default,
+        benchmark_config_builder,
+        benchmark_state_default,
+        benchmark_state_serialization,
+        benchmark_state_save_load,
+        benchmark_manager_construction,
+        benchmark_status_query,
+        benchmark_status_command,
+        benchmark_activate_subsequent,
+        benchmark_emergency,
+        benchmark_state_transitions,
+        benchmark_overlay_targets,
+        benchmark_exclusion_filter
+}
 criterion_main!(benches);
