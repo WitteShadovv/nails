@@ -214,6 +214,22 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Create a directory (and parents).
     fn create_directory(&self, path: &Path) -> Result<()>;
 
+    /// Create `relative` and any missing parents, resolved strictly beneath
+    /// `hidden_root`.
+    ///
+    /// This is the symlink- and traversal-safe way to create directories *on the
+    /// hidden volume*. Unlike [`create_directory`](Self::create_directory), which
+    /// takes an absolute path and follows symlinks the way `std::fs` does, a
+    /// symlink or `..` planted under `hidden_root` cannot redirect the creation
+    /// outside it. The default implementation joins the paths and defers to
+    /// [`create_directory`](Self::create_directory) for the in-memory test
+    /// double; the real filesystem overrides it with an `openat2` resolution
+    /// (see [`crate::filesystem::SafeRoot`]) that fails closed on a kernel
+    /// without `openat2`.
+    fn create_hidden_dir_all(&self, hidden_root: &Path, relative: &Path) -> Result<()> {
+        self.create_directory(&hidden_root.join(relative))
+    }
+
     /// Set Unix permissions on a path.
     fn set_permissions(&self, path: &Path, mode: u32) -> Result<()>;
 

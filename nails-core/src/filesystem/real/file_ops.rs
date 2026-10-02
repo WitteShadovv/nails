@@ -447,7 +447,10 @@ fn create_user_dir_all(dir: &Path, user: &TargetUser) -> Result<()> {
 /// A process-unique temp file name. The write path creates it with `O_EXCL`, so
 /// a residual collision only costs a retry; uniqueness here just keeps retries
 /// rare and the name unpredictable.
-fn unique_temp_name() -> String {
+///
+/// Shared with [`crate::filesystem::safe_path`], whose atomic write under the
+/// hidden root uses the same `O_EXCL`-guarded temp-then-rename pattern.
+pub(crate) fn unique_temp_name() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 

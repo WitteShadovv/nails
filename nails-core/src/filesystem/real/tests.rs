@@ -1273,3 +1273,33 @@ fn canonicalize_resolves_symlinks_and_reports_missing_paths() {
         other => panic!("expected NotFound, got {other:?}"),
     }
 }
+
+#[test]
+fn create_hidden_dir_all_creates_nested_dirs_beneath_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let fs_impl = RealFilesystem;
+
+    fs_impl
+        .create_hidden_dir_all(temp.path(), Path::new(".work/home"))
+        .unwrap();
+
+    assert!(temp.path().join(".work/home").is_dir());
+}
+
+#[test]
+fn create_hidden_dir_all_refuses_a_planted_symlink_in_the_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    // A link under the root that points clean outside it. The real override
+    // resolves with openat2, so the creation must be refused rather than land in
+    // `outside`.
+    std::os::unix::fs::symlink(outside.path(), temp.path().join("escape")).unwrap();
+
+    let fs_impl = RealFilesystem;
+    assert!(
+        fs_impl
+            .create_hidden_dir_all(temp.path(), Path::new("escape/upper"))
+            .is_err()
+    );
+    assert!(!outside.path().join("upper").exists());
+}

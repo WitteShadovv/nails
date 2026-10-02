@@ -41,6 +41,7 @@ pub mod mock;
 pub mod mount_info;
 pub mod mountinfo;
 pub mod real;
+pub mod safe_path;
 mod traits;
 
 // Re-exports
@@ -51,4 +52,5 @@ pub use mountinfo::{
     read_mountinfo,
 };
 pub use real::RealFilesystem;
+pub use safe_path::SafeRoot;
 pub use traits::*;

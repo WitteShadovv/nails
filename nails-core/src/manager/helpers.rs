@@ -384,16 +384,15 @@ pub(crate) fn create_overlay_config<F: Filesystem>(
 
     // Build upper and work paths from the single-sourced layout
     let (upper, work) = derive_upper_work_paths(target, hidden_volume_root)?;
-    let work_parent = hidden_volume_root.join(".work");
 
-    // Create directories if they don't exist
-    // First create .work parent directory (may not exist yet)
-    fs.create_directory(&work_parent)?;
-
-    // Then create upper and work directories
-    // create_directory handles EEXIST gracefully
-    fs.create_directory(&upper)?;
-    fs.create_directory(&work)?;
+    // Create the upper and work directories *beneath the hidden root* through the
+    // symlink-safe path: a link or `..` planted under the root cannot redirect
+    // these creations onto the decoy filesystem. The relatives below join back to
+    // `{root}/.work`, `{root}/{dir_name}` and `{root}/.work/{dir_name}`.
+    let work_relative = Path::new(".work").join(dir_name);
+    fs.create_hidden_dir_all(hidden_volume_root, Path::new(".work"))?;
+    fs.create_hidden_dir_all(hidden_volume_root, Path::new(dir_name))?;
+    fs.create_hidden_dir_all(hidden_volume_root, &work_relative)?;
 
     // Ensure permissions are safe and usable regardless of umask or preflight state
     let desired_upper_mode = fs.get_permissions(target)?;

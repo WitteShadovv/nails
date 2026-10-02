@@ -21,6 +21,11 @@ mod system_ops;
 #[cfg(test)]
 pub(crate) use submount::parse_submount_sources;
 
+/// Shared with [`crate::filesystem::safe_path`] so the hidden-root atomic write
+/// reuses the same unpredictable, `O_EXCL`-guarded temp-name scheme as the
+/// user-home write path.
+pub(crate) use file_ops::unique_temp_name;
+
 use super::{Filesystem, MountInfo, MountSource};
 use crate::Result;
 use crate::target_user::TargetUser;
@@ -132,6 +137,12 @@ impl Filesystem for RealFilesystem {
 
     fn create_directory(&self, path: &Path) -> Result<()> {
         file_ops::create_directory(path)
+    }
+
+    fn create_hidden_dir_all(&self, hidden_root: &Path, relative: &Path) -> Result<()> {
+        // Resolve every component beneath the hidden-root fd with openat2, so a
+        // symlink or `..` planted under the root cannot redirect the creation.
+        crate::filesystem::SafeRoot::open(hidden_root)?.create_dir_all(relative)
     }
 
     fn set_permissions(&self, path: &Path, mode: u32) -> Result<()> {
