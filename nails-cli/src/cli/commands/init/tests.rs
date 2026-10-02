@@ -415,8 +415,17 @@ fn no_hardware_config_skips_bootstrap_on_a_real_volume() {
 
     let report = apply(&fs, tmp.path(), plan(&fs, &args).unwrap()).unwrap();
 
+    // Skipping the layout on request is information, not a warning.
     assert!(
         report
+            .notes
+            .iter()
+            .any(|note| note.contains("--no-hardware-config")),
+        "{:?}",
+        report.notes
+    );
+    assert!(
+        !report
             .warnings
             .iter()
             .any(|warning| warning.contains("--no-hardware-config")),
@@ -470,6 +479,7 @@ fn json_report_lists_each_item_and_its_status() {
             },
         ],
         warnings: Vec::new(),
+        notes: vec!["host is not NixOS".to_string()],
         next_steps: vec!["activate".to_string()],
     };
 
@@ -481,7 +491,50 @@ fn json_report_lists_each_item_and_its_status() {
     assert_eq!(value["data"]["items"][0]["path"], "/mnt/data/logs");
     assert_eq!(value["data"]["items"][0]["status"], "created");
     assert_eq!(value["data"]["items"][1]["status"], "already_present");
+    assert_eq!(value["data"]["notes"][0], "host is not NixOS");
     assert_eq!(value["data"]["next_steps"][0], "activate");
+    assert!(
+        value["data"].get("warnings").is_none(),
+        "an empty warning list is omitted: {line}"
+    );
+}
+
+#[test]
+fn human_output_ends_with_the_numbered_next_steps() {
+    let tmp = TempDir::new().unwrap();
+    let args = InitArgs {
+        path: tmp.path().to_path_buf(),
+        allow_unmounted: true,
+        hardware_config: None,
+        no_hardware_config: true,
+    };
+    let fs = RealFilesystem;
+    let report = apply(&fs, tmp.path(), plan(&fs, &args).unwrap()).unwrap();
+
+    let text = render_text(&report);
+    let lines: Vec<&str> = text.lines().collect();
+
+    let header = lines
+        .iter()
+        .position(|line| *line == "Next steps:")
+        .unwrap_or_else(|| panic!("no next steps header: {text}"));
+    let steps = &lines[header + 1..];
+    assert_eq!(steps.len(), 4, "{text}");
+    for (index, step) in steps.iter().enumerate() {
+        assert!(step.starts_with(&format!("  {}. ", index + 1)), "{text}");
+    }
+    let root = tmp.path().display().to_string();
+    assert!(steps[0].contains(&format!("{root}/nails")), "{text}");
+    assert!(
+        steps[3].contains(&format!("sudo {root}/nails activate")),
+        "{text}"
+    );
+
+    assert!(text.contains("  created: "), "{text}");
+    assert!(text.contains("info: --no-hardware-config"), "{text}");
+    // Errors and statuses are rendered with Display, never Debug.
+    assert!(!text.contains("NixOSError("), "{text}");
+    assert!(!text.contains("AlreadyPresent"), "{text}");
 }
 
 #[test]

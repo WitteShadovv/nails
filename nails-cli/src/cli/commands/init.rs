@@ -7,10 +7,12 @@
 //! decoy disk where the real volume later hides it), writable, and able to hold
 //! symlinks; the base hardware configuration must be readable whenever the
 //! hidden NixOS layout will be bootstrapped. A refusal therefore leaves the
-//! target untouched. Writes then go through the [`Filesystem`] trait, each item
-//! is reported as created or already present, and the run ends with the numbered
-//! next steps the operator takes to activate.
+//! target untouched. Writes then go through the [`Filesystem`] trait, except the
+//! state file, which the core state module writes atomically under its lock.
+//! Each item is reported as created or already present, and the run ends with
+//! the numbered next steps the operator takes to activate.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -92,6 +94,9 @@ struct InitReport {
     items: Vec<InitItem>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<String>,
+    /// Informational lines, such as why the hidden NixOS layout was skipped.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<String>,
     next_steps: Vec<String>,
 }
 
@@ -306,7 +311,7 @@ fn resolve_bootstrap<F: Filesystem>(fs: &F, args: &InitArgs) -> Result<HardwareB
 /// Write the layout, reporting each item's status. Called only after [`plan`].
 fn apply<F: Filesystem>(fs: &F, base: &Path, plan: InitPlan) -> Result<InitReport> {
     let mut items = Vec::new();
-    let mut warnings = plan.warnings;
+    let mut notes = Vec::new();
 
     for dir_name in SUBDIRS {
         let dir = base.join(dir_name);
@@ -353,13 +358,14 @@ fn apply<F: Filesystem>(fs: &F, base: &Path, plan: InitPlan) -> Result<InitRepor
                 ItemStatus::of(symlink_existed),
             ));
         }
-        HardwareBootstrap::Skip(reason) => warnings.push(reason),
+        HardwareBootstrap::Skip(reason) => notes.push(reason),
     }
 
     Ok(InitReport {
         root: base.display().to_string(),
         items,
-        warnings,
+        warnings: plan.warnings,
+        notes,
         next_steps: next_steps(base),
     })
 }
@@ -402,8 +408,8 @@ fn next_steps(base: &Path) -> Vec<String> {
     ]
 }
 
-/// Render the report: one JSON envelope under `--json`, otherwise the item lines,
-/// any warnings, and the numbered next steps.
+/// Render the report: one JSON envelope under `--json`, otherwise any warnings
+/// on stderr (kept under `-q`) and [`render_text`] on stdout.
 fn render_report(settings: &OutputSettings, report: &InitReport) {
     if settings.is_json() {
         Envelope::success("init", report).print();
@@ -418,16 +424,27 @@ fn render_report(settings: &OutputSettings, report: &InitReport) {
         return;
     }
 
+    print!("{}", render_text(report));
+}
+
+/// The human-readable report: the item lines, any informational notes, and the
+/// numbered next steps, which always come last.
+fn render_text(report: &InitReport) -> String {
+    let mut out = String::new();
     for item in &report.items {
-        println!("  {}: {}", item.status.label(), item.path);
+        let _ = writeln!(out, "  {}: {}", item.status.label(), item.path);
     }
-    println!();
-    println!("NAILS layout initialized at {}", report.root);
-    println!();
-    println!("Next steps:");
+    for note in &report.notes {
+        let _ = writeln!(out, "info: {note}");
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(out, "NAILS layout initialized at {}", report.root);
+    let _ = writeln!(out);
+    let _ = writeln!(out, "Next steps:");
     for (index, step) in report.next_steps.iter().enumerate() {
-        println!("  {}. {step}", index + 1);
+        let _ = writeln!(out, "  {}. {step}", index + 1);
     }
+    out
 }
 
 #[cfg(test)]
