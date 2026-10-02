@@ -143,10 +143,18 @@ fn init_file_layer(
     use nails_core::{LoggingManager, RealFilesystem};
     use std::fs::OpenOptions;
 
-    // Determine log path from config (P1-03: honor config.log_path)
-    let config_path = nails_core::config::discover_config_path(config_override);
-    let config = nails_core::config::Config::load_or_default(&config_path)
-        .unwrap_or_else(|_| nails_core::config::Config::default());
+    // Resolve the configuration through the one shared entry point every command
+    // uses (`commands::resolve_config`), so the log file is placed by exactly the
+    // configuration the command runs with. A configuration that fails to load is
+    // never silently replaced by binary-derived defaults: doing so would open a
+    // log file next to the binary even though the operator named a configuration
+    // that could not be read, and with an explicit `--config` the command itself
+    // exits non-zero. On any load error file logging simply stays off; the
+    // command surfaces the error on stderr.
+    let config = match crate::cli::commands::resolve_config(config_override) {
+        Ok(loaded) => loaded.into_config(),
+        Err(_) => return Ok(None),
+    };
 
     let log_dir = config.log_path.clone();
     let hidden_volume_root = config.hidden_volume_root.clone();

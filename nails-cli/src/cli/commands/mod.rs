@@ -26,6 +26,12 @@ pub mod verify;
 
 /// Resolve and load the configuration strictly.
 ///
+/// This is the one place the CLI turns the optional `--config` path into a
+/// [`LoadedConfig`]; every command and the file-logging setup in
+/// [`crate::cli::logging`] route through it, so none of them can disagree on
+/// where the configuration came from or treat a broken file as if it were the
+/// built-in defaults.
+///
 /// * `config_override` is `Some` (`--config`): the file must exist.
 /// * `config_override` is `None`: the binary-relative file is optional and
 ///   built-in defaults apply when it is missing.

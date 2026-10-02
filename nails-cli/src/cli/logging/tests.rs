@@ -280,6 +280,14 @@ fn subprocess_logging_entrypoint() {
             super::init_subscriber(&normal, true, config, StdoutFormat::Human);
             tracing::info!(phase = "logging", "fallback stdout line");
         }
+        "unreadable-config-no-silent-default" => {
+            // The config path is invalid, so file logging must stay off rather
+            // than fall back to the binary-derived default root (which this
+            // subprocess force-attaches). The marker line may reach the console
+            // but must never land in a log file under that default root.
+            super::init_subscriber(&normal, true, config, StdoutFormat::Human);
+            tracing::info!(phase = "logging", "no-silent-default marker line");
+        }
         "directory-log-target-human" => {
             super::init_subscriber(&normal, true, config, StdoutFormat::Human);
             tracing::info!(phase = "logging", "directory fallback line");
@@ -518,6 +526,47 @@ fn init_subscriber_falls_back_when_log_path_is_invalid() {
     assert!(output.status.success(), "stderr={stderr}");
     assert!(stderr.contains("Logging init failed"), "stderr={stderr}");
     assert!(stderr.contains("fallback stdout line"), "stderr={stderr}");
+}
+
+#[test]
+fn invalid_explicit_config_never_logs_to_the_default_root() {
+    // An explicit `--config` that cannot be loaded must not be silently replaced
+    // by the binary-derived default configuration. Before this was fixed, file
+    // logging re-loaded the config on its own and fell back to `Config::default`,
+    // which — on a force-attached root like the subprocess's own directory —
+    // opened a log file right next to the binary even though the operator named a
+    // config that failed to load. File logging must now simply stay off; the
+    // command surfaces the config error and exits.
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("nails.toml");
+    // Unknown key: strict loading rejects it, so resolution fails.
+    std::fs::write(&config_path, "definitely_not_a_key = true\n").unwrap();
+
+    // Where a silent default would place the log: `{binary parent}/logs`, the
+    // default root the subprocess force-attaches. The subprocess runs the same
+    // test binary, so its derived root matches this one.
+    let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+    let default_log = exe.parent().unwrap().join("logs").join("nails.log");
+    // Start from a clean slate so a log left by a regressed earlier run cannot
+    // make this assertion stick after the fix.
+    let _ = std::fs::remove_file(&default_log);
+
+    let output = run_subprocess("unreadable-config-no-silent-default", Some(&config_path));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "stderr={stderr}");
+    // The marker still reaches the console (stdout-only fallback).
+    assert!(
+        stderr.contains("no-silent-default marker line"),
+        "stderr={stderr}"
+    );
+    // But it must not have been written to a log file under the default root.
+    let leaked = std::fs::read_to_string(&default_log).unwrap_or_default();
+    assert!(
+        !leaked.contains("no-silent-default marker line"),
+        "a log was silently written to the default root {}",
+        default_log.display()
+    );
 }
 
 #[test]
