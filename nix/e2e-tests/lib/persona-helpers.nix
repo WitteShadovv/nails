@@ -8,7 +8,7 @@
 # real remote, so the sync tests are two-node: a `peer` machine runs a second
 # Syncthing that the decoy client pairs with.
 #
-# Syncthing keys: the TODO calls for pre-generated device keys committed under
+# Syncthing keys: the design calls for pre-generated device keys committed under
 # fixtures/persona/. They cannot be generated in the development sandbox (no
 # syncthing/openssl, and a device ID is the base32 Luhn digest of the DER cert),
 # so each node lets its own Syncthing generate a valid key on first boot and the
