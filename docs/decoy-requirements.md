@@ -135,6 +135,31 @@ the sudo record is never durably written, and keep the binary at a neutral path
 on the hidden volume. NAILS cannot suppress sudo's own logging without tampering
 with the decoy, which would itself be a tell.
 
+## Shell history hardening
+
+NAILS keeps hidden-session history off the decoy by killing shells before the
+unmount (see [bash-history-forensics.md](bash-history-forensics.md)), but it does
+**not** configure the decoy's own shells. If you type on the decoy — and the
+pre-activation unlock and mount commands must be typed there — harden the decoy's
+history yourself so an interactive shell has nowhere to write:
+
+- **Environment.** Set `HISTSIZE=0` and `HISTFILESIZE=0`, and point the history
+  file at the null device, in the decoy's shell profile so a login shell keeps no
+  on-disk history.
+- **Shell options.** Disable history recording (`set +o history`) and append mode
+  (`shopt -u histappend`) for sessions where you unlock the volume.
+- **Filesystem redirection.** Symlink `~/.bash_history` and `~/.zsh_history` to
+  the null device so even a shell that ignores the environment writes nowhere.
+- **Boot-time enforcement.** A systemd unit that truncates any regular history
+  file and re-creates the symlinks early in boot closes the gap before the first
+  interactive login.
+
+On an amnesic decoy (impermanence, overlayroot, bilibop) the history file is on
+volatile storage and discarded at power-off regardless, so these steps are
+defence in depth. Do **not** disable them during a session, re-enable history
+recording, or run `history -a`/`history -w`: each of those writes the commands
+you typed back to the decoy.
+
 ## Out of scope
 
 These sit outside the overlay model and NAILS does not attempt to manage them:
@@ -145,4 +170,4 @@ These sit outside the overlay model and NAILS does not attempt to manage them:
   only).
 
 See also [threat-model.md](threat-model.md) for the overall model and
-[USER-SECURITY-GUIDE.md](USER-SECURITY-GUIDE.md) for operational guidance.
+[operator-guide.md](operator-guide.md) for operational guidance.

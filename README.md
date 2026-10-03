@@ -110,7 +110,7 @@ it. To keep activation fast and the volume small:
   `sudo /mnt/data/nails reset-upper <TARGET>` (it confirms first, prunes no whiteouts
   automatically, and warns that resetting `/nix` drops the hidden Nix store).
 
-See [docs/USER-SECURITY-GUIDE.md](docs/USER-SECURITY-GUIDE.md) for the full
+See [docs/operator-guide.md](docs/operator-guide.md) for the full
 maintenance guidance.
 
 ## Installation
@@ -384,7 +384,7 @@ identity.
 
 A fully separate hidden account (`separate-user`) is planned but not yet available. See
 [`docs/configuration.md`](docs/configuration.md#persona-modes) and the
-[user security guide](docs/USER-SECURITY-GUIDE.md) for details and trade-offs.
+[operator guide](docs/operator-guide.md) for details and trade-offs.
 
 ### Remote state and sync clients
 
@@ -400,8 +400,8 @@ Mitigation: run sensitive work in **`fresh-home`** mode with the decoy's account
 (`[persona] mask_inherited`) or disabled, so nothing hidden is handed to the decoy's remotes; or, in
 `shared-home`, disconnect every sync, cloud, mail and messaging client first. Do not generate "decoy
 activity" while such clients are connected. See
-[Remote state and sync clients](docs/USER-SECURITY-GUIDE.md#remote-state-and-sync-clients) in the
-security guide.
+[Remote state and sync clients](docs/operator-guide.md#remote-state-and-sync-clients) in the
+operator guide.
 
 ## Reproducible release artifact
 

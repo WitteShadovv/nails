@@ -169,7 +169,7 @@ Every backend leaves the same traces on the decoy side while you unlock it:
 - **Shell history.** The unlock and mount commands name the tool, the mapping
   and, for a container, its path. Type them in a shell with history disabled;
   see "Shell History Protection" in the
-  [User Security Guide](USER-SECURITY-GUIDE.md).
+  [operator guide](operator-guide.md#history-off-on-the-decoy).
 - **The journal.** sudo logs every command line it runs, and the kernel and
   udev log the loop and device-mapper devices being created. Keep the journal
   volatile (journald `Storage=volatile`) or on impermanent storage.

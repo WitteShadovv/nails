@@ -4,7 +4,7 @@ How NAILS reaches a machine decides what traces it leaves. A package manager
 writes to the decoy disk, records the install in its database, and often keeps a
 cached copy; a registry entry is a permanent public record that the tool exists.
 The threat model treats any such trace on the decoy as a compromise (see
-[Binary Location Requirements](USER-SECURITY-GUIDE.md#binary-location-requirements)).
+[Keeping NAILS off the decoy](operator-guide.md#keeping-nails-off-the-decoy)).
 This page lists the channels that respect that and the ones that do not.
 
 ## Supported

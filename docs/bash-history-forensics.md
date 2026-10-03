@@ -4,9 +4,11 @@ This page explains, at a technical level, where a shell can leave a record of
 what was typed in a hidden session, why naive deletion is not enough against a
 forensic examiner, and how NAILS neutralises each surface. It is the companion
 reference for the operator-facing steps in
-[USER-SECURITY-GUIDE.md](./USER-SECURITY-GUIDE.md#shell-history-protection); read
-that guide first for the day-to-day rules, and use this page to understand the
-mechanics behind them.
+[operator-guide.md](./operator-guide.md#shell-history); read that guide first for
+the day-to-day rules, and use this page to understand the mechanics behind them.
+Decoy-side history hardening (environment, symlinks, boot-time enforcement) is
+something you configure on the decoy itself; it lives in
+[decoy-requirements.md](./decoy-requirements.md#shell-history-hardening).
 
 The threat NAILS defends against is an examiner who images the decoy disk after
 the hidden session is gone. The goal is simple: no command typed inside the
@@ -34,26 +36,33 @@ the overlay is gone, or a history file that already exists on the real disk.
 
 ## How NAILS neutralises each surface
 
-The operator guide describes this as a five-layer defence; the mechanics are:
+NAILS's own runtime defence is narrow and honest. It does **not** set history
+environment variables, symlink history files to the null device, or install a
+boot-time enforcement unit — that hardening is decoy configuration you apply
+yourself (see
+[decoy-requirements.md](./decoy-requirements.md#shell-history-hardening)). What
+NAILS does at runtime is:
 
-1. **Environment** - `HISTFILE=/dev/null`, `HISTSIZE=0`, `HISTFILESIZE=0` are set
-   so an interactive shell has nowhere and nothing to write.
-2. **Shell options** - `set +o history` and `shopt -u histappend` stop recording
-   and append-on-exit inside the session.
-3. **Filesystem redirection** - `~/.bash_history` and `~/.zsh_history` are
-   symlinked to `/dev/null`, so even a shell that ignores the environment writes
-   into the null device.
-4. **Boot-time enforcement** - a systemd unit truncates any regular history file
-   and re-creates the symlinks early in boot, before an interactive login can
-   repopulate them.
-5. **Deactivation cleanup** - shell processes are terminated *before* the overlay
-   unmounts to defeat the flush race (see below), and real-disk history files are
-   truncated after the overlay is removed.
+1. **Keep hidden writes off the decoy.** The session runs over an OverlayFS
+   upper, so a history file written inside the session lands on the hidden
+   volume, not the decoy lower.
+2. **Kill shells before the unmount.** Both standard and emergency teardown
+   SIGKILL every interactive shell (including root's) before the overlays come
+   down, so none runs an exit trap or flushes its in-memory buffer to the decoy
+   (see [the flush race](#the-flush-race)). Standard deactivation then reboots.
+3. **Make no post-unmount write by default.** Editing a history file on the decoy
+   after unmount is itself a deactivation-time artifact (a fresh timestamp at the
+   moment of teardown), so the default makes no such write. An **opt-in**
+   in-place edit exists for a decoy verified amnesic
+   (`[cleanup] post_unmount_cleanup`).
+4. **Warn on incremental flushing.** A preflight check warns when the shell you
+   run NAILS from flushes history after every command
+   (`INC_APPEND_HISTORY`/`SHARE_HISTORY`, or `history -a` in bash
+   `PROMPT_COMMAND`), because such a shell writes the unlock/mount commands to
+   disk before teardown can help.
 
 Journal, audit and accounting surfaces are host-policy concerns: NAILS does not
 enable them, and an operator who turns them on must account for them separately.
-The guide's "What You Should NOT Do" table lists the actions that defeat these
-layers.
 
 ## Why deletion alone is not enough
 
@@ -91,8 +100,9 @@ command typed in hidden session
 
 NAILS closes this window by killing shell processes before the unmount:
 
-- **Emergency deactivation** sends `SIGKILL` first, so no flush can run.
-- **Standard deactivation** relies on a reboot to terminate the processes.
+- **Both standard and emergency deactivation** send `SIGKILL` to every
+  interactive shell first, so none runs an exit trap or flushes its buffer.
+  Standard deactivation additionally reboots once teardown completes.
 
 The operator's part is to not manually exit a shell once deactivation has begun,
 and to confirm the history files are empty after returning to the decoy.
@@ -115,5 +125,7 @@ compromised and follow the recovery guidance in the operator guide.
 
 ## See also
 
-- [USER-SECURITY-GUIDE.md](./USER-SECURITY-GUIDE.md#shell-history-protection) -
-  operator steps, the "What You Should NOT Do" table, and deactivation workflow.
+- [operator-guide.md](./operator-guide.md#shell-history) - operator steps and the
+  deactivation workflow.
+- [decoy-requirements.md](./decoy-requirements.md#shell-history-hardening) -
+  decoy-side history hardening you configure yourself.

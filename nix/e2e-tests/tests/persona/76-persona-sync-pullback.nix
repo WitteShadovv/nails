@@ -10,7 +10,7 @@
 # This is asserted as the documented known limitation and doubles as a positive
 # control for the fresh-home test (77): it proves the canary really does traverse
 # the peer and return, so 77's clean result is meaningful. See the "Remote state
-# and sync clients" limitation in docs/USER-SECURITY-GUIDE.md.
+# and sync clients" limitation in docs/operator-guide.md.
 #
 # Two nodes and disk imaging across a reboot: it must run on the Nix VM driver.
 

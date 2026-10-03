@@ -26,6 +26,78 @@ fn suspicious_check_name() -> String {
     .to_string()
 }
 
+/// Run the read-only decoy residue scan and record a pre-mount baseline on the
+/// hidden volume.
+///
+/// This is a best-effort snapshot taken before any overlay is mounted: it only
+/// reads the decoy and writes its report to `<hidden-root>/reports/`, which is
+/// torn down with the session. A scan or write failure is logged and activation
+/// continues, because the baseline is a convenience for later comparison, not a
+/// precondition for activating.
+fn write_activation_residue_baseline(
+    manager: &nails_core::NailsManager<nails_core::RealFilesystem>,
+    json: bool,
+    settings: &OutputSettings,
+) {
+    use nails_core::{RealFilesystem, StateFileStatus, Verifier, VerifyStatus};
+
+    let config = manager.config().clone();
+    let hidden_root = config.hidden_volume_root.clone();
+    if hidden_root.as_os_str().is_empty() {
+        return;
+    }
+
+    // Pre-activation: the system is Inactive, so the scan sees the decoy as it is
+    // before overlays. Standard depth keeps activation responsive; the scanners
+    // and artifact checks run at either depth.
+    let verifier = Verifier::with_config(RealFilesystem, config, None, StateFileStatus::NotChecked);
+    let result = match verifier.run(false) {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "pre-activation decoy residue scan failed; continuing without a baseline report"
+            );
+            return;
+        }
+    };
+
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    match nails_core::write_activation_residue_report(
+        &RealFilesystem,
+        &hidden_root,
+        &result,
+        &timestamp,
+    ) {
+        Ok(summary) => {
+            let status = match summary.status {
+                VerifyStatus::Secure => "clean",
+                VerifyStatus::Warning => "warnings",
+                VerifyStatus::Critical => "critical findings",
+            };
+            if json {
+                tracing::debug!(
+                    path = %summary.path.display(),
+                    "wrote pre-activation decoy residue report"
+                );
+            } else if settings.verbosity >= Verbosity::Normal {
+                println!(
+                    "Pre-activation decoy residue baseline: {status} ({} finding{}) -> {}",
+                    summary.finding_count,
+                    if summary.finding_count == 1 { "" } else { "s" },
+                    summary.path.display()
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "could not write pre-activation decoy residue report; continuing"
+            );
+        }
+    }
+}
+
 /// Execute the activate command
 ///
 /// # Parameters
@@ -385,6 +457,13 @@ pub fn execute(
             );
         }
     }
+
+    // Record a pre-mount decoy residue baseline. The scan is read-only and runs
+    // before any overlay is mounted, so it describes the decoy as it was when the
+    // session began; the report is written to the hidden volume, which is torn
+    // down with the session. It is a convenience snapshot, not a gate: a scan or
+    // write failure is logged and activation proceeds.
+    write_activation_residue_baseline(&manager, json, settings);
 
     // Run activation with options and measure duration. Under --json the stream
     // is NDJSON: a progress line now, the result line below.

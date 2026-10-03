@@ -16,7 +16,7 @@ This page is the only place that describes how to check them. Other documents li
 
 Never download or verify a release on the decoy system. A copy of `nails` on the decoy disk, even
 a deleted one, can be recovered and identifies the tool (see
-[Binary Location Requirements](USER-SECURITY-GUIDE.md#binary-location-requirements)). The
+[Keeping NAILS off the decoy](operator-guide.md#keeping-nails-off-the-decoy)). The
 browser's download history, the shell history and the GitHub CLI's login token in
 `~/.config/gh` would point to it as well.
 

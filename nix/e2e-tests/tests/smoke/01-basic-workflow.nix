@@ -93,6 +93,17 @@ in
         f"Expected core overlays in status output, got: {active_status}"
     print("✓ NAILS status reports Active after activation")
 
+    print("\n=== Testing Pre-Activation Residue Report ===")
+    # activate runs the read-only decoy residue scan before mounting overlays and
+    # records it on the hidden volume. The report must exist, be valid-looking
+    # JSON, and live on the hidden root (never on the decoy).
+    report = machine.succeed(
+        "ls /mnt/data/reports/activation-residue-*.json"
+    ).splitlines()[0].strip()
+    machine.succeed(f"grep -q 'schema_version' {report}")
+    machine.succeed(f"grep -q '\"result\"' {report}")
+    print(f"✓ Pre-activation residue report written on the hidden volume at {report}")
+
     print("\n=== Testing User Activities ===")
     machine.succeed("su - testuser -c 'echo \"This is a secret document\" > ~/secret-document.txt'")
     print("✓ Created secret-document.txt in home directory")

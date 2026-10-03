@@ -131,7 +131,7 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
                  lines. Use neutral names that reveal nothing (for example a \"data\" \
                  mapper, a /mnt/data mountpoint and a plain label). These names also leak \
                  before NAILS runs; see the pre-activation residue section of \
-                 docs/USER-SECURITY-GUIDE.md.",
+                 docs/operator-guide.md.",
                 self.hidden_volume_root.display(),
                 hints.join("; ")
             )));

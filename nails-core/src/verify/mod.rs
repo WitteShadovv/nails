@@ -24,6 +24,7 @@
 //! # Ok::<(), nails_core::NailsError>(())
 //! ```
 
+mod residue_report;
 mod types;
 mod verifier;
 
@@ -31,5 +32,9 @@ mod verifier;
 mod tests;
 
 // Re-export public types
+pub use residue_report::{
+    RESIDUE_REPORT_DIR, RESIDUE_REPORT_SCHEMA_VERSION, ResidueReport, ResidueReportSummary,
+    write_activation_residue_report,
+};
 pub use types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
 pub use verifier::Verifier;
