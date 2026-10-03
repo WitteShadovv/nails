@@ -23,24 +23,33 @@ use crate::cli::output::envelope::{Envelope, ErrorBody, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
 use nails_core::config::CONFIG_FILE_NAME;
 use nails_core::{
-    AttachState, Config, Filesystem, HiddenRoot, NailsError, RealFilesystem, Result, StateFile,
-    StateLock, ensure_hidden_hardware_configuration, stage_hidden_config_symlink,
+    AttachState, Config, Filesystem, HiddenRoot, HostProfile, NailsError, RealFilesystem, Result,
+    StateFile, StateLock, detect, ensure_hidden_hardware_configuration,
+    stage_hidden_config_symlink,
 };
 
-/// Required subdirectories to create, each with 0700 permissions.
-const SUBDIRS: &[&str] = &[
+/// Platform-agnostic subdirectories to create, each with 0700 permissions.
+///
+/// These back the overlay layout on every supported host and are created
+/// regardless of the detected platform.
+const COMMON_SUBDIRS: &[&str] = &[
     "logs",
     "config",
-    "config/nixos",
     "etc",
-    "etc/nixos",
     "home",
-    "nix",
     ".work",
     ".work/etc",
     ".work/home",
-    ".work/nix",
 ];
+
+/// Subdirectories the NixOS declarative config layer needs.
+///
+/// Created only when the hidden NixOS layout is bootstrapped (a NixOS host, or an
+/// explicit `--hardware-config`). On a host without a config layer (FHS / Debian)
+/// these are never written, so init leaves no NixOS paths on such a host. Listed
+/// after their [`COMMON_SUBDIRS`] parents (`config`, `etc`, `.work`) so the parent
+/// always exists first.
+const NIXOS_SUBDIRS: &[&str] = &["config/nixos", "etc/nixos", "nix", ".work/nix"];
 
 /// Default base hardware configuration consulted on a NixOS host.
 const DEFAULT_HARDWARE_CONFIG: &str = "/etc/nixos/hardware-configuration.nix";
@@ -248,14 +257,20 @@ fn plan<F: Filesystem>(fs: &F, args: &InitArgs) -> std::result::Result<InitPlan,
 
     if !fs.supports_symlinks(base)? {
         failures.push(format!(
-            "the filesystem at {} does not support symlinks, which the hidden NixOS layout needs",
+            "the filesystem at {} does not support symlinks, which the overlay layout needs",
             base.display()
         ));
     }
 
-    failures.extend(obstructions(fs, base)?);
-
+    // Resolving the bootstrap source consults the platform seam on the auto path
+    // and refuses an unsupported host before any write, so the layout is only ever
+    // written on a host NAILS can operate on, and the NixOS-only subdirectories are
+    // skipped on a host without a config layer.
     let bootstrap = resolve_bootstrap(fs, args)?;
+    let nixos_layout = matches!(bootstrap, HardwareBootstrap::From(_));
+
+    failures.extend(obstructions(fs, base, nixos_layout)?);
+
     if let HardwareBootstrap::From(hardware) = &bootstrap
         && !(fs.path_exists(hardware)? && fs.is_readable(hardware)?)
     {
@@ -276,14 +291,27 @@ fn plan<F: Filesystem>(fs: &F, args: &InitArgs) -> std::result::Result<InitPlan,
     }
 }
 
+/// The subdirectories init creates for this run.
+///
+/// Always the [`COMMON_SUBDIRS`]; the [`NIXOS_SUBDIRS`] are added only when the
+/// hidden NixOS layout is being bootstrapped, so a host without a config layer
+/// (FHS / Debian) never gets any NixOS paths.
+fn layout_subdirs(nixos_layout: bool) -> Vec<&'static str> {
+    let mut dirs: Vec<&'static str> = COMMON_SUBDIRS.to_vec();
+    if nixos_layout {
+        dirs.extend_from_slice(NIXOS_SUBDIRS);
+    }
+    dirs
+}
+
 /// Existing entries of the wrong kind where the layout needs a directory or a
 /// file.
 ///
 /// Found before the first write, so init neither creates part of the layout nor
 /// changes the permissions of something it would then fail to replace.
-fn obstructions<F: Filesystem>(fs: &F, base: &Path) -> Result<Vec<String>> {
+fn obstructions<F: Filesystem>(fs: &F, base: &Path, nixos_layout: bool) -> Result<Vec<String>> {
     let mut found = Vec::new();
-    for dir_name in SUBDIRS {
+    for dir_name in layout_subdirs(nixos_layout) {
         let dir = base.join(dir_name);
         if fs.path_exists(&dir)? && !fs.is_directory(&dir)? {
             found.push(format!(
@@ -315,11 +343,16 @@ struct InitPlan {
 /// Decide where the hidden NixOS layout's base hardware config comes from.
 ///
 /// `--no-hardware-config` skips the layout; `--hardware-config` names the base
-/// explicitly; otherwise the host is probed for NixOS. The probe is a local
-/// stand-in: it treats the presence of `/etc/NIXOS` as "this host is NixOS".
-/// Replace it with the platform detection seam (`HostProfile`/`Platform::detect`)
-/// once that module exists, so other platforms can bootstrap their own layout.
-fn resolve_bootstrap<F: Filesystem>(fs: &F, args: &InitArgs) -> Result<HardwareBootstrap> {
+/// explicitly (and asserts NixOS intent, so the platform seam is not consulted);
+/// otherwise the host is resolved through the platform seam ([`detect`]). Only a
+/// host with a declarative config layer (NixOS) is bootstrapped with the hidden
+/// NixOS layout; every other supported host (FHS / Debian) is overlay-only and
+/// the layout is skipped, so init writes no NixOS paths there. An unsupported
+/// host (ostree / image-based, or non-systemd) is refused before any write.
+fn resolve_bootstrap<F: Filesystem>(
+    fs: &F,
+    args: &InitArgs,
+) -> std::result::Result<HardwareBootstrap, InitFailure> {
     if args.no_hardware_config {
         return Ok(HardwareBootstrap::Skip(
             "--no-hardware-config: skipping the hidden NixOS layout".to_string(),
@@ -330,14 +363,28 @@ fn resolve_bootstrap<F: Filesystem>(fs: &F, args: &InitArgs) -> Result<HardwareB
         return Ok(HardwareBootstrap::From(path.clone()));
     }
 
-    if fs.path_exists(Path::new("/etc/NIXOS"))? {
+    let profile = detect(fs)?;
+    profile
+        .require_supported()
+        .map_err(|error| InitFailure::Preconditions(vec![error.to_string()]))?;
+
+    if profile.has_config_layer() {
         Ok(HardwareBootstrap::From(PathBuf::from(
             DEFAULT_HARDWARE_CONFIG,
         )))
     } else {
-        Ok(HardwareBootstrap::Skip(
-            "host is not NixOS (no /etc/NIXOS); skipping the hidden NixOS layout".to_string(),
-        ))
+        Ok(HardwareBootstrap::Skip(format!(
+            "{} has no NixOS config layer (overlay-only); skipping the hidden NixOS layout",
+            platform_label(&profile)
+        )))
+    }
+}
+
+/// A short, human-readable name for the detected host, for the skip note.
+fn platform_label(profile: &HostProfile) -> String {
+    match profile.id.as_deref() {
+        Some(id) => format!("host '{id}'"),
+        None => "this host".to_string(),
     }
 }
 
@@ -346,7 +393,8 @@ fn apply<F: Filesystem>(fs: &F, base: &Path, plan: InitPlan) -> Result<InitRepor
     let mut items = Vec::new();
     let mut notes = Vec::new();
 
-    for dir_name in SUBDIRS {
+    let nixos_layout = matches!(plan.bootstrap, HardwareBootstrap::From(_));
+    for dir_name in layout_subdirs(nixos_layout) {
         let dir = base.join(dir_name);
         let existed = fs.path_exists(&dir)?;
         if !existed {

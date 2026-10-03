@@ -71,6 +71,23 @@ fn attached_mock(root: &Path) -> MockFilesystem {
     fs
 }
 
+/// Make the mock host detect as NixOS (a host with a declarative config layer),
+/// so the auto bootstrap path chooses the hidden NixOS layout.
+fn mark_host_nixos(fs: &MockFilesystem) {
+    fs.mock_set_file_content("/etc/os-release", "ID=nixos\nVERSION_ID=\"24.11\"\n");
+    fs.mock_set_file_content("/proc/1/comm", "systemd\n");
+}
+
+/// Make the mock host detect as a supported FHS (Debian) host with no config
+/// layer, so the auto bootstrap path skips the hidden NixOS layout.
+fn mark_host_debian(fs: &MockFilesystem) {
+    fs.mock_set_file_content(
+        "/etc/os-release",
+        "ID=debian\nID_LIKE=debian\nVERSION_ID=\"12\"\n",
+    );
+    fs.mock_set_file_content("/proc/1/comm", "systemd\n");
+}
+
 /// Load the config `nails init` generated under `root`.
 ///
 /// The template leaves `hidden_volume_root` unset so it is derived from the
@@ -94,7 +111,7 @@ fn mock_init_layout(fs: &MockFilesystem, hidden_root: &Path) {
     fs.mock_set_writable(hidden_root.to_str().unwrap(), true);
     fs.mock_set_supports_symlinks(hidden_root, true);
 
-    for rel in SUBDIRS {
+    for rel in COMMON_SUBDIRS.iter().chain(NIXOS_SUBDIRS) {
         let path = hidden_root.join(rel);
         fs.mock_set_path_exists(path.to_str().unwrap(), true);
         fs.mock_set_path_type(path.to_str().unwrap(), PathKind::Dir);
@@ -140,7 +157,7 @@ fn test_init_creates_directory_structure() {
 
     init_real(&tmp, &base_hardware_config);
 
-    for dir_name in SUBDIRS {
+    for dir_name in COMMON_SUBDIRS.iter().chain(NIXOS_SUBDIRS) {
         let dir = tmp.path().join(dir_name);
         assert!(dir.is_dir(), "{} should exist", dir.display());
         let meta = fs::metadata(&dir).unwrap();
@@ -300,7 +317,7 @@ fn unmounted_target_refused_with_zero_writes() {
     let status = run(&OutputSettings::default(), &fs, &args);
     assert_eq!(status, ExitStatus::PreflightRefused);
 
-    for rel in SUBDIRS {
+    for rel in COMMON_SUBDIRS.iter().chain(NIXOS_SUBDIRS) {
         assert!(
             !fs.path_exists(&root.join(rel)).unwrap(),
             "{rel} must not be created when the target is refused"
@@ -429,7 +446,7 @@ fn missing_hardware_config_fails_before_any_write() {
     let root = Path::new("/mnt/data");
     let fs = attached_mock(root);
     // A NixOS host, but the default base hardware config is absent.
-    fs.mock_set_path_exists("/etc/NIXOS", true);
+    mark_host_nixos(&fs);
 
     let args = InitArgs {
         path: root.to_path_buf(),
@@ -453,7 +470,8 @@ fn missing_hardware_config_fails_before_any_write() {
 fn non_nixos_host_skips_the_layout() {
     let root = Path::new("/mnt/data");
     let fs = attached_mock(root);
-    // No /etc/NIXOS marker: not a NixOS host.
+    // A supported FHS host (Debian) with no config layer: overlay-only.
+    mark_host_debian(&fs);
 
     let args = InitArgs {
         path: root.to_path_buf(),
@@ -462,10 +480,107 @@ fn non_nixos_host_skips_the_layout() {
         no_hardware_config: false,
     };
 
-    let plan = plan(&fs, &args).expect("non-NixOS host should still pass");
+    let plan = plan(&fs, &args).expect("a supported FHS host should still pass");
     match plan.bootstrap {
-        HardwareBootstrap::Skip(reason) => assert!(reason.contains("not NixOS"), "{reason}"),
+        HardwareBootstrap::Skip(reason) => {
+            assert!(reason.contains("no NixOS config layer"), "{reason}")
+        }
         HardwareBootstrap::From(path) => panic!("expected a skip, got From({})", path.display()),
+    }
+}
+
+#[test]
+fn debian_host_init_creates_no_nixos_paths() {
+    // The root is a real temp dir (so the state file and its lock can be written
+    // through the core's own atomic path), while the mock backs the layout writes
+    // and the host detection, letting us drive a Debian host without a real one.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let fs = attached_mock(root);
+    mark_host_debian(&fs);
+
+    let args = InitArgs {
+        path: root.to_path_buf(),
+        allow_unmounted: false,
+        hardware_config: None,
+        no_hardware_config: false,
+    };
+
+    let report = apply(
+        &fs,
+        root,
+        plan(&fs, &args).expect("a Debian host should plan"),
+    )
+    .unwrap();
+
+    // The skip is reported as information, naming the overlay-only decision.
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("no NixOS config layer")),
+        "{:?}",
+        report.notes
+    );
+
+    // The platform-agnostic layout is present...
+    for rel in COMMON_SUBDIRS {
+        assert!(
+            fs.path_exists(&root.join(rel)).unwrap(),
+            "{rel} should be created on a Debian host"
+        );
+    }
+    // ...but no NixOS paths are ever written.
+    for rel in NIXOS_SUBDIRS {
+        assert!(
+            !fs.path_exists(&root.join(rel)).unwrap(),
+            "{rel} must not be created on a Debian host"
+        );
+    }
+    assert!(
+        fs.mock_get_symlink_target(&root.join("etc/nixos/nails/configuration.nix"))
+            .is_none(),
+        "the hidden NixOS symlink must not be staged on a Debian host"
+    );
+    assert!(
+        fs.get_written_content(&root.join("config/nixos/configuration.nix"))
+            .is_none(),
+        "the hidden NixOS module must not be written on a Debian host"
+    );
+}
+
+#[test]
+fn unsupported_host_is_refused_before_any_write() {
+    let root = Path::new("/mnt/data");
+    let fs = attached_mock(root);
+    // A non-systemd PID 1: an unsupported host the platform seam refuses.
+    fs.mock_set_file_content("/etc/os-release", "ID=debian\nVERSION_ID=\"12\"\n");
+    fs.mock_set_file_content("/proc/1/comm", "openrc-init\n");
+
+    let args = InitArgs {
+        path: root.to_path_buf(),
+        allow_unmounted: false,
+        hardware_config: None,
+        no_hardware_config: false,
+    };
+
+    match plan(&fs, &args) {
+        Err(InitFailure::Preconditions(failures)) => assert!(
+            failures.iter().any(|reason| reason.contains("systemd")),
+            "{failures:?}"
+        ),
+        other => panic!(
+            "expected an unsupported-host refusal, got {:?}",
+            other.is_ok()
+        ),
+    }
+
+    // Nothing was written during planning.
+    for rel in COMMON_SUBDIRS.iter().chain(NIXOS_SUBDIRS) {
+        assert!(
+            !fs.path_exists(&root.join(rel)).unwrap(),
+            "{rel} must not be created when the host is refused"
+        );
     }
 }
 
@@ -515,7 +630,7 @@ fn no_hardware_config_skips_bootstrap_on_a_real_volume() {
 fn full_validation_passes_on_a_mock_nixos_volume() {
     let root = Path::new("/mnt/data");
     let fs = attached_mock(root);
-    fs.mock_set_path_exists("/etc/NIXOS", true);
+    mark_host_nixos(&fs);
     fs.mock_set_path_exists(DEFAULT_HARDWARE_CONFIG, true);
     fs.mock_set_readable(DEFAULT_HARDWARE_CONFIG, true);
 

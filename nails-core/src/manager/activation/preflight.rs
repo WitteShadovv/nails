@@ -41,16 +41,20 @@ impl<F: Filesystem> NailsManager<F> {
             .supports_symlinks(&self.config.hidden_volume_root)
         {
             Ok(false) => {
-                let msg = format!(
-                    "Filesystem at {} does not support symbolic links. \
-                     The hidden volume must be formatted with a Linux filesystem (e.g. ext4). \
-                     FAT32 and exFAT do not support symlinks.",
-                    self.config.hidden_volume_root.display()
-                );
+                let reason = "does not support symbolic links; the hidden volume must be \
+                     formatted with a Linux filesystem (e.g. ext4). FAT32 and exFAT do not \
+                     support symlinks."
+                    .to_string();
                 if no_preflight {
-                    tracing::warn!("{}", msg);
+                    tracing::warn!(
+                        path = %self.config.hidden_volume_root.display(),
+                        "Filesystem {reason}"
+                    );
                 } else {
-                    return Err(crate::NailsError::NixOSError(msg));
+                    return Err(crate::NailsError::UnsupportedFilesystem {
+                        path: self.config.hidden_volume_root.clone(),
+                        reason,
+                    });
                 }
             }
             Err(e) => {

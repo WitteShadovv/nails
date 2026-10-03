@@ -144,20 +144,17 @@ pub(super) fn dispatch_reboot_candidates(candidates: Vec<RebootCommand>) -> Resu
     }
 
     if failures.is_empty() {
-        Err(NailsError::NixOSError(
-            "Failed to trigger reboot: no usable reboot command was found".to_string(),
+        Err(NailsError::RebootFailed(
+            "no usable reboot command was found".to_string(),
         ))
     } else {
-        Err(NailsError::NixOSError(format!(
-            "Failed to trigger reboot: {}",
-            failures.join(" | ")
-        )))
+        Err(NailsError::RebootFailed(failures.join(" | ")))
     }
 }
 
 pub(super) fn request_reboot() -> Result<()> {
     if crate::runtime_safety::should_skip_host_interaction() {
-        return Err(NailsError::NixOSError(
+        return Err(NailsError::RebootFailed(
             "Refusing to trigger reboot in test or runtime-safety mode".to_string(),
         ));
     }

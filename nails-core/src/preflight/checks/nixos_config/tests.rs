@@ -541,3 +541,63 @@ fn test_nixos_config_check_fails_on_parse_error_before_mount() {
         .any(|op| matches!(op, crate::filesystem::MockOp::MountOverlay { .. }));
     assert!(!mounted, "preflight must not mount anything");
 }
+
+#[test]
+fn nixos_config_check_performs_no_writes() {
+    // A fully-staged, valid hidden layout: the check must only read it, never
+    // create or write any file. This pins the "preflight writes nothing"
+    // guarantee — all filesystem creation lives in `nails init`, not in a check.
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
+    fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
+
+    fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
+
+    fs.mock_set_path_exists("/mnt/hidden/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        PathKind::File,
+    );
+    fs.mock_set_file_content(
+        "/mnt/hidden/etc/nixos/hardware-configuration.nix",
+        "{ config, lib, pkgs, ... }:\n{ imports = [ ./nails/configuration.nix ]; }",
+    );
+
+    fs.mock_set_path_exists("/mnt/hidden/config/nixos/configuration.nix", true);
+    fs.mock_set_path_type("/mnt/hidden/config/nixos/configuration.nix", PathKind::File);
+
+    let check = NixOSConfigCheck::new(PathBuf::from("/mnt/hidden"));
+    let result = check.run(&fs).expect("Check should not error");
+    assert!(result.is_pass(), "staged layout should pass");
+
+    // No write/copy/mount operation was logged at all.
+    assert!(
+        fs.mock_ops().is_empty(),
+        "preflight check wrote to the filesystem: {:?}",
+        fs.mock_ops()
+    );
+    // And none of the files the old auto-creating check would have produced were
+    // written or symlinked.
+    assert!(
+        fs.get_written_content(std::path::Path::new(
+            "/mnt/hidden/config/nixos/configuration.nix"
+        ))
+        .is_none()
+    );
+    assert!(
+        fs.get_written_content(std::path::Path::new(
+            "/mnt/hidden/etc/nixos/hardware-configuration.nix"
+        ))
+        .is_none()
+    );
+    assert!(
+        fs.mock_get_symlink_target(std::path::Path::new(
+            "/mnt/hidden/etc/nixos/nails/configuration.nix"
+        ))
+        .is_none()
+    );
+}

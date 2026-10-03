@@ -28,6 +28,7 @@ fn build_registry_includes_the_shared_checks() {
     let config = explicit_config();
     let inputs = RegistryInputs {
         overlay_only: false,
+        has_config_layer: true,
         read_only: true,
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
@@ -62,6 +63,7 @@ fn overlay_only_registry_drops_the_nixos_checks() {
     let config = explicit_config();
     let inputs = RegistryInputs {
         overlay_only: true,
+        has_config_layer: true,
         read_only: true,
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
@@ -75,6 +77,34 @@ fn overlay_only_registry_drops_the_nixos_checks() {
 
     assert!(!names.iter().any(|name| name == "nixos-config"));
     assert!(!names.iter().any(|name| name == "nixos-build-target"));
+}
+
+#[test]
+fn fhs_host_registry_drops_the_nixos_checks_without_overlay_only() {
+    // A non-NixOS host has no config layer, so the NixOS checks must not be
+    // registered even when `--overlay-only` was not passed: otherwise they would
+    // fire and fail with NixOS-only guidance on a Debian/Ubuntu host.
+    let fs = MockFilesystem::new();
+    let config = explicit_config();
+    let inputs = RegistryInputs {
+        overlay_only: false,
+        has_config_layer: false,
+        read_only: true,
+        current_state: SystemState::Inactive,
+        flake_target_already_validated: false,
+        selected_flake_dir: None,
+        operator: None,
+        allow_persistent_journal: false,
+    };
+
+    let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
+    let names = check_names(&registry.run_all_detailed(&fs).0);
+
+    assert!(!names.iter().any(|name| name == "nixos-config"));
+    assert!(!names.iter().any(|name| name == "nixos-build-target"));
+    // The shared, platform-agnostic checks are still present.
+    assert!(names.iter().any(|name| name == "hidden-volume"));
+    assert!(names.iter().any(|name| name == "state"));
 }
 
 #[test]
@@ -118,6 +148,7 @@ fn read_only_registry_creates_nothing() {
     };
     let inputs = RegistryInputs {
         overlay_only: false,
+        has_config_layer: true,
         read_only: true,
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,

@@ -21,6 +21,15 @@ use std::path::PathBuf;
 pub struct RegistryInputs {
     /// Skip the NixOS config and build-target checks (overlay-only activation).
     pub overlay_only: bool,
+    /// Whether the detected host carries a declarative config layer (NixOS).
+    ///
+    /// The NixOS config and build-target checks are registered only when the host
+    /// actually has a config layer, so a non-NixOS host (FHS / Debian) never runs
+    /// NixOS-only checks that would fail with NixOS-specific guidance even without
+    /// the `--overlay-only` flag. Resolved from the platform seam by
+    /// [`NailsManager::preflight_registry`]; unit tests that build inputs directly
+    /// set it explicitly.
+    pub has_config_layer: bool,
     /// Assemble a registry that only inspects the system: no check creates a
     /// directory or changes permissions. Activation leaves this `false` so the
     /// storage check still auto-creates the hidden layout; `nails check` sets it
@@ -183,7 +192,12 @@ pub fn build_registry<F: Filesystem>(
         config.hidden_volume_root.clone(),
     )));
 
-    if !inputs.overlay_only {
+    // The NixOS config and build-target checks belong to the NixOS config layer,
+    // so they are registered only on a host that has one and only when a
+    // declarative switch will run. On an FHS / Debian host (no config layer) or in
+    // overlay-only mode they are skipped entirely, so a non-NixOS host never fails
+    // pre-flight with NixOS-only remediation text.
+    if !inputs.overlay_only && inputs.has_config_layer {
         registry.add_check(Box::new(NixOSConfigCheck::new(
             config.hidden_volume_root.clone(),
         )));
@@ -295,6 +309,11 @@ impl<F: Filesystem> NailsManager<F> {
 
         let inputs = RegistryInputs {
             overlay_only,
+            // The host's config layer decides whether the NixOS checks belong in
+            // the registry at all; `config_layer` returns `Some` only on NixOS
+            // (and assumes NixOS when no host profile has been detected, as in
+            // unit tests), matching the historical behaviour.
+            has_config_layer: self.config_layer().is_some(),
             read_only,
             current_state: self.current_state()?,
             flake_target_already_validated,

@@ -102,6 +102,27 @@ pub enum NailsError {
     #[error("NixOS operation failed: {0}")]
     NixOSError(String),
 
+    /// Rebooting the host could not be dispatched.
+    ///
+    /// The post-deactivation reboot (which boots the decoy from the bootloader
+    /// default) is a generic step that runs on every platform, so its failure is
+    /// not a NixOS fault. The string names the dispatch commands that were tried,
+    /// or why the reboot was refused.
+    #[error("Reboot failed: {0}")]
+    RebootFailed(String),
+
+    /// The hidden volume's filesystem lacks a capability NAILS requires.
+    ///
+    /// Raised by the symlink-support probe before any staging: FAT32/exFAT cannot
+    /// hold the symlinks the overlay layout needs. This is a filesystem fault, not
+    /// a NixOS one, so it carries its own typed variant rather than reusing the
+    /// NixOS error.
+    #[error("Unsupported filesystem at {path}: {reason}")]
+    UnsupportedFilesystem {
+        path: std::path::PathBuf,
+        reason: String,
+    },
+
     /// Pre-flight validation check failed
     ///
     /// Contains a list of (check_name, error_message) tuples for all failed checks.
@@ -319,6 +340,9 @@ impl NailsError {
             NailsError::UnsupportedPlatform { .. } => {
                 Some("This host is not a supported platform; see the platform requirements.")
             }
+            NailsError::UnsupportedFilesystem { .. } => Some(
+                "Format the hidden volume with a Linux filesystem such as ext4; FAT32 and exFAT cannot hold the required symlinks.",
+            ),
             NailsError::DeactivationIncomplete { .. } => {
                 Some("Reboot to clear the remaining mounts, then verify with `nails status`.")
             }
