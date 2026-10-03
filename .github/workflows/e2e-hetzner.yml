@@ -53,6 +53,9 @@ defaults:
 env:
   # Bumped by hand; see https://github.com/actions/runner/releases.
   RUNNER_VERSION: "2.321.0"
+  # SHA-256 of actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz, from the
+  # release notes. Bump it together with RUNNER_VERSION.
+  RUNNER_SHA256: "ba46ba7ce3a4d7236b16fbe44419fb453bc08f866b24f04d549ec89f1722a29e"  # pragma: allowlist secret
   HCLOUD_IMAGE: ubuntu-24.04
   # Candidate (server type, location) pairs, tried in order until one is
   # available. Nested KVM needs a dedicated-vCPU (ccx) type.
@@ -96,7 +99,7 @@ jobs:
             -f "name=$LABEL" -F "runner_group_id=1" -f "work_folder=_work" \
             -f "labels[]=self-hosted" -f "labels[]=nails-e2e" -f "labels[]=$LABEL" \
             --jq .encoded_jit_config)
-          user_data=$(RUNNER_VERSION="$RUNNER_VERSION" JIT="$jit" bash -c '
+          user_data=$(RUNNER_VERSION="$RUNNER_VERSION" RUNNER_SHA256="$RUNNER_SHA256" JIT="$jit" bash -c '
             cat <<CLOUDINIT
           #cloud-config
           runcmd:
@@ -104,6 +107,7 @@ jobs:
                 && apt-get update && apt-get install -y curl tar qemu-kvm
                 && mkdir -p /opt/runner && cd /opt/runner
                 && curl -fsSL -o runner.tgz https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz
+                && echo \"${RUNNER_SHA256}  runner.tgz\" | sha256sum -c -
                 && tar xzf runner.tgz && ./bin/installdependencies.sh
                 && ./run.sh --jitconfig ${JIT}" ]
           CLOUDINIT')
