@@ -14,3 +14,8 @@ requires-python = ">=3.11"
 
 [tool.setuptools.packages.find]
 include = ["nails_e2e*"]
+
+# Ship the PEP 561 marker so the test driver's mypy pass type-checks imports of
+# nails_e2e instead of rejecting them as an untyped installed package.
+[tool.setuptools.package-data]
+nails_e2e = ["py.typed"]
