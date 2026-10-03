@@ -73,7 +73,10 @@
   };
 
   # /persist is mounted under /mnt-root in stage-1 (neededForBoot); create the
-  # bind source there before stage-2 sets up the bind above.
+  # bind source there before stage-2 sets up the bind above. postMountCommands is
+  # a scripted-stage-1 hook that systemd stage-1 (the test driver's default)
+  # rejects, so pin this VM to the scripted initrd, which this hook needs.
+  boot.initrd.systemd.enable = lib.mkForce false;
   boot.initrd.postMountCommands = ''
     mkdir -p /mnt-root/persist/var/lib/nixos
   '';
