@@ -4,6 +4,12 @@
   # Python function to write the standard headless config file.
   # Usage in testScript: ${testHelpers.writeHeadlessConfigFn}
   # Then call: write_headless_config("/run/nails-tests/nails-headless.toml")
+  #
+  # The overlay set covers every base-OS tree that exists as a real directory on
+  # the NixOS test host. The writable-trees pre-flight check refuses activation
+  # when a core binary root (/usr, /bin, /lib64 here) is left neither overlaid nor
+  # read-only, since a hidden-session write there would reach the decoy disk, so
+  # the explicit config must overlay them just as auto mode does.
   writeHeadlessConfigFn = ''
     def write_headless_config(path):
         import os
@@ -51,6 +57,27 @@
     upper = "/mnt/data/tmp"
     work = "/mnt/data/.work/tmp"
     target = "/tmp"
+
+    [[overlays]]
+    name = "usr"
+    lower = "/usr"
+    upper = "/mnt/data/usr"
+    work = "/mnt/data/.work/usr"
+    target = "/usr"
+
+    [[overlays]]
+    name = "bin"
+    lower = "/bin"
+    upper = "/mnt/data/bin"
+    work = "/mnt/data/.work/bin"
+    target = "/bin"
+
+    [[overlays]]
+    name = "lib64"
+    lower = "/lib64"
+    upper = "/mnt/data/lib64"
+    work = "/mnt/data/.work/lib64"
+    target = "/lib64"
     EOF""" % path
         )
   '';
