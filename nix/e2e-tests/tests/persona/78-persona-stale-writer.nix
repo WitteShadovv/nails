@@ -42,7 +42,8 @@ in
 
     WRITER_LOG = "/home/testuser/decoy-open.log"
     WRITER_TOKEN = "NAILS_STALE_WRITER_LEAK_2026a"
-    HEADLINE = "writer(s) still on the decoy"
+    # decoy_writers_headline: "1 writer still on the decoy" or "N writers ...".
+    HEADLINE = "still on the decoy"
 
 
     def write_home_overlay_config(path):
