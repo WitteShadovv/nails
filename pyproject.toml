@@ -1,8 +1,10 @@
 # Lint and type-check configuration for the repository's Python. There is no
-# build backend here; nothing is packaged or published. CI passes the paths to
-# check explicitly: the `ci-python` flake check and `just ci-python` gate the
-# ci/ package (`ruff check ci`, `mypy ci`). The stand-alone scripts/ join once
-# the forensics runners that still fail ruff are removed.
+# build backend here; nothing is packaged or published (the in-VM helper
+# package under nix/e2e-tests/py carries its own build metadata). CI passes the
+# paths to check explicitly: the `ci-python` flake check and `just ci-python`
+# gate the ci/ package (`ruff check ci`, `mypy ci`), and the `e2e-helpers` check
+# gates the nails_e2e helper package the same way. The stand-alone scripts/ join
+# once the forensics runners that still fail ruff are removed.
 
 [tool.ruff]
 line-length = 88

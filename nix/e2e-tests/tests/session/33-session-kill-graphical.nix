@@ -6,7 +6,6 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   sessionHelpers = import ./../../lib/session-helpers.nix;
-  shellHelpers = import ./../../lib/shell-helpers.nix;
 in
 {
   name = "session-kill-graphical";
@@ -20,6 +19,8 @@ in
     };
 
   testScript = _: ''
+    from nails_e2e import run_command_capture
+
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.runDetachedCommandFn}
     ${testHelpers.readStatusJsonFn}
@@ -32,7 +33,6 @@ in
     ${sessionHelpers.waitForUnitRestartedFn}
     ${sessionHelpers.waitForActivationTransientUnitFn}
     ${sessionHelpers.assertUnitInSystemSliceFn}
-    ${shellHelpers.runCommandCaptureFn}
 
     def count_started_messages(unit):
         import shlex
@@ -91,7 +91,9 @@ in
         display_manager_before = read_systemd_active_enter_monotonic("display-manager.service")
         user_manager_before = read_systemd_active_enter_monotonic("user@1000.service")
         display_started_before = count_started_messages("display-manager.service")
-        before_shell = run_command_capture("session-graphical-shell-before", shell_command)
+        before_shell = run_command_capture(
+            machine, "session-graphical-shell-before", shell_command
+        )
         assert before_shell["rc"] == 0, before_shell
         assert osc_sequence not in before_shell["stdout"], before_shell
 
@@ -159,7 +161,9 @@ in
         assert any(line is not None for line in switch_outcomes), (
             "expected the hidden log to record the NixOS build+switch outcome"
         )
-        active_shell = run_command_capture("session-graphical-shell-active", shell_command)
+        active_shell = run_command_capture(
+            machine, "session-graphical-shell-active", shell_command
+        )
         assert active_shell["rc"] == 0, active_shell
         assert osc_sequence in active_shell["stdout"], repr(active_shell["stdout"])
 
@@ -168,7 +172,9 @@ in
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
         assert_status_state("inactive", config_path=headless_config)
         machine.fail("test -e /etc/nails-graphical-marker")
-        after_shell = run_command_capture("session-graphical-shell-after", shell_command)
+        after_shell = run_command_capture(
+            machine, "session-graphical-shell-after", shell_command
+        )
         assert after_shell["rc"] == 0, after_shell
         assert osc_sequence not in after_shell["stdout"], repr(after_shell["stdout"])
   '';

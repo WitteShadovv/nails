@@ -1,0 +1,16 @@
+# Build metadata for the in-VM helper package. The NixOS test driver installs
+# it through `extraPythonPackages` (nix/e2e-tests/default.nix); it is never
+# published. Repository-wide ruff and mypy configuration lives in the top-level
+# pyproject.toml, which the `e2e-helpers` flake check points at this tree.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nails-e2e"
+version = "0"
+description = "In-VM helpers for the NAILS NixOS end-to-end test driver."
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+include = ["nails_e2e*"]

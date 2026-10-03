@@ -4,6 +4,22 @@ let
   inherit (pkgs) lib;
   testsRoot = ./tests;
 
+  # The in-VM helpers every testScript can import (run_command_capture and
+  # install_nixos_rebuild_wrapper), as one importable package instead of the
+  # hand-escaped copies that used to live inside each test's Nix strings. It is
+  # built against the driver's own Python package set (the `ps` the driver
+  # passes to extraPythonPackages below), so the interpreter stays in step.
+  nailsE2eHelpers =
+    ps:
+    ps.buildPythonPackage {
+      pname = "nails-e2e-test-helpers";
+      version = "0";
+      src = ./py;
+      pyproject = true;
+      build-system = [ ps.setuptools ];
+      doCheck = false;
+    };
+
   collectTestFiles =
     dir:
     let
@@ -102,6 +118,12 @@ let
           // {
             testScript = wrapTestScript spec.testScript;
             globalTimeout = effectiveTimeout spec;
+            # Expose nails_e2e to every test's driver, preserving any packages a
+            # test already asks for.
+            extraPythonPackages =
+              ps:
+              (lib.optionals (spec ? extraPythonPackages) (spec.extraPythonPackages ps))
+              ++ [ (nailsE2eHelpers ps) ];
             # meta.timeout bounds the whole derivation for an outer builder.
             # Keeping it a minute above the driver's own deadline lets the
             # driver report the timeout and release the VMs itself.

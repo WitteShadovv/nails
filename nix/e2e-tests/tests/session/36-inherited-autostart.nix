@@ -29,6 +29,8 @@ in
     };
 
   testScript = _: ''
+    from nails_e2e import install_nixos_rebuild_wrapper
+
     ${testHelpers.readStatusJsonFn}
     ${testHelpers.waitForStatusStateFn}
     ${testHelpers.canonicalDeactivateFn}
@@ -127,20 +129,6 @@ in
     def hash_path(path):
         return machine.succeed("sha256sum " + path + " | cut -d' ' -f1").strip()
 
-    def install_nixos_rebuild_wrapper():
-        # The real nixos-rebuild is slow and unnecessary here; record the call
-        # and succeed so activation reaches the Active state.
-        machine.succeed(
-            """mkdir -p /tmp/nails-wrapper/bin
-    cat > /tmp/nails-wrapper/bin/nixos-rebuild <<'EOF'
-    #!/bin/sh
-    printf '%s\\n' "$*" >> /tmp/nixos-rebuild-mask.log
-    exit 0
-    EOF
-    chmod 755 /tmp/nails-wrapper/bin/nixos-rebuild"""
-        )
-        return "PATH=/tmp/nails-wrapper/bin:$PATH"
-
     machine.start()
     machine.wait_for_unit("display-manager.service")
     machine.wait_until_succeeds("systemctl is-active user@1000.service")
@@ -153,7 +141,9 @@ in
         timer_unit_hash_before = hash_path(user_timer_unit)
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
         display_manager_before = read_systemd_active_enter_monotonic("display-manager.service")
-        wrapper_env = install_nixos_rebuild_wrapper()
+        wrapper_env = install_nixos_rebuild_wrapper(
+            machine, "/tmp/nixos-rebuild-mask.log"
+        )
 
     with subtest("activate and mask the inherited decoy entries"):
         machine.succeed(

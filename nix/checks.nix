@@ -183,6 +183,29 @@ in
     '';
   };
 
+  # The in-VM helper package nails_e2e (nix/e2e-tests/py), lint and unit-tested
+  # host-side without a VM, the same fast lane as e2e-disk-forensics. The VM
+  # tests import the package through the driver's extraPythonPackages; this
+  # proves the helpers themselves stay correct, linted and typed on every
+  # `nix flake check`, not only when a VM test is assembled.
+  e2e-helpers = lint "e2e-helpers" {
+    files = fs.unions [
+      ./e2e-tests/py
+      ../pyproject.toml
+    ];
+    tools = [
+      pkgs.python3
+      pkgs.ruff
+      pkgs.mypy
+    ];
+    script = ''
+      export HOME="$PWD"
+      python3 -m unittest discover -s nix/e2e-tests/py/tests -t nix/e2e-tests/py
+      ruff check nix/e2e-tests/py
+      MYPYPATH=nix/e2e-tests/py mypy nix/e2e-tests/py/nails_e2e nix/e2e-tests/py/tests
+    '';
+  };
+
   # Guards the E2E suite against assertions that can never fail (the soft
   # "Note:" branch). It reads only the test files, so it runs in seconds and
   # never builds a VM. The rule it enforces lives in nix/e2e-tests/README.md.
