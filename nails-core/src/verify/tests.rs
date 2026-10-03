@@ -1495,3 +1495,95 @@ fn test_verify_overlaid_decoy_tree_is_not_flagged() {
         result.findings
     );
 }
+
+// ========================================================================
+// Mount-Table Scan for Leftover NAILS Scaffolding
+// ========================================================================
+
+#[test]
+fn test_mount_scan_flags_leftover_overlay_at_non_standard_target() {
+    use crate::config::Config;
+    use std::path::PathBuf;
+
+    let fs = MockFilesystem::new();
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/hidden"),
+        ..Config::default()
+    };
+
+    // A leftover ephemeral /var overlay (upper under the runtime dir), a pivot
+    // staging bind, and an expected /home overlay (upper under the hidden root).
+    // Only the first two are at non-standard targets and must be flagged; the
+    // /home overlay is covered by the standard overlay check and must not be
+    // double-reported here.
+    let mountinfo = concat!(
+        "10 1 0:50 / /home rw - overlay overlay ",
+        "rw,lowerdir=/home,upperdir=/mnt/hidden/home/upper,workdir=/mnt/hidden/home/work\n",
+        "11 1 0:51 / /var rw - overlay overlay ",
+        "rw,lowerdir=/var,upperdir=/run/nails/var/upper,workdir=/run/nails/var/work\n",
+        "12 1 0:52 / /mnt/nails-pivot/etc rw - overlay overlay ",
+        "rw,lowerdir=/etc,upperdir=/mnt/hidden/etc/upper,workdir=/mnt/hidden/etc/work\n",
+    );
+    fs.mock_set_file_content("/proc/self/mountinfo", mountinfo);
+
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+
+    let scaffolding: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "mount" && f.message.contains("non-standard target"))
+        .collect();
+    assert_eq!(
+        scaffolding.len(),
+        2,
+        "the /var ephemeral overlay and the pivot staging bind must be flagged, not /home: {:?}",
+        result.findings
+    );
+    for finding in &scaffolding {
+        assert_eq!(finding.severity, Severity::Critical);
+        assert!(finding.fix_guidance.is_some());
+    }
+    assert!(scaffolding.iter().any(|f| f.message.contains("/var")));
+    assert!(
+        scaffolding
+            .iter()
+            .any(|f| f.message.contains("/mnt/nails-pivot/etc"))
+    );
+    assert!(
+        !scaffolding.iter().any(|f| f.message.contains("/home")),
+        "the expected /home overlay must not be reported as leftover scaffolding"
+    );
+}
+
+#[test]
+fn test_mount_scan_without_config_ignores_foreign_overlays() {
+    let fs = MockFilesystem::new();
+
+    // Without a configured hidden root, a generic overlay (e.g. a container's)
+    // cannot be attributed to NAILS and must not be flagged. A runtime-backed
+    // ephemeral overlay still is, since its upper is unambiguously ours.
+    let mountinfo = concat!(
+        "20 1 0:60 / /var/lib/docker/overlay2/x/merged rw - overlay overlay ",
+        "rw,lowerdir=/foreign,upperdir=/foreign/upper,workdir=/foreign/work\n",
+        "21 1 0:61 / /opt rw - overlay overlay ",
+        "rw,lowerdir=/opt,upperdir=/run/nails/opt/upper,workdir=/run/nails/opt/work\n",
+    );
+    fs.mock_set_file_content("/proc/self/mountinfo", mountinfo);
+
+    let verifier = Verifier::new(fs);
+    let result = verifier.run(false).unwrap();
+
+    let scaffolding: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "mount" && f.message.contains("non-standard target"))
+        .collect();
+    assert_eq!(
+        scaffolding.len(),
+        1,
+        "only the runtime-backed /opt overlay is attributable to NAILS: {:?}",
+        result.findings
+    );
+    assert!(scaffolding[0].message.contains("/opt"));
+}

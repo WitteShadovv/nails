@@ -41,6 +41,12 @@ const DESKTOP_RECENT_FILES: &[&str] = &[
 /// Shell history files, relative to a home, searched for NAILS commands.
 const HISTORY_FILES: &[&str] = &[".bash_history", ".zsh_history"];
 
+/// Overlay targets an active hidden session is expected to present. Leftover
+/// NAILS overlays or staging binds anywhere else mean teardown left scaffolding
+/// behind; [`check_overlay_mounts`](Verifier::check_overlay_mounts) already
+/// reports these expected targets, so the mount-table scan skips them.
+const STANDARD_OVERLAY_TARGETS: &[&str] = &["/home", "/etc", "/root"];
+
 /// Where a verification run is pointed: the live host, or an offline image.
 #[derive(Debug, Clone)]
 enum VerifyContext {
@@ -156,6 +162,11 @@ impl<F: Filesystem> Verifier<F> {
 
             // 1b. While active, flag a writable non-overlay decoy OS tree.
             findings.extend(self.check_writable_decoy_mounts()?);
+            checks_run += 1;
+
+            // 1c. Flag leftover NAILS overlays and staging binds at non-standard
+            // targets, classified from the live mount table.
+            findings.extend(self.check_nails_owned_mounts()?);
             checks_run += 1;
         }
 
@@ -438,6 +449,83 @@ impl<F: Filesystem> Verifier<F> {
                     ),
                 );
             }
+        }
+
+        Ok(findings)
+    }
+
+    /// Scan the live mount table for NAILS overlays and staging binds left at a
+    /// non-standard target.
+    ///
+    /// [`check_overlay_mounts`](Self::check_overlay_mounts) covers the expected
+    /// `/home`, `/etc` and `/root` overlays. This catches everything else an
+    /// incomplete teardown can leave behind: an ephemeral `/var`, `/tmp`,
+    /// `/srv`, `/opt` or `/nix` overlay whose upper or work dir resolves under
+    /// the runtime directory, a pivot staging bind, or — when a config pins the
+    /// hidden volume — an overlay whose upper or work dir resolves under the
+    /// hidden root. Such a mount at an unexpected target means scaffolding is
+    /// still mounted, so it is reported Critical.
+    ///
+    /// The table is parsed from `/proc/self/mountinfo` through the shared parser
+    /// ([`parse_mountinfo`](crate::filesystem::parse_mountinfo)) and classified
+    /// by [`NailsMounts`](crate::filesystem::NailsMounts), so a fake table can be
+    /// injected in tests. Only mounts positively attributable to NAILS are
+    /// flagged: staging binds and runtime-backed ephemeral overlays are always
+    /// NAILS, while a generic overlay is attributed only when a configured
+    /// hidden root places its upper or work dir inside the hidden volume. This
+    /// keeps a foreign overlay (a container or build sandbox) from being
+    /// mistaken for a leftover when verify runs without a config.
+    fn check_nails_owned_mounts(&self) -> Result<Vec<Finding>> {
+        let mut findings = Vec::new();
+
+        let Ok(content) = self.filesystem.read_file_content(Path::new(SELF_MOUNTINFO)) else {
+            return Ok(findings);
+        };
+
+        let hidden_root = self
+            .config
+            .as_ref()
+            .map(|config| config.hidden_volume_root.clone())
+            .filter(|root| !root.as_os_str().is_empty());
+
+        let entries = crate::filesystem::parse_mountinfo(&content);
+        let owned = crate::filesystem::NailsMounts::from_entries(&entries, hidden_root.as_deref());
+
+        // Staging binds and runtime-backed ephemeral overlays are unambiguously
+        // NAILS. A generic overlay is only attributable when a configured hidden
+        // root classified it as persistent (upper/work under that root); without
+        // a hidden root the classifier treats every overlay as persistent, so
+        // those are dropped to avoid flagging foreign overlays.
+        let mut suspects: Vec<std::path::PathBuf> = Vec::new();
+        suspects.extend(owned.pivot_binds.iter().cloned());
+        suspects.extend(owned.ephemeral_overlays.iter().cloned());
+        if hidden_root.is_some() {
+            suspects.extend(owned.persistent_overlays.iter().cloned());
+        }
+
+        let is_standard = |p: &Path| STANDARD_OVERLAY_TARGETS.iter().any(|t| p == Path::new(t));
+
+        let mut seen: Vec<std::path::PathBuf> = Vec::new();
+        for target in suspects {
+            if is_standard(&target) || seen.contains(&target) {
+                continue;
+            }
+            seen.push(target.clone());
+            findings.push(
+                Finding::new(
+                    Severity::Critical,
+                    "mount",
+                    format!(
+                        "NAILS overlay or staging mount left at non-standard target {}; \
+                         teardown did not remove all scaffolding",
+                        target.display()
+                    ),
+                )
+                .with_fix_guidance(
+                    "Run 'nails deactivate' (or 'nails emergency') to tear down leftover \
+                     overlays, staging binds and the runtime directory",
+                ),
+            );
         }
 
         Ok(findings)
