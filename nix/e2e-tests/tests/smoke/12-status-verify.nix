@@ -78,7 +78,18 @@ in
     verify2_rc, verify2_json = run_verify()
     assert "status" in verify2_json or "findings" in verify2_json, \
         f"Expected status/findings in verify JSON, got: {verify2_json}"
+    # The honest headline is data-backed: a count of checks run and an explicit
+    # list of areas the run did not inspect.
+    assert verify2_json["checks_run"] > 0, verify2_json
+    assert verify2_json["areas_not_checked"], verify2_json
     print(f"✓ Verify --json returns valid JSON (exit={verify2_rc})")
+
+    print("\n=== Test 5b: Verify human headline never overclaims ===")
+    verify_human = machine.succeed("nails --no-log-file verify")
+    assert "No traces found" not in verify_human, verify_human
+    assert "System appears clean" not in verify_human, verify_human
+    assert "not proof of absence" in verify_human.lower(), verify_human
+    print("✓ Verify headline is honest")
 
     print("\n=== Test 6: Status shows Active after activation ===")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
