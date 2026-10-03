@@ -122,6 +122,15 @@ of this changelog for that version becomes the release notes word for word, and
   logs do not leak to the decoy journal.
 - `nails verify` flags leftover NAILS overlays and staging binds left mounted at non-standard
   targets, drawn from the live mount table.
+- A platform-aware decoy-persistence pre-flight check: a persistent journal or an active rsyslog,
+  syslog-ng or auditd refuses activation unless `accept_persistent_decoy` (or
+  `--accept-persistent-decoy`) is set; a persistent root filesystem, atime-recording mounts,
+  crash-dump channels and the NixOS auto-upgrade timer warn. `docs/decoy-requirements.md` describes
+  the amnesic decoy profiles NAILS expects.
+- A portable Debian/Ubuntu VM smoke suite (`nix/distro-tests`) with a bounded distro matrix
+  planner and an informational `distro-e2e` CI workflow.
+- A filesystem contract suite run against both the in-memory mock and the real filesystem, and a
+  weekly mutation-testing job.
 
 ### Changed
 
@@ -268,6 +277,21 @@ of this changelog for that version becomes the release notes word for word, and
   platform package-drift scanning, and supports an offline image mode (`--offline --root`).
 - The hidden-volume state file, state lock and notification writes are resolved with `openat2`
   under the hidden root, so a planted symlink or `..` cannot redirect them onto the decoy.
+- `--allow-persistent-journal` is replaced by `--accept-persistent-decoy`; the hidden NixOS module
+  now forces `system.autoUpgrade.enable = false`.
+- The swap pre-flight classifies each device: RAM-only zram is allowed, disk or file swap,
+  fixed-key encrypted swap and hibernation are refused, the check is repeated after the hidden
+  switch and before deactivation, `verify` reports swap as a warning or critical finding, and the
+  decoy's `swapDevices`/`resumeDevice` are no longer copied into the hidden configuration.
+- The disk-space pre-flight is a single hard floor (500 MB by default); a new `rebuild_space_mb`
+  key (4096 MB by default) is checked after mounting and before a hidden NixOS rebuild, a
+  post-switch notification warns when the hidden volume is nearly full, and a full volume during
+  the build is reported as `hidden-volume-full` with `nails reapply` guidance.
+- Platform detection supports Debian 12+ and Ubuntu 24.04+ in overlay-only mode and refuses older
+  releases, non-merged-usr layouts and unvalidated distributions (Fedora, Arch, unknown) with a
+  documented message.
+- Coverage is measured over production code only against one threshold in
+  `.config/coverage.toml`; the filesystem mock no longer ships in release builds.
 
 ### Removed
 
