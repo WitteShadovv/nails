@@ -87,11 +87,19 @@ fn map_into_bind(path: &Path, bind_root: &Path) -> PathBuf {
 /// Parse `ldd` output into the dynamic loader and the set of library
 /// directories a command needs.
 ///
-/// `ldd` prints resolved shared objects as `name => /path (0x...)` lines and the
-/// program interpreter as a standalone `/path (0x...)` line (the vDSO line has
-/// no path). The loader is the first standalone absolute path; library
-/// directories are the parents of every resolved object plus the loader itself,
-/// de-duplicated while preserving discovery order.
+/// `ldd` prints resolved shared objects as `soname => /path (0x...)` lines. The
+/// program interpreter appears in one of two shapes depending on the glibc
+/// version and on whether the requested interpreter path differs from the one
+/// it resolved to: a standalone `/path (0x...)` line, or `/requested => /resolved
+/// (0x...)` with an absolute path on the left (a library's left side is a bare
+/// soname). The vDSO line has no path, and a static binary prints only
+/// `statically linked`. The loader is the first interpreter line found, taking
+/// the resolved path; library directories are the parents of every resolved
+/// object plus the loader, de-duplicated while preserving discovery order.
+///
+/// The authoritative loader comes from the ELF `PT_INTERP` header
+/// ([`read_elf_interpreter`]); this parse is used for the library directories
+/// and as the loader fallback when the binary cannot be read as ELF.
 fn parse_ldd_output(ldd_output: &str) -> (Option<PathBuf>, Vec<PathBuf>) {
     let mut loader = None;
     let mut directories: Vec<PathBuf> = Vec::new();
@@ -111,13 +119,17 @@ fn parse_ldd_output(ldd_output: &str) -> (Option<PathBuf>, Vec<PathBuf>) {
             continue;
         }
 
-        if let Some((_, resolved)) = line.split_once("=>") {
-            // Resolved shared object: the path after `=>`.
+        if let Some((requested, resolved)) = line.split_once("=>") {
+            // Resolved object: the path after `=>`. An absolute path on the left
+            // marks the program interpreter rather than a soname-keyed library.
             if let Some(path) = resolved
                 .split_whitespace()
                 .find(|token| token.starts_with('/'))
                 .map(PathBuf::from)
             {
+                if requested.trim_start().starts_with('/') && loader.is_none() {
+                    loader = Some(path.clone());
+                }
                 push_parent(&mut directories, &path);
             }
         } else if let Some(path) = line
@@ -134,6 +146,86 @@ fn parse_ldd_output(ldd_output: &str) -> (Option<PathBuf>, Vec<PathBuf>) {
     }
 
     (loader, directories)
+}
+
+/// `PT_INTERP`: the program header naming the dynamic loader.
+const PT_INTERP: u32 = 3;
+
+/// Read the dynamic loader a program requests from its ELF `PT_INTERP` header.
+///
+/// This is the authoritative answer `ldd` itself derives the loader from, read
+/// in-process so it does not depend on the shape of `ldd`'s output. Returns
+/// `Ok(None)` for a valid ELF file without an interpreter (a statically linked
+/// program) and an `InvalidData` error for anything that is not a well-formed
+/// 32- or 64-bit ELF file in either byte order.
+fn read_elf_interpreter(bytes: &[u8]) -> std::io::Result<Option<PathBuf>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let invalid = |what: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("not a readable ELF file: {what}"),
+        )
+    };
+
+    if bytes.len() < 16 || bytes[..4] != [0x7f, b'E', b'L', b'F'] {
+        return Err(invalid("bad magic"));
+    }
+    let is_64 = match bytes[4] {
+        1 => false,
+        2 => true,
+        _ => return Err(invalid("unknown class")),
+    };
+    let little = match bytes[5] {
+        1 => true,
+        2 => false,
+        _ => return Err(invalid("unknown byte order")),
+    };
+
+    let field = |offset: usize, width: usize| -> std::io::Result<u64> {
+        let slice = bytes
+            .get(offset..offset + width)
+            .ok_or_else(|| invalid("truncated header"))?;
+        let mut value: u64 = 0;
+        for (index, byte) in slice.iter().enumerate() {
+            let shift = if little { index } else { width - 1 - index };
+            value |= u64::from(*byte) << (8 * shift);
+        }
+        Ok(value)
+    };
+    let to_usize = |value: u64| usize::try_from(value).map_err(|_| invalid("offset overflow"));
+
+    // (e_phoff, e_phentsize, e_phnum) and, per program header, the offsets of
+    // (p_type, p_offset, p_filesz) with the width of the latter two.
+    let (phoff, phentsize, phnum, off_at, size_at, word) = if is_64 {
+        (field(0x20, 8)?, field(0x36, 2)?, field(0x38, 2)?, 8, 32, 8)
+    } else {
+        (field(0x1c, 4)?, field(0x2a, 2)?, field(0x2c, 2)?, 4, 16, 4)
+    };
+    let phoff = to_usize(phoff)?;
+    let phentsize = to_usize(phentsize)?;
+
+    for index in 0..to_usize(phnum)? {
+        let header = index
+            .checked_mul(phentsize)
+            .and_then(|delta| phoff.checked_add(delta))
+            .ok_or_else(|| invalid("program header overflow"))?;
+        if field(header, 4)? as u32 != PT_INTERP {
+            continue;
+        }
+        let start = to_usize(field(header + off_at, word)?)?;
+        let size = to_usize(field(header + size_at, word)?)?;
+        let raw = start
+            .checked_add(size)
+            .and_then(|end| bytes.get(start..end))
+            .ok_or_else(|| invalid("truncated interpreter"))?;
+        let name = raw.split(|byte| *byte == 0).next().unwrap_or_default();
+        if name.is_empty() {
+            return Err(invalid("empty interpreter"));
+        }
+        return Ok(Some(PathBuf::from(std::ffi::OsStr::from_bytes(name))));
+    }
+    Ok(None)
 }
 
 /// Build the command used to run `systemctl` (and friends) after `/nix` is
@@ -156,6 +248,22 @@ pub(super) fn build_cached_command(
         return Ok(CachedCommand::Direct(canonical));
     }
 
+    // The loader comes from the program's own ELF header. A store binary with no
+    // interpreter is statically linked: it needs no loader or library path and
+    // runs directly from the pre-overlay bind (`ldd` would only fail on it).
+    let elf_loader = match std::fs::read(&canonical) {
+        Ok(bytes) => match read_elf_interpreter(&bytes) {
+            Ok(None) => {
+                return Ok(CachedCommand::Direct(map_into_bind(&canonical, bind_root)));
+            }
+            Ok(Some(interpreter)) => {
+                Some(std::fs::canonicalize(&interpreter).unwrap_or(interpreter))
+            }
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
+
     // Resolve `ldd` from the fixed system directories and bound it with a
     // deadline so a hung resolver cannot stall activation before the overlay.
     let ldd_output = RealProcessRunner
@@ -172,16 +280,24 @@ pub(super) fn build_cached_command(
         ));
     }
 
-    let (loader, library_dirs) = parse_ldd_output(&String::from_utf8_lossy(&ldd_output.stdout));
-    let loader = loader.ok_or_else(|| {
+    let (ldd_loader, mut library_dirs) =
+        parse_ldd_output(&String::from_utf8_lossy(&ldd_output.stdout));
+    let loader = elf_loader.or(ldd_loader).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "ldd output for {} did not list a dynamic loader",
+                "found no dynamic loader for {}: no readable ELF PT_INTERP and none in ldd output",
                 canonical.display()
             ),
         )
     })?;
+    // The loader's own directory must be on the library path even when `ldd`
+    // listed it under a different (symlinked) directory.
+    if let Some(parent) = loader.parent()
+        && !library_dirs.iter().any(|dir| dir == parent)
+    {
+        library_dirs.push(parent.to_path_buf());
+    }
 
     let mut cached_library_dirs: Vec<PathBuf> = Vec::new();
     for library_dir in &library_dirs {
