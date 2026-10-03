@@ -108,6 +108,7 @@ is the `name` key of each `[[overlays]]` table.
 | `backend_watch.debounce_secs` | integer (seconds) | `15` | How long a failure must persist before an opted-in automatic emergency teardown fires. Ignored unless `backend_watch.auto_emergency` is `true`. |
 | `backend_watch.enabled` | boolean | `true` | Start the in-session backend watcher at activation. The watcher polls the hidden backend and alerts you when it fails. `false` runs no long-lived component. See [Backend watcher](#backend-watcher). |
 | `backend_watch.poll_interval_secs` | integer (seconds) | `5` | Seconds between the watcher's probes of the hidden backend. |
+| `sleep_policy.mode` | `"warn"`, `"block"` or `"teardown"` | `"warn"` | What to do about system sleep (suspend/hibernate) while a session is active. Suspending keeps the whole session — overlays, the open dm-crypt mapper and the master key — resident in RAM behind the decoy lock screen. `warn` only surfaces a pre-flight warning when the host would suspend an active session. `block` holds a sleep/idle inhibitor for the life of the session so the host cannot suspend while active; released at deactivation. `teardown` holds a sleep *delay* inhibitor and runs the bounded emergency teardown when the host is about to sleep, within logind's `InhibitDelayMaxSec` window. Also set the decoy's logind lid switch to `ignore`/`lock`. See [Sleep policy](#sleep-policy). |
 <!-- END config-keys -->
 
 The Key and Default columns are generated from the code, and
@@ -299,3 +300,33 @@ opt-in — set `backend_watch.auto_emergency = true` — and even then it fires 
 after the failure has persisted for `backend_watch.debounce_secs`, so a brief
 hiccup that recovers is reported but never acted on. Both the copy directory and
 the watcher unit use neutral, non-product names.
+
+## Sleep policy
+
+Suspending or hibernating while a session is active leaves the whole hidden
+environment — the overlays, the open dm-crypt mapper and the master key —
+resident in RAM behind the decoy lock screen, so on resume the decoy login
+unlocks a still-live hidden session. logind's defaults make this the normal case:
+`HandleLidSwitch` defaults to `suspend`, and desktops add idle auto-suspend.
+
+The `sleep-policy` pre-flight check parses `/etc/systemd/logind.conf` and its
+`logind.conf.d/*.conf` drop-ins and **warns** (never blocks) when the effective
+lid-switch or idle settings would suspend an active session. Fix the host
+first: set the decoy's logind lid switch to `ignore` or `lock` and disable
+desktop auto-suspend (see [decoy-requirements.md](decoy-requirements.md)).
+
+`sleep_policy.mode` adds a runtime backstop started from the RAM-backed runtime
+copy as a transient systemd unit (the same mechanism as the backend watcher),
+which holds a logind inhibitor for the life of the session:
+
+- `warn` (default) — pre-flight warning only; nothing runs at runtime.
+- `block` — hold a sleep/idle **block** inhibitor, so logind refuses to suspend
+  or idle-sleep while the session is up. Released at deactivation. A suspend
+  blocked with the lid shut can overheat a laptop, so still fix the lid switch.
+- `teardown` — hold a sleep **delay** inhibitor and, on the host's
+  `PrepareForSleep` signal, run the bounded emergency teardown within logind's
+  `InhibitDelayMaxSec` window (default 5s) before releasing the inhibitor and
+  letting the sleep proceed.
+
+The inhibitor appears in `systemd-inhibit --list` under neutral, non-product
+names, and nothing is written to the decoy disk.

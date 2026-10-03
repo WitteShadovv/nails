@@ -323,6 +323,21 @@ fn render_template(root: &Path, title: &str) -> String {
 # poll_interval_secs = 5   # seconds between probes
 # debounce_secs = 15       # seconds a failure must persist before auto_emergency
 
+# What to do about system sleep (suspend/hibernate) while the hidden environment
+# is active. Suspending an active session leaves it resident in RAM behind the
+# decoy lock screen, so on resume the decoy login unlocks a still-live session.
+#   "warn" (default): pre-flight warns when the host would suspend an active
+#     session (lid switch, idle auto-suspend); nothing runs at runtime.
+#   "block": hold a sleep/idle inhibitor for the whole session so the host cannot
+#     suspend while active; released at deactivation. A blocked suspend with the
+#     lid shut can overheat a laptop.
+#   "teardown": hold a sleep *delay* inhibitor and run the bounded emergency
+#     teardown when the host is about to sleep, within logind's InhibitDelayMaxSec.
+# Also set the logind lid switch to "ignore" or "lock" on the decoy; see
+# docs/decoy-requirements.md.
+# [sleep_policy]
+# mode = "warn"
+
 # Terminal colors while the hidden environment is active.
 # [color_scheme]
 # enabled = true

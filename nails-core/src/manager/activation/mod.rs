@@ -921,6 +921,12 @@ impl<F: Filesystem> NailsManager<F> {
         if self.config().backend_watch.enabled {
             crate::runtime_copy::start_watch_unit();
         }
+
+        // Start the sleep guard for block/teardown policies, so a suspend cannot
+        // strand the active session resident in RAM. Warn mode starts nothing.
+        if self.config().sleep_policy.mode.runs_guard() {
+            crate::sleep_guard::start_sleep_guard_unit();
+        }
     }
 
     /// Log the security label and any writers left on the decoy once the

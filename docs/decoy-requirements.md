@@ -43,6 +43,55 @@ decoy disk.
   automatic decoy rebuild (and touch EFI NVRAM) while the hidden session runs.
   The generated hidden module force-disables `system.autoUpgrade`.
 
+## Suspend and the lid switch
+
+Suspend and hibernate are not a filesystem concern, so they sit outside the
+overlay model, but they are a direct hazard: suspending while a session is active
+leaves the whole hidden environment — overlays, the open dm-crypt mapper and the
+master key — resident in RAM behind the decoy lock screen. On resume the decoy
+login unlocks a still-live hidden session. logind's defaults make this the normal
+case: `HandleLidSwitch` and `HandleLidSwitchExternalPower` both default to
+`suspend`, and desktops add their own idle auto-suspend.
+
+The `sleep-policy` pre-flight check parses `/etc/systemd/logind.conf` and its
+`logind.conf.d/*.conf` drop-ins and warns (never blocks) when the effective lid
+or idle settings would suspend an active session.
+
+Set the decoy's lid switch so a closed lid does not suspend. The neutral choice
+is `lock` (lock the screen, stay running) or `ignore`; add a drop-in rather than
+editing the main file:
+
+```ini
+# /etc/systemd/logind.conf.d/10-lid.conf
+[Login]
+HandleLidSwitch=lock
+HandleLidSwitchExternalPower=lock
+HandleLidSwitchDocked=ignore
+IdleAction=ignore
+```
+
+On NixOS, set it declaratively in the **decoy** configuration (a drop-in on the
+decoy, not the hidden module):
+
+```nix
+services.logind.settings.Login = {
+  HandleLidSwitch = "lock";
+  HandleLidSwitchExternalPower = "lock";
+  HandleLidSwitchDocked = "ignore";
+  IdleAction = "ignore";
+};
+```
+
+Also disable any desktop-level auto-suspend (GNOME/KDE power settings), which
+logind does not govern.
+
+For defence in depth, set `sleep_policy.mode` in `nails.toml`. `block` holds a
+sleep/idle inhibitor for the life of the session so the host cannot suspend while
+active; `teardown` holds a sleep *delay* inhibitor and runs the bounded emergency
+teardown when the host is about to sleep, within logind's `InhibitDelayMaxSec`
+window (default 5s). The inhibitor is a runtime backstop — still fix the lid
+switch above, since a blocked suspend with the lid shut can overheat a laptop.
+
 ## Satisfying the requirements per platform
 
 ### NixOS

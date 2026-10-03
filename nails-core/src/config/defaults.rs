@@ -205,6 +205,7 @@ impl Default for Config {
             nixos_switch_required: true,
             risky_services: None,
             accept_persistent_decoy: false,
+            sleep_policy: super::types::SleepPolicyConfig::default(),
         }
     }
 }

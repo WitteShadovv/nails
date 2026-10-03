@@ -100,6 +100,49 @@ mod tests {
         assert!(DEFAULT_OVERLAY_EXCLUSIONS.contains(&"/sys"));
         assert!(DEFAULT_OVERLAY_EXCLUSIONS.contains(&"/dev"));
     }
+
+    #[test]
+    fn sleep_policy_defaults_to_warn_and_runs_no_guard() {
+        let config = SleepPolicyConfig::default();
+        assert_eq!(config.mode, SleepPolicyMode::Warn);
+        assert!(!SleepPolicyMode::Warn.runs_guard());
+        assert!(SleepPolicyMode::Block.runs_guard());
+        assert!(SleepPolicyMode::Teardown.runs_guard());
+    }
+
+    #[test]
+    fn sleep_policy_empty_table_fills_default() {
+        let config: SleepPolicyConfig = toml::from_str("").unwrap();
+        assert_eq!(config, SleepPolicyConfig::default());
+    }
+
+    #[test]
+    fn sleep_policy_parses_every_mode() {
+        for (text, mode) in [
+            ("mode = \"warn\"", SleepPolicyMode::Warn),
+            ("mode = \"block\"", SleepPolicyMode::Block),
+            ("mode = \"teardown\"", SleepPolicyMode::Teardown),
+        ] {
+            let config: SleepPolicyConfig = toml::from_str(text).unwrap();
+            assert_eq!(config.mode, mode);
+        }
+    }
+
+    #[test]
+    fn sleep_policy_rejects_unknown_key_and_bad_mode() {
+        assert!(toml::from_str::<SleepPolicyConfig>("bogus = true").is_err());
+        assert!(toml::from_str::<SleepPolicyConfig>("mode = \"nap\"").is_err());
+    }
+
+    #[test]
+    fn sleep_policy_round_trips_through_toml() {
+        let config = SleepPolicyConfig {
+            mode: SleepPolicyMode::Teardown,
+        };
+        let serialized = toml::to_string(&config).unwrap();
+        let parsed: SleepPolicyConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed, config);
+    }
 }
 
 /// Application configuration
@@ -126,6 +169,59 @@ mod tests {
 ///     ..Config::default()
 /// };
 /// ```
+/// What NAILS does about system sleep (suspend/hibernate) while a hidden
+/// session is active.
+///
+/// Closing the lid or an idle auto-suspend leaves the whole hidden session
+/// resident in RAM behind the decoy lock screen: on resume the decoy login
+/// unlocks a session whose overlays, mapper and master key are all still live.
+/// Each mode trades that exposure against a practical cost, so the safe default
+/// only warns rather than silently changing the machine's power behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SleepPolicyMode {
+    /// Pre-flight warns when the host would suspend an active session; nothing
+    /// runs at runtime. The default: a permanent sleep inhibitor has real costs
+    /// (a suspend blocked with the lid shut can overheat a laptop), so taking one
+    /// is opt-in.
+    #[default]
+    Warn,
+    /// Hold a sleep/idle *block* inhibitor for the life of the session so the
+    /// host cannot suspend or idle-sleep while the hidden environment is up. The
+    /// inhibitor is released at deactivation.
+    Block,
+    /// Hold a sleep *delay* inhibitor and, when the host is about to sleep, run
+    /// the bounded emergency teardown inside logind's delay window before
+    /// releasing the inhibitor and letting the sleep proceed. Bounded by
+    /// `InhibitDelayMaxSec` (logind default 5s), so it reuses the fast emergency
+    /// path rather than a full deactivation.
+    Teardown,
+}
+
+impl SleepPolicyMode {
+    /// Whether this mode runs a long-lived sleep guard at activation.
+    ///
+    /// [`Warn`](Self::Warn) only reports at pre-flight and starts nothing;
+    /// [`Block`](Self::Block) and [`Teardown`](Self::Teardown) both start the
+    /// guard that holds a logind inhibitor for the session.
+    pub fn runs_guard(self) -> bool {
+        matches!(self, SleepPolicyMode::Block | SleepPolicyMode::Teardown)
+    }
+}
+
+/// `[sleep_policy]` configuration table.
+///
+/// Mirrors the other nested tables: every key is optional and unknown keys are
+/// rejected, so a typo fails loudly instead of silently selecting a default.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SleepPolicyConfig {
+    /// How to handle suspend/hibernate while active. Defaults to
+    /// [`SleepPolicyMode::Warn`].
+    #[serde(default)]
+    pub mode: SleepPolicyMode,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -284,6 +380,15 @@ pub struct Config {
     #[serde(default)]
     pub backend_watch: BackendWatchConfig,
 
+    /// What to do about system sleep (suspend/hibernate) while active.
+    ///
+    /// Suspending an active session leaves the hidden environment resident in RAM
+    /// behind the decoy lock screen. Warn-only by default; `block` holds a sleep
+    /// inhibitor for the session and `teardown` runs the bounded emergency
+    /// teardown when the host is about to sleep. See [`SleepPolicyConfig`].
+    #[serde(default)]
+    pub sleep_policy: SleepPolicyConfig,
+
     /// Neutral active-state indicator prepended to the shell prompt while the
     /// hidden environment is active.
     ///
@@ -386,4 +491,5 @@ pub const CONFIG_KEYS: &[&str] = &[
     "color_scheme",
     "persona",
     "backend_watch",
+    "sleep_policy",
 ];

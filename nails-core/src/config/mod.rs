@@ -56,7 +56,7 @@ pub use persona::{PersonaConfig, PersonaMode, persona_home_source};
 // Re-exports for public API - core types
 pub use types::{
     CONFIG_KEYS, CliOverrides, Config, DEFAULT_HIDDEN_VOLUME_ROOT, DEFAULT_OVERLAY_EXCLUSIONS,
-    get_default_hidden_volume_root,
+    SleepPolicyConfig, SleepPolicyMode, get_default_hidden_volume_root,
 };
 
 // Re-exports for public API - leaky exclusion floor

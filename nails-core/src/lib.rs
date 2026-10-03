@@ -99,6 +99,8 @@ pub mod notification;
 
 pub mod runtime_copy;
 
+pub mod sleep_guard;
+
 pub mod watcher;
 
 // Shared string constants (environment-variable names).

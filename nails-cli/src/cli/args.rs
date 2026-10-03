@@ -214,6 +214,9 @@ pub enum Commands {
     /// In-session backend watcher (started at activation as a transient unit)
     #[command(hide = true)]
     Watch,
+    /// Sleep guard holding a logind inhibitor (started at activation as a transient unit)
+    #[command(name = "sleep-guard", hide = true)]
+    SleepGuard,
 }
 
 /// `nails activate` arguments

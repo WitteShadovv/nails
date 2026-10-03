@@ -50,6 +50,7 @@ fn subcommand_name(command: &Commands) -> &'static str {
         Commands::Config(_) => "config",
         Commands::NotifyDispatch => "notify-dispatch",
         Commands::Watch => "watch",
+        Commands::SleepGuard => "sleep-guard",
     }
 }
 

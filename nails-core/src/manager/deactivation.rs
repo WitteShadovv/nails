@@ -388,6 +388,7 @@ impl<F: Filesystem> NailsManager<F> {
         }
         if !crate::runtime_safety::should_skip_host_interaction() {
             crate::runtime_copy::stop_watch_unit();
+            crate::sleep_guard::stop_sleep_guard_unit();
         }
     }
 

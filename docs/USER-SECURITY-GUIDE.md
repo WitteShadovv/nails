@@ -713,6 +713,7 @@ After power-off, DRAM retains data for a period depending on temperature:
 
 **Your responsibility:**
 - Power off completely (not suspend) in threat situations — `nails emergency --poweroff` does this after the teardown
+- Never let the machine suspend or hibernate while a session is active. Suspend keeps the whole session — overlays, the open dm-crypt mapper and the master key — resident in RAM behind the decoy lock screen, so on resume the decoy login unlocks a still-live hidden session. Set the decoy's logind lid switch to `ignore` or `lock` (see `docs/decoy-requirements.md`) and, for defence in depth, set `sleep_policy.mode` in `nails.toml`: `block` holds a sleep inhibitor for the whole session, and `teardown` runs the emergency teardown when the host is about to sleep.
 - Keep physical control of device for 5+ minutes after power-off
 - In extreme scenarios, physically remove and secure RAM modules
 

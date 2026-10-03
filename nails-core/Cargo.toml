@@ -54,6 +54,7 @@ tempfile = { workspace = true }
 colored = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 
 [dev-dependencies]
 # Workspace testing dependencies
