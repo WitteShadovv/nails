@@ -113,6 +113,9 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- Desktop notifications now dispatch through the shared bounded process runner with a cleared,
+  allowlisted environment: the operator's session variables (`XDG_RUNTIME_DIR`,
+  `DBUS_SESSION_BUS_ADDRESS`, display) are passed explicitly while the fixed `PATH` is applied last.
 - The base-config suspicious-reference preflight now matches the configured hidden volume root and
   its backing device (resolved from `/proc/self/mountinfo`) and scans every `.nix` under
   `/etc/nixos` instead of only `hardware-configuration.nix`.
