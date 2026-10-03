@@ -25,6 +25,7 @@ Tier 3 is everything a contributor must pass to merge. Tier 4 catches what a per
 | `.github/workflows/pr-title.yml` | Pull request opened, edited, synchronized, reopened | `pr-title` | 3 | `ubuntu-24.04` | the commit-msg hook |
 | `.github/workflows/e2e.yml` | PRs to `main`, push to `main`, nightly, dispatch, `workflow_call` | `e2e-result` | 3 (affected) and 4 (nightly full) | `runner` input, default `ubuntu-24.04` | `just e2e` |
 | `.github/workflows/e2e-hetzner.yml` | Manual dispatch only | — | 4 | a provisioned Hetzner server | `just e2e` on that runner |
+| `.github/workflows/distro-e2e.yml` | Nightly, `distro-e2e` PR label, dispatch, `workflow_call` | — (informational) | 4 | `runner` input, default `ubuntu-24.04` (KVM) | `nix build .#legacyPackages.x86_64-linux.e2e-distro.<scenario>` |
 | `.github/workflows/scheduled.yml` | Weekly, twice-weekly and monthly schedules, dispatch with a `task` input | — | 4 | `ubuntu-24.04` | `just deny-full`, `just stress`, `cargo bench` |
 | `.github/workflows/reproducibility.yml` | `workflow_call` from `release.yml`, weekly from `scheduled.yml` | — | 4 | `ubuntu-24.04` | `nix build .#nails-release` |
 | `.github/workflows/release.yml` | Push of `v*` tags, dispatch from a tag | — | release | `ubuntu-24.04` (E2E on the `e2e-runner` input) | `python3 -m ci.release check` |
@@ -126,6 +127,15 @@ The target is that `mode=all` finishes in at most 10 shards and about 20 minutes
 - **Run and teardown.** The `e2e` job calls `e2e.yml` with the provisioned runner label; `teardown` deletes the server with `if: always()`, even when the run failed. There is no six-hour budget check and no approval environment.
 - **Secrets.** `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID` and `RUNNER_REGISTRATION` (a fine-grained PAT with repository `administration: write`) live in a `hetzner` deployment environment for secret scoping; the environment carries no required reviewers, so it is not an approval gate. `CACHIX_AUTH_TOKEN` is passed on to `e2e.yml` as usual.
 - **Status.** The server-type ladder, the pinned runner version and KVM nesting need a live dispatch to confirm against current Hetzner inventory; adjust `HCLOUD_CANDIDATES` and `RUNNER_VERSION` in the workflow if a run reports none available.
+
+### The portable distribution lane
+
+`distro-e2e.yml` boots real Debian and Ubuntu cloud images on the NixOS test driver through `numtide/nix-vm-test` (`nix/distro-tests/`), so overlay-only regressions on a non-NixOS host are caught instead of passing unseen. It is informational and gates no merge until promoted to a required check; the NixOS `e2e.yml` suite is unchanged and stays NixOS-only.
+
+- **Trigger.** A nightly schedule, a pull request that gets the `distro-e2e` label, manual dispatch, and `workflow_call`.
+- **Runner.** Each VM needs KVM, so the `runner` input selects where the jobs run (a hosted `ubuntu-24.04` exposes `/dev/kvm`; a self-hosted KVM runner is a label list). The matrix is planned by `python3 -m ci.e2e distro-plan` and kept at or below eight parallel jobs (distributions times their shards).
+- **Coverage.** One smoke scenario per distribution: platform detection, the decoy-persistence preflight, overlay-only activation with a read-only `/usr` guard, the lifecycle through a reboot, and the host-side decoy disk-image leak check with null and positive controls.
+- **Adding a distribution** is one entry in `nix/distro-tests/images.nix`; see `nix/e2e-tests/README.md`. The image hashes and the `nix-vm-test` lock are pinned on a networked KVM host, not in the sandbox.
 
 ### Post-merge contract and the red-main rule
 

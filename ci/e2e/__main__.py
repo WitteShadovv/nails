@@ -14,7 +14,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from . import interactive, plan, resolve, run
+from . import distro, interactive, plan, resolve, run
 from .metadata import Metadata, MetadataError, load_metadata
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -27,7 +27,17 @@ EXIT_INVALID = 1
 EXIT_BAD_INPUT = 2
 
 SUBCOMMANDS = frozenset(
-    {"list", "resolve", "plan", "run", "regen-weights", "interactive", "check", "drift"}
+    {
+        "list",
+        "resolve",
+        "plan",
+        "distro-plan",
+        "run",
+        "regen-weights",
+        "interactive",
+        "check",
+        "drift",
+    }
 )
 
 
@@ -129,6 +139,15 @@ def _command_plan(args: argparse.Namespace) -> int:
         for index, shard in enumerate(split.shards, start=1):
             load = split.loads[index - 1]
             print(f"shard {index}/{count} ({load}s): " + " ".join(shard))
+    return 0
+
+
+def _command_distro_plan(args: argparse.Namespace) -> int:
+    metadata = distro.load_distro_metadata()
+    matrix = distro.plan_distro_matrix(
+        metadata, args.distros, max_jobs=args.max_jobs
+    )
+    print(json.dumps(matrix))
     return 0
 
 
@@ -318,6 +337,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_cmd.set_defaults(handler=_command_plan)
 
+    distro_cmd = commands.add_parser(
+        "distro-plan", help="emit the distro VM smoke matrix as a GitHub matrix"
+    )
+    distro_cmd.add_argument(
+        "distros",
+        nargs="*",
+        help="distributions to run, or all of them when none are named",
+    )
+    distro_cmd.add_argument(
+        "--max-jobs",
+        type=_positive_int,
+        default=distro.MAX_DISTRO_JOBS,
+        help="upper bound on parallel distro jobs (distros x shards)",
+    )
+    distro_cmd.set_defaults(handler=_command_distro_plan)
+
     run_cmd = commands.add_parser("run", help="build resolved tests in one nix build")
     _add_target_args(run_cmd)
     run_cmd.add_argument("--shard", type=_parse_shard, metavar="i/N")
@@ -393,7 +428,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(["run"])
     try:
         return int(args.handler(args))
-    except (plan.InputError, resolve.ResolveError, MetadataError) as exc:
+    except (
+        plan.InputError,
+        resolve.ResolveError,
+        MetadataError,
+        distro.DistroError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_BAD_INPUT
 

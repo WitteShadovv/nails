@@ -7,6 +7,14 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Boots real Debian/Ubuntu cloud images on the NixOS test driver, so the
+    # overlay-only backend is exercised on a non-NixOS host. See
+    # nix/distro-tests/. flake.lock must be regenerated on a networked host to
+    # pin this input; the development sandbox cannot fetch it.
+    nix-vm-test = {
+      url = "github:numtide/nix-vm-test";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -14,6 +22,7 @@
       self,
       nixpkgs,
       rust-overlay,
+      nix-vm-test,
       ...
     }:
     let
@@ -229,6 +238,14 @@
 
       rawE2eTests = import ./nix/e2e-tests { inherit self pkgs; };
       e2eTests = lib.filterAttrs (name: _: !(lib.hasPrefix "_" name)) rawE2eTests;
+
+      # The portable distribution smoke suite (Debian/Ubuntu on nix-vm-test).
+      # Kept separate from the NixOS `e2e` set: it uses a different driver input
+      # and its own CI tier. `_metadata` is the plain data the ci.e2e distro
+      # planner reads.
+      rawDistroTests = import ./nix/distro-tests { inherit self pkgs nix-vm-test; };
+      distroTests = lib.filterAttrs (name: _: !(lib.hasPrefix "_" name)) rawDistroTests;
+      distroMetadata = rawDistroTests._metadata;
       e2eTestMetadata = {
         availableTargets = builtins.attrNames e2eTests;
         leafTests = rawE2eTests._testNames;
@@ -248,6 +265,8 @@
       legacyPackages.${system} = {
         e2e = e2eTests;
         e2e-metadata = e2eTestMetadata;
+        e2e-distro = distroTests;
+        e2e-distro-metadata = distroMetadata;
       };
 
       checks.${system} = import ./nix/checks.nix {

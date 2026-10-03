@@ -177,3 +177,92 @@ allowlist of volatile paths instead (see `tests/forensic/06-snapshot-diff.nix`).
 ## Adding a fixture
 
 Add files under `fixtures/configs/` or `fixtures/schemas/` and reference them from tests via `${./../../fixtures/...}` (from nested tests) or copied paths inside the VM.
+
+## Portable distribution tier (`nix/distro-tests/`)
+
+The suite above runs on `pkgs.testers.runNixOSTest`, whose driver backdoor only
+exists in NixOS guests, so it cannot catch a regression on another distribution.
+The distribution tier under `nix/distro-tests/` boots real Debian and Ubuntu
+cloud images on the same NixOS test driver through
+[`numtide/nix-vm-test`](https://github.com/numtide/nix-vm-test), so the
+overlay-only backend, platform detection, the read-only `/usr` guard and the
+decoy-persistence preflight are exercised on a non-NixOS host. A container tier
+cannot do this: a privileged container cannot host an overlay upper on an
+overlay2 rootfs and cannot exercise journald or a reboot.
+
+Layout:
+
+- `images.nix`: the image table, `name -> { distro, release, format, image }`.
+  Each image is a pinned fixed-output derivation (`pkgs.fetchurl`), so upstream
+  pruning cannot change what the suite runs. **This is the one place to edit.**
+- `lib/distro-vm.nix`: the single call into `nix-vm-test` (`buildVmTest`), so a
+  change in its attribute layout is a one-line fix.
+- `lib/hidden-root.nix`: the loop-backed ext4 (or LUKS, when `cryptsetup` ships)
+  hidden root, mirroring `e2e-tests/lib/backends.nix`, and the volatile-journald
+  switch the preflight needs.
+- `tests/smoke.nix`: the smoke scenario, generated once per image-table entry.
+- `default.nix`: maps the scenario over the table and exposes the metadata.
+
+Each smoke scenario copies the static musl `nails` binary into the guest; asserts
+platform detection selects the overlay-only Debian-family backend; runs the
+decoy-persistence preflight (a stock persistent journal is refused, and passes
+once journald is volatile); activates overlay-only over `/home`, `/etc`, `/srv`,
+`/opt`, `/var`, `/tmp` and `/usr`, writing canaries; asserts a write under
+`/usr`/`/usr/local` fails read-only (checked against a negative control that
+leaves `/usr` writable); runs `status`, `verify`, `emergency` and
+`deactivate` with a reboot; and runs the host-side decoy disk-image check
+(`lib/disk_forensics.py`, shared with the NixOS suite) with null and positive
+controls.
+
+### Adding a distribution
+
+Once a distribution's backend and detection have landed, add one entry to
+`nix/distro-tests/images.nix`:
+
+```nix
+"fedora-41" = cloud {
+  distro = "fedora";          # the nix-vm-test distribution attribute
+  release = "41";
+  url = "https://.../Fedora-Cloud-Base-...-x86_64.qcow2";
+  sha256 = "sha256-...";      # see "Pinning images" below
+};
+```
+
+The scenario, the flake's `e2e-distro` attribute and the CI matrix are all
+derived by mapping over this table, so nothing else changes.
+
+### Running and CI
+
+The tier needs KVM, so it is a VM tier, not a container one. A hosted
+`ubuntu-24.04` runner exposes `/dev/kvm`; a self-hosted KVM runner is selected by
+passing its label list. The CI matrix is planned by
+`python3 -m ci.e2e distro-plan` and kept at or below eight parallel jobs
+(distributions times their shards). `.github/workflows/distro-e2e.yml` runs it on
+a nightly schedule, when a pull request gets the `distro-e2e` label, and on
+manual dispatch, with the runner as an input. The tier is informational and
+gates no merge until promoted to a required check. The NixOS suite in `e2e.yml`
+is unchanged and stays NixOS-only.
+
+Build one scenario directly:
+
+```sh
+nix build -L .#legacyPackages.x86_64-linux.e2e-distro.debian-12-smoke
+```
+
+### Pinning images (deferred, needs network and Nix)
+
+The `sha256` values in `images.nix` ship as `lib.fakeHash` placeholders: the
+development sandbox has no network and no Nix daemon, so they cannot be computed
+there, and `flake.lock` cannot pin the `nix-vm-test` input. Before the suite
+builds, on a networked host with Nix:
+
+1. `nix flake lock` to add and pin `nix-vm-test`.
+2. For each image, `nix store prefetch-file --json <url>` and copy the printed
+   `hash` into `images.nix` (the `buildVmTest` assertion fails loudly on a
+   remaining placeholder).
+3. Mirror the pinned image files into the project binary cache so a pruned
+   upstream URL still resolves.
+4. Confirm the `nix-vm-test` attribute spelling in `lib/distro-vm.nix` against
+   the pinned revision, then
+   `nix build .#legacyPackages.x86_64-linux.e2e-distro.debian-12-smoke` and the
+   Ubuntu scenario on a KVM host.
