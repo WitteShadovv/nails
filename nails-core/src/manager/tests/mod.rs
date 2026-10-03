@@ -25,15 +25,6 @@ mod preflight_runner;
 mod rollback;
 mod state_management;
 
-/// Helper function to check if logs contain a specific string.
-///
-/// Clippy can report this as dead code when linting all targets even though it
-/// is exercised by traced test cases in this module.
-#[allow(dead_code)]
-fn logs_contain(s: &str) -> bool {
-    tracing_test::internal::logs_with_scope_contain("", s)
-}
-
 fn setup_nixos_config_check(fs: &MockFilesystem, hidden_root: &Path) {
     // Base hardware-configuration.nix must exist
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
@@ -228,10 +219,11 @@ fn test_unmount_overlays_single_path_failure() {
     let result = manager.unmount_overlays(mounted_paths);
     assert!(result.is_err(), "Should return error when unmount fails");
 
-    let err_msg = result.unwrap_err().to_string();
+    let err = result.unwrap_err();
+    assert!(matches!(err, NailsError::OverlayError(_)));
     assert!(
-        err_msg.contains("Unmount completed with errors"),
-        "Error should mention unmount failure"
+        err.to_string().contains("/home"),
+        "Error should name the /home target that failed to unmount"
     );
 }
 

@@ -494,15 +494,12 @@ fn test_rollback_tr45_first_mount_fails_error_message() {
 
     let result = manager_arc.lock().unwrap().activate(true);
 
-    assert!(result.is_err());
     let err = result.unwrap_err();
-    let err_msg = err.to_string();
 
-    // TR45: Error should mention /home mount failure specifically
+    // TR45: the failure is the typed overlay mount error naming the /home target.
     assert!(
-        err_msg.contains("/home") && err_msg.contains("mount"),
-        "Error message should mention /home mount failure: {}",
-        err_msg
+        matches!(&err, NailsError::Mount { target, .. } if target == Path::new("/home")),
+        "Expected a Mount error for /home, got: {err:?}"
     );
 }
 
@@ -835,12 +832,12 @@ fn test_rollback_tr50_unmount_fails_error_message() {
         err
     );
 
-    // TR50: Error should name the mount that is still live and point to recovery.
-    let err_msg = err.to_string();
+    // TR50: the variant already carries the "incomplete" meaning; only the
+    // mount path left live is behaviour worth asserting on the rendered text.
     assert!(
-        err_msg.contains("/etc") && err_msg.to_lowercase().contains("incomplete"),
+        err.to_string().contains("/etc"),
         "Error should name the /etc mount still live: {}",
-        err_msg
+        err
     );
 }
 

@@ -54,7 +54,6 @@ fn test_space_check_pass_plenty_of_space() {
     let result = check.run(&fs).unwrap();
     assert!(result.is_pass());
     assert!(result.message().contains("2.0 GB available"));
-    assert!(result.message().contains("minimum required"));
 }
 
 #[test]

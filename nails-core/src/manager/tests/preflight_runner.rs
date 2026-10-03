@@ -288,8 +288,8 @@ fn test_preflight_rejects_state_path_directory() {
     let err = manager.run_preflight_checks(false, false).unwrap_err();
 
     assert!(
-        err.to_string().contains("State path must be a file"),
-        "unexpected error: {err}"
+        matches!(err, NailsError::InvalidState(_)),
+        "a non-file state path must be rejected before any checks run: {err:?}"
     );
 }
 
@@ -564,11 +564,12 @@ fn test_suspicious_reference_preflight_fails_before_activation_state_or_mounts()
 
     match result.unwrap_err() {
         NailsError::PreFlightCheckFailed(failures) => {
-            let (_, message, _) = failures
-                .iter()
-                .find(|(name, _, _)| name == "suspicious-nails-reference")
-                .expect("suspicious-nails-reference failure should be reported");
-            assert!(message.contains("before any side effects"));
+            assert!(
+                failures
+                    .iter()
+                    .any(|(name, _, _)| name == "suspicious-nails-reference"),
+                "suspicious-nails-reference failure should be reported"
+            );
         }
         other => panic!("Expected PreFlightCheckFailed error, got {:?}", other),
     }
@@ -660,7 +661,7 @@ fn test_preflight_flake_builder_fails_when_default_flake_is_missing() {
                 .iter()
                 .find(|(name, _, _)| name == "nixos-build-target")
                 .expect("nixos-build-target failure should be reported");
-            assert!(message.contains("flake.nix not found"));
+            // Behaviour: the check must name the directory it looked in.
             assert!(message.contains(nixos_dir.to_str().unwrap()));
         }
         other => panic!("Expected PreFlightCheckFailed error, got {:?}", other),
@@ -717,7 +718,7 @@ fn test_preflight_fails_when_explicit_flake_is_missing() {
                 .iter()
                 .find(|(name, _, _)| name == "nixos-build-target")
                 .expect("nixos-build-target failure should be reported");
-            assert!(message.contains("flake.nix not found"));
+            // Behaviour: the check must name the explicit flake directory.
             assert!(message.contains(explicit_flake_dir.to_str().unwrap()));
         }
         other => panic!("Expected PreFlightCheckFailed error, got {:?}", other),
@@ -782,15 +783,18 @@ fn test_run_read_only_nixos_preflight_reports_lock_file_problem_before_activatio
     );
 
     let err = manager.run_read_only_nixos_preflight(false).unwrap_err();
-    let err_text = err.to_string();
-    assert!(
-        err_text.contains("flake lock"),
-        "unexpected error: {err_text}"
-    );
-    assert!(
-        err_text.contains("does not run 'nix flake update' automatically"),
-        "unexpected error: {err_text}"
-    );
+    // Behaviour: the read-only preflight blocks on the nixos-build-target check
+    // because the flake lock needs a manual update. Assert the failing check by
+    // name rather than pinning its human-readable message.
+    match err {
+        NailsError::PreFlightCheckFailed(failures) => assert!(
+            failures
+                .iter()
+                .any(|(name, _, _)| name == "nixos-build-target"),
+            "nixos-build-target failure should be reported: {failures:?}"
+        ),
+        other => panic!("expected PreFlightCheckFailed, got {other:?}"),
+    }
 }
 
 #[test]

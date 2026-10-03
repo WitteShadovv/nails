@@ -166,12 +166,10 @@ fn test_status_command_propagates_permission_denied_for_unreadable_state() {
     restore.set_mode(0o600);
     std::fs::set_permissions(&state_path, restore).unwrap();
 
-    match result.unwrap_err() {
-        crate::NailsError::PermissionDenied(msg) => {
-            assert!(msg.contains("Cannot read state file"), "msg={msg}");
-        }
-        other => panic!("expected PermissionDenied, got {other:?}"),
-    }
+    assert!(
+        matches!(result.unwrap_err(), crate::NailsError::PermissionDenied(_)),
+        "an unreadable state file must surface as PermissionDenied"
+    );
 }
 
 // Unit tests for ACTIVE state

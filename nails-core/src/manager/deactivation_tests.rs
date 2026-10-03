@@ -74,7 +74,7 @@ fn request_reboot_falls_back_to_override_reboot_binary_when_systemctl_fails() {
 #[serial]
 fn request_reboot_fails_closed_in_test_runtime() {
     let err = request_reboot().expect_err("request_reboot must be blocked in tests");
-    assert!(err.to_string().contains("Refusing to trigger reboot"));
+    assert!(matches!(err, NailsError::RebootFailed(_)), "{err:?}");
 }
 
 #[test]
@@ -94,7 +94,10 @@ fn reboot_override_never_falls_back_to_real_host_commands() {
 
     let err = dispatch_reboot_candidates(reboot_candidates())
         .expect_err("broken override must not fall back to host binaries");
-    assert!(err.to_string().contains("override failed"));
+    assert!(matches!(&err, NailsError::RebootFailed(_)), "{err:?}");
+    // Behaviour: the override's own failure is surfaced, proving no fallback to
+    // a real host reboot binary was attempted.
+    assert!(err.to_string().contains("override failed"), "{err}");
 }
 
 #[test]

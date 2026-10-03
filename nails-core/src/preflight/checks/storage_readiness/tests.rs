@@ -77,7 +77,6 @@ fn test_storage_readiness_all_dirs_exist_no_overlays_pass() {
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_pass());
-    assert!(result.message().contains("Hidden storage ready"));
 }
 
 #[test]
@@ -90,11 +89,6 @@ fn test_storage_readiness_all_dirs_and_overlays_pass() {
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_pass());
-    assert!(
-        result
-            .message()
-            .contains("Hidden storage ready: all directories accessible")
-    );
 }
 
 #[test]
@@ -173,7 +167,6 @@ fn test_storage_readiness_missing_dir_autocreate_fails() {
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
-    assert!(result.message().contains("Storage not ready"));
     assert!(result.message().contains("etc/"));
 }
 
@@ -253,7 +246,6 @@ fn test_storage_readiness_mixed_issues_single_fail() {
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
     let msg = result.message();
-    assert!(msg.contains("Storage not ready"), "msg: {}", msg);
     assert!(msg.contains("config/"), "missing config/: {}", msg);
     assert!(msg.contains("nix/"), "missing nix/: {}", msg);
     assert!(

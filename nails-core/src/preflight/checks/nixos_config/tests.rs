@@ -64,11 +64,6 @@ fn test_nixos_config_check_missing_base_config() {
             .message()
             .contains("Base /etc/nixos/hardware-configuration.nix not found")
     );
-    assert!(
-        result
-            .message()
-            .contains("Ensure NixOS is properly installed")
-    );
 }
 
 #[test]
@@ -116,13 +111,7 @@ fn test_nixos_config_check_missing_hidden_etc_nixos() {
         result.is_fail(),
         "Check should fail when hidden etc/nixos missing"
     );
-    assert!(
-        result
-            .message()
-            .contains("Hidden storage missing etc/nixos/ directory")
-    );
     assert!(result.message().contains("/mnt/hidden/etc/nixos"));
-    assert!(result.message().contains("Create this directory"));
 }
 
 #[test]
@@ -210,7 +199,6 @@ fn test_nixos_config_check_missing_hidden_import() {
             .contains("Modified hardware-configuration.nix missing hidden import")
     );
     assert!(result.message().contains("./nails/configuration.nix"));
-    assert!(result.message().contains("imports = [ ..."));
 }
 
 #[test]

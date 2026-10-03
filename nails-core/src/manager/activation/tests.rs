@@ -7,7 +7,9 @@ use super::{
 use crate::DecoyWriter;
 use crate::overlay::SurvivingWriter;
 use crate::test_support::EnvGuard;
-use crate::{Config, Filesystem, MockFilesystem, NailsManager, OverlayConfig, SystemState};
+use crate::{
+    Config, Filesystem, MockFilesystem, NailsError, NailsManager, OverlayConfig, SystemState,
+};
 use serial_test::serial;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -111,9 +113,7 @@ fn test_activation_gate_reports_directory_creation_failures() {
     let _env = activation_gate_env(Some(&gate_path), Some(&entered_path));
 
     let err = maybe_block_after_activating_state_transition().expect_err("should fail");
-    let msg = err.to_string();
-
-    assert!(msg.contains("Failed to prepare activation test marker directory"));
+    assert!(matches!(err, NailsError::NixOSError(_)), "{err:?}");
 }
 
 #[test]
@@ -127,9 +127,7 @@ fn test_activation_gate_reports_marker_write_failures() {
     let _env = activation_gate_env(Some(&gate_path), Some(&entered_path));
 
     let err = maybe_block_after_activating_state_transition().expect_err("should fail");
-    let msg = err.to_string();
-
-    assert!(msg.contains("Failed to write activation test marker"));
+    assert!(matches!(err, NailsError::NixOSError(_)), "{err:?}");
 }
 
 #[test]
@@ -686,9 +684,7 @@ fn rebuild_space_check_fails_below_the_rebuild_floor() {
     let err = manager
         .ensure_rebuild_space_before_build(&None)
         .unwrap_err();
-    let text = err.to_string();
-    assert!(text.contains("rebuild_space_mb"), "{text}");
-    assert!(text.contains("rolled back"), "{text}");
+    assert!(matches!(err, NailsError::NixOSError(_)), "{err:?}");
 }
 
 #[test]

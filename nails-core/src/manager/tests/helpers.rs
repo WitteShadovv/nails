@@ -87,9 +87,12 @@ fn test_clean_stale_network_config_logs_removal() {
     let result = clean_stale_network_config(&upper_dir, &fs);
     assert!(result.is_ok());
 
-    // Should log the removal
-    assert!(logs_contain("Cleaned stale resolv.conf"));
-    assert!(logs_contain("DNS preservation"));
+    // Behaviour: the stale resolv.conf is removed from the upper layer so the
+    // live host DNS is inherited rather than a captured nameserver.
+    assert!(
+        !fs.path_exists(&resolv_path).unwrap(),
+        "stale resolv.conf should have been removed"
+    );
 }
 
 #[test]

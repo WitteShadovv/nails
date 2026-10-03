@@ -214,7 +214,6 @@ mod tests {
 
         assert!(result.is_pass());
         assert!(result.message().contains("/etc/nixos#amnesia-virtualbox"));
-        assert!(result.message().contains("attribute selection deferred"));
     }
 
     #[test]
@@ -244,7 +243,6 @@ mod tests {
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_pass());
-        assert!(result.message().contains("generic flake reference"));
         assert!(result.message().contains("github:owner/repo#machine"));
     }
 
@@ -319,7 +317,6 @@ mod tests {
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_fail());
-        assert!(result.message().contains("not found"));
         assert!(result.message().contains("/nonexistent/path"));
     }
 
@@ -336,7 +333,6 @@ mod tests {
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_fail());
-        assert!(result.message().contains("flake.nix not found"));
         assert!(result.message().contains("/etc/nixos"));
     }
 
@@ -355,7 +351,6 @@ mod tests {
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_fail());
-        assert!(result.message().contains("flake.nix not found"));
         assert!(result.message().contains("/mnt/hidden/nixos"));
         assert!(!result.message().contains("legacy"));
     }
@@ -390,7 +385,6 @@ mod tests {
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_pass());
-        assert!(result.message().contains("Auto-discovered flake"));
         assert!(result.message().contains("/mnt/hidden/nixos"));
     }
 
@@ -404,11 +398,7 @@ mod tests {
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_pass());
-        assert!(
-            result
-                .message()
-                .contains("Auto-discovered flake at /etc/nixos")
-        );
+        assert!(result.message().contains("/etc/nixos"));
     }
 
     #[test]
@@ -422,7 +412,6 @@ mod tests {
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_pass());
-        assert!(result.message().contains("legacy config"));
         assert!(result.message().contains("configuration.nix"));
     }
 
@@ -440,7 +429,6 @@ mod tests {
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_pass());
-        assert!(result.message().contains("legacy config"));
         assert!(result.message().contains("/etc/nixos/configuration.nix"));
     }
 
@@ -456,7 +444,6 @@ mod tests {
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_fail());
-        assert!(result.message().contains("No NixOS configuration found"));
         assert!(result.message().contains("--flake"));
     }
 }

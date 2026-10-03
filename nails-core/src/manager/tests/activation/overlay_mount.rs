@@ -356,7 +356,11 @@ fn test_activate_auto_mode_all_mounts_fail_returns_first_mount_error() {
     )));
 
     let err = manager.lock().unwrap().activate(true).unwrap_err();
-    assert!(err.to_string().contains("/etc"));
+    // Auto mode reports the first target that failed to mount, by its typed variant.
+    assert!(
+        matches!(&err, NailsError::Mount { target, .. } if target == Path::new("/etc")),
+        "expected the /etc mount error first, got: {err:?}"
+    );
 
     let state = manager.lock().unwrap().current_state().unwrap();
     assert_eq!(state, SystemState::Inactive);
@@ -433,8 +437,20 @@ fn test_activate_refuses_hidden_root_under_an_auto_target_before_any_mount() {
 
     let err = manager.activate(true).unwrap_err();
 
-    let message = err.to_string();
-    assert!(message.contains("overlay-targets"), "{message}");
+    // The overlay-targets safety check refuses before any mount. Assert the
+    // failing check by name, then that its message names the covered hidden
+    // root and the target that covers it (behaviour, not wording).
+    let message = match err {
+        NailsError::PreFlightCheckFailed(failures) => {
+            let (_, message, _) = failures
+                .iter()
+                .find(|(name, _, _)| name == "overlay-targets")
+                .expect("overlay-targets failure should be reported")
+                .clone();
+            message
+        }
+        other => panic!("expected PreFlightCheckFailed, got {other:?}"),
+    };
     assert!(
         message.contains(&format!(
             "hidden root {} is under overlay target {}",
@@ -462,12 +478,19 @@ fn test_activate_refuses_a_leaky_exclusion_even_without_preflight() {
     config.overlay_exclusions = vec![PathBuf::from("/home")];
     let mut manager = NailsManager::new(fs.clone(), config, state_path);
 
-    let message = manager.activate(true).unwrap_err().to_string();
-
-    assert!(
-        message.contains("leaves /home on the decoy disk"),
-        "{message}"
-    );
+    let err = manager.activate(true).unwrap_err();
+    // The overlay-targets safety check refuses the leaky exclusion before any
+    // mount. Assert the failing check by name and that it names the leaking path.
+    match err {
+        NailsError::PreFlightCheckFailed(failures) => {
+            let (_, message, _) = failures
+                .iter()
+                .find(|(name, _, _)| name == "overlay-targets")
+                .expect("overlay-targets failure should be reported");
+            assert!(message.contains("/home"), "{message}");
+        }
+        other => panic!("expected PreFlightCheckFailed, got {other:?}"),
+    }
     assert!(fs.get_mounted_paths().is_empty(), "nothing may be mounted");
 }
 
@@ -788,11 +811,10 @@ fn test_activate_explicit_mode_empty_overlays_fails() {
         result.is_err(),
         "Activation should fail with empty Explicit mode"
     );
-    let err_msg = result.unwrap_err().to_string();
+    let err = result.unwrap_err();
     assert!(
-        err_msg.contains("no overlays") || err_msg.contains("NO forensic protection"),
-        "Error should mention empty overlays: {}",
-        err_msg
+        matches!(err, NailsError::ConfigError(_)),
+        "empty explicit overlays must be rejected as a config error: {err:?}"
     );
 }
 
@@ -847,8 +869,16 @@ fn test_activation_aborts_when_base_hardware_config_is_dirty() {
     )));
 
     let err = manager.lock().unwrap().activate(false).unwrap_err();
-    assert!(err.to_string().contains("suspicious-nails-reference"));
-    assert!(err.to_string().contains("before any side effects"));
+    // Behaviour: pre-flight blocks activation and names the responsible check.
+    match err {
+        NailsError::PreFlightCheckFailed(failures) => assert!(
+            failures
+                .iter()
+                .any(|(name, _, _)| name == "suspicious-nails-reference"),
+            "suspicious-nails-reference failure should be reported"
+        ),
+        other => panic!("expected PreFlightCheckFailed, got {other:?}"),
+    }
     assert!(
         fs.mock_ops().is_empty(),
         "no side-effecting writes or overlay mounts should be attempted"
@@ -914,7 +944,10 @@ fn test_activation_aborts_when_base_hardware_config_cannot_be_read() {
     )));
 
     let err = manager.lock().unwrap().activate(false).unwrap_err();
-    assert!(err.to_string().contains("File not found in mock"));
+    assert!(
+        matches!(&err, NailsError::IoError(e) if e.kind() == std::io::ErrorKind::NotFound),
+        "expected a not-found I/O error, got: {err:?}"
+    );
     assert!(
         fs.mock_ops().is_empty(),
         "no side-effecting writes or overlay mounts should be attempted"
@@ -978,11 +1011,9 @@ fn test_activate_explicit_mode_rejects_critical_system_root_overlay_bin() {
     )));
 
     let err = manager.lock().unwrap().activate(true).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("Overlaying system tree /bin is blocked"),
-        "got: {err}"
-    );
+    assert!(matches!(&err, NailsError::InvalidState(_)), "got: {err:?}");
+    // Behaviour: the refusal must name the blocked system tree.
+    assert!(err.to_string().contains("/bin"), "got: {err}");
     assert!(fs.mock_ops().is_empty());
 }
 
@@ -1029,7 +1060,10 @@ fn test_activation_rolls_back_when_import_injection_fails_after_etc_mount() {
     )));
 
     let err = manager.lock().unwrap().activate(true).unwrap_err();
-    assert!(err.to_string().contains("Mock write failure"));
+    assert!(
+        matches!(&err, NailsError::IoError(e) if e.kind() == std::io::ErrorKind::PermissionDenied),
+        "expected a permission-denied I/O error, got: {err:?}"
+    );
     assert!(
         !fs.is_mounted(Path::new("/etc")).unwrap(),
         "/etc should be rolled back"
@@ -1149,14 +1183,11 @@ fn test_overlay_mount_failure_error_format() {
     // Skip preflight to directly test mount failure error format
     let _result = manager.lock().unwrap().activate(true);
 
-    // Verify error message format
+    // A best-effort overlay failure is logged as a warning naming the target,
+    // asserted on a stable token rather than the leading warning glyph.
     assert!(
-        logs_contain("⚠ Could not overlay /etc"),
-        "Error message should contain '⚠ Could not overlay /etc'"
-    );
-    assert!(
-        logs_contain("⚠ Could not overlay"),
-        "Error message should follow format '⚠ Could not overlay <path>: <reason>'"
+        logs_contain("Could not overlay /etc"),
+        "best-effort mount failure should warn and name the /etc target"
     );
 }
 

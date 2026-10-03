@@ -72,11 +72,12 @@ fn test_mount_tracker_rollback_all_best_effort_continues_on_failure() {
     let result = tracker.rollback_all();
 
     // Should return error mentioning /etc failure
-    assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
+    let err = result.unwrap_err();
+    assert!(matches!(err, NailsError::OverlayError(_)));
+    // The failing target path is the behaviour that matters, not the wording.
     assert!(
-        err_msg.contains("/etc") && err_msg.contains("Failed to unmount"),
-        "Error should mention /etc unmount failure"
+        err.to_string().contains("/etc"),
+        "Error should name the /etc target that failed to unmount"
     );
 
     // But /home should still be unmounted (best-effort)
@@ -105,11 +106,12 @@ fn test_mount_tracker_rollback_all_aggregate_errors() {
     let result = tracker.rollback_all();
 
     // Should return aggregate error mentioning both failures
-    assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
+    let err = result.unwrap_err();
+    assert!(matches!(err, NailsError::OverlayError(_)));
+    let err_msg = err.to_string();
     assert!(
         err_msg.contains("/home") && err_msg.contains("/etc"),
-        "Error should mention both unmount failures"
+        "Error should name both unmount failures"
     );
 }
 
@@ -422,10 +424,12 @@ fn test_mount_tracker_ephemeral_tmpfs_failure_best_effort() {
         "Rollback should return error for tmpfs failure"
     );
 
-    let err_msg = result.unwrap_err().to_string();
+    let err = result.unwrap_err();
+    assert!(matches!(err, NailsError::OverlayError(_)));
+    let err_msg = err.to_string();
     assert!(
-        err_msg.contains("upper") || err_msg.contains("tmpfs"),
-        "Error should mention tmpfs failure: {}",
+        err_msg.contains("upper"),
+        "Error should name the upper tmpfs target that failed: {}",
         err_msg
     );
 

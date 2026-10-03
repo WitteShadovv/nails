@@ -570,6 +570,11 @@ fn deactivate_surfaces_a_refusing_reboot_guard_as_an_error() {
     drop(env);
 
     assert!(
+        matches!(err, NailsError::NixOSError(_)),
+        "unexpected error: {err:?}"
+    );
+    // The guard's own refusal reason must propagate through unchanged.
+    assert!(
         err.to_string().contains("forced guard"),
         "unexpected error: {err}"
     );

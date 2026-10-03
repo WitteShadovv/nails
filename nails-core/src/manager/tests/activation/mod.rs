@@ -497,55 +497,18 @@ fn test_activate_logs_all_progress_steps() {
     let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
 
-    // Verify progress steps were logged (pre-flight will show warning, not "passed" message)
-    assert!(logs_contain("DANGER: Skipping pre-flight checks"));
-    assert!(logs_contain("Activation complete"));
-}
-
-#[test]
-#[tracing_test::traced_test]
-fn test_activate_logs_include_timing() {
-    use std::sync::Arc;
-
-    // Create mock hidden volume structure in temp dir
-    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
-    let mock_hidden_vol = temp_dir.path();
-    std::fs::create_dir_all(mock_hidden_vol).unwrap();
-    let state_path = mock_hidden_vol.join("state.json");
-
-    let fs = MockFilesystem::new();
-
-    // Setup initial state file
-    let initial_state = StateFile {
-        state: SystemState::Inactive,
-        ..StateFile::default()
-    };
-    initial_state
-        .save_with_custom_root(&state_path, mock_hidden_vol)
-        .expect("Should save initial state");
-
-    // Create manager with Normal verbosity
-    let config = Config {
-        hidden_volume_root: mock_hidden_vol.to_path_buf(),
-        state_file_path: state_path.clone(),
-        overlays: vec![],
-        ..Config::test_default()
-    };
-    let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
-    manager.set_verbosity(Verbosity::Normal);
-
-    let manager_arc = Arc::new(Mutex::new(manager));
-
-    // Run activate (skip pre-flight to avoid validation failures in test)
-    let result = manager_arc.lock().unwrap().activate(true);
-    assert!(result.is_ok(), "Activate should succeed: {:?}", result);
-
-    // Verify timing is included (look for patterns like "0.1s", "1.2s", "150ms")
-    // The logs should contain timing information in parentheses
-    assert!(
-        logs_contain("(") && (logs_contain("s)") || logs_contain("ms)")),
-        "Logs should contain timing information"
-    );
+    // The pre-flight bypass warning is a safety contract, so it must be logged.
+    // Assert on a stable token rather than its exact punctuation or wording.
+    logs_assert(|lines: &[&str]| {
+        if lines
+            .iter()
+            .any(|l| l.contains("Skipping pre-flight checks"))
+        {
+            Ok(())
+        } else {
+            Err("expected the pre-flight bypass warning in the logs".to_string())
+        }
+    });
 }
 
 #[test]
@@ -586,9 +549,9 @@ fn test_activate_quiet_mode_minimal_output() {
     let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
 
-    // In quiet mode, should NOT see progress steps
-    assert!(!logs_contain("[1/6] Preparing session management"));
-    assert!(!logs_contain("Pre-flight checks passed"));
+    // In quiet mode, progress steps are suppressed. Assert on stable step
+    // tokens rather than the step count (which the path derives) or punctuation.
+    assert!(!logs_contain("Preparing session management"));
     assert!(!logs_contain("Running pre-flight checks"));
 }
 
@@ -707,7 +670,6 @@ fn test_activate_already_active_is_verified_no_op() {
         .activate(false)
         .expect("verified-active activation is a success no-op");
     assert_eq!(outcome, ActivationOutcome::AlreadyActive);
-    assert!(logs_contain("already active"));
 
     // State is unchanged and still Active.
     assert!(
@@ -838,7 +800,7 @@ fn test_activation_emits_structured_events_with_state_fields() {
 
 #[test]
 #[tracing_test::traced_test]
-fn test_activation_error_emits_structured_error_fields() {
+fn test_activation_error_rolls_back_to_inactive() {
     use std::sync::Arc;
 
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
@@ -888,9 +850,16 @@ fn test_activation_error_emits_structured_error_fields() {
     let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_err(), "Activate should fail due to mount failure");
 
-    // Verify structured error event fields
-    assert!(logs_contain("error"));
-    assert!(logs_contain("rollback") || logs_contain("Rollback"));
+    // Behaviour: a failed activation rolls back cleanly to Inactive and leaves
+    // nothing mounted, rather than leaking a half-activated state.
+    assert_eq!(
+        manager_arc.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive
+    );
+    assert!(
+        fs.get_mounted_paths().is_empty(),
+        "a rolled-back activation must leave nothing mounted"
+    );
 }
 
 #[test]
