@@ -492,16 +492,14 @@ impl<F: Filesystem> Verifier<F> {
         let owned = crate::filesystem::NailsMounts::from_entries(&entries, hidden_root.as_deref());
 
         // Staging binds and runtime-backed ephemeral overlays are unambiguously
-        // NAILS. A generic overlay is only attributable when a configured hidden
-        // root classified it as persistent (upper/work under that root); without
-        // a hidden root the classifier treats every overlay as persistent, so
-        // those are dropped to avoid flagging foreign overlays.
+        // NAILS and are not reported anywhere else, so this scan owns them. A
+        // persistent overlay (upper/work under the configured hidden root) is
+        // already reported by `check_overlay_upperdirs`, which runs first and
+        // catches it at every mount point, so it is intentionally not repeated
+        // here to avoid double-reporting the same mount.
         let mut suspects: Vec<std::path::PathBuf> = Vec::new();
         suspects.extend(owned.pivot_binds.iter().cloned());
         suspects.extend(owned.ephemeral_overlays.iter().cloned());
-        if hidden_root.is_some() {
-            suspects.extend(owned.persistent_overlays.iter().cloned());
-        }
 
         let is_standard = |p: &Path| STANDARD_OVERLAY_TARGETS.iter().any(|t| p == Path::new(t));
 
