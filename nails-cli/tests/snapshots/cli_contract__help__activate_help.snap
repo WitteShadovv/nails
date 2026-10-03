@@ -94,10 +94,10 @@ Options:
 
           Off by default: activation refuses to SIGKILL a program a user is working in and aborts before mounting. This flag ends them anyway.
 
-      --allow-persistent-journal
-          Accept a persistent decoy journal instead of refusing activation
+      --accept-persistent-decoy
+          Accept a persistent decoy posture instead of refusing activation
 
-          By default activation refuses a host whose systemd-journald keeps a persistent journal on the decoy disk, because records written before `/var` is overlaid can survive deactivation and reboot. This flag accepts that risk.
+          By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. Records those sinks write before the overlays are mounted survive deactivation and reboot. This flag accepts that risk (and overrides `accept_persistent_decoy` in `nails.toml`).
 
   -h, --help
           Print help (see a summary with '-h')

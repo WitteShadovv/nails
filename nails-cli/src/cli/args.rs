@@ -233,14 +233,15 @@ pub struct ActivateArgs {
     #[arg(long)]
     pub terminate_interactive: bool,
 
-    /// Accept a persistent decoy journal instead of refusing activation
+    /// Accept a persistent decoy posture instead of refusing activation
     ///
-    /// By default activation refuses a host whose systemd-journald keeps a
-    /// persistent journal on the decoy disk, because records written before
-    /// `/var` is overlaid can survive deactivation and reboot. This flag accepts
-    /// that risk.
+    /// By default activation refuses a host that keeps forensic traces on the
+    /// decoy disk: a persistent systemd-journald journal, or an active
+    /// rsyslog/syslog-ng/auditd. Records those sinks write before the overlays
+    /// are mounted survive deactivation and reboot. This flag accepts that risk
+    /// (and overrides `accept_persistent_decoy` in `nails.toml`).
     #[arg(long)]
-    pub allow_persistent_journal: bool,
+    pub accept_persistent_decoy: bool,
 }
 
 impl ActivateArgs {
@@ -260,7 +261,7 @@ impl ActivateArgs {
             overlay_only: self.overlay_only,
             risky_services: self.risky_services.map(Into::into),
             terminate_interactive: self.terminate_interactive,
-            allow_persistent_journal: self.allow_persistent_journal,
+            accept_persistent_decoy: self.accept_persistent_decoy,
             ..nails_core::ActivateOptions::default()
         }
     }
@@ -341,12 +342,12 @@ pub struct CheckArgs {
     )]
     pub nixos_flake: Option<String>,
 
-    /// Report a persistent decoy journal as a warning instead of a failure
+    /// Report a persistent decoy posture as a warning instead of a failure
     ///
-    /// Mirrors `activate --allow-persistent-journal` so `check`/`--dry-run`
+    /// Mirrors `activate --accept-persistent-decoy` so `check`/`--dry-run`
     /// reflects what activation would do.
     #[arg(long)]
-    pub allow_persistent_journal: bool,
+    pub accept_persistent_decoy: bool,
 }
 
 /// `nails config` subcommands

@@ -74,6 +74,7 @@ impl Config {
             nixos_flake: None,
             nixos_switch_required: true,
             risky_services: None,
+            accept_persistent_decoy: false,
         }
     }
 }

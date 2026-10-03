@@ -6,6 +6,12 @@
 
 This guide provides essential security information for NAILS users. Read this document completely before using NAILS in any security-sensitive context.
 
+> **Before anything else:** NAILS requires an *amnesic decoy* — a base system
+> that keeps no durable record of the hidden session. Activation fails closed on
+> a persistent journald journal or an active syslog/audit daemon. Read
+> [decoy-requirements.md](decoy-requirements.md) and set your decoy up
+> accordingly before relying on NAILS.
+
 ---
 
 ## Table of Contents

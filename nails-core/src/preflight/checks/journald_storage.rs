@@ -1,7 +1,10 @@
-//! journald persistent-storage pre-flight check
+//! journald persistent-storage detection
 //!
-//! Refuses activation on a host whose systemd-journald keeps a persistent journal
-//! on the decoy disk, unless the operator opts in.
+//! Parses the effective systemd-journald `Storage=` setting and decides whether
+//! the journal persists onto the decoy disk. The verdict is folded into
+//! [`DecoyPersistenceCheck`](super::decoy_posture::DecoyPersistenceCheck), which
+//! fails activation closed on a persistent decoy journal unless the operator
+//! opts in.
 //!
 //! # Security
 //!
@@ -10,12 +13,11 @@
 //! journald fails to re-home onto the overlay — survive on the decoy disk across
 //! deactivation and reboot. The overlay re-home and the detach-time relinquish
 //! shrink that window, but a persistent decoy journal remains a standing hazard,
-//! so this check surfaces it before any state is written. It never vacuums or
+//! so this is surfaced before any state is written. Nothing here vacuums or
 //! rotates the decoy journal: destroying the decoy's own log history is itself a
 //! deniability tell.
 
-use super::super::{CheckResult, PreFlightCheck};
-use crate::{Filesystem, Result};
+use crate::Filesystem;
 use std::path::Path;
 
 /// Main journald configuration file.
@@ -71,87 +73,47 @@ pub fn parse_journald_storage(config_text: &str) -> Option<JournaldStorage> {
     storage
 }
 
-/// Pre-flight check that refuses a persistent decoy journal.
-#[derive(Debug, Default)]
-pub struct JournaldStorageCheck {
-    /// When set, a persistent journal is accepted (reported as a warning) instead
-    /// of failing the check. Wired from `--allow-persistent-journal`.
-    allow_persistent: bool,
+/// The effective `Storage=` of the running journald, read from the main config
+/// file. A missing or unreadable file means journald runs on its built-in
+/// default (`auto`), so that is returned when no explicit value is found.
+pub fn effective_journald_storage<F: Filesystem>(fs: &F) -> JournaldStorage {
+    fs.read_file_content(Path::new(JOURNALD_CONF))
+        .ok()
+        .and_then(|text| parse_journald_storage(&text))
+        .unwrap_or(JournaldStorage::Auto)
 }
 
-impl JournaldStorageCheck {
-    /// Create the check. `allow_persistent` mirrors the override flag.
-    pub fn new(allow_persistent: bool) -> Self {
-        Self { allow_persistent }
+/// Whether `/var/log/journal` is a real on-disk directory (not tmpfs, not
+/// absent), which is what makes `Storage=auto` behave persistently.
+pub fn persistent_journal_dir_present<F: Filesystem>(fs: &F) -> bool {
+    let dir = Path::new(JOURNAL_DIR);
+    if !fs.is_directory(dir).unwrap_or(false) {
+        return false;
     }
+    // A journal directory backed by tmpfs is volatile despite existing.
+    !matches!(
+        fs.get_filesystem_type(dir),
+        Ok(Some(ref fstype)) if fstype == "tmpfs"
+    )
+}
 
-    /// Whether `/var/log/journal` is a real on-disk directory (not tmpfs, not
-    /// absent), which is what makes `Storage=auto` behave persistently.
-    fn persistent_dir_present<F: Filesystem>(fs: &F) -> bool {
-        let dir = Path::new(JOURNAL_DIR);
-        if !fs.is_directory(dir).unwrap_or(false) {
-            return false;
-        }
-        // A journal directory backed by tmpfs is volatile despite existing.
-        !matches!(
-            fs.get_filesystem_type(dir),
-            Ok(Some(ref fstype)) if fstype == "tmpfs"
-        )
-    }
-
-    /// Decide whether the effective storage persists to the decoy disk.
-    fn persists_to_disk(storage: JournaldStorage, dir_present: bool) -> bool {
-        match storage {
-            JournaldStorage::Persistent => true,
-            JournaldStorage::Volatile | JournaldStorage::None => false,
-            JournaldStorage::Auto => dir_present,
-        }
+/// Decide whether the effective storage persists to the decoy disk.
+pub fn journal_persists_to_disk(storage: JournaldStorage, dir_present: bool) -> bool {
+    match storage {
+        JournaldStorage::Persistent => true,
+        JournaldStorage::Volatile | JournaldStorage::None => false,
+        JournaldStorage::Auto => dir_present,
     }
 }
 
-impl<F: Filesystem> PreFlightCheck<F> for JournaldStorageCheck {
-    fn name(&self) -> &'static str {
-        "journald-storage"
-    }
-
-    fn description(&self) -> &'static str {
-        "Validates journald does not persist the decoy journal to disk"
-    }
-
-    fn run(&self, fs: &F) -> Result<CheckResult> {
-        // A missing config file means journald runs on its built-in default
-        // (auto), so treat an unreadable file as "no explicit Storage=".
-        let storage = fs
-            .read_file_content(Path::new(JOURNALD_CONF))
-            .ok()
-            .and_then(|text| parse_journald_storage(&text))
-            .unwrap_or(JournaldStorage::Auto);
-
-        let dir_present = Self::persistent_dir_present(fs);
-
-        if !Self::persists_to_disk(storage, dir_present) {
-            return Ok(CheckResult::Pass(
-                "journald does not persist a journal to the decoy disk".into(),
-            ));
-        }
-
-        if self.allow_persistent {
-            return Ok(CheckResult::Warn(
-                "journald keeps a persistent journal on the decoy disk; accepted via \
-                 --allow-persistent-journal. Records logged before /var is overlaid may \
-                 survive on the decoy disk."
-                    .into(),
-            ));
-        }
-
-        Ok(CheckResult::fail(
-            "journald keeps a persistent journal on the decoy disk (/var/log/journal). \
-             Records written before /var is overlaid can survive deactivation and reboot. \
-             Set Storage=volatile in journald.conf, or pass --allow-persistent-journal to \
-             accept the risk."
-                .to_string(),
-        ))
-    }
+/// Whether the live journald configuration persists the journal to the decoy
+/// disk. Combines the effective `Storage=` value with the presence of an on-disk
+/// `/var/log/journal`.
+pub fn journald_persists_to_decoy<F: Filesystem>(fs: &F) -> bool {
+    journal_persists_to_disk(
+        effective_journald_storage(fs),
+        persistent_journal_dir_present(fs),
+    )
 }
 
 #[cfg(test)]
@@ -201,103 +163,46 @@ mod tests {
 
     #[test]
     fn persists_to_disk_matrix() {
-        assert!(JournaldStorageCheck::persists_to_disk(
-            JournaldStorage::Persistent,
-            false
-        ));
-        assert!(!JournaldStorageCheck::persists_to_disk(
-            JournaldStorage::Volatile,
-            true
-        ));
-        assert!(!JournaldStorageCheck::persists_to_disk(
-            JournaldStorage::None,
-            true
-        ));
-        assert!(JournaldStorageCheck::persists_to_disk(
-            JournaldStorage::Auto,
-            true
-        ));
-        assert!(!JournaldStorageCheck::persists_to_disk(
-            JournaldStorage::Auto,
-            false
-        ));
+        assert!(journal_persists_to_disk(JournaldStorage::Persistent, false));
+        assert!(!journal_persists_to_disk(JournaldStorage::Volatile, true));
+        assert!(!journal_persists_to_disk(JournaldStorage::None, true));
+        assert!(journal_persists_to_disk(JournaldStorage::Auto, true));
+        assert!(!journal_persists_to_disk(JournaldStorage::Auto, false));
     }
 
     #[test]
-    fn fails_on_explicit_persistent_storage() {
+    fn missing_config_defaults_to_auto() {
+        let fs = MockFilesystem::new();
+        assert_eq!(effective_journald_storage(&fs), JournaldStorage::Auto);
+    }
+
+    #[test]
+    fn auto_without_journal_dir_does_not_persist() {
+        let fs = MockFilesystem::new();
+        assert!(!journald_persists_to_decoy(&fs));
+    }
+
+    #[test]
+    fn explicit_persistent_persists() {
         let fs = MockFilesystem::new();
         fs.mock_add_file(JOURNALD_CONF, "[Journal]\nStorage=persistent\n");
-
-        let check = JournaldStorageCheck::new(false);
-        let result = check.run(&fs).unwrap();
-
-        assert!(result.is_fail(), "persistent storage must fail: {result:?}");
+        assert!(journald_persists_to_decoy(&fs));
     }
 
     #[test]
-    fn override_turns_persistent_into_a_warning() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(JOURNALD_CONF, "[Journal]\nStorage=persistent\n");
-
-        let check = JournaldStorageCheck::new(true);
-        let result = check.run(&fs).unwrap();
-
-        assert!(result.is_warn(), "override must warn, not fail: {result:?}");
-    }
-
-    #[test]
-    fn passes_on_volatile_storage() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(JOURNALD_CONF, "[Journal]\nStorage=volatile\n");
-
-        let check = JournaldStorageCheck::new(false);
-        let result = check.run(&fs).unwrap();
-
-        assert!(result.is_pass(), "volatile storage must pass: {result:?}");
-    }
-
-    #[test]
-    fn auto_without_journal_dir_passes() {
-        // No journald.conf and no /var/log/journal: auto stays volatile.
-        let fs = MockFilesystem::new();
-
-        let check = JournaldStorageCheck::new(false);
-        let result = check.run(&fs).unwrap();
-
-        assert!(
-            result.is_pass(),
-            "auto without a journal dir must pass: {result:?}"
-        );
-    }
-
-    #[test]
-    fn auto_with_persistent_journal_dir_fails() {
+    fn auto_with_on_disk_journal_dir_persists() {
         let fs = MockFilesystem::new();
         fs.mock_add_file(JOURNALD_CONF, "[Journal]\nStorage=auto\n");
         fs.mock_set_path_type(JOURNAL_DIR, PathKind::Dir);
-
-        let check = JournaldStorageCheck::new(false);
-        let result = check.run(&fs).unwrap();
-
-        assert!(
-            result.is_fail(),
-            "auto with an on-disk journal dir must fail: {result:?}"
-        );
+        assert!(journald_persists_to_decoy(&fs));
     }
 
     #[test]
-    fn auto_with_tmpfs_journal_dir_passes() {
+    fn auto_with_tmpfs_journal_dir_does_not_persist() {
         let fs = MockFilesystem::new();
         fs.mock_add_file(JOURNALD_CONF, "[Journal]\nStorage=auto\n");
         fs.mock_set_path_type(JOURNAL_DIR, PathKind::Dir);
         fs.mock_set_filesystem_type(Path::new(JOURNAL_DIR), "tmpfs");
-
-        let check = JournaldStorageCheck::new(false);
-        let result = check.run(&fs).unwrap();
-
-        assert!(
-            result.is_pass(),
-            "a tmpfs journal dir is volatile and must pass: {result:?}"
-        );
+        assert!(!journald_persists_to_decoy(&fs));
     }
 }

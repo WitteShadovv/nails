@@ -262,6 +262,13 @@ fn render_template(root: &Path, title: &str) -> String {
 # prompt on a terminal otherwise. Overridden by --risky-services.
 # risky_services = "restart"
 
+# Accept a persistent decoy posture instead of refusing activation. Activation
+# fails closed when the decoy keeps forensic traces: a persistent journald
+# journal on the decoy disk, or an active rsyslog/syslog-ng/auditd. Set true (or
+# pass --accept-persistent-decoy) to accept that risk. See
+# docs/decoy-requirements.md.
+# accept_persistent_decoy = false
+
 # Overlay target selection. "auto" overlays every top-level directory except
 # the exclusions; "explicit" overlays only the [[overlays]] tables below.
 # overlay_mode = "auto"

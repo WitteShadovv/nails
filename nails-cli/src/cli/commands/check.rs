@@ -59,7 +59,7 @@ pub fn execute(
     let manager = super::build_nixos_manager(config, state_path, overlay_only);
 
     let registry =
-        match manager.preflight_registry(overlay_only, true, args.allow_persistent_journal) {
+        match manager.preflight_registry(overlay_only, true, args.accept_persistent_decoy) {
             Ok(registry) => registry,
             Err(e) => {
                 return report_error(

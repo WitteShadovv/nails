@@ -5,6 +5,7 @@
 
 pub mod backend_detect;
 pub mod binary_location;
+pub mod decoy_posture;
 pub mod hidden_volume;
 pub mod host_tools;
 pub mod inherited_autostart;
@@ -27,10 +28,11 @@ pub mod writable_trees;
 // Re-exports for convenient access
 pub use backend_detect::BackendDetectCheck;
 pub use binary_location::BinaryLocationCheck;
+pub use decoy_posture::DecoyPersistenceCheck;
 pub use hidden_volume::HiddenVolumeCheck;
 pub use host_tools::HostToolsCheck;
 pub use inherited_autostart::InheritedAutostartCheck;
-pub use journald_storage::{JournaldStorage, JournaldStorageCheck, parse_journald_storage};
+pub use journald_storage::{JournaldStorage, parse_journald_storage};
 pub use mount_namespace::MountNamespaceCheck;
 pub use nixos_build_target::NixOSBuildTargetCheck;
 pub use nixos_config::NixOSConfigCheck;

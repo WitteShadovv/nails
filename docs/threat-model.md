@@ -5,6 +5,13 @@ later gains full, offline access to the host's disks and firmware. Anything that
 survives a session and reveals that a hidden mode ever existed is evidence, even
 when the hidden data itself stays encrypted.
 
+The overlay model assumes an **amnesic decoy**: a base system that keeps no
+durable record of the hidden session (volatile journald, no classic syslog or
+audit daemon, no swap or hibernation, no persistent crash dumps). NAILS enforces
+the load-bearing parts of this at pre-flight and fails closed otherwise. See
+[decoy-requirements.md](decoy-requirements.md) for the full list and how to
+satisfy it per platform.
+
 ## Bootloader, ESP and EFI NVRAM stay unchanged
 
 **Invariant:** activating and then deactivating the hidden environment must not

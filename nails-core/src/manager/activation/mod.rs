@@ -533,7 +533,7 @@ impl<F: Filesystem> NailsManager<F> {
             options.overlay_only,
             verbosity,
             options.pre_activation_cleanup,
-            options.allow_persistent_journal,
+            options.accept_persistent_decoy,
         )?;
 
         // Step 4: Handle --session kill before taking the StateGuard.

@@ -50,9 +50,10 @@ pub struct RegistryInputs {
     /// `None` (the default used by unit tests that build inputs directly) makes
     /// that check report a skipped Pass instead of inspecting anything.
     pub operator: Option<crate::TargetUser>,
-    /// Accept a persistent decoy journal (the `--allow-persistent-journal` flag):
-    /// the journald-storage check then warns instead of failing.
-    pub allow_persistent_journal: bool,
+    /// Accept a persistent decoy posture (the `--accept-persistent-decoy` flag):
+    /// the decoy-persistence check then warns instead of failing. The effective
+    /// value is this flag OR the `accept_persistent_decoy` config key.
+    pub accept_persistent_decoy: bool,
 }
 
 /// Assemble the pre-flight check registry for a set of [`RegistryInputs`].
@@ -75,8 +76,8 @@ pub fn build_registry<F: Filesystem>(
     inputs: &RegistryInputs,
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
-        BackendDetectCheck, BinaryLocationCheck, HiddenVolumeCheck, HostToolsCheck,
-        InheritedAutostartCheck, JournaldStorageCheck, MountNamespaceCheck, NixOSBuildTargetCheck,
+        BackendDetectCheck, BinaryLocationCheck, DecoyPersistenceCheck, HiddenVolumeCheck,
+        HostToolsCheck, InheritedAutostartCheck, MountNamespaceCheck, NixOSBuildTargetCheck,
         NixOSConfigCheck, OverlayCompatibilityCheck, OverlayTargetsCheck, SnapshotMemoryCheck,
         SpaceCheck, StateCheck, StorageReadinessCheck, SuspiciousNailsReferenceCheck, SwapCheck,
         SymlinkSupportCheck, UpperFsCapabilityCheck, WritableTreesCheck,
@@ -213,11 +214,17 @@ pub fn build_registry<F: Filesystem>(
 
     registry.add_check(Box::new(SwapCheck));
 
-    // Refuses a persistent decoy journal (where hidden-session records logged
-    // before /var is overlaid would survive on the decoy disk) unless the operator
-    // accepts the risk with --allow-persistent-journal.
-    registry.add_check(Box::new(JournaldStorageCheck::new(
-        inputs.allow_persistent_journal,
+    // Refuses a persistent decoy posture (a persistent journald journal or an
+    // active rsyslog/syslog-ng/auditd, where hidden-session records logged before
+    // the overlays are mounted would survive on the decoy disk) unless the
+    // operator accepts the risk with --accept-persistent-decoy or the config key.
+    // Lower-severity findings (root fs type, atime, crash-dump channels,
+    // maintenance timers) are always warnings. The check performs no writes, and
+    // its maintenance-timer sub-check applies only on a NixOS host.
+    let accept_persistent_decoy = inputs.accept_persistent_decoy || config.accept_persistent_decoy;
+    registry.add_check(Box::new(DecoyPersistenceCheck::new(
+        accept_persistent_decoy,
+        inputs.has_config_layer,
     )));
 
     registry.add_check(Box::new(SpaceCheck::new(
@@ -296,7 +303,7 @@ impl<F: Filesystem> NailsManager<F> {
         &self,
         overlay_only: bool,
         read_only: bool,
-        allow_persistent_journal: bool,
+        accept_persistent_decoy: bool,
     ) -> Result<PreFlightRegistry<F>> {
         let flake_target_already_validated = self
             .nixos_builder
@@ -321,7 +328,7 @@ impl<F: Filesystem> NailsManager<F> {
             // Resolve the operator best-effort so the inherited-autostart check
             // can inspect the decoy state; an unresolved operator simply skips it.
             operator: crate::TargetUser::resolve().ok(),
-            allow_persistent_journal,
+            accept_persistent_decoy,
         };
 
         build_registry(&self.filesystem, &self.config, &inputs)
@@ -368,10 +375,10 @@ impl<F: Filesystem> NailsManager<F> {
     pub fn run_preflight_checks(
         &self,
         overlay_only: bool,
-        allow_persistent_journal: bool,
+        accept_persistent_decoy: bool,
     ) -> Result<()> {
         // Activation keeps the auto-creating storage check: `read_only = false`.
-        let registry = self.preflight_registry(overlay_only, false, allow_persistent_journal)?;
+        let registry = self.preflight_registry(overlay_only, false, accept_persistent_decoy)?;
 
         // Run all checks (always get full results for display)
         let (results, all_passed) = registry.run_all_detailed(&self.filesystem);

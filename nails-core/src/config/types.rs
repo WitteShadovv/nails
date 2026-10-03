@@ -318,6 +318,24 @@ pub struct Config {
     /// ```
     #[serde(default)]
     pub risky_services: Option<RiskyServicePolicy>,
+
+    /// Accept a persistent decoy posture instead of refusing activation.
+    ///
+    /// By default activation fails closed when the decoy keeps forensic traces:
+    /// a persistent systemd-journald journal on the decoy disk, or an active
+    /// rsyslog/syslog-ng/auditd. Records those sinks write before the overlays
+    /// are mounted survive on the decoy disk across deactivation and reboot. Set
+    /// this to `true` (or pass `--accept-persistent-decoy`) to accept that risk;
+    /// the decoy-persistence check then warns instead of failing. Lower-severity
+    /// findings (root filesystem type, atime policy, crash-dump channels,
+    /// maintenance timers) are always warnings regardless of this setting.
+    ///
+    /// **Example**:
+    /// ```toml
+    /// accept_persistent_decoy = true
+    /// ```
+    #[serde(default = "super::defaults::default_accept_persistent_decoy")]
+    pub accept_persistent_decoy: bool,
 }
 
 /// Every top-level key `nails.toml` accepts, in the order they are documented
@@ -340,6 +358,7 @@ pub const CONFIG_KEYS: &[&str] = &[
     "nixos_flake",
     "nixos_switch_required",
     "risky_services",
+    "accept_persistent_decoy",
     "color_scheme",
     "persona",
 ];

@@ -34,7 +34,7 @@ fn build_registry_includes_the_shared_checks() {
         flake_target_already_validated: false,
         selected_flake_dir: None,
         operator: None,
-        allow_persistent_journal: false,
+        accept_persistent_decoy: false,
     };
 
     let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
@@ -69,7 +69,7 @@ fn overlay_only_registry_drops_the_nixos_checks() {
         flake_target_already_validated: false,
         selected_flake_dir: None,
         operator: None,
-        allow_persistent_journal: false,
+        accept_persistent_decoy: false,
     };
 
     let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
@@ -94,7 +94,7 @@ fn fhs_host_registry_drops_the_nixos_checks_without_overlay_only() {
         flake_target_already_validated: false,
         selected_flake_dir: None,
         operator: None,
-        allow_persistent_journal: false,
+        accept_persistent_decoy: false,
     };
 
     let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
@@ -154,7 +154,7 @@ fn read_only_registry_creates_nothing() {
         flake_target_already_validated: false,
         selected_flake_dir: None,
         operator: None,
-        allow_persistent_journal: false,
+        accept_persistent_decoy: false,
     };
 
     let registry = build_registry(&fs, &config, &inputs).expect("registry builds");

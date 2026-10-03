@@ -845,3 +845,19 @@ fn risky_services_parses_restart_and_skip() {
 fn risky_services_rejects_unknown_value() {
     assert!(toml::from_str::<Config>("risky_services = \"ignore\"").is_err());
 }
+
+#[test]
+fn accept_persistent_decoy_defaults_to_false() {
+    let unset: Config = toml::from_str("").unwrap();
+    assert!(!unset.accept_persistent_decoy);
+
+    let set: Config = toml::from_str("accept_persistent_decoy = true").unwrap();
+    assert!(set.accept_persistent_decoy);
+}
+
+#[test]
+fn strict_loader_rejects_misspelled_accept_persistent_decoy() {
+    // deny_unknown_fields: a typo'd key must be refused, not silently ignored.
+    assert!(toml::from_str::<Config>("accept_persistent_decoyy = true").is_err());
+    assert!(toml::from_str::<Config>("accept_persistant_decoy = true").is_err());
+}

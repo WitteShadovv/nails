@@ -27,6 +27,12 @@
   # No swap for forensic safety
   swapDevices = lib.mkForce [ ];
 
+  # Model an amnesic decoy: journald keeps no persistent journal on the decoy
+  # disk, so the decoy-persistence pre-flight check passes and the E2E suite
+  # exercises the supported posture. A test that wants to exercise the refusal
+  # path overrides this back to "persistent".
+  services.journald.storage = lib.mkDefault "volatile";
+
   # Test user with sudo privileges
   users.users.testuser = {
     isNormalUser = true;

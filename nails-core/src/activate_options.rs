@@ -130,14 +130,14 @@ pub struct ActivateOptions {
     /// validates the flake post-overlay, while a real `--no-preflight` opts out.
     pub skip_flake_validation: bool,
 
-    /// Accept a persistent decoy journal (the `--allow-persistent-journal` flag).
+    /// Accept a persistent decoy posture (the `--accept-persistent-decoy` flag).
     ///
-    /// Off by default: the journald-storage pre-flight check fails when
-    /// systemd-journald keeps a persistent journal on the decoy disk. Setting
-    /// this downgrades that failure to a warning, so an operator who understands
-    /// that records logged before `/var` is overlaid may survive on the decoy can
-    /// proceed anyway.
-    pub allow_persistent_journal: bool,
+    /// Off by default: the decoy-persistence pre-flight check fails closed when
+    /// the decoy keeps a persistent journald journal on disk or runs an active
+    /// rsyslog/syslog-ng/auditd. Setting this downgrades that failure to a
+    /// warning, so an operator who understands that records logged before the
+    /// overlays are mounted may survive on the decoy can proceed anyway.
+    pub accept_persistent_decoy: bool,
 }
 
 impl Default for ActivateOptions {
@@ -158,7 +158,7 @@ impl Default for ActivateOptions {
             session_kill_confirmed: false,
             pre_activation_cleanup: DEFAULT_PRE_ACTIVATION_CLEANUP,
             skip_flake_validation: false,
-            allow_persistent_journal: false,
+            accept_persistent_decoy: false,
         }
     }
 }
@@ -365,7 +365,7 @@ mod tests {
             session_kill_confirmed: false,
             pre_activation_cleanup: true,
             skip_flake_validation: false,
-            allow_persistent_journal: false,
+            accept_persistent_decoy: false,
         };
         assert!(opts.validate().is_ok());
     }

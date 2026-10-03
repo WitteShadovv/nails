@@ -67,6 +67,11 @@ pub(crate) const AUTO_GENERATED_HIDDEN_CONFIGURATION: &str = r#"{ config, lib, p
 # setting below is commented out: uncomment the ones you want and keep the file
 # valid Nix (the trailing attribute set must stay intact).
 {
+  # Force the decoy's automatic upgrade off while the hidden session is active.
+  # An unattended rebuild would rewrite the decoy system profile and can touch
+  # EFI NVRAM, both of which are forensic tells; this stays on unconditionally.
+  system.autoUpgrade.enable = lib.mkForce false;
+
   # Keep the systemd journal in RAM so the hidden session leaves no log trail on
   # the disk.
   # services.journald.extraConfig = ''

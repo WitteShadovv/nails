@@ -26,7 +26,7 @@ impl<F: Filesystem> NailsManager<F> {
         overlay_only: bool,
         verbosity: Verbosity,
         pre_activation_cleanup: bool,
-        allow_persistent_journal: bool,
+        accept_persistent_decoy: bool,
     ) -> Result<()> {
         // The overlay-target floor holds even with --no-preflight, and runs
         // before every side effect below (symlink probe, history cleanup,
@@ -196,7 +196,7 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         let step_timer = Stopwatch::start();
-        self.run_preflight_checks(overlay_only, allow_persistent_journal)?;
+        self.run_preflight_checks(overlay_only, accept_persistent_decoy)?;
 
         if verbosity >= Verbosity::Normal {
             // Pre-flight checks event with duration_ms field

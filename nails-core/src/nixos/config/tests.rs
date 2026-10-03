@@ -1294,3 +1294,24 @@ fn test_stage_hidden_config_symlink_real_filesystem_creates_expected_symlink() {
     assert_eq!(config_mode, 0o600);
     assert!(config_content.contains("Hidden-session configuration"));
 }
+
+#[test]
+fn generated_hidden_module_force_disables_auto_upgrade() {
+    // The hidden module must switch the decoy's automatic upgrade off
+    // unconditionally: an unattended rebuild rewrites the decoy profile and can
+    // touch EFI NVRAM while the hidden session is active. It is an active
+    // setting, not a commented template line.
+    assert!(
+        AUTO_GENERATED_HIDDEN_CONFIGURATION
+            .contains("system.autoUpgrade.enable = lib.mkForce false;"),
+        "hidden module must force-disable system.autoUpgrade"
+    );
+    let active_line = AUTO_GENERATED_HIDDEN_CONFIGURATION
+        .lines()
+        .find(|line| line.contains("system.autoUpgrade.enable"))
+        .expect("autoUpgrade line present");
+    assert!(
+        !active_line.trim_start().starts_with('#'),
+        "the autoUpgrade force-disable must be active, not commented: {active_line:?}"
+    );
+}

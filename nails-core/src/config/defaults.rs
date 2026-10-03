@@ -132,6 +132,10 @@ pub(super) fn default_nixos_switch_required() -> bool {
     true
 }
 
+pub(super) fn default_accept_persistent_decoy() -> bool {
+    false
+}
+
 pub(super) fn default_log_path() -> PathBuf {
     // Replaced by `{hidden_volume_root}/logs` when a config file omits it
     PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs")
@@ -194,6 +198,7 @@ impl Default for Config {
             nixos_flake: None,
             nixos_switch_required: true,
             risky_services: None,
+            accept_persistent_decoy: false,
         }
     }
 }

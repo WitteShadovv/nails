@@ -62,7 +62,8 @@ NAILS is designed for a narrow threat model and operational style.
 | Hidden storage backend | Any mounted, writable Linux filesystem that can host an overlayfs upper (symlinks, trusted xattrs, `d_type`, whiteouts) — e.g. ext4, xfs, btrfs, f2fs. NFS, CIFS/SMB, 9p, most FUSE mounts, and FAT/exFAT/NTFS cannot. See [docs/backends.md](docs/backends.md) for what is tested and the hazards of each backend. |
 | Root access | Required for `activate`, `deactivate`, and `emergency` |
 | Rust 1.93+ | Only needed to build from source |
-| Impermanence-style setup | Strongly recommended for the strongest documented posture |
+| Amnesic decoy | Required. The decoy must keep no durable record of the hidden session: volatile journald, no active rsyslog/syslog-ng/auditd, no swap or hibernation. Activation fails closed otherwise (override with `--accept-persistent-decoy`). See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
+| Impermanence-style setup | Strongly recommended for the strongest documented posture; see [docs/decoy-requirements.md](docs/decoy-requirements.md) |
 
 ### Important constraints
 
