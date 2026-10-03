@@ -88,6 +88,22 @@ pub struct DeactivationReport {
     /// `Some(true)` when every decoy history file was verified small afterwards,
     /// `Some(false)` when one was still large enough to carry artifacts.
     pub history_truncation_verified: Option<bool>,
+
+    /// Whether the volatile runtime journal under `/run/log/journal` was scrubbed
+    /// after unmount.
+    ///
+    /// journald's volatile store keeps a hidden session's records in RAM on a
+    /// decoy with no persistent journal; `/run` is never overlaid, so teardown
+    /// scrubs it explicitly once journald has been restarted onto the decoy.
+    pub runtime_journal_scrubbed: bool,
+
+    /// Whether only a full reboot is a complete remedy.
+    ///
+    /// `true` after a teardown that does not reboot on its own (emergency and
+    /// recovery): the on-disk and runtime journals are handled, but kernel and RAM
+    /// residue of the hidden session can only be cleared by powering the machine
+    /// off, so the operator is warned.
+    pub reboot_recommended: bool,
 }
 
 impl DeactivationReport {
@@ -181,6 +197,21 @@ impl std::fmt::Display for DeactivationReport {
             for warning in &self.post_unmount_cleanup.warnings {
                 writeln!(f, "  ⚠ {}", warning)?;
             }
+        }
+
+        if self.runtime_journal_scrubbed {
+            writeln!(f)?;
+            writeln!(f, "✓ Runtime journal scrubbed (/run/log/journal)")?;
+        }
+
+        if self.reboot_recommended {
+            writeln!(f)?;
+            writeln!(
+                f,
+                "⚠ Only a full reboot is a complete remedy: this teardown does not \
+                 reboot, so kernel and RAM residue of the hidden session remains until \
+                 the machine is powered off."
+            )?;
         }
 
         if self.is_successful() {

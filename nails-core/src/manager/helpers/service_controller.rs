@@ -502,6 +502,24 @@ impl ServiceController {
         run_journalctl(&["--flush"]).map(|_| ())
     }
 
+    /// Rotate the active journal files so journald closes them.
+    ///
+    /// `journalctl --rotate` makes journald archive the journals it currently has
+    /// open and start fresh ones. At teardown, after journald has been restarted
+    /// onto the decoy `/var`, rotating forces it to close the active runtime files
+    /// under `/run/log/journal` before they are removed, so the removal does not
+    /// orphan inodes journald still holds open. Best-effort: a host without
+    /// journald simply has nothing to rotate.
+    pub fn rotate_journal() -> std::result::Result<(), std::io::Error> {
+        if Self::should_skip() {
+            #[cfg(test)]
+            recorder::record("journalctl:rotate");
+            return Ok(());
+        }
+
+        run_journalctl(&["--rotate"]).map(|_| ())
+    }
+
     /// List the names of the currently active service units.
     ///
     /// Runs `systemctl list-units --type=service --state=active --no-legend

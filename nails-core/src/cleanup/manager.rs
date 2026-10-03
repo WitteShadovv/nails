@@ -284,6 +284,85 @@ impl<F: Filesystem> CleanupManager<F> {
         }
     }
 
+    /// Remove the volatile runtime journal under `/run/log/journal`.
+    ///
+    /// journald's volatile store (`Storage=volatile`, or `auto` with no
+    /// persistent `/var/log/journal` — the recommended decoy posture) keeps every
+    /// record a hidden session produced in RAM at `/run/log/journal`. `/run` is
+    /// never overlaid, so those records survive an emergency teardown, which does
+    /// not reboot, and anyone at the machine can then read the hidden session's
+    /// service lifecycle, sudo invocations and user-unit stderr with `journalctl`.
+    ///
+    /// Run at teardown after journald has been restarted onto the decoy `/var` and
+    /// the active runtime files rotated, this removes the per-machine journal
+    /// directories so the hidden-session runtime records are gone. All runtime
+    /// files are removed rather than only those newer than activation: the store
+    /// is entirely volatile and journald recreates it, so clearing it wholesale is
+    /// both simpler and leaves no hidden-session residue, at the cost of also
+    /// dropping pre-activation decoy runtime entries — acceptable for an
+    /// anti-forensic teardown.
+    ///
+    /// This is a decoy-side scrub of the host's own volatile store and is
+    /// deliberately *not* bound by the hidden-volume guard that governs
+    /// [`LogCleaner`](super::logs::LogCleaner); that guard protects paths under
+    /// the hidden volume, which `/run/log/journal` is not. Operates on the
+    /// injected [`Filesystem`], so tests exercise it against a mock. Best-effort:
+    /// a missing store is a no-op and every removal outcome is recorded on the
+    /// report.
+    pub fn scrub_runtime_journal(&self, report: &mut CleanupReport) {
+        let journal_root = Path::new("/run/log/journal");
+
+        match self.filesystem.path_exists(journal_root) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                let msg = format!(
+                    "Could not check the runtime journal {}: {}",
+                    journal_root.display(),
+                    e
+                );
+                output::warn(&msg);
+                report.add_error(msg);
+                return;
+            }
+        }
+
+        if !matches!(self.filesystem.is_directory(journal_root), Ok(true)) {
+            return;
+        }
+
+        let entries = match self.filesystem.list_directory(journal_root) {
+            Ok(entries) => entries,
+            Err(e) => {
+                let msg = format!(
+                    "Could not list the runtime journal {}: {}",
+                    journal_root.display(),
+                    e
+                );
+                output::warn(&msg);
+                report.add_error(msg);
+                return;
+            }
+        };
+
+        for entry in entries {
+            match self.filesystem.remove_dir_all(&entry) {
+                Ok(()) => {
+                    report.add_cleaned(format!("runtime journal removed: {}", entry.display()));
+                }
+                Err(e) => {
+                    let msg = format!(
+                        "Could not remove runtime journal {}: {}",
+                        entry.display(),
+                        e
+                    );
+                    output::warn(&msg);
+                    report.add_error(msg);
+                }
+            }
+        }
+    }
+
     pub fn config(&self) -> &CleanupConfig {
         &self.config
     }

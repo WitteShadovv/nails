@@ -1376,3 +1376,72 @@ fn test_cleanup_manager_uses_secure_delete_when_configured() {
         report.cleaned_items, has_secure_delete_note
     );
 }
+
+// ----- runtime journal scrub (/run/log/journal) -----
+
+fn runtime_journal_scrubber(fs: MockFilesystem) -> CleanupManager<MockFilesystem> {
+    CleanupManager::new(fs, CleanupConfig::default(), CleanupMode::default())
+}
+
+#[test]
+fn scrub_runtime_journal_removes_machine_directories() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/run/log/journal", PathKind::Dir);
+    let machine_dir = PathBuf::from("/run/log/journal/0a1b2c3d");
+    fs.mock_set_path_type(machine_dir.to_str().unwrap(), PathKind::Dir);
+    fs.mock_set_directory_contents(Path::new("/run/log/journal"), vec![machine_dir.clone()]);
+
+    let manager = runtime_journal_scrubber(fs.clone());
+    let mut report = CleanupReport::new(CleanupMode::default());
+    manager.scrub_runtime_journal(&mut report);
+
+    assert!(
+        report
+            .cleaned_items
+            .iter()
+            .any(|item| item.contains("0a1b2c3d")),
+        "the removed machine journal should be recorded: {:?}",
+        report.cleaned_items
+    );
+    assert!(
+        report.errors.is_empty(),
+        "no errors expected: {:?}",
+        report.errors
+    );
+    assert!(
+        !fs.path_exists(&machine_dir).unwrap(),
+        "the machine journal directory must be gone"
+    );
+}
+
+#[test]
+fn scrub_runtime_journal_is_a_noop_when_the_store_is_absent() {
+    let fs = MockFilesystem::new();
+    // /run/log/journal is not configured to exist.
+    let manager = runtime_journal_scrubber(fs);
+    let mut report = CleanupReport::new(CleanupMode::default());
+    manager.scrub_runtime_journal(&mut report);
+
+    assert!(report.cleaned_items.is_empty());
+    assert!(report.errors.is_empty());
+}
+
+#[test]
+fn scrub_runtime_journal_records_a_removal_failure() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/run/log/journal", PathKind::Dir);
+    let machine_dir = PathBuf::from("/run/log/journal/deadbeef");
+    fs.mock_set_path_type(machine_dir.to_str().unwrap(), PathKind::Dir);
+    fs.mock_set_directory_contents(Path::new("/run/log/journal"), vec![machine_dir.clone()]);
+    fs.mock_set_remove_should_fail(machine_dir.to_str().unwrap(), true);
+
+    let manager = runtime_journal_scrubber(fs);
+    let mut report = CleanupReport::new(CleanupMode::default());
+    manager.scrub_runtime_journal(&mut report);
+
+    assert!(
+        report.errors.iter().any(|e| e.contains("deadbeef")),
+        "a failed removal must be recorded: {:?}",
+        report.errors
+    );
+}

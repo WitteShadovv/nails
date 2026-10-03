@@ -1303,3 +1303,221 @@ fn test_normal_deactivate_on_untrusted_state_still_refuses() {
         "normal deactivate must not touch the mount table on an untrusted state"
     );
 }
+
+// ========== journal handling at teardown (T-113) ==========
+
+/// A /var-overlaid emergency teardown relinquishes the persistent journal before
+/// the unmount, restarts journald onto the decoy /var, then rotates and scrubs the
+/// volatile runtime journal under /run/log/journal — in that order.
+#[test]
+#[serial]
+fn emergency_teardown_handles_journal_in_order_and_scrubs_runtime_store() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let mock_hidden_vol = temp_dir.path();
+    std::fs::create_dir_all(mock_hidden_vol).unwrap();
+    let state_path = mock_hidden_vol.join("state.json");
+
+    let fs = MockFilesystem::new();
+    setup_deactivation_system_profile(&fs);
+    fs.mock_set_path_exists("/", true);
+
+    let upper_dir = mock_hidden_vol.join("overlays/var/upper");
+    let work_dir = mock_hidden_vol.join("overlays/var/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+    fs.mock_set_mounted(Path::new("/var"), true);
+
+    // Plant a volatile runtime journal so the scrub has something to remove.
+    fs.mock_set_path_type("/run/log/journal", PathKind::Dir);
+    let machine_journal = PathBuf::from("/run/log/journal/abcd1234");
+    fs.mock_set_path_type(machine_journal.to_str().unwrap(), PathKind::Dir);
+    fs.mock_set_directory_contents(Path::new("/run/log/journal"), vec![machine_journal.clone()]);
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlay_mode: crate::OverlayMode::Explicit,
+        overlays: vec![OverlayConfig {
+            name: "var".to_string(),
+            lower: PathBuf::from("/"),
+            upper: upper_dir.clone(),
+            work: work_dir.clone(),
+            target: PathBuf::from("/var"),
+        }],
+        ..Config::test_default()
+    };
+
+    let fs_clone = fs.clone();
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        config,
+        state_path.clone(),
+    )));
+
+    let mut overlay_status = HashMap::new();
+    overlay_status.insert(
+        PathBuf::from("/var"),
+        OverlayInfo {
+            mount_method: Default::default(),
+            mount_path: PathBuf::from("/var"),
+            lower_dir: PathBuf::from("/"),
+            upper_dir: upper_dir.clone(),
+            work_dir: work_dir.clone(),
+            mounted_at: Utc::now(),
+        },
+    );
+    manager
+        .lock()
+        .unwrap()
+        .force_state(SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/var")],
+            decoy_writers: Vec::new(),
+        })
+        .unwrap();
+    {
+        let mgr = manager.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
+        if let Some(ref mut state_file) = *cached {
+            state_file.overlay_status = overlay_status;
+        }
+    }
+
+    let _ = crate::manager::helpers::drain_recorded_service_actions();
+
+    let report = manager.lock().unwrap().emergency_deactivate();
+    assert!(
+        report.is_ok(),
+        "emergency teardown should succeed: {report:?}"
+    );
+    let report = report.unwrap();
+
+    let actions = crate::manager::helpers::drain_recorded_service_actions();
+    let idx = |needle: &str| {
+        actions
+            .iter()
+            .position(|a| a == needle)
+            .unwrap_or_else(|| panic!("missing {needle} in {actions:?}"))
+    };
+
+    let relinquish = idx("journalctl:relinquish-var");
+    let restart_start = idx("start:systemd-journald");
+    let rotate = idx("journalctl:rotate");
+
+    assert!(
+        relinquish < restart_start,
+        "relinquish-var must precede the journald restart: {actions:?}"
+    );
+    assert!(
+        restart_start < rotate,
+        "rotate must follow the journald restart: {actions:?}"
+    );
+
+    assert!(
+        report.runtime_journal_scrubbed,
+        "the report must record the runtime journal scrub"
+    );
+    assert!(
+        report
+            .cleanup_report
+            .cleaned_items
+            .iter()
+            .any(|item| item.contains("abcd1234")),
+        "the machine runtime journal should be scrubbed: {:?}",
+        report.cleanup_report.cleaned_items
+    );
+    assert!(
+        !fs_clone.path_exists(&machine_journal).unwrap(),
+        "the runtime journal directory must be gone after the scrub"
+    );
+    assert!(
+        report.reboot_recommended,
+        "emergency teardown does not reboot, so a reboot must be recommended"
+    );
+}
+
+/// A normal (rebooting) deactivation does not set the reboot recommendation: the
+/// reboot is part of the flow, so there is no residual-residue warning to raise.
+#[test]
+#[serial]
+fn normal_deactivation_does_not_recommend_a_reboot() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let mock_hidden_vol = temp_dir.path();
+    std::fs::create_dir_all(mock_hidden_vol).unwrap();
+    let state_path = mock_hidden_vol.join("state.json");
+
+    let fs = MockFilesystem::new();
+    setup_deactivation_system_profile(&fs);
+    fs.mock_set_path_exists("/", true);
+    let upper_dir = mock_hidden_vol.join("overlays/home/upper");
+    let work_dir = mock_hidden_vol.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+    fs.mock_set_mounted(Path::new("/home"), true);
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        log_path: mock_hidden_vol.join("logs"),
+        overlay_mode: crate::OverlayMode::Explicit,
+        overlays: vec![OverlayConfig {
+            name: "home".to_string(),
+            lower: PathBuf::from("/"),
+            upper: upper_dir.clone(),
+            work: work_dir.clone(),
+            target: PathBuf::from("/home"),
+        }],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs,
+        config,
+        state_path.clone(),
+    )));
+
+    let mut overlay_status = HashMap::new();
+    overlay_status.insert(
+        PathBuf::from("/home"),
+        OverlayInfo {
+            mount_method: Default::default(),
+            mount_path: PathBuf::from("/home"),
+            lower_dir: PathBuf::from("/"),
+            upper_dir: upper_dir.clone(),
+            work_dir: work_dir.clone(),
+            mounted_at: Utc::now(),
+        },
+    );
+    manager
+        .lock()
+        .unwrap()
+        .force_state(SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
+        })
+        .unwrap();
+    {
+        let mgr = manager.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
+        if let Some(ref mut state_file) = *cached {
+            state_file.overlay_status = overlay_status;
+        }
+    }
+
+    // In the test runtime `deactivate()` reaches success without a real reboot.
+    let mut env = EnvGuard::lock();
+    env.set("NAILS_TEST_RUNTIME", "1");
+    let report = manager.lock().unwrap().deactivate();
+    drop(env);
+
+    assert!(report.is_ok(), "deactivation should succeed: {report:?}");
+    assert!(
+        !report.unwrap().reboot_recommended,
+        "a rebooting deactivation must not raise the residual-residue warning"
+    );
+}

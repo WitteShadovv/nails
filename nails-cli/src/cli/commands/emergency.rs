@@ -207,6 +207,8 @@ struct EmergencyData {
     cleanup_errors: Vec<String>,
     /// Whether the page cache was dropped after unmount.
     page_cache_dropped: bool,
+    /// Whether the volatile runtime journal under `/run/log/journal` was scrubbed.
+    runtime_journal_scrubbed: bool,
     /// Result of the opt-in post-unmount history-truncation check, if it ran.
     history_truncation_verified: Option<bool>,
     /// The exact commands to close the encrypted backend.
@@ -239,6 +241,7 @@ fn print_emergency_json(
         force_detached_overlays: report.force_detached_overlays.clone(),
         cleanup_errors: report.cleanup_report.errors.clone(),
         page_cache_dropped: report.page_cache_dropped,
+        runtime_journal_scrubbed: report.runtime_journal_scrubbed,
         history_truncation_verified: report.history_truncation_verified,
         backend_close_commands: backend_commands.to_vec(),
         power_action: power_action_name(power_action),
@@ -284,6 +287,10 @@ fn render_emergency_success(
 
     if report.page_cache_dropped {
         println!("  Page cache dropped");
+    }
+
+    if report.runtime_journal_scrubbed {
+        println!("  Runtime journal scrubbed (/run/log/journal)");
     }
 
     if !report.cleanup_report.errors.is_empty() {

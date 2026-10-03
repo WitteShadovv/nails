@@ -578,6 +578,8 @@ impl<F: Filesystem> NailsManager<F> {
                     force_detached_overlays: Vec::new(),
                     page_cache_dropped: false,
                     history_truncation_verified: None,
+                    runtime_journal_scrubbed: false,
+                    reboot_recommended: false,
                 });
             }
         }
@@ -695,6 +697,8 @@ impl<F: Filesystem> NailsManager<F> {
             .with_decoy_profile_restore(restore_decoy_profile)
             .with_untrusted_state(untrusted_state);
 
+        Self::relinquish_journal_before_unmount(&overlay_context);
+
         let result = orchestrator.run(self);
 
         // Restart services on every exit path, after /nix and /var have been
@@ -726,6 +730,8 @@ impl<F: Filesystem> NailsManager<F> {
         self.teardown_backend_runtime_copy();
 
         let mut report = result?;
+
+        self.scrub_runtime_journal_and_warn(&overlay_context, kind, &mut report);
 
         // Post-unmount history editing on the decoy disk is opt-in (see
         // [`CleanupConfig::post_unmount_cleanup`]): by default deactivation makes
@@ -765,6 +771,60 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         Ok(report)
+    }
+
+    /// Hand the persistent journal back to volatile storage before `/var` is
+    /// unmounted, mirroring activation.
+    ///
+    /// `journalctl --relinquish-var` makes journald stop writing to the on-overlay
+    /// `/var/log/journal`, so no further hidden-session records land there between
+    /// here and the unmount. Best-effort — a host without a persistent journal has
+    /// nothing to relinquish. Only when `/var` was overlaid; otherwise journald is
+    /// already on the decoy's own `/var` and must not be disturbed.
+    fn relinquish_journal_before_unmount(overlay_context: &OverlayContext) {
+        if overlay_context.var_was_overlaid
+            && let Err(e) = crate::manager::helpers::ServiceController::relinquish_journal_var()
+        {
+            tracing::warn!(error = %e, "journalctl --relinquish-var before /var unmount failed");
+        }
+    }
+
+    /// Scrub the volatile runtime journal after unmount and warn when no reboot
+    /// follows.
+    ///
+    /// journald's volatile store at `/run/log/journal` holds the hidden session's
+    /// records in RAM; `/run` is never overlaid, so without this they survive an
+    /// emergency teardown (which does not reboot). Runs only when `/var` was
+    /// overlaid and after journald has been restarted onto the decoy `/var`:
+    /// rotate first so journald closes the active runtime files, then remove them.
+    /// A teardown that does not reboot on its own (emergency, recovery) also raises
+    /// an honest warning that only a full power-off clears kernel and RAM residue.
+    fn scrub_runtime_journal_and_warn(
+        &self,
+        overlay_context: &OverlayContext,
+        kind: ManagerDeactivationKind,
+        report: &mut DeactivationReport,
+    ) {
+        if overlay_context.var_was_overlaid {
+            if let Err(e) = crate::manager::helpers::ServiceController::rotate_journal() {
+                tracing::warn!(error = %e, "journalctl --rotate before runtime journal scrub failed");
+            }
+            let scrubber = CleanupManager::new(
+                self.filesystem.clone(),
+                CleanupConfig::default(),
+                CleanupMode::default(),
+            );
+            scrubber.scrub_runtime_journal(&mut report.cleanup_report);
+            report.runtime_journal_scrubbed = true;
+        }
+
+        if !kind.reboots_on_success() {
+            report.reboot_recommended = true;
+            tracing::warn!(
+                "Teardown complete without a reboot: the runtime journal was scrubbed, but \
+                 only a full reboot clears all kernel and RAM residue of the hidden session"
+            );
+        }
     }
 
     /// Deactivate NAILS, restoring the decoy configuration, then reboot.
@@ -1097,6 +1157,8 @@ impl DeactivationOrchestrator {
                 force_detached_overlays: Vec::new(),
                 page_cache_dropped: false,
                 history_truncation_verified: None,
+                runtime_journal_scrubbed: false,
+                reboot_recommended: false,
             });
         }
 
@@ -1286,6 +1348,8 @@ impl DeactivationOrchestrator {
             force_detached_overlays: force_detached,
             page_cache_dropped,
             history_truncation_verified: None,
+            runtime_journal_scrubbed: false,
+            reboot_recommended: false,
         })
     }
 
@@ -1452,6 +1516,8 @@ impl DeactivationOrchestrator {
             force_detached_overlays: force_detached,
             page_cache_dropped,
             history_truncation_verified: None,
+            runtime_journal_scrubbed: false,
+            reboot_recommended: false,
         })
     }
 

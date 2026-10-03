@@ -15,6 +15,8 @@ fn test_deactivation_report_new() {
         force_detached_overlays: Vec::new(),
         page_cache_dropped: false,
         history_truncation_verified: None,
+        runtime_journal_scrubbed: false,
+        reboot_recommended: false,
     };
 
     assert!(report.is_successful());
@@ -36,6 +38,8 @@ fn test_deactivation_report_display_already_inactive() {
         force_detached_overlays: Vec::new(),
         page_cache_dropped: false,
         history_truncation_verified: None,
+        runtime_journal_scrubbed: false,
+        reboot_recommended: false,
     };
 
     let output = format!("{}", report);
@@ -60,6 +64,8 @@ fn test_deactivation_report_display_with_items() {
         force_detached_overlays: Vec::new(),
         page_cache_dropped: false,
         history_truncation_verified: None,
+        runtime_journal_scrubbed: false,
+        reboot_recommended: false,
     };
 
     let output = format!("{}", report);
@@ -108,6 +114,8 @@ fn test_deactivation_report_display_with_post_unmount_cleanup() {
         force_detached_overlays: Vec::new(),
         page_cache_dropped: false,
         history_truncation_verified: None,
+        runtime_journal_scrubbed: false,
+        reboot_recommended: false,
     };
 
     let output = format!("{}", report);
@@ -148,6 +156,8 @@ fn test_deactivation_report_display_without_post_unmount_cleanup() {
         force_detached_overlays: Vec::new(),
         page_cache_dropped: false,
         history_truncation_verified: None,
+        runtime_journal_scrubbed: false,
+        reboot_recommended: false,
     };
 
     let output = format!("{}", report);
@@ -170,6 +180,8 @@ fn test_deactivation_report_is_successful_with_inactive_state() {
         force_detached_overlays: Vec::new(),
         page_cache_dropped: false,
         history_truncation_verified: None,
+        runtime_journal_scrubbed: false,
+        reboot_recommended: false,
     };
 
     assert!(report.is_successful());
@@ -192,6 +204,8 @@ fn test_deactivation_report_is_not_successful_with_active_state() {
         force_detached_overlays: Vec::new(),
         page_cache_dropped: false,
         history_truncation_verified: None,
+        runtime_journal_scrubbed: false,
+        reboot_recommended: false,
     };
 
     assert!(!report.is_successful());
