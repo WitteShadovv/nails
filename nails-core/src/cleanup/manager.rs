@@ -41,8 +41,8 @@ impl<F: Filesystem> CleanupManager<F> {
         if self.config.clear_logs {
             self.cleanup_logs(&mut report);
         }
-        if self.config.sanitize_memory {
-            self.sanitize_memory(&mut report);
+        if self.config.drop_page_cache {
+            self.drop_page_cache(&mut report);
         }
 
         if let CleanupMode::Thorough {
@@ -258,19 +258,26 @@ impl<F: Filesystem> CleanupManager<F> {
         true
     }
 
-    fn sanitize_memory(&self, report: &mut CleanupReport) {
-        // Flush dirty pages first: drop_caches only releases clean ones.
-        nix::unistd::sync();
-
+    fn drop_page_cache(&self, report: &mut CleanupReport) {
+        // No global `sync` here: a blocking, unbounded sync of every filesystem
+        // can wedge teardown on a stalled backend, and dropping clean page cache
+        // does not require it. drop_caches only frees *clean* cached pages; it
+        // does not zero RAM, so this is a modest residue-reduction step, not
+        // "memory sanitization".
+        //
+        // The node is written through `write_kernel_tunable`, which opens procfs
+        // directly instead of staging a temp file and renaming it — the atomic
+        // write `write_file_content` performs can never succeed on procfs, which
+        // is why this step used to fail even as root.
         let drop_caches_path = Path::new("/proc/sys/vm/drop_caches");
 
-        match self.filesystem.write_file_content(drop_caches_path, "3") {
+        match self.filesystem.write_kernel_tunable(drop_caches_path, "3") {
             Ok(()) => {
-                report.memory_sanitized = true;
-                report.add_cleaned("Memory sanitized (page cache cleared)");
+                report.page_cache_dropped = true;
+                report.add_cleaned("page cache dropped");
             }
             Err(e) => {
-                let msg = format!("Memory sanitization failed (requires root): {}", e);
+                let msg = format!("Dropping the page cache failed (requires root): {}", e);
                 output::warn(&msg);
                 report.add_error(msg);
             }

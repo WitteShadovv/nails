@@ -93,7 +93,7 @@ in
         # in the same boot.
         rc, stdout, stderr = capture_command(
             "state-corruption-emergency",
-            f"nails --config {headless_config} emergency --no-countdown",
+            f"nails --config {headless_config} emergency",
         )
         assert rc == 0, (
             f"Emergency must succeed on a corrupt state, got rc={rc}, "

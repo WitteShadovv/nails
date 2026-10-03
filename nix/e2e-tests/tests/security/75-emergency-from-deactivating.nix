@@ -88,7 +88,7 @@ in
         prefix = "/run/nails-tests/emergency-from-deactivating"
         result = run_shellless_transient_command(
             prefix,
-            ["nails", "--config", headless_config, "emergency", "--no-countdown"],
+            ["nails", "--config", headless_config, "emergency"],
             unit_name="nails-emergency-from-deactivating",
             timeout=30,
         )

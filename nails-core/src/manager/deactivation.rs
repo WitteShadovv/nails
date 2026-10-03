@@ -25,7 +25,7 @@ use std::time::Instant;
 
 mod reboot;
 
-pub use reboot::HostEffects;
+pub use reboot::{HostEffects, PostTeardownPower};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use reboot::{SimulatedHostEffects, SimulatedReboot};
 
@@ -217,12 +217,17 @@ fn build_cleanup_config<F: Filesystem>(
     };
 
     if kind == ManagerDeactivationKind::Emergency {
+        // Emergency clears the forensic artifacts but does NOT secure-delete and
+        // does NOT drop the page cache as part of cleanup. The hidden upper lives
+        // on the encrypted backend, so overwriting its files only wastes the time
+        // budget, and the page cache is dropped as a dedicated step *after*
+        // unmount, never before (see `run_from_trusted_state`).
         CleanupConfig {
             clear_history: true,
             clear_temp_files: true,
             clear_logs: true,
-            secure_delete: true,
-            sanitize_memory: true,
+            secure_delete: false,
+            drop_page_cache: false,
             ..cleanup_config
         }
     } else {
@@ -310,7 +315,12 @@ fn overlay_context_from_mounts<F: Filesystem>(manager: &NailsManager<F>) -> Resu
     })
 }
 
-fn verify_history_truncation<F: Filesystem>(manager: &NailsManager<F>) {
+/// Verify every decoy history file is small after the post-unmount edit.
+///
+/// Returns `true` when all files are below the 100-byte threshold and `false`
+/// when any history file still holds enough content to carry session artifacts,
+/// so the caller can surface an honest pass/fail to the operator.
+fn verify_history_truncation<F: Filesystem>(manager: &NailsManager<F>) -> bool {
     let history_files =
         crate::cleanup::history::get_extended_history_files_for_homes(&history_cleanup_homes());
     let mut verification_passed = true;
@@ -336,6 +346,8 @@ fn verify_history_truncation<F: Filesystem>(manager: &NailsManager<F>) {
             "History truncation verification: some files may not have been fully cleaned"
         );
     }
+
+    verification_passed
 }
 
 impl<F: Filesystem> NailsManager<F> {
@@ -497,7 +509,7 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
-    fn run_deactivation(&mut self, kind: ManagerDeactivationKind) -> Result<()> {
+    fn run_deactivation(&mut self, kind: ManagerDeactivationKind) -> Result<DeactivationReport> {
         // The emergency panic button must work from every state, not only a
         // clean Active one: the state is Activating during the whole switch, it
         // is Deactivating after an interrupted teardown, and it may be a corrupt
@@ -554,7 +566,19 @@ impl<F: Filesystem> NailsManager<F> {
                 tracing::info!(
                     "Nothing to tear down: no live NAILS mounts and the state is Inactive"
                 );
-                return Ok(());
+                return Ok(DeactivationReport {
+                    cleanup_report: CleanupReport::default(),
+                    unmounted_overlays: Vec::new(),
+                    failed_overlays: Vec::new(),
+                    remaining_mounts: Vec::new(),
+                    duration: std::time::Duration::ZERO,
+                    final_state: SystemState::Inactive,
+                    was_already_inactive: true,
+                    post_unmount_cleanup: PostUnmountCleanupReport::default(),
+                    force_detached_overlays: Vec::new(),
+                    page_cache_dropped: false,
+                    history_truncation_verified: None,
+                });
             }
         }
 
@@ -701,7 +725,7 @@ impl<F: Filesystem> NailsManager<F> {
         // teardown reported a problem.
         self.teardown_backend_runtime_copy();
 
-        let _report = result?;
+        let mut report = result?;
 
         // Post-unmount history editing on the decoy disk is opt-in (see
         // [`CleanupConfig::post_unmount_cleanup`]): by default deactivation makes
@@ -723,7 +747,7 @@ impl<F: Filesystem> NailsManager<F> {
                 "Post-unmount history edit complete"
             );
 
-            verify_history_truncation(self);
+            report.history_truncation_verified = Some(verify_history_truncation(self));
         }
 
         if kind.reboots_on_success() {
@@ -740,17 +764,37 @@ impl<F: Filesystem> NailsManager<F> {
             let _outcome = host_effects.reboot_into_decoy(self.filesystem())?;
         }
 
-        Ok(())
+        Ok(report)
     }
 
     /// Deactivate NAILS, restoring the decoy configuration, then reboot.
-    pub fn deactivate(&mut self) -> Result<()> {
+    pub fn deactivate(&mut self) -> Result<DeactivationReport> {
         self.run_deactivation(ManagerDeactivationKind::Normal)
     }
 
     /// Emergency deactivation: fast, best-effort teardown without a reboot.
-    pub fn emergency_deactivate(&mut self) -> Result<()> {
+    ///
+    /// Returns the [`DeactivationReport`] so the caller can surface an honest
+    /// account of what was detached (including overlays that needed the forced
+    /// detach), what cleanup did, whether the page cache was dropped, and the
+    /// history-verification result, rather than a fixed success string.
+    pub fn emergency_deactivate(&mut self) -> Result<DeactivationReport> {
         self.run_deactivation(ManagerDeactivationKind::Emergency)
+    }
+
+    /// Run the operator's post-teardown power request (`--poweroff`/`--reboot`).
+    ///
+    /// Dispatched through the same host-effects seam as the deactivation reboot,
+    /// so it is skipped in runtime-safety mode and observable in tests. Returns
+    /// `true` when a power command was actually dispatched, `false` when it was
+    /// skipped (runtime-safety mode). Powering off or rebooting is the only way to
+    /// clear RAM, so it is offered after the teardown finishes, never before.
+    pub fn run_post_teardown_power(&self, action: PostTeardownPower) -> Result<bool> {
+        let host_effects = self.host_effects.clone();
+        Ok(matches!(
+            host_effects.run_post_teardown_power(action)?,
+            reboot::PowerDispatch::Dispatched
+        ))
     }
 
     /// Reconcile the recorded state against the live mount table and finish an
@@ -908,6 +952,9 @@ struct UnmountOutcome {
     unmounted: Vec<String>,
     /// Targets whose unmount failed after both graceful and forced attempts.
     failed: Vec<PathBuf>,
+    /// Targets that only came down after the forced (lazy) detach fallback,
+    /// because the graceful unmount failed. A subset of `unmounted`.
+    force_detached: Vec<String>,
 }
 
 /// Re-read the mount table and return the attempted targets that are still live.
@@ -1047,6 +1094,9 @@ impl DeactivationOrchestrator {
                 final_state: SystemState::Inactive,
                 was_already_inactive: true,
                 post_unmount_cleanup: PostUnmountCleanupReport::default(),
+                force_detached_overlays: Vec::new(),
+                page_cache_dropped: false,
+                history_truncation_verified: None,
             });
         }
 
@@ -1068,10 +1118,30 @@ impl DeactivationOrchestrator {
         guard.update_state(deactivating_state)?;
         maybe_block_after_deactivating_state_transition()?;
 
-        // Step 2: Cleanup artifacts.
+        // The emergency and normal teardowns differ in order. Emergency detaches
+        // the overlays FIRST — the one step that matters — then runs best-effort
+        // cleanup and drops the page cache, so a stalled backend or a slow scrub
+        // can never delay the unmount. Normal deactivation keeps the thorough
+        // order: verify cleanup first (rolling back to ACTIVE if it fails) and
+        // only then unmount.
         let cleanup_start = Instant::now();
-        let cleanup_report = if self.mode == DeactivationMode::Emergency {
-            match self.execute_emergency_cleanup(&guard) {
+        let unmount_start = Instant::now();
+        let (cleanup_report, unmount_outcome, page_cache_dropped);
+
+        if self.mode == DeactivationMode::Emergency {
+            // Step 2 (emergency): detach every overlay first.
+            let outcome = self.unmount_overlays(&guard, &overlays_to_unmount);
+            guard =
+                self.finish_or_degrade(guard, &overlays_to_unmount, "deactivation", &outcome)?;
+            let unmounted = &outcome.unmounted;
+            tracing::info!(
+                unmounted_paths = ?unmounted,
+                duration_ms = unmount_start.elapsed().as_millis() as u64,
+                "Overlays unmounted"
+            );
+
+            // Step 3 (emergency): best-effort cleanup AFTER unmount.
+            let report = match self.execute_emergency_cleanup(&guard) {
                 Ok(report) => {
                     tracing::info!(
                         cleaned_items = report.cleaned_items.len(),
@@ -1089,9 +1159,18 @@ impl DeactivationOrchestrator {
                     );
                     CleanupReport::default()
                 }
-            }
+            };
+
+            // Step 4 (emergency): drop the page cache, now that the overlays are
+            // gone. Best-effort and never before unmount.
+            let dropped = self.drop_page_cache_after_unmount(&guard);
+
+            cleanup_report = report;
+            unmount_outcome = outcome;
+            page_cache_dropped = dropped;
         } else {
-            match self.execute_cleanup(&guard) {
+            // Step 2 (normal): verify cleanup; a failure rolls back to ACTIVE.
+            cleanup_report = match self.execute_cleanup(&guard) {
                 Ok(report) => {
                     tracing::info!(
                         cleaned_items = report.cleaned_items.len(),
@@ -1111,58 +1190,27 @@ impl DeactivationOrchestrator {
                     // Guard drops here on return, rolling the state back to ACTIVE.
                     return Err(e);
                 }
-            }
-        };
+            };
 
-        // Step 3: Attempt every overlay unmount in reverse LIFO order. Never abort
-        // on the first failure and never remount: once a target is detached,
-        // returning to ACTIVE would route hidden-session writes onto the decoy
-        // disk, so a teardown that cannot finish ends DEGRADED instead.
-        let unmount_start = Instant::now();
-        let unmount_outcome = self.unmount_overlays(&guard, &overlays_to_unmount);
-
-        // Re-read the mount table: which NAILS targets are still live?
-        let remaining_mounts = remaining_nails_mounts(&guard, &overlays_to_unmount);
-
-        if !remaining_mounts.is_empty() {
-            let remaining_display = remaining_mounts
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let reason = format!(
-                "deactivation left {} NAILS mount(s) live: {}",
-                remaining_mounts.len(),
-                remaining_display
-            );
-
-            tracing::error!(
-                remaining = %remaining_display,
-                unmounted = ?unmount_outcome.unmounted,
-                failed = ?unmount_outcome.failed,
+            // Step 3 (normal): attempt every overlay unmount in reverse LIFO
+            // order. Never abort on the first failure and never remount: once a
+            // target is detached, returning to ACTIVE would route hidden-session
+            // writes onto the decoy disk, so a teardown that cannot finish ends
+            // DEGRADED instead.
+            let outcome = self.unmount_overlays(&guard, &overlays_to_unmount);
+            guard =
+                self.finish_or_degrade(guard, &overlays_to_unmount, "deactivation", &outcome)?;
+            tracing::info!(
+                unmounted_paths = ?outcome.unmounted,
                 duration_ms = unmount_start.elapsed().as_millis() as u64,
-                phase = "unmount",
-                state_to = "Degraded",
-                "Teardown incomplete; recording DEGRADED (no remount, no return to ACTIVE)"
+                "Overlays unmounted"
             );
-
-            // Record DEGRADED and commit so the RAII guard does NOT force the
-            // state back to ACTIVE on drop. DEACTIVATING -> DEGRADED is allowed.
-            let degraded = guard
-                .current_state()?
-                .enter_degraded(reason, remaining_mounts.clone());
-            guard.update_state(degraded)?;
-            guard.commit();
-
-            return Err(NailsError::DeactivationIncomplete { remaining_mounts });
+            unmount_outcome = outcome;
+            page_cache_dropped = false;
         }
 
         let unmounted = unmount_outcome.unmounted;
-        tracing::info!(
-            unmounted_paths = ?unmounted,
-            duration_ms = unmount_start.elapsed().as_millis() as u64,
-            "Overlays unmounted"
-        );
+        let force_detached = unmount_outcome.force_detached;
 
         // Step 3.5: Post-unmount cleanup on the real disk (Normal mode only).
         let post_unmount_report = if self.mode == DeactivationMode::Emergency {
@@ -1235,7 +1283,62 @@ impl DeactivationOrchestrator {
             final_state: SystemState::Inactive,
             was_already_inactive: false,
             post_unmount_cleanup: post_unmount_report,
+            force_detached_overlays: force_detached,
+            page_cache_dropped,
+            history_truncation_verified: None,
         })
+    }
+
+    /// After attempting every unmount, either return the guard (clean teardown)
+    /// or record `Degraded` and fail with [`NailsError::DeactivationIncomplete`].
+    ///
+    /// Re-reads the mount table for the attempted targets: if any NAILS mount is
+    /// still live the state is recorded `Degraded` and the guard committed, so the
+    /// RAII rollback never forces the state back to `Active` (a detached overlay
+    /// would route hidden-session writes onto the decoy disk). A clean teardown
+    /// returns the guard for the caller to finish with.
+    fn finish_or_degrade<'a, F: Filesystem>(
+        &self,
+        mut guard: StateGuard<'a, F>,
+        overlays: &[PathBuf],
+        reason_prefix: &str,
+        unmount_outcome: &UnmountOutcome,
+    ) -> Result<StateGuard<'a, F>> {
+        let remaining_mounts = remaining_nails_mounts(&guard, overlays);
+        if remaining_mounts.is_empty() {
+            return Ok(guard);
+        }
+
+        let remaining_display = remaining_mounts
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let reason = format!(
+            "{} left {} NAILS mount(s) live: {}",
+            reason_prefix,
+            remaining_mounts.len(),
+            remaining_display
+        );
+
+        tracing::error!(
+            remaining = %remaining_display,
+            unmounted = ?unmount_outcome.unmounted,
+            failed = ?unmount_outcome.failed,
+            phase = "unmount",
+            state_to = "Degraded",
+            "Teardown incomplete; recording DEGRADED (no remount, no return to ACTIVE)"
+        );
+
+        // Record DEGRADED and commit so the RAII guard does NOT force the state
+        // back to ACTIVE on drop. DEACTIVATING/Degraded -> DEGRADED is allowed.
+        let degraded = guard
+            .current_state()?
+            .enter_degraded(reason, remaining_mounts.clone());
+        guard.update_state(degraded)?;
+        guard.commit();
+
+        Err(NailsError::DeactivationIncomplete { remaining_mounts })
     }
 
     /// Emergency teardown when the state file cannot be trusted.
@@ -1278,7 +1381,27 @@ impl DeactivationOrchestrator {
 
         let mut guard = StateGuard::new(&mut *manager, baseline);
 
-        // Best-effort cleanup; its failure must never abort the teardown.
+        // Emergency order (same as the trusted path): detach the overlays first,
+        // then run best-effort cleanup, then drop the page cache. The unmount is
+        // the one step that matters, so nothing is allowed to run before it.
+        let unmount_start = Instant::now();
+        let unmount_outcome = self.unmount_overlays(&guard, &overlays_to_unmount);
+        guard = self.finish_or_degrade(
+            guard,
+            &overlays_to_unmount,
+            "emergency teardown",
+            &unmount_outcome,
+        )?;
+
+        let unmounted = unmount_outcome.unmounted.clone();
+        let force_detached = unmount_outcome.force_detached.clone();
+        tracing::info!(
+            unmounted_paths = ?unmounted,
+            duration_ms = unmount_start.elapsed().as_millis() as u64,
+            "Overlays unmounted"
+        );
+
+        // Best-effort cleanup after unmount; its failure must never abort.
         let cleanup_start = Instant::now();
         let cleanup_report = match self.execute_emergency_cleanup(&guard) {
             Ok(report) => {
@@ -1300,48 +1423,8 @@ impl DeactivationOrchestrator {
             }
         };
 
-        // Attempt every unmount in reverse mount order; never abort, never remount.
-        let unmount_start = Instant::now();
-        let unmount_outcome = self.unmount_overlays(&guard, &overlays_to_unmount);
-        let remaining_mounts = remaining_nails_mounts(&guard, &overlays_to_unmount);
-
-        if !remaining_mounts.is_empty() {
-            let remaining_display = remaining_mounts
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let reason = format!(
-                "emergency teardown left {} NAILS mount(s) live: {}",
-                remaining_mounts.len(),
-                remaining_display
-            );
-
-            tracing::error!(
-                remaining = %remaining_display,
-                unmounted = ?unmount_outcome.unmounted,
-                failed = ?unmount_outcome.failed,
-                duration_ms = unmount_start.elapsed().as_millis() as u64,
-                phase = "unmount",
-                state_to = "Degraded",
-                "Emergency teardown incomplete; recording DEGRADED (no remount)"
-            );
-
-            let degraded = guard
-                .current_state()?
-                .enter_degraded(reason, remaining_mounts.clone());
-            guard.update_state(degraded)?;
-            guard.commit();
-
-            return Err(NailsError::DeactivationIncomplete { remaining_mounts });
-        }
-
-        let unmounted = unmount_outcome.unmounted;
-        tracing::info!(
-            unmounted_paths = ?unmounted,
-            duration_ms = unmount_start.elapsed().as_millis() as u64,
-            "Overlays unmounted"
-        );
+        // Drop the page cache after unmount (best-effort).
+        let page_cache_dropped = self.drop_page_cache_after_unmount(&guard);
 
         // Clean teardown: clear tracking and go Degraded -> Inactive.
         guard.clear_overlay_status_in_cache()?;
@@ -1366,6 +1449,9 @@ impl DeactivationOrchestrator {
             final_state: SystemState::Inactive,
             was_already_inactive: false,
             post_unmount_cleanup: PostUnmountCleanupReport::default(),
+            force_detached_overlays: force_detached,
+            page_cache_dropped,
+            history_truncation_verified: None,
         })
     }
 
@@ -1400,22 +1486,19 @@ impl DeactivationOrchestrator {
     }
 
     /// Fast, best-effort cleanup; errors are logged but not fatal.
+    ///
+    /// The emergency cleanup configuration was already prepared by
+    /// [`build_cleanup_config`]: it clears history, temp files and logs but does
+    /// not secure-delete the encrypted hidden upper and does not drop the page
+    /// cache (that is a dedicated post-unmount step), so this reuses
+    /// `self.cleanup_config` directly rather than forcing a second config.
     fn execute_emergency_cleanup<F: Filesystem>(
         &self,
         manager: &NailsManager<F>,
     ) -> Result<CleanupReport> {
-        let cleanup_config = CleanupConfig {
-            clear_history: true,
-            clear_temp_files: true,
-            clear_logs: true,
-            secure_delete: true,
-            sanitize_memory: true,
-            ..self.cleanup_config.clone()
-        };
-
         let cleanup_manager = CleanupManager::new(
             manager.filesystem().clone(),
-            cleanup_config,
+            self.cleanup_config.clone(),
             CleanupMode::Fast,
         );
 
@@ -1426,6 +1509,30 @@ impl DeactivationOrchestrator {
         }
 
         Ok(report)
+    }
+
+    /// Drop the page cache after an emergency unmount.
+    ///
+    /// Runs only after the overlays are detached, so a stalled backend can never
+    /// delay it, and releases clean cached pages that may still hold decoded
+    /// hidden-session data. Best-effort: a failure (for example not running as
+    /// root) is recorded but never fails the teardown. This frees only *clean*
+    /// page cache — it does not zero RAM, which only a reboot does.
+    fn drop_page_cache_after_unmount<F: Filesystem>(&self, manager: &NailsManager<F>) -> bool {
+        let drop_caches_path = Path::new("/proc/sys/vm/drop_caches");
+        match manager
+            .filesystem()
+            .write_kernel_tunable(drop_caches_path, "3")
+        {
+            Ok(()) => {
+                tracing::info!("page cache dropped");
+                true
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Dropping the page cache after unmount failed (best-effort)");
+                false
+            }
+        }
     }
 
     /// Phase 2 cleanup on the real disk after overlays are unmounted.
@@ -1477,11 +1584,16 @@ impl DeactivationOrchestrator {
     ) -> UnmountOutcome {
         let mut unmounted = Vec::new();
         let mut failed = Vec::new();
+        let mut force_detached = Vec::new();
 
         for overlay_path in overlays.iter().rev() {
             match self.unmount_single_overlay(manager, overlay_path) {
-                Ok(()) => {
-                    unmounted.push(overlay_path.to_string_lossy().to_string());
+                Ok(needed_force) => {
+                    let display = overlay_path.to_string_lossy().to_string();
+                    if needed_force {
+                        force_detached.push(display.clone());
+                    }
+                    unmounted.push(display);
                 }
                 Err(e) => {
                     tracing::error!(
@@ -1495,15 +1607,23 @@ impl DeactivationOrchestrator {
             }
         }
 
-        UnmountOutcome { unmounted, failed }
+        UnmountOutcome {
+            unmounted,
+            failed,
+            force_detached,
+        }
     }
 
     /// Unmount a single overlay with graceful -> force fallback.
+    ///
+    /// Returns `Ok(true)` when the overlay only came down after the forced (lazy)
+    /// detach, `Ok(false)` when the graceful unmount succeeded, and an error when
+    /// both attempts failed.
     fn unmount_single_overlay<F: Filesystem>(
         &self,
         manager: &NailsManager<F>,
         path: &Path,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         match manager.filesystem().unmount(path, false) {
             Ok(()) => {
                 tracing::info!(
@@ -1511,7 +1631,7 @@ impl DeactivationOrchestrator {
                     method = "graceful",
                     "Overlay unmounted"
                 );
-                Ok(())
+                Ok(false)
             }
             Err(e) => {
                 tracing::warn!(
@@ -1519,7 +1639,7 @@ impl DeactivationOrchestrator {
                     error = %e,
                     "Graceful unmount failed, trying force unmount"
                 );
-                manager.filesystem().unmount(path, true)
+                manager.filesystem().unmount(path, true).map(|()| true)
             }
         }
     }

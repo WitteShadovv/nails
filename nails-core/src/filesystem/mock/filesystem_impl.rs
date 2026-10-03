@@ -138,6 +138,10 @@ impl Filesystem for MockFilesystem {
         self.scan_files_with_pattern_impl(dir, pattern)
     }
 
+    fn write_kernel_tunable(&self, path: &Path, value: &str) -> Result<()> {
+        self.write_kernel_tunable_impl(path, value)
+    }
+
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {
         self.write_file_content_impl(path, content)
     }

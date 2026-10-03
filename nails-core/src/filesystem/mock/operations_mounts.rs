@@ -127,6 +127,14 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .remove(target);
 
+        self.op_log
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push(MockOp::Unmount {
+                target: target.to_path_buf(),
+                force,
+            });
+
         Ok(())
     }
 

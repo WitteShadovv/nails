@@ -80,7 +80,7 @@ in
         assert_no_overlays(overlay_targets)
         assert_status_state("Inactive", config_path=headless_config)
         # A following emergency teardown succeeds on the already-clean system.
-        machine.succeed(f"nails --config {headless_config} emergency --no-countdown")
+        machine.succeed(f"nails --config {headless_config} emergency")
 
     with subtest("SIGINT during activation rolls back to a clean inactive state"):
         assert_cancelled_clean("nails-signal-sigint", "SIGINT")
@@ -98,7 +98,7 @@ in
         assert_overlay_mounted("/home")
         assert_status_state("Active", config_path=headless_config)
         # Leave the machine clean for any later use.
-        machine.succeed(f"nails --config {headless_config} emergency --no-countdown")
+        machine.succeed(f"nails --config {headless_config} emergency")
         wait_for_status_state("Inactive", config_path=headless_config, timeout=180)
   '';
 }

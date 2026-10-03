@@ -235,8 +235,16 @@ NAILS provides two deactivation modes with different security and convenience tr
 | Normal session end, time available | Standard | `sudo nails deactivate` |
 | Imminent physical threat | Emergency | `sudo nails emergency` |
 | System instability | Standard (if possible) | `sudo nails deactivate` |
-| Time-critical situation (< 10 seconds) | Emergency | `sudo nails emergency` |
+| Time-critical situation | Emergency | `sudo nails emergency` |
 | Cannot reboot immediately | Emergency | `sudo nails emergency` |
+
+Emergency detaches the overlays first (each `umount2` with `MNT_DETACH` under an
+overall deadline), so a stalled backend cannot delay the one step that matters;
+cleanup and the page-cache drop run afterwards. How long the whole teardown takes
+depends on the backend and on how many processes still hold the overlays, so no
+fixed "seconds" figure is promised. Teardown starts immediately; pass
+`--countdown <SECS>` for an abortable wait, and `--poweroff`/`--reboot` to clear
+RAM once the teardown finishes.
 
 ### Cleanup Comparison
 
@@ -248,9 +256,13 @@ NAILS provides two deactivation modes with different security and convenience tr
 | Clear in-memory bash history | Limited | Yes |
 | Kill user shell processes | Via reboot | Yes (prevents flush) |
 | Restart nix-daemon | Via reboot | Yes (if /nix overlaid) |
-| Drop page cache | No | Configurable |
+| Drop page cache (clean pages only) | No | Yes (after unmount) |
 | Verification scan | No | Optional (fast mode) |
-| System reboot | **Yes** | No |
+| System reboot | **Yes** | No (opt-in `--reboot`/`--poweroff`) |
+
+Dropping the page cache frees only *clean* cached pages; it does not zero RAM.
+Only a power-off or reboot clears RAM, which is why emergency offers `--poweroff`
+and `--reboot` and the guidance below recommends one of them when unsure.
 
 ### Tradeoffs
 
@@ -665,13 +677,28 @@ After power-off, DRAM retains data for a period depending on temperature:
 - Process memory
 
 **NAILS mitigations:**
-- Emergency deactivation can optionally drop page cache (`echo 3 > /proc/sys/vm/drop_caches`)
-- Deactivation can reduce some residual host state, but it is not a defense against direct memory acquisition shortly after use
+- Emergency deactivation drops the page cache after unmount (`echo 3 > /proc/sys/vm/drop_caches`). This frees only *clean* cached pages; it does not zero RAM and is not a defense against cold-boot acquisition.
+- Deactivation can reduce some residual host state, but it is not a defense against direct memory acquisition shortly after use.
+- Harden the decoy kernel so freed memory is wiped as it is released (see the recommended decoy profile below): `init_on_free=1` zeroes pages as they are freed, and `page_poison=1` poisons freed pages. These shrink the window of recoverable residue but still do not substitute for a power-off.
 
 **Your responsibility:**
-- Power off completely (not suspend) in threat situations
+- Power off completely (not suspend) in threat situations — `nails emergency --poweroff` does this after the teardown
 - Keep physical control of device for 5+ minutes after power-off
 - In extreme scenarios, physically remove and secure RAM modules
+
+**Recommended decoy kernel parameters (RAM residue):**
+
+Add these to the decoy system's kernel command line (on NixOS,
+`boot.kernelParams`) so the kernel wipes memory as it frees it:
+
+```
+init_on_free=1 page_poison=1
+```
+
+`init_on_free=1` zeroes pages when they are freed (so freed hidden-session data
+does not linger), and `page_poison=1` fills freed pages with a poison pattern.
+Both add a small runtime cost and neither clears memory that is still in use, so
+they complement — never replace — powering off.
 
 ### Memory Forensics While Running
 

@@ -56,8 +56,8 @@ mod tests;
 
 // Re-export key types for convenience
 pub use activation::{ActivationOutcome, HiddenConfigOutcome};
-pub use deactivation::HostEffects;
 pub use deactivation::RecoverOutcome;
+pub use deactivation::{HostEffects, PostTeardownPower};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use deactivation::{SimulatedHostEffects, SimulatedReboot};
 pub use mount_tracker::{MountInfo, MountTracker, MountType};

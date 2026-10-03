@@ -46,6 +46,22 @@ pub enum MockOp {
     WriteFile {
         path: PathBuf,
     },
+    /// A successful unmount of a tracked mount, recorded so tests can assert the
+    /// teardown order (for example that emergency detaches overlays before it
+    /// runs cleanup). `force` distinguishes a forced (lazy) detach from a
+    /// graceful one.
+    Unmount {
+        target: PathBuf,
+        force: bool,
+    },
+    /// A write to a kernel tunable (`procfs`/`sysfs`) through
+    /// [`Filesystem::write_kernel_tunable`](crate::Filesystem::write_kernel_tunable),
+    /// recorded distinctly from `WriteFile` so tests can assert the page cache
+    /// was dropped after unmount and that no staged-temp write was attempted.
+    WriteKernelTunable {
+        path: PathBuf,
+        value: String,
+    },
     CopyTree {
         src: PathBuf,
         dst: PathBuf,

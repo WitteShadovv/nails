@@ -110,7 +110,7 @@ pub fn execute(
 
     // Run quick deactivation (restore symlink + reboot)
     match manager.deactivate() {
-        Ok(()) => {
+        Ok(_report) => {
             if json {
                 print_deactivate_json();
             } else {

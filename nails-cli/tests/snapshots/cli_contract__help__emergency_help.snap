@@ -9,7 +9,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Emergency mode: rapid deactivation with countdown
+Emergency teardown: detach overlays immediately, best-effort cleanup
 
 Usage: nails emergency [OPTIONS]
 
@@ -17,14 +17,26 @@ Options:
   -c, --config <PATH>
           Path to the configuration file (overrides binary-relative discovery)
 
-      --no-countdown
-          Skip the 3-second countdown (proceed immediately)
+      --countdown <SECS>
+          Wait this many seconds before tearing down, printing a Ctrl+C abort hint.
+
+          Omitted (the default) tears down immediately. The wait is never affected by `--quiet` or `--json`, so output flags never change the timing.
+
+      --poweroff
+          Power the machine off after the teardown completes.
+
+          Powering off clears RAM, the only complete remedy for residue the teardown cannot remove. Mutually exclusive with `--reboot`.
 
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
 
   -q, --quiet
           Print only errors and the final result
+
+      --reboot
+          Reboot into the decoy after the teardown completes.
+
+          A reboot clears RAM. Mutually exclusive with `--poweroff`.
 
       --color <WHEN>
           When to use colour
@@ -50,5 +62,8 @@ Options:
 
 EXAMPLES:
   nails emergency                     Tear everything down immediately
+  nails emergency --countdown 5       Wait 5s (Ctrl+C to abort), then tear down
+  nails emergency --poweroff          Tear down, then power the machine off
+  nails emergency --reboot            Tear down, then reboot into the decoy
 
 ----- stderr -----

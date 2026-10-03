@@ -42,7 +42,7 @@ in
         prefix = "/run/nails-tests/emergency-while-inactive"
         capture = run_captured_command(
             prefix,
-            f"nails --config {headless_config} emergency --no-countdown",
+            f"nails --config {headless_config} emergency",
             unit_name="nails-emergency-while-inactive",
         )
         result = read_command_result(prefix, unit_name=capture["unit_name"], timeout=30)

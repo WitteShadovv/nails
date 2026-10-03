@@ -93,7 +93,7 @@ in
         hidden_service_came_up = unit_is_active("hidden-marker.service")
 
     with subtest("emergency tears the hidden session and services down"):
-        machine.succeed(f"nails --config {headless_config} emergency --no-countdown")
+        machine.succeed(f"nails --config {headless_config} emergency")
 
         # The hidden overlays are released and the hidden-added service is gone.
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])

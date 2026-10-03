@@ -48,7 +48,7 @@ in
         prefix = "/run/nails-tests/emergency-fast-mode"
         result = run_shellless_transient_command(
             prefix,
-            ["nails", "--config", headless_config, "emergency", "--no-countdown", "-vv"],
+            ["nails", "--config", headless_config, "emergency", "-vv"],
             unit_name=unit_name,
             timeout=45,
         )
@@ -61,11 +61,15 @@ in
         assert "Emergency cleanup complete (best-effort)" in combined_output, combined_output
         assert "Starting Phase 2 cleanup on real disk" not in combined_output, combined_output
         assert "Phase 2 cleanup complete" not in combined_output, combined_output
+        # The page cache is dropped after unmount (requires root; the VM runs as
+        # root), and the log must say so honestly rather than "memory sanitized".
+        assert "page cache dropped" in combined_output, combined_output
+        assert "memory saniti" not in combined_output.lower(), combined_output
         # nails' own measurement of the teardown, so a stall of the host or
         # of the driver polling the unit cannot fail the check.
         elapsed_ms = deactivation_duration_ms(result["stderr"])
         assert elapsed_ms is not None, combined_output
-        assert elapsed_ms < 12000, f"Fast-mode emergency took too long: {elapsed_ms} ms"
+        assert elapsed_ms < 10000, f"Fast-mode emergency took too long: {elapsed_ms} ms"
 
     with subtest("fast cleanup still removes key artifacts and leaves inactive state"):
         machine.fail("test -f /tmp/nails-fast-mode-artifact")

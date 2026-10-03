@@ -12,6 +12,9 @@ fn test_deactivation_report_new() {
         final_state: SystemState::Inactive,
         was_already_inactive: false,
         post_unmount_cleanup: PostUnmountCleanupReport::default(),
+        force_detached_overlays: Vec::new(),
+        page_cache_dropped: false,
+        history_truncation_verified: None,
     };
 
     assert!(report.is_successful());
@@ -30,6 +33,9 @@ fn test_deactivation_report_display_already_inactive() {
         final_state: SystemState::Inactive,
         was_already_inactive: true,
         post_unmount_cleanup: PostUnmountCleanupReport::default(),
+        force_detached_overlays: Vec::new(),
+        page_cache_dropped: false,
+        history_truncation_verified: None,
     };
 
     let output = format!("{}", report);
@@ -51,6 +57,9 @@ fn test_deactivation_report_display_with_items() {
         final_state: SystemState::Inactive,
         was_already_inactive: false,
         post_unmount_cleanup: PostUnmountCleanupReport::default(),
+        force_detached_overlays: Vec::new(),
+        page_cache_dropped: false,
+        history_truncation_verified: None,
     };
 
     let output = format!("{}", report);
@@ -96,6 +105,9 @@ fn test_deactivation_report_display_with_post_unmount_cleanup() {
         final_state: SystemState::Inactive,
         was_already_inactive: false,
         post_unmount_cleanup,
+        force_detached_overlays: Vec::new(),
+        page_cache_dropped: false,
+        history_truncation_verified: None,
     };
 
     let output = format!("{}", report);
@@ -133,6 +145,9 @@ fn test_deactivation_report_display_without_post_unmount_cleanup() {
         final_state: SystemState::Inactive,
         was_already_inactive: false,
         post_unmount_cleanup,
+        force_detached_overlays: Vec::new(),
+        page_cache_dropped: false,
+        history_truncation_verified: None,
     };
 
     let output = format!("{}", report);
@@ -152,6 +167,9 @@ fn test_deactivation_report_is_successful_with_inactive_state() {
         final_state: SystemState::Inactive,
         was_already_inactive: false,
         post_unmount_cleanup: PostUnmountCleanupReport::default(),
+        force_detached_overlays: Vec::new(),
+        page_cache_dropped: false,
+        history_truncation_verified: None,
     };
 
     assert!(report.is_successful());
@@ -171,6 +189,9 @@ fn test_deactivation_report_is_not_successful_with_active_state() {
         },
         was_already_inactive: false,
         post_unmount_cleanup: PostUnmountCleanupReport::default(),
+        force_detached_overlays: Vec::new(),
+        page_cache_dropped: false,
+        history_truncation_verified: None,
     };
 
     assert!(!report.is_successful());

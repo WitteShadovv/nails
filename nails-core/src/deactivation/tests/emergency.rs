@@ -666,3 +666,59 @@ fn test_emergency_stops_recorded_units_and_terminates_session_before_dm_restart(
     assert_eq!(guard.current_state().unwrap(), SystemState::Inactive);
     assert!(!guard.filesystem().is_mounted(Path::new("/home")).unwrap());
 }
+
+#[test]
+#[serial]
+fn test_emergency_order_unmount_then_cleanup_then_drop_page_cache() {
+    use crate::filesystem::MockOp;
+
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
+
+    let fixture = setup_active_manager();
+    let hidden_root = fixture.lock().unwrap().config().hidden_volume_root.clone();
+    {
+        let guard = fixture.lock().unwrap();
+        let fs = guard.filesystem();
+        // The /proc knob must exist for the in-place write to succeed.
+        fs.mock_set_path_exists("/proc/sys/vm/drop_caches", true);
+        mount_nails_overlay(fs, &hidden_root, Path::new("/home"));
+        mount_nails_overlay(fs, &hidden_root, Path::new("/etc"));
+    }
+
+    fixture.lock().unwrap().emergency_deactivate().unwrap();
+
+    let guard = fixture.lock().unwrap();
+    let ops = guard.filesystem().mock_ops();
+
+    // The page cache is dropped exactly once, through the kernel-tunable write,
+    // writing "3" to drop_caches.
+    let drop_idx = ops
+        .iter()
+        .position(|op| {
+            matches!(
+                op,
+                MockOp::WriteKernelTunable { path, value }
+                    if path == Path::new("/proc/sys/vm/drop_caches") && value == "3"
+            )
+        })
+        .expect("emergency must drop the page cache via write_kernel_tunable");
+
+    // Every overlay unmount happens before the page cache is dropped: the one step
+    // that matters runs first, the cache drop runs last.
+    let last_unmount_idx = ops
+        .iter()
+        .rposition(|op| matches!(op, MockOp::Unmount { .. }))
+        .expect("emergency must detach the overlays");
+    assert!(
+        last_unmount_idx < drop_idx,
+        "page cache must be dropped only after every unmount: {ops:?}"
+    );
+
+    // Emergency must not secure-delete the encrypted hidden upper.
+    assert!(
+        !ops.iter()
+            .any(|op| matches!(op, MockOp::SecureDelete { .. })),
+        "emergency must not secure-delete hidden-upper files: {ops:?}"
+    );
+}

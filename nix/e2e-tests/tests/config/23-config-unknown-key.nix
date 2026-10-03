@@ -77,7 +77,7 @@ in
         prefix = "/run/nails-tests/config-unknown-key-emergency"
         capture = run_captured_command(
             prefix,
-            "nails --config /tmp/unknown-key.toml emergency --no-countdown",
+            "nails --config /tmp/unknown-key.toml emergency",
             unit_name="nails-config-unknown-key-emergency",
         )
         result = read_command_result(prefix, unit_name=capture["unit_name"], timeout=30)

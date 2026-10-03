@@ -45,8 +45,8 @@
         machine.send_chars("systemctl reset-failed nails-emergency-test.service\n", delay=0)
         machine.wait_until_tty_matches("1", r"TTY1_READY#", timeout=30)
         machine.send_chars("systemctl start --no-block nails-emergency-test.service\n", delay=0)
-        wait_for_console_log(r"Emergency deactivation complete", timeout=30, start_index=console_start)
-        wait_for_console_log(r"overlays released", timeout=5, start_index=console_start)
+        wait_for_console_log(r"Emergency teardown complete", timeout=30, start_index=console_start)
+        wait_for_console_log(r"Detached", timeout=5, start_index=console_start)
         elapsed = time.time() - start_time
         if reboot:
             reboot_after_emergency()
@@ -57,7 +57,7 @@
     description = "NAILS emergency test runner";
     serviceConfig = {
       Type = "exec";
-      ExecStart = "${nailsPackage}/bin/nails --config ${configPath} emergency --no-countdown";
+      ExecStart = "${nailsPackage}/bin/nails --config ${configPath} emergency";
       StandardOutput = "journal+console";
       StandardError = "journal+console";
     };

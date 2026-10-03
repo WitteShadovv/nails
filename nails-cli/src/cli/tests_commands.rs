@@ -43,8 +43,8 @@ fn test_emergency_args_parsing_defaults() {
 }
 
 #[test]
-fn test_emergency_no_countdown_flag() {
-    assert!(emergency(&["--no-countdown"]).1.no_countdown);
+fn test_emergency_countdown_flag() {
+    assert_eq!(emergency(&["--countdown", "5"]).1.countdown, Some(5));
 }
 
 #[test]
@@ -67,8 +67,8 @@ fn test_emergency_quiet_verbose_conflict() {
 
 #[test]
 fn test_emergency_multiple_flags() {
-    let (global, args) = emergency(&["--no-countdown", "--json", "--color", "never"]);
-    assert!(args.no_countdown);
+    let (global, args) = emergency(&["--poweroff", "--json", "--color", "never"]);
+    assert!(args.poweroff);
     assert!(global.json);
     assert_eq!(global.color, args::ColorChoice::Never);
 }

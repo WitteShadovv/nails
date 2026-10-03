@@ -90,7 +90,7 @@ in
         prefix = "/run/nails-tests/emergency-from-activating"
         result = run_shellless_transient_command(
             prefix,
-            ["nails", "--config", headless_config, "emergency", "--no-countdown"],
+            ["nails", "--config", headless_config, "emergency"],
             unit_name="nails-emergency-from-activating",
             timeout=30,
         )
@@ -116,13 +116,13 @@ in
         prefix = "/run/nails-tests/emergency-from-activating-cleanup"
         result = run_shellless_transient_command(
             prefix,
-            ["nails", "--config", headless_config, "emergency", "--no-countdown"],
+            ["nails", "--config", headless_config, "emergency"],
             unit_name="nails-emergency-from-activating-cleanup",
             timeout=30,
         )
 
         assert result["rc"] == 0, result
-        assert "Emergency deactivation complete" in result["stdout"], result
+        assert "Emergency teardown complete" in result["stdout"], result
 
         assert_no_overlays(expected_overlays)
         status = read_status_json(config_path=headless_config)

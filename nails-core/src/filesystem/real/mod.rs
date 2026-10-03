@@ -176,6 +176,10 @@ impl Filesystem for RealFilesystem {
         file_ops::write_file_content(path, content)
     }
 
+    fn write_kernel_tunable(&self, path: &Path, value: &str) -> Result<()> {
+        file_ops::write_kernel_tunable(path, value)
+    }
+
     fn write_user_file(
         &self,
         path: &Path,

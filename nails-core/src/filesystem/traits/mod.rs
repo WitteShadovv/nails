@@ -349,6 +349,16 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Write content to a file atomically (write to temp, then rename).
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()>;
 
+    /// Write a value to a kernel tunable (a `procfs`/`sysfs` knob) in place.
+    ///
+    /// Unlike [`write_file_content`](Self::write_file_content) this opens the
+    /// existing node directly for writing and never stages a sibling temp file to
+    /// rename into place: `procfs` and `sysfs` nodes cannot be created or renamed,
+    /// so the atomic-rename write always fails on them (which is why writing
+    /// `/proc/sys/vm/drop_caches` never worked before). The node must already
+    /// exist; the value is written as-is with no trailing newline added.
+    fn write_kernel_tunable(&self, path: &Path, value: &str) -> Result<()>;
+
     /// Write a file on behalf of an unprivileged user with symlink-safe opens
     /// and correct numeric ownership.
     ///

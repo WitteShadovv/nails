@@ -171,3 +171,66 @@ fn reboot_failure_propagates_a_failed_fallback() {
 
     assert!(matches!(outcome, Err(NailsError::NixOSError(_))));
 }
+
+#[test]
+#[serial]
+fn verify_history_truncation_fails_when_a_file_stays_large() {
+    use crate::cleanup::history::{get_extended_history_files_for_homes, history_cleanup_homes};
+    use crate::cleanup::test_utils::set_safe_test_home;
+    use crate::{Config, MockFilesystem, NailsManager};
+
+    let _home = set_safe_test_home();
+    let files = get_extended_history_files_for_homes(&history_cleanup_homes());
+    let target = files
+        .first()
+        .expect("at least one history file path")
+        .clone();
+
+    let fs = MockFilesystem::new();
+    // A history file left at 150 bytes (>= the 100-byte threshold) must fail.
+    fs.mock_add_file(target.to_str().unwrap(), &"x".repeat(150));
+
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join("state.json");
+    let config = Config {
+        hidden_volume_root: temp.path().to_path_buf(),
+        state_file_path: state_path.clone(),
+        ..Config::test_default()
+    };
+    let manager = NailsManager::new(fs, config, state_path);
+
+    assert!(
+        !super::verify_history_truncation(&manager),
+        "a 150-byte history file must fail truncation verification"
+    );
+}
+
+#[test]
+#[serial]
+fn verify_history_truncation_passes_when_files_are_small() {
+    use crate::cleanup::history::{get_extended_history_files_for_homes, history_cleanup_homes};
+    use crate::cleanup::test_utils::set_safe_test_home;
+    use crate::{Config, MockFilesystem, NailsManager};
+
+    let _home = set_safe_test_home();
+    let files = get_extended_history_files_for_homes(&history_cleanup_homes());
+    let target = files
+        .first()
+        .expect("at least one history file path")
+        .clone();
+
+    let fs = MockFilesystem::new();
+    // A truncated (small) history file passes verification.
+    fs.mock_add_file(target.to_str().unwrap(), "x");
+
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join("state.json");
+    let config = Config {
+        hidden_volume_root: temp.path().to_path_buf(),
+        state_file_path: state_path.clone(),
+        ..Config::test_default()
+    };
+    let manager = NailsManager::new(fs, config, state_path);
+
+    assert!(super::verify_history_truncation(&manager));
+}

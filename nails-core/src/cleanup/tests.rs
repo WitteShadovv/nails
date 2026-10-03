@@ -97,7 +97,7 @@ fn test_cleanup_config_custom() {
         log_path: hidden_volume.join("logs"),
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -269,12 +269,12 @@ fn test_cleanup_report_display_with_verification_failed_no_canary() {
 }
 
 #[test]
-fn test_cleanup_report_display_with_memory_sanitized() {
+fn test_cleanup_report_display_with_page_cache_dropped() {
     let mut report = CleanupReport::new(CleanupMode::Fast);
-    report.memory_sanitized = true;
+    report.page_cache_dropped = true;
 
     let output = format!("{}", report);
-    assert!(output.contains("Memory sanitization completed"));
+    assert!(output.contains("Page cache dropped"));
 }
 
 #[test]
@@ -377,7 +377,7 @@ fn test_cleanup_manager_selective_cleanup() {
         log_path: hidden_volume.join("logs"),
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: true, // Enable memory sanitization
+        drop_page_cache: true, // Enable memory sanitization
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -428,7 +428,7 @@ fn test_cleanup_manager_config_accessor() {
         log_path: hidden_volume.join("logs"),
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -454,7 +454,7 @@ fn test_cleanup_manager_reports_temp_cleanup_errors() {
         log_path: hidden_volume.join("logs"),
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -484,7 +484,7 @@ fn test_cleanup_manager_reports_log_cleanup_errors() {
         log_path: PathBuf::from("/var/log/nails"),
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -517,7 +517,7 @@ fn test_cleanup_manager_verification_flags_remaining_log_files() {
         log_path,
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -554,7 +554,7 @@ fn test_cleanup_manager_verification_ignores_missing_log_directory() {
         log_path: hidden_volume.join("logs"),
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -595,7 +595,7 @@ fn test_cleanup_manager_verification_flags_large_history_file() {
         log_path,
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -658,7 +658,7 @@ fn test_cleanup_manager_temp_files_integration() {
         log_path: hidden_volume.join("logs"),
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -733,7 +733,7 @@ fn test_cleanup_manager_temp_files_with_errors() {
         log_path: hidden_volume.join("logs"),
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -774,7 +774,7 @@ fn test_cleanup_manager_verification_ignores_preserved_explicit_temp_config() {
         log_path: hidden_volume.join("logs"),
         hidden_volume_root: hidden_volume,
         config_file_path: Some(config_path.clone()),
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -833,7 +833,7 @@ fn test_cleanup_manager_verification_still_flags_non_preserved_temp_residue() {
         log_path: hidden_volume.join("logs"),
         hidden_volume_root: hidden_volume,
         config_file_path: Some(config_path.clone()),
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -944,7 +944,7 @@ fn test_full_cleanup_cycle_all_cleaners_invoked() {
         log_path: log_dir.clone(),
         hidden_volume_root: hidden_volume.clone(),
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -1153,7 +1153,7 @@ fn test_verification_fails_when_artifacts_remain() {
         log_path: hidden_volume.join("logs"),
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -1199,7 +1199,7 @@ fn test_memory_sanitization_tracking() {
         log_path: hidden_volume.join("logs"),
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: true, // Enable memory sanitization
+        drop_page_cache: true, // Enable memory sanitization
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -1208,18 +1208,17 @@ fn test_memory_sanitization_tracking() {
     let manager = CleanupManager::new(fs, config, mode);
     let report = manager.cleanup().unwrap();
 
-    // Memory sanitization should have been attempted
-    // Note: It may fail if write fails, but it should be tracked in the report
-    // Check for either success (memory_sanitized=true) or an error mentioning memory
-    let memory_mentioned = report.memory_sanitized
+    // Dropping the page cache should have been attempted and tracked in the
+    // report: either success (page_cache_dropped=true) or an error mentioning it.
+    let tracked = report.page_cache_dropped
         || report
             .errors
             .iter()
-            .any(|e| e.to_lowercase().contains("memory"));
+            .any(|e| e.to_lowercase().contains("page cache"));
     assert!(
-        memory_mentioned,
-        "Memory sanitization should be tracked (either success or failure). memory_sanitized={}, errors={:?}",
-        report.memory_sanitized, report.errors
+        tracked,
+        "Page-cache drop should be tracked (either success or failure). page_cache_dropped={}, errors={:?}",
+        report.page_cache_dropped, report.errors
     );
 }
 
@@ -1259,7 +1258,7 @@ fn test_cleanup_report_tracks_canary_findings() {
         log_path: hidden_volume.join("logs"),
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: false,
         post_unmount_cleanup: true,
     };
@@ -1288,7 +1287,7 @@ fn test_cleanup_report_display_includes_new_fields() {
     });
 
     report.add_cleaned("Removed history entries (secure delete)");
-    report.memory_sanitized = true;
+    report.page_cache_dropped = true;
     report.canary_findings_count = 2;
     report.verification_passed = Some(false);
     report.duration = Duration::from_millis(100);
@@ -1297,7 +1296,7 @@ fn test_cleanup_report_display_includes_new_fields() {
 
     // Verify new fields are displayed
     assert!(
-        output.contains("Memory sanitization"),
+        output.contains("Page cache dropped"),
         "Should display memory sanitization status"
     );
     assert!(
@@ -1349,7 +1348,7 @@ fn test_cleanup_manager_uses_secure_delete_when_configured() {
         log_path: log_dir.clone(),
         hidden_volume_root: hidden_volume,
         config_file_path: None,
-        sanitize_memory: false,
+        drop_page_cache: false,
         secure_delete: true, // Enable secure delete
         post_unmount_cleanup: true,
     };

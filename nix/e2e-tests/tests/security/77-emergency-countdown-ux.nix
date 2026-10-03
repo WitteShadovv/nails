@@ -38,24 +38,24 @@ in
     write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    with subtest("default emergency countdown is visible and ordered"):
+    with subtest("--countdown shows an abortable countdown and waits"):
         machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
-        prefix = "/run/nails-tests/emergency-countdown-default"
+        prefix = "/run/nails-tests/emergency-countdown-optin"
         started_at = now()
         result = run_shellless_transient_command(
             prefix,
-            ["nails", "--config", headless_config, "emergency"],
-            unit_name="nails-emergency-countdown-default",
+            ["nails", "--config", headless_config, "emergency", "--countdown", "3"],
+            unit_name="nails-emergency-countdown-optin",
             timeout=45,
         )
-        default_elapsed = now() - started_at
+        countdown_elapsed = now() - started_at
 
         assert result["rc"] == 0, result
         assert result["systemd"].get("ExecMainCode") in ("exited", "0"), result
         assert result["systemd"].get("ExecMainStatus") == "0", result
         assert result["systemd"].get("Result") == "success", result
-        assert "Emergency deactivation complete" in result["stdout"], result
+        assert "Emergency teardown complete" in result["stdout"], result
         stderr = result["stderr"]
         for marker in [
             "Emergency deactivation in 3",
@@ -64,25 +64,27 @@ in
             "Emergency deactivation starting now!",
         ]:
             assert marker in stderr, stderr
+        # The countdown always prints the Ctrl+C abort hint, regardless of output flags.
+        assert "(Ctrl+C to abort)" in stderr, stderr
         assert stderr.find("in 3") < stderr.find("in 2") < stderr.find("in 1") < stderr.find("starting now!"), stderr
-        assert default_elapsed >= 3.0, f"Countdown completed too quickly: {default_elapsed:.3f}s"
-        assert default_elapsed < 20.0, f"Countdown command took too long: {default_elapsed:.3f}s"
+        assert countdown_elapsed >= 3.0, f"Countdown completed too quickly: {countdown_elapsed:.3f}s"
+        assert countdown_elapsed < 20.0, f"Countdown command took too long: {countdown_elapsed:.3f}s"
         assert_no_overlays(["/home", "/etc"])
         status = read_status_json(config_path=headless_config)
         assert_status_state("inactive", payload=status)
 
-    with subtest("--no-countdown removes countdown text and delay"):
+    with subtest("default emergency is immediate (no countdown text)"):
         machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
-        prefix = "/run/nails-tests/emergency-countdown-disabled"
+        prefix = "/run/nails-tests/emergency-countdown-immediate"
         started_at = now()
         result = run_shellless_transient_command(
             prefix,
-            ["nails", "--config", headless_config, "emergency", "--no-countdown"],
-            unit_name="nails-emergency-countdown-disabled",
+            ["nails", "--config", headless_config, "emergency"],
+            unit_name="nails-emergency-countdown-immediate",
             timeout=30,
         )
-        no_countdown_elapsed = now() - started_at
+        immediate_elapsed = now() - started_at
 
         assert result["rc"] == 0, result
         assert result["systemd"].get("ExecMainCode") in ("exited", "0"), result
@@ -90,10 +92,10 @@ in
         assert result["systemd"].get("Result") == "success", result
         assert "Emergency deactivation in " not in result["stderr"], result
         assert "starting now!" not in result["stderr"], result
-        assert "Emergency deactivation complete" in result["stdout"], result
-        assert default_elapsed - no_countdown_elapsed >= 2.0, \
-            f"Expected --no-countdown to skip roughly three seconds (default={default_elapsed:.3f}s, no-countdown={no_countdown_elapsed:.3f}s)"
-        assert no_countdown_elapsed < 12.0, f"--no-countdown command took too long: {no_countdown_elapsed:.3f}s"
+        assert "Emergency teardown complete" in result["stdout"], result
+        assert countdown_elapsed - immediate_elapsed >= 2.0, \
+            f"Expected the default to skip the ~3s countdown (countdown={countdown_elapsed:.3f}s, immediate={immediate_elapsed:.3f}s)"
+        assert immediate_elapsed < 12.0, f"Immediate emergency took too long: {immediate_elapsed:.3f}s"
         assert_no_overlays(["/home", "/etc"])
         status = read_status_json(config_path=headless_config)
         assert_status_state("inactive", payload=status)

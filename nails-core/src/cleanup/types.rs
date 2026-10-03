@@ -77,13 +77,14 @@ pub struct CleanupConfig {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub config_file_path: Option<PathBuf>,
 
-    /// Whether to sanitize memory after cleanup (default: false)
+    /// Whether to drop the page cache after cleanup (default: false)
     ///
-    /// When enabled, attempts to clear page cache by writing "3" to
-    /// /proc/sys/vm/drop_caches. Requires root privileges.
-    /// This helps prevent forensic recovery of cleanup artifacts from RAM.
+    /// When enabled, writes "3" to `/proc/sys/vm/drop_caches` to release clean
+    /// cached pages. Requires root privileges. This only frees *clean* page
+    /// cache; it does not zero RAM, so it is a modest residue-reduction step, not
+    /// memory sanitization. Only a reboot clears RAM completely.
     #[serde(default)]
-    pub sanitize_memory: bool,
+    pub drop_page_cache: bool,
 
     /// Use secure deletion (overwrite before delete) (default: false)
     ///
@@ -123,7 +124,7 @@ impl Default for CleanupConfig {
             log_path: hidden_volume.join("logs"),
             hidden_volume_root: hidden_volume,
             config_file_path: None,
-            sanitize_memory: false,
+            drop_page_cache: false,
             secure_delete: false,
             post_unmount_cleanup: false,
         }
@@ -153,8 +154,8 @@ pub struct CleanupReport {
     /// - None: Verification was not performed (Fast mode or verify_cleanup=false)
     pub verification_passed: Option<bool>,
 
-    /// Whether memory sanitization was performed
-    pub memory_sanitized: bool,
+    /// Whether the page cache was dropped
+    pub page_cache_dropped: bool,
 
     /// Number of canary pattern findings during verification
     pub canary_findings_count: usize,
@@ -169,7 +170,7 @@ impl CleanupReport {
             duration: Duration::ZERO,
             mode,
             verification_passed: None,
-            memory_sanitized: false,
+            page_cache_dropped: false,
             canary_findings_count: 0,
         }
     }
@@ -252,9 +253,9 @@ impl fmt::Display for CleanupReport {
             }
         }
 
-        if self.memory_sanitized {
+        if self.page_cache_dropped {
             writeln!(f)?;
-            writeln!(f, "✓ Memory sanitization completed (page cache cleared)")?;
+            writeln!(f, "✓ Page cache dropped")?;
         }
 
         Ok(())

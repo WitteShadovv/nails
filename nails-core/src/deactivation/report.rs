@@ -71,6 +71,23 @@ pub struct DeactivationReport {
 
     /// Post-unmount cleanup results (Phase 2: real disk cleanup)
     pub post_unmount_cleanup: PostUnmountCleanupReport,
+
+    /// Overlays that only came down after the forced (lazy) detach fallback,
+    /// because the graceful unmount failed. Empty when every overlay detached
+    /// cleanly. An emergency teardown expects these when processes still hold the
+    /// mount; they signal that the backend cannot be closed until those holders
+    /// exit (or the host reboots).
+    pub force_detached_overlays: Vec<String>,
+
+    /// Whether the page cache was dropped after unmount (emergency only).
+    pub page_cache_dropped: bool,
+
+    /// Result of the opt-in post-unmount history-truncation check.
+    ///
+    /// `None` when the check did not run (no post-unmount edit was performed);
+    /// `Some(true)` when every decoy history file was verified small afterwards,
+    /// `Some(false)` when one was still large enough to carry artifacts.
+    pub history_truncation_verified: Option<bool>,
 }
 
 impl DeactivationReport {
@@ -129,6 +146,29 @@ impl std::fmt::Display for DeactivationReport {
                 f,
                 "Run `nails emergency` or `nails recover` to finish the teardown."
             )?;
+        }
+
+        // Overlays that only came down after the forced detach fallback.
+        if !self.force_detached_overlays.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "Force-Detached (processes still held the mount):")?;
+            for overlay in &self.force_detached_overlays {
+                writeln!(f, "  ! {}", overlay)?;
+            }
+        }
+
+        if self.page_cache_dropped {
+            writeln!(f)?;
+            writeln!(f, "✓ Page cache dropped")?;
+        }
+
+        if let Some(passed) = self.history_truncation_verified {
+            writeln!(f)?;
+            if passed {
+                writeln!(f, "✓ History truncation verified")?;
+            } else {
+                writeln!(f, "⚠ History truncation incomplete: some files remain")?;
+            }
         }
 
         // Post-unmount cleanup (Phase 2: real disk)

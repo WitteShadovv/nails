@@ -1,38 +1,46 @@
 //! Emergency command handler
 //!
 //! Emergency is a fast, best-effort teardown, not a switch back to the decoy
-//! configuration. It ends the hidden graphical session and the services the
-//! hidden configuration added, then releases the NAILS overlays so the encrypted
-//! backend can be closed. It does not run `switch-to-configuration` and does not
-//! claim an immediate, complete return to the decoy: the display manager is
-//! restarted so the decoy greeter reappears, and the operator still closes the
-//! backend (and reboots when unsure) as the recovery guidance explains.
+//! configuration. It detaches the NAILS overlays first — the one step that
+//! matters — then runs best-effort cleanup and drops the page cache, so a stalled
+//! backend can never delay the unmount. It ends the hidden graphical session and
+//! the services the hidden configuration added, and restarts the display manager
+//! so the decoy greeter reappears. It does not run `switch-to-configuration` and
+//! does not claim an immediate, complete return to the decoy: the operator still
+//! closes the encrypted backend (and powers off or reboots to clear RAM) as the
+//! recovery guidance explains. The teardown starts immediately unless
+//! `--countdown <SECS>` is given, and `--poweroff`/`--reboot` run only after it
+//! finishes.
 
+use std::io::Write;
 use std::path::Path;
 
 use nails_core::output::Mark;
+use nails_core::{DeactivationReport, Filesystem, NailsManager, PostTeardownPower};
 use serde::Serialize;
 
 use crate::cli::args::EmergencyArgs;
 use crate::cli::output::deactivate::deactivate_error_body;
-use crate::cli::output::envelope::{Envelope, report_error};
+use crate::cli::output::envelope::{Envelope, ErrorBody, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// Execute the emergency command.
 ///
-/// Rapid deactivation with a countdown. A missing or invalid config is logged as
-/// a warning and defaults are used.
+/// A missing or invalid config is logged as a warning and defaults are used. The
+/// teardown is immediate by default; `--countdown <SECS>` adds an abortable wait
+/// that output flags never change.
 ///
 /// # Returns
 ///
 /// - [`ExitStatus::Ok`] once the teardown completed
-/// - [`ExitStatus::Failed`] when the teardown failed
+/// - [`ExitStatus::DegradedReboot`] when some NAILS mount could not be removed
+/// - [`ExitStatus::Failed`] on any other failure
 pub fn execute(
     settings: &OutputSettings,
     args: &EmergencyArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
-    use nails_core::{NailsManager, RealFilesystem};
+    use nails_core::RealFilesystem;
 
     let json = settings.is_json();
     let verbosity = settings.verbosity;
@@ -59,39 +67,55 @@ pub fn execute(
     // block an emergency teardown: proceed without it after a short timeout.
     let _state_lock = super::acquire_state_lock_for_emergency(&lock_state_path);
 
-    // Countdown before emergency deactivation (skip if --no-countdown, --quiet, or --json)
-    if !args.no_countdown && !settings.is_quiet() && !json {
-        use std::io::Write;
-
-        for i in (1..=3).rev() {
-            eprint!("\r  Emergency deactivation in {}... ", i);
-            let _ = std::io::stderr().flush();
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
-        eprintln!("\r  Emergency deactivation starting now!  ");
+    // Opt-in countdown before teardown. Immediate by default. The wait is never
+    // skipped or shortened by --quiet or --json: output flags must never change
+    // the timing of a panic button.
+    if let Some(secs) = args.countdown {
+        run_countdown(secs);
     }
 
-    // Run emergency deactivation
+    let power_action = requested_power_action(args);
+
     match manager.emergency_deactivate() {
-        Ok(()) => {
+        Ok(report) => {
+            let backend_commands = backend_close_commands(&manager);
+
+            // Dispatch the requested power action after the teardown completes.
+            // Powering off or rebooting is the only way to clear RAM, so it is
+            // offered only once the overlays are gone.
+            let power_note = dispatch_power_action(&manager, power_action);
+
             if json {
-                print_emergency_json();
+                print_emergency_json(&report, &backend_commands, power_action, &power_note);
             } else {
-                println!(
-                    "{}",
-                    settings
-                        .stdout_style()
-                        .marked(Mark::Pass, "Emergency deactivation complete")
+                render_emergency_success(
+                    settings,
+                    &report,
+                    &backend_commands,
+                    power_action,
+                    &power_note,
                 );
-                println!(
-                    "  Hidden session ended and overlays released; the decoy greeter will reappear"
-                );
-                eprintln!();
-                for line in emergency_recovery_guidance(settings) {
-                    eprintln!("{line}");
-                }
             }
             ExitStatus::Ok
+        }
+        Err(nails_core::NailsError::DeactivationIncomplete { remaining_mounts }) => {
+            let remaining = remaining_mounts
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            report_error(
+                json,
+                "emergency",
+                ExitStatus::DegradedReboot,
+                ErrorBody::new(
+                    "teardown_incomplete",
+                    format!("REBOOT REQUIRED: could not remove every NAILS mount: {remaining}"),
+                )
+                .with_hint(
+                    "processes still hold the mounts; reboot to clear them and the key from RAM",
+                ),
+            )
         }
         Err(e) => report_error(
             json,
@@ -102,30 +126,208 @@ pub fn execute(
     }
 }
 
+/// Which post-teardown power action the operator requested, if any.
+fn requested_power_action(args: &EmergencyArgs) -> Option<PostTeardownPower> {
+    if args.poweroff {
+        Some(PostTeardownPower::Poweroff)
+    } else if args.reboot {
+        Some(PostTeardownPower::Reboot)
+    } else {
+        None
+    }
+}
+
+/// Dispatch the requested power action after a successful teardown.
+///
+/// Returns a short human note describing what happened (dispatched, skipped in a
+/// safe runtime, or failed), or `None` when no action was requested.
+fn dispatch_power_action<F: Filesystem>(
+    manager: &NailsManager<F>,
+    action: Option<PostTeardownPower>,
+) -> Option<String> {
+    let action = action?;
+    let label = match action {
+        PostTeardownPower::Poweroff => "power off",
+        PostTeardownPower::Reboot => "reboot",
+    };
+    match manager.run_post_teardown_power(action) {
+        Ok(true) => Some(format!("{label} dispatched")),
+        Ok(false) => Some(format!("{label} skipped (safe runtime)")),
+        Err(e) => Some(format!("{label} failed: {e}")),
+    }
+}
+
+/// Print an abortable countdown to stderr, one line per second, always ending
+/// with a Ctrl+C hint. Never gated by `--quiet`/`--json`.
+fn run_countdown(secs: u64) {
+    for remaining in (1..=secs).rev() {
+        eprint!("\r  Emergency deactivation in {remaining}... (Ctrl+C to abort) ");
+        let _ = std::io::stderr().flush();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    if secs > 0 {
+        eprintln!("\r  Emergency deactivation starting now!            ");
+    }
+}
+
+/// The exact commands to close the encrypted backend, derived from the hidden
+/// volume's mount source (mount point, device, and dm name when present).
+///
+/// The overlays come down during the teardown, but the encrypted backend stays
+/// open so its key remains in RAM until the operator closes it. Best-effort: an
+/// unreadable mount source yields no command lines and the generic dismount
+/// guidance still applies.
+fn backend_close_commands<F: Filesystem>(manager: &NailsManager<F>) -> Vec<String> {
+    let root = manager.config().hidden_volume_root.clone();
+    let Ok(Some(source)) = manager.filesystem().mount_source(&root) else {
+        return Vec::new();
+    };
+
+    let mut lines = Vec::new();
+    lines.push(format!("umount {}", root.display()));
+    if let Some(dm_name) = &source.dm_name {
+        lines.push(format!("cryptsetup close {dm_name}"));
+    } else if let Some(device) = &source.device {
+        lines.push(format!("# backend device: {device}"));
+    }
+    lines
+}
+
 /// The `data` payload for a successful `emergency --json`.
 #[derive(Debug, Serialize)]
 struct EmergencyData {
     /// What happened (`complete`).
     status: &'static str,
+    /// Overlays detached during the teardown.
+    detached_overlays: Vec<String>,
+    /// Overlays that only came down after the forced (lazy) detach, because
+    /// processes still held the mount.
+    force_detached_overlays: Vec<String>,
+    /// Best-effort cleanup errors (non-fatal).
+    cleanup_errors: Vec<String>,
+    /// Whether the page cache was dropped after unmount.
+    page_cache_dropped: bool,
+    /// Result of the opt-in post-unmount history-truncation check, if it ran.
+    history_truncation_verified: Option<bool>,
+    /// The exact commands to close the encrypted backend.
+    backend_close_commands: Vec<String>,
+    /// The requested post-teardown power action, if any.
+    power_action: Option<&'static str>,
+    /// What the power action did (dispatched / skipped / failed), if requested.
+    power_result: Option<String>,
     /// The recovery steps the operator should still take.
     recovery_guidance: Vec<&'static str>,
 }
 
+fn power_action_name(action: Option<PostTeardownPower>) -> Option<&'static str> {
+    action.map(|action| match action {
+        PostTeardownPower::Poweroff => "poweroff",
+        PostTeardownPower::Reboot => "reboot",
+    })
+}
+
 /// Print the success envelope for a completed emergency teardown.
-fn print_emergency_json() {
+fn print_emergency_json(
+    report: &DeactivationReport,
+    backend_commands: &[String],
+    power_action: Option<PostTeardownPower>,
+    power_note: &Option<String>,
+) {
     let data = EmergencyData {
         status: "complete",
+        detached_overlays: report.unmounted_overlays.clone(),
+        force_detached_overlays: report.force_detached_overlays.clone(),
+        cleanup_errors: report.cleanup_report.errors.clone(),
+        page_cache_dropped: report.page_cache_dropped,
+        history_truncation_verified: report.history_truncation_verified,
+        backend_close_commands: backend_commands.to_vec(),
+        power_action: power_action_name(power_action),
+        power_result: power_note.clone(),
         recovery_guidance: EMERGENCY_RECOVERY_GUIDANCE.to_vec(),
     };
     Envelope::success("emergency", data).print();
+}
+
+/// Render the human-readable success output for a completed emergency teardown.
+fn render_emergency_success(
+    settings: &OutputSettings,
+    report: &DeactivationReport,
+    backend_commands: &[String],
+    power_action: Option<PostTeardownPower>,
+    power_note: &Option<String>,
+) {
+    let style = settings.stdout_style();
+    println!(
+        "{}",
+        style.marked(Mark::Pass, "Emergency teardown complete")
+    );
+
+    if report.unmounted_overlays.is_empty() {
+        println!("  No NAILS overlays were mounted");
+    } else {
+        println!("  Detached {} overlay(s):", report.unmounted_overlays.len());
+        for overlay in &report.unmounted_overlays {
+            println!("    - {overlay}");
+        }
+    }
+
+    if !report.force_detached_overlays.is_empty() {
+        println!(
+            "  {} overlay(s) needed a forced detach (processes still held them);",
+            report.force_detached_overlays.len()
+        );
+        println!("  the backend cannot be closed until those processes exit or you reboot:");
+        for overlay in &report.force_detached_overlays {
+            println!("    ! {overlay}");
+        }
+    }
+
+    if report.page_cache_dropped {
+        println!("  Page cache dropped");
+    }
+
+    if !report.cleanup_report.errors.is_empty() {
+        println!(
+            "  Cleanup reported {} error(s):",
+            report.cleanup_report.errors.len()
+        );
+        for error in &report.cleanup_report.errors {
+            println!("    - {error}");
+        }
+    }
+
+    match report.history_truncation_verified {
+        Some(true) => println!("  History truncation verified"),
+        Some(false) => println!("  History truncation incomplete: some files remain"),
+        None => {}
+    }
+
+    if let Some(note) = power_note {
+        println!("  Power action: {note}");
+    } else if power_action.is_none() {
+        println!("  The decoy greeter will reappear");
+    }
+
+    if !backend_commands.is_empty() {
+        println!();
+        println!("  Close the encrypted backend when it is safe to do so:");
+        for command in backend_commands {
+            println!("    {command}");
+        }
+    }
+
+    eprintln!();
+    for line in emergency_recovery_guidance(settings) {
+        eprintln!("{line}");
+    }
 }
 
 /// Recovery guidance printed to stderr after an emergency teardown; the first
 /// line carries the shared warning mark in the stderr style.
 const EMERGENCY_RECOVERY_GUIDANCE: &[&str] = &[
     "Critical: For maximum safety:",
-    "  1. Dismount the hidden volume when it is safe to do so",
-    "  2. If you are unsure cleanup was complete, reboot immediately",
+    "  1. Close the encrypted backend when it is safe to do so",
+    "  2. Power off or reboot to clear the key and any residue from RAM",
 ];
 
 fn emergency_recovery_guidance(settings: &OutputSettings) -> Vec<String> {
@@ -139,13 +341,12 @@ fn emergency_recovery_guidance(settings: &OutputSettings) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        EMERGENCY_RECOVERY_GUIDANCE, emergency_recovery_guidance, execute, print_emergency_json,
-    };
+    use super::{EMERGENCY_RECOVERY_GUIDANCE, emergency_recovery_guidance, execute, run_countdown};
     use crate::cli::args::EmergencyArgs;
     use crate::cli::output::{OutputMode, OutputSettings};
     use nails_core::test_support::EnvGuard;
     use std::path::PathBuf;
+    use std::time::Instant;
 
     const SUBPROCESS_TEST_NAME: &str =
         "cli::commands::emergency::tests::subprocess_emergency_entrypoint";
@@ -185,11 +386,11 @@ mod tests {
             .without_time()
             .try_init();
 
-        let args = EmergencyArgs { no_countdown: true };
+        let base = EmergencyArgs::default();
         let status = match case.as_str() {
             "invalid-config" => execute(
                 &OutputSettings::default(),
-                &args,
+                &base,
                 config_override.as_deref(),
             ),
             "invalid-config-json" => {
@@ -199,8 +400,16 @@ mod tests {
                     ascii: true,
                     ..OutputSettings::default()
                 };
-                execute(&settings, &args, config_override.as_deref())
+                execute(&settings, &base, config_override.as_deref())
             }
+            "poweroff" => execute(
+                &OutputSettings::default(),
+                &EmergencyArgs {
+                    poweroff: true,
+                    ..EmergencyArgs::default()
+                },
+                config_override.as_deref(),
+            ),
             other => panic!("unknown emergency subprocess case: {other}"),
         };
         crate::cli::detach::exit_process(status.code());
@@ -254,6 +463,51 @@ mod tests {
     }
 
     #[test]
+    fn execute_emergency_poweroff_dispatches_after_teardown() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing = temp_dir.path().join("missing.toml");
+
+        let output = run_subprocess("poweroff", Some(&missing));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // In the safe runtime the real poweroff is skipped, but the CLI still runs
+        // the power action after the teardown and reports it, so the dispatch path
+        // is exercised without touching the host.
+        assert_eq!(output.status.code(), Some(0), "stderr={stderr}");
+        assert!(
+            stdout.contains("Power action") && stdout.contains("power off"),
+            "stdout={stdout}"
+        );
+    }
+
+    #[test]
+    fn countdown_waits_the_requested_seconds_and_prints_abort_hint() {
+        // A 1s countdown should take at least ~1s and emit the abort hint.
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let _guard = shared.lock().unwrap();
+        let start = Instant::now();
+        run_countdown(1);
+        assert!(start.elapsed() >= std::time::Duration::from_millis(900));
+    }
+
+    #[test]
+    fn zero_countdown_is_immediate() {
+        let start = Instant::now();
+        run_countdown(0);
+        assert!(start.elapsed() < std::time::Duration::from_millis(200));
+    }
+
+    #[test]
+    fn no_countdown_flag_is_rejected_by_clap() {
+        use crate::cli::args::Cli;
+        use clap::Parser;
+
+        let result = Cli::try_parse_from(["nails", "emergency", "--no-countdown"]);
+        assert!(result.is_err(), "clap should reject the removed flag");
+    }
+
+    #[test]
     fn emergency_ascii_recovery_guidance_is_ascii_only() {
         let settings = OutputSettings {
             color_stderr: true,
@@ -281,16 +535,9 @@ mod tests {
     }
 
     #[test]
-    fn emergency_success_json_contains_recovery_guidance() {
-        // The renderer prints a parseable envelope; the shape is asserted here by
-        // capturing the serialized data rather than re-reading stdout.
-        print_emergency_json();
-    }
-
-    #[test]
     fn emergency_recovery_guidance_contains_expected_text() {
         let combined: String = EMERGENCY_RECOVERY_GUIDANCE.join("\n");
-        assert!(combined.contains("Dismount the hidden volume"));
-        assert!(combined.contains("reboot immediately"));
+        assert!(combined.contains("Close the encrypted backend"));
+        assert!(combined.contains("clear the key"));
     }
 }

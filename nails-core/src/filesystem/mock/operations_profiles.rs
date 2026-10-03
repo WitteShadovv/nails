@@ -137,6 +137,54 @@ impl MockFilesystem {
         Ok(())
     }
 
+    pub(super) fn write_kernel_tunable_impl(&self, path: &Path, value: &str) -> Result<()> {
+        if self
+            .write_should_fail
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .contains(path)
+        {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("Mock kernel-tunable write failure for {}", path.display()),
+            )));
+        }
+
+        // A kernel tunable must already exist: there is no create path, mirroring
+        // the real `open` without `O_CREAT`. A path explicitly tracked as absent
+        // (or never set up) fails with NotFound.
+        let exists = self
+            .paths
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+            .map(|info| info.exists)
+            .unwrap_or(false);
+        if !exists {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Kernel tunable not found: {}", path.display()),
+            )));
+        }
+
+        let mut contents = self
+            .file_contents
+            .lock()
+            .expect("MockFilesystem mutex poisoned");
+        contents.insert(path.to_path_buf(), value.to_string());
+        drop(contents);
+
+        self.op_log
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push(MockOp::WriteKernelTunable {
+                path: path.to_path_buf(),
+                value: value.to_string(),
+            });
+
+        Ok(())
+    }
+
     pub(super) fn overwrite_file_in_place_impl(&self, path: &Path, content: &str) -> Result<()> {
         if self
             .write_should_fail

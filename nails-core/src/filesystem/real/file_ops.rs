@@ -173,6 +173,37 @@ pub(super) fn write_file_content(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+/// Write a value to a kernel tunable (`procfs`/`sysfs`) node in place.
+///
+/// See [`crate::filesystem::Filesystem::write_kernel_tunable`] for the contract.
+/// The node is opened for writing and truncated with no `O_CREAT`: these virtual
+/// filesystems forbid both creating a new node and renaming over an existing one,
+/// so the staged-temp-then-rename write that [`write_file_content`] performs
+/// always fails on them. Writing the node directly is the only way that works.
+pub(super) fn write_kernel_tunable(path: &Path, value: &str) -> Result<()> {
+    use std::io::Write;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|e| {
+            NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to open kernel tunable {}: {}", path.display(), e),
+            ))
+        })?;
+
+    file.write_all(value.as_bytes()).map_err(|e| {
+        NailsError::IoError(std::io::Error::new(
+            e.kind(),
+            format!("Failed to write kernel tunable {}: {}", path.display(), e),
+        ))
+    })?;
+
+    Ok(())
+}
+
 /// Overwrite an existing file's contents in place on the same inode.
 ///
 /// See [`crate::filesystem::Filesystem::overwrite_file_in_place`] for the
@@ -784,6 +815,36 @@ pub(super) fn secure_delete_dir_all(fs: &RealFilesystem, path: &Path) -> Result<
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod write_kernel_tunable_tests {
+    use super::*;
+
+    #[test]
+    fn writes_in_place_without_a_tmp_sibling() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let knob = dir.path().join("drop_caches");
+        // The node must already exist, like a procfs knob.
+        std::fs::write(&knob, "0").unwrap();
+
+        write_kernel_tunable(&knob, "3").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&knob).unwrap(), "3");
+        // No staged sibling is created (procfs forbids rename; the write is direct).
+        assert!(!knob.with_extension("tmp").exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn missing_node_is_an_error_not_a_create() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let knob = dir.path().join("drop_caches");
+
+        assert!(write_kernel_tunable(&knob, "3").is_err());
+        // The write must never create the node (no O_CREAT).
+        assert!(!knob.exists());
+    }
 }
 
 #[cfg(test)]

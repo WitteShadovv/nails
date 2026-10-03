@@ -189,7 +189,7 @@ pub enum Commands {
     Deactivate(DeactivateArgs),
     /// Reapply the hidden configuration layer while active (platforms with a layer only)
     Reapply(ReapplyArgs),
-    /// Emergency mode: rapid deactivation with countdown
+    /// Emergency teardown: detach overlays immediately, best-effort cleanup
     Emergency(EmergencyArgs),
     /// Reconcile a stuck state and finish an interrupted or degraded teardown
     Recover(RecoverArgs),
@@ -351,11 +351,30 @@ pub struct ReapplyArgs {}
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 #[command(after_long_help = "\
 EXAMPLES:
-  nails emergency                     Tear everything down immediately")]
+  nails emergency                     Tear everything down immediately
+  nails emergency --countdown 5       Wait 5s (Ctrl+C to abort), then tear down
+  nails emergency --poweroff          Tear down, then power the machine off
+  nails emergency --reboot            Tear down, then reboot into the decoy")]
 pub struct EmergencyArgs {
-    /// Skip the 3-second countdown (proceed immediately)
+    /// Wait this many seconds before tearing down, printing a Ctrl+C abort hint.
+    ///
+    /// Omitted (the default) tears down immediately. The wait is never affected
+    /// by `--quiet` or `--json`, so output flags never change the timing.
+    #[arg(long, value_name = "SECS")]
+    pub countdown: Option<u64>,
+
+    /// Power the machine off after the teardown completes.
+    ///
+    /// Powering off clears RAM, the only complete remedy for residue the
+    /// teardown cannot remove. Mutually exclusive with `--reboot`.
+    #[arg(long, conflicts_with = "reboot")]
+    pub poweroff: bool,
+
+    /// Reboot into the decoy after the teardown completes.
+    ///
+    /// A reboot clears RAM. Mutually exclusive with `--poweroff`.
     #[arg(long)]
-    pub no_countdown: bool,
+    pub reboot: bool,
 }
 
 /// `nails recover` arguments
