@@ -14,14 +14,19 @@ expression: redact_status(value)
     },
     "overlays": [],
     "persona_mode": "shared-home",
-    "security_posture": "critical",
+    "posture": "inconsistent",
+    "remaining_mounts": [
+      "/opt/nails-contract-home"
+    ],
+    "remediation": "Run `nails emergency` to tear down the remaining NAILS mounts",
     "state": {
       "kind": "degraded",
       "reason": "teardown left overlays mounted",
       "remaining_mounts": [
         "/opt/nails-contract-home"
       ]
-    }
+    },
+    "state_source": "loaded"
   },
   "ok": true,
   "schema_version": 1

@@ -10,15 +10,18 @@ expression: redact_status(value)
     "hidden_root_used_bytes": "[bytes]",
     "opsec_reminders": [],
     "overlay_verification": {
-      "kind": "not_applicable"
+      "kind": "skipped"
     },
     "overlays": [],
     "persona_mode": "shared-home",
-    "security_posture": "decoy",
+    "posture": "unknown",
+    "remaining_mounts": [],
+    "remediation": "Run `nails emergency` and recover the hidden volume before activating again",
     "state": {
       "kind": "unknown",
       "reason": "state file is corrupt or has no integrity digest; the real state is unknown"
-    }
+    },
+    "state_source": "corrupt"
   },
   "ok": true,
   "schema_version": 1

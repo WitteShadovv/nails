@@ -37,6 +37,24 @@ impl InterruptedPhase {
     }
 }
 
+/// Which shape of inconsistency a [`EffectiveState::Degraded`] records.
+///
+/// The two are dangerous in opposite directions, so the consumers (activation's
+/// refusal and status's posture) need to tell them apart without string-sniffing
+/// the reason: an active system missing overlays leaks hidden writes onto the
+/// decoy disk, while live NAILS mounts under an inactive state mean the backend
+/// was torn down out from under them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DegradedKind {
+    /// State is Active but one or more tracked overlays are not mounted (or none
+    /// are): hidden writes may be reaching the decoy disk.
+    ActiveOverlaysMissing,
+    /// NAILS mounts are still live while the persisted state is not Active (it is
+    /// Inactive, or a teardown that left mounts behind): an inconsistent system
+    /// recovery must tear down.
+    InactiveMountsLive,
+}
+
 /// The real state of the system after reconciling the persisted [`StateFile`]
 /// against the current boot, the owner process, and the live mount table.
 ///
@@ -71,6 +89,8 @@ pub enum EffectiveState {
     /// overlays missing from the kernel, or Inactive with NAILS mounts still
     /// live. Hidden writes may be reaching the decoy disk. Never auto-reset.
     Degraded {
+        /// Which direction the inconsistency runs (see [`DegradedKind`]).
+        kind: DegradedKind,
         /// Human-readable explanation of the inconsistency.
         reason: String,
         /// NAILS-owned mount points still live, which recovery must tear down.
@@ -126,6 +146,7 @@ pub fn reconcile(
                 // Inactive on paper but NAILS overlays are mounted: hidden writes
                 // may be reaching the decoy disk. Inconsistent, never auto-reset.
                 EffectiveState::Degraded {
+                    kind: DegradedKind::InactiveMountsLive,
                     reason: format!(
                         "state is inactive but {} NAILS mount(s) are still live",
                         live.len()
@@ -147,6 +168,7 @@ pub fn reconcile(
 
             if overlays.is_empty() {
                 EffectiveState::Degraded {
+                    kind: DegradedKind::ActiveOverlaysMissing,
                     reason: "state is active but records no overlays".to_string(),
                     remaining: live,
                 }
@@ -156,6 +178,7 @@ pub fn reconcile(
                 }
             } else {
                 EffectiveState::Degraded {
+                    kind: DegradedKind::ActiveOverlaysMissing,
                     reason: format!(
                         "state is active but {} of {} overlay(s) are not mounted: {}",
                         missing.len(),
@@ -186,6 +209,9 @@ pub fn reconcile(
             remaining_mounts,
             ..
         } => EffectiveState::Degraded {
+            // A persisted Degraded is a teardown that left NAILS mounts behind
+            // while heading for Inactive: live mounts under a non-active state.
+            kind: DegradedKind::InactiveMountsLive,
             reason: reason.clone(),
             // Prefer what the kernel actually still has over the recorded list.
             remaining: if live.is_empty() {
@@ -284,7 +310,12 @@ mod tests {
         let mounts = mounts_with_persistent(&["/home"]);
         let eff = reconcile(&st, &LoadOutcome::Loaded, &mounts, Some(BOOT_A), true);
         match eff {
-            EffectiveState::Degraded { reason, remaining } => {
+            EffectiveState::Degraded {
+                kind,
+                reason,
+                remaining,
+            } => {
+                assert_eq!(kind, DegradedKind::ActiveOverlaysMissing);
                 assert!(reason.contains("/var"), "reason: {reason}");
                 assert_eq!(remaining, vec![PathBuf::from("/home")]);
             }
@@ -376,7 +407,10 @@ mod tests {
         let mounts = mounts_with_persistent(&["/home"]);
         let eff = reconcile(&st, &LoadOutcome::Loaded, &mounts, Some(BOOT_A), true);
         match eff {
-            EffectiveState::Degraded { remaining, .. } => {
+            EffectiveState::Degraded {
+                kind, remaining, ..
+            } => {
+                assert_eq!(kind, DegradedKind::InactiveMountsLive);
                 assert_eq!(remaining, vec![PathBuf::from("/home")]);
             }
             other => panic!("expected Degraded, got {other:?}"),

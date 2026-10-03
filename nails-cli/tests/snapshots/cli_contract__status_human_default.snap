@@ -7,7 +7,7 @@ expression: redact_volume_line(&stdout)
 =======================================
 
 State:              Inactive
-Security Posture:   [DECOY] Decoy system - no sensitive data accessible
+Security Posture:   [DECOY] Decoy system in use - no hidden environment mounted
 Persona mode:       shared-home
   [WARN] shared-home: the hidden session uses the decoy home; its accounts and secrets are live
 

@@ -1,45 +1,24 @@
 use super::{execute, status_exit_code};
 use crate::cli::args::StatusArgs;
 use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
-use nails_core::status::SecurityPosture;
+use nails_core::status::Posture;
 use nails_core::test_support::EnvGuard;
 use std::path::PathBuf;
 
 #[test]
-fn status_exit_code_is_always_ok_without_the_flag() {
-    for posture in [
-        SecurityPosture::Secure,
-        SecurityPosture::Decoy,
-        SecurityPosture::Warning,
-        SecurityPosture::Critical,
-    ] {
-        assert_eq!(status_exit_code(posture, false, false), ExitStatus::Ok);
-        assert_eq!(status_exit_code(posture, true, false), ExitStatus::Ok);
-    }
-}
-
-#[test]
-fn status_exit_code_reflects_posture_with_the_flag() {
+fn status_exit_code_is_driven_by_the_posture() {
+    // Safe postures exit 0; the dangerous ones fail closed.
+    assert_eq!(status_exit_code(Posture::Decoy), ExitStatus::Ok);
+    assert_eq!(status_exit_code(Posture::Active), ExitStatus::Ok);
     assert_eq!(
-        status_exit_code(SecurityPosture::Secure, false, true),
-        ExitStatus::Ok
-    );
-    assert_eq!(
-        status_exit_code(SecurityPosture::Decoy, false, true),
-        ExitStatus::Ok
-    );
-    assert_eq!(
-        status_exit_code(SecurityPosture::Warning, false, true),
-        ExitStatus::Failed
-    );
-    assert_eq!(
-        status_exit_code(SecurityPosture::Critical, false, true),
-        ExitStatus::Failed
-    );
-    assert_eq!(
-        status_exit_code(SecurityPosture::Critical, true, true),
+        status_exit_code(Posture::Degraded),
         ExitStatus::DegradedReboot
     );
+    assert_eq!(
+        status_exit_code(Posture::Inconsistent),
+        ExitStatus::DegradedReboot
+    );
+    assert_eq!(status_exit_code(Posture::Unknown), ExitStatus::InvalidState);
 }
 
 const SUBPROCESS_TEST_NAME: &str = "cli::commands::status::tests::subprocess_status_entrypoint";
@@ -69,10 +48,7 @@ fn subprocess_status_entrypoint() {
     let config_override = std::env::var_os("NAILS_STATUS_SUBPROCESS_CONFIG").map(PathBuf::from);
 
     let config = config_override.as_deref();
-    let details = StatusArgs {
-        details: true,
-        ..StatusArgs::default()
-    };
+    let details = StatusArgs { details: true };
     let status = match case.as_str() {
         "ascii" => execute(
             &OutputSettings {
@@ -120,10 +96,7 @@ fn execute_status_ascii_mode_succeeds_with_missing_state_file() {
 
     assert!(output.status.success(), "stdout={stdout}");
     assert!(stdout.contains("State:"));
-    assert!(
-        stdout.contains("Security Posture:") || stdout.contains("security_posture"),
-        "stdout={stdout}"
-    );
+    assert!(stdout.contains("Security Posture:"), "stdout={stdout}");
 }
 
 #[test]
@@ -147,7 +120,7 @@ fn execute_status_json_mode_succeeds() {
 
     assert!(output.status.success(), "stdout={stdout}");
     assert!(stdout.contains("\"state\""));
-    assert!(stdout.contains("\"security_posture\""));
+    assert!(stdout.contains("\"posture\""));
 }
 
 #[test]
@@ -251,7 +224,8 @@ fn execute_status_permission_denied_reports_unknown_not_inactive() {
     std::fs::set_permissions(&state_path, restore).unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "stdout={stdout}");
+    // An unreadable state file is an unknown posture: fail closed with code 6.
+    assert_eq!(output.status.code(), Some(6), "stdout={stdout}");
     assert!(
         stdout.contains("State:              UNKNOWN"),
         "stdout={stdout}"
@@ -326,7 +300,8 @@ fn execute_status_no_color_verbose_reports_corrupt_state() {
     let output = run_subprocess("no-color", Some(config.path()));
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    assert!(output.status.success(), "stdout={stdout}");
+    // A corrupt state file is an unknown posture: fail closed with code 6.
+    assert_eq!(output.status.code(), Some(6), "stdout={stdout}");
     assert!(stdout.contains("Details:"), "stdout={stdout}");
     assert!(
         stdout.contains("State loaded:       corrupt (state unknown, using defaults)"),
@@ -404,7 +379,9 @@ fn execute_status_no_color_verbose_active_shows_overlay_details_and_logs() {
     let output = run_subprocess("no-color", Some(config.path()));
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    assert!(output.status.success(), "stdout={stdout}");
+    // The recorded overlay is not a live NAILS overlay in this sandbox, so the
+    // posture is degraded (exit 7); the details and logs are still shown.
+    assert_eq!(output.status.code(), Some(7), "stdout={stdout}");
     assert!(
         stdout.contains("NixOS Generation:   nails-gen-77"),
         "stdout={stdout}"

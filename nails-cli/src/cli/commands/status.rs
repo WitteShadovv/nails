@@ -3,35 +3,32 @@
 use crate::cli::args::StatusArgs;
 use crate::cli::output::status::print_status_json_unknown;
 use crate::cli::output::{self, ExitStatus, OutputSettings};
-use nails_core::status::SecurityPosture;
+use nails_core::status::Posture;
 use std::io::Write;
 use std::path::Path;
 
-/// The exit status a status run reports.
+/// The exit status a status run reports, driven entirely by the posture.
 ///
-/// Without `--exit-status`, status always exits 0 once it produced a report. With
-/// `--exit-status`, the exit code reflects the security posture so scripts can
-/// branch on it: a transitional/inconsistent posture is a failure, a degraded
-/// system asks for a reboot, and the normal decoy or a verified-active system is
-/// a success.
-fn status_exit_code(posture: SecurityPosture, degraded: bool, exit_status: bool) -> ExitStatus {
-    if !exit_status {
-        return ExitStatus::Ok;
-    }
+/// The posture is the kernel-truth verdict, so it always drives the exit code —
+/// there is no opt-in flag. The safe postures (decoy, active) exit 0; the
+/// dangerous ones (degraded, inconsistent) exit [`ExitStatus::DegradedReboot`] so
+/// a script fails closed and is pointed at recovery; an unknown state exits
+/// [`ExitStatus::InvalidState`].
+fn status_exit_code(posture: Posture) -> ExitStatus {
     match posture {
-        SecurityPosture::Secure | SecurityPosture::Decoy => ExitStatus::Ok,
-        SecurityPosture::Warning => ExitStatus::Failed,
-        SecurityPosture::Critical if degraded => ExitStatus::DegradedReboot,
-        SecurityPosture::Critical => ExitStatus::Failed,
+        Posture::Decoy | Posture::Active => ExitStatus::Ok,
+        Posture::Degraded | Posture::Inconsistent => ExitStatus::DegradedReboot,
+        Posture::Unknown => ExitStatus::InvalidState,
     }
 }
 
 /// Execute the status command.
 ///
 /// Shows current system status and uptime. Status always reports an exit status
-/// of [`ExitStatus::Ok`] once it has produced a report (even for an unreadable
-/// state file), and [`ExitStatus::Config`] when the configuration file itself
-/// could not be loaded.
+/// of [`ExitStatus::Ok`] for a safe posture (decoy or active), and a non-zero
+/// posture-driven code (`DegradedReboot` or `InvalidState`) when the kernel truth
+/// is dangerous or unknown; [`ExitStatus::Config`] when the configuration file
+/// itself could not be loaded.
 ///
 /// # Arguments
 ///
@@ -63,12 +60,11 @@ pub fn execute(
     let filesystem = RealFilesystem;
     let command = StatusCommand::new(filesystem, config, state_path.clone());
 
-    // Status collection/runtime failures after config is loaded still exit 0.
-    let report = match command.run_truthful() {
+    // A hard error (e.g. a permission-denied state file) means the real state is
+    // unknown: report the UNKNOWN posture and fail closed.
+    let report = match command.run() {
         Ok(report) => report,
         Err(e) => {
-            // State file error - report an UNKNOWN status with error details.
-            // Status always succeeds (exit code 0) once it produced a report.
             let error_msg = match e {
                 NailsError::IoError(ref io_err) => {
                     if io_err.kind() == std::io::ErrorKind::NotFound {
@@ -105,18 +101,20 @@ pub fn execute(
             } else {
                 output::print_status_header(style);
                 println!("State:              UNKNOWN");
-                println!(
-                    "Security Posture:   {}",
-                    SecurityPosture::Warning.render(style)
-                );
+                println!("Security Posture:   {}", Posture::Unknown.render(style));
+                if let Some(remediation) = Posture::Unknown.remediation() {
+                    println!(
+                        "  {}",
+                        style.marked(nails_core::output::Mark::Arrow, remediation)
+                    );
+                }
                 println!();
                 println!("Error: {}", error_msg);
                 println!();
                 println!("Run status with sufficient privileges or fix state file access");
             }
             let _ = std::io::stdout().flush();
-            // An untrusted state file is a Warning posture, not Degraded.
-            return status_exit_code(SecurityPosture::Warning, false, args.exit_status);
+            return status_exit_code(Posture::Unknown);
         }
     };
 
@@ -134,14 +132,10 @@ pub fn execute(
         );
     }
 
-    // Status exits 0 once it produced a report, unless --exit-status asks for the
-    // posture to be reflected in the exit code.
+    // The posture always drives the exit code: safe postures exit 0, dangerous or
+    // unknown ones fail closed.
     let _ = std::io::stdout().flush();
-    status_exit_code(
-        report.security_posture(),
-        matches!(report.state, nails_core::SystemState::Degraded { .. }),
-        args.exit_status,
-    )
+    status_exit_code(report.posture)
 }
 
 #[cfg(test)]

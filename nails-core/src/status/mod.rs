@@ -13,7 +13,7 @@
 //! - **[`StatusCommand`]**: Main command struct that executes status queries
 //! - **[`StatusReport`]**: Comprehensive report containing state, overlays, and verification results
 //! - **[`VerificationStatus`]**: Enum representing overlay verification outcomes
-//! - **[`SecurityPosture`]**: Enum representing security posture with graduated levels
+//! - **[`Posture`]**: The kernel-truth verdict (decoy/active/degraded/inconsistent/unknown)
 //!
 //! ## Example
 //!
@@ -30,7 +30,7 @@
 //!
 //! println!("State: {:?}", report.state);
 //! println!("Verification: {:?}", report.overlay_verification);
-//! println!("Posture: {}", report.security_posture());
+//! println!("Posture: {}", report.posture());
 //! # Ok::<(), nails_core::NailsError>(())
 //! ```
 //!
@@ -45,9 +45,10 @@
 //! - State verification (overlays match reality)
 //! - Status <500ms
 
+use crate::state::{EffectiveState, reconcile};
 use crate::{Config, Filesystem, LoadOutcome, Result, StateFile, SystemState};
 use chrono::{DateTime, Duration, Utc};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// OpSec reminder with severity level
 ///
@@ -74,8 +75,8 @@ pub mod report;
 
 // Re-export report types
 pub use report::{
-    OpSecReminder, OverlayMountStatus, ReminderSeverity, SecurityPosture, StatusReport,
-    VerificationStatus, format_uptime, generate_opsec_reminders,
+    OpSecReminder, OverlayMountStatus, Posture, ReminderSeverity, StatusReport, VerificationStatus,
+    format_uptime, generate_opsec_reminders,
 };
 
 pub struct StatusCommand<F: Filesystem> {
@@ -154,12 +155,43 @@ impl<F: Filesystem> StatusCommand<F> {
     /// # Ok::<(), nails_core::NailsError>(())
     /// ```
     pub fn run(&self) -> Result<StatusReport> {
-        // Load state file with outcome metadata (P1-03)
+        // Load state file with outcome metadata.
         let load_result = StateFile::load_with_outcome(&self.state_file_path)?;
         let state_file = load_result.state_file;
         let load_outcome = load_result.outcome;
 
         tracing::debug!(state = ?state_file.state, phase = "status", "Status query executed");
+
+        // Ask the kernel what NAILS actually has mounted, independent of the
+        // state file. A failed read degrades to "no NAILS mounts", which keeps
+        // reconciliation fail-closed (an Active state then reads as degraded
+        // rather than trusting an unreadable table). This never writes.
+        let mounts = self
+            .filesystem
+            .discover_nails_mounts(Some(&self.config.hidden_volume_root))
+            .unwrap_or_default();
+
+        // Reconcile the persisted state against the boot id, the owner process
+        // and the live mount table, then collapse it into a single posture. This
+        // uses the pure reconcile(), not the manager wrapper, because the wrapper
+        // resets and persists stale state and status must stay read-only.
+        let boot_id = crate::state::read_boot_id();
+        let owner_alive = pid_is_alive(state_file.owner_pid);
+        let effective = reconcile(
+            &state_file,
+            &load_outcome,
+            &mounts,
+            boot_id.as_deref(),
+            owner_alive,
+        );
+        let live_points = mounts.owned_mount_points();
+        let posture = Posture::from_effective(&effective, !live_points.is_empty());
+
+        tracing::debug!(
+            posture = posture.as_str(),
+            phase = "status",
+            "Reconciled posture computed"
+        );
 
         // Extract data from state file
         let (overlays, activated_at) = match &state_file.state {
@@ -188,15 +220,6 @@ impl<F: Filesystem> StatusCommand<F> {
             None => Vec::new(),
         };
 
-        // Verify overlays
-        let overlay_verification = self.verify_overlays(&state_file)?;
-
-        tracing::debug!(
-            verification_result = ?overlay_verification,
-            phase = "status",
-            "Overlay verification performed"
-        );
-
         // Include overlay details for Active state (used by verbose mode)
         let overlay_details = match &state_file.state {
             SystemState::Active { .. } if !state_file.overlay_status.is_empty() => {
@@ -205,26 +228,56 @@ impl<F: Filesystem> StatusCommand<F> {
             _ => None,
         };
 
-        // Build per-overlay mount statuses for Active state
+        // Build per-overlay identities for an Active state, judging each overlay
+        // by whether the kernel says NAILS owns it — an actual overlay with its
+        // upperdir under the hidden root — not merely that *something* is mounted
+        // there. A plain foreign mount (an ext4 `/home`) is therefore never
+        // reported as a verified overlay.
         let overlay_mount_statuses = match &state_file.state {
-            SystemState::Active { overlays, .. } => {
-                let mut statuses = Vec::new();
-                for overlay_path in overlays {
-                    if let Some(overlay_info) = state_file.overlay_status.get(overlay_path) {
-                        let actually_mounted = self
-                            .filesystem
-                            .is_mounted(&overlay_info.mount_path)
-                            .unwrap_or(false);
-                        statuses.push(OverlayMountStatus {
-                            path: overlay_path.clone(),
-                            expected_mounted: true,
-                            actually_mounted,
+            SystemState::Active { overlays, .. } => overlays
+                .iter()
+                .map(|overlay_path| {
+                    let owned = mounts.is_owned(&canonical_or_self(overlay_path));
+                    let upperdir = state_file
+                        .overlay_status
+                        .get(overlay_path)
+                        .map(|info| info.upper_dir.clone())
+                        .or_else(|| {
+                            self.filesystem
+                                .get_mount_info(overlay_path)
+                                .map(|info| info.upper)
                         });
+                    OverlayMountStatus {
+                        path: overlay_path.clone(),
+                        expected_mounted: true,
+                        actually_mounted: owned,
+                        owned,
+                        upperdir,
                     }
-                }
-                statuses
-            }
+                })
+                .collect(),
             _ => vec![],
+        };
+
+        let overlay_verification = verification_from(&effective, &overlay_mount_statuses);
+
+        tracing::debug!(
+            verification_result = ?overlay_verification,
+            phase = "status",
+            "Overlay verification performed"
+        );
+
+        // Mounts a dangerous posture must account for: what recovery tears down.
+        let remaining_mounts = match &effective {
+            EffectiveState::Degraded { remaining, .. } => remaining.clone(),
+            EffectiveState::Interrupted { .. } | EffectiveState::StaleFromPreviousBoot => {
+                if posture == Posture::Decoy {
+                    Vec::new()
+                } else {
+                    live_points.clone()
+                }
+            }
+            _ => Vec::new(),
         };
 
         // Report hidden-root disk usage from a single statvfs call. This never
@@ -239,6 +292,8 @@ impl<F: Filesystem> StatusCommand<F> {
         // Build report
         let report = StatusReport {
             state: state_file.state,
+            posture,
+            remaining_mounts,
             overlays,
             overlay_verification,
             nixos_generation: state_file.nixos_generation,
@@ -256,14 +311,6 @@ impl<F: Filesystem> StatusCommand<F> {
         };
 
         Ok(report)
-    }
-
-    /// Execute the status command, converting unreadable state into a truthful report.
-    ///
-    /// Permission errors are surfaced to callers, while other recoverable
-    /// state-file problems inside `run()` still yield a truthful report.
-    pub fn run_truthful(&self) -> Result<StatusReport> {
-        self.run()
     }
 
     /// Calculate uptime for active state
@@ -296,83 +343,64 @@ impl<F: Filesystem> StatusCommand<F> {
             None => None,
         }
     }
+}
 
-    /// Verify overlay mounts match state file
-    ///
-    /// Checks that each overlay in the state file matches the actual mount status.
-    ///
-    /// # Arguments
-    ///
-    /// * `state_file` - Loaded state file
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(VerificationStatus::Verified)` - Overlays match expected state
-    /// * `Ok(VerificationStatus::Mismatch)` - Overlays don't match (with errors)
-    /// * `Ok(VerificationStatus::Skipped)` - Transitional state, verification skipped
-    /// * `Ok(VerificationStatus::NotApplicable)` - Inactive state, no overlays
-    ///
-    /// # Verification Logic
-    ///
-    /// - **Active**: All overlays in Active.overlays must be in overlay_status and mounted
-    /// - **Inactive**: No overlays should be mounted
-    /// - **Transitional**: Skip verification (partial state expected)
-    fn verify_overlays(&self, state_file: &StateFile) -> Result<VerificationStatus> {
-        match &state_file.state {
-            SystemState::Active { overlays, .. } => {
-                // Verify all overlays are mounted
-                let mut errors = Vec::new();
+/// Whether a recorded owner pid is still a live process.
+///
+/// Reconciliation only consults this for a transitional state left behind within
+/// the current boot, to tell an in-flight operation from a crashed one. A pid of
+/// `0` is the "unset" sentinel and is never alive. Status reads `/proc` directly
+/// (not through the filesystem trait); tests drive the outcome through
+/// `test_boot_id` and the reconcile logic, which is itself unit-tested as a pure
+/// function, rather than through this probe.
+fn pid_is_alive(pid: u32) -> bool {
+    pid != 0 && Path::new(&format!("/proc/{pid}")).exists()
+}
 
-                // First: Validate that Active.overlays matches overlay_status keys
-                // This ensures state file consistency
-                for overlay_path in overlays {
-                    if !state_file.overlay_status.contains_key(overlay_path) {
-                        errors.push(format!(
-                            "{} is listed in Active state but missing from overlay_status tracking",
-                            overlay_path.display()
-                        ));
-                    }
-                }
+/// Canonicalize `path` for an ownership lookup, falling back to the path itself
+/// when it cannot be resolved (it may not exist in a test, and mountinfo paths
+/// are already canonical in production).
+fn canonical_or_self(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
 
-                // Second: Check that all tracked overlays are actually mounted
-                for (path, overlay_info) in &state_file.overlay_status {
-                    // Only verify overlays that are supposed to be active
-                    if !overlays.contains(path) {
-                        errors.push(format!(
-                            "{} is in overlay_status but not listed in Active state",
-                            path.display()
-                        ));
-                        continue;
-                    }
-
-                    match self.filesystem.is_mounted(&overlay_info.mount_path) {
-                        Ok(true) => {
-                            // Overlay is mounted as expected
-                        }
-                        Ok(false) => {
-                            errors.push(format!("{} should be mounted but is not", path.display()));
-                        }
-                        Err(e) => {
-                            errors.push(format!(
-                                "Failed to check mount status for {}: {}",
-                                path.display(),
-                                e
-                            ));
-                        }
-                    }
-                }
-
-                if errors.is_empty() {
-                    Ok(VerificationStatus::Verified)
-                } else {
-                    Ok(VerificationStatus::Mismatch { errors })
-                }
+/// Derive the overlay verification result from the reconciled effective state and
+/// the per-overlay ownership judged against the live mount table.
+///
+/// This replaces trusting `state.json`: an overlay counts as verified only when
+/// the kernel says NAILS owns it, so a foreign mount at an overlay target reads
+/// as a mismatch, never as verified.
+fn verification_from(
+    effective: &EffectiveState,
+    overlays: &[OverlayMountStatus],
+) -> VerificationStatus {
+    match effective {
+        EffectiveState::VerifiedActive { .. } => VerificationStatus::Verified,
+        EffectiveState::Degraded {
+            kind: crate::state::DegradedKind::ActiveOverlaysMissing,
+            ..
+        } => {
+            let errors: Vec<String> = overlays
+                .iter()
+                .filter(|status| !status.owned)
+                .map(|status| {
+                    format!(
+                        "{} is not mounted as a NAILS overlay",
+                        status.path.display()
+                    )
+                })
+                .collect();
+            if errors.is_empty() {
+                VerificationStatus::Skipped
+            } else {
+                VerificationStatus::Mismatch { errors }
             }
-            SystemState::Inactive => Ok(VerificationStatus::NotApplicable),
-            SystemState::Activating { .. }
-            | SystemState::Deactivating { .. }
-            | SystemState::Degraded { .. } => Ok(VerificationStatus::Skipped),
         }
+        EffectiveState::Inactive => VerificationStatus::NotApplicable,
+        EffectiveState::Degraded { .. }
+        | EffectiveState::Interrupted { .. }
+        | EffectiveState::StaleFromPreviousBoot
+        | EffectiveState::Unknown => VerificationStatus::Skipped,
     }
 }
 
@@ -380,6 +408,8 @@ impl Default for StatusReport {
     fn default() -> Self {
         Self {
             state: SystemState::Inactive,
+            posture: Posture::Decoy,
+            remaining_mounts: vec![],
             overlays: vec![],
             overlay_verification: VerificationStatus::NotApplicable,
             nixos_generation: None,

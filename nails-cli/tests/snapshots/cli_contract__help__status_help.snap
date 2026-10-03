@@ -20,9 +20,6 @@ Options:
       --details
           Show resolved paths and overlay mount details
 
-      --exit-status
-          Reflect the security posture in the exit code instead of always exiting 0
-
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
 

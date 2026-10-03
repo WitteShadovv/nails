@@ -113,16 +113,18 @@ in
         "su - testuser -c "
         + shlex.quote(f"nails --config {headless_config} status --json"),
     )
-    assert non_root["rc"] == 0, non_root
+    # An unreadable state file means the real state is unknown: status fails
+    # closed with the invalid-state exit code rather than claiming inactive.
+    assert non_root["rc"] == 6, non_root
     non_root_payload = json.loads(non_root["stdout"])["data"]
     state = non_root_payload["state"]
     assert state["kind"] == "unknown", non_root_payload
-    assert non_root_payload["security_posture"] == "warning", non_root_payload
+    assert non_root_payload["posture"] == "unknown", non_root_payload
     # The untrusted-load reason carries the specific failure.
     assert "Permission denied" in state["reason"], non_root_payload
     assert "/mnt/data/state.json" in state["reason"], non_root_payload
     assert_status_state("Active", config_path=headless_config)
-    print("✓ Non-root status exits zero but reports permission failure explicitly")
+    print("✓ Non-root status fails closed and reports the permission failure explicitly")
 
     print("\n=== Test 9: Status after deactivation ===")
     machine.crash()

@@ -231,8 +231,7 @@ pub use deactivation::{DeactivationReport, PostUnmountCleanupReport};
 
 // Status command exports (State Query with Overlay Verification)
 pub use status::{
-    OpSecReminder, ReminderSeverity, SecurityPosture, StatusCommand, StatusReport,
-    VerificationStatus,
+    OpSecReminder, Posture, ReminderSeverity, StatusCommand, StatusReport, VerificationStatus,
 };
 
 // Shell instrumentation exports (Shell Prompt Instrumentation Scripts)

@@ -15,8 +15,10 @@
       "additionalProperties": false,
       "required": [
         "state",
-        "security_posture",
+        "state_source",
+        "posture",
         "overlays",
+        "remaining_mounts",
         "overlay_verification",
         "opsec_reminders"
       ],
@@ -44,9 +46,18 @@
             }
           }
         },
-        "security_posture": {
+        "state_source": {
           "type": "string",
-          "enum": ["secure", "warning", "critical", "decoy"]
+          "enum": ["loaded", "missing", "unreadable", "corrupt"]
+        },
+        "posture": {
+          "type": "string",
+          "enum": ["decoy", "active", "degraded", "inconsistent", "unknown"]
+        },
+        "remediation": { "type": "string", "minLength": 1 },
+        "remaining_mounts": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/" }
         },
         "persona_mode": {
           "type": "string",
@@ -60,13 +71,15 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["path", "status"],
+            "required": ["mount_point", "status", "owned"],
             "properties": {
-              "path": { "type": "string", "pattern": "^/" },
+              "mount_point": { "type": "string", "pattern": "^/" },
               "status": {
                 "type": "string",
                 "enum": ["mounted", "not_mounted"]
-              }
+              },
+              "owned": { "type": "boolean" },
+              "upperdir": { "type": "string", "pattern": "^/" }
             }
           }
         },

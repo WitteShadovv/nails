@@ -286,10 +286,6 @@ pub struct StatusArgs {
     /// Show resolved paths and overlay mount details
     #[arg(long)]
     pub details: bool,
-
-    /// Reflect the security posture in the exit code instead of always exiting 0
-    #[arg(long)]
-    pub exit_status: bool,
 }
 
 /// `nails verify` arguments

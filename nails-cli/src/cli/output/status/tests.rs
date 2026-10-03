@@ -1,7 +1,7 @@
 use super::*;
 use nails_core::output::Style;
 use nails_core::status::{
-    OpSecReminder, OverlayMountStatus, ReminderSeverity, StatusReport, VerificationStatus,
+    OpSecReminder, OverlayMountStatus, Posture, ReminderSeverity, StatusReport, VerificationStatus,
 };
 use nails_core::{LoadOutcome, SystemState};
 use std::path::PathBuf;
@@ -18,6 +18,7 @@ const ASCII: Style = Style {
 fn inactive_report() -> StatusReport {
     StatusReport {
         state: SystemState::Inactive,
+        posture: Posture::Decoy,
         overlays: vec![],
         overlay_verification: VerificationStatus::NotApplicable,
         nixos_generation: None,
@@ -39,6 +40,7 @@ fn active_report() -> StatusReport {
             activated_at: now - chrono::Duration::hours(2),
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
         },
+        posture: Posture::Active,
         overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
         overlay_verification: VerificationStatus::Verified,
         nixos_generation: Some("nails-gen-42".to_string()),
@@ -52,11 +54,15 @@ fn active_report() -> StatusReport {
                 path: PathBuf::from("/home"),
                 expected_mounted: true,
                 actually_mounted: true,
+                owned: true,
+                upperdir: Some(PathBuf::from("/mnt/hidden/home/.upper")),
             },
             OverlayMountStatus {
                 path: PathBuf::from("/etc"),
                 expected_mounted: true,
                 actually_mounted: false,
+                owned: false,
+                upperdir: None,
             },
         ],
         load_outcome: LoadOutcome::Loaded,
@@ -83,6 +89,7 @@ fn active_report_with_overlay_details() -> StatusReport {
             activated_at: now,
             overlays: vec![PathBuf::from("/home")],
         },
+        posture: Posture::Active,
         overlays: vec![PathBuf::from("/home")],
         overlay_verification: VerificationStatus::Verified,
         nixos_generation: None,
@@ -95,6 +102,8 @@ fn active_report_with_overlay_details() -> StatusReport {
             path: PathBuf::from("/home"),
             expected_mounted: true,
             actually_mounted: true,
+            owned: true,
+            upperdir: Some(PathBuf::from("/mnt/hidden/home/.upper")),
         }],
         load_outcome: LoadOutcome::Loaded,
         ..Default::default()
@@ -108,6 +117,8 @@ fn active_report_with_reminders() -> StatusReport {
             activated_at: now - chrono::Duration::hours(26),
             overlays: vec![],
         },
+        posture: Posture::Degraded,
+        remaining_mounts: vec![PathBuf::from("/home")],
         overlays: vec![],
         overlay_verification: VerificationStatus::Mismatch {
             errors: vec!["overlay mismatch".to_string()],
@@ -142,8 +153,10 @@ fn degraded_report() -> StatusReport {
         state: SystemState::Degraded {
             since: chrono::Utc::now(),
             reason: "unmount failed".to_string(),
-            remaining_mounts: vec![],
+            remaining_mounts: vec![PathBuf::from("/home")],
         },
+        posture: Posture::Inconsistent,
+        remaining_mounts: vec![PathBuf::from("/home")],
         overlays: vec![],
         overlay_verification: VerificationStatus::Skipped,
         nixos_generation: None,
@@ -563,5 +576,122 @@ fn config_file_label_notes_missing_file() {
     assert_eq!(
         super::config_file_label(file.path()),
         file.path().display().to_string()
+    );
+}
+
+// ── posture & identity in JSON ───────────────────────────────────────────────
+
+#[test]
+fn test_status_json_carries_posture_state_source_and_overlay_identity() {
+    let data = super::json::build_status_data(&active_report());
+    let value = serde_json::to_value(&data).unwrap();
+
+    assert_eq!(value["posture"], "active");
+    assert_eq!(value["state_source"], "loaded");
+
+    let home = &value["overlays"][0];
+    assert_eq!(home["mount_point"], "/home");
+    assert_eq!(home["owned"], true);
+    assert_eq!(home["status"], "mounted");
+    assert_eq!(home["upperdir"], "/mnt/hidden/home/.upper");
+
+    let etc = &value["overlays"][1];
+    assert_eq!(etc["owned"], false);
+    assert_eq!(etc["status"], "not_mounted");
+}
+
+#[test]
+fn test_status_json_degraded_carries_remaining_mounts_and_remediation() {
+    let data = super::json::build_status_data(&active_report_with_reminders());
+    let value = serde_json::to_value(&data).unwrap();
+
+    assert_eq!(value["posture"], "degraded");
+    assert_eq!(value["remaining_mounts"][0], "/home");
+    assert!(
+        value["remediation"]
+            .as_str()
+            .unwrap()
+            .contains("nails emergency")
+    );
+}
+
+#[test]
+fn test_status_json_unknown_posture_for_untrusted_state() {
+    let data = super::json::build_status_data_unknown("state file could not be read".to_string());
+    let value = serde_json::to_value(&data).unwrap();
+
+    assert_eq!(value["posture"], "unknown");
+    assert_eq!(value["state"]["kind"], "unknown");
+    assert_eq!(value["state_source"], "unreadable");
+}
+
+// ── recent logs: newest N, chronological, read-only ──────────────────────────
+
+#[test]
+fn test_recent_logs_show_newest_entries_chronologically_without_touching_file() {
+    use std::io::Write as _;
+    let dir = tempfile::tempdir().unwrap();
+    let log_file = dir.path().join("nails.log");
+    let base = chrono::Utc::now() - chrono::Duration::hours(1);
+
+    // 30 INFO entries, each a minute apart and numbered in order.
+    let mut f = std::fs::File::create(&log_file).unwrap();
+    for i in 0..30 {
+        let ts = (base + chrono::Duration::minutes(i)).to_rfc3339();
+        writeln!(
+            f,
+            r#"{{"timestamp":"{ts}","level":"INFO","fields":{{"message":"entry {i:02}"}}}}"#
+        )
+        .unwrap();
+    }
+    drop(f);
+
+    let size_before = std::fs::metadata(&log_file).unwrap().len();
+    let mtime_before = std::fs::metadata(&log_file).unwrap().modified().unwrap();
+
+    let logs = super::read_recent_logs(
+        dir.path(),
+        Some(base - chrono::Duration::hours(1)),
+        false,
+        ASCII,
+    )
+    .expect("logs should be present");
+
+    // Only the newest 20 survive, and they stay in chronological order.
+    assert_eq!(logs.len(), 20);
+    assert!(logs[0].contains("entry 10"), "first: {}", logs[0]);
+    assert!(logs[19].contains("entry 29"), "last: {}", logs[19]);
+    assert!(!logs.iter().any(|l| l.contains("entry 09")));
+
+    // Reading must not rewrite the log file.
+    let size_after = std::fs::metadata(&log_file).unwrap().len();
+    let mtime_after = std::fs::metadata(&log_file).unwrap().modified().unwrap();
+    assert_eq!(size_before, size_after);
+    assert_eq!(mtime_before, mtime_after);
+}
+
+#[test]
+fn test_logs_hidden_for_decoy_posture_unless_details() {
+    use std::io::Write as _;
+    let dir = tempfile::tempdir().unwrap();
+    let now = chrono::Utc::now();
+    let mut f = std::fs::File::create(dir.path().join("nails.log")).unwrap();
+    writeln!(
+        f,
+        r#"{{"timestamp":"{}","level":"INFO","fields":{{"message":"decoy log"}}}}"#,
+        now.to_rfc3339()
+    )
+    .unwrap();
+    drop(f);
+
+    // A decoy report prints no log section without --details (smoke: must not panic).
+    print_status_human(
+        &inactive_report(),
+        false,
+        &PathBuf::from("/etc/nails.toml"),
+        &PathBuf::from("/mnt/hidden/state.json"),
+        &PathBuf::from("/mnt/hidden"),
+        dir.path(),
+        ASCII,
     );
 }

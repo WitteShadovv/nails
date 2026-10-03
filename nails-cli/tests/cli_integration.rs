@@ -293,23 +293,18 @@ fn test_status_command_json_output() {
         .assert()
         .success()
         .stdout(predicates::str::contains("\"state\""))
-        .stdout(predicates::str::contains("\"security_posture\""));
+        .stdout(predicates::str::contains("\"posture\""));
 }
 
 #[test]
-fn test_status_exit_status_flag_stays_zero_for_a_decoy_system() {
-    // --exit-status reflects the posture; a decoy (inactive) system is a success,
-    // and plain status always exits 0.
+fn test_status_exits_zero_for_a_decoy_system() {
+    // A decoy (inactive) system is a safe posture, so status exits 0; the posture
+    // always drives the exit code with no opt-in flag.
     let (_dir, config) = isolated_status_config();
     let config = config.to_str().unwrap();
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["--config", config, "status"]).assert().success();
-
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["--config", config, "status", "--exit-status"])
-        .assert()
-        .success();
 }
 
 #[test]
@@ -436,7 +431,9 @@ fn test_status_command_details_active_shows_overlay_details() {
         .expect("failed to run verbose active status");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "stdout={stdout}");
+    // The recorded overlay is not a live NAILS overlay here, so the posture is
+    // degraded (exit 7); the overlay details are still shown.
+    assert_eq!(output.status.code(), Some(7), "stdout={stdout}");
     assert!(stdout.contains("NixOS Generation:   nails-gen-99"));
     assert!(stdout.contains("Overlay Mount Details:"));
     assert!(stdout.contains("Mount:     /home"));
@@ -483,7 +480,8 @@ fn test_status_command_details_reports_corrupt_state_load() {
         .expect("failed to run corrupt-state status");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "stdout={stdout}");
+    // A corrupt state file is an unknown posture: fail closed with code 6.
+    assert_eq!(output.status.code(), Some(6), "stdout={stdout}");
     assert!(stdout.contains("State loaded:       corrupt (state unknown, using defaults)"));
     assert!(stdout.contains("Details:"));
     assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");

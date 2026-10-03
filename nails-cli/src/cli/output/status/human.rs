@@ -80,10 +80,19 @@ pub fn print_status_human(
     print_status_header(style);
 
     println!("State:              {}", state_label(report));
-    println!(
-        "Security Posture:   {}",
-        report.security_posture().render(style)
-    );
+    println!("Security Posture:   {}", report.posture.render(style));
+    if let Some(remediation) = report.posture.remediation() {
+        println!("  {}", style.marked(Mark::Arrow, remediation));
+    }
+    if !report.remaining_mounts.is_empty() {
+        println!("Live NAILS mounts:");
+        for mount in &report.remaining_mounts {
+            println!(
+                "  {}",
+                style.marked(Mark::Fail, format_args!("{}", mount.display()))
+            );
+        }
+    }
     println!("Persona mode:       {}", report.persona_mode.as_str());
     if report.persona_mode == nails_core::config::PersonaMode::SharedHome {
         println!(
@@ -115,15 +124,15 @@ pub fn print_status_human(
         if !report.overlay_mount_statuses.is_empty() {
             println!("Overlays:");
             for status in &report.overlay_mount_statuses {
-                let line = if status.actually_mounted {
+                let line = if status.owned {
                     style.marked(
                         Mark::Pass,
-                        format_args!("{} (mounted)", status.path.display()),
+                        format_args!("{} (verified NAILS overlay)", status.path.display()),
                     )
                 } else {
                     style.marked(
                         Mark::Fail,
-                        format_args!("{} (NOT mounted)", status.path.display()),
+                        format_args!("{} (NOT a NAILS overlay)", status.path.display()),
                     )
                 };
                 println!("  {line}");
@@ -195,10 +204,19 @@ pub fn print_status_human(
         }
     }
 
-    if let Some(logs) = read_recent_logs(log_path, report.activated_at, details, style) {
+    // Recent logs are noise on a clean decoy, so show them only with --details or
+    // when the posture warrants a look (active or degraded). `read_recent_logs`
+    // already returns the newest entries in chronological order.
+    let show_logs = details
+        || matches!(
+            report.posture,
+            nails_core::status::Posture::Active | nails_core::status::Posture::Degraded
+        );
+    if show_logs && let Some(logs) = read_recent_logs(log_path, report.activated_at, details, style)
+    {
         println!();
         println!("Recent Logs:");
-        for log in logs.iter().take(20) {
+        for log in &logs {
             println!("  {}", log);
         }
     }

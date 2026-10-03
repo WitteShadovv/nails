@@ -2,7 +2,9 @@
 //!
 //! The report is rendered into typed DTOs and wrapped in the shared envelope, so
 //! `state` and `overlay_verification` are tagged objects rather than Rust
-//! `Debug` strings.
+//! `Debug` strings. `posture` is the kernel-truth verdict; `state_source` records
+//! how the state file loaded, so a consumer can tell a trusted state from a
+//! defaulted one.
 
 use serde::Serialize;
 
@@ -14,8 +16,13 @@ use crate::cli::output::envelope::Envelope;
 pub struct StatusData {
     /// System state as a tagged object.
     state: StateJson,
-    /// Security posture level (secure, warning, critical, decoy).
-    security_posture: &'static str,
+    /// How the state file loaded: loaded, missing, unreadable or corrupt.
+    state_source: &'static str,
+    /// Kernel-truth posture (decoy, active, degraded, inconsistent, unknown).
+    posture: &'static str,
+    /// Remediation step for a dangerous or unknown posture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remediation: Option<&'static str>,
     /// When the system was activated (ISO 8601).
     #[serde(skip_serializing_if = "Option::is_none")]
     activated_at: Option<String>,
@@ -25,8 +32,10 @@ pub struct StatusData {
     /// Human-readable uptime string.
     #[serde(skip_serializing_if = "Option::is_none")]
     uptime_formatted: Option<String>,
-    /// Overlay list with mount status.
+    /// Overlay list with per-overlay identity.
     overlays: Vec<OverlayJsonEntry>,
+    /// NAILS mounts still live that recovery must tear down (dangerous postures).
+    remaining_mounts: Vec<String>,
     /// Overlay verification result as a tagged object.
     overlay_verification: VerificationJson,
     /// Persona mode (how the hidden session relates to the decoy account).
@@ -51,9 +60,14 @@ pub struct StatusData {
 #[derive(Debug, Serialize)]
 struct OverlayJsonEntry {
     /// Overlay mount path.
-    path: String,
-    /// Mount status.
+    mount_point: String,
+    /// Mount status: `mounted` when it is a live NAILS overlay, else `not_mounted`.
     status: &'static str,
+    /// Whether the kernel says NAILS created this mount.
+    owned: bool,
+    /// The overlay's upper directory, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upperdir: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,13 +78,14 @@ struct OpSecReminderJson {
     message: String,
 }
 
-fn posture_label(posture: nails_core::status::SecurityPosture) -> &'static str {
-    use nails_core::status::SecurityPosture;
-    match posture {
-        SecurityPosture::Secure => "secure",
-        SecurityPosture::Warning => "warning",
-        SecurityPosture::Decoy => "decoy",
-        SecurityPosture::Critical => "critical",
+/// The stable label for how the state file loaded.
+fn state_source_label(outcome: &nails_core::LoadOutcome) -> &'static str {
+    use nails_core::LoadOutcome;
+    match outcome {
+        LoadOutcome::Loaded => "loaded",
+        LoadOutcome::Missing => "missing",
+        LoadOutcome::Unreadable => "unreadable",
+        LoadOutcome::Corrupt => "corrupt",
     }
 }
 
@@ -80,7 +95,9 @@ pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusDat
 
     StatusData {
         state: StateJson::from_report(&report.state, &report.load_outcome),
-        security_posture: posture_label(report.security_posture()),
+        state_source: state_source_label(&report.load_outcome),
+        posture: report.posture.as_str(),
+        remediation: report.posture.remediation(),
         activated_at: report.activated_at.map(|dt| dt.to_rfc3339()),
         uptime_seconds: report.uptime.map(|d| d.num_seconds()),
         uptime_formatted: if report.formatted_uptime.is_empty() {
@@ -92,13 +109,20 @@ pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusDat
             .overlay_mount_statuses
             .iter()
             .map(|status| OverlayJsonEntry {
-                path: status.path.display().to_string(),
+                mount_point: status.path.display().to_string(),
                 status: if status.actually_mounted {
                     "mounted"
                 } else {
                     "not_mounted"
                 },
+                owned: status.owned,
+                upperdir: status.upperdir.as_ref().map(|p| p.display().to_string()),
             })
+            .collect(),
+        remaining_mounts: report
+            .remaining_mounts
+            .iter()
+            .map(|p| p.display().to_string())
             .collect(),
         overlay_verification: VerificationJson::from(&report.overlay_verification),
         persona_mode: Some(report.persona_mode.as_str()),
@@ -122,15 +146,22 @@ pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusDat
 }
 
 /// Build the `data` payload for a status run whose state file could not be read
-/// or trusted: the state is `unknown` and carries the reason.
+/// or trusted: the posture is `unknown` and carries the reason.
 pub fn build_status_data_unknown(reason: String) -> StatusData {
+    use nails_core::status::Posture;
+
     StatusData {
-        state: StateJson::Unknown { reason },
-        security_posture: "warning",
+        state: StateJson::Unknown {
+            reason: reason.clone(),
+        },
+        state_source: "unreadable",
+        posture: Posture::Unknown.as_str(),
+        remediation: Posture::Unknown.remediation(),
         activated_at: None,
         uptime_seconds: None,
         uptime_formatted: None,
         overlays: Vec::new(),
+        remaining_mounts: Vec::new(),
         overlay_verification: VerificationJson::NotApplicable,
         persona_mode: None,
         nixos_generation: None,

@@ -276,6 +276,17 @@ fn redact_status(mut value: Value) -> Value {
         if data.contains_key("uptime_formatted") {
             data["uptime_formatted"] = Value::String("[uptime]".to_string());
         }
+        // An overlay's upperdir lives under the harness's temp hidden root, so
+        // replace it with a fixed placeholder to keep the snapshot deterministic.
+        if let Some(overlays) = data.get_mut("overlays").and_then(Value::as_array_mut) {
+            for overlay in overlays {
+                if let Some(entry) = overlay.as_object_mut()
+                    && entry.contains_key("upperdir")
+                {
+                    entry["upperdir"] = Value::String("[upperdir]".to_string());
+                }
+            }
+        }
     }
     value
 }
@@ -305,10 +316,14 @@ fn status_json_inactive_matches_schema_and_snapshot() {
 fn status_json_active_matches_schema_and_snapshot() {
     let harness = write_active_harness();
     let (code, value) = run_json(&harness.config, &["status"]);
-    assert_eq!(code, 0);
+    // An active state whose overlay is not a live NAILS overlay is degraded, and
+    // a dangerous posture fails closed with the degraded/reboot exit code.
+    assert_eq!(code, 7);
     assert_matches_schema(&load_schema("status.json"), &value);
     assert_eq!(value["data"]["state"]["kind"], "active");
+    assert_eq!(value["data"]["posture"], "degraded");
     assert_eq!(value["data"]["overlays"][0]["status"], "not_mounted");
+    assert_eq!(value["data"]["overlays"][0]["owned"], false);
     insta::assert_json_snapshot!("status_json_active", redact_status(value));
 }
 
@@ -317,9 +332,11 @@ fn status_json_tampered_state_is_unknown_and_matches_schema() {
     let harness = Harness::new();
     harness.write_tampered_state();
     let (code, value) = run_json(&harness.config, &["status"]);
-    assert_eq!(code, 0, "status still exits 0 on an untrusted state file");
+    // An untrusted state file means the real state is unknown: fail closed.
+    assert_eq!(code, 6, "an unknown posture exits InvalidState");
     assert_matches_schema(&load_schema("status.json"), &value);
     assert_eq!(value["data"]["state"]["kind"], "unknown");
+    assert_eq!(value["data"]["posture"], "unknown");
     insta::assert_json_snapshot!("status_json_tampered", redact_status(value));
 }
 
@@ -332,9 +349,11 @@ fn status_json_degraded_matches_schema_and_snapshot() {
         remaining_mounts: vec![PathBuf::from(CONTRACT_TARGET)],
     });
     let (code, value) = run_json(&harness.config, &["status"]);
-    assert_eq!(code, 0);
+    // A persisted Degraded teardown reconciles to an inconsistent posture.
+    assert_eq!(code, 7);
     assert_matches_schema(&load_schema("status.json"), &value);
     assert_eq!(value["data"]["state"]["kind"], "degraded");
+    assert_eq!(value["data"]["posture"], "inconsistent");
     insta::assert_json_snapshot!("status_json_degraded", redact_status(value));
 }
 
@@ -478,14 +497,13 @@ fn exit_code_0_ok_on_status() {
 }
 
 #[test]
-fn exit_code_1_failed_on_warning_posture() {
-    // An active state whose overlays are not mounted is a Warning posture, which
-    // `status --exit-status` reports as a plain failure.
-    let harness = write_active_harness();
-    let code = run(&harness.config, &[], &["status", "--exit-status"])
-        .status
-        .code();
-    assert_eq!(code, Some(1));
+fn exit_code_6_invalid_state_on_unknown_status() {
+    // A tampered (untrusted) state file makes the real state unknown; status
+    // fails closed with the invalid-state code.
+    let harness = Harness::new();
+    harness.write_tampered_state();
+    let code = run(&harness.config, &[], &["status"]).status.code();
+    assert_eq!(code, Some(6));
 }
 
 #[test]
@@ -534,9 +552,8 @@ fn exit_code_7_degraded_reboot_on_status() {
         reason: "teardown left overlays mounted".to_string(),
         remaining_mounts: vec![PathBuf::from(CONTRACT_TARGET)],
     });
-    let code = run(&harness.config, &[], &["status", "--exit-status"])
-        .status
-        .code();
+    // The posture drives the exit code with no opt-in flag.
+    let code = run(&harness.config, &[], &["status"]).status.code();
     assert_eq!(code, Some(7));
 }
 

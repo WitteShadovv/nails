@@ -86,6 +86,38 @@ impl MockFilesystem {
         }
     }
 
+    /// Mount a NAILS overlay at `target` with explicit `upper`/`work` directories.
+    ///
+    /// Unlike [`mock_set_overlay_mounted`](Self::mock_set_overlay_mounted), which
+    /// invents an upperdir outside any hidden root, this records the real upper
+    /// and work paths so [`discover_nails_mounts`](crate::Filesystem::discover_nails_mounts)
+    /// classifies the overlay as persistent (upper under the hidden root) exactly
+    /// as the kernel parser would. Used by status/reconcile tests to stand up a
+    /// genuinely NAILS-owned overlay.
+    pub fn mock_mount_nails_overlay(&self, target: &Path, upper: &Path, work: &Path) {
+        self.mounted
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(target.to_path_buf());
+        self.nails_owned_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(target.to_path_buf());
+        self.mounted_overlays
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(
+                target.to_path_buf(),
+                MountInfo {
+                    lower: target.to_path_buf(),
+                    upper: upper.to_path_buf(),
+                    work: work.to_path_buf(),
+                    target: target.to_path_buf(),
+                    mounted_at: Utc::now(),
+                },
+            );
+    }
+
     /// Set whether a path is busy (has open files)
     pub fn mock_set_busy(&self, path: &Path, busy: bool) {
         let mut busy_set = self.busy.lock().expect("MockFilesystem mutex poisoned");

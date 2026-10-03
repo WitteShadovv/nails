@@ -44,6 +44,36 @@ fn create_overlay_info(mount_path: &str) -> OverlayInfo {
     }
 }
 
+/// A fixed hidden-root for the reconcile-driven tests, so a mounted overlay's
+/// upperdir can live under it and be classified as a genuine NAILS overlay.
+const HIDDEN_ROOT: &str = "/mnt/hidden";
+
+/// A config whose hidden root is the fixed [`HIDDEN_ROOT`], so ownership
+/// discovery is deterministic rather than binary-path-derived.
+fn config_hidden() -> Config {
+    Config {
+        hidden_volume_root: PathBuf::from(HIDDEN_ROOT),
+        ..Config::default()
+    }
+}
+
+/// Register a genuinely NAILS-owned overlay at `target` with the mock (its
+/// upper/work live under [`HIDDEN_ROOT`], so `discover_nails_mounts` classifies
+/// it as persistent) and return the matching [`OverlayInfo`] for the state file.
+fn mount_nails_overlay(fs: &MockFilesystem, target: &str) -> OverlayInfo {
+    let upper = format!("{HIDDEN_ROOT}/overlays{target}/upper");
+    let work = format!("{HIDDEN_ROOT}/overlays{target}/work");
+    fs.mock_mount_nails_overlay(Path::new(target), Path::new(&upper), Path::new(&work));
+    OverlayInfo {
+        mount_method: Default::default(),
+        mount_path: PathBuf::from(target),
+        lower_dir: PathBuf::from(target),
+        upper_dir: PathBuf::from(upper),
+        work_dir: PathBuf::from(work),
+        mounted_at: Utc::now(),
+    }
+}
+
 #[test]
 fn test_verification_status_is_verified() {
     assert!(VerificationStatus::Verified.is_verified());
@@ -130,7 +160,7 @@ fn test_status_command_propagates_permission_denied_for_unreadable_state() {
     std::fs::set_permissions(&state_path, perms).unwrap();
 
     let cmd = StatusCommand::new(MockFilesystem::new(), Config::default(), state_path.clone());
-    let result = cmd.run_truthful();
+    let result = cmd.run();
 
     let mut restore = std::fs::metadata(&state_path).unwrap().permissions();
     restore.set_mode(0o600);
@@ -148,16 +178,13 @@ fn test_status_command_propagates_permission_denied_for_unreadable_state() {
 #[test]
 fn test_status_command_active_verified() {
     let fs = MockFilesystem::new();
-    fs.mock_set_mounted(Path::new("/home"), true);
-    fs.mock_set_mounted(Path::new("/etc"), true);
-
-    let config = Config::default();
+    let config = config_hidden();
     let activated_at = Utc::now() - chrono::Duration::hours(2);
     let overlays = vec![PathBuf::from("/home"), PathBuf::from("/etc")];
 
     let mut overlay_status = std::collections::HashMap::new();
-    overlay_status.insert(PathBuf::from("/home"), create_overlay_info("/home"));
-    overlay_status.insert(PathBuf::from("/etc"), create_overlay_info("/etc"));
+    overlay_status.insert(PathBuf::from("/home"), mount_nails_overlay(&fs, "/home"));
+    overlay_status.insert(PathBuf::from("/etc"), mount_nails_overlay(&fs, "/etc"));
 
     let state_file = StateFile {
         state: SystemState::Active {
@@ -174,8 +201,10 @@ fn test_status_command_active_verified() {
     let report = cmd.run().unwrap();
 
     assert!(matches!(report.state, SystemState::Active { .. }));
+    assert_eq!(report.posture, Posture::Active);
     assert_eq!(report.overlays, overlays);
     assert_eq!(report.overlay_verification, VerificationStatus::Verified);
+    assert!(report.overlay_mount_statuses.iter().all(|s| s.owned));
     assert!(report.uptime.is_some());
     assert_eq!(report.activated_at, Some(activated_at));
     assert_eq!(report.nixos_generation, Some("generation-123".to_string()));
@@ -188,16 +217,13 @@ fn test_status_command_active_verified() {
 #[test]
 fn test_status_command_active_mismatch() {
     let fs = MockFilesystem::new();
-    // First overlay mounted, second not
-    fs.mock_set_mounted(Path::new("/home"), true);
-    fs.mock_set_mounted(Path::new("/etc"), false);
-
-    let config = Config::default();
+    let config = config_hidden();
+    // First overlay is a genuine NAILS overlay; the second is absent.
     let activated_at = Utc::now() - chrono::Duration::minutes(30);
     let overlays = vec![PathBuf::from("/home"), PathBuf::from("/etc")];
 
     let mut overlay_status = std::collections::HashMap::new();
-    overlay_status.insert(PathBuf::from("/home"), create_overlay_info("/home"));
+    overlay_status.insert(PathBuf::from("/home"), mount_nails_overlay(&fs, "/home"));
     overlay_status.insert(PathBuf::from("/etc"), create_overlay_info("/etc"));
 
     let state_file = StateFile {
@@ -214,6 +240,7 @@ fn test_status_command_active_mismatch() {
     let report = cmd.run().unwrap();
 
     assert!(matches!(report.state, SystemState::Active { .. }));
+    assert_eq!(report.posture, Posture::Degraded);
     assert_eq!(report.overlays, overlays);
 
     // Should have mismatch with /etc error
@@ -221,7 +248,7 @@ fn test_status_command_active_mismatch() {
         VerificationStatus::Mismatch { errors } => {
             assert_eq!(errors.len(), 1);
             assert!(errors[0].contains("/etc"));
-            assert!(errors[0].contains("should be mounted"));
+            assert!(errors[0].contains("NAILS overlay"));
         }
         _ => panic!("Expected Mismatch verification status"),
     }
@@ -301,11 +328,7 @@ fn test_status_command_degraded() {
 #[test]
 fn test_status_command_active_all_overlays_mounted() {
     let fs = MockFilesystem::new();
-    fs.mock_set_mounted(Path::new("/home"), true);
-    fs.mock_set_mounted(Path::new("/etc"), true);
-    fs.mock_set_mounted(Path::new("/var"), true);
-
-    let config = Config::default();
+    let config = config_hidden();
     let overlays = vec![
         PathBuf::from("/home"),
         PathBuf::from("/etc"),
@@ -316,7 +339,7 @@ fn test_status_command_active_all_overlays_mounted() {
     for overlay in &overlays {
         overlay_status.insert(
             overlay.clone(),
-            create_overlay_info(overlay.to_str().unwrap()),
+            mount_nails_overlay(&fs, overlay.to_str().unwrap()),
         );
     }
 
@@ -333,14 +356,17 @@ fn test_status_command_active_all_overlays_mounted() {
     let cmd = StatusCommand::new(fs, config, temp_file.path().to_path_buf());
     let report = cmd.run().unwrap();
 
+    assert_eq!(report.posture, Posture::Active);
     assert_eq!(report.overlay_verification, VerificationStatus::Verified);
     assert_eq!(report.overlays.len(), 3);
 }
 
 #[test]
-fn test_status_command_active_no_overlays() {
+fn test_status_command_active_recording_no_overlays_is_degraded() {
+    // An Active state that records no overlays is inconsistent with reality: the
+    // reconciler flags it degraded rather than treating empty as verified.
     let fs = MockFilesystem::new();
-    let config = Config::default();
+    let config = config_hidden();
 
     let state_file = StateFile {
         state: SystemState::Active {
@@ -355,19 +381,15 @@ fn test_status_command_active_no_overlays() {
     let cmd = StatusCommand::new(fs, config, temp_file.path().to_path_buf());
     let report = cmd.run().unwrap();
 
-    assert_eq!(report.overlay_verification, VerificationStatus::Verified);
+    assert_eq!(report.posture, Posture::Degraded);
     assert!(report.overlays.is_empty());
 }
 
 #[test]
 fn test_status_command_active_multiple_mismatches() {
+    // None of the recorded overlays is actually a NAILS overlay in the kernel.
     let fs = MockFilesystem::new();
-    // None mounted
-    fs.mock_set_mounted(Path::new("/home"), false);
-    fs.mock_set_mounted(Path::new("/etc"), false);
-    fs.mock_set_mounted(Path::new("/var"), false);
-
-    let config = Config::default();
+    let config = config_hidden();
     let overlays = vec![
         PathBuf::from("/home"),
         PathBuf::from("/etc"),
@@ -395,6 +417,7 @@ fn test_status_command_active_multiple_mismatches() {
     let cmd = StatusCommand::new(fs, config, temp_file.path().to_path_buf());
     let report = cmd.run().unwrap();
 
+    assert_eq!(report.posture, Posture::Degraded);
     match report.overlay_verification {
         VerificationStatus::Mismatch { errors } => {
             assert_eq!(errors.len(), 3);
@@ -410,6 +433,8 @@ fn test_status_command_active_multiple_mismatches() {
 fn test_status_report_serialization() {
     let report = StatusReport {
         state: SystemState::Inactive,
+        posture: Posture::Decoy,
+        remaining_mounts: vec![],
         overlays: vec![],
         overlay_verification: VerificationStatus::NotApplicable,
         nixos_generation: None,
@@ -476,240 +501,259 @@ fn test_uptime_calculation_with_long_activation() {
     assert_eq!(uptime.num_days(), 7);
 }
 
-// Security posture tests
+// ========== Posture Tests ==========
 
 #[test]
-fn test_security_posture_active_verified() {
-    let report = StatusReport {
-        state: SystemState::Active {
-            activated_at: Utc::now(),
-            overlays: vec![PathBuf::from("/home")],
-        },
-        overlay_verification: VerificationStatus::Verified,
-        ..Default::default()
-    };
+fn posture_maps_each_effective_state() {
+    use crate::state::{DegradedKind, EffectiveState, InterruptedPhase};
 
-    let posture = report.security_posture();
-    assert_eq!(posture, SecurityPosture::Secure);
-    assert!(format!("{}", posture).contains('✓'));
-    let plain = posture.to_plain();
-    assert!(plain.contains("[SECURE]"));
-}
-
-#[test]
-fn test_security_posture_active_mismatch() {
-    let report = StatusReport {
-        state: SystemState::Active {
-            activated_at: Utc::now(),
-            overlays: vec![PathBuf::from("/home")],
-        },
-        overlay_verification: VerificationStatus::Mismatch {
-            errors: vec!["Overlay not mounted".to_string()],
-        },
-        ..Default::default()
-    };
-
-    let posture = report.security_posture();
-    assert_eq!(posture, SecurityPosture::Warning);
-    assert!(format!("{}", posture).contains('⚠'));
-    let plain = posture.to_plain();
-    assert!(plain.contains("[WARNING]"));
-}
-
-#[test]
-fn test_security_posture_activating() {
-    let report = StatusReport {
-        state: SystemState::Activating {
-            started_at: Utc::now(),
-        },
-        overlay_verification: VerificationStatus::Skipped,
-        ..Default::default()
-    };
-
-    let posture = report.security_posture();
-    assert_eq!(posture, SecurityPosture::Warning);
-    assert!(format!("{}", posture).contains('⚠'));
-    let plain = posture.to_plain();
-    assert!(plain.contains("[WARNING]"));
-}
-
-#[test]
-fn test_security_posture_deactivating() {
-    let report = StatusReport {
-        state: SystemState::Deactivating {
-            started_at: Utc::now(),
-        },
-        overlay_verification: VerificationStatus::Skipped,
-        ..Default::default()
-    };
-
-    let posture = report.security_posture();
-    assert_eq!(posture, SecurityPosture::Warning);
-    assert!(format!("{}", posture).contains('⚠'));
-    let plain = posture.to_plain();
-    assert!(plain.contains("[WARNING]"));
-}
-
-#[test]
-fn test_security_posture_inactive() {
-    let report = StatusReport {
-        state: SystemState::Inactive,
-        overlay_verification: VerificationStatus::NotApplicable,
-        ..Default::default()
-    };
-
-    let posture = report.security_posture();
-    assert_eq!(posture, SecurityPosture::Decoy);
-    assert!(format!("{}", posture).contains('○'));
-    assert!(format!("{}", posture).contains("DECOY"));
-    assert!(format!("{}", posture).contains("Decoy system"));
-    assert!(!format!("{}", posture).contains("CRITICAL"));
-    let plain = posture.to_plain();
-    assert!(plain.contains("[DECOY]"));
-    assert!(!plain.contains("[CRITICAL]"));
-}
-
-#[test]
-fn test_security_posture_degraded() {
-    let report = StatusReport {
-        state: SystemState::Degraded {
-            since: Utc::now(),
-            reason: "unmount of /home failed".into(),
-            remaining_mounts: vec![],
-        },
-        overlay_verification: VerificationStatus::Skipped,
-        ..Default::default()
-    };
-
-    let posture = report.security_posture();
-    assert_eq!(posture, SecurityPosture::Critical);
-    assert!(format!("{}", posture).contains('✗'));
-    assert!(format!("{}", posture).contains("CRITICAL"));
-    assert!(format!("{}", posture).contains("Emergency deactivation"));
-    let plain = posture.to_plain();
-    assert!(plain.contains("[CRITICAL]"));
-}
-
-#[test]
-fn test_security_posture_display_secure() {
-    let posture = SecurityPosture::Secure;
-    let display = format!("{}", posture);
-
-    assert!(display.contains('✓'));
-    assert!(display.contains("SECURE"));
-    assert!(display.contains("Hidden environment active"));
-}
-
-#[test]
-fn test_security_posture_display_warning() {
-    let posture = SecurityPosture::Warning;
-    let display = format!("{}", posture);
-
-    assert!(display.contains('⚠'));
-    assert!(display.contains("WARNING"));
-    assert!(display.contains("transitional state"));
-}
-
-#[test]
-fn test_security_posture_display_critical() {
-    let posture = SecurityPosture::Critical;
-    let display = format!("{}", posture);
-
-    assert!(display.contains('✗'));
-    assert!(display.contains("CRITICAL"));
-    assert!(display.contains("Emergency deactivation"));
-}
-
-#[test]
-fn test_security_posture_display_decoy() {
-    let posture = SecurityPosture::Decoy;
-    let display = format!("{}", posture);
-
-    assert!(display.contains('○'));
-    assert!(display.contains("DECOY"));
-    assert!(display.contains("Decoy system"));
-    assert!(!display.contains("CRITICAL"));
-}
-
-#[test]
-fn test_security_posture_to_plain_secure() {
-    let posture = SecurityPosture::Secure;
-    let plain = posture.to_plain();
-
-    assert!(!plain.contains('✓')); // ASCII only
-    assert!(plain.contains("[SECURE]"));
-    assert!(plain.contains("Hidden environment active"));
     assert_eq!(
-        plain,
-        "[SECURE] Hidden environment active, overlays verified"
+        Posture::from_effective(&EffectiveState::Inactive, false),
+        Posture::Decoy
+    );
+    assert_eq!(
+        Posture::from_effective(&EffectiveState::VerifiedActive { overlays: vec![] }, true),
+        Posture::Active
+    );
+    assert_eq!(
+        Posture::from_effective(
+            &EffectiveState::Degraded {
+                kind: DegradedKind::ActiveOverlaysMissing,
+                reason: String::new(),
+                remaining: vec![],
+            },
+            false
+        ),
+        Posture::Degraded
+    );
+    assert_eq!(
+        Posture::from_effective(
+            &EffectiveState::Degraded {
+                kind: DegradedKind::InactiveMountsLive,
+                reason: String::new(),
+                remaining: vec![],
+            },
+            true
+        ),
+        Posture::Inconsistent
+    );
+    assert_eq!(
+        Posture::from_effective(
+            &EffectiveState::Interrupted {
+                phase: InterruptedPhase::Activating,
+                owner_alive: false,
+            },
+            false
+        ),
+        Posture::Inconsistent
+    );
+    assert_eq!(
+        Posture::from_effective(&EffectiveState::StaleFromPreviousBoot, false),
+        Posture::Decoy
+    );
+    assert_eq!(
+        Posture::from_effective(&EffectiveState::StaleFromPreviousBoot, true),
+        Posture::Inconsistent
+    );
+    assert_eq!(
+        Posture::from_effective(&EffectiveState::Unknown, false),
+        Posture::Unknown
     );
 }
 
 #[test]
-fn test_security_posture_to_plain_warning() {
-    let posture = SecurityPosture::Warning;
-    let plain = posture.to_plain();
+fn posture_safety_and_remediation() {
+    assert!(Posture::Decoy.is_safe());
+    assert!(Posture::Active.is_safe());
+    assert!(!Posture::Degraded.is_safe());
+    assert!(!Posture::Inconsistent.is_safe());
+    assert!(!Posture::Unknown.is_safe());
 
-    assert!(!plain.contains('⚠')); // ASCII only
-    assert!(plain.contains("[WARNING]"));
-    assert!(plain.contains("transitional state"));
-    assert_eq!(
-        plain,
-        "[WARNING] System in transitional state - wait for completion"
+    assert!(Posture::Decoy.remediation().is_none());
+    assert!(Posture::Active.remediation().is_none());
+    assert!(
+        Posture::Degraded
+            .remediation()
+            .unwrap()
+            .contains("nails emergency")
+    );
+    assert!(
+        Posture::Inconsistent
+            .remediation()
+            .unwrap()
+            .contains("nails emergency")
+    );
+    assert!(Posture::Unknown.remediation().is_some());
+}
+
+#[test]
+fn posture_marks_distinguish_safe_from_dangerous() {
+    use crate::output::Mark;
+    assert_eq!(Posture::Decoy.mark(), Mark::Neutral);
+    assert_eq!(Posture::Active.mark(), Mark::Pass);
+    assert_eq!(Posture::Degraded.mark(), Mark::Fail);
+    assert_eq!(Posture::Inconsistent.mark(), Mark::Fail);
+    assert_eq!(Posture::Unknown.mark(), Mark::Warn);
+}
+
+#[test]
+fn posture_labels_and_plain_are_stable() {
+    assert_eq!(Posture::Decoy.as_str(), "decoy");
+    assert_eq!(Posture::Active.as_str(), "active");
+    assert_eq!(Posture::Degraded.as_str(), "degraded");
+    assert_eq!(Posture::Inconsistent.as_str(), "inconsistent");
+    assert_eq!(Posture::Unknown.as_str(), "unknown");
+
+    assert!(Posture::Degraded.to_plain().starts_with("[DEGRADED]"));
+    assert!(
+        Posture::Inconsistent
+            .to_plain()
+            .starts_with("[INCONSISTENT]")
     );
 }
 
 #[test]
-fn test_security_posture_to_plain_decoy() {
-    let posture = SecurityPosture::Decoy;
-    let plain = posture.to_plain();
-
-    assert!(!plain.contains('○')); // ASCII only
-    assert!(plain.contains("[DECOY]"));
-    assert!(plain.contains("Decoy system"));
-    assert!(!plain.contains("[CRITICAL]"));
-    assert_eq!(plain, "[DECOY] Decoy system - no sensitive data accessible");
-}
-
-#[test]
-fn test_security_posture_to_plain_critical() {
-    let posture = SecurityPosture::Critical;
-    let plain = posture.to_plain();
-
-    assert!(!plain.contains('✗')); // ASCII only
-    assert!(plain.contains("[CRITICAL]"));
-    assert!(plain.contains("Emergency deactivation"));
-    assert_eq!(
-        plain,
-        "[CRITICAL] Emergency deactivation occurred - reboot recommended"
-    );
-}
-
-#[test]
-fn test_security_posture_screenreader_compatibility() {
-    let postures = [
-        SecurityPosture::Secure,
-        SecurityPosture::Warning,
-        SecurityPosture::Decoy,
-        SecurityPosture::Critical,
-    ];
-
-    for posture in postures {
-        let display = format!("{}", posture);
-        let plain = posture.to_plain();
-
-        // All should have text labels (not just emoji)
-        assert!(
-            display.len() > 5,
-            "Posture should have more than just emoji: {}",
-            display
-        );
-        assert!(
-            plain.len() > 10,
-            "Plain text should be descriptive: {}",
-            plain
-        );
+fn posture_render_is_ascii_in_ascii_style() {
+    use crate::output::Style;
+    let ascii = Style {
+        color: true,
+        ascii: true,
+    };
+    for posture in [
+        Posture::Decoy,
+        Posture::Active,
+        Posture::Degraded,
+        Posture::Inconsistent,
+        Posture::Unknown,
+    ] {
+        assert!(posture.render(ascii).is_ascii(), "{posture:?}");
+        assert_eq!(posture.render(ascii), posture.to_plain());
     }
+
+    // Only the dangerous postures are painted red; the decoy is never coloured.
+    let color = Style {
+        color: true,
+        ascii: false,
+    };
+    assert!(Posture::Degraded.render(color).contains("\x1b[1;31m"));
+    assert!(Posture::Inconsistent.render(color).contains("\x1b[1;31m"));
+    assert!(!Posture::Decoy.render(color).contains('\x1b'));
+}
+
+// ========== Reconcile-Driven Posture Tests ==========
+
+#[test]
+fn test_status_degraded_when_active_overlay_missing() {
+    // Active state records two overlays but only one is a live NAILS overlay:
+    // the posture is degraded and the remediation names emergency.
+    let fs = MockFilesystem::new();
+    let config = config_hidden();
+    let mut overlay_status = std::collections::HashMap::new();
+    overlay_status.insert(PathBuf::from("/home"), mount_nails_overlay(&fs, "/home"));
+    overlay_status.insert(PathBuf::from("/var"), create_overlay_info("/var"));
+
+    let state_file = StateFile {
+        state: SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/home"), PathBuf::from("/var")],
+        },
+        overlay_status,
+        boot_id: crate::state::read_boot_id(),
+        ..StateFile::default()
+    };
+    let temp_file = create_temp_state_file(&state_file);
+
+    let report = StatusCommand::new(fs, config, temp_file.path().to_path_buf())
+        .run()
+        .unwrap();
+
+    assert_eq!(report.posture, Posture::Degraded);
+    assert!(!report.posture.is_safe());
+    assert!(
+        report
+            .posture
+            .remediation()
+            .unwrap()
+            .contains("nails emergency")
+    );
+    let var = report
+        .overlay_mount_statuses
+        .iter()
+        .find(|s| s.path == Path::new("/var"))
+        .unwrap();
+    assert!(!var.owned);
+}
+
+#[test]
+fn test_status_unknown_for_truncated_state_file() {
+    let temp_file = NamedTempFile::new().unwrap();
+    std::fs::write(temp_file.path(), "{ definitely-not-json").unwrap();
+
+    let report = StatusCommand::new(
+        MockFilesystem::new(),
+        config_hidden(),
+        temp_file.path().to_path_buf(),
+    )
+    .run()
+    .unwrap();
+
+    assert_eq!(report.posture, Posture::Unknown);
+    assert_eq!(report.load_outcome, crate::LoadOutcome::Corrupt);
+}
+
+#[test]
+fn test_status_inconsistent_when_state_missing_but_overlay_live() {
+    // The dangerous lazily-unmounted-backend case: the state file is gone (the
+    // backend was torn down) but a NAILS overlay is still serving hidden data.
+    // Status must report inconsistent, never decoy.
+    let fs = MockFilesystem::new();
+    let config = config_hidden();
+    mount_nails_overlay(&fs, "/home");
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let missing_path = temp_dir.path().join("state.json");
+
+    let report = StatusCommand::new(fs, config, missing_path).run().unwrap();
+
+    assert_eq!(report.posture, Posture::Inconsistent);
+    assert!(report.remaining_mounts.contains(&PathBuf::from("/home")));
+}
+
+#[test]
+fn test_status_plain_ext4_home_is_not_a_verified_overlay() {
+    // A plain foreign mount at an overlay target must never read as verified.
+    let fs = MockFilesystem::new();
+    let config = config_hidden();
+    fs.mock_set_mount_unmanaged(Path::new("/home"));
+
+    let state_file = StateFile {
+        state: SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+        },
+        overlay_status: {
+            let mut m = std::collections::HashMap::new();
+            m.insert(PathBuf::from("/home"), create_overlay_info("/home"));
+            m
+        },
+        boot_id: crate::state::read_boot_id(),
+        ..StateFile::default()
+    };
+    let temp_file = create_temp_state_file(&state_file);
+
+    let report = StatusCommand::new(fs, config, temp_file.path().to_path_buf())
+        .run()
+        .unwrap();
+
+    assert_eq!(report.posture, Posture::Degraded);
+    let home = report
+        .overlay_mount_statuses
+        .iter()
+        .find(|s| s.path == Path::new("/home"))
+        .unwrap();
+    assert!(!home.owned, "plain ext4 /home must not be owned");
+    assert!(!home.actually_mounted);
+    assert_ne!(report.overlay_verification, VerificationStatus::Verified);
 }
 
 // ========== Uptime Formatting Tests ==========
@@ -1086,25 +1130,24 @@ fn test_uptime_calculation_handles_future_timestamp() {
 }
 
 #[test]
-fn test_verification_detects_active_overlays_missing_from_overlay_status() {
-    // Bug fix: Detect when Active.overlays contains paths not in overlay_status
+fn test_verification_flags_overlay_absent_from_kernel() {
+    // Verification is judged against the kernel, not the state file: a live NAILS
+    // overlay passes, while one that is merely recorded but not mounted is flagged.
     let fs = MockFilesystem::new();
-    fs.mock_set_mounted(Path::new("/home"), true);
-
-    let config = Config::default();
-    let activated_at = Utc::now();
+    let config = config_hidden();
     let overlays = vec![PathBuf::from("/home"), PathBuf::from("/etc")];
 
     let mut overlay_status = std::collections::HashMap::new();
-    overlay_status.insert(PathBuf::from("/home"), create_overlay_info("/home"));
-    // Missing /etc in overlay_status!
+    overlay_status.insert(PathBuf::from("/home"), mount_nails_overlay(&fs, "/home"));
+    overlay_status.insert(PathBuf::from("/etc"), create_overlay_info("/etc"));
 
     let state_file = StateFile {
         state: SystemState::Active {
-            activated_at,
+            activated_at: Utc::now(),
             overlays: overlays.clone(),
         },
         overlay_status,
+        boot_id: crate::state::read_boot_id(),
         ..StateFile::default()
     };
     let temp_file = create_temp_state_file(&state_file);
@@ -1112,58 +1155,12 @@ fn test_verification_detects_active_overlays_missing_from_overlay_status() {
     let cmd = StatusCommand::new(fs, config, temp_file.path().to_path_buf());
     let report = cmd.run().unwrap();
 
-    // Should detect the mismatch
     match report.overlay_verification {
         VerificationStatus::Mismatch { errors } => {
-            assert!(
-                errors
-                    .iter()
-                    .any(|e| e.contains("/etc")
-                        && e.contains("missing from overlay_status tracking"))
-            );
+            assert!(errors.iter().any(|e| e.contains("/etc")));
+            assert!(!errors.iter().any(|e| e.contains("/home")));
         }
-        _ => panic!("Expected Mismatch verification status"),
-    }
-}
-
-#[test]
-fn test_verification_detects_overlay_status_not_in_active_overlays() {
-    // Bug fix: Detect when overlay_status has entries not in Active.overlays
-    let fs = MockFilesystem::new();
-    fs.mock_set_mounted(Path::new("/home"), true);
-    fs.mock_set_mounted(Path::new("/var"), true);
-
-    let config = Config::default();
-    let activated_at = Utc::now();
-    let overlays = vec![PathBuf::from("/home")]; // Only /home in Active
-
-    let mut overlay_status = std::collections::HashMap::new();
-    overlay_status.insert(PathBuf::from("/home"), create_overlay_info("/home"));
-    overlay_status.insert(PathBuf::from("/var"), create_overlay_info("/var")); // Extra!
-
-    let state_file = StateFile {
-        state: SystemState::Active {
-            activated_at,
-            overlays: overlays.clone(),
-        },
-        overlay_status,
-        ..StateFile::default()
-    };
-    let temp_file = create_temp_state_file(&state_file);
-
-    let cmd = StatusCommand::new(fs, config, temp_file.path().to_path_buf());
-    let report = cmd.run().unwrap();
-
-    // Should detect the mismatch
-    match report.overlay_verification {
-        VerificationStatus::Mismatch { errors } => {
-            assert!(
-                errors
-                    .iter()
-                    .any(|e| e.contains("/var") && e.contains("not listed in Active state"))
-            );
-        }
-        _ => panic!("Expected Mismatch verification status"),
+        other => panic!("Expected Mismatch verification status, got {other:?}"),
     }
 }
 
@@ -1214,10 +1211,10 @@ fn test_status_command_recovers_from_corrupt_state_file() {
 
     assert_eq!(report.state, SystemState::Inactive);
     assert_eq!(report.load_outcome, crate::LoadOutcome::Corrupt);
-    assert_eq!(
-        report.overlay_verification,
-        VerificationStatus::NotApplicable
-    );
+    // A corrupt file collapses to the safe default on disk but the posture fails
+    // closed: unknown, not decoy.
+    assert_eq!(report.posture, Posture::Unknown);
+    assert_eq!(report.overlay_verification, VerificationStatus::Skipped);
 }
 
 #[test]
@@ -1256,14 +1253,16 @@ fn test_status_command_populates_overlay_details_only_for_active_state_with_trac
 }
 
 #[test]
-fn test_status_command_reports_mount_check_errors_as_mismatch_and_status_false() {
+fn test_status_reports_upperdir_and_ownership_per_overlay() {
+    // The per-overlay identity carries the upperdir from the state file and the
+    // ownership verdict from the kernel.
     let fs = MockFilesystem::new();
-    fs.mock_set_mounted(Path::new("/home"), true);
-    fs.mock_set_is_mounted_error(Path::new("/etc"), "mount table unreadable");
+    let config = config_hidden();
+    let home_info = mount_nails_overlay(&fs, "/home");
 
     let overlays = vec![PathBuf::from("/home"), PathBuf::from("/etc")];
     let mut overlay_status = std::collections::HashMap::new();
-    overlay_status.insert(PathBuf::from("/home"), create_overlay_info("/home"));
+    overlay_status.insert(PathBuf::from("/home"), home_info.clone());
     overlay_status.insert(PathBuf::from("/etc"), create_overlay_info("/etc"));
 
     let state_file = StateFile {
@@ -1272,30 +1271,30 @@ fn test_status_command_reports_mount_check_errors_as_mismatch_and_status_false()
             overlays,
         },
         overlay_status,
+        boot_id: crate::state::read_boot_id(),
         ..StateFile::default()
     };
     let temp_file = create_temp_state_file(&state_file);
 
-    let report = StatusCommand::new(fs, Config::default(), temp_file.path().to_path_buf())
+    let report = StatusCommand::new(fs, config, temp_file.path().to_path_buf())
         .run()
         .unwrap();
 
-    match report.overlay_verification {
-        VerificationStatus::Mismatch { errors } => {
-            assert!(errors.iter().any(|error| {
-                error.contains("Failed to check mount status for /etc")
-                    && error.contains("mount table unreadable")
-            }));
-        }
-        other => panic!("expected mismatch, got {other:?}"),
-    }
+    let home = report
+        .overlay_mount_statuses
+        .iter()
+        .find(|status| status.path == Path::new("/home"))
+        .unwrap();
+    assert!(home.owned);
+    assert_eq!(home.upperdir, Some(home_info.upper_dir));
 
-    let etc_status = report
+    let etc = report
         .overlay_mount_statuses
         .iter()
         .find(|status| status.path == Path::new("/etc"))
         .unwrap();
-    assert!(!etc_status.actually_mounted);
+    assert!(!etc.owned);
+    assert!(!etc.actually_mounted);
 }
 
 // ============================================================================
@@ -1364,10 +1363,10 @@ fn test_status_logs_verification_result() {
 fn test_overlay_mount_statuses_populated_for_active_state() {
     // Test that overlay_mount_statuses is populated with actual mount status
     let fs = MockFilesystem::new();
-    fs.mock_set_mounted(Path::new("/home"), true);
-    fs.mock_set_mounted(Path::new("/etc"), false); // Not mounted
+    let config = config_hidden();
+    mount_nails_overlay(&fs, "/home"); // live NAILS overlay
+    // /etc is recorded but never mounted as a NAILS overlay
 
-    let config = Config::default();
     let activated_at = Utc::now();
     let overlays = vec![PathBuf::from("/home"), PathBuf::from("/etc")];
 
@@ -1381,6 +1380,7 @@ fn test_overlay_mount_statuses_populated_for_active_state() {
             overlays: overlays.clone(),
         },
         overlay_status,
+        boot_id: crate::state::read_boot_id(),
         ..StateFile::default()
     };
     let temp_file = create_temp_state_file(&state_file);
@@ -1391,7 +1391,7 @@ fn test_overlay_mount_statuses_populated_for_active_state() {
     // Verify overlay_mount_statuses is populated
     assert_eq!(report.overlay_mount_statuses.len(), 2);
 
-    // Verify /home status (mounted)
+    // Verify /home status (a live NAILS overlay)
     let home_status = report
         .overlay_mount_statuses
         .iter()
@@ -1400,7 +1400,7 @@ fn test_overlay_mount_statuses_populated_for_active_state() {
     assert!(home_status.expected_mounted);
     assert!(home_status.actually_mounted);
 
-    // Verify /etc status (not mounted)
+    // Verify /etc status (not a NAILS overlay)
     let etc_status = report
         .overlay_mount_statuses
         .iter()
@@ -1464,7 +1464,7 @@ fn test_overlay_mount_statuses_empty_for_transitional_states() {
 }
 
 #[test]
-fn test_decoy_and_critical_postures_render_distinctly() {
+fn test_decoy_and_dangerous_postures_render_distinctly() {
     use crate::output::Style;
 
     for style in [
@@ -1478,44 +1478,24 @@ fn test_decoy_and_critical_postures_render_distinctly() {
             ascii: true,
         },
     ] {
-        let decoy = SecurityPosture::Decoy.render(style);
-        let critical = SecurityPosture::Critical.render(style);
+        let decoy = Posture::Decoy.render(style);
+        let degraded = Posture::Degraded.render(style);
         assert_ne!(
             decoy.split_whitespace().next(),
-            critical.split_whitespace().next(),
-            "{style:?}: {decoy} / {critical}"
+            degraded.split_whitespace().next(),
+            "{style:?}: {decoy} / {degraded}"
         );
     }
-
-    // Only the critical posture is painted red.
-    let color = Style {
-        color: true,
-        ascii: false,
-    };
-    assert!(
-        SecurityPosture::Critical
-            .render(color)
-            .contains("\x1b[1;31m")
-    );
-    assert!(!SecurityPosture::Decoy.render(color).contains('\x1b'));
 }
 
 #[test]
-fn test_posture_and_reminder_ascii_render_is_ascii() {
+fn test_reminder_ascii_render_is_ascii() {
     use crate::output::Style;
 
     let ascii = Style {
         color: true,
         ascii: true,
     };
-    for posture in [
-        SecurityPosture::Secure,
-        SecurityPosture::Warning,
-        SecurityPosture::Decoy,
-        SecurityPosture::Critical,
-    ] {
-        assert!(posture.render(ascii).is_ascii(), "{posture:?}");
-    }
     for severity in [
         ReminderSeverity::Info,
         ReminderSeverity::Warning,

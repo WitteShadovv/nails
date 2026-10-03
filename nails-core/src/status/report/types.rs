@@ -1,7 +1,8 @@
-//! Status report types: VerificationStatus, SecurityPosture, StatusReport
+//! Status report types: VerificationStatus, Posture, StatusReport
 
 use super::OpSecReminder;
 use crate::config::PersonaMode;
+use crate::state::{DegradedKind, EffectiveState};
 use crate::{LoadOutcome, SystemState};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -56,87 +57,152 @@ impl VerificationStatus {
     }
 }
 
-/// Security posture indicator with graduated levels
+/// What the kernel actually has mounted, as a single at-a-glance verdict.
 ///
-/// Represents the overall security posture of the NAILS system based on
-/// system state and overlay verification, with a mark from the shared table
-/// for at-a-glance assessment.
+/// Unlike the old state-trusting posture, this is derived from the reconciled
+/// [`EffectiveState`] (state file vs. boot id vs. the live NAILS mount table), so
+/// it never reports `decoy` while hidden overlays are still serving data. The two
+/// dangerous postures (`degraded`, `inconsistent`) and `unknown` fail closed.
 ///
 /// # Variants
 ///
-/// - **Secure** (✓, green): Hidden environment active, overlays verified
-/// - **Warning** (⚠, yellow): Transitional state or overlay inconsistency detected
-/// - **Decoy** (○, uncoloured): Inactive; the decoy system is in use
-/// - **Critical** (✗, red): Emergency or degraded state
+/// - **Decoy** (○, uncoloured): no hidden environment is mounted; the decoy is in use
+/// - **Active** (✓, green): hidden environment active, every overlay verified against the kernel
+/// - **Degraded** (✗, red): active but overlays are missing — hidden writes may reach the decoy disk
+/// - **Inconsistent** (✗, red): NAILS overlays are mounted while the state is not active
+/// - **Unknown** (⚠, yellow): the state file could not be read, so the real state is unknown
 ///
 /// # Example
 ///
 /// ```
-/// use nails_core::status::SecurityPosture;
+/// use nails_core::status::Posture;
 ///
-/// let posture = SecurityPosture::Secure;
-/// assert_eq!(format!("{}", posture), "✓ SECURE: Hidden environment active, overlays verified");
-/// assert_eq!(posture.to_plain(), "[SECURE] Hidden environment active, overlays verified");
+/// let posture = Posture::Active;
+/// assert_eq!(posture.to_plain(), "[ACTIVE] Hidden environment active, all overlays verified");
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SecurityPosture {
-    /// System is fully protected with verified overlays
-    Secure,
-
-    /// System is in transitional state or has inconsistencies
-    Warning,
-
-    /// System is in decoy mode (inactive state)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Posture {
+    /// No hidden environment is mounted; the decoy system is in use.
     Decoy,
-
-    /// System is in emergency state requiring immediate attention
-    Critical,
+    /// Hidden environment active and every tracked overlay is verified.
+    Active,
+    /// Active but one or more overlays are missing from the kernel.
+    Degraded,
+    /// NAILS overlays are mounted while the persisted state is not active.
+    Inconsistent,
+    /// The state file could not be read or trusted; the real state is unknown.
+    Unknown,
 }
 
-impl SecurityPosture {
+impl Posture {
+    /// Collapse a reconciled [`EffectiveState`] into a posture.
+    ///
+    /// `live_mounts` is whether the kernel mount table still carries any
+    /// NAILS-owned mount; it only matters for a stale-from-previous-boot file,
+    /// which is otherwise the decoy but must read as inconsistent if (improbably)
+    /// mounts are still live.
+    pub fn from_effective(effective: &EffectiveState, live_mounts: bool) -> Self {
+        match effective {
+            EffectiveState::Inactive => Posture::Decoy,
+            EffectiveState::VerifiedActive { .. } => Posture::Active,
+            EffectiveState::Degraded { kind, .. } => match kind {
+                DegradedKind::ActiveOverlaysMissing => Posture::Degraded,
+                DegradedKind::InactiveMountsLive => Posture::Inconsistent,
+            },
+            EffectiveState::Interrupted { .. } => Posture::Inconsistent,
+            EffectiveState::StaleFromPreviousBoot => {
+                if live_mounts {
+                    Posture::Inconsistent
+                } else {
+                    Posture::Decoy
+                }
+            }
+            EffectiveState::Unknown => Posture::Unknown,
+        }
+    }
+
+    /// Whether this posture is a safe, expected outcome (exit 0). The dangerous
+    /// and unknown postures all fail closed.
+    pub fn is_safe(&self) -> bool {
+        matches!(self, Posture::Decoy | Posture::Active)
+    }
+
     /// The shared mark for this posture.
     ///
-    /// The decoy state is neither protected nor in trouble, so it gets the
-    /// neutral mark; only a critical posture is shown as a failure.
+    /// Decoy is neutral (neither protected nor at risk). Active passes. The two
+    /// dangerous postures fail; an unknown state is a warning.
     pub fn mark(&self) -> crate::output::Mark {
         use crate::output::Mark;
         match self {
-            SecurityPosture::Secure => Mark::Pass,
-            SecurityPosture::Warning => Mark::Warn,
-            SecurityPosture::Decoy => Mark::Neutral,
-            SecurityPosture::Critical => Mark::Fail,
+            Posture::Decoy => Mark::Neutral,
+            Posture::Active => Mark::Pass,
+            Posture::Degraded | Posture::Inconsistent => Mark::Fail,
+            Posture::Unknown => Mark::Warn,
         }
     }
 
-    /// Get the text level indicator
-    fn level(&self) -> &'static str {
+    /// The uppercase level label.
+    pub fn level(&self) -> &'static str {
         match self {
-            SecurityPosture::Secure => "SECURE",
-            SecurityPosture::Warning => "WARNING",
-            SecurityPosture::Decoy => "DECOY",
-            SecurityPosture::Critical => "CRITICAL",
+            Posture::Decoy => "DECOY",
+            Posture::Active => "ACTIVE",
+            Posture::Degraded => "DEGRADED",
+            Posture::Inconsistent => "INCONSISTENT",
+            Posture::Unknown => "UNKNOWN",
         }
     }
 
-    /// Get the descriptive message for this security posture
+    /// The stable `snake_case` label used in machine-readable output.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Posture::Decoy => "decoy",
+            Posture::Active => "active",
+            Posture::Degraded => "degraded",
+            Posture::Inconsistent => "inconsistent",
+            Posture::Unknown => "unknown",
+        }
+    }
+
+    /// A one-line description of what the posture means.
     fn description(&self) -> &'static str {
         match self {
-            SecurityPosture::Secure => "Hidden environment active, overlays verified",
-            SecurityPosture::Warning => "System in transitional state - wait for completion",
-            SecurityPosture::Decoy => "Decoy system - no sensitive data accessible",
-            SecurityPosture::Critical => "Emergency deactivation occurred - reboot recommended",
+            Posture::Decoy => "Decoy system in use - no hidden environment mounted",
+            Posture::Active => "Hidden environment active, all overlays verified",
+            Posture::Degraded => {
+                "Active but overlays are missing - hidden writes may reach the decoy disk"
+            }
+            Posture::Inconsistent => "NAILS overlays are mounted but the state is not active",
+            Posture::Unknown => "State file could not be read - the real state is unknown",
         }
     }
 
-    /// Get ASCII-only representation for plain output mode
+    /// The remediation step for a dangerous or unknown posture, or `None` when
+    /// the system is in a safe state.
+    pub fn remediation(&self) -> Option<&'static str> {
+        match self {
+            Posture::Decoy | Posture::Active => None,
+            Posture::Degraded | Posture::Inconsistent => {
+                Some("Run `nails emergency` to tear down the remaining NAILS mounts")
+            }
+            Posture::Unknown => {
+                Some("Run `nails emergency` and recover the hidden volume before activating again")
+            }
+        }
+    }
+
+    /// ASCII-only representation for plain output mode.
     ///
     /// # Example
     ///
     /// ```
-    /// use nails_core::status::SecurityPosture;
+    /// use nails_core::status::Posture;
     ///
-    /// let posture = SecurityPosture::Secure;
-    /// assert_eq!(posture.to_plain(), "[SECURE] Hidden environment active, overlays verified");
+    /// let posture = Posture::Decoy;
+    /// assert_eq!(
+    ///     posture.to_plain(),
+    ///     "[DECOY] Decoy system in use - no hidden environment mounted"
+    /// );
     /// ```
     pub fn to_plain(&self) -> String {
         format!("[{}] {}", self.level(), self.description())
@@ -158,21 +224,31 @@ impl SecurityPosture {
     }
 }
 
-impl fmt::Display for SecurityPosture {
+impl fmt::Display for Posture {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.render(crate::output::Style::default()))
     }
 }
 
-/// Per-overlay mount status for status display
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Per-overlay identity and verification for status display.
+///
+/// `owned` is the real verdict: it comes from the live NAILS mount table
+/// ([`NailsMounts::is_owned`](crate::filesystem::NailsMounts::is_owned)), so a
+/// plain foreign mount at an overlay target (an ext4 `/home`) reads as not owned,
+/// never as a verified overlay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OverlayMountStatus {
-    /// The overlay mount path
+    /// The overlay mount path.
     pub path: PathBuf,
-    /// Whether the overlay should be mounted based on state
+    /// Whether the overlay should be mounted based on state.
     pub expected_mounted: bool,
-    /// Whether the overlay is actually mounted (checked via filesystem.is_mounted)
+    /// Whether an actual NAILS overlay is mounted here (i.e. it is owned).
     pub actually_mounted: bool,
+    /// Whether the live mount table says NAILS created this mount.
+    pub owned: bool,
+    /// The overlay's upper directory, from the state file (or a live probe).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upperdir: Option<PathBuf>,
 }
 
 /// Status report for the NAILS system
@@ -184,6 +260,14 @@ pub struct OverlayMountStatus {
 pub struct StatusReport {
     /// Current system state from state file
     pub state: SystemState,
+
+    /// The posture derived from reconciling the state file against the kernel
+    /// mount table. This, not `state`, is the truthful verdict a caller acts on.
+    pub posture: Posture,
+
+    /// NAILS-owned mounts still live that a dangerous posture must account for
+    /// (recovery tears these down). Empty for a safe posture.
+    pub remaining_mounts: Vec<PathBuf>,
 
     /// List of overlay paths (empty for inactive/transitional states)
     pub overlays: Vec<PathBuf>,
@@ -249,26 +333,11 @@ fn default_load_outcome() -> LoadOutcome {
 }
 
 impl StatusReport {
-    /// Calculate security posture from state and verification
-    ///
-    /// # Returns
-    ///
-    /// - **Secure**: Active state with verified overlays
-    /// - **Warning**: Active state with mismatched overlays, or transitional state
-    /// - **Decoy**: Inactive state (normal decoy environment)
-    /// - **Critical**: Degraded state requiring immediate attention
-    pub fn security_posture(&self) -> SecurityPosture {
-        match (&self.state, &self.overlay_verification) {
-            (SystemState::Active { .. }, VerificationStatus::Verified) => SecurityPosture::Secure,
-            (SystemState::Active { .. }, VerificationStatus::Mismatch { .. }) => {
-                SecurityPosture::Warning
-            }
-            (SystemState::Activating { .. }, _) => SecurityPosture::Warning,
-            (SystemState::Deactivating { .. }, _) => SecurityPosture::Warning,
-            (SystemState::Inactive, _) => SecurityPosture::Decoy,
-            (SystemState::Degraded { .. }, _) => SecurityPosture::Critical,
-            // Fallback for edge cases (e.g., Active with Skipped/NotApplicable verification)
-            _ => SecurityPosture::Warning,
-        }
+    /// The posture this report carries. Computed once in
+    /// [`StatusCommand::run`](crate::StatusCommand::run) from the reconciled
+    /// effective state, then stored, because deriving it needs the live mount
+    /// table the command holds.
+    pub fn posture(&self) -> Posture {
+        self.posture
     }
 }

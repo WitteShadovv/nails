@@ -12,21 +12,26 @@ expression: redact_status(value)
     "opsec_reminders": [],
     "overlay_verification": {
       "errors": [
-        "/opt/nails-contract-home should be mounted but is not"
+        "/opt/nails-contract-home is not mounted as a NAILS overlay"
       ],
       "kind": "mismatch"
     },
     "overlays": [
       {
-        "path": "/opt/nails-contract-home",
-        "status": "not_mounted"
+        "mount_point": "/opt/nails-contract-home",
+        "owned": false,
+        "status": "not_mounted",
+        "upperdir": "[upperdir]"
       }
     ],
     "persona_mode": "shared-home",
-    "security_posture": "warning",
+    "posture": "degraded",
+    "remaining_mounts": [],
+    "remediation": "Run `nails emergency` to tear down the remaining NAILS mounts",
     "state": {
       "kind": "active"
     },
+    "state_source": "loaded",
     "uptime_formatted": "[uptime]",
     "uptime_seconds": "[uptime_s]"
   },

@@ -252,14 +252,14 @@ impl<F: Filesystem> NailsManager<F> {
                 Ok(None)
             }
             EffectiveState::Inactive => Ok(None),
-            EffectiveState::Degraded { reason, remaining } => {
-                Err(NailsError::InvalidState(format!(
-                    "refusing to activate: {reason}. Hidden writes may be reaching the decoy disk. \
+            EffectiveState::Degraded {
+                reason, remaining, ..
+            } => Err(NailsError::InvalidState(format!(
+                "refusing to activate: {reason}. Hidden writes may be reaching the decoy disk. \
                  Run 'nails emergency' to tear down the remaining NAILS mount(s) ({}) before \
                  activating again.",
-                    format_mount_list(&remaining)
-                )))
-            }
+                format_mount_list(&remaining)
+            ))),
             EffectiveState::Interrupted { phase, .. } => Err(NailsError::InvalidState(format!(
                 "refusing to activate: a previous {} was interrupted and left the system in an \
                  unknown state. Run 'nails emergency' to reset before activating again.",

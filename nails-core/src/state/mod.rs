@@ -53,7 +53,7 @@ mod transitions;
 pub use file::{LoadOutcome, LoadResult, StateFile};
 pub use guard::StateGuard;
 pub use lock::{EMERGENCY_LOCK_TIMEOUT, StateLock};
-pub use reconcile::{EffectiveState, InterruptedPhase, reconcile};
+pub use reconcile::{DegradedKind, EffectiveState, InterruptedPhase, reconcile};
 
 // Kernel boot id reader, shared with state reconciliation in the manager.
 pub(crate) use file::read_boot_id;

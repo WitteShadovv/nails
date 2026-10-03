@@ -14,10 +14,12 @@ expression: redact_status(value)
     },
     "overlays": [],
     "persona_mode": "shared-home",
-    "security_posture": "decoy",
+    "posture": "decoy",
+    "remaining_mounts": [],
     "state": {
       "kind": "inactive"
-    }
+    },
+    "state_source": "missing"
   },
   "ok": true,
   "schema_version": 1
