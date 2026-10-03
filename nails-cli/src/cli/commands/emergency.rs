@@ -202,9 +202,10 @@ mod tests {
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         // A broken config never blocks an emergency teardown: it falls back to
-        // defaults with a warning and proceeds to the teardown, which refuses from
-        // the Inactive default state (exit 1).
-        assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
+        // defaults with a warning and proceeds. The panic button runs from any
+        // state, so against a clean Inactive default (no NAILS mounts) it is a
+        // successful no-op (exit 0) rather than a refusal.
+        assert_eq!(output.status.code(), Some(0), "stderr={stderr}");
         assert!(stderr.contains("did you mean `enabled`?"), "{stderr}");
         assert!(stderr.contains("continuing with defaults"), "{stderr}");
     }
@@ -217,22 +218,24 @@ mod tests {
         let output = run_subprocess("invalid-config", Some(&missing));
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
+        // A missing config falls back to defaults with a warning; with nothing to
+        // tear down the teardown is a clean no-op (exit 0).
+        assert_eq!(output.status.code(), Some(0), "stderr={stderr}");
         assert!(stderr.contains("config file not found"), "{stderr}");
     }
 
     #[test]
-    fn execute_emergency_reports_inactive_refusal_as_json() {
+    fn execute_emergency_succeeds_from_inactive_as_json() {
         let temp_dir = tempfile::tempdir().unwrap();
         let missing = temp_dir.path().join("missing.toml");
 
         let output = run_subprocess("invalid-config-json", Some(&missing));
         let stdout = String::from_utf8_lossy(&output.stdout);
 
-        // --json routes the Inactive refusal through one envelope on stdout.
-        assert_eq!(output.status.code(), Some(1), "stdout={stdout}");
-        assert!(stdout.contains("\"ok\":false"), "stdout={stdout}");
-        assert!(stdout.contains("invalid_state"), "stdout={stdout}");
+        // The panic button runs from any state; against a clean Inactive default
+        // it reports a successful no-op through one envelope on stdout.
+        assert_eq!(output.status.code(), Some(0), "stdout={stdout}");
+        assert!(stdout.contains("\"ok\":true"), "stdout={stdout}");
     }
 
     #[test]

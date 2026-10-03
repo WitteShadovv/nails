@@ -867,9 +867,11 @@ nails status
 # Check state file
 cat /mnt/data/state.json
 
-# Force state reset (DANGEROUS - verify overlays are down first)
-findmnt | grep overlay  # Must be empty
-sudo rm /mnt/data/state.json
+# Reconcile the stuck state and finish the teardown. recover reads the live
+# kernel mount table, unmounts any NAILS overlays it still finds, and resets the
+# state to the decoy. Never delete state.json by hand: that hides live mounts
+# from status instead of removing them.
+sudo /mnt/data/nails recover
 
 # Re-run status
 nails status  # Should show INACTIVE

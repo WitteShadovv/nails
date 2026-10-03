@@ -48,6 +48,7 @@ const HELP_INVOCATIONS: &[&[&str]] = &[
     &["activate", "--help"],
     &["deactivate", "--help"],
     &["emergency", "--help"],
+    &["recover", "--help"],
     &["status", "--help"],
     &["verify", "--help"],
     &["check", "--help"],

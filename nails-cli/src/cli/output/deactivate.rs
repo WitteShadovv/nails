@@ -55,7 +55,7 @@ pub fn deactivate_error_body(error: &NailsError) -> ErrorBody {
         )
         .with_hint("check if the overlay is in use and retry"),
         NailsError::InvalidState(msg) => ErrorBody::new("invalid_state", msg.clone())
-            .with_hint("verify the system is in the ACTIVE state"),
+            .with_hint("if the system is stuck, run 'nails recover' to finish teardown, or 'nails emergency' to tear down now"),
         other => ErrorBody::new("deactivation_failed", other.to_string())
             .with_hint("check system state and retry"),
     }

@@ -1,8 +1,21 @@
 use super::*;
 
+/// Mount a NAILS-owned overlay at `target` whose upper/work live under the
+/// hidden root, so [`Filesystem::discover_nails_mounts`] classifies it as a
+/// persistent NAILS overlay the teardown must remove.
+fn mount_nails_overlay(fs: &MockFilesystem, hidden_root: &Path, target: &Path) {
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "root".to_string());
+    let upper = hidden_root.join(&name);
+    let work = hidden_root.join(".work").join(&name);
+    fs.mock_mount_nails_overlay(target, &upper, &work);
+}
+
 #[test]
 #[serial]
-fn test_emergency_deactivate_from_inactive_state_returns_error() {
+fn test_emergency_deactivate_from_inactive_state_with_no_mounts_succeeds() {
     let mut env = EnvGuard::lock();
     env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
@@ -20,8 +33,9 @@ fn test_emergency_deactivate_from_inactive_state_returns_error() {
 
     let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
 
-    let err = manager.lock().unwrap().emergency_deactivate().unwrap_err();
-    assert!(matches!(err, NailsError::InvalidState(_)));
+    // The panic button must never refuse: an Inactive system with nothing to tear
+    // down is a clean success, not an error.
+    manager.lock().unwrap().emergency_deactivate().unwrap();
     assert_eq!(
         manager.lock().unwrap().current_state().unwrap(),
         SystemState::Inactive
@@ -29,72 +43,126 @@ fn test_emergency_deactivate_from_inactive_state_returns_error() {
 }
 #[test]
 #[serial]
-fn test_emergency_deactivate_from_activating_state_returns_error_without_unmounting() {
+fn test_emergency_deactivate_from_activating_state_tears_down_overlays() {
     let manager = setup_manager_in_state(SystemState::Activating {
         started_at: chrono::Utc::now(),
     });
 
+    let hidden_root = manager.lock().unwrap().config().hidden_volume_root.clone();
     {
         let guard = manager.lock().unwrap();
         let fs = guard.filesystem();
-        fs.mock_set_mounted(Path::new("/home"), true);
-        fs.mock_set_mounted(Path::new("/etc"), true);
+        mount_nails_overlay(fs, &hidden_root, Path::new("/home"));
+        mount_nails_overlay(fs, &hidden_root, Path::new("/etc"));
     }
 
-    let err = manager.lock().unwrap().emergency_deactivate().unwrap_err();
-    assert!(matches!(err, NailsError::InvalidState(_)));
-    let err_msg = err.to_string();
-    assert!(
-        err_msg.contains("Activating"),
-        "unexpected error: {err_msg}"
-    );
-    assert!(
-        err_msg.contains("Must be ACTIVE"),
-        "unexpected error: {err_msg}"
-    );
+    // Emergency during the switch (state is Activating) must tear the overlays
+    // down from the live mount table and end Inactive, not refuse.
+    manager.lock().unwrap().emergency_deactivate().unwrap();
 
     let guard = manager.lock().unwrap();
-    assert!(matches!(
-        guard.current_state().unwrap(),
-        SystemState::Activating { .. }
-    ));
-    assert!(guard.filesystem().is_mounted(Path::new("/home")).unwrap());
-    assert!(guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
+    assert_eq!(guard.current_state().unwrap(), SystemState::Inactive);
+    assert!(!guard.filesystem().is_mounted(Path::new("/home")).unwrap());
+    assert!(!guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
 }
 #[test]
 #[serial]
-fn test_emergency_deactivate_from_deactivating_state_returns_error_without_unmounting() {
+fn test_emergency_deactivate_from_deactivating_state_tears_down_overlays() {
     let manager = setup_manager_in_state(SystemState::Deactivating {
         started_at: chrono::Utc::now(),
     });
 
+    let hidden_root = manager.lock().unwrap().config().hidden_volume_root.clone();
     {
         let guard = manager.lock().unwrap();
         let fs = guard.filesystem();
-        fs.mock_set_mounted(Path::new("/home"), true);
-        fs.mock_set_mounted(Path::new("/etc"), true);
+        mount_nails_overlay(fs, &hidden_root, Path::new("/home"));
+        mount_nails_overlay(fs, &hidden_root, Path::new("/etc"));
     }
 
-    let err = manager.lock().unwrap().emergency_deactivate().unwrap_err();
-    assert!(matches!(err, NailsError::InvalidState(_)));
-    let err_msg = err.to_string();
-    assert!(
-        err_msg.contains("Deactivating"),
-        "unexpected error: {err_msg}"
-    );
-    assert!(
-        err_msg.contains("Must be ACTIVE"),
-        "unexpected error: {err_msg}"
-    );
+    // Emergency after an interrupted teardown (state is Deactivating) must finish
+    // the job from the live mount table and end Inactive.
+    manager.lock().unwrap().emergency_deactivate().unwrap();
 
     let guard = manager.lock().unwrap();
-    assert!(matches!(
-        guard.current_state().unwrap(),
-        SystemState::Deactivating { .. }
-    ));
-    assert!(guard.filesystem().is_mounted(Path::new("/home")).unwrap());
-    assert!(guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
+    assert_eq!(guard.current_state().unwrap(), SystemState::Inactive);
+    assert!(!guard.filesystem().is_mounted(Path::new("/home")).unwrap());
+    assert!(!guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
 }
+
+#[test]
+#[serial]
+fn test_recover_tears_down_remaining_mounts_from_degraded_state() {
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
+
+    let manager = setup_manager_in_state(SystemState::Degraded {
+        since: chrono::Utc::now(),
+        reason: "interrupted teardown".to_string(),
+        remaining_mounts: vec![PathBuf::from("/home")],
+    });
+
+    let hidden_root = manager.lock().unwrap().config().hidden_volume_root.clone();
+    {
+        let guard = manager.lock().unwrap();
+        mount_nails_overlay(guard.filesystem(), &hidden_root, Path::new("/home"));
+    }
+
+    let outcome = manager.lock().unwrap().recover().unwrap();
+    assert!(!outcome.was_already_inactive);
+    assert!(outcome.state_backed_up.is_none());
+
+    let guard = manager.lock().unwrap();
+    assert_eq!(guard.current_state().unwrap(), SystemState::Inactive);
+    assert!(!guard.filesystem().is_mounted(Path::new("/home")).unwrap());
+}
+
+#[test]
+#[serial]
+fn test_recover_is_a_no_op_when_already_inactive() {
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
+
+    let manager = setup_manager_in_state(SystemState::Inactive);
+
+    let outcome = manager.lock().unwrap().recover().unwrap();
+    assert!(outcome.was_already_inactive);
+    assert!(outcome.state_backed_up.is_none());
+    assert_eq!(
+        manager.lock().unwrap().current_state().unwrap(),
+        SystemState::Inactive
+    );
+}
+
+#[test]
+#[serial]
+fn test_recover_backs_up_a_corrupt_state_file() {
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
+
+    let manager = setup_manager_in_state(SystemState::Activating {
+        started_at: chrono::Utc::now(),
+    });
+
+    let state_path = manager.lock().unwrap().config().state_file_path.clone();
+    // Corrupt the on-disk state file so its load outcome is unknown; recovery must
+    // preserve it before the teardown overwrites it.
+    std::fs::write(&state_path, b"this is not valid json").unwrap();
+
+    let outcome = manager.lock().unwrap().recover().unwrap();
+    assert!(!outcome.was_already_inactive);
+
+    let backup = outcome
+        .state_backed_up
+        .expect("corrupt state file must be backed up");
+    assert_eq!(backup.file_name().unwrap(), "state.json.bad");
+    assert!(backup.exists(), "backup file must be on disk");
+    assert_eq!(
+        std::fs::read(&backup).unwrap(),
+        b"this is not valid json".to_vec()
+    );
+}
+
 #[test]
 #[serial]
 fn test_emergency_deactivate_force_unmount_succeeds_after_graceful_failure() {

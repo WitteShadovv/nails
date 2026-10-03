@@ -26,6 +26,7 @@ fn command_is_mutating(command: &Commands) -> bool {
             | Commands::Deactivate(_)
             | Commands::Reapply(_)
             | Commands::Emergency(_)
+            | Commands::Recover(_)
             | Commands::ResetUpper(_)
     )
 }
@@ -67,6 +68,7 @@ pub fn execute_command(cli: Cli, settings: &OutputSettings) -> ExitStatus {
         Commands::Deactivate(args) => commands::deactivate::execute(settings, &args, config),
         Commands::Reapply(args) => commands::reapply::execute(settings, &args, config),
         Commands::Emergency(args) => commands::emergency::execute(settings, &args, config),
+        Commands::Recover(args) => commands::recover::execute(settings, &args, config),
         Commands::Status(args) => commands::status::execute(settings, &args, config),
         Commands::Verify(args) => commands::verify::execute(settings, &args, config),
         Commands::Check(args) => commands::check::execute(settings, &args, config),

@@ -155,6 +155,8 @@ pub enum Commands {
     Reapply(ReapplyArgs),
     /// Emergency mode: rapid deactivation with countdown
     Emergency(EmergencyArgs),
+    /// Reconcile a stuck state and finish an interrupted or degraded teardown
+    Recover(RecoverArgs),
     /// Show current status and uptime
     Status(StatusArgs),
     /// Verify system is clean of NAILS artifacts
@@ -300,6 +302,14 @@ pub struct EmergencyArgs {
     #[arg(long)]
     pub no_countdown: bool,
 }
+
+/// `nails recover` arguments
+///
+/// Recover takes no options of its own: it always reconciles the recorded state
+/// against the live mount table and tears down whatever NAILS mounts remain,
+/// resetting the state to the decoy.
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecoverArgs {}
 
 /// `nails status` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]

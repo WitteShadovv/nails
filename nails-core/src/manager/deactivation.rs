@@ -117,13 +117,24 @@ pub enum DeactivationMode {
 enum ManagerDeactivationKind {
     Normal,
     Emergency,
+    /// Operator-driven recovery of a stuck state (Interrupted/Degraded/corrupt).
+    ///
+    /// Always drives the mount-discovery teardown engine: it never trusts the
+    /// recorded overlay list, never reboots, and ends Inactive when nothing
+    /// survives. Unlike emergency it is not a panic button on a live session but
+    /// a deliberate reconcile-and-clean of a system left in an inconsistent
+    /// state, so it skips the decoy-history edit a forensic teardown performs.
+    Recover,
 }
 
 impl ManagerDeactivationKind {
     fn orchestrator_mode(self) -> DeactivationMode {
         match self {
             Self::Normal => DeactivationMode::Normal,
-            Self::Emergency => DeactivationMode::Emergency,
+            // Recovery reuses the fast, best-effort teardown: errors are
+            // non-fatal and no thorough verification stands between it and the
+            // unmounts it must finish.
+            Self::Emergency | Self::Recover => DeactivationMode::Emergency,
         }
     }
 
@@ -133,6 +144,15 @@ impl ManagerDeactivationKind {
 
     fn reboots_on_success(self) -> bool {
         matches!(self, Self::Normal)
+    }
+
+    /// Whether this kind always tears down from the live mount table rather than
+    /// the recorded overlay list.
+    ///
+    /// Recovery always does; emergency does only when the state file is
+    /// untrusted (decided per run); normal deactivation never does.
+    fn always_untrusted(self) -> bool {
+        matches!(self, Self::Recover)
     }
 }
 
@@ -321,23 +341,31 @@ impl<F: Filesystem> NailsManager<F> {
     }
 
     fn run_deactivation(&mut self, kind: ManagerDeactivationKind) -> Result<()> {
-        // Emergency on an untrusted state: a corrupt or unreadable state file
-        // must not silently collapse to Inactive and refuse the teardown. When
-        // the honest load outcome is unknown, enumerate the NAILS overlays from
-        // the live mount table instead of trusting the recorded state. Normal
-        // deactivation still requires a trustworthy Active state.
-        let untrusted_state = kind == ManagerDeactivationKind::Emergency
-            && self
-                .current_state_with_outcome()
-                .map(|(_, outcome)| outcome.is_unknown())
-                .unwrap_or(true);
+        // The emergency panic button must work from every state, not only a
+        // clean Active one: the state is Activating during the whole switch, it
+        // is Deactivating after an interrupted teardown, and it may be a corrupt
+        // or unreadable file. Only a state that is *verifiably* clean Active
+        // (readable file, Active state) takes the fast trusted path with its
+        // recorded overlay list; every other emergency enumerates the NAILS
+        // overlays from the live mount table instead. Normal deactivation still
+        // requires a trustworthy Active state.
+        let untrusted_state = kind.always_untrusted()
+            || (kind == ManagerDeactivationKind::Emergency
+                && !self
+                    .current_state_with_outcome()
+                    .map(|(state, outcome)| {
+                        !outcome.is_unknown() && matches!(state, SystemState::Active { .. })
+                    })
+                    .unwrap_or(false));
 
         if !untrusted_state {
             // Preconditions: both modes require an Active system; only the messages differ.
             let state = self.current_state()?;
             if !matches!(state, SystemState::Active { .. }) {
                 let message = match kind {
-                    ManagerDeactivationKind::Normal => {
+                    // Recover is always untrusted, so this precondition block is
+                    // never reached for it; the arm exists only for exhaustiveness.
+                    ManagerDeactivationKind::Normal | ManagerDeactivationKind::Recover => {
                         "Cannot deactivate: system is not in Active state".to_string()
                     }
                     ManagerDeactivationKind::Emergency if state == SystemState::Inactive => {
@@ -348,6 +376,28 @@ impl<F: Filesystem> NailsManager<F> {
                     }
                 };
                 return Err(NailsError::InvalidState(message));
+            }
+        }
+
+        // A state-independent teardown (emergency from a non-Active state, or
+        // recovery) must not disturb a system that is already the decoy: with no
+        // NAILS mount live and the state Inactive there is nothing to tear down,
+        // so skip the shell kill, the forced state write and the service restarts
+        // entirely and report a clean no-op.
+        if untrusted_state {
+            let hidden_root = self.config().hidden_volume_root.clone();
+            let discovered = self
+                .filesystem()
+                .discover_nails_mounts(Some(&hidden_root))?;
+            let already_inactive = self
+                .current_state()
+                .map(|state| state == SystemState::Inactive)
+                .unwrap_or(false);
+            if discovered.owned_mount_points().is_empty() && already_inactive {
+                tracing::info!(
+                    "Nothing to tear down: no live NAILS mounts and the state is Inactive"
+                );
+                return Ok(());
             }
         }
 
@@ -523,6 +573,107 @@ impl<F: Filesystem> NailsManager<F> {
     pub fn emergency_deactivate(&mut self) -> Result<()> {
         self.run_deactivation(ManagerDeactivationKind::Emergency)
     }
+
+    /// Reconcile the recorded state against the live mount table and finish an
+    /// interrupted, degraded, or corrupt-state teardown.
+    ///
+    /// Unlike [`deactivate`](Self::deactivate), recovery never requires an Active
+    /// state and never reboots: it exists to clean up after a crash, a killed
+    /// activation/deactivation, or a state file that can no longer be trusted. It
+    /// discovers the NAILS-owned mounts from the live mount table, tears them
+    /// down with the same engine emergency uses (no countdown), and resets the
+    /// state to Inactive. A corrupt or unreadable state file is backed up to
+    /// `state.json.bad` before the recovery overwrites it.
+    ///
+    /// Returns a [`RecoverOutcome`] describing what it found and did. A cleanly
+    /// inactive system with no live NAILS mount is a no-op that reports
+    /// [`RecoverOutcome::was_already_inactive`].
+    pub fn recover(&mut self) -> Result<RecoverOutcome> {
+        // Reconcile first so a cleanly inactive system is a quiet no-op rather
+        // than a teardown that discovers nothing and still rewrites the state.
+        let effective = self.reconcile_state()?;
+        if matches!(effective, crate::state::EffectiveState::Inactive) {
+            tracing::info!("Recover: system already inactive with no live NAILS mounts");
+            return Ok(RecoverOutcome {
+                state_backed_up: None,
+                was_already_inactive: true,
+            });
+        }
+
+        // Preserve a corrupt/unreadable state file before the teardown replaces
+        // it, so an operator can still inspect what was recorded.
+        let state_backed_up = self.backup_corrupt_state_file()?;
+
+        tracing::info!(
+            ?effective,
+            backed_up = state_backed_up.is_some(),
+            "Recover: reconciling and tearing down remaining NAILS mounts"
+        );
+
+        self.run_deactivation(ManagerDeactivationKind::Recover)?;
+
+        Ok(RecoverOutcome {
+            state_backed_up,
+            was_already_inactive: false,
+        })
+    }
+
+    /// Copy a corrupt or unreadable state file to `state.json.bad`, returning the
+    /// backup path when one was made.
+    ///
+    /// Only a state file whose load outcome is unknown (unparseable, or a
+    /// checksum mismatch) is backed up; a readable file is left in place for the
+    /// teardown to update. A missing file, or any copy error, is a best-effort
+    /// no-op: recovery must never fail because the broken file could not be copied
+    /// aside. The copy uses `std::fs` directly, matching how the state file itself
+    /// is loaded and saved (it is always a real-filesystem artifact on the hidden
+    /// root, never a trait-abstracted mock path).
+    fn backup_corrupt_state_file(&self) -> Result<Option<PathBuf>> {
+        let (_, outcome) = match self.current_state_with_outcome() {
+            Ok(pair) => pair,
+            Err(_) => return Ok(None),
+        };
+        if !outcome.is_unknown() {
+            return Ok(None);
+        }
+
+        if !self.state_file_path.exists() {
+            return Ok(None);
+        }
+
+        let backup_path = {
+            let mut name = self
+                .state_file_path
+                .file_name()
+                .unwrap_or_default()
+                .to_os_string();
+            name.push(".bad");
+            self.state_file_path.with_file_name(name)
+        };
+
+        match std::fs::copy(&self.state_file_path, &backup_path) {
+            Ok(_) => {
+                tracing::warn!(
+                    path = %backup_path.display(),
+                    "Recover: backed up corrupt state file"
+                );
+                Ok(Some(backup_path))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Recover: could not copy corrupt state file aside (continuing)");
+                Ok(None)
+            }
+        }
+    }
+}
+
+/// What [`NailsManager::recover`](NailsManager::recover) found and did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoverOutcome {
+    /// Where a corrupt state file was backed up, if one was found.
+    pub state_backed_up: Option<PathBuf>,
+    /// True when the system was already cleanly inactive, so recovery did nothing.
+    pub was_already_inactive: bool,
 }
 
 fn overlay_unmount_targets<F: Filesystem>(

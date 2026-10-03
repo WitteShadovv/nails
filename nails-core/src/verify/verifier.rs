@@ -1071,9 +1071,7 @@ impl<F: Filesystem> Verifier<F> {
                         "state",
                         "State file indicates system is stuck in ACTIVATING state",
                     )
-                    .with_fix_guidance(
-                        "Run 'nails deactivate --force' to clean up partial activation",
-                    ),
+                    .with_fix_guidance("Run 'nails recover' to clean up the partial activation"),
                 );
             }
             crate::SystemState::Deactivating { .. } => {
@@ -1083,7 +1081,7 @@ impl<F: Filesystem> Verifier<F> {
                         "state",
                         "State file indicates system is stuck in DEACTIVATING state",
                     )
-                    .with_fix_guidance("Run 'nails deactivate --force' to complete deactivation"),
+                    .with_fix_guidance("Run 'nails recover' to complete the teardown"),
                 );
             }
             crate::SystemState::Degraded {
