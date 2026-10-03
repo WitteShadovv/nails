@@ -26,6 +26,7 @@
   "faults-kill-deactivating-recover": 160,
   "faults-readonly-hidden-fs": 150,
   "forensic-clean": 105,
+  "help-version-no-leak": 70,
   "impermanent-decoy": 300,
   "inherited-autostart": 180,
   "init-bootstrap": 66,

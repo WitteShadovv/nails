@@ -152,8 +152,8 @@ fn test_deactivate_quiet_verbose_conflict() {
 #[test]
 fn test_activate_flake_flag() {
     assert_eq!(
-        activate(&["--nixos-flake", "/etc/nixos#amnesia-virtualbox"]).nixos_flake,
-        Some("/etc/nixos#amnesia-virtualbox".to_string())
+        activate(&["--nixos-flake", "/etc/nixos#myhost"]).nixos_flake,
+        Some("/etc/nixos#myhost".to_string())
     );
 }
 
