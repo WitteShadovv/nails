@@ -589,11 +589,10 @@ fn status_command_reports_decoy_writers_recorded_at_activation() {
     // status runs as its own process, so the writers must come from the state
     // file written at activation, not from a fresh /proc scan.
     let fs = MockFilesystem::new();
-    fs.mock_set_mounted(Path::new("/var"), true);
 
     let overlays = vec![PathBuf::from("/var")];
     let mut overlay_status = std::collections::HashMap::new();
-    overlay_status.insert(PathBuf::from("/var"), create_overlay_info("/var"));
+    overlay_status.insert(PathBuf::from("/var"), mount_nails_overlay(&fs, "/var"));
     let state_file = StateFile {
         state: SystemState::Active {
             activated_at: Utc::now(),
@@ -605,7 +604,7 @@ fn status_command_reports_decoy_writers_recorded_at_activation() {
     };
     let temp_file = create_temp_state_file(&state_file);
 
-    let cmd = StatusCommand::new(fs, Config::default(), temp_file.path().to_path_buf());
+    let cmd = StatusCommand::new(fs, config_hidden(), temp_file.path().to_path_buf());
     let report = cmd.run().unwrap();
 
     assert_eq!(report.overlay_verification, VerificationStatus::Verified);

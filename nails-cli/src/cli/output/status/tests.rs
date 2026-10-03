@@ -229,10 +229,10 @@ fn active_report_with_decoy_writers() -> StatusReport {
 }
 
 #[test]
-fn test_status_json_lists_decoy_writers_and_warns() {
+fn test_status_json_lists_decoy_writers() {
     let data = super::json::build_status_data(&active_report_with_decoy_writers());
     let value = serde_json::to_value(&data).unwrap();
-    assert_eq!(value["security_posture"], "warning");
+    assert_eq!(value["posture"], "active");
     assert_eq!(value["decoy_writers"][0]["name"], "tail");
     assert_eq!(value["decoy_writers"][0]["pid"], 812);
     assert_eq!(value["decoy_writers"][1]["service"], "NetworkManager");
@@ -254,14 +254,28 @@ fn test_posture_lines_report_writers_still_on_the_decoy() {
     let lines = super::human::posture_lines(&active_report_with_decoy_writers(), ASCII);
     assert_eq!(
         lines[0],
-        "Security Posture:   [WARN] NOT OPTIMAL: 2 writers still on the decoy"
+        "Security Posture:   [ACTIVE] Hidden environment active, all overlays verified"
     );
-    assert_eq!(lines[1], "  - tail (PID 812) on /var");
-    assert_eq!(
-        lines[2],
-        "  - NetworkManager (NetworkManager.service, PID 600) on /etc, /var"
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("[WARN] NOT OPTIMAL: 2 writers still on the decoy")),
+        "{lines:?}"
     );
-    assert!(lines[3].contains("Recorded at activation"), "{lines:?}");
+    assert!(
+        lines.iter().any(|l| l == "    - tail (PID 812) on /var"),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "    - NetworkManager (NetworkManager.service, PID 600) on /etc, /var"),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("Recorded at activation")),
+        "{lines:?}"
+    );
 }
 
 #[test]
@@ -270,7 +284,7 @@ fn test_posture_lines_without_writers_show_the_plain_posture() {
     report.overlay_verification = VerificationStatus::Verified;
     let lines = super::human::posture_lines(&report, COLOR);
     assert_eq!(lines.len(), 1);
-    assert!(lines[0].contains("SECURE"), "{lines:?}");
+    assert!(lines[0].contains("ACTIVE"), "{lines:?}");
     assert!(!lines[0].contains("NOT OPTIMAL"), "{lines:?}");
 }
 

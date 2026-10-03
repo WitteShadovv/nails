@@ -72,7 +72,6 @@ impl SystemState {
     ) -> Result<SystemState> {
         match self {
             SystemState::Activating { .. } => Ok(SystemState::Active {
-    decoy_writers: Vec::new(),
                 activated_at: Utc::now(),
                 overlays,
                 decoy_writers,
