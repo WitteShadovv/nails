@@ -85,7 +85,9 @@ in
         )
         machine.succeed(f"logger -t nails-control {jrnl_token}")
         machine.succeed(f"printf 'nonce\\n' > /tmp/{store_token}")
-        machine.succeed(f"nix store add-file /tmp/{store_token}")
+        # nix-store --add is the stable spelling; `nix store add-file` needs the
+        # nix-command experimental feature, which the decoy VM leaves disabled.
+        machine.succeed(f"nix-store --add /tmp/{store_token}")
         # Force the journal and filesystem to disk before imaging.
         machine.succeed("journalctl --sync 2>/dev/null || journalctl --flush || true")
         machine.succeed("sync")
