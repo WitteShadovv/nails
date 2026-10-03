@@ -32,6 +32,10 @@ of this changelog for that version becomes the release notes word for word, and
   arguments carry shell value hints.
 - Fault-injection E2E group (`faults`) and a strict hidden-volume teardown helper that fails and
   lists holders when the encrypted backend cannot be closed.
+- Persona-separation E2E tests (sync pull-back as a known limitation, fresh-home without sync,
+  stale decoy writers, masked decoy user timer) and a shared base node for E2E specs without a
+  `nodes` block; README and the security guide document the remote-state and sync-client
+  limitation.
 
 - SIGINT/SIGTERM during an in-progress activation now cancel it and roll the system back to
   Inactive (exit code 130), SIGHUP no longer aborts a running operation, and mutating commands
@@ -433,6 +437,9 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Security
 
+- Teardown relinquishes the journal before unmounting /var, then rotates and scrubs the volatile
+  runtime journal under `/run/log/journal`; emergency and recovery report the scrub and warn that
+  only a reboot is a complete remedy.
 - Deactivation makes no write to any decoy filesystem after unmount by default (whole-file
   truncation and secure-delete are no longer forced), removing the deactivation-time artifact the
   post-unmount scrub left on the decoy; the pre-teardown shell kill plus an amnesic decoy base are

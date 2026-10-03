@@ -2567,7 +2567,7 @@ Owns: `nails-core/src/manager/deactivation.rs`, `nails-core/src/emergency.rs`, `
 
 Owns: `nails-core/src/cleanup/manager.rs`, `nails-core/src/deactivation/orchestrator/mod.rs`, `nails-core/src/manager/activation/overlay_mount/mod.rs`
 
-- [ ] **T-113: Handle the journal explicitly at activation and teardown (flush onto the overlay; volatile runtime journal after emergency)** (high · effort M)
+- [x] **T-113: Handle the journal explicitly at activation and teardown (flush onto the overlay; volatile runtime journal after emergency)** (high · effort M)
 
   **Problem:** `/run` is excluded from overlays (`nails-core/src/config/types.rs:70`), and journald's volatile store lives at `/run/log/journal`. On a tmpfs-root decoy (`Storage=volatile`, or `auto` with no `/var/log/journal` — the recommended posture), everything journald records during a hidden session stays in RAM: hidden service lifecycle, sudo commands, user-service stderr. It survives emergency teardown, which does not reboot (`reboots_on_success` matches only `Normal`, `nails-core/src/manager/deactivation.rs:261`), so anyone at the machine can read it with `journalctl`. The only journal handling today is a restart of systemd-journald after the /var overlay (`nails-core/src/manager/activation/overlay_mount/mod.rs:176-183`); cleanup never touches the journal, and forensic test 05 hides the gap by excluding journal dirs from its grep (`nix/e2e-tests/tests/forensic/05-standard-deactivation-forensic.nix:34`).
 
@@ -2602,7 +2602,9 @@ Owns: `nix/e2e-tests/lib/base-node.nix`, `nix/e2e-tests/tests/persona/`, `nix/e2
 
   **Done when:** specs without `nodes` evaluate with baseNode and the number of distinct node blocks has clearly dropped; every remaining `canonical_deactivate` is followed by post-deactivation assertions; no duplicate tamper or extended-overlay scenario remains; `rg 'Self-check' nix/e2e-tests` is empty; the README records the measured per-test fixed cost; the full E2E suite passes.
 
-- [ ] **T-115: Persona-separation E2E tests (remote-state pull-back, fresh-home mode, graphical emergency, stale writers) and documentation of the sync limitation** (critical · effort L)
+  _Status: shared base node done (`lib/base-node.nix`, applied by `default.nix` to specs without `nodes`) and Self-check headers are gone; remaining: the serialized sweep dropping `nodes` from the standard specs, duplicate removal (config/24 into overlay/69, tamper only in state/52), trailing `canonical_deactivate` removal and the hosted-runner fixed-cost measurement in the README (needs Nix evaluation and hosted runs)._
+
+- [x] **T-115: Persona-separation E2E tests (remote-state pull-back, fresh-home mode, graphical emergency, stale writers) and documentation of the sync limitation** (critical · effort L)
 
   **Problem:** Deactivation only throws away the overlay upper dirs (`nails-core/src/deactivation/orchestrator/unmount.rs:30-108`). Account-bound decoy clients (two-way sync, IMAP Sent folders, browser sync) that run in the hidden session push hidden data to their servers. After deactivation, the decoy client resumes from its pre-activation local state, reconciles, and pulls that data back onto the decoy disk, where a post-use disk examiner can find it. `docs/USER-SECURITY-GUIDE.md:426` ("plausible recent activity") and `:465` ("Create some decoy activity") make this more likely. No E2E test covers sync clients, decoy user units or timers, autostart inheritance, a graphical emergency, or stale cwd/fd writers. `33-session-kill-graphical.nix:150-152` asserts that the session restarts before the NixOS switch.
 
