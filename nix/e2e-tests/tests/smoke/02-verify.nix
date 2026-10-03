@@ -40,8 +40,11 @@ in
     print(f"✓ Baseline verify status: {baseline_payload['status']}")
 
     print("\n=== Verifying artifact detection ===")
+    # A stray log under /tmp is not a path NAILS writes, so the standard scan no
+    # longer carries it in its registry; the deep scan sweeps /tmp, /var/tmp and
+    # /var/log for nails-named leftovers, which is where this leak is reported.
     machine.succeed("touch /tmp/nails.log")
-    status, payload = run_verify()
+    status, payload = run_verify("--deep")
     assert status in (10, 11), f"Expected artifact verify exit 10/11, got {status}"
     assert payload["status"] in ("warning", "critical"), \
         f"Expected Warning or Critical verify result, got: {payload}"
