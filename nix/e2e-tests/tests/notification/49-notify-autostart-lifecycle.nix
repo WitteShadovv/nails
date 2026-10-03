@@ -87,7 +87,12 @@ in
         machine.succeed(
             f"{wrapper_env} env DISPLAY=:0 XDG_SESSION_TYPE=x11 SUDO_UID=1000 SUDO_USER=testuser "
             + "SHELL=/run/current-system/sw/bin/bash "
-            + f"{hidden_nails} --config {headless_config} activate -y"
+            # Overlay-only: this test covers the autostart entry, the queued
+            # login notifications and the session restart, none of which need the
+            # hidden NixOS switch. A full activate would run a real rebuild before
+            # the restart, which the offline VM cannot complete in time; the switch
+            # itself is covered by the nixos test group.
+            + f"{hidden_nails} --config {headless_config} activate --overlay-only -y"
         )
         activation_unit = wait_for_activation_transient_unit()
         assert_unit_in_system_slice(activation_unit)
