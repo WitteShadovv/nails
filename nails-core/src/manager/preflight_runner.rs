@@ -77,10 +77,11 @@ pub fn build_registry<F: Filesystem>(
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
         BackendDetectCheck, BinaryLocationCheck, DecoyPersistenceCheck, HiddenVolumeCheck,
-        HostToolsCheck, InheritedAutostartCheck, MountNamespaceCheck, NixOSBuildTargetCheck,
-        NixOSConfigCheck, OverlayCompatibilityCheck, OverlayTargetsCheck, SnapshotMemoryCheck,
-        SpaceCheck, StateCheck, StorageReadinessCheck, SuspiciousNailsReferenceCheck, SwapCheck,
-        SymlinkSupportCheck, UpperFsCapabilityCheck, WritableTreesCheck,
+        HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck, MountNamespaceCheck,
+        NixOSBuildTargetCheck, NixOSConfigCheck, OverlayCompatibilityCheck, OverlayTargetsCheck,
+        SnapshotMemoryCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
+        SuspiciousNailsReferenceCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
+        WritableTreesCheck,
     };
 
     let mut registry = PreFlightRegistry::new();
@@ -250,6 +251,16 @@ pub fn build_registry<F: Filesystem>(
             fresh_home,
         ),
         None => InheritedAutostartCheck::disabled(),
+    }));
+
+    // Warns (never fails) when the operator's shell flushes command history to
+    // disk after every command (zsh INC_APPEND_HISTORY/SHARE_HISTORY, bash
+    // `history -a` in PROMPT_COMMAND): such a shell has already written the
+    // activation commands to disk before the pre-teardown shell kill can prevent
+    // it. Degrades to a skipped Pass when no operator could be resolved.
+    registry.add_check(Box::new(match inputs.operator.as_ref() {
+        Some(operator) => IncrementalHistoryFlushCheck::new(operator.home().to_path_buf()),
+        None => IncrementalHistoryFlushCheck::disabled(),
     }));
 
     registry.add_check(Box::new(StateCheck::new(inputs.current_state.clone())));

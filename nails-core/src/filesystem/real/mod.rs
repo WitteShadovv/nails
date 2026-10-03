@@ -186,6 +186,10 @@ impl Filesystem for RealFilesystem {
         file_ops::write_user_file(path, content, user, default_mode)
     }
 
+    fn overwrite_file_in_place(&self, path: &Path, content: &str) -> Result<()> {
+        file_ops::overwrite_file_in_place(path, content)
+    }
+
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
         file_ops::find_files_with_pattern(self, dir, pattern)
     }

@@ -57,14 +57,18 @@ in
         )
         machine.succeed("test -s " + history_path)
 
-    with subtest("deactivate truncates visible fish history on decoy disk"):
+    with subtest("deactivate leaves the decoy fish history untouched; session entries were overlay-only"):
+        # New T-105 behaviour: no post-unmount write to the decoy disk. The
+        # in-session fish entries lived in the discarded overlay upper; the
+        # pre-existing lower-disk entry is preserved.
         canonical_deactivate_for_user(
             config_path,
             shell_path,
             unit_name="nails-deactivate-shell-history-fish",
         )
         machine.succeed("test -f " + history_path)
-        machine.succeed("test ! -s " + history_path)
+        machine.succeed("grep -q 'lower-fish-entry' " + history_path)
+        machine.fail("grep -q -e 'secret-fish-entry' -e 'nails activate' " + history_path)
         assert_status_state("inactive", config_path=config_path)
   '';
 }

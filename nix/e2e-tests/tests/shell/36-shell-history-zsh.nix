@@ -52,14 +52,19 @@ in
         )
         machine.succeed("test -s /home/testuser/.zsh_history")
 
-    with subtest("deactivate truncates visible zsh history on decoy disk"):
+    with subtest("deactivate leaves the decoy history untouched; session entries were overlay-only"):
+        # New T-105 behaviour: deactivation makes no post-unmount write to the
+        # decoy disk. The in-session entries lived in the discarded overlay upper,
+        # so they never reach the decoy; the pre-existing lower-disk line is
+        # preserved exactly as it was.
         canonical_deactivate_for_user(
             config_path,
             shell_path,
             unit_name="nails-deactivate-shell-history-zsh",
         )
         machine.succeed("test -f /home/testuser/.zsh_history")
-        machine.succeed("test ! -s /home/testuser/.zsh_history")
+        machine.succeed("grep -q 'lower-history-entry' /home/testuser/.zsh_history")
+        machine.fail("grep -q -e 'secret-zsh-entry' -e 'nails activate' /home/testuser/.zsh_history")
         assert_status_state("inactive", config_path=config_path)
   '';
 }

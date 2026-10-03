@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::MockFilesystem;
+use std::path::Path;
 
 /// Test home directory path - safe for tests, doesn't exist on real filesystem
 const TEST_HOME: &str = "/home/testuser";
@@ -479,4 +480,73 @@ fn test_fish_history_cleaned_via_history_cleaner() {
         .filter(|l| l.trim_start().starts_with("when:"))
         .count();
     assert_eq!(cmd_count, when_count);
+}
+
+// ============================================================================
+// Opt-in in-place decoy history edit
+// ============================================================================
+
+#[test]
+fn test_in_place_edit_overwrites_same_inode_not_temp_rename() {
+    use crate::filesystem::mock::MockOp;
+
+    let fs = MockFilesystem::new();
+    let hist = "/home/operator/.bash_history";
+    fs.mock_set_file_content(hist, "ls\nnails activate\npwd\n");
+
+    let cleaner = HistoryCleaner::new(fs.clone())
+        .with_home(PathBuf::from("/home/operator"))
+        .with_shells(vec![ShellType::Bash])
+        .with_in_place(true);
+
+    let result = cleaner.clean().unwrap();
+    assert_eq!(result.len(), 1);
+    assert!(result[0].contains("in place"));
+
+    // The matching line is gone, the others survive.
+    let written = fs.get_written_content(Path::new(hist)).unwrap();
+    assert!(!written.contains("nails"));
+    assert!(written.contains("ls"));
+    assert!(written.contains("pwd"));
+
+    // The edit went through the same-inode overwrite path, never the temp+rename
+    // write that would allocate a new inode.
+    let ops = fs.mock_ops();
+    assert!(
+        ops.iter()
+            .any(|op| matches!(op, MockOp::OverwriteInPlace { path } if path == Path::new(hist))),
+        "expected an in-place overwrite, got {ops:?}"
+    );
+    assert!(
+        !ops.iter()
+            .any(|op| matches!(op, MockOp::WriteFile { path } if path == Path::new(hist))),
+        "in-place edit must not use the temp+rename write path"
+    );
+}
+
+#[test]
+fn test_default_edit_uses_atomic_write_not_in_place() {
+    use crate::filesystem::mock::MockOp;
+
+    let fs = MockFilesystem::new();
+    let hist = "/home/operator/.bash_history";
+    fs.mock_set_file_content(hist, "ls\nnails activate\n");
+
+    let cleaner = HistoryCleaner::new(fs.clone())
+        .with_home(PathBuf::from("/home/operator"))
+        .with_shells(vec![ShellType::Bash]);
+
+    cleaner.clean().unwrap();
+
+    let ops = fs.mock_ops();
+    assert!(
+        ops.iter()
+            .any(|op| matches!(op, MockOp::WriteFile { path } if path == Path::new(hist))),
+        "default edit should use the atomic temp+rename write"
+    );
+    assert!(
+        !ops.iter()
+            .any(|op| matches!(op, MockOp::OverwriteInPlace { .. })),
+        "default edit must not overwrite in place"
+    );
 }

@@ -15,7 +15,7 @@ use crate::deactivation::test_gate::should_skip_shell_cleanup_before_deactivatio
 use crate::deactivation::{DeactivationReport, PostUnmountCleanupReport};
 use crate::filesystem::NailsMounts;
 #[cfg(not(test))]
-use crate::process::kill_user_shells;
+use crate::process::kill_shells_for_teardown;
 use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError, Result,
     StateGuard, SystemState,
@@ -425,9 +425,15 @@ impl<F: Filesystem> NailsManager<F> {
                 "Skipping pre-unmount shell cleanup because the deactivation test gate is armed"
             );
         } else {
-            tracing::info!("Killing user shell processes immediately before overlay teardown");
+            tracing::info!(
+                "Killing every interactive shell (including root's) immediately before overlay teardown"
+            );
             let protected = collect_protected_shell_pids();
-            let report = kill_user_shells(&protected);
+            // Teardown kills root's decoy shell too, so its in-memory history is
+            // never flushed; only this process's own ancestry stays protected, and
+            // the deactivation detach means the invoking shell is torn down with
+            // the rest rather than permanently spared.
+            let report = kill_shells_for_teardown(&protected);
             tracing::info!(
                 killed = report.killed.len(),
                 failed = report.failed.len(),
@@ -435,6 +441,12 @@ impl<F: Filesystem> NailsManager<F> {
                 "Shell cleanup complete"
             );
         }
+
+        // Capture the opt-in flags before the config is moved into the
+        // orchestrator: the forensic-reboot path below edits decoy history only
+        // when the operator opted in, and secure-delete stays off unless enabled.
+        let post_unmount_opt_in = cleanup_config.post_unmount_cleanup;
+        let post_unmount_secure_delete = cleanup_config.secure_delete;
 
         let restore_decoy_profile = requires_decoy_restore(self)?;
         let orchestrator = DeactivationOrchestrator::new(cleanup_config)
@@ -462,16 +474,24 @@ impl<F: Filesystem> NailsManager<F> {
 
         let _report = result?;
 
-        if kind.requires_forensic_verification() {
-            tracing::info!("Truncating all history files for forensic safety");
+        // Post-unmount history editing on the decoy disk is opt-in (see
+        // [`CleanupConfig::post_unmount_cleanup`]): by default deactivation makes
+        // no write to any decoy filesystem after unmount, because such a write is
+        // itself a deactivation-time artifact on the decoy. The pre-teardown shell
+        // kill plus an amnesic decoy base are the real defenses. When the operator
+        // has opted in (decoy verified amnesic), the forensic-reboot path still
+        // edits history, best-effort and without secure-delete unless separately
+        // enabled.
+        if kind.requires_forensic_verification() && post_unmount_opt_in {
+            tracing::info!("Editing decoy history files after unmount (opt-in)");
             let truncated = truncate_all_history_files_for_homes(
                 &self.filesystem,
                 &history_cleanup_homes(),
-                true,
+                post_unmount_secure_delete,
             );
             tracing::info!(
                 truncated_count = truncated.len(),
-                "History truncation complete"
+                "Post-unmount history edit complete"
             );
 
             verify_history_truncation(self);
@@ -1089,10 +1109,13 @@ impl DeactivationOrchestrator {
             "Starting Phase 2 cleanup on real disk"
         );
 
+        // No secure-delete / whole-file scrub by default: an opt-in post-unmount
+        // edit only removes the hidden-session lines, it does not announce itself
+        // by overwriting every history file on the decoy with zeros.
         let cleaned_items = truncate_all_history_files_for_homes(
             manager.filesystem(),
             &history_cleanup_homes(),
-            true,
+            self.cleanup_config.secure_delete,
         );
 
         let report = PostUnmountCleanupReport {

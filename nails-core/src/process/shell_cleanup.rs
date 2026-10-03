@@ -88,6 +88,31 @@ fn should_kill_shell_process(shell_uid: u32, target_uid: Option<u32>) -> bool {
     target_uid.is_some_and(|target_uid| shell_uid == target_uid)
 }
 
+/// Which shells a cleanup pass targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KillScope {
+    /// Only the resolved operator's shells (never root). Used by pre-unmount
+    /// cleanup passes that run while the session is otherwise intact.
+    OperatorOnly,
+    /// Every interactive shell on the host, including root's. Used at final
+    /// teardown, where root's own decoy shell must also be killed before it can
+    /// flush its in-memory history: an interactive root shell would otherwise
+    /// write the hidden-session commands to `/root/.bash_history` on exit.
+    AllInteractive,
+}
+
+/// Whether a scanned shell should be killed under the given scope.
+///
+/// Under [`KillScope::AllInteractive`] every shell qualifies regardless of uid
+/// (the own-PID and protected-PID exclusions are applied separately by the
+/// scan); under [`KillScope::OperatorOnly`] only the resolved target uid does.
+fn should_kill_in_scope(scope: KillScope, shell_uid: u32, target_uid: Option<u32>) -> bool {
+    match scope {
+        KillScope::AllInteractive => true,
+        KillScope::OperatorOnly => should_kill_shell_process(shell_uid, target_uid),
+    }
+}
+
 /// Whether a scanned PID is in the caller-supplied protected set.
 ///
 /// Protected PIDs are the deactivation process's own ancestry plus any PIDs
@@ -140,11 +165,31 @@ fn read_uid_from_status(pid: u32) -> Option<u32> {
 ///
 /// `ShellKillReport` with details of what was killed, failed, or skipped.
 pub fn kill_user_shells(protected_pids: &[u32]) -> ShellKillReport {
+    kill_shells(protected_pids, KillScope::OperatorOnly)
+}
+
+/// Kills every interactive shell on the host, including root's, using SIGKILL.
+///
+/// This is the final-teardown pass: unlike [`kill_user_shells`] it is not scoped
+/// to the operator's uid, so root's own decoy shell is killed too, before it can
+/// flush its in-memory history to `/root/.bash_history` on exit. The caller runs
+/// it after stopping the display manager / logind session and relies on the
+/// deactivation detach so the invoking shell is killed with the rest rather than
+/// permanently protected — only the teardown's own process ancestry (and, in
+/// test-hooks builds, the harness handoff set) stays in `protected_pids`.
+///
+/// Best-effort and non-fatal; compiled out in test builds like
+/// [`kill_user_shells`].
+pub fn kill_shells_for_teardown(protected_pids: &[u32]) -> ShellKillReport {
+    kill_shells(protected_pids, KillScope::AllInteractive)
+}
+
+fn kill_shells(protected_pids: &[u32], scope: KillScope) -> ShellKillReport {
     // Defense-in-depth: Never kill shells during tests
     #[cfg(test)]
     {
-        let _ = protected_pids;
-        tracing::warn!("kill_user_shells() called in test context - returning no-op");
+        let _ = (protected_pids, scope);
+        tracing::warn!("kill_shells() called in test context - returning no-op");
         ShellKillReport::default()
     }
 
@@ -152,11 +197,14 @@ pub fn kill_user_shells(protected_pids: &[u32]) -> ShellKillReport {
     {
         let mut report = ShellKillReport::default();
         let own_pid = std::process::id();
+        // The operator uid only matters for the OperatorOnly scope; the
+        // all-interactive teardown pass kills every uid, so a missing operator
+        // must not short-circuit it.
         let target_uid = shell_cleanup_target_uid();
 
-        if target_uid.is_none() {
+        if scope == KillScope::OperatorOnly && target_uid.is_none() {
             tracing::warn!(
-                "Skipping shell cleanup because no non-root target user could be determined"
+                "Skipping operator shell cleanup because no non-root target user could be determined"
             );
             return report;
         }
@@ -209,7 +257,7 @@ pub fn kill_user_shells(protected_pids: &[u32]) -> ShellKillReport {
                 continue;
             };
 
-            if !should_kill_shell_process(shell_uid, target_uid) {
+            if !should_kill_in_scope(scope, shell_uid, target_uid) {
                 tracing::debug!(
                     pid = pid,
                     comm = %comm,
@@ -308,6 +356,55 @@ mod tests {
         // target-user resolver's own tests.
         let fallback = non_root_self_uid();
         assert_ne!(fallback, Some(0));
+    }
+
+    #[test]
+    fn teardown_scope_kills_every_uid_including_root() {
+        // AllInteractive is the final-teardown scope: root (uid 0) and every other
+        // uid qualify, regardless of the resolved operator uid.
+        assert!(should_kill_in_scope(
+            KillScope::AllInteractive,
+            0,
+            Some(1000)
+        ));
+        assert!(should_kill_in_scope(
+            KillScope::AllInteractive,
+            1000,
+            Some(1000)
+        ));
+        assert!(should_kill_in_scope(KillScope::AllInteractive, 1001, None));
+    }
+
+    #[test]
+    fn operator_scope_spares_root_and_other_users() {
+        // OperatorOnly keeps the pre-unmount behaviour: only the resolved operator
+        // uid is killed, never root, never another user.
+        assert!(should_kill_in_scope(
+            KillScope::OperatorOnly,
+            1000,
+            Some(1000)
+        ));
+        assert!(!should_kill_in_scope(
+            KillScope::OperatorOnly,
+            0,
+            Some(1000)
+        ));
+        assert!(!should_kill_in_scope(
+            KillScope::OperatorOnly,
+            1001,
+            Some(1000)
+        ));
+        assert!(!should_kill_in_scope(KillScope::OperatorOnly, 1000, None));
+    }
+
+    #[test]
+    fn teardown_still_honours_protected_pids() {
+        // The scope decision never overrides the protected-PID exclusion that the
+        // scan applies: a protected pid is skipped whatever its uid. This asserts
+        // the invariant at the helper the scan uses.
+        let protected = [42u32];
+        assert!(pid_is_protected(42, &protected));
+        assert!(!pid_is_protected(43, &protected));
     }
 
     #[test]

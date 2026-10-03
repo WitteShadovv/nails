@@ -68,6 +68,21 @@ fn test_cleanup_config_default() {
     }
     assert_eq!(config.temp_dirs.len(), 1);
     assert_eq!(config.temp_dirs[0], PathBuf::from("/tmp"));
+    // Post-unmount decoy history editing is opt-in: the default performs no write
+    // to any decoy filesystem after unmount, and never secure-deletes.
+    assert!(
+        !config.post_unmount_cleanup,
+        "post-unmount decoy history editing must be off by default"
+    );
+    assert!(!config.secure_delete);
+}
+
+#[test]
+fn test_cleanup_config_post_unmount_defaults_off_via_serde() {
+    // A config file that omits the key must deserialize with post-unmount editing
+    // off, matching the Default impl (no compat shim that silently re-enables it).
+    let config: CleanupConfig = serde_json::from_str("{\"clear_history\":true,\"clear_temp_files\":true,\"clear_logs\":true,\"history_patterns\":[],\"temp_dirs\":[],\"log_path\":\"/x/logs\",\"hidden_volume_root\":\"/x\"}").unwrap();
+    assert!(!config.post_unmount_cleanup);
 }
 
 #[test]

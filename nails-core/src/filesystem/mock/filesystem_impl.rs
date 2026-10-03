@@ -152,6 +152,10 @@ impl Filesystem for MockFilesystem {
         self.write_user_file_impl(path, content, user, default_mode)
     }
 
+    fn overwrite_file_in_place(&self, path: &Path, content: &str) -> Result<()> {
+        self.overwrite_file_in_place_impl(path, content)
+    }
+
     fn list_directory(&self, dir: &Path) -> Result<Vec<PathBuf>> {
         self.list_directory_impl(dir)
     }

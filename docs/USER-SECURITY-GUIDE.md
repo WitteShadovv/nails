@@ -396,7 +396,7 @@ Take immediate action if you observe:
 
 ## Shell History Protection
 
-### The 5-Layer Defense System
+### The Layered Defense System
 
 NAILS implements a defense-in-depth approach to shell history protection:
 
@@ -423,10 +423,28 @@ shopt -u histappend   # Prevents append mode
 - Systemd service truncates any regular history files at boot
 - Re-creates symlinks if they were broken or replaced
 
-**Layer 5: Deactivation Cleanup**
-- Kills shell processes before overlay unmount (prevents flush race)
-- Truncates real-disk history files after overlay removal
-- Verifies cleanup completion
+**Layer 5: Deactivation shell kill**
+- Before overlay unmount, NAILS SIGKILLs **every** interactive shell, including
+  root's, so no shell is left to flush its in-memory history. SIGKILL (not SIGHUP)
+  is used so the shell runs no exit trap and writes nothing.
+- NAILS does **not** write to the decoy disk after unmount by default. Editing
+  history files on the decoy after it is unmounted is itself a forensic artifact
+  (fresh timestamps at the exact moment of deactivation), so the default teardown
+  makes no post-unmount write at all. Your protection is that the hidden-session
+  history never reaches the decoy disk in the first place (the shell kill above),
+  backed by an amnesic decoy base.
+- An opt-in post-unmount edit exists for operators whose decoy root is verified
+  **amnesic** (a volatile backing, or accepted with `--accept-persistent-decoy`).
+  When enabled it edits the resolved operator's history (plus `/root`) in place on
+  the same inode — it does not whole-file truncate or secure-delete by default, so
+  it leaves no new inode and no zeroed-file tell. It is off unless you turn it on.
+
+**Layer 6: Incremental-flush preflight**
+- A pre-flight check warns when the shell you run NAILS from flushes history to
+  disk after **every** command (zsh `INC_APPEND_HISTORY`/`SHARE_HISTORY`, or
+  `history -a` in bash `PROMPT_COMMAND`). Such a shell writes the unlock/mount
+  commands to disk immediately, long before the teardown shell kill can help, so
+  the check tells you to disable incremental flushing in that session.
 
 ### What You Should NOT Do
 
@@ -462,14 +480,19 @@ Hidden commands now exist on decoy disk
 ```
 
 **NAILS mitigation:**
-- Emergency deactivation kills shell processes with SIGKILL before unmounting
-- This prevents the history flush from occurring
-- Standard deactivation relies on reboot to terminate processes
+- Both standard and emergency deactivation SIGKILL every interactive shell —
+  including root's — before unmounting, so no shell is left to flush its buffer.
+- NAILS does not write to the decoy disk after unmount by default; the defense is
+  that the commands never reach the decoy, not that they are scrubbed afterwards.
+- A shell configured to flush after every command defeats this, because the
+  commands are already on disk before teardown. The incremental-flush preflight
+  warns about exactly that; heed it.
 
 **Your responsibility:**
-- Do not manually exit shells after deactivation starts
-- If using standard deactivation, wait for the reboot
-- Verify history files are empty after returning to decoy
+- Run NAILS from a shell that does not flush history incrementally (clear the
+  preflight warning before activating).
+- Keep the decoy base amnesic if you rely on post-unmount history editing.
+- Verify history files contain only decoy commands after returning to the decoy.
 
 ---
 

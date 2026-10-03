@@ -58,6 +58,13 @@ pub enum MockOp {
         path: PathBuf,
         recursive: bool,
     },
+    /// An in-place overwrite on the same inode (`overwrite_file_in_place`),
+    /// recorded distinctly from `WriteFile` so tests can assert that the opt-in
+    /// decoy history edit kept the existing inode instead of staging a temp file
+    /// and renaming it (which would allocate a new inode).
+    OverwriteInPlace {
+        path: PathBuf,
+    },
 }
 
 /// Mock filesystem for testing (no root privileges required)

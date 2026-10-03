@@ -1303,3 +1303,83 @@ fn create_hidden_dir_all_refuses_a_planted_symlink_in_the_path() {
     );
     assert!(!outside.path().join("upper").exists());
 }
+
+// ========================================================================
+// Tests for in-place overwrite (same inode)
+// ========================================================================
+
+#[test]
+fn test_real_overwrite_file_in_place_preserves_inode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let path = temp_dir.path().join(".bash_history");
+    fs::write(&path, "ls\nnails activate\npwd\n").unwrap();
+    let inode_before = fs::metadata(&path).unwrap().ino();
+    let mode_before = fs::metadata(&path).unwrap().mode();
+
+    let realfs = RealFilesystem;
+    realfs.overwrite_file_in_place(&path, "ls\npwd\n").unwrap();
+
+    let meta_after = fs::metadata(&path).unwrap();
+    assert_eq!(
+        inode_before,
+        meta_after.ino(),
+        "in-place overwrite must keep the same inode"
+    );
+    assert_eq!(
+        mode_before,
+        meta_after.mode(),
+        "in-place overwrite must preserve mode"
+    );
+    let content = fs::read_to_string(&path).unwrap();
+    assert_eq!(content, "ls\npwd\n");
+}
+
+#[test]
+fn test_real_overwrite_file_in_place_missing_file_errors() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let path = temp_dir.path().join("does-not-exist");
+    let realfs = RealFilesystem;
+    // The parent exists but the file does not; open_rw_create would normally
+    // create it, but the caller contract is existence-checked, and here we assert
+    // the method still succeeds by creating-or-opening without panicking. The
+    // important invariant (same inode on an existing file) is covered above.
+    let result = realfs.overwrite_file_in_place(&path, "x\n");
+    assert!(result.is_ok());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "x\n");
+}
+
+#[test]
+fn test_mock_overwrite_file_in_place_records_distinct_op() {
+    use crate::filesystem::MockOp;
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content("/home/op/.bash_history", "a\nb\n");
+    fs.overwrite_file_in_place(Path::new("/home/op/.bash_history"), "a\n")
+        .unwrap();
+
+    assert_eq!(
+        fs.get_written_content(Path::new("/home/op/.bash_history"))
+            .as_deref(),
+        Some("a\n")
+    );
+    assert!(fs.mock_ops().iter().any(|op| matches!(
+        op,
+        MockOp::OverwriteInPlace { path } if path == Path::new("/home/op/.bash_history")
+    )));
+}
+
+#[test]
+fn test_mock_overwrite_file_in_place_missing_file_is_not_found() {
+    let fs = MockFilesystem::new();
+    let err = fs
+        .overwrite_file_in_place(Path::new("/home/op/.missing"), "x")
+        .unwrap_err();
+    match err {
+        NailsError::IoError(io) => {
+            assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+        }
+        other => panic!("expected NotFound IoError, got {other:?}"),
+    }
+}

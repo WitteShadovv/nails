@@ -92,23 +92,23 @@ pub struct CleanupConfig {
     #[serde(default)]
     pub secure_delete: bool,
 
-    /// Whether to perform post-unmount cleanup on the real disk (default: true)
+    /// Whether to edit history files on the decoy disk AFTER overlay unmount
+    /// (default: false — opt-in).
     ///
-    /// When enabled, a second cleanup phase runs AFTER overlay unmount to clean
-    /// history files on the actual disk. This is critical for forensic safety
-    /// because the first cleanup phase only cleans the overlay layer, not the
-    /// real underlying filesystem.
+    /// This is off by default because writing to the decoy filesystem after it is
+    /// unmounted is itself a forensic artifact: it leaves fresh timestamps on the
+    /// decoy disk at the exact moment of deactivation. The safe posture is that
+    /// the decoy carries no hidden-session history in the first place (the
+    /// in-memory shells are SIGKILLed before teardown, so they never flush), and
+    /// any residual decoy history is wiped by the decoy base being amnesic.
     ///
-    /// The post-unmount cleanup:
-    /// - Uses secure_delete=true for better forensic resistance
-    /// - Cleans an extended list of history file locations (not just shells)
-    /// - Is best-effort (failures don't abort deactivation)
-    #[serde(default = "default_post_unmount_cleanup")]
+    /// Enable this only when the decoy root is verified amnesic (a volatile
+    /// `tmpfs`/overlay backing, or `--accept-persistent-decoy`); the
+    /// decoy-persistence pre-flight reports that posture. When enabled the
+    /// post-unmount edit is best-effort, never secure-deletes by default, and is
+    /// applied to the resolved operator's home plus `/root`.
+    #[serde(default)]
     pub post_unmount_cleanup: bool,
-}
-
-fn default_post_unmount_cleanup() -> bool {
-    true
 }
 
 impl Default for CleanupConfig {
@@ -125,7 +125,7 @@ impl Default for CleanupConfig {
             config_file_path: None,
             sanitize_memory: false,
             secure_delete: false,
-            post_unmount_cleanup: true,
+            post_unmount_cleanup: false,
         }
     }
 }

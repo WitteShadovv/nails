@@ -32,6 +32,16 @@ pub struct HistoryCleaner<F: Filesystem> {
     shells: Vec<ShellType>,
     /// Use secure deletion (overwrite before delete)
     pub(crate) secure_delete: bool,
+    /// Overwrite the filtered content in place on the same inode instead of the
+    /// default atomic temp-file-then-rename.
+    ///
+    /// This is the opt-in decoy history edit: temp+rename allocates a new inode,
+    /// leaving the removed lines recoverable in the old inode's freed blocks under
+    /// a sibling name, which defeats the point of filtering history on a decoy. An
+    /// in-place overwrite keeps the existing inode, owner and mode and rewrites
+    /// only its bytes. It is off by default, so ordinary overlay-layer cleanup
+    /// keeps its crash-atomic write.
+    pub(crate) in_place: bool,
     /// Optional explicit single home directory path (for testing without env vars)
     home: Option<PathBuf>,
     /// Optional explicit list of home directories to clean. Takes precedence over
@@ -52,6 +62,7 @@ impl<F: Filesystem> HistoryCleaner<F> {
             patterns: vec!["nails".to_string()],
             shells: ShellType::all(),
             secure_delete: false,
+            in_place: false,
             home: None,
             homes: None,
         }
@@ -75,6 +86,18 @@ impl<F: Filesystem> HistoryCleaner<F> {
     /// being rewritten with filtered content. This provides better forensic resistance.
     pub fn with_secure_delete(mut self, enabled: bool) -> Self {
         self.secure_delete = enabled;
+        self
+    }
+
+    /// Enable or disable in-place overwrite on the same inode.
+    ///
+    /// When enabled, filtered history is written back with
+    /// [`Filesystem::overwrite_file_in_place`](crate::Filesystem::overwrite_file_in_place)
+    /// (truncate + rewrite the existing inode) instead of the default atomic
+    /// temp-file-then-rename, so the removed lines are not left behind in a freed
+    /// inode. This is the opt-in decoy history edit; see the field docs.
+    pub fn with_in_place(mut self, enabled: bool) -> Self {
+        self.in_place = enabled;
         self
     }
 
@@ -220,8 +243,11 @@ impl<F: Filesystem> HistoryCleaner<F> {
             )));
         }
 
-        // If secure_delete is enabled, securely delete the original file first
+        // If secure_delete is enabled, securely delete the original file first.
+        // Skip it under in-place mode: secure_delete unlinks the inode, which
+        // would defeat the same-inode overwrite that in-place mode exists to do.
         if self.secure_delete
+            && !self.in_place
             && let Err(e) = self.filesystem.secure_delete(&history_path)
         {
             output::warn(&format!(
@@ -231,12 +257,21 @@ impl<F: Filesystem> HistoryCleaner<F> {
             ));
         }
 
-        // Write filtered content back (atomic write via Filesystem trait)
-        self.filesystem
-            .write_file_content(&history_path, &new_content)?;
+        // Write filtered content back. The opt-in decoy edit overwrites in place on
+        // the same inode (no new inode, so the removed lines are not stranded in
+        // freed blocks); the default keeps the crash-atomic temp+rename write.
+        if self.in_place {
+            self.filesystem
+                .overwrite_file_in_place(&history_path, &new_content)?;
+        } else {
+            self.filesystem
+                .write_file_content(&history_path, &new_content)?;
+        }
 
         let secure_note = if self.secure_delete {
             " (secure delete)"
+        } else if self.in_place {
+            " (in place)"
         } else {
             ""
         };

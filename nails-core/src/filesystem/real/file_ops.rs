@@ -173,6 +173,61 @@ pub(super) fn write_file_content(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+/// Overwrite an existing file's contents in place on the same inode.
+///
+/// See [`crate::filesystem::Filesystem::overwrite_file_in_place`] for the
+/// contract. The parent directory is resolved through [`SafeRoot`] (symlink
+/// resolution disabled), the file is opened `O_RDWR | O_NOFOLLOW` without
+/// `O_CREAT` — a missing file is reported rather than created — truncated to
+/// zero, and rewritten. No temp file and no rename, so the inode, owner and mode
+/// are preserved and the old content is not left behind under a sibling name.
+pub(super) fn overwrite_file_in_place(path: &Path, content: &str) -> Result<()> {
+    use std::io::Write;
+
+    let parent = path.parent().ok_or_else(|| {
+        NailsError::IoError(std::io::Error::other(format!(
+            "Refusing to overwrite a file with no parent directory: {}",
+            path.display()
+        )))
+    })?;
+    let file_name = path.file_name().ok_or_else(|| {
+        NailsError::IoError(std::io::Error::other(format!(
+            "Refusing to overwrite a path with no file name: {}",
+            path.display()
+        )))
+    })?;
+
+    // The caller existence-checks and resolves the path first, so the file is
+    // present: opening it beneath the symlink-safe parent root keeps the existing
+    // inode, owner and mode (the mode argument only applies to a fresh create,
+    // which does not happen for an existing file). `O_NOFOLLOW` refuses a symlink
+    // planted at the final component.
+    let root = crate::filesystem::SafeRoot::open(parent)?;
+    let mut file = root.open_rw_create(Path::new(file_name), 0o600)?;
+
+    // Truncate on the same inode, then rewrite — no temp file, no rename.
+    file.set_len(0).map_err(|e| {
+        NailsError::IoError(std::io::Error::new(
+            e.kind(),
+            format!("Failed to truncate {}: {}", path.display(), e),
+        ))
+    })?;
+    file.write_all(content.as_bytes()).map_err(|e| {
+        NailsError::IoError(std::io::Error::new(
+            e.kind(),
+            format!("Failed to rewrite {}: {}", path.display(), e),
+        ))
+    })?;
+    file.sync_all().map_err(|e| {
+        NailsError::IoError(std::io::Error::new(
+            e.kind(),
+            format!("Failed to sync {}: {}", path.display(), e),
+        ))
+    })?;
+
+    Ok(())
+}
+
 /// Symlink-safe, correctly-owned write of a file in a user-owned home path.
 ///
 /// See [`crate::filesystem::Filesystem::write_user_file`] for the contract. The

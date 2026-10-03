@@ -137,6 +137,60 @@ impl MockFilesystem {
         Ok(())
     }
 
+    pub(super) fn overwrite_file_in_place_impl(&self, path: &Path, content: &str) -> Result<()> {
+        if self
+            .write_should_fail
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .contains(path)
+        {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("Mock write failure for {}", path.display()),
+            )));
+        }
+
+        // In-place overwrite requires an existing file: there is no create path,
+        // so a missing file is NotFound, matching the real `O_RDWR` open.
+        let exists = self
+            .paths
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+            .map(|info| info.exists)
+            .unwrap_or(false)
+            || self
+                .file_contents
+                .lock()
+                .expect("MockFilesystem mutex poisoned")
+                .contains_key(path);
+        if !exists {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("File not found for in-place overwrite: {}", path.display()),
+            )));
+        }
+
+        // Owner and mode are deliberately left untouched: an in-place overwrite
+        // keeps the existing inode's metadata.
+        self.written_files
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf(), content.to_string());
+        self.file_contents
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf(), content.to_string());
+        self.op_log
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push(MockOp::OverwriteInPlace {
+                path: path.to_path_buf(),
+            });
+
+        Ok(())
+    }
+
     /// Fail when `path`'s parent directory is known to be missing, matching the
     /// real filesystem's temp-file-then-rename write (which fails `NotFound` when
     /// the parent does not exist).

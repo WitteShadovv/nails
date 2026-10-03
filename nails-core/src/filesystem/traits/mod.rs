@@ -379,6 +379,27 @@ pub trait Filesystem: Send + Sync + Clone {
         default_mode: u32,
     ) -> Result<()>;
 
+    /// Overwrite an existing file's contents in place, on the SAME inode.
+    ///
+    /// Unlike [`write_file_content`](Self::write_file_content) and
+    /// [`write_user_file`](Self::write_user_file), which stage a temporary file
+    /// and rename it over the destination, this opens the existing file
+    /// `O_RDWR | O_NOFOLLOW`, truncates it, and rewrites it. The inode number,
+    /// owner and mode are preserved, so no new inode is allocated and the removed
+    /// lines are not left behind in the old inode's freed blocks under a fresh
+    /// name.
+    ///
+    /// This is the write used for the opt-in decoy history edit, where leaving the
+    /// pre-edit content recoverable in freed blocks (the temp+rename failure mode)
+    /// matters more than crash atomicity. The trade-off is explicit: a crash
+    /// part-way through can leave a truncated file, because there is no atomic
+    /// rename to fall back on.
+    ///
+    /// The file must already exist; a missing file is an error (callers resolve
+    /// and existence-check the path first). A symlink at the path is refused
+    /// (`O_NOFOLLOW`).
+    fn overwrite_file_in_place(&self, path: &Path, content: &str) -> Result<()>;
+
     // ------------------------------------------------------------------------
     // Directory Listing Operations (Log Cleanup)
     // ------------------------------------------------------------------------
