@@ -21,8 +21,8 @@ use super::RestoreOutcome;
 use crate::filesystem::Filesystem;
 use crate::manager::{ensure_run_current_system_symlink, select_system_profile};
 use crate::nixos::{
-    NixOSBuilder, SwitchAction, compute_config_fingerprint, inject_import_block,
-    stage_hidden_config_symlink, stage_hidden_nixos_config,
+    NixOSBuilder, SwitchAction, collect_config_tree, compute_config_fingerprint,
+    inject_import_block, stage_hidden_config_symlink, stage_hidden_nixos_config,
 };
 use crate::process::{ProcessCommand, ProcessRunner};
 use crate::{
@@ -37,9 +37,10 @@ use crate::{
 /// place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigPlan {
-    /// The system generation to fast-path switch to when the stored fingerprint
-    /// still matches the current one; `None` forces a full build.
-    pub fast_path_generation: Option<String>,
+    /// The cached hidden-system toplevel store path to fast-path switch to, set
+    /// only when the stored fingerprint still matches the current one *and* that
+    /// store path still exists on disk; `None` forces a full build.
+    pub fast_path_toplevel: Option<String>,
     /// The fingerprint of the current hidden config inputs, persisted on success
     /// so the next activation can take the fast path.
     pub fingerprint: String,
@@ -65,32 +66,42 @@ pub trait ConfigLayer<F: Filesystem>: std::fmt::Debug + Send + Sync {
     /// `/etc/nixos/hardware-configuration.nix`, after the `/etc` overlay mounts.
     fn inject_import(&self, fs: &F) -> Result<()>;
 
-    /// Compute the config fingerprint and check the fast-path cache.
+    /// Compute the config fingerprint over the whole hidden config tree and check
+    /// the fast-path cache.
     ///
     /// Reads nothing but the hidden config inputs, so it is safe to run before
-    /// any session kill or mount. `stored_fingerprint`/`stored_generation` are
-    /// the values carried forward from the previous successful activation.
+    /// any session kill or mount. `stored_fingerprint`/`stored_toplevel` are the
+    /// values carried forward from the previous successful activation;
+    /// `flake_ref`/`config_name` fold the build target into the fingerprint so a
+    /// changed flake reference or attribute name also forces a rebuild.
+    #[allow(clippy::too_many_arguments)]
     fn plan(
         &self,
         fs: &F,
         hidden_volume_root: &Path,
         stored_fingerprint: Option<&str>,
-        stored_generation: Option<&str>,
+        stored_toplevel: Option<&str>,
+        flake_ref: Option<&str>,
+        config_name: Option<&str>,
         verbosity: Verbosity,
     ) -> Result<ConfigPlan>;
 
-    /// Build the hidden configuration and switch to it.
+    /// Build the hidden system toplevel and switch to it.
     ///
-    /// Tries the fast-path `switch-to-configuration` for `generation` first, then
-    /// falls back to a full `nixos-rebuild test`. The caller has already pointed
-    /// `/run/current-system` at the right profile and persists the resulting
-    /// generation itself.
+    /// Runs after the overlays are mounted. On the fast path (`fast_path_toplevel`
+    /// is `Some` and the path still exists on the now-overlaid `/nix`) the cached
+    /// toplevel is switched to directly; otherwise the toplevel is built explicitly
+    /// and then switched to. The caller has already pointed `/run/current-system`
+    /// at the right profile and persists the returned store path itself. Returns
+    /// the toplevel store path that was switched to, or `None` for the legacy
+    /// `nixos-rebuild test` path, which activates without yielding a store path.
     fn apply(
         &self,
+        fs: &F,
         builder: &NixOSBuilder,
-        generation: Option<&str>,
+        fast_path_toplevel: Option<&str>,
         verbosity: Verbosity,
-    ) -> Result<()>;
+    ) -> Result<Option<String>>;
 
     /// Restore the decoy (base) configuration on deactivation.
     ///
@@ -130,7 +141,9 @@ impl<F: Filesystem> ConfigLayer<F> for NixOsConfigLayer {
         fs: &F,
         hidden_volume_root: &Path,
         stored_fingerprint: Option<&str>,
-        stored_generation: Option<&str>,
+        stored_toplevel: Option<&str>,
+        flake_ref: Option<&str>,
+        config_name: Option<&str>,
         verbosity: Verbosity,
     ) -> Result<ConfigPlan> {
         if verbosity >= Verbosity::Normal {
@@ -139,130 +152,113 @@ impl<F: Filesystem> ConfigLayer<F> for NixOsConfigLayer {
             );
         }
 
-        // Read the config files that feed the fingerprint. hardware-configuration.nix
-        // is a fixed wrapper, so the real hardware config lives in
-        // hardware-configuration.base.nix; both feed the fingerprint so edits to
-        // the original still trigger a rebuild.
-        let hw_path = hidden_volume_root.join("etc/nixos/hardware-configuration.nix");
-        let base_path = hidden_volume_root.join("etc/nixos/hardware-configuration.base.nix");
-        let cfg_path = hidden_volume_root.join("config/nixos/configuration.nix");
-
-        let wrapper_content = read_fingerprint_input(fs, &hw_path, "hardware-configuration.nix");
-        let base_content =
-            read_fingerprint_input(fs, &base_path, "hardware-configuration.base.nix");
-        let hw_content = format!("{wrapper_content}\n{base_content}");
-        let cfg_content = read_fingerprint_input(fs, &cfg_path, "configuration.nix");
-
-        let current_fp = compute_config_fingerprint(&hw_content, &cfg_content);
+        // Fingerprint the whole hidden config tree (flake.nix, flake.lock, the
+        // hardware wrapper and its base, configuration.nix and every imported
+        // module) plus the flake reference and configuration name, so any change a
+        // build depends on invalidates the fast path.
+        let entries = collect_config_tree(fs, hidden_volume_root, flake_ref, config_name);
+        let current_fp = compute_config_fingerprint(&entries);
 
         if verbosity >= Verbosity::Normal {
             tracing::info!(
                 stored_fingerprint = %stored_fingerprint.unwrap_or("none"),
                 current_fingerprint = %current_fp,
-                stored_generation = %stored_generation.unwrap_or("none"),
+                stored_toplevel = %stored_toplevel.unwrap_or("none"),
                 "Fast-path check"
             );
         }
 
-        let mut fast_path_generation: Option<String> = None;
+        // Carry the cached toplevel forward as the fast-path candidate when the
+        // fingerprint still matches. Whether the closure actually survived on the
+        // hidden `/nix` upper is checked in `apply`, after the overlays are
+        // mounted — the cached toplevel lives on that upper and is not visible on
+        // the decoy `/nix` that is live here, before the mount phase.
+        let mut fast_path_toplevel: Option<String> = None;
         if stored_fingerprint == Some(current_fp.as_str())
-            && let Some(generation_id) = stored_generation
+            && let Some(toplevel) = stored_toplevel
         {
             if verbosity >= Verbosity::Normal {
                 tracing::info!(
-                    generation = %generation_id,
-                    "Fast path: fingerprint matches — will attempt generation switch at Step 9"
+                    toplevel = %toplevel,
+                    "Fast path: fingerprint matches — will reuse the cached toplevel if it is still present after the overlays mount"
                 );
             }
-            fast_path_generation = Some(generation_id.to_string());
+            fast_path_toplevel = Some(toplevel.to_string());
         }
 
         Ok(ConfigPlan {
-            fast_path_generation,
+            fast_path_toplevel,
             fingerprint: current_fp,
         })
     }
 
     fn apply(
         &self,
+        fs: &F,
         builder: &NixOSBuilder,
-        generation: Option<&str>,
+        fast_path_toplevel: Option<&str>,
         verbosity: Verbosity,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         if verbosity >= Verbosity::Normal {
             tracing::info!("Switching to hidden NixOS configuration...");
         }
 
         let step_timer = Stopwatch::start();
 
-        // Fast path: try switching to the cached generation directly. Both flake
-        // and legacy slow-paths use `nixos-rebuild test`, which writes to the
-        // system profile, so a cached generation ID is always a system generation
-        // number.
-        let mut switched = false;
-        if let Some(generation_id) = generation {
-            if verbosity >= Verbosity::Normal {
-                tracing::info!(
-                    generation = %generation_id,
-                    "Attempting fast-path switch-to-configuration"
-                );
-            }
-
-            match builder.switch_system_generation(generation_id, SwitchAction::Test) {
-                Ok(()) => {
-                    switched = true;
-                    if verbosity >= Verbosity::Normal {
-                        tracing::info!(
-                            step = "nixos_switch",
-                            duration_ms = step_timer.elapsed().as_millis() as u64,
-                            "NixOS switch complete via fast path ({})",
-                            step_timer
-                        );
-                    }
+        // Fast path: switch directly to the cached toplevel when it is still on
+        // the now-overlaid `/nix`. The fingerprint matching does not prove the
+        // closure survived the decoy's garbage collector between sessions, so the
+        // path is checked here, after the overlays are mounted; if it is gone the
+        // fast path is dropped and a full rebuild runs.
+        if let Some(toplevel) = fast_path_toplevel {
+            if fs.path_exists(Path::new(toplevel)).unwrap_or(false) {
+                builder
+                    .switch_to_toplevel(toplevel, SwitchAction::Test)
+                    .map_err(|e| {
+                        wrap_nixos_failure(e, "switching to the cached hidden toplevel")
+                    })?;
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!(
+                        step = "nixos_switch",
+                        duration_ms = step_timer.elapsed().as_millis() as u64,
+                        toplevel = %toplevel,
+                        "NixOS switch complete via fast path ({})",
+                        step_timer
+                    );
                 }
-                Err(e) => {
-                    if verbosity >= Verbosity::Normal {
-                        tracing::warn!(
-                            error = %e,
-                            "Fast-path switch failed, falling back to nixos-rebuild"
-                        );
-                    }
-                }
+                return Ok(Some(toplevel.to_string()));
             }
+            tracing::warn!(
+                toplevel = %toplevel,
+                "Cached hidden toplevel is gone from /nix; forcing a full rebuild"
+            );
         }
 
-        // Slow path: nixos-rebuild test (build + switch).
-        if !switched {
-            builder.build_and_switch().map_err(|e| {
-                let error_msg = match &e {
-                    NailsError::NixOSError(message) => {
-                        let category = classify_nixos_failure_category(message, "");
-                        format!(
-                            "NixOS build+switch failed: [{}] {}",
-                            category,
-                            format_classified_nixos_failure(
-                                "nixos-rebuild test failed",
-                                message,
-                                ""
-                            )
-                        )
-                    }
-                    other => format!("NixOS build+switch failed: {}", other),
-                };
-
-                tracing::error!(
-                    error = %e,
-                    phase = "nixos_switch",
-                    rollback = true,
-                    "NixOS build+switch failed"
+        // Full path. A flake builds the toplevel explicitly then switches to it,
+        // so the built store path is cached for the next fast path. A legacy
+        // config has no toplevel attribute, so it is built and activated in one
+        // `nixos-rebuild test` step and yields no store path.
+        if builder.is_flake() {
+            let toplevel = builder
+                .build_toplevel()
+                .map_err(|e| wrap_nixos_failure(e, "building the hidden NixOS toplevel"))?;
+            builder
+                .switch_to_toplevel(&toplevel, SwitchAction::Test)
+                .map_err(|e| wrap_nixos_failure(e, "switching to the hidden NixOS toplevel"))?;
+            if verbosity >= Verbosity::Normal {
+                tracing::info!(
+                    step = "nixos_switch",
+                    duration_ms = step_timer.elapsed().as_millis() as u64,
+                    toplevel = %toplevel,
+                    "NixOS build+switch complete ({})",
+                    step_timer
                 );
-
-                match e {
-                    NailsError::NixOSError(_) => NailsError::NixOSError(error_msg),
-                    other => other,
-                }
-            })?;
-
+            }
+            Ok(Some(toplevel))
+        } else {
+            builder
+                .build_and_switch()
+                .map_err(|e| wrap_nixos_failure(e, "nixos-rebuild test failed"))?;
             if verbosity >= Verbosity::Normal {
                 tracing::info!(
                     step = "nixos_switch",
@@ -271,9 +267,8 @@ impl<F: Filesystem> ConfigLayer<F> for NixOsConfigLayer {
                     step_timer
                 );
             }
+            Ok(None)
         }
-
-        Ok(())
     }
 
     fn restore(
@@ -287,20 +282,25 @@ impl<F: Filesystem> ConfigLayer<F> for NixOsConfigLayer {
     }
 }
 
-/// Read one fingerprint input file, logging and substituting empty content when
-/// it is missing or unreadable (the build step fails later with a clear error if
-/// the config is genuinely required).
-fn read_fingerprint_input<F: Filesystem>(fs: &F, path: &Path, label: &str) -> String {
-    match fs.read_file_content(path) {
-        Ok(content) => content,
-        Err(e) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %e,
-                "Failed to read {label} for fingerprint, using empty content"
-            );
-            String::new()
+/// Wrap a build/switch failure with a classified, operator-facing message while
+/// preserving non-NixOS errors untouched.
+fn wrap_nixos_failure(e: NailsError, context: &str) -> NailsError {
+    tracing::error!(
+        error = %e,
+        phase = "nixos_switch",
+        rollback = true,
+        "{context}"
+    );
+    match e {
+        NailsError::NixOSError(message) => {
+            let category = classify_nixos_failure_category(&message, "");
+            NailsError::NixOSError(format!(
+                "NixOS switch failed: [{}] {}",
+                category,
+                format_classified_nixos_failure(context, &message, "")
+            ))
         }
+        other => other,
     }
 }
 
@@ -458,5 +458,76 @@ mod tests {
             commands[0].contains("switch-to-configuration") && commands[0].ends_with(" test"),
             "{commands:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+    use crate::filesystem::MockFilesystem;
+    use crate::nixos::{collect_config_tree, compute_config_fingerprint};
+
+    const FLAKE_REF: &str = "/etc/nixos#host";
+    const TOPLEVEL: &str = "/nix/store/0000000000000000000000000000000a-nixos-system-host";
+
+    fn current_fp(fs: &MockFilesystem, root: &Path) -> String {
+        compute_config_fingerprint(&collect_config_tree(
+            fs,
+            root,
+            Some(FLAKE_REF),
+            Some("host"),
+        ))
+    }
+
+    fn plan_with(
+        fs: &MockFilesystem,
+        root: &Path,
+        stored_fp: Option<&str>,
+        stored_toplevel: Option<&str>,
+    ) -> ConfigPlan {
+        ConfigLayer::<MockFilesystem>::plan(
+            &NixOsConfigLayer,
+            fs,
+            root,
+            stored_fp,
+            stored_toplevel,
+            Some(FLAKE_REF),
+            Some("host"),
+            Verbosity::Quiet,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn fast_path_candidate_when_fingerprint_matches() {
+        // plan carries the cached toplevel forward on a fingerprint match; the
+        // on-disk existence of that path is checked later in `apply`, after the
+        // overlays mount.
+        let fs = MockFilesystem::new();
+        let root = Path::new("/mnt/hidden");
+        let fp = current_fp(&fs, root);
+
+        let plan = plan_with(&fs, root, Some(&fp), Some(TOPLEVEL));
+        assert_eq!(plan.fingerprint, fp);
+        assert_eq!(plan.fast_path_toplevel, Some(TOPLEVEL.to_string()));
+    }
+
+    #[test]
+    fn no_fast_path_when_fingerprint_differs() {
+        let fs = MockFilesystem::new();
+        let root = Path::new("/mnt/hidden");
+
+        let plan = plan_with(&fs, root, Some("ffffffffffffffff"), Some(TOPLEVEL));
+        assert_eq!(plan.fast_path_toplevel, None);
+    }
+
+    #[test]
+    fn no_fast_path_without_stored_toplevel() {
+        let fs = MockFilesystem::new();
+        let root = Path::new("/mnt/hidden");
+        let fp = current_fp(&fs, root);
+
+        let plan = plan_with(&fs, root, Some(&fp), None);
+        assert_eq!(plan.fast_path_toplevel, None);
     }
 }

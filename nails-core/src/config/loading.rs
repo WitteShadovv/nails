@@ -251,6 +251,11 @@ fn render_template(root: &Path, title: &str) -> String {
 # NixOS flake reference for the hidden environment. Unset: auto-detected.
 # nixos_flake = {flake_value}
 
+# Fail activation (rolling the overlays back and restoring the decoy session)
+# when the hidden NixOS build or switch fails, instead of only warning. The
+# switch runs before the session restart, so the default fails closed.
+# nixos_switch_required = true
+
 # What to do with risky services (NetworkManager, dbus, the audio server) that
 # still reference a target at activation: "restart" them or "skip" (leave them
 # running as reported survivors). Unset: restart when the session is killed,

@@ -161,7 +161,7 @@ fn requires_decoy_restore<F: Filesystem>(manager: &NailsManager<F>) -> Result<bo
 
     Ok(cached
         .as_ref()
-        .and_then(|state_file| state_file.nixos_generation.as_ref())
+        .and_then(|state_file| state_file.hidden_toplevel.as_ref())
         .is_some())
 }
 

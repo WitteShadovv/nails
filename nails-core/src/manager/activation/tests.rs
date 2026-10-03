@@ -225,16 +225,19 @@ fn activation_progress_describes_requested_ordering() {
     let overlay_idx = source
         .find("[4/7] Mounting overlays...")
         .expect("overlay progress marker");
-    let restart_idx = source
-        .find("[5/7] Restarting session/display manager...")
-        .expect("session restart progress marker");
     let switch_idx = source
-        .find("[6/7] Running NixOS switch/rebuild...")
+        .find("[5/7] Running NixOS switch/rebuild...")
         .expect("switch progress marker");
+    let restart_idx = source
+        .find("[6/7] Restarting session/display manager...")
+        .expect("session restart progress marker");
 
+    // The hidden NixOS switch runs before the session restart, so the restarted
+    // session comes up under the hidden configuration and a failed switch never
+    // brings the decoy session up first.
     assert!(
-        overlay_idx < restart_idx && restart_idx < switch_idx,
-        "activation progress markers should reflect overlays -> restart -> switch ordering"
+        overlay_idx < switch_idx && switch_idx < restart_idx,
+        "activation progress markers should reflect overlays -> switch -> restart ordering"
     );
 }
 

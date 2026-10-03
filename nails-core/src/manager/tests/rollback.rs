@@ -227,7 +227,7 @@ fn test_activate_failure_state_file_reflects_rollback() {
 // ========== StateFile Rollback Clearing ==========
 
 #[test]
-fn test_rollback_clears_overlay_status_and_nixos_generation() {
+fn test_rollback_clears_overlay_status_and_hidden_toplevel() {
     use crate::OverlayConfig;
 
     // Create mock hidden volume structure
@@ -270,7 +270,7 @@ fn test_rollback_clears_overlay_status_and_nixos_generation() {
         state_path.clone(),
     )));
 
-    // Manually set up state file with overlay_status and nixos_generation BEFORE activation
+    // Manually set up state file with overlay_status and hidden_toplevel BEFORE activation
     // (simulating a previous activation that left metadata)
     {
         let mgr = manager.lock().unwrap();
@@ -290,7 +290,7 @@ fn test_rollback_clears_overlay_status_and_nixos_generation() {
         let mut cached = mgr.cached_state.borrow_mut();
         let state_file = StateFile {
             overlay_status,
-            nixos_generation: Some("test-generation-123".to_string()),
+            hidden_toplevel: Some("test-generation-123".to_string()),
             ..StateFile::default()
         };
         *cached = Some(state_file);
@@ -300,7 +300,7 @@ fn test_rollback_clears_overlay_status_and_nixos_generation() {
     let result = manager.lock().unwrap().activate(true);
     assert!(result.is_err(), "Activation should fail");
 
-    // Verify rollback cleared overlay_status and nixos_generation
+    // Verify rollback cleared overlay_status and hidden_toplevel
     let loaded = StateFile::load(&state_path).unwrap();
     assert_eq!(
         loaded.state,
@@ -314,8 +314,8 @@ fn test_rollback_clears_overlay_status_and_nixos_generation() {
         "overlay_status should be cleared after rollback"
     );
     assert_eq!(
-        loaded.nixos_generation, None,
-        "nixos_generation should be cleared after rollback"
+        loaded.hidden_toplevel, None,
+        "hidden_toplevel should be cleared after rollback"
     );
 }
 

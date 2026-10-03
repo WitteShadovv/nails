@@ -36,7 +36,7 @@ fn test_deactivation_skips_decoy_restore_when_disabled() {
         &work_dir,
     );
     let mut loaded = StateFile::load(&state_path).unwrap();
-    loaded.nixos_generation = Some("1".to_string());
+    loaded.hidden_toplevel = Some("1".to_string());
     loaded
         .save_with_custom_root(&state_path, &hidden_root)
         .unwrap();
@@ -149,7 +149,7 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
             activated_at: chrono::Utc::now(),
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
         },
-        nixos_generation: Some("6".to_string()),
+        hidden_toplevel: Some("6".to_string()),
         config_fingerprint: Some("deadbeefcafebabe".to_string()),
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
@@ -193,7 +193,7 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
             .join("state.json"),
     )
     .unwrap();
-    assert_eq!(loaded.nixos_generation, Some("6".to_string()));
+    assert_eq!(loaded.hidden_toplevel, Some("6".to_string()));
     assert_eq!(
         loaded.config_fingerprint,
         Some("deadbeefcafebabe".to_string())
@@ -273,7 +273,7 @@ fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
             .filesystem()
             .mock_set_path_exists(work_dir.to_str().unwrap(), true);
     }
-    set_state_nixos_generation(&state_path, &hidden_root, "1");
+    set_state_hidden_toplevel(&state_path, &hidden_root, "1");
 
     let err = manager
         .lock()
@@ -337,7 +337,7 @@ fn test_deactivate_prepares_decoy_symlink_when_restore_is_required() {
         &upper_dir,
         &work_dir,
     );
-    set_state_nixos_generation(&state_path, &hidden_root, "1");
+    set_state_hidden_toplevel(&state_path, &hidden_root, "1");
 
     let manager = Arc::new(Mutex::new(NailsManager::new(
         fs,

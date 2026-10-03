@@ -17,14 +17,14 @@ impl<F: Filesystem> NailsManager<F> {
     /// Compute NixOS config fingerprint and check fast-path cache (Step 7).
     ///
     /// Both flake and legacy paths are handled identically:
-    /// 1. Read the two NixOS config files from the hidden volume.
-    /// 2. Compute a fingerprint over them.
-    /// 3. Compare against the stored fingerprint from the last successful
-    ///    activation.  When they match *and* the stored generation is known,
-    ///    carry it forward so Step 9 can attempt a cheap
-    ///    `switch-to-configuration` before falling back to a full rebuild.
+    /// 1. Walk the hidden config tree and compute a fingerprint over it, plus the
+    ///    flake reference and configuration name.
+    /// 2. Compare against the stored fingerprint from the last successful
+    ///    activation. When it matches *and* the cached toplevel store path still
+    ///    exists on disk, carry that store path forward so Step 9 can switch to it
+    ///    directly without rebuilding.
     ///
-    /// Returns `(Option<fast_path_generation>, Option<fingerprint>)`, or
+    /// Returns `(Option<fast_path_toplevel>, Option<fingerprint>)`, or
     /// `(None, None)` when the host has no config layer or no builder.
     pub(super) fn build_nixos_profile(
         &self,
@@ -35,60 +35,34 @@ impl<F: Filesystem> NailsManager<F> {
         let Some(layer) = self.config_layer() else {
             return Ok((None, None));
         };
-        if self.nixos_builder.is_none() {
+        let Some(builder) = self.nixos_builder.as_ref() else {
             return Ok((None, None));
-        }
+        };
 
-        // The stored fingerprint and generation are manager state; the layer
-        // computes the current fingerprint from the hidden config and decides the
-        // fast path.
-        let (stored_fp, stored_generation) = {
+        // The stored fingerprint and toplevel are manager state; the layer
+        // computes the current fingerprint from the hidden config tree and decides
+        // the fast path (checking the cached toplevel still exists itself).
+        let (stored_fp, stored_toplevel) = {
             let cached = self.cached_state.borrow();
             (
                 cached.as_ref().and_then(|sf| sf.config_fingerprint.clone()),
-                cached.as_ref().and_then(|sf| sf.nixos_generation.clone()),
+                cached.as_ref().and_then(|sf| sf.hidden_toplevel.clone()),
             )
         };
+
+        let (flake_ref, config_name) = builder.fingerprint_inputs();
 
         let plan = layer.plan(
             &self.filesystem,
             &self.config.hidden_volume_root,
             stored_fp.as_deref(),
-            stored_generation.as_deref(),
+            stored_toplevel.as_deref(),
+            flake_ref.as_deref(),
+            config_name.as_deref(),
             verbosity,
         )?;
 
-        // The fingerprint matching does not prove the cached generation's closure
-        // still exists: the decoy's garbage collector may have removed it between
-        // sessions. Before carrying the fast path forward, confirm the hidden
-        // profile still resolves to that generation; if it is gone (or now points
-        // elsewhere) drop the fast path so Step 9 does a full rebuild instead of
-        // switching to a vanished closure.
-        let fast_path_generation = match plan.fast_path_generation {
-            Some(generation) => self.verify_fast_path_generation(generation),
-            None => None,
-        };
-
-        Ok((fast_path_generation, Some(plan.fingerprint)))
-    }
-
-    /// Keep `generation` as the fast path only when the on-disk hidden profile
-    /// still resolves to it; otherwise warn and return `None` to force a rebuild.
-    fn verify_fast_path_generation(&self, generation: String) -> Option<String> {
-        let Some(builder) = self.nixos_builder.as_ref() else {
-            return Some(generation);
-        };
-        match builder.cached_generation() {
-            Ok(Some(on_disk)) if on_disk == generation => Some(generation),
-            other => {
-                tracing::warn!(
-                    generation = %generation,
-                    found = ?other,
-                    "Cached hidden NixOS generation is no longer present in /nix; forcing a full rebuild"
-                );
-                None
-            }
-        }
+        Ok((plan.fast_path_toplevel, Some(plan.fingerprint)))
     }
 }
 

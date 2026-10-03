@@ -28,7 +28,7 @@ fn test_config_fingerprint_field_persistence() {
     let initial_state = StateFile {
         version: env!("CARGO_PKG_VERSION").to_string(),
         state: SystemState::Inactive,
-        nixos_generation: None,
+        hidden_toplevel: None,
         config_fingerprint: None, // First activation - no fingerprint yet
         overlay_status: HashMap::new(),
         failed_overlays: Vec::new(),
@@ -83,7 +83,7 @@ fn test_config_fingerprint_field_persistence() {
         let mut cached = mgr.cached_state.borrow_mut();
         if let Some(ref mut state) = *cached {
             state.config_fingerprint = Some(test_fingerprint.clone());
-            state.nixos_generation = Some("test-gen-123".to_string());
+            state.hidden_toplevel = Some("test-gen-123".to_string());
         }
     }
 
@@ -122,260 +122,40 @@ fn test_config_fingerprint_field_persistence() {
     // validating the state persistence integration
 }
 
-#[test]
-#[tracing_test::traced_test]
-fn test_nixos_build_logs_fast_path_when_fingerprint_matches_and_generation_exists() {
-    use crate::NixOSBuilder;
-    use crate::nixos::compute_config_fingerprint;
+// ========== Fast-path plan (fingerprint + cached toplevel) ==========
 
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.path();
-    let state_path = hidden_root.join("state.json");
-    let fs = MockFilesystem::new();
-    setup_nixos_config_check(&fs, hidden_root);
-    fs.mock_set_path_exists("/home", true);
-    fs.mock_set_mount_should_fail("/home", true);
+const CACHED_TOPLEVEL: &str = "/nix/store/0000000000000000000000000000000a-nixos-system-host";
 
-    let hw_content = fs
-        .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.nix"))
-        .unwrap();
-    // The wrapper's real hardware content lives in the base file; both feed the
-    // fingerprint exactly as the manager combines them.
-    let base_content = fs
-        .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.base.nix"))
-        .unwrap_or_default();
-    let cfg_content = fs
-        .read_file_content(&hidden_root.join("config/nixos/configuration.nix"))
-        .unwrap();
-    let fingerprint =
-        compute_config_fingerprint(&format!("{hw_content}\n{base_content}"), &cfg_content);
-
-    let upper_home = hidden_root.join("overlays/home/upper");
-    let work_home = hidden_root.join("overlays/home/work");
-    std::fs::create_dir_all(&upper_home).unwrap();
-    std::fs::create_dir_all(&work_home).unwrap();
-    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
-    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
-    fs.mock_set_path_exists("/", true);
-
-    let builder = NixOSBuilder::new(
-        hidden_root.join("config/nixos"),
-        hidden_root.join("profiles/nails-system"),
-    );
-    let mut manager = NailsManager::with_nixos(
-        fs.clone(),
-        Config {
-            hidden_volume_root: hidden_root.to_path_buf(),
-            state_file_path: state_path.clone(),
-            overlay_mode: OverlayMode::Explicit,
-            overlays: vec![OverlayConfig {
-                name: "home".to_string(),
-                lower: PathBuf::from("/"),
-                upper: upper_home,
-                work: work_home,
-                target: PathBuf::from("/home"),
-            }],
-            ..Config::test_default()
-        },
-        state_path,
-        builder,
-    );
-    manager.set_verbosity(Verbosity::Normal);
-    {
-        let mut cached = manager.cached_state.borrow_mut();
-        *cached = Some(StateFile {
-            state: SystemState::Inactive,
-            config_fingerprint: Some(fingerprint),
-            nixos_generation: Some("123".to_string()),
-            ..StateFile::default()
-        });
-    }
-
-    let result = Arc::new(Mutex::new(manager)).lock().unwrap().activate(true);
-    assert!(result.is_err());
-    assert!(logs_contain("Computing NixOS config fingerprint"));
-    assert!(logs_contain("Fast-path check"));
-    assert!(logs_contain("Fast path: fingerprint matches"));
+/// Fingerprint the hidden config tree exactly as `plan` does, so a test can arm a
+/// matching stored fingerprint and drive the fast path.
+fn matching_fingerprint(fs: &MockFilesystem, hidden_root: &Path, config_dir: &Path) -> String {
+    use crate::nixos::{collect_config_tree, compute_config_fingerprint};
+    let flake_ref = config_dir.to_string_lossy();
+    let entries = collect_config_tree(fs, hidden_root, Some(&flake_ref), None);
+    compute_config_fingerprint(&entries)
 }
 
-#[test]
-#[tracing_test::traced_test]
-fn test_nixos_build_does_not_take_fast_path_when_generation_missing() {
-    use crate::NixOSBuilder;
-    use crate::nixos::compute_config_fingerprint;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.path();
-    let state_path = hidden_root.join("state.json");
-    let fs = MockFilesystem::new();
-    setup_nixos_config_check(&fs, hidden_root);
-    fs.mock_set_path_exists("/home", true);
-    fs.mock_set_mount_should_fail("/home", true);
-    fs.mock_set_path_exists("/", true);
-
-    let hw_content = fs
-        .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.nix"))
-        .unwrap();
-    // The wrapper's real hardware content lives in the base file; both feed the
-    // fingerprint exactly as the manager combines them.
-    let base_content = fs
-        .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.base.nix"))
-        .unwrap_or_default();
-    let cfg_content = fs
-        .read_file_content(&hidden_root.join("config/nixos/configuration.nix"))
-        .unwrap();
-    let fingerprint =
-        compute_config_fingerprint(&format!("{hw_content}\n{base_content}"), &cfg_content);
-
-    let upper_home = hidden_root.join("overlays/home/upper");
-    let work_home = hidden_root.join("overlays/home/work");
-    std::fs::create_dir_all(&upper_home).unwrap();
-    std::fs::create_dir_all(&work_home).unwrap();
-    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
-    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
-
-    let builder = NixOSBuilder::new(
-        hidden_root.join("config/nixos"),
-        hidden_root.join("profiles/nails-system"),
-    );
-    let mut manager = NailsManager::with_nixos(
-        fs.clone(),
-        Config {
-            hidden_volume_root: hidden_root.to_path_buf(),
-            state_file_path: state_path.clone(),
-            overlay_mode: OverlayMode::Explicit,
-            overlays: vec![OverlayConfig {
-                name: "home".to_string(),
-                lower: PathBuf::from("/"),
-                upper: upper_home,
-                work: work_home,
-                target: PathBuf::from("/home"),
-            }],
-            ..Config::test_default()
-        },
-        state_path,
-        builder,
-    );
-    manager.set_verbosity(Verbosity::Normal);
-    {
-        let mut cached = manager.cached_state.borrow_mut();
-        *cached = Some(StateFile {
-            state: SystemState::Inactive,
-            config_fingerprint: Some(fingerprint),
-            nixos_generation: None,
-            ..StateFile::default()
-        });
-    }
-
-    let result = Arc::new(Mutex::new(manager)).lock().unwrap().activate(true);
-    assert!(result.is_err());
-    assert!(logs_contain("Fast-path check"));
-    assert!(!logs_contain("Fast path: fingerprint matches"));
-}
-
-#[test]
-#[tracing_test::traced_test]
-fn test_nixos_build_uses_empty_content_when_both_reads_fail() {
-    use crate::NixOSBuilder;
-    use crate::nixos::compute_config_fingerprint;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.path();
-    let state_path = hidden_root.join("state.json");
-    let fs = MockFilesystem::new();
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ }",
-    );
-    fs.mock_set_path_exists("/home", true);
-    fs.mock_set_mount_should_fail("/home", true);
-    fs.mock_set_path_exists("/", true);
-
-    // All three hidden config reads fail, so the wrapper and base contents are
-    // both empty and the manager fingerprints the "{empty}\n{empty}" material.
-    let fingerprint = compute_config_fingerprint("\n", "");
-    let upper_home = hidden_root.join("overlays/home/upper");
-    let work_home = hidden_root.join("overlays/home/work");
-    std::fs::create_dir_all(&upper_home).unwrap();
-    std::fs::create_dir_all(&work_home).unwrap();
-    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
-    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
-
-    let builder = NixOSBuilder::new(
-        hidden_root.join("config/nixos"),
-        hidden_root.join("profiles/nails-system"),
-    );
-    let mut manager = NailsManager::with_nixos(
-        fs.clone(),
-        Config {
-            hidden_volume_root: hidden_root.to_path_buf(),
-            state_file_path: state_path.clone(),
-            overlay_mode: OverlayMode::Explicit,
-            overlays: vec![OverlayConfig {
-                name: "home".to_string(),
-                lower: PathBuf::from("/"),
-                upper: upper_home,
-                work: work_home,
-                target: PathBuf::from("/home"),
-            }],
-            ..Config::test_default()
-        },
-        state_path,
-        builder,
-    );
-    manager.set_verbosity(Verbosity::Normal);
-    {
-        let mut cached = manager.cached_state.borrow_mut();
-        *cached = Some(StateFile {
-            state: SystemState::Inactive,
-            config_fingerprint: Some(fingerprint),
-            nixos_generation: Some("123".to_string()),
-            ..StateFile::default()
-        });
-    }
-
-    let result = Arc::new(Mutex::new(manager)).lock().unwrap().activate(true);
-    assert!(result.is_err());
-    assert!(logs_contain(
-        "Failed to read hardware-configuration.nix for fingerprint"
-    ));
-    assert!(logs_contain(
-        "Failed to read configuration.nix for fingerprint"
-    ));
-    assert!(logs_contain("Fast path: fingerprint matches"));
-}
-
-/// Build a NixOS manager whose fingerprint matches generation `123`, so the fast
-/// path is taken, with the hidden profile symlink optionally present on disk.
-/// Returns the manager ready to activate (which then fails at the /home mount, so
-/// only the fingerprint + requisites stage runs).
-fn fast_path_manager(
+/// Build a manager whose hidden config fingerprint matches the stored one, with an
+/// optional cached toplevel on disk. Activation fails at the `/home` mount, so only
+/// the fingerprint/plan stage runs before the error.
+fn plan_manager(
     hidden_root: &Path,
     state_path: &Path,
     fs: &MockFilesystem,
-    profile_present: bool,
+    stored_fingerprint: Option<String>,
+    stored_toplevel: Option<String>,
+    toplevel_present: bool,
 ) -> NailsManager<MockFilesystem> {
     use crate::NixOSBuilder;
-    use crate::nixos::compute_config_fingerprint;
 
     setup_nixos_config_check(fs, hidden_root);
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_mount_should_fail("/home", true);
     fs.mock_set_path_exists("/", true);
 
-    let hw_content = fs
-        .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.nix"))
-        .unwrap();
-    let base_content = fs
-        .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.base.nix"))
-        .unwrap_or_default();
-    let cfg_content = fs
-        .read_file_content(&hidden_root.join("config/nixos/configuration.nix"))
-        .unwrap();
-    let fingerprint =
-        compute_config_fingerprint(&format!("{hw_content}\n{base_content}"), &cfg_content);
+    if toplevel_present && let Some(ref tp) = stored_toplevel {
+        fs.mock_set_path_exists(tp, true);
+    }
 
     let upper_home = hidden_root.join("overlays/home/upper");
     let work_home = hidden_root.join("overlays/home/work");
@@ -384,18 +164,8 @@ fn fast_path_manager(
     fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
     fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
 
-    // The builder reads the live profile symlink; create one pointing at a
-    // generation-123 link when the test wants the generation present on disk.
-    let profiles_dir = hidden_root.join("profiles");
-    std::fs::create_dir_all(&profiles_dir).unwrap();
-    let profile_path = profiles_dir.join("nails-system");
-    if profile_present {
-        let generation_link = profiles_dir.join("nails-system-123-link");
-        std::fs::create_dir_all(&generation_link).unwrap();
-        std::os::unix::fs::symlink(&generation_link, &profile_path).unwrap();
-    }
-
-    let builder = NixOSBuilder::new(hidden_root.join("config/nixos"), profile_path);
+    let config_dir = hidden_root.join("config/nixos");
+    let builder = NixOSBuilder::new(config_dir, hidden_root.join("profiles/nails-system"));
     let mut manager = NailsManager::with_nixos(
         fs.clone(),
         Config {
@@ -419,8 +189,8 @@ fn fast_path_manager(
         let mut cached = manager.cached_state.borrow_mut();
         *cached = Some(StateFile {
             state: SystemState::Inactive,
-            config_fingerprint: Some(fingerprint),
-            nixos_generation: Some("123".to_string()),
+            config_fingerprint: stored_fingerprint,
+            hidden_toplevel: stored_toplevel,
             ..StateFile::default()
         });
     }
@@ -429,34 +199,51 @@ fn fast_path_manager(
 
 #[test]
 #[tracing_test::traced_test]
-fn test_fast_path_kept_when_cached_generation_still_present() {
+fn test_fast_path_carried_when_fingerprint_matches() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
     let state_path = hidden_root.join("state.json");
     let fs = MockFilesystem::new();
 
-    let manager = fast_path_manager(hidden_root, &state_path, &fs, true);
+    let fp = matching_fingerprint(&fs, hidden_root, &hidden_root.join("config/nixos"));
+    let manager = plan_manager(
+        hidden_root,
+        &state_path,
+        &fs,
+        Some(fp),
+        Some(CACHED_TOPLEVEL.to_string()),
+        true,
+    );
+
     let result = Arc::new(Mutex::new(manager)).lock().unwrap().activate(true);
     assert!(result.is_err());
+    assert!(logs_contain("Computing NixOS config fingerprint"));
+    assert!(logs_contain("Fast-path check"));
+    // plan carries the fast path forward on a fingerprint match; the on-disk
+    // existence check happens in apply, after the overlays mount.
     assert!(logs_contain("Fast path: fingerprint matches"));
-    // The generation is still on disk, so the fast path is not dropped.
-    assert!(!logs_contain("no longer present in /nix"));
 }
 
 #[test]
 #[tracing_test::traced_test]
-fn test_fast_path_dropped_when_cached_generation_missing() {
+fn test_no_fast_path_when_fingerprint_mismatches() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
     let state_path = hidden_root.join("state.json");
     let fs = MockFilesystem::new();
 
-    // No profile symlink on disk: decoy GC removed the cached generation.
-    let manager = fast_path_manager(hidden_root, &state_path, &fs, false);
+    // A stored fingerprint that cannot match the freshly computed one.
+    let manager = plan_manager(
+        hidden_root,
+        &state_path,
+        &fs,
+        Some("ffffffffffffffff".to_string()),
+        Some(CACHED_TOPLEVEL.to_string()),
+        true,
+    );
+
     let result = Arc::new(Mutex::new(manager)).lock().unwrap().activate(true);
     assert!(result.is_err());
-    // The plan still matched the fingerprint, but the requisites check forces a
-    // rebuild because the generation's closure is gone.
-    assert!(logs_contain("Fast path: fingerprint matches"));
-    assert!(logs_contain("no longer present in /nix"));
+    assert!(logs_contain("Fast-path check"));
+    assert!(!logs_contain("Fast path: fingerprint matches"));
 }

@@ -72,7 +72,7 @@ pub enum EffectiveState {
     },
     /// The state file records a live or transitional state but was written under
     /// a previous boot, so it is stale. It is safe to reset to Inactive; the
-    /// caller keeps the cached build metadata (`nixos_generation`,
+    /// caller keeps the cached build metadata (`hidden_toplevel`,
     /// `config_fingerprint`) because those survive a reboot.
     StaleFromPreviousBoot,
     /// A transitional state from the *current* boot whose owner process is gone:

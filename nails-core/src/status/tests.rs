@@ -110,7 +110,7 @@ fn test_status_command_inactive() {
     );
     assert!(report.uptime.is_none());
     assert!(report.activated_at.is_none());
-    assert!(report.nixos_generation.is_none());
+    assert!(report.hidden_toplevel.is_none());
 }
 
 #[test]
@@ -193,7 +193,7 @@ fn test_status_command_active_verified() {
             decoy_writers: Vec::new(),
         },
         overlay_status,
-        nixos_generation: Some("generation-123".to_string()),
+        hidden_toplevel: Some("generation-123".to_string()),
         ..StateFile::default()
     };
     let temp_file = create_temp_state_file(&state_file);
@@ -208,7 +208,7 @@ fn test_status_command_active_verified() {
     assert!(report.overlay_mount_statuses.iter().all(|s| s.owned));
     assert!(report.uptime.is_some());
     assert_eq!(report.activated_at, Some(activated_at));
-    assert_eq!(report.nixos_generation, Some("generation-123".to_string()));
+    assert_eq!(report.hidden_toplevel, Some("generation-123".to_string()));
 
     // Verify uptime is approximately 2 hours
     let uptime = report.uptime.unwrap();
@@ -442,7 +442,7 @@ fn test_status_report_serialization() {
         remaining_mounts: vec![],
         overlays: vec![],
         overlay_verification: VerificationStatus::NotApplicable,
-        nixos_generation: None,
+        hidden_toplevel: None,
         activated_at: None,
         uptime: None,
         formatted_uptime: String::new(),

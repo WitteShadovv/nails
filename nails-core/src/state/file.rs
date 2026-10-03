@@ -92,8 +92,16 @@ pub struct StateFile {
     /// Current system state (Inactive, Activating, Active, Deactivating, Degraded)
     pub state: SystemState,
 
-    /// NixOS generation hash when last activated (for profile rebuild detection)
-    pub nixos_generation: Option<String>,
+    /// Store path of the hidden NixOS system toplevel built and switched to on
+    /// the last successful activation (e.g. `/nix/store/…-nixos-system-host-…`).
+    ///
+    /// The fast path reuses this directly: when the config fingerprint still
+    /// matches and this path still exists on disk, activation re-runs
+    /// `switch-to-configuration test` against it instead of rebuilding. `None`
+    /// until the first successful activation that switched the hidden config, and
+    /// cleared on deactivation. Deactivation keys the decoy restore on this being
+    /// set, so it is the record that a hidden configuration is in force.
+    pub hidden_toplevel: Option<String>,
 
     /// Config fingerprint after last successful activation.
     ///
@@ -185,7 +193,7 @@ impl Default for StateFile {
         Self {
             version: env!("CARGO_PKG_VERSION").to_string(),
             state: SystemState::Inactive,
-            nixos_generation: None,
+            hidden_toplevel: None,
             config_fingerprint: None,
             overlay_status: HashMap::new(),
             failed_overlays: Vec::new(),

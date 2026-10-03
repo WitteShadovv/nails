@@ -44,9 +44,9 @@ pub struct StatusData {
     /// Persona mode (how the hidden session relates to the decoy account).
     #[serde(skip_serializing_if = "Option::is_none")]
     persona_mode: Option<&'static str>,
-    /// NixOS generation (if available).
+    /// Store path of the hidden NixOS system toplevel (if available).
     #[serde(skip_serializing_if = "Option::is_none")]
-    nixos_generation: Option<String>,
+    hidden_toplevel: Option<String>,
     /// Total size of the hidden volume's filesystem in bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     hidden_root_total_bytes: Option<u64>,
@@ -130,7 +130,7 @@ pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusDat
             .collect(),
         overlay_verification: VerificationJson::from(&report.overlay_verification),
         persona_mode: Some(report.persona_mode.as_str()),
-        nixos_generation: report.nixos_generation.clone(),
+        hidden_toplevel: report.hidden_toplevel.clone(),
         hidden_root_total_bytes: report.hidden_root_total,
         hidden_root_used_bytes: report.hidden_root_used,
         hidden_root_available_bytes: report.hidden_root_available,
@@ -169,7 +169,7 @@ pub fn build_status_data_unknown(reason: String) -> StatusData {
         remaining_mounts: Vec::new(),
         overlay_verification: VerificationJson::NotApplicable,
         persona_mode: None,
-        nixos_generation: None,
+        hidden_toplevel: None,
         hidden_root_total_bytes: None,
         hidden_root_used_bytes: None,
         hidden_root_available_bytes: None,

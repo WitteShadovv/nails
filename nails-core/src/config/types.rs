@@ -286,6 +286,22 @@ pub struct Config {
     #[serde(default)]
     pub nixos_flake: Option<String>,
 
+    /// Whether a failed hidden NixOS build or switch fails the whole activation.
+    ///
+    /// The hidden configuration is switched into place *before* the session is
+    /// restarted. When this is `true` (the default, fail closed) a build or switch
+    /// failure rolls the overlays back and restores the decoy session instead of
+    /// bringing the session up on a half-applied or decoy configuration. Set it to
+    /// `false` to keep the overlays and session and only warn when the hidden
+    /// configuration could not be applied.
+    ///
+    /// **Example**:
+    /// ```toml
+    /// nixos_switch_required = true
+    /// ```
+    #[serde(default = "super::defaults::default_nixos_switch_required")]
+    pub nixos_switch_required: bool,
+
     /// What to do with risky services (NetworkManager, dbus-daemon, the audio
     /// server) that still reference an overlay target at activation.
     ///
@@ -322,6 +338,7 @@ pub const CONFIG_KEYS: &[&str] = &[
     "show_opsec_reminders",
     "prompt_label",
     "nixos_flake",
+    "nixos_switch_required",
     "risky_services",
     "color_scheme",
     "persona",

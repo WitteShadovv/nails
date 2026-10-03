@@ -31,11 +31,9 @@
 //!     PathBuf::from("/nix/var/nix/profiles/nails-system"),
 //! );
 //!
-//! // First call: builds profile (~30-60s)
-//! let generation = builder.build_profile()?;
-//!
-//! // Subsequent calls: returns cached generation (<1s)
-//! let cached_generation = builder.build_profile()?;
+//! // Build the hidden system toplevel explicitly and switch to it; the resulting
+//! // store path is cached so an unchanged config takes the fast path next time.
+//! let toplevel = builder.build_toplevel()?;
 //! # Ok::<(), nails_core::NailsError>(())
 //! ```
 
@@ -55,6 +53,7 @@ pub use config::{
     parse_check_composed_config, prepare_nixos_config_overlay, stage_hidden_config_symlink,
     stage_hidden_nixos_config, verify_base_config_clean,
 };
+pub(crate) use fingerprint::collect_config_tree;
 pub use fingerprint::compute_config_fingerprint;
 
 // Internal imports
@@ -64,7 +63,7 @@ use command::RealCommandExecutor as RealCommandExecutorImpl;
 pub(crate) use command::{FlakePreflightSummary, local_flake_dir};
 pub(crate) use command::{
     classify_nixos_failure_category, format_classified_nixos_failure, is_non_fatal_switch_failure,
-    resolve_local_flake_dir, split_flake_ref,
+    resolve_local_flake_dir, selected_nixos_configuration_fragment, split_flake_ref,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

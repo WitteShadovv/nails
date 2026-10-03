@@ -106,7 +106,7 @@ in
         activation_unit = wait_for_activation_transient_unit()
         assert_unit_in_system_slice(activation_unit)
 
-    with subtest("display manager and user manager are restarted after overlays mount but before nixos switch"):
+    with subtest("display manager and user manager are restarted after the nixos switch"):
         # The activation runs in a detached unit, so the pre-kill display and
         # user managers may still be up here; wait for fresh activation
         # timestamps rather than `is-active`. LightDM autologin recreates the
@@ -130,13 +130,17 @@ in
         assert display_started_after == display_started_before + 1, (
             f"display manager restarted more than once: before={display_started_before} after={display_started_after}"
         )
-        display_restart = hidden_log_line_number("Restarting display manager")
-        switch_marker = hidden_log_line_number("NixOS profile switch complete")
-        if switch_marker is None:
-            switch_marker = hidden_log_line_number("Running NixOS switch/rebuild")
-        assert display_restart is not None and switch_marker is not None, "expected switch/restart log markers"
-        assert display_restart < switch_marker, (
-            f"session restart should happen before NixOS switch begins: switch={switch_marker} restart={display_restart}"
+        # Switch-before-restart (T-089): the hidden NixOS switch runs before the
+        # session/display-manager restart, so the restarted session comes up under
+        # the hidden configuration and a failed switch never brings the decoy
+        # session up first.
+        switch_marker = hidden_log_line_number("Running NixOS switch/rebuild")
+        restart_marker = hidden_log_line_number("Restarting session/display manager")
+        assert switch_marker is not None and restart_marker is not None, (
+            "expected switch/restart ordering markers in the hidden log"
+        )
+        assert switch_marker < restart_marker, (
+            f"the NixOS switch must happen before the session restart: switch={switch_marker} restart={restart_marker}"
         )
         # ActiveEnterTimestampMonotonic is the stable signal for the user
         # manager restart. Recent systemd/NixOS combinations can emit more than

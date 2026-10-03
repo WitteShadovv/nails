@@ -46,8 +46,8 @@ fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
         std::fs::set_permissions(&rebuild_script, perms).unwrap();
     }
 
-    let builder = crate::nixos::NixOSBuilder::new(
-        hidden_root.join("config"),
+    let builder = crate::nixos::NixOSBuilder::new_legacy(
+        hidden_root.join("config/nixos/configuration.nix"),
         hidden_root.join("nails-system"),
     )
     .with_executor(Box::new(
@@ -76,6 +76,8 @@ fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
                     target: PathBuf::from("/home"),
                 },
             ],
+            // switch_required=false keeps the overlays and session on a failed build.
+            nixos_switch_required: false,
             ..Config::test_default()
         },
         state_path.clone(),
@@ -163,8 +165,8 @@ fn test_activation_non_fatal_switch_failures_do_not_roll_back() {
         std::fs::set_permissions(&rebuild_script, perms).unwrap();
     }
 
-    let builder = crate::nixos::NixOSBuilder::new(
-        hidden_root.join("config"),
+    let builder = crate::nixos::NixOSBuilder::new_legacy(
+        hidden_root.join("config/nixos/configuration.nix"),
         hidden_root.join("nails-system"),
     )
     .with_executor(Box::new(
@@ -228,4 +230,109 @@ fn test_activation_non_fatal_switch_failures_do_not_roll_back() {
         }),
         "non-fatal service restart failures should not emit fatal rebuild notifications"
     );
+}
+
+#[test]
+#[serial]
+fn test_switch_required_rolls_overlays_back_on_switch_failure() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+
+    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
+    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
+    fs.mock_set_file_content("/etc/nixos/hardware-configuration.nix", "{ ... }: { }");
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists("/etc", true);
+    fs.mock_set_path_exists("/home", true);
+
+    let upper_etc = hidden_root.join("overlays/etc/upper");
+    let work_etc = hidden_root.join("overlays/etc/work");
+    let upper_home = hidden_root.join("overlays/home/upper");
+    let work_home = hidden_root.join("overlays/home/work");
+    for dir in [&upper_etc, &work_etc, &upper_home, &work_home] {
+        std::fs::create_dir_all(dir).unwrap();
+        fs.mock_set_path_exists(dir.to_str().unwrap(), true);
+    }
+
+    // A legacy builder whose `nixos-rebuild test` fails fatally (not a non-fatal
+    // unit restart warning).
+    let bin_dir = hidden_root.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let rebuild_script = bin_dir.join("nixos-rebuild");
+    std::fs::write(
+        &rebuild_script,
+        "#!/usr/bin/env sh\nprintf 'boom\\n' 1>&2\nexit 2\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&rebuild_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&rebuild_script, perms).unwrap();
+    }
+
+    let builder = crate::nixos::NixOSBuilder::new_legacy(
+        hidden_root.join("config/nixos/configuration.nix"),
+        hidden_root.join("nails-system"),
+    )
+    .with_executor(Box::new(
+        crate::nixos::RealCommandExecutor::with_search_path(&bin_dir),
+    ));
+
+    let manager = Arc::new(Mutex::new(NailsManager::with_nixos(
+        fs.clone(),
+        Config {
+            hidden_volume_root: hidden_root.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlay_mode: OverlayMode::Explicit,
+            // The default, stated explicitly: fail closed.
+            nixos_switch_required: true,
+            overlays: vec![
+                OverlayConfig {
+                    name: "etc".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: upper_etc.clone(),
+                    work: work_etc.clone(),
+                    target: PathBuf::from("/etc"),
+                },
+                OverlayConfig {
+                    name: "home".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: upper_home.clone(),
+                    work: work_home.clone(),
+                    target: PathBuf::from("/home"),
+                },
+            ],
+            ..Config::test_default()
+        },
+        state_path.clone(),
+        builder,
+    )));
+
+    let result = manager.lock().unwrap().activate(true);
+    assert!(
+        result.is_err(),
+        "a failed switch with switch_required=true must fail activation: {result:?}"
+    );
+
+    let manager_guard = manager.lock().unwrap();
+    assert!(
+        matches!(
+            manager_guard.current_state().unwrap(),
+            SystemState::Inactive
+        ),
+        "activation must roll back to Inactive on a fail-closed switch failure"
+    );
+    drop(manager_guard);
+
+    // The overlays were torn down before any session restart.
+    assert!(!fs.is_mounted(Path::new("/etc")).unwrap());
+    assert!(!fs.is_mounted(Path::new("/home")).unwrap());
+
+    let loaded = StateFile::load(&state_path).unwrap();
+    assert!(matches!(loaded.state, SystemState::Inactive));
+    assert!(loaded.overlay_status.is_empty());
 }

@@ -183,9 +183,9 @@ pub fn print_status_human(
             }
         }
 
-        if let Some(ref generation) = report.nixos_generation {
+        if let Some(ref toplevel) = report.hidden_toplevel {
             println!();
-            println!("NixOS Generation:   {}", generation);
+            println!("Hidden system:      {}", toplevel);
         }
     } else if let SystemState::Inactive = report.state {
         println!();

@@ -346,7 +346,7 @@ fn execute_status_no_color_verbose_active_shows_overlay_details_and_logs() {
             overlays: vec![PathBuf::from("/home")],
             decoy_writers: Vec::new(),
         },
-        nixos_generation: Some("nails-gen-77".to_string()),
+        hidden_toplevel: Some("nails-gen-77".to_string()),
         overlay_status,
         ..StateFile::default()
     };
@@ -387,7 +387,7 @@ fn execute_status_no_color_verbose_active_shows_overlay_details_and_logs() {
     // posture is degraded (exit 7); the details and logs are still shown.
     assert_eq!(output.status.code(), Some(7), "stdout={stdout}");
     assert!(
-        stdout.contains("NixOS Generation:   nails-gen-77"),
+        stdout.contains("Hidden system:      nails-gen-77"),
         "stdout={stdout}"
     );
     assert!(stdout.contains("Overlay Mount Details:"), "stdout={stdout}");

@@ -449,7 +449,7 @@ fn looks_like_explicit_relative_flake_ref(base_ref: &str) -> bool {
     matches!(base_ref, "." | "..") || base_ref.starts_with("./") || base_ref.starts_with("../")
 }
 
-fn selected_nixos_configuration_fragment(
+pub(crate) fn selected_nixos_configuration_fragment(
     explicit_fragment: Option<&str>,
 ) -> crate::Result<(String, bool)> {
     if let Some(fragment) = explicit_fragment.filter(|fragment| !fragment.is_empty()) {

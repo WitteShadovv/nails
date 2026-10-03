@@ -296,8 +296,9 @@ pub struct StatusReport {
     /// Overlay verification result
     pub overlay_verification: VerificationStatus,
 
-    /// NixOS generation (if available)
-    pub nixos_generation: Option<String>,
+    /// Store path of the hidden NixOS system toplevel switched to on the last
+    /// successful activation (if available).
+    pub hidden_toplevel: Option<String>,
 
     /// When the system was activated (None for inactive)
     pub activated_at: Option<DateTime<Utc>>,

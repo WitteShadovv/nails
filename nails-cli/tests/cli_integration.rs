@@ -386,7 +386,7 @@ fn test_status_command_details_active_shows_overlay_details() {
       "overlays": ["/home"]
     }}
   }},
-  "nixos_generation": "nails-gen-99",
+  "hidden_toplevel": "nails-gen-99",
   "config_fingerprint": null,
   "overlay_status": {{
     "/home": {{
@@ -434,7 +434,7 @@ fn test_status_command_details_active_shows_overlay_details() {
     // The recorded overlay is not a live NAILS overlay here, so the posture is
     // degraded (exit 7); the overlay details are still shown.
     assert_eq!(output.status.code(), Some(7), "stdout={stdout}");
-    assert!(stdout.contains("NixOS Generation:   nails-gen-99"));
+    assert!(stdout.contains("Hidden system:      nails-gen-99"));
     assert!(stdout.contains("Overlay Mount Details:"));
     assert!(stdout.contains("Mount:     /home"));
     assert!(stdout.contains(&format!(
@@ -691,7 +691,7 @@ fn test_verify_command_json_output_reports_present_state_file_status() {
     let state_json = r#"{
   \"version\": \"0.2.0\",
   \"state\": \"Inactive\",
-  \"nixos_generation\": null,
+  \"hidden_toplevel\": null,
   \"config_fingerprint\": null,
   \"overlay_status\": {},
   \"failed_overlays\": [],

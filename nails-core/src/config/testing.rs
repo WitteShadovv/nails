@@ -72,6 +72,7 @@ impl Config {
             persona: super::persona::PersonaConfig::default(),
             prompt_label: String::new(),
             nixos_flake: None,
+            nixos_switch_required: true,
             risky_services: None,
         }
     }

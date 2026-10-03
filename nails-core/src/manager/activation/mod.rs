@@ -6,8 +6,8 @@
 //! 3. Handles session management
 //! 4. Computes NixOS rebuild metadata (if enabled)
 //! 5. Mounts overlays with RAII rollback
-//! 6. Restarts the user/display session when needed
-//! 7. Runs NixOS switch/rebuild
+//! 6. Builds and switches the hidden NixOS configuration
+//! 7. Restarts the user/display session when needed
 //! 8. Updates state to Active
 //!
 //! # RAII Rollback Pattern
@@ -489,7 +489,7 @@ impl<F: Filesystem> NailsManager<F> {
             3,
             "[3/7] Preparing NixOS switch metadata...",
         );
-        let (generation, new_fingerprint) = guard.build_nixos_profile(verbosity)?;
+        let (fast_path_toplevel, new_fingerprint) = guard.build_nixos_profile(verbosity)?;
 
         // Step 7: Mount persistent and ephemeral overlays.
         emit_progress(verbosity, "overlay_mount", 4, "[4/7] Mounting overlays...");
@@ -541,34 +541,50 @@ impl<F: Filesystem> NailsManager<F> {
             guard.run_read_only_nixos_preflight(options.overlay_only)?;
         }
 
-        // Step 8: Restart session / display manager after overlays are in place.
+        // Step 8: Build and switch the hidden NixOS configuration BEFORE the
+        // session restarts. Switching first means the restarted session comes up
+        // under the hidden configuration and a failed switch never brings the
+        // decoy session up ahead of the hidden one. With `nixos_switch_required`
+        // (the default) a failure here is fatal: returning early drops the overlay
+        // rollback guard, tearing the overlays down, and the session-restart guard
+        // then restores the decoy session — all before any restart has run. Fail
+        // closed. With `nixos_switch_required = false` the failure is only a
+        // warning and activation continues with the overlays and session kept.
+        emit_progress(
+            verbosity,
+            "profile_switch",
+            5,
+            "[5/7] Running NixOS switch/rebuild...",
+        );
+        let nixos_switch_warning =
+            guard.run_post_overlay_nixos_switch(&fast_path_toplevel, &new_fingerprint, verbosity);
+        if let Some(reason) = nixos_switch_warning.as_deref()
+            && guard.config().nixos_switch_required
+        {
+            return Err(NailsError::NixOSError(format!(
+                "hidden NixOS configuration was not applied: {reason}. Overlays were rolled \
+                 back before any session restart (set nixos_switch_required = false to keep \
+                 the overlays and session and only warn instead)."
+            )));
+        }
+
+        // Step 9: Restart session / display manager, now that the hidden
+        // configuration is in force.
         emit_progress(
             verbosity,
             "session_restart",
-            5,
-            "[5/7] Restarting session/display manager...",
+            6,
+            "[6/7] Restarting session/display manager...",
         );
         if restart_phase == SessionRestartPhase::AfterOverlayMounts {
             prepare_notification_autostart_before_session_restart(&guard);
             restart_session_after_success(&restart_plan).map_err(|e| {
                 NailsError::OverlayError(format!(
-                    "Activation failed before NixOS switch because session restart failed: {}",
+                    "Activation failed after NixOS switch because session restart failed: {}",
                     e
                 ))
             })?;
         }
-
-        // Step 9: Run NixOS switch/rebuild. Failures here are non-fatal for
-        // overlay/session activation: preserve the mounted environment and
-        // continue to a consistent Active state.
-        emit_progress(
-            verbosity,
-            "profile_switch",
-            6,
-            "[6/7] Running NixOS switch/rebuild...",
-        );
-        let nixos_switch_warning =
-            guard.run_post_overlay_nixos_switch(&generation, &new_fingerprint, verbosity);
 
         // Step 9.5: Keep the decoy's base-OS trees read-only for the session. This
         // runs after every decoy-writing step (the NixOS switch above) so those
@@ -700,11 +716,12 @@ impl<F: Filesystem> NailsManager<F> {
     /// activation was preserved; `None` on success.
     fn run_post_overlay_nixos_switch(
         &self,
-        generation: &Option<String>,
+        fast_path_toplevel: &Option<String>,
         new_fingerprint: &Option<String>,
         verbosity: Verbosity,
     ) -> Option<String> {
-        let switch_result = self.switch_nixos_profile(generation, new_fingerprint, verbosity);
+        let switch_result =
+            self.switch_nixos_profile(fast_path_toplevel, new_fingerprint, verbosity);
         let hidden_root = self.config().hidden_volume_root.clone();
 
         match switch_result {

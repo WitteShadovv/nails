@@ -243,15 +243,15 @@ impl<F: Filesystem> NailsManager<F> {
         state_file.state = new_state.clone();
         state_file.last_modified = Utc::now();
 
-        // Clear overlay_status and nixos_generation when rolling back to Inactive
+        // Clear overlay_status and hidden_toplevel when rolling back to Inactive
         // This ensures the state file doesn't retain stale activation metadata after rollback
         if let SystemState::Inactive = new_state {
             state_file.overlay_status.clear();
-            state_file.nixos_generation = None;
+            state_file.hidden_toplevel = None;
             tracing::debug!(
                 action = "rollback",
                 target_state = "Inactive",
-                fields_cleared = "overlay_status,nixos_generation",
+                fields_cleared = "overlay_status,hidden_toplevel",
                 "Rollback to Inactive"
             );
         }
@@ -377,7 +377,7 @@ impl<F: Filesystem> NailsManager<F> {
 
     /// Clear transient mount-tracking state in cached state without altering other fields.
     ///
-    /// Used during deactivation to avoid losing nixos_generation/config_fingerprint
+    /// Used during deactivation to avoid losing hidden_toplevel/config_fingerprint
     /// while still returning to a clean inactive tracker state.
     pub(crate) fn clear_overlay_status_in_cache(&self) -> Result<()> {
         let mut cached = self.cached_state.borrow_mut();
@@ -546,7 +546,7 @@ impl<F: Filesystem> NailsManager<F> {
     ///
     /// A state written under a *previous* boot that no longer corresponds to any
     /// live mount is reset to Inactive and persisted here — the cached build
-    /// metadata (`nixos_generation`, `config_fingerprint`) survives the reset
+    /// metadata (`hidden_toplevel`, `config_fingerprint`) survives the reset
     /// because it is still valid across a reboot. Every other disagreement
     /// (overlays missing, mounts live while inactive, a crashed transitional
     /// state, an unreadable file) is reported and never auto-reset, so an
@@ -577,7 +577,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// Reset a stale-from-previous-boot state file to Inactive, keeping the cached
     /// build metadata, and update the in-memory cache to match.
     ///
-    /// `nixos_generation` and `config_fingerprint` are deliberately preserved:
+    /// `hidden_toplevel` and `config_fingerprint` are deliberately preserved:
     /// they describe the hidden build, which outlives a reboot, so the next
     /// activation can still take its fast path. The overlay tracking is cleared
     /// because nothing is mounted.
