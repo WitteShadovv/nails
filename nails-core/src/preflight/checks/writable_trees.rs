@@ -151,6 +151,19 @@ mod tests {
     }
 
     #[test]
+    fn nixos_auto_mode_overlays_a_real_lib64() {
+        // A stock NixOS root keeps a real /lib64 for the ld-linux shim. Auto mode
+        // must overlay it, since the NixOS policy keeps nothing read-only.
+        let fs = host(
+            "ID=nixos\nVERSION_ID=\"24.11\"\n",
+            &["/usr", "/bin", "/lib64", "/etc", "/nix"],
+        );
+
+        let result = WritableTreesCheck::new(auto_config()).run(&fs).unwrap();
+        assert!(result.is_pass(), "{}", result.message());
+    }
+
+    #[test]
     fn excluding_usr_without_a_read_only_guard_is_refused() {
         // A NixOS host (no read-only guard) where the operator excludes /usr from
         // overlay: /usr is then neither overlaid nor read-only, which must fail.

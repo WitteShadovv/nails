@@ -109,12 +109,12 @@ impl OverlayPolicy {
         Self {
             mount_hooks: MountHooks::NixOs,
             never_overlay: Self::universal_never_overlay(),
-            // NixOS has no /lib, /lib64 or /sbin at the root; listing them is a
-            // harmless guard against a host that does.
-            default_exclusions: ["/lib", "/lib64", "/sbin"]
-                .iter()
-                .map(PathBuf::from)
-                .collect(),
+            // No base-OS tree is excluded. A stock NixOS root still carries real
+            // /lib64 (the ld-linux shim) and may carry /lib or /sbin; with no
+            // read-only guard on this platform, excluding them would leave them
+            // writable on the decoy, which the writable-trees check refuses.
+            // Auto mode therefore overlays whichever of them exist.
+            default_exclusions: Vec::new(),
             read_only: Vec::new(),
         }
     }
@@ -276,6 +276,14 @@ mod tests {
         // switch's /bin/sh and /usr/bin/env rewrites stay off the decoy root.
         assert!(!policy.default_exclusions.contains(&PathBuf::from("/bin")));
         assert!(!policy.default_exclusions.contains(&PathBuf::from("/usr")));
+        // Nor the other core roots: NixOS guards nothing read-only, so an
+        // excluded real /lib64 (or /lib, /sbin) would stay writable on the decoy.
+        for tree in ["/lib", "/lib64", "/sbin"] {
+            assert!(
+                !policy.default_exclusions.contains(&PathBuf::from(tree)),
+                "{tree}"
+            );
+        }
         for pseudo in ["/proc", "/sys", "/dev", "/run"] {
             assert!(policy.never_overlay.contains(&PathBuf::from(pseudo)));
         }
