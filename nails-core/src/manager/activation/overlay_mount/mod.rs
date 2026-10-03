@@ -56,6 +56,16 @@ pub(in crate::manager::activation) struct OverlayMountOutcome {
     pub(in crate::manager::activation) mounts: Vec<MountInfo>,
 }
 
+/// The per-overlay progress line shown at Normal verbosity, e.g.
+/// `mounting /home (3/12)`.
+///
+/// Mounting the overlays is the longest observable activation phase after the
+/// build, so the operator sees one line per target as it goes up rather than a
+/// single `Mounting overlays...` followed by silence. `index` is 1-based.
+fn overlay_progress_message(target: &Path, index: usize, total: usize) -> String {
+    format!("mounting {} ({index}/{total})", target.display())
+}
+
 impl<F: Filesystem> NailsManager<F> {
     /// Mount persistent and ephemeral overlays.
     ///
@@ -264,7 +274,19 @@ impl<F: Filesystem> NailsManager<F> {
         // each stage/re-attach also pushes onto.
         let mut submount_attachments: Vec<crate::state::SubmountAttachment> = Vec::new();
 
-        for overlay in overlays {
+        let overlay_total = overlays.len();
+        for (overlay_index, overlay) in overlays.iter().enumerate() {
+            if verbosity >= Verbosity::Normal {
+                tracing::info!(
+                    event = "progress",
+                    phase = "overlay_mount",
+                    current = overlay_index + 1,
+                    total = overlay_total,
+                    "{}",
+                    overlay_progress_message(&overlay.target, overlay_index + 1, overlay_total)
+                );
+            }
+
             // Clear stale opaque markers on NAILS-managed dirs (currently
             // /etc/nixos) so a previous cycle cannot hide lower-layer contents.
             // Scoped: user uppers and /nix are never touched, so intended whiteouts
@@ -931,4 +953,30 @@ fn find_pid_by_comm(name: &str) -> Option<u32> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::overlay_progress_message;
+    use std::path::Path;
+
+    #[test]
+    fn progress_message_is_one_based_with_target_and_count() {
+        assert_eq!(
+            overlay_progress_message(Path::new("/home"), 3, 12),
+            "mounting /home (3/12)"
+        );
+    }
+
+    #[test]
+    fn progress_message_handles_first_and_last_overlay() {
+        assert_eq!(
+            overlay_progress_message(Path::new("/etc"), 1, 1),
+            "mounting /etc (1/1)"
+        );
+        assert_eq!(
+            overlay_progress_message(Path::new("/nix"), 5, 5),
+            "mounting /nix (5/5)"
+        );
+    }
 }

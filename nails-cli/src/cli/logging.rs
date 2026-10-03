@@ -64,7 +64,13 @@ pub fn init_subscriber(
     let registry = tracing_subscriber::registry().with(file_layer);
     match stdout_format {
         StdoutFormat::Human => {
+            // No timestamps on the human console: activation and teardown are
+            // interactive, the elapsed time is reported by the progress heartbeat,
+            // and a microsecond wall-clock stamp on every line only adds noise and
+            // widens the activity fingerprint if it is ever copied off-box. The
+            // JSON file layer still records a precise timestamp for forensics.
             let console = fmt::layer()
+                .without_time()
                 .with_target(false)
                 .with_thread_ids(false)
                 .with_thread_names(false)

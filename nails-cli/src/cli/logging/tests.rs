@@ -374,6 +374,26 @@ fn init_subscriber_quiet_mode_shows_only_errors() {
 }
 
 #[test]
+fn init_subscriber_human_output_has_no_timestamps() {
+    let output = run_subprocess("stdout-normal", None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "stderr={stderr}");
+    let line = stderr
+        .lines()
+        .find(|line| line.contains("visible info line"))
+        .expect("expected the info line on stderr");
+    // A default tracing timestamp leads the line with an ISO-8601 date
+    // (`2026-10-03T...`). With `.without_time()` the line opens with the level
+    // or the message, so its first non-space character is never a digit.
+    let first = line.trim_start().chars().next().expect("non-empty line");
+    assert!(
+        !first.is_ascii_digit(),
+        "human log line still carries a leading timestamp: {line:?}"
+    );
+}
+
+#[test]
 fn init_subscriber_normal_mode_hides_debug() {
     let output = run_subprocess("stdout-normal", None);
     let stderr = String::from_utf8_lossy(&output.stderr);
