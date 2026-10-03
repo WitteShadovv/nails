@@ -4,6 +4,23 @@ let
   inherit (pkgs) lib;
   testsRoot = ./tests;
 
+  # Shared node for specs that need nothing beyond the standard decoy VM and the
+  # nails binary. A spec that declares no `nodes` gets this node as `machine`,
+  # optionally parameterised through a top-level `baseNode` attribute (for
+  # example `baseNode = { python3 = true; }`). A spec with its own `nodes` is
+  # left untouched.
+  baseNode = import ./lib/base-node.nix { inherit self pkgs; };
+
+  applyBaseNode =
+    spec:
+    let
+      stripped = builtins.removeAttrs spec [ "baseNode" ];
+    in
+    if spec ? nodes then
+      stripped
+    else
+      stripped // { nodes.machine = baseNode.mkNode (spec.baseNode or { }); };
+
   # The in-VM helpers every testScript can import (run_command_capture and
   # install_nixos_rebuild_wrapper), as one importable package instead of the
   # hand-escaped copies that used to live inside each test's Nix strings. It is
@@ -111,7 +128,10 @@ let
 
   tests = builtins.listToAttrs (
     map (
-      spec:
+      rawSpec:
+      let
+        spec = applyBaseNode rawSpec;
+      in
       lib.nameValuePair spec.name (
         pkgs.testers.runNixOSTest (
           spec
