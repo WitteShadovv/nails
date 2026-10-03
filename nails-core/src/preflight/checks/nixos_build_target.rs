@@ -147,7 +147,7 @@ impl NixOSBuildTargetCheck {
                 CheckResult::Pass("Overlay-only: no NixOS build target".to_string())
             }
             HostTarget::None => CheckResult::fail(
-                "No NixOS configuration found. Provide --flake or ensure /etc/nixos contains flake.nix or configuration.nix.".to_string()
+                "No NixOS configuration found. Provide --nixos-flake or ensure /etc/nixos contains flake.nix or configuration.nix.".to_string()
             ),
         })
     }
@@ -444,6 +444,6 @@ mod tests {
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_fail());
-        assert!(result.message().contains("--flake"));
+        assert!(result.message().contains("--nixos-flake"));
     }
 }

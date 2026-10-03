@@ -290,6 +290,12 @@ impl<F: Filesystem> StatusCommand<F> {
                 Err(_) => (None, None, None),
             };
 
+        // Read the typed platform section before moving `state` out of the file,
+        // so both are `Some` only on NixOS; the status surface therefore shows the
+        // hidden-system generation on NixOS alone.
+        let hidden_toplevel = state_file.hidden_toplevel().map(str::to_string);
+        let last_switch_warning = state_file.last_switch_warning().map(str::to_string);
+
         // Build report
         let report = StatusReport {
             state: state_file.state,
@@ -297,8 +303,8 @@ impl<F: Filesystem> StatusCommand<F> {
             remaining_mounts,
             overlays,
             overlay_verification,
-            hidden_toplevel: state_file.hidden_toplevel,
-            last_switch_warning: state_file.last_switch_warning,
+            hidden_toplevel,
+            last_switch_warning,
             activated_at,
             uptime,
             formatted_uptime,

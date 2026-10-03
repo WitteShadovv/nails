@@ -487,6 +487,22 @@ impl<F: Filesystem> NailsManager<F> {
 
         let verbosity = self.verbosity;
 
+        // Whether this activation applies a declarative configuration layer. Only
+        // NixOS has one, and `--overlay-only` skips it. The progress-step total and
+        // labels are derived from this, so the NixOS prepare/switch steps never
+        // render on an overlay-only or Debian-family run. When no host profile was
+        // detected (unit tests) assume a layer so the legacy ordering still holds.
+        let host_has_layer = self
+            .host_profile
+            .as_ref()
+            .map(|profile| profile.has_config_layer());
+        let layer_runs = !options.overlay_only && host_has_layer.unwrap_or(true);
+        // A host whose profile is known to carry no declarative layer (FHS /
+        // Debian-family). `None` (no profile detected, e.g. unit tests) is not
+        // treated as Debian-family, so no spurious platform marker is written.
+        let host_is_fhs = host_has_layer == Some(false);
+        let mut step = StepProgress::new(verbosity, if layer_runs { 7 } else { 5 });
+
         // Step 1: Reconcile the persisted state against the boot and the live
         // kernel mount table before trusting it (see `reconcile_gate_for_activation`).
         // A verifiably active system is a no-op; a stale file is reset here and we
@@ -526,12 +542,7 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Step 3: Stage config and run preflight checks before any session
         // disruption (no StateGuard yet, so an early failure leaves state alone).
-        emit_progress(
-            verbosity,
-            "preflight",
-            1,
-            "[1/7] Running preflight checks...",
-        );
+        step.emit("preflight", "Running preflight checks...");
         self.run_preflight_phase(
             no_preflight,
             options.overlay_only,
@@ -541,24 +552,13 @@ impl<F: Filesystem> NailsManager<F> {
         )?;
 
         // Step 4: Handle --session kill before taking the StateGuard.
-        if verbosity >= Verbosity::Normal {
-            if no_preflight {
-                tracing::info!(
-                    event = "progress",
-                    phase = "session_management",
-                    current = 2,
-                    total = 7,
-                    "[2/7] Preparing session management (--no-preflight)"
-                );
-            } else {
-                tracing::info!(
-                    event = "progress",
-                    phase = "session_management",
-                    current = 2,
-                    total = 7,
-                    "[2/7] Preparing session management..."
-                );
-            }
+        if no_preflight {
+            step.emit(
+                "session_management",
+                "Preparing session management (--no-preflight)",
+            );
+        } else {
+            step.emit("session_management", "Preparing session management...");
         }
         let restart_plan = Self::handle_session_kill(verbosity, &options, &RealSessionCommands)?;
         // Test seam: lets a rollback test inject a non-default plan to drive the
@@ -582,13 +582,12 @@ impl<F: Filesystem> NailsManager<F> {
         guard.update_state(activating_state)?;
         maybe_block_after_activating_state_transition()?;
 
-        // Step 6: Compute NixOS switch metadata (no rebuild yet).
-        emit_progress(
-            verbosity,
-            "nixos_prepare",
-            3,
-            "[3/7] Preparing NixOS switch metadata...",
-        );
+        // Step 6: Compute the hidden configuration metadata (no rebuild yet). The
+        // call is cheap and returns nothing to apply off NixOS, but its progress
+        // step is only shown when a layer actually runs.
+        if layer_runs {
+            step.emit("config_prepare", "Preparing hidden configuration...");
+        }
         let (fast_path_toplevel, new_fingerprint) = guard.build_nixos_profile(verbosity)?;
 
         // Cancellation checkpoint before any mount (covers a SIGINT/SIGTERM during
@@ -598,7 +597,7 @@ impl<F: Filesystem> NailsManager<F> {
         crate::cancel::checkpoint()?;
 
         // Step 7: Mount persistent and ephemeral overlays.
-        emit_progress(verbosity, "overlay_mount", 4, "[4/7] Mounting overlays...");
+        step.emit("overlay_mount", "Mounting overlays...");
         let mount_timer = Stopwatch::start();
         let overlay_mount::OverlayMountOutcome {
             direct_mounts,
@@ -661,12 +660,9 @@ impl<F: Filesystem> NailsManager<F> {
         // state. None follows — a running `switch-to-configuration` is never cut.
         crate::cancel::checkpoint()?;
 
-        emit_progress(
-            verbosity,
-            "profile_switch",
-            5,
-            "[5/7] Running NixOS switch/rebuild...",
-        );
+        if layer_runs {
+            step.emit("profile_switch", "Applying hidden configuration...");
+        }
         let hidden_config =
             guard.run_post_overlay_nixos_switch(&fast_path_toplevel, &new_fingerprint, verbosity);
         if let HiddenConfigOutcome::Failed { reason } = &hidden_config
@@ -688,12 +684,7 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Step 9: Restart session / display manager, now that the hidden
         // configuration is in force.
-        emit_progress(
-            verbosity,
-            "session_restart",
-            6,
-            "[6/7] Restarting session/display manager...",
-        );
+        step.emit("session_restart", "Restarting session/display manager...");
         if restart_phase == SessionRestartPhase::AfterOverlayMounts {
             prepare_notification_autostart_before_session_restart(&guard);
             restart_session_after_success(&restart_plan).map_err(|e| {
@@ -718,8 +709,16 @@ impl<F: Filesystem> NailsManager<F> {
             guard.record_read_only_guards(&read_only_guards)?;
         }
 
+        // Record the platform section for a host with no declarative layer, so the
+        // typed marker is persisted even when no switch ran. Skipped for an
+        // overlay-only run on NixOS, which leaves the platform unset rather than
+        // mislabelling the host as Debian-family.
+        if host_is_fhs {
+            guard.record_debian_family_platform();
+        }
+
         // Step 10: Finalize - transition to Active.
-        emit_progress(verbosity, "finalize", 7, "[7/7] Finalizing activation...");
+        step.emit("finalize", "Finalizing activation...");
         let current = guard.current_state()?;
         let active_state = current.complete_activation(mounted_overlays, decoy_writers)?;
         guard.update_state(active_state)?;
@@ -798,7 +797,18 @@ impl<F: Filesystem> NailsManager<F> {
     pub(crate) fn record_switch_warning(&self, warning: Option<&str>) {
         let mut cached = self.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
-            state_file.last_switch_warning = warning.map(ToString::to_string);
+            state_file.set_switch_warning(warning.map(ToString::to_string));
+        }
+    }
+
+    /// Record the Debian-family platform section in the cached state so a host
+    /// with no declarative layer still carries a typed platform marker. A no-op
+    /// once a NixOS section is recorded (an overlay-only run on NixOS keeps the
+    /// platform unset rather than claiming Debian-family).
+    pub(crate) fn record_debian_family_platform(&self) {
+        let mut cached = self.cached_state.borrow_mut();
+        if let Some(ref mut state_file) = *cached {
+            state_file.mark_debian_family();
         }
     }
 
@@ -1087,16 +1097,42 @@ fn format_mount_list(mounts: &[std::path::PathBuf]) -> String {
     }
 }
 
-/// Emit a `[n/7]` progress log line at Normal verbosity or above.
-fn emit_progress(verbosity: Verbosity, phase: &str, current: u8, message: &str) {
-    if verbosity >= Verbosity::Normal {
-        tracing::info!(
-            event = "progress",
-            phase = phase,
-            current = current,
-            total = 7,
-            "{}",
-            message
-        );
+/// Sequential activation progress whose count follows the active execution path.
+///
+/// The total is fixed up front from whether a declarative configuration layer
+/// runs (NixOS, and not `--overlay-only`); each emitted step advances the counter
+/// so the `[n/total]` numbering stays contiguous even when the layer steps are
+/// skipped. A step is counted whatever the verbosity, so the numbering a quiet
+/// run would show matches a verbose one; only the log line is gated.
+struct StepProgress {
+    verbosity: Verbosity,
+    current: u8,
+    total: u8,
+}
+
+impl StepProgress {
+    fn new(verbosity: Verbosity, total: u8) -> Self {
+        Self {
+            verbosity,
+            current: 0,
+            total,
+        }
+    }
+
+    /// Advance to the next step and log it at Normal verbosity or above.
+    fn emit(&mut self, phase: &str, message: &str) {
+        self.current += 1;
+        if self.verbosity >= Verbosity::Normal {
+            tracing::info!(
+                event = "progress",
+                phase = phase,
+                current = self.current,
+                total = self.total,
+                "[{}/{}] {}",
+                self.current,
+                self.total,
+                message
+            );
+        }
     }
 }

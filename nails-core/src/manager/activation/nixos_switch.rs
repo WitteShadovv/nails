@@ -80,9 +80,9 @@ impl<F: Filesystem> NailsManager<F> {
         {
             let mut cached = self.cached_state.borrow_mut();
             if let Some(ref mut state_file) = *cached {
-                if let Some(ref toplevel) = toplevel {
-                    state_file.hidden_toplevel = Some(toplevel.clone());
-                }
+                // An Applied switch is always NixOS; record the generation (keeping
+                // any prior one when this switch produced no fresh toplevel).
+                state_file.set_nixos_generation(toplevel.clone());
                 state_file.config_fingerprint = new_fingerprint.clone();
 
                 drop(cached);
@@ -271,7 +271,7 @@ mod tests {
 
         let saved = StateFile::load(&hidden_root.join("state.json")).unwrap();
         let toplevel = saved
-            .hidden_toplevel
+            .hidden_toplevel()
             .expect("toplevel store path persisted");
         assert!(
             toplevel.starts_with("/nix/store/") && toplevel.contains("nixos-system"),
@@ -334,7 +334,7 @@ mod tests {
         );
 
         let saved = StateFile::load(&hidden_root.join("state.json")).unwrap();
-        assert_eq!(saved.hidden_toplevel, Some(TOPLEVEL.to_string()));
+        assert_eq!(saved.hidden_toplevel(), Some(TOPLEVEL));
     }
 
     #[test]
@@ -374,6 +374,6 @@ mod tests {
 
         // The freshly built toplevel, not the vanished cached one, is persisted.
         let saved = StateFile::load(&hidden_root.join("state.json")).unwrap();
-        assert_eq!(saved.hidden_toplevel, Some(TOPLEVEL.to_string()));
+        assert_eq!(saved.hidden_toplevel(), Some(TOPLEVEL));
     }
 }

@@ -83,7 +83,7 @@ fn test_activate_flake_conflicts_with_overlay_only() {
     let result = Cli::try_parse_checked_from([
         "nails",
         "activate",
-        "--flake",
+        "--nixos-flake",
         "/etc/nixos",
         "--overlay-only",
     ]);
@@ -152,7 +152,7 @@ fn test_deactivate_quiet_verbose_conflict() {
 #[test]
 fn test_activate_flake_flag() {
     assert_eq!(
-        activate(&["--flake", "/etc/nixos#amnesia-virtualbox"]).nixos_flake,
+        activate(&["--nixos-flake", "/etc/nixos#amnesia-virtualbox"]).nixos_flake,
         Some("/etc/nixos#amnesia-virtualbox".to_string())
     );
 }
@@ -160,7 +160,7 @@ fn test_activate_flake_flag() {
 #[test]
 fn test_activate_flake_flag_path_only() {
     assert_eq!(
-        activate(&["--flake", "/etc/nixos"]).nixos_flake,
+        activate(&["--nixos-flake", "/etc/nixos"]).nixos_flake,
         Some("/etc/nixos".to_string())
     );
 }
@@ -184,7 +184,7 @@ fn test_verbosity_reaches_activate_from_either_position() {
 #[test]
 fn test_activate_flake_flag_with_equals_syntax() {
     assert_eq!(
-        activate(&["--flake=/etc/nixos#my-host"]).nixos_flake,
+        activate(&["--nixos-flake=/etc/nixos#my-host"]).nixos_flake,
         Some("/etc/nixos#my-host".to_string())
     );
 }

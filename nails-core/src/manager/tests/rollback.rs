@@ -290,7 +290,9 @@ fn test_rollback_clears_overlay_status_and_hidden_toplevel() {
         let mut cached = mgr.cached_state.borrow_mut();
         let state_file = StateFile {
             overlay_status,
-            hidden_toplevel: Some("test-generation-123".to_string()),
+            platform: Some(crate::state::PlatformState::nixos(Some(
+                "test-generation-123".to_string(),
+            ))),
             ..StateFile::default()
         };
         *cached = Some(state_file);
@@ -314,7 +316,8 @@ fn test_rollback_clears_overlay_status_and_hidden_toplevel() {
         "overlay_status should be cleared after rollback"
     );
     assert_eq!(
-        loaded.hidden_toplevel, None,
+        loaded.hidden_toplevel(),
+        None,
         "hidden_toplevel should be cleared after rollback"
     );
 }

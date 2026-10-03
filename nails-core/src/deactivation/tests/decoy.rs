@@ -36,7 +36,7 @@ fn test_deactivation_skips_decoy_restore_when_disabled() {
         &work_dir,
     );
     let mut loaded = StateFile::load(&state_path).unwrap();
-    loaded.hidden_toplevel = Some("1".to_string());
+    loaded.set_nixos_generation(Some("1".to_string()));
     loaded
         .save_with_custom_root(&state_path, &hidden_root)
         .unwrap();
@@ -149,9 +149,8 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
             activated_at: chrono::Utc::now(),
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
         },
-        hidden_toplevel: Some("6".to_string()),
+        platform: Some(crate::state::PlatformState::nixos(Some("6".to_string()))),
         config_fingerprint: Some("deadbeefcafebabe".to_string()),
-        last_switch_warning: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: chrono::Utc::now(),
@@ -194,7 +193,7 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
             .join("state.json"),
     )
     .unwrap();
-    assert_eq!(loaded.hidden_toplevel, Some("6".to_string()));
+    assert_eq!(loaded.hidden_toplevel(), Some("6"));
     assert_eq!(
         loaded.config_fingerprint,
         Some("deadbeefcafebabe".to_string())

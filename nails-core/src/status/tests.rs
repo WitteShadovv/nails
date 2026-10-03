@@ -3,7 +3,7 @@
 use super::*;
 use crate::MockFilesystem;
 use crate::StateFile;
-use crate::state::OverlayInfo;
+use crate::state::{OverlayInfo, PlatformState};
 use std::io::Write;
 use std::path::Path;
 use tempfile::NamedTempFile;
@@ -191,8 +191,12 @@ fn test_status_command_active_verified() {
             decoy_writers: Vec::new(),
         },
         overlay_status,
-        hidden_toplevel: Some("generation-123".to_string()),
-        last_switch_warning: Some("hidden NixOS configuration was not applied (boom)".to_string()),
+        platform: Some(PlatformState::NixOs {
+            generation: Some("generation-123".to_string()),
+            last_switch_warning: Some(
+                "hidden NixOS configuration was not applied (boom)".to_string(),
+            ),
+        }),
         ..StateFile::default()
     };
     let temp_file = create_temp_state_file(&state_file);

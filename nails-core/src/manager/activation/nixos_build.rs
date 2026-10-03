@@ -46,7 +46,9 @@ impl<F: Filesystem> NailsManager<F> {
             let cached = self.cached_state.borrow();
             (
                 cached.as_ref().and_then(|sf| sf.config_fingerprint.clone()),
-                cached.as_ref().and_then(|sf| sf.hidden_toplevel.clone()),
+                cached
+                    .as_ref()
+                    .and_then(|sf| sf.hidden_toplevel().map(str::to_string)),
             )
         };
 

@@ -247,12 +247,11 @@ impl<F: Filesystem> NailsManager<F> {
         // This ensures the state file doesn't retain stale activation metadata after rollback
         if let SystemState::Inactive = new_state {
             state_file.overlay_status.clear();
-            state_file.hidden_toplevel = None;
-            state_file.last_switch_warning = None;
+            state_file.clear_platform();
             tracing::debug!(
                 action = "rollback",
                 target_state = "Inactive",
-                fields_cleared = "overlay_status,hidden_toplevel,last_switch_warning",
+                fields_cleared = "overlay_status,platform",
                 "Rollback to Inactive"
             );
         }

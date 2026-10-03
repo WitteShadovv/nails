@@ -10,12 +10,12 @@ use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-/// Overlay environment manager for NixOS
+/// Overlay environment manager
 #[derive(Parser, Debug)]
 #[command(name = "nails")]
 #[command(author = "NAILS Project")]
 #[command(version)]
-#[command(about = "Overlay environment manager for NixOS", long_about = None)]
+#[command(about = "Overlay environment manager", long_about = None)]
 pub struct Cli {
     #[command(flatten)]
     pub global: GlobalArgs,
@@ -147,11 +147,11 @@ pub struct GlobalArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Activate the hidden NixOS environment (mount overlayfs + switch profiles)
+    /// Activate the hidden environment (mount overlays and apply the platform layer)
     Activate(ActivateArgs),
     /// Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
     Deactivate(DeactivateArgs),
-    /// Reapply the hidden NixOS configuration while active (rebuild + switch-to-configuration test)
+    /// Reapply the hidden configuration layer while active (platforms with a layer only)
     Reapply(ReapplyArgs),
     /// Emergency mode: rapid deactivation with countdown
     Emergency(EmergencyArgs),
@@ -197,13 +197,13 @@ pub struct ActivateArgs {
     #[arg(short = 'y', long)]
     pub yes: bool,
 
-    /// NixOS flake reference (e.g., /etc/nixos#hostname)
+    /// NixOS layer: flake reference (e.g., /etc/nixos#hostname)
     ///
-    /// When set, this value is passed directly to `nixos-rebuild --flake`
-    /// instead of auto-detecting the flake path. Supports attribute
-    /// selection (e.g., /etc/nixos#amnesia-virtualbox).
+    /// Only applies on NixOS. When set, this value is passed directly to
+    /// `nixos-rebuild --flake` instead of auto-detecting the flake path. Supports
+    /// attribute selection (e.g., /etc/nixos#amnesia-virtualbox).
     #[arg(
-        long = "flake",
+        long = "nixos-flake",
         value_name = "FLAKE_REF",
         conflicts_with = "overlay_only"
     )]
@@ -213,7 +213,7 @@ pub struct ActivateArgs {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Mount overlays only, skip NixOS profile switch
+    /// Mount overlays only, skip the platform configuration layer
     #[arg(long)]
     pub overlay_only: bool,
 
@@ -330,13 +330,13 @@ pub struct VerifyArgs {
 /// `nails check` (alias `doctor`) arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct CheckArgs {
-    /// Check as for an overlay-only activation (skip the NixOS profile checks)
+    /// Check as for an overlay-only activation (skip the platform-layer checks)
     #[arg(long)]
     pub overlay_only: bool,
 
-    /// Check against a specific NixOS flake reference (e.g. /etc/nixos#hostname)
+    /// NixOS layer: check against a specific flake reference (e.g. /etc/nixos#hostname)
     #[arg(
-        long = "flake",
+        long = "nixos-flake",
         value_name = "FLAKE_REF",
         conflicts_with = "overlay_only"
     )]
@@ -361,8 +361,12 @@ pub enum ConfigCommand {
         #[arg(long)]
         example: bool,
 
-        /// Preview the effect of `activate --flake FLAKE_REF`
-        #[arg(long = "flake", value_name = "FLAKE_REF", conflicts_with = "example")]
+        /// Preview the effect of `activate --nixos-flake FLAKE_REF`
+        #[arg(
+            long = "nixos-flake",
+            value_name = "FLAKE_REF",
+            conflicts_with = "example"
+        )]
         nixos_flake: Option<String>,
 
         /// Preview the effect of `deactivate --no-clear-history`

@@ -346,7 +346,9 @@ fn execute_status_no_color_verbose_active_shows_overlay_details_and_logs() {
             overlays: vec![PathBuf::from("/home")],
             decoy_writers: Vec::new(),
         },
-        hidden_toplevel: Some("nails-gen-77".to_string()),
+        platform: Some(nails_core::PlatformState::nixos(Some(
+            "nails-gen-77".to_string(),
+        ))),
         overlay_status,
         ..StateFile::default()
     };

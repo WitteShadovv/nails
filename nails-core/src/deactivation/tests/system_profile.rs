@@ -26,7 +26,7 @@ fn test_deactivate_returns_error_when_no_system_profile_exists() {
     };
     StateFile {
         state: active_state,
-        hidden_toplevel: Some("1".to_string()),
+        platform: Some(crate::state::PlatformState::nixos(Some("1".to_string()))),
         ..StateFile::default()
     }
     .save_with_custom_root(&state_path, temp_dir.path())

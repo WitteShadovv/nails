@@ -69,7 +69,10 @@ pub(crate) fn prompt_session_kill_confirmation_with_io<R: std::io::BufRead, W: s
     )?;
     writeln!(writer, "    3. Mount hidden environment overlays")?;
     writeln!(writer, "    4. Restart display manager and user manager")?;
-    writeln!(writer, "    5. Run the NixOS switch/rebuild test path")?;
+    writeln!(
+        writer,
+        "    5. Apply the hidden configuration layer (if any)"
+    )?;
     writeln!(writer)?;
     writeln!(
         writer,

@@ -1,10 +1,11 @@
 use super::gate::ActivationGateTestGuard;
 use super::maybe_block_after_activating_state_transition;
 use super::{
-    INTEGRITY_VERIFIED_TARGETS, SessionRestartPhase, derive_security_label,
+    INTEGRITY_VERIFIED_TARGETS, SessionRestartPhase, StepProgress, derive_security_label,
     determine_session_restart_phase, overlay_status_body, record_surviving_writers,
 };
 use crate::DecoyWriter;
+use crate::Verbosity;
 use crate::overlay::SurvivingWriter;
 use crate::test_support::EnvGuard;
 use crate::{
@@ -221,18 +222,18 @@ fn session_restart_phase_runs_after_overlay_mounts_for_any_plan() {
 fn activation_progress_describes_requested_ordering() {
     let source = include_str!("mod.rs");
     let overlay_idx = source
-        .find("[4/7] Mounting overlays...")
+        .find("\"overlay_mount\", \"Mounting overlays...\"")
         .expect("overlay progress marker");
     let switch_idx = source
-        .find("[5/7] Running NixOS switch/rebuild...")
+        .find("\"profile_switch\", \"Applying hidden configuration...\"")
         .expect("switch progress marker");
     let restart_idx = source
-        .find("[6/7] Restarting session/display manager...")
+        .find("\"session_restart\", \"Restarting session/display manager...\"")
         .expect("session restart progress marker");
 
-    // The hidden NixOS switch runs before the session restart, so the restarted
-    // session comes up under the hidden configuration and a failed switch never
-    // brings the decoy session up first.
+    // The hidden configuration switch runs before the session restart, so the
+    // restarted session comes up under the hidden configuration and a failed
+    // switch never brings the decoy session up first.
     assert!(
         overlay_idx < switch_idx && switch_idx < restart_idx,
         "activation progress markers should reflect overlays -> switch -> restart ordering"
@@ -763,4 +764,27 @@ fn no_cancel_lets_activation_complete() {
         SystemState::Active { .. }
     ));
     assert!(fs.is_mounted(Path::new("/home")).expect("/home mounted"));
+}
+
+#[test]
+fn step_progress_numbers_steps_contiguously_up_to_the_total() {
+    // The layer path emits seven steps: the counter ends exactly at the total.
+    let mut step = StepProgress::new(Verbosity::Normal, 7);
+    for _ in 0..7 {
+        step.emit("phase", "message");
+    }
+    assert_eq!(step.current, 7);
+    assert_eq!(step.total, 7);
+}
+
+#[test]
+fn step_progress_total_follows_the_overlay_only_path() {
+    // With no declarative layer the two NixOS steps are skipped, so the derived
+    // total is five and the five emitted steps number 1..=5 contiguously.
+    let mut step = StepProgress::new(Verbosity::Quiet, 5);
+    for expected in 1..=5 {
+        step.emit("phase", "message");
+        assert_eq!(step.current, expected);
+    }
+    assert_eq!(step.total, 5);
 }

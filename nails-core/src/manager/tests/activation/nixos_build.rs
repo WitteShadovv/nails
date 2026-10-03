@@ -28,9 +28,8 @@ fn test_config_fingerprint_field_persistence() {
     let initial_state = StateFile {
         version: env!("CARGO_PKG_VERSION").to_string(),
         state: SystemState::Inactive,
-        hidden_toplevel: None,
+        platform: None,
         config_fingerprint: None, // First activation - no fingerprint yet
-        last_switch_warning: None,
         overlay_status: HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
@@ -84,7 +83,7 @@ fn test_config_fingerprint_field_persistence() {
         let mut cached = mgr.cached_state.borrow_mut();
         if let Some(ref mut state) = *cached {
             state.config_fingerprint = Some(test_fingerprint.clone());
-            state.hidden_toplevel = Some("test-gen-123".to_string());
+            state.set_nixos_generation(Some("test-gen-123".to_string()));
         }
     }
 
@@ -191,7 +190,7 @@ fn plan_manager(
         *cached = Some(StateFile {
             state: SystemState::Inactive,
             config_fingerprint: stored_fingerprint,
-            hidden_toplevel: stored_toplevel,
+            platform: stored_toplevel.map(|t| crate::state::PlatformState::nixos(Some(t))),
             ..StateFile::default()
         });
     }

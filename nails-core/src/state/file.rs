@@ -70,6 +70,48 @@ pub struct LoadResult {
     pub outcome: LoadOutcome,
 }
 
+/// The platform-specific half of a saved activation, tagged by platform.
+///
+/// A typed section replaces the former flat `hidden_toplevel`/`last_switch_warning`
+/// fields: only NixOS applies a declarative configuration layer, so only its
+/// variant records a generation and a switch warning. FHS / Debian-family hosts
+/// have no such layer, so their variant is empty. This keeps NixOS-only data off
+/// every non-NixOS state file and lets the status surface render the hidden-system
+/// generation on NixOS alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "platform", rename_all = "snake_case")]
+pub enum PlatformState {
+    /// A NixOS host: the hidden system generation in force, plus any warning from
+    /// the last switch.
+    NixOs {
+        /// Store path of the hidden NixOS system toplevel switched to on the last
+        /// successful activation (e.g. `/nix/store/…-nixos-system-host-…`). The
+        /// fast path reuses it when the config fingerprint still matches and the
+        /// path still exists. `None` until the first switch that produced one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generation: Option<String>,
+        /// Reason the hidden configuration was not applied on the last activation,
+        /// when the switch failed but the overlays and session were kept
+        /// (`nixos_switch_required = false`). `None` when the switch applied
+        /// cleanly. The detached GUI worker exits before the operator sees console
+        /// output, so this is the durable record `nails status` reports.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_switch_warning: Option<String>,
+    },
+    /// A Debian/Ubuntu or other FHS host: no declarative configuration layer.
+    DebianFamily,
+}
+
+impl PlatformState {
+    /// A NixOS section carrying `generation` and no switch warning.
+    pub fn nixos(generation: Option<String>) -> Self {
+        PlatformState::NixOs {
+            generation,
+            last_switch_warning: None,
+        }
+    }
+}
+
 /// State file for persistence to hidden volume
 ///
 /// The StateFile contains the current system state and all metadata needed
@@ -92,36 +134,27 @@ pub struct StateFile {
     /// Current system state (Inactive, Activating, Active, Deactivating, Degraded)
     pub state: SystemState,
 
-    /// Store path of the hidden NixOS system toplevel built and switched to on
-    /// the last successful activation (e.g. `/nix/store/…-nixos-system-host-…`).
+    /// Platform-specific activation record, or `None` before the first
+    /// activation and after a rollback to Inactive.
     ///
-    /// The fast path reuses this directly: when the config fingerprint still
-    /// matches and this path still exists on disk, activation re-runs
-    /// `switch-to-configuration test` against it instead of rebuilding. `None`
-    /// until the first successful activation that switched the hidden config, and
-    /// cleared on deactivation. Deactivation keys the decoy restore on this being
-    /// set, so it is the record that a hidden configuration is in force.
-    pub hidden_toplevel: Option<String>,
+    /// Only NixOS has a declarative layer, so only its variant carries a
+    /// generation (the hidden system toplevel) and a switch warning. FHS /
+    /// Debian-family hosts protect the decoy with overlays and read-only guards
+    /// alone, so [`PlatformState::DebianFamily`] carries no layer state. Status
+    /// reads this to surface the hidden-system generation on NixOS only, and
+    /// deactivation keys the decoy restore on a NixOS generation being present.
+    #[serde(default)]
+    pub platform: Option<PlatformState>,
 
     /// Config fingerprint after last successful activation.
     ///
     /// 16-char hex FNV-1a hash of hardware-configuration.nix + configuration.nix content.
     /// Used by the fast-path activation logic to skip rebuilds when the config has not changed.
-    /// `None` until the first successful activation with fingerprint tracking.
+    /// `None` until the first successful activation with fingerprint tracking. This
+    /// is an internal cache key, not operator-facing platform state, so it stays a
+    /// flat field rather than moving into [`PlatformState`].
     #[serde(default)]
     pub config_fingerprint: Option<String>,
-
-    /// Reason the hidden NixOS configuration was not applied on the last
-    /// activation, when the switch failed but the overlays and session were kept
-    /// (`nixos_switch_required = false`).
-    ///
-    /// `None` when the last switch applied cleanly, was not requested (an
-    /// overlay-only run or an FHS host), or activation rolled back. The detached
-    /// GUI worker exits before the operator sees any console output, so this is
-    /// the durable record `nails status` reads to report a hidden configuration
-    /// that is NOT in force. Cleared on a later clean switch and on rollback.
-    #[serde(default)]
-    pub last_switch_warning: Option<String>,
 
     /// Currently mounted overlays with their configuration
     pub overlay_status: HashMap<PathBuf, OverlayInfo>,
@@ -205,9 +238,8 @@ impl Default for StateFile {
         Self {
             version: env!("CARGO_PKG_VERSION").to_string(),
             state: SystemState::Inactive,
-            hidden_toplevel: None,
+            platform: None,
             config_fingerprint: None,
-            last_switch_warning: None,
             overlay_status: HashMap::new(),
             failed_overlays: Vec::new(),
             nix_store_init_namespace_bound: false,
@@ -222,6 +254,71 @@ impl Default for StateFile {
 }
 
 impl StateFile {
+    /// Whether the last activation ran on NixOS (the only platform with a layer).
+    pub fn is_nixos(&self) -> bool {
+        matches!(self.platform, Some(PlatformState::NixOs { .. }))
+    }
+
+    /// Store path of the hidden NixOS system generation in force, if any.
+    ///
+    /// `Some` only on NixOS after a switch produced a toplevel; `None` on every
+    /// other platform. Deactivation keys the decoy restore on this.
+    pub fn hidden_toplevel(&self) -> Option<&str> {
+        match &self.platform {
+            Some(PlatformState::NixOs { generation, .. }) => generation.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Reason the hidden NixOS configuration was not applied on the last
+    /// activation, if the switch failed but the activation was kept.
+    pub fn last_switch_warning(&self) -> Option<&str> {
+        match &self.platform {
+            Some(PlatformState::NixOs {
+                last_switch_warning,
+                ..
+            }) => last_switch_warning.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Record the NixOS generation, marking the platform NixOS and preserving any
+    /// stored switch warning. A `None` generation keeps a previously stored one
+    /// (a switch that applied without yielding a fresh toplevel does not erase the
+    /// generation already in force).
+    pub fn set_nixos_generation(&mut self, generation: Option<String>) {
+        let generation = generation.or_else(|| self.hidden_toplevel().map(str::to_string));
+        let last_switch_warning = self.last_switch_warning().map(str::to_string);
+        self.platform = Some(PlatformState::NixOs {
+            generation,
+            last_switch_warning,
+        });
+    }
+
+    /// Record (or clear) the last NixOS switch warning, marking the platform NixOS
+    /// and preserving the stored generation.
+    pub fn set_switch_warning(&mut self, warning: Option<String>) {
+        let generation = self.hidden_toplevel().map(str::to_string);
+        self.platform = Some(PlatformState::NixOs {
+            generation,
+            last_switch_warning: warning,
+        });
+    }
+
+    /// Mark the platform as Debian-family (no declarative layer) unless a NixOS
+    /// section is already recorded.
+    pub fn mark_debian_family(&mut self) {
+        if !self.is_nixos() {
+            self.platform = Some(PlatformState::DebianFamily);
+        }
+    }
+
+    /// Drop the platform section (rollback to Inactive clears stale activation
+    /// metadata).
+    pub fn clear_platform(&mut self) {
+        self.platform = None;
+    }
+
     /// Save state file to disk with a durable atomic write.
     ///
     /// # Durability & Atomicity

@@ -9,7 +9,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Activate the hidden NixOS environment (mount overlayfs + switch profiles)
+Activate the hidden environment (mount overlays and apply the platform layer)
 
 Usage: nails activate [OPTIONS]
 
@@ -63,10 +63,10 @@ Options:
       --ascii
           Use ASCII markers instead of Unicode symbols and box drawing
 
-      --flake <FLAKE_REF>
-          NixOS flake reference (e.g., /etc/nixos#hostname)
+      --nixos-flake <FLAKE_REF>
+          NixOS layer: flake reference (e.g., /etc/nixos#hostname)
 
-          When set, this value is passed directly to `nixos-rebuild --flake` instead of auto-detecting the flake path. Supports attribute selection (e.g., /etc/nixos#amnesia-virtualbox).
+          Only applies on NixOS. When set, this value is passed directly to `nixos-rebuild --flake` instead of auto-detecting the flake path. Supports attribute selection (e.g., /etc/nixos#amnesia-virtualbox).
 
       --dry-run
           Preview activation steps without making changes
@@ -78,7 +78,7 @@ Options:
           Do not write the log file on the hidden volume (diagnostics still go to stderr)
 
       --overlay-only
-          Mount overlays only, skip NixOS profile switch
+          Mount overlays only, skip the platform configuration layer
 
       --risky-services <POLICY>
           What to do with risky services still referencing a target (overrides the `risky_services` config key)

@@ -40,9 +40,7 @@ fn test_help_flag() {
     cmd.arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
-            "Overlay environment manager for NixOS",
-        ));
+        .stdout(predicates::str::contains("Overlay environment manager"));
 }
 
 /// Test that activate command accepts --no-preflight flag
@@ -386,7 +384,7 @@ fn test_status_command_details_active_shows_overlay_details() {
       "overlays": ["/home"]
     }}
   }},
-  "hidden_toplevel": "nails-gen-99",
+  "platform": {{ "platform": "nix_os", "generation": "nails-gen-99" }},
   "config_fingerprint": null,
   "overlay_status": {{
     "/home": {{
@@ -691,7 +689,6 @@ fn test_verify_command_json_output_reports_present_state_file_status() {
     let state_json = r#"{
   \"version\": \"0.2.0\",
   \"state\": \"Inactive\",
-  \"hidden_toplevel\": null,
   \"config_fingerprint\": null,
   \"overlay_status\": {},
   \"failed_overlays\": [],

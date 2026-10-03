@@ -8,14 +8,14 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Overlay environment manager for NixOS
+Overlay environment manager
 
 Usage: nails [OPTIONS] <COMMAND>
 
 Commands:
-  activate         Activate the hidden NixOS environment (mount overlayfs + switch profiles)
+  activate         Activate the hidden environment (mount overlays and apply the platform layer)
   deactivate       Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
-  reapply          Reapply the hidden NixOS configuration while active (rebuild + switch-to-configuration test)
+  reapply          Reapply the hidden configuration layer while active (platforms with a layer only)
   emergency        Emergency mode: rapid deactivation with countdown
   status           Show current status and uptime
   verify           Verify system is clean of NAILS artifacts

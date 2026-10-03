@@ -231,7 +231,7 @@ fn write_state_with_overlay(
 
 fn set_state_hidden_toplevel(state_path: &Path, hidden_root: &Path, generation: &str) {
     let mut loaded = StateFile::load(state_path).unwrap();
-    loaded.hidden_toplevel = Some(generation.to_string());
+    loaded.set_nixos_generation(Some(generation.to_string()));
     loaded
         .save_with_custom_root(state_path, hidden_root)
         .unwrap();
@@ -343,7 +343,7 @@ fn active_manager_with_failing_profile_lookup() -> (
             activated_at: chrono::Utc::now(),
             overlays: vec![],
         },
-        hidden_toplevel: Some("1".to_string()),
+        platform: Some(crate::state::PlatformState::nixos(Some("1".to_string()))),
         ..StateFile::default()
     }
     .save_with_custom_root(&state_path, &hidden_root)

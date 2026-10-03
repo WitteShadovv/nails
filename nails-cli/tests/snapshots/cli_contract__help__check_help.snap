@@ -18,10 +18,10 @@ Options:
           Path to the configuration file (overrides binary-relative discovery)
 
       --overlay-only
-          Check as for an overlay-only activation (skip the NixOS profile checks)
+          Check as for an overlay-only activation (skip the platform-layer checks)
 
-      --flake <FLAKE_REF>
-          Check against a specific NixOS flake reference (e.g. /etc/nixos#hostname)
+      --nixos-flake <FLAKE_REF>
+          NixOS layer: check against a specific flake reference (e.g. /etc/nixos#hostname)
 
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace

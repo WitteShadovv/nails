@@ -79,7 +79,7 @@ pub struct CliOverrides {
     /// Override clear_history (--no-clear-history sets to false)
     pub clear_history: Option<bool>,
 
-    /// Override nixos_flake (--flake sets to the given flake reference)
+    /// Override nixos_flake (--nixos-flake sets to the given flake reference)
     pub nixos_flake: Option<String>,
 }
 
@@ -290,7 +290,7 @@ pub struct Config {
     /// instead of auto-detecting the flake path. Supports full flake references
     /// with attribute selection (e.g., `/mnt/data/nixos#my-host`).
     ///
-    /// **Precedence**: CLI `--flake` flag > config `nixos_flake` > auto-discovery
+    /// **Precedence**: CLI `--nixos-flake` flag > config `nixos_flake` > auto-discovery
     ///
     /// **Example**:
     /// ```toml

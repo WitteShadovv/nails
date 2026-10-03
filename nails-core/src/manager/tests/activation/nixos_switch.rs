@@ -117,7 +117,7 @@ fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
     // The outcome is persisted so `nails status` can report the hidden
     // configuration as NOT applied after a detached run.
     assert!(
-        loaded.last_switch_warning.is_some(),
+        loaded.last_switch_warning().is_some(),
         "a failed switch must be recorded in state for status to surface it"
     );
     assert!(fs.is_mounted(Path::new("/etc")).unwrap());

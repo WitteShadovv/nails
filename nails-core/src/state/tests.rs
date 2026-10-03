@@ -153,7 +153,7 @@ fn test_state_file_default() {
 
     assert_eq!(state_file.version, env!("CARGO_PKG_VERSION"));
     assert_eq!(state_file.state, SystemState::Inactive);
-    assert_eq!(state_file.hidden_toplevel, None);
+    assert_eq!(state_file.hidden_toplevel(), None);
     assert!(state_file.overlay_status.is_empty());
     assert_eq!(state_file.integrity_sha256, None);
     // Just verify last_modified exists (can't test exact time)
@@ -186,7 +186,7 @@ fn test_state_file_serialization() {
             overlays: vec![PathBuf::from("/home")],
             decoy_writers: Vec::new(),
         },
-        hidden_toplevel: Some("abc123def456".to_string()),
+        platform: Some(PlatformState::nixos(Some("abc123def456".to_string()))),
         overlay_status,
         failed_overlays: Vec::new(),
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:01Z")
@@ -199,14 +199,13 @@ fn test_state_file_serialization() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
-        last_switch_warning: None,
     };
 
     // Serialize to JSON
     let json = serde_json::to_string_pretty(&state_file).expect("Should serialize");
     assert!(json.contains("\"version\""));
     assert!(json.contains("\"Active\""));
-    assert!(json.contains("\"hidden_toplevel\""));
+    assert!(json.contains("\"platform\""));
     assert!(json.contains("\"overlay_status\""));
 
     // Deserialize back
@@ -340,7 +339,7 @@ fn test_load_missing_file_returns_default() {
 
     let state = result.unwrap();
     assert_eq!(state.state, SystemState::Inactive);
-    assert_eq!(state.hidden_toplevel, None);
+    assert_eq!(state.hidden_toplevel(), None);
     assert!(state.overlay_status.is_empty());
 }
 
@@ -402,7 +401,7 @@ fn test_save_load_round_trip_with_inactive_state() {
     let original = StateFile {
         version: env!("CARGO_PKG_VERSION").to_string(),
         state: SystemState::Inactive,
-        hidden_toplevel: None,
+        platform: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
@@ -415,7 +414,6 @@ fn test_save_load_round_trip_with_inactive_state() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
-        last_switch_warning: None,
     };
 
     // Save through the real durable path so the file carries a valid digest.
@@ -427,7 +425,7 @@ fn test_save_load_round_trip_with_inactive_state() {
     let loaded = StateFile::load(&state_path).expect("Should load");
     assert_eq!(loaded.state, original.state);
     assert_eq!(loaded.version, original.version);
-    assert_eq!(loaded.hidden_toplevel, original.hidden_toplevel);
+    assert_eq!(loaded.hidden_toplevel(), original.hidden_toplevel());
     assert_eq!(loaded.last_modified, original.last_modified);
 }
 
@@ -461,7 +459,7 @@ fn test_save_load_round_trip_with_active_state() {
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
             decoy_writers: Vec::new(),
         },
-        hidden_toplevel: Some("abc123def456".to_string()),
+        platform: Some(PlatformState::nixos(Some("abc123def456".to_string()))),
         overlay_status,
         failed_overlays: Vec::new(),
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:01Z")
@@ -474,7 +472,6 @@ fn test_save_load_round_trip_with_active_state() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
-        last_switch_warning: None,
     };
 
     // Save through the real durable path so the file carries a valid digest.
@@ -485,7 +482,7 @@ fn test_save_load_round_trip_with_active_state() {
     // Load and verify
     let loaded = StateFile::load(&state_path).expect("Should load");
     assert_eq!(loaded.state, original.state);
-    assert_eq!(loaded.hidden_toplevel, original.hidden_toplevel);
+    assert_eq!(loaded.hidden_toplevel(), original.hidden_toplevel());
     assert_eq!(loaded.overlay_status, original.overlay_status);
     assert_eq!(loaded.version, env!("CARGO_PKG_VERSION"));
 }
@@ -524,7 +521,7 @@ fn test_save_load_multiple_overlays() {
             ],
             decoy_writers: Vec::new(),
         },
-        hidden_toplevel: Some("test123".to_string()),
+        platform: Some(PlatformState::nixos(Some("test123".to_string()))),
         overlay_status,
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
@@ -535,7 +532,6 @@ fn test_save_load_multiple_overlays() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
-        last_switch_warning: None,
     };
 
     // Save through the real durable path so the file carries a valid digest.
@@ -615,7 +611,6 @@ fn test_nix_store_init_namespace_bound_absent_field_defaults_false() {
     let legacy = r#"{
         "version": "0.2.0",
         "state": "Inactive",
-        "hidden_toplevel": null,
         "overlay_status": {},
         "last_modified": "2025-01-27T10:30:00Z",
         "owner_pid": 0
@@ -719,7 +714,7 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
     let state = StateFile {
         version: env!("CARGO_PKG_VERSION").to_string(),
         state: SystemState::Inactive,
-        hidden_toplevel: Some("test-gen".to_string()),
+        platform: Some(PlatformState::nixos(Some("test-gen".to_string()))),
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
@@ -730,7 +725,6 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
-        last_switch_warning: None,
     };
 
     // Use save_with_root to test actual atomic write logic
@@ -743,7 +737,7 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
     let loaded_json = std::fs::read_to_string(&state_path).expect("Should read");
     let loaded: StateFile = serde_json::from_str(&loaded_json).expect("Should deserialize");
     assert_eq!(loaded.version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(loaded.hidden_toplevel, Some("test-gen".to_string()));
+    assert_eq!(loaded.hidden_toplevel(), Some("test-gen"));
 
     // Verify permissions on Unix
     #[cfg(unix)]
@@ -782,7 +776,7 @@ fn test_load_io_error_returns_default() {
 
     let state = result.unwrap();
     assert_eq!(state.state, SystemState::Inactive);
-    assert_eq!(state.hidden_toplevel, None);
+    assert_eq!(state.hidden_toplevel(), None);
 }
 
 #[test]
@@ -805,7 +799,7 @@ fn test_persist_race_condition_handling() {
             overlays: vec![],
             decoy_writers: Vec::new(),
         },
-        hidden_toplevel: None,
+        platform: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
@@ -816,7 +810,6 @@ fn test_persist_race_condition_handling() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
-        last_switch_warning: None,
     };
 
     // save_with_root should handle the existing file (overwrite it)
@@ -851,7 +844,7 @@ fn create_test_manager_with_state(
     let state_file = StateFile {
         version: env!("CARGO_PKG_VERSION").to_string(),
         state,
-        hidden_toplevel: None,
+        platform: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
@@ -862,7 +855,6 @@ fn create_test_manager_with_state(
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
-        last_switch_warning: None,
     };
     // Save through the durable path so the file carries a valid integrity digest.
     state_file
@@ -1405,7 +1397,7 @@ fn test_state_file_permissions_are_0600() {
     let state = StateFile {
         version: env!("CARGO_PKG_VERSION").to_string(),
         state: SystemState::Inactive,
-        hidden_toplevel: None,
+        platform: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
@@ -1416,7 +1408,6 @@ fn test_state_file_permissions_are_0600() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
-        last_switch_warning: None,
     };
     state
         .save_with_root(&state_path, mock_hidden_vol_root)
@@ -1443,7 +1434,7 @@ fn test_checksum_round_trip_save_load() {
     let state = StateFile {
         version: env!("CARGO_PKG_VERSION").to_string(),
         state: SystemState::Inactive,
-        hidden_toplevel: Some("gen123".to_string()),
+        platform: Some(PlatformState::nixos(Some("gen123".to_string()))),
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
@@ -1456,7 +1447,6 @@ fn test_checksum_round_trip_save_load() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
-        last_switch_warning: None,
     };
 
     state
@@ -1464,7 +1454,7 @@ fn test_checksum_round_trip_save_load() {
         .expect("Should save");
     let loaded = StateFile::load(&state_path).expect("Should load");
     assert_eq!(loaded.state, SystemState::Inactive);
-    assert_eq!(loaded.hidden_toplevel, Some("gen123".to_string()));
+    assert_eq!(loaded.hidden_toplevel(), Some("gen123"));
 }
 
 #[test]
@@ -1481,7 +1471,7 @@ fn test_integrity_mismatch_maps_to_unknown() {
     // Corrupt the file: change a field but keep the stale integrity digest.
     let mut raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
-    raw["hidden_toplevel"] = serde_json::Value::String("CORRUPTED".to_string());
+    raw["config_fingerprint"] = serde_json::Value::String("CORRUPTED".to_string());
     std::fs::write(&state_path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
 
     // A digest mismatch is never a hard error: it collapses to the safe default
@@ -1524,7 +1514,6 @@ fn test_missing_integrity_digest_rejected() {
     let json = serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "state": "Inactive",
-        "hidden_toplevel": null,
         "overlay_status": {},
         "failed_overlays": [],
         "last_modified": "2025-01-27T10:30:00Z"
@@ -1698,7 +1687,7 @@ fn test_compatible_version_load_with_checksum() {
     let state_path = temp_dir.path().join("state.json");
 
     let state = StateFile {
-        hidden_toplevel: Some("gen-abc".to_string()),
+        platform: Some(PlatformState::nixos(Some("gen-abc".to_string()))),
         last_modified: DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc),
@@ -1716,7 +1705,7 @@ fn test_compatible_version_load_with_checksum() {
         "Should load state file with a different but compatible version without integrity failure",
     );
     assert_eq!(loaded.state, SystemState::Inactive);
-    assert_eq!(loaded.hidden_toplevel, Some("gen-abc".to_string()));
+    assert_eq!(loaded.hidden_toplevel(), Some("gen-abc"));
     // With no migration, the stored version is preserved verbatim.
     assert_eq!(loaded.version, "0.99.99");
 }
@@ -1736,7 +1725,7 @@ fn test_corrupt_compatible_version_maps_to_unknown() {
     let mut raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
     raw["version"] = serde_json::Value::String("0.99.99".to_string());
-    raw["hidden_toplevel"] = serde_json::Value::String("CORRUPTED".to_string());
+    raw["config_fingerprint"] = serde_json::Value::String("CORRUPTED".to_string());
     std::fs::write(&state_path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
 
     let result = StateFile::load_with_outcome(&state_path).expect("Should not hard-error");
@@ -1793,7 +1782,7 @@ fn test_version_migration_preserves_data() {
             overlays: vec![PathBuf::from("/home")],
             decoy_writers: Vec::new(),
         },
-        hidden_toplevel: Some("gen-xyz".to_string()),
+        platform: Some(PlatformState::nixos(Some("gen-xyz".to_string()))),
         config_fingerprint: Some("abcdef0123456789".to_string()),
         overlay_status: overlay_status.clone(),
         failed_overlays: vec![FailedOverlayInfo {
@@ -1821,7 +1810,7 @@ fn test_version_migration_preserves_data() {
     // No migration: the stored version is preserved and the data is intact.
     assert_eq!(loaded.version, "0.50.0");
     assert!(matches!(loaded.state, SystemState::Active { .. }));
-    assert_eq!(loaded.hidden_toplevel, Some("gen-xyz".to_string()));
+    assert_eq!(loaded.hidden_toplevel(), Some("gen-xyz"));
     assert_eq!(
         loaded.config_fingerprint,
         Some("abcdef0123456789".to_string())
@@ -1986,4 +1975,100 @@ fn test_emergency_transition_targets_inactive_and_degraded_recovers() {
     let degraded = SystemState::Inactive.enter_degraded("boom".into(), vec![]);
     assert!(degraded.is_degraded());
     assert!(degraded.recover().unwrap().is_inactive());
+}
+
+// ========== PlatformState (typed per-platform section) ==========
+
+#[test]
+fn platform_state_nixos_round_trips_through_json() {
+    let section = PlatformState::NixOs {
+        generation: Some("/nix/store/aaaa-nixos-system-host".to_string()),
+        last_switch_warning: Some("switch skipped".to_string()),
+    };
+    let json = serde_json::to_string(&section).unwrap();
+    // Internally tagged by `platform`, with the variant in snake_case.
+    assert!(json.contains("\"platform\":\"nix_os\""));
+    let back: PlatformState = serde_json::from_str(&json).unwrap();
+    assert_eq!(section, back);
+}
+
+#[test]
+fn platform_state_debian_family_round_trips_through_json() {
+    let section = PlatformState::DebianFamily;
+    let json = serde_json::to_string(&section).unwrap();
+    assert!(json.contains("\"platform\":\"debian_family\""));
+    let back: PlatformState = serde_json::from_str(&json).unwrap();
+    assert_eq!(section, back);
+}
+
+#[test]
+fn state_file_round_trips_each_platform_section() {
+    for section in [
+        None,
+        Some(PlatformState::nixos(Some("gen-1".to_string()))),
+        Some(PlatformState::DebianFamily),
+    ] {
+        let state = StateFile {
+            platform: section.clone(),
+            ..StateFile::default()
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let back: StateFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(state.platform, section);
+        assert_eq!(back.platform, section);
+    }
+}
+
+#[test]
+fn state_file_platform_absent_defaults_to_none() {
+    // A state file written without the field must still load (platform None).
+    let json = r#"{
+        "version": "0.2.0",
+        "state": "Inactive",
+        "overlay_status": {},
+        "last_modified": "2025-01-27T10:30:00Z",
+        "owner_pid": 0
+    }"#;
+    let state: StateFile = serde_json::from_str(json).unwrap();
+    assert_eq!(state.platform, None);
+    assert!(!state.is_nixos());
+    assert_eq!(state.hidden_toplevel(), None);
+    assert_eq!(state.last_switch_warning(), None);
+}
+
+#[test]
+fn state_file_nixos_accessors_read_the_section() {
+    let mut state = StateFile::default();
+    state.set_nixos_generation(Some("gen-7".to_string()));
+    assert!(state.is_nixos());
+    assert_eq!(state.hidden_toplevel(), Some("gen-7"));
+
+    // A None generation keeps the stored one and preserves the warning.
+    state.set_switch_warning(Some("boom".to_string()));
+    state.set_nixos_generation(None);
+    assert_eq!(state.hidden_toplevel(), Some("gen-7"));
+    assert_eq!(state.last_switch_warning(), Some("boom"));
+}
+
+#[test]
+fn state_file_mark_debian_family_is_not_nixos_and_has_no_generation() {
+    let mut state = StateFile::default();
+    state.mark_debian_family();
+    assert_eq!(state.platform, Some(PlatformState::DebianFamily));
+    assert!(!state.is_nixos());
+    assert_eq!(state.hidden_toplevel(), None);
+
+    // Once NixOS is recorded, marking Debian-family is a no-op.
+    state.set_nixos_generation(Some("gen".to_string()));
+    state.mark_debian_family();
+    assert!(state.is_nixos());
+}
+
+#[test]
+fn state_file_clear_platform_drops_the_section() {
+    let mut state = StateFile::default();
+    state.set_nixos_generation(Some("gen".to_string()));
+    state.clear_platform();
+    assert_eq!(state.platform, None);
+    assert_eq!(state.hidden_toplevel(), None);
 }

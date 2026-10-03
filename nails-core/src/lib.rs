@@ -157,7 +157,7 @@ pub use persona::{InheritedSource, PersonaEntry, PersonaInventory, collect_inher
 // State management exports
 pub use state::{
     DecoyWriter, EMERGENCY_LOCK_TIMEOUT, FailedOverlayInfo, LoadOutcome, LoadResult, OverlayInfo,
-    StateFile, StateLock, SubmountAttachment, SystemState, decoy_writers_headline,
+    PlatformState, StateFile, StateLock, SubmountAttachment, SystemState, decoy_writers_headline,
     summarize_decoy_writers,
 };
 

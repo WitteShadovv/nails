@@ -548,7 +548,9 @@ fn test_reconcile_state_resets_stale_active_keeping_build_metadata() {
                 activated_at: Utc::now(),
                 overlays: vec![PathBuf::from("/home")],
             },
-            hidden_toplevel: Some("gen-abc".to_string()),
+            platform: Some(crate::state::PlatformState::nixos(Some(
+                "gen-abc".to_string(),
+            ))),
             config_fingerprint: Some("fp-123".to_string()),
             ..StateFile::default()
         };
@@ -576,7 +578,7 @@ fn test_reconcile_state_resets_stale_active_keeping_build_metadata() {
     let reloaded = StateFile::load(&state_path).expect("reload");
     assert_eq!(reloaded.state, SystemState::Inactive);
     assert!(reloaded.overlay_status.is_empty());
-    assert_eq!(reloaded.hidden_toplevel.as_deref(), Some("gen-abc"));
+    assert_eq!(reloaded.hidden_toplevel(), Some("gen-abc"));
     assert_eq!(reloaded.config_fingerprint.as_deref(), Some("fp-123"));
 }
 
