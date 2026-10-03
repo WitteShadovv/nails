@@ -4,7 +4,7 @@
 # Linux filesystem, bind-mounted at the configured root, must back a full
 # activate/deactivate cycle. This exercises the path a user takes when the hidden
 # storage is a subtree of an already-mounted encrypted disk rather than its own
-# mapper. The backing ext4 lives on /dev/vdb (the secondary test disk), a
+# mapper. The backing ext4 lives on /dev/disk/by-id/virtio-data (the secondary test disk), a
 # subdirectory of it is bind-mounted at /mnt/data, and the standard headless
 # config activates over it unchanged.
 
@@ -48,9 +48,9 @@ in
         # mount point (a bind), so the upper-fs probe and NAILS treat it exactly
         # like a dedicated volume.
         machine.succeed(
-            "mkfs.ext4 -F -L data /dev/vdb",
+            "mkfs.ext4 -F -L data /dev/disk/by-id/virtio-data",
             "mkdir -p /mnt/backing",
-            "mount /dev/vdb /mnt/backing",
+            "mount /dev/disk/by-id/virtio-data /mnt/backing",
             "mkdir -p /mnt/backing/vol",
         )
         machine.succeed("""${backends.nailsDirStructure "/mnt/backing/vol"}""")
@@ -84,7 +84,7 @@ in
         # The backing data survives the cycle; only the overlays are gone. The
         # reboot dropped every mount, so remount the backing disk to inspect it.
         machine.fail("su - testuser -c 'test -f ~/notes.txt'")
-        machine.succeed("mkdir -p /mnt/backing", "mount /dev/vdb /mnt/backing")
+        machine.succeed("mkdir -p /mnt/backing", "mount /dev/disk/by-id/virtio-data /mnt/backing")
         machine.succeed("test -f /mnt/backing/vol/home/testuser/notes.txt")
         machine.succeed("umount /mnt/backing")
   '';

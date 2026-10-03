@@ -13,7 +13,10 @@ in
   boot.supportedFilesystems = [ "vfat" ];
 
   virtualisation.emptyDiskImages = lib.mkForce [
-    2048
+    {
+      size = 2048;
+      driveConfig.deviceExtraOpts.serial = "data";
+    }
     256
   ];
 

@@ -1,6 +1,6 @@
 # Base VM Configuration for E2E Tests
 # Simplified: let NixOS test framework handle boot/filesystems
-# Secondary disk (/dev/vdb) is available for LUKS hidden volume testing
+# Secondary disk (serial "data", /dev/disk/by-id/virtio-data) is available for LUKS hidden volume testing
 
 { lib, pkgs, ... }:
 {
@@ -15,9 +15,15 @@
     cores = 2;
     diskSize = 20480; # 20GB primary disk
 
-    # Secondary disk for hidden volume simulation (2GB)
-    # Available as /dev/vdb inside the VM
-    emptyDiskImages = [ 2048 ];
+    # Secondary disk for hidden volume simulation (2GB). It carries the neutral
+    # serial "data", so the guest addresses it as /dev/disk/by-id/virtio-data:
+    # its /dev/vdX letter shifts when a profile adds a Nix store image disk.
+    emptyDiskImages = [
+      {
+        size = 2048;
+        driveConfig.deviceExtraOpts.serial = "data";
+      }
+    ];
 
     # Keeping restrictNetwork = false is harmless and avoids the QEMU "-net none"
     # flag that can interfere with the test framework's own virtual network.

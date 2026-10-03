@@ -8,8 +8,8 @@
 # (via the T-075 host-side forensic harness) to prove the hidden-session canaries
 # never reach the decoy disk when the backend is tcrypt rather than LUKS.
 #
-# The ciphertext lives on /dev/vdb, the secondary test disk, which the forensic
-# harness never images -- only the decoy root qcow2 is converted and scanned, so
+# The ciphertext lives on the secondary test disk (/dev/disk/by-id/virtio-data),
+# which the forensic harness never images -- only the decoy root qcow2 is converted and scanned, so
 # the hidden container is out of frame exactly as it would be post-seizure.
 #
 # This is a nightly/manual backend test, not part of the PR smoke lane (it is not
@@ -87,7 +87,7 @@ in
         # passphrase supplied as well. The alternative is a tcplay-made TrueCrypt
         # volume opened with `--type tcrypt --tcrypt-hidden` (drop `--veracrypt`).
         machine.succeed(
-            "veracrypt --text --create /dev/vdb "
+            "veracrypt --text --create /dev/disk/by-id/virtio-data "
             + "--volume-type=normal "
             + "--encryption=AES --hash=sha-512 --filesystem=FAT "
             + f"--password={outer_pass} "
@@ -95,7 +95,7 @@ in
             + "--non-interactive --quick"
         )
         machine.succeed(
-            "veracrypt --text --create /dev/vdb "
+            "veracrypt --text --create /dev/disk/by-id/virtio-data "
             + "--volume-type=hidden --size=64M "
             + "--encryption=AES --hash=sha-512 --filesystem=none "
             + f"--password={hidden_pass} "
@@ -109,7 +109,7 @@ in
         # /dev/mapper, by-label links or generated unit names.
         machine.succeed(
             f"printf '%s' {hidden_pass} | cryptsetup open --type tcrypt --veracrypt "
-            + "--tcrypt-hidden --key-file=- /dev/vdb data"
+            + "--tcrypt-hidden --key-file=- /dev/disk/by-id/virtio-data data"
         )
         machine.succeed("mkfs.ext4 -F -L data /dev/mapper/data")
         machine.succeed("mkdir -p /mnt/data", "mount /dev/mapper/data /mnt/data")

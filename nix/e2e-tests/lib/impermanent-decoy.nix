@@ -28,17 +28,24 @@
 # and its early-boot bind mounts, and offline closure completeness for anything
 # built against this profile can only be confirmed by `nix build` of a test that
 # imports it — none of it can be evaluated in the offline sandbox.
-{ lib, ... }:
+{ lib, pkgs, ... }:
 {
   imports = [ ./forensic-vm-config.nix ];
 
   virtualisation = {
-    # A second empty disk (/dev/vdc) backs /persist; /dev/vdb stays the hidden
-    # LUKS volume from vm-config.nix. mkForce because vm-config.nix already
-    # assigns emptyDiskImages.
+    # A second empty disk backs /persist; the first stays the hidden LUKS volume
+    # from vm-config.nix. Both are addressed by serial: the store image disk of
+    # this profile shifts their /dev/vdX letters. mkForce because vm-config.nix
+    # already assigns emptyDiskImages.
     emptyDiskImages = lib.mkForce [
-      2048
-      2048
+      {
+        size = 2048;
+        driveConfig.deviceExtraOpts.serial = "data";
+      }
+      {
+        size = 2048;
+        driveConfig.deviceExtraOpts.serial = "persist";
+      }
     ];
 
     # The decoy root is a tmpfs: every write that is not explicitly persisted
@@ -52,7 +59,7 @@
     # The persistent volume for the trees that must outlive the tmpfs root. It is
     # needed before the bind mounts below, so it mounts early.
     fileSystems."/persist" = {
-      device = "/dev/vdc";
+      device = "/dev/disk/by-id/virtio-persist";
       fsType = "ext4";
       autoFormat = true;
       neededForBoot = true;
@@ -64,7 +71,7 @@
   # /persist/var/lib/nixos after deactivation is the decoy's real drift.
   #
   # It is left out of the stage-1 (neededForBoot) set so it mounts in stage-2 —
-  # by then postMountCommands below has created its source on the freshly
+  # by then the stage-1 unit below has created its source on the freshly
   # formatted /persist, avoiding the bind-before-source chicken-and-egg.
   fileSystems."/var/lib/nixos" = {
     device = "/persist/var/lib/nixos";
@@ -72,14 +79,23 @@
     depends = [ "/persist" ];
   };
 
-  # /persist is mounted under /mnt-root in stage-1 (neededForBoot); create the
-  # bind source there before stage-2 sets up the bind above. postMountCommands is
-  # a scripted-stage-1 hook that systemd stage-1 (the test driver's default)
-  # rejects, so pin this VM to the scripted initrd, which this hook needs.
-  boot.initrd.systemd.enable = lib.mkForce false;
-  boot.initrd.postMountCommands = ''
-    mkdir -p /mnt-root/persist/var/lib/nixos
-  '';
+  # /persist is mounted under /sysroot in stage-1 (neededForBoot); create the
+  # bind source there before stage-2 sets up the bind above. The VM needs systemd
+  # stage-1 (the writable store overlay depends on it), which rejects the old
+  # boot.initrd.postMountCommands hook, so this is a stage-1 unit modelled on the
+  # one nixpkgs uses to create overlay upper directories.
+  boot.initrd.systemd.services.persist-var-lib-nixos-source = {
+    wantedBy = [ "initrd-fs.target" ];
+    before = [ "initrd-fs.target" ];
+    unitConfig = {
+      DefaultDependencies = false;
+      RequiresMountsFor = "/sysroot/persist";
+    };
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.coreutils}/bin/mkdir -p -m 0755 /sysroot/persist/var/lib/nixos";
+    };
+  };
 
   # A volatile journal: the decoy journal lives only in RAM, so a journal carve
   # of the image sees only lines a hidden session forced onto a persisted tree.

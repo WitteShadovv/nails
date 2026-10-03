@@ -1,7 +1,7 @@
 # Shared setup snippets for the non-LUKS hidden-root backends (bind mount,
 # VeraCrypt/tcrypt, and the NFS refusal case).
 #
-# lib/hidden-volume.nix covers the LUKS-on-/dev/vdb happy path every positive
+# lib/hidden-volume.nix covers the LUKS-on-the-data-disk happy path every positive
 # test uses. These helpers give the other backends the same on-disk layout so a
 # single headless config activates over any of them. Every on-disk name stays
 # neutral ("data"); the Nix identifiers here are internal to the harness and

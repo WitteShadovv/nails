@@ -11,14 +11,14 @@
   # Setup script - creates LUKS volume and prepares directory structure
   # Note: Use single quotes in echo to avoid breaking Python string interpolation
   setupHiddenVolume = ''
-    echo 'Setting up data volume on /dev/vdb...'
+    echo 'Setting up data volume on /dev/disk/by-id/virtio-data...'
 
-    # Format /dev/vdb with LUKS using test passphrase
+    # Format the data disk with LUKS using test passphrase
     # --iter-time=1 makes this fast for testing (less secure but acceptable for tests)
-    echo -n 'test-passphrase' | cryptsetup luksFormat -q --iter-time=1 /dev/vdb -
+    echo -n 'test-passphrase' | cryptsetup luksFormat -q --iter-time=1 /dev/disk/by-id/virtio-data -
 
     # Open LUKS volume as the neutral "data" device
-    echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - /dev/vdb data
+    echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - /dev/disk/by-id/virtio-data data
 
     # Create ext4 filesystem with the neutral label "data"
     mkfs.ext4 -L data /dev/mapper/data
@@ -119,7 +119,7 @@
     echo 'Mounting data volume...'
 
     # Open LUKS volume
-    echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - /dev/vdb data
+    echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - /dev/disk/by-id/virtio-data data
 
     # Mount the filesystem
     mkdir -p /mnt/data
