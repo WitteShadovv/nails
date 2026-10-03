@@ -34,7 +34,10 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    headless_config = "/tmp/nails-headless.toml"
+    # Keep the harness config out of /tmp, /var/tmp and /var/log: the deep verify
+    # pass sweeps those for nails-named files, and a config left in /tmp would show
+    # up as a leftover and make the post-cleanup scan differ from the baseline.
+    headless_config = "/run/nails-tests/nails-headless.toml"
     write_headless_config(headless_config)
 
     baseline_status, baseline_payload = run_verify(config_path=headless_config)
