@@ -2421,6 +2421,8 @@ Owns: `nails-core/src/process/classification/mod.rs`, `nails-core/src/process/de
   - New E2E/disk-image test: a background process holding a writable fd and cwd in `/home` keeps writing after activation, and the decoy lower is unchanged after deactivation (or activation refused).
   - README/guide `--no-kill-session` wording corrected.
 
+  _Status: Wave 18 landed the detection/classification core — ProcessInfo now records write capability (writable/directory fds via fdinfo flags, shared-writable `rw-s` mappings, `/proc/PID/root` and mount-namespace reads flag chrooted/foreign-ns processes as unverifiable writers), component-wise `Path::starts_with` with `" (deleted)"` stripping fixes the `/opt2`-matches-`/opt` bug, a one-shot `ProcSnapshot` walks `/proc` once and classifies many targets from one capture, and `classify_process` now returns Skip for any read-only consumer, all covered by synthetic-/proc unit fixtures. Remaining: thread `ProcSnapshot` through manager/activation so `/proc` is scanned once per phase (counter test); move the DE/browser/editor name tables into the platform data layer; post-mount rescan flagging stale-lower refs (mnt_id/st_dev) and surfacing unverifiable/stale writers in state + status human/json/dto; explicit opt-in restart-or-fail-closed for Risky holders; `chdir("/")` before first mount + decoy-cwd warning; remove Direct=OPTIMAL/security_status-from-pivot-count and fix doc comments; README.md and docs/USER-SECURITY-GUIDE.md `--no-kill-session` wording; new E2E/disk-image writer-survival test._
+
 ## Wave 19: Emergency/recover subsystem + watcher + fault-injection E2E + help
 
 ### W19-C1: Emergency, recover, watcher, fault-injection, help

@@ -142,6 +142,12 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- Processes blocking an overlay target are now classified by write capability rather than mere
+  presence: a writable or directory file descriptor (parsed from `/proc/PID/fdinfo` open flags), a
+  shared-writable (`rw-s`) file mapping, or a cwd/root inside the target marks a process as blocking,
+  while read-only holders are skipped. Path matching is component-wise and strips the kernel's
+  `" (deleted)"` suffix (fixing `/opt2` matching `/opt`), and chrooted or foreign-namespace
+  processes are flagged as unverifiable writers.
 - The CLI and persisted state are now driven by the platform model: generic "Overlay environment
   manager" about/help text, a NixOS-only `--nixos-flake` (replacing `--flake`), activation progress
   steps whose total and labels follow the active path (7 with a declarative layer, 5 overlay-only /
