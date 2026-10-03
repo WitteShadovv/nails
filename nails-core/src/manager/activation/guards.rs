@@ -87,17 +87,28 @@ impl SessionRestartGuard {
     }
 }
 
-/// RAII guard: if we stop nix-daemon for /nix overlay but exit early,
-/// restart both socket and service so the system isn't left degraded.
+/// RAII guard: if we stop nix-daemon for the `/nix` overlay but exit early,
+/// restart it so the system isn't left degraded.
+///
+/// The restart path matches how the daemon was stopped: a NixOS host restarts it
+/// through the NixOS-resolved service controller, while a non-NixOS host (Nix on
+/// Debian/Ubuntu) restarts it through its own `systemctl`, resolved from the
+/// platform command directories. A guard for a host with no `/nix` overlay
+/// ([`NixRuntime::None`]) does nothing.
 pub(super) struct NixDaemonGuard {
-    pub(super) active: bool,
+    pub(super) runtime: crate::platform::NixRuntime,
+    pub(super) command_dirs: &'static [&'static str],
     pub(super) disarmed: bool,
 }
 
 impl NixDaemonGuard {
-    pub(super) fn new(active: bool) -> Self {
+    pub(super) fn new(
+        runtime: crate::platform::NixRuntime,
+        command_dirs: &'static [&'static str],
+    ) -> Self {
         Self {
-            active,
+            runtime,
+            command_dirs,
             disarmed: false,
         }
     }
@@ -109,10 +120,21 @@ impl NixDaemonGuard {
 
 impl Drop for NixDaemonGuard {
     fn drop(&mut self) {
-        if !self.active || self.disarmed {
+        use crate::platform::NixRuntime;
+        if self.disarmed {
             return;
         }
-        start_service_and_socket("nix-daemon");
+        match self.runtime {
+            NixRuntime::Native => start_service_and_socket("nix-daemon"),
+            NixRuntime::Foreign => {
+                if let Err(err) =
+                    crate::platform::nix_foreign::restart_nix_daemon(self.command_dirs)
+                {
+                    tracing::warn!(error = %err, "Failed to restart nix-daemon on the error path");
+                }
+            }
+            NixRuntime::None => {}
+        }
     }
 }
 

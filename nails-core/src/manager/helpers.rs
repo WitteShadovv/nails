@@ -24,6 +24,15 @@ pub(crate) use service_controller::{ServiceController, start_service_and_socket}
 #[cfg(test)]
 pub(crate) use service_controller::recorder::drain as drain_recorded_service_actions;
 
+/// Record a service lifecycle action onto the test-only recorder.
+///
+/// Lets the Nix-on-foreign daemon helpers (which short-circuit before touching the
+/// host under test) report the stop/start they would have issued, so an activation
+/// test can assert the foreign `/nix` lifecycle through
+/// [`drain_recorded_service_actions`].
+#[cfg(test)]
+pub(crate) use service_controller::recorder::record as record_service_action;
+
 /// Return the system profile path, honoring NAILS_SYSTEM_PROFILE_PATH if set.
 pub(crate) fn system_profile_path() -> PathBuf {
     std::env::var_os(ENV_SYSTEM_PROFILE_PATH)

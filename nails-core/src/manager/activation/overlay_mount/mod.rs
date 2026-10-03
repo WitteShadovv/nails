@@ -17,12 +17,28 @@ use super::{
     MountInfo, MountTracker, MountType, build_overlay_targets, clean_stale_network_config,
     create_overlay_config, start_service_and_socket,
 };
-use crate::platform::ConfigLayer;
+use crate::manager::activation::guards::NixDaemonGuard;
+use crate::platform::{ConfigLayer, NixRuntime};
 use crate::{
-    FailedOverlayInfo, Filesystem, NailsError, NailsManager, OverlayInfo, Result, Verbosity,
+    FailedOverlayInfo, Filesystem, NailsError, NailsManager, OverlayConfig, OverlayInfo, Result,
+    Verbosity,
 };
 use chrono::Utc;
 use std::path::{Path, PathBuf};
+
+/// How a mount failure inside the shared overlay loop is handled.
+///
+/// This is the one behavioural difference between the former auto and explicit
+/// loops: auto is best-effort, explicit fails fast. Both share the same body and
+/// the same `/nix` gating; only this choice differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MountFailureMode {
+    /// Auto mode: record each failed overlay and continue; abort after the loop if
+    /// any overlay (or its config) failed, so activation never half-completes.
+    BestEffort,
+    /// Explicit mode: abort on the first overlay that fails to mount.
+    FailFast,
+}
 
 impl<F: Filesystem> NailsManager<F> {
     /// Mount persistent and ephemeral overlays.
@@ -116,6 +132,301 @@ impl<F: Filesystem> NailsManager<F> {
         let mounts = tracker.take_mounts();
 
         Ok((direct_mounts, pivot_mounts, leaking_targets, mounts))
+    }
+
+    /// Mount a resolved list of overlays, gating the `/nix` runtime on the host.
+    ///
+    /// This is the single overlay loop both modes share. Auto and explicit differ
+    /// only in how they select their targets (dynamic enumeration vs. the
+    /// configured list) and in their [`MountFailureMode`]; everything else — the
+    /// per-overlay opaque strip, extra-lower computation, DNS cleanup, the mount
+    /// itself and the post-mount bookkeeping — runs here once.
+    ///
+    /// The `/nix` lifecycle is resolved from the platform, not the target name: a
+    /// NixOS host runs the full stop → cache → mount → store-bind +
+    /// current-system restore → restart sequence, a non-NixOS host with `/nix`
+    /// overlaid only stops and restarts nix-daemon, and a run without `/nix` as a
+    /// target does neither.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn mount_overlay_targets(
+        &self,
+        tracker: &mut MountTracker<F>,
+        overlays: &[OverlayConfig],
+        initial_failures: Vec<(PathBuf, NailsError)>,
+        failure_mode: MountFailureMode,
+        strategy_options: &crate::overlay::OverlayStrategyOptions,
+        verbosity: Verbosity,
+        direct_mounts: &mut usize,
+        pivot_mounts: &mut usize,
+        leaking_targets: &mut Vec<PathBuf>,
+    ) -> Result<()> {
+        // Resolve the /nix lifecycle from the platform before Phase-1 detection.
+        let nix_in_targets = overlays.iter().any(|o| o.target == Path::new("/nix"));
+        let platform = crate::platform::detect_platform(&self.filesystem)?;
+        let nix_runtime = platform.nix_runtime(nix_in_targets);
+        let command_dirs = platform.host_command_dirs();
+
+        // Armed for Native and Foreign; a no-op guard for None. On an early exit
+        // the guard restarts nix-daemon the way it was stopped.
+        let mut nix_guard = NixDaemonGuard::new(nix_runtime, command_dirs);
+
+        // Pre-overlay: stop nix-daemon so it does not appear as a blocking writer
+        // during detection and does not keep the pre-overlay store busy. Native
+        // additionally caches the runtime commands against the pre-overlay store so
+        // they keep working once /nix is overlaid; Foreign does not.
+        match nix_runtime {
+            NixRuntime::Native => {
+                if !crate::runtime_safety::should_skip_host_interaction() {
+                    crate::manager::helpers::cache_nix_overlay_runtime_commands().map_err(
+                        |err| {
+                            NailsError::NixOSError(format!(
+                                "Failed to cache /nix overlay runtime commands before /nix overlay: {err}"
+                            ))
+                        },
+                    )?;
+                }
+                tracing::info!("Stopping nix-daemon before /nix overlay (NixOS)...");
+                let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();
+            }
+            NixRuntime::Foreign => {
+                tracing::info!(
+                    "Stopping nix-daemon before /nix overlay (Nix on a non-NixOS host)..."
+                );
+                if let Err(err) = crate::platform::nix_foreign::stop_nix_daemon(command_dirs) {
+                    tracing::warn!(error = %err, "Failed to stop nix-daemon before /nix overlay");
+                }
+            }
+            NixRuntime::None => {}
+        }
+
+        let mut var_was_overlaid = false;
+        let outcome = self.mount_overlay_targets_body(
+            tracker,
+            overlays,
+            initial_failures,
+            failure_mode,
+            strategy_options,
+            verbosity,
+            direct_mounts,
+            pivot_mounts,
+            leaking_targets,
+            &mut nix_guard,
+            nix_runtime,
+            command_dirs,
+            &mut var_was_overlaid,
+        );
+
+        if let Err(error) = outcome {
+            // Roll back every mounted overlay BEFORE restarting any service, so
+            // nix-daemon and journald never come back up writing to an overlay that
+            // is about to be torn down. nix-daemon is restarted by `nix_guard` on
+            // drop, after this rollback returns.
+            if let Err(rollback_err) = tracker.rollback_all() {
+                tracing::error!(
+                    error = %rollback_err,
+                    context = "activation_abort",
+                    rollback = true,
+                    "Rollback failed during activation abort"
+                );
+            }
+            if var_was_overlaid {
+                crate::manager::helpers::start_service_and_socket("systemd-journald");
+                tracing::info!(
+                    "Restarted systemd-journald after activation rollback (now writing to base /var)"
+                );
+            }
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
+    /// The per-overlay loop body, shared by both modes.
+    ///
+    /// Any error is propagated to [`mount_overlay_targets`], which performs the
+    /// rollback and service restarts in the correct order.
+    #[allow(clippy::too_many_arguments)]
+    fn mount_overlay_targets_body(
+        &self,
+        tracker: &mut MountTracker<F>,
+        overlays: &[OverlayConfig],
+        mut mount_failures: Vec<(PathBuf, NailsError)>,
+        failure_mode: MountFailureMode,
+        strategy_options: &crate::overlay::OverlayStrategyOptions,
+        verbosity: Verbosity,
+        direct_mounts: &mut usize,
+        pivot_mounts: &mut usize,
+        leaking_targets: &mut Vec<PathBuf>,
+        nix_guard: &mut NixDaemonGuard,
+        nix_runtime: NixRuntime,
+        command_dirs: &'static [&'static str],
+        var_was_overlaid: &mut bool,
+    ) -> Result<()> {
+        let mut nix_overlay_succeeded = false;
+
+        for overlay in overlays {
+            // Clear stale opaque markers on NAILS-managed dirs (currently
+            // /etc/nixos) so a previous cycle cannot hide lower-layer contents.
+            // Scoped: user uppers and /nix are never touched, so intended whiteouts
+            // survive.
+            let stripped =
+                crate::overlay::opaque::strip_managed_opaque(&overlay.upper, &overlay.target);
+            if stripped > 0 {
+                tracing::warn!(
+                    upper = %overlay.upper.display(),
+                    count = stripped,
+                    "Stripped {} opaque overlay dir(s) from upper layer {}",
+                    stripped,
+                    overlay.upper.display()
+                );
+            }
+
+            // Compute extra lower layers from bind-mounted content: overlayfs cannot
+            // follow bind mounts in the lower layer, so the backing store of a bind
+            // mount (e.g. /etc/nixos from /persist/etc/nixos) is added as an extra
+            // lower to keep its content visible.
+            let extra_lowers = match self.filesystem.find_submount_sources(&overlay.target) {
+                Ok(sources) if !sources.is_empty() => {
+                    let extra = crate::overlay::bind_sync::compute_extra_lower_dirs(
+                        &overlay.target,
+                        &sources,
+                    );
+                    if !extra.is_empty() {
+                        tracing::info!(
+                            target = %overlay.target.display(),
+                            count = extra.len(),
+                            extra = ?extra,
+                            "Adding {} extra lower layer(s) for bind mount visibility on {}",
+                            extra.len(),
+                            overlay.target.display()
+                        );
+                    }
+                    extra
+                }
+                Ok(_) => Vec::new(),
+                Err(e) => {
+                    tracing::warn!(
+                        target = %overlay.target.display(),
+                        error = %e,
+                        "Failed to detect submount sources for {}: {}",
+                        overlay.target.display(),
+                        e
+                    );
+                    // Continue anyway — best effort.
+                    Vec::new()
+                }
+            };
+
+            // Build lower layer refs: primary lower first, then extras.
+            let mut lower_refs: Vec<&std::path::Path> = vec![&overlay.lower];
+            for extra in &extra_lowers {
+                lower_refs.push(extra.as_path());
+            }
+
+            // DNS preservation: clean stale network config before mounting /etc.
+            if overlay.target == Path::new("/etc")
+                && let Err(e) = clean_stale_network_config(&overlay.upper, &self.filesystem)
+            {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to clean stale network config from /etc upper layer: {}",
+                    e
+                );
+                // Continue anyway — this is best-effort.
+            }
+
+            match crate::overlay::mount_overlay_with_strategy(
+                &self.filesystem,
+                &lower_refs,
+                &overlay.upper,
+                &overlay.work,
+                &overlay.target,
+                strategy_options,
+            ) {
+                Ok(mount_result) => {
+                    self.handle_mount_success(
+                        tracker,
+                        overlay,
+                        &mount_result,
+                        verbosity,
+                        direct_mounts,
+                        pivot_mounts,
+                        leaking_targets,
+                        &mut nix_overlay_succeeded,
+                    )?;
+                    if overlay.target == Path::new("/var") {
+                        // journald was moved onto the /var overlay; remember so a
+                        // later abort can restart it against the base /var.
+                        *var_was_overlaid = true;
+                    }
+                }
+                Err(e) => match failure_mode {
+                    MountFailureMode::BestEffort => {
+                        tracing::warn!(
+                            error = %e,
+                            target = %overlay.target.display(),
+                            "⚠ Could not overlay {}: {}",
+                            overlay.target.display(),
+                            e
+                        );
+                        mount_failures.push((overlay.target.clone(), e));
+                        continue;
+                    }
+                    MountFailureMode::FailFast => {
+                        tracing::error!(
+                            error = %e,
+                            target = %overlay.target.display(),
+                            rollback = true,
+                            "Overlay mount failed"
+                        );
+                        return Err(e);
+                    }
+                },
+            }
+        }
+
+        // Best-effort post-processing (only reachable in BestEffort mode, where
+        // `mount_failures` may carry config-build and mount failures).
+        if !mount_failures.is_empty() {
+            // If nothing mounted at all, abort with the first failure as the
+            // representative error; the caller rolls back (nothing to undo) and
+            // restarts services.
+            if tracker.mounted.is_empty() {
+                tracing::error!(
+                    failure_count = mount_failures.len(),
+                    "All overlay mounts failed - activation aborted"
+                );
+                return Err(mount_failures.into_iter().next().unwrap().1);
+            }
+
+            // Record the failures for status reporting, then abort to avoid a
+            // partially-active state.
+            self.record_failed_overlays(&mount_failures)?;
+            return Err(NailsError::InvalidState(format!(
+                "{} overlay(s) failed to mount",
+                mount_failures.len()
+            )));
+        }
+
+        // Post-overlay: restore the /nix runtime when /nix was overlaid.
+        if nix_overlay_succeeded {
+            match nix_runtime {
+                NixRuntime::Native => self.restore_nix_security_model(nix_guard)?,
+                NixRuntime::Foreign => {
+                    crate::platform::nix_foreign::restart_nix_daemon(command_dirs).map_err(
+                        |e| {
+                            NailsError::NixOSError(format!(
+                                "Failed to restart nix-daemon after /nix overlay: {e}"
+                            ))
+                        },
+                    )?;
+                    nix_guard.disarm();
+                }
+                NixRuntime::None => {}
+            }
+        }
+
+        Ok(())
     }
 
     /// Handle successful overlay mount with service restart and state tracking

@@ -23,6 +23,16 @@ pub(super) fn system_profiles_dir() -> PathBuf {
 }
 
 impl NixOSBuilder {
+    /// The generation the on-disk hidden profile currently resolves to, if any.
+    ///
+    /// Reads the live profile symlink, so a profile the decoy's garbage collector
+    /// has removed resolves to `None`. The fast-path activation uses this to
+    /// confirm a cached generation is still present under the merged `/nix` before
+    /// switching to it, falling back to a full rebuild when it is gone.
+    pub fn cached_generation(&self) -> Result<Option<String>> {
+        self.get_cached_generation()
+    }
+
     /// Get cached generation ID if profile exists
     ///
     /// Checks if profile_path symlink exists and reads the generation ID

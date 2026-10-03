@@ -40,6 +40,7 @@ mod detect;
 mod discover;
 mod fhs;
 pub mod host_commands;
+pub(crate) mod nix_foreign;
 mod nixos;
 pub mod ro_guard;
 mod unsupported;
@@ -78,6 +79,30 @@ pub enum PlatformKind {
     Fhs,
     /// A host NAILS refuses: ostree / image-based, or non-systemd PID 1.
     Unsupported,
+}
+
+/// How the `/nix` runtime must be handled while `/nix` is overlaid, resolved from
+/// the host rather than from the target name.
+///
+/// Overlaying `/nix` requires nix-daemon to be stopped first (so it does not keep
+/// the pre-overlay store busy or serve from it) and restarted afterwards. *How
+/// much more* than that is needed depends on the host:
+///
+/// - On a real NixOS host the overlay hides the boot-time read-only `/nix/store`
+///   bind and the `/run/current-system` generation, so both must be restored —
+///   the full security-model restoration.
+/// - On a non-NixOS host that merely has Nix installed (Nix on Debian/Ubuntu),
+///   none of that applies: there is no `/run/current-system` to re-point and no
+///   boot-time store bind to recreate, so only the daemon is cycled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NixRuntime {
+    /// A real NixOS host: cycle the daemon *and* restore the `/nix/store` bind and
+    /// `/run/current-system` symlink after the overlay.
+    Native,
+    /// Nix installed on a non-NixOS host: only stop and start nix-daemon.
+    Foreign,
+    /// `/nix` is not a target, or the host runs no nix machinery: nothing to do.
+    None,
 }
 
 /// What [`Platform::restore_base_system`] did to return the host to the decoy.
@@ -175,6 +200,28 @@ pub trait Platform<F: Filesystem>: std::fmt::Debug + Send + Sync {
     /// The overlay policy for this host: which trees are overlaid, never
     /// overlaid, or kept read-only, and which distro-specific mount hooks run.
     fn overlay_policy(&self) -> OverlayPolicy;
+
+    /// How the `/nix` runtime must be handled while a hidden session is active,
+    /// given whether `/nix` is among the overlay targets.
+    ///
+    /// Resolved from the host's mount hooks, not from the target name: a NixOS
+    /// host does the full security-model restoration, a non-NixOS host that
+    /// happens to have `/nix` overlaid only cycles nix-daemon, and when `/nix` is
+    /// not a target there is nothing to do. The default covers every backend from
+    /// its [`overlay_policy`](Self::overlay_policy), so a backend only overrides it
+    /// to special-case a degraded host.
+    fn nix_runtime(&self, nix_is_target: bool) -> NixRuntime {
+        if !nix_is_target {
+            return NixRuntime::None;
+        }
+        match self.overlay_policy().mount_hooks {
+            MountHooks::NixOs => NixRuntime::Native,
+            // A non-NixOS host with /nix overlaid (Nix on Debian/Ubuntu), and the
+            // refused/undetected case: in both, only the daemon is cycled — the
+            // NixOS-only store bind and current-system restore must never run.
+            MountHooks::Fhs | MountHooks::None => NixRuntime::Foreign,
+        }
+    }
 
     /// Directories searched, in order, for host tools on this platform.
     fn host_command_dirs(&self) -> &'static [&'static str];

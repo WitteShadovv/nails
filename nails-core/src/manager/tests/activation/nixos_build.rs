@@ -345,3 +345,117 @@ fn test_nixos_build_uses_empty_content_when_both_reads_fail() {
     ));
     assert!(logs_contain("Fast path: fingerprint matches"));
 }
+
+/// Build a NixOS manager whose fingerprint matches generation `123`, so the fast
+/// path is taken, with the hidden profile symlink optionally present on disk.
+/// Returns the manager ready to activate (which then fails at the /home mount, so
+/// only the fingerprint + requisites stage runs).
+fn fast_path_manager(
+    hidden_root: &Path,
+    state_path: &Path,
+    fs: &MockFilesystem,
+    profile_present: bool,
+) -> NailsManager<MockFilesystem> {
+    use crate::NixOSBuilder;
+    use crate::nixos::compute_config_fingerprint;
+
+    setup_nixos_config_check(fs, hidden_root);
+    fs.mock_set_path_exists("/home", true);
+    fs.mock_set_mount_should_fail("/home", true);
+    fs.mock_set_path_exists("/", true);
+
+    let hw_content = fs
+        .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.nix"))
+        .unwrap();
+    let base_content = fs
+        .read_file_content(&hidden_root.join("etc/nixos/hardware-configuration.base.nix"))
+        .unwrap_or_default();
+    let cfg_content = fs
+        .read_file_content(&hidden_root.join("config/nixos/configuration.nix"))
+        .unwrap();
+    let fingerprint =
+        compute_config_fingerprint(&format!("{hw_content}\n{base_content}"), &cfg_content);
+
+    let upper_home = hidden_root.join("overlays/home/upper");
+    let work_home = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_home).unwrap();
+    std::fs::create_dir_all(&work_home).unwrap();
+    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+
+    // The builder reads the live profile symlink; create one pointing at a
+    // generation-123 link when the test wants the generation present on disk.
+    let profiles_dir = hidden_root.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    let profile_path = profiles_dir.join("nails-system");
+    if profile_present {
+        let generation_link = profiles_dir.join("nails-system-123-link");
+        std::fs::create_dir_all(&generation_link).unwrap();
+        std::os::unix::fs::symlink(&generation_link, &profile_path).unwrap();
+    }
+
+    let builder = NixOSBuilder::new(hidden_root.join("config/nixos"), profile_path);
+    let mut manager = NailsManager::with_nixos(
+        fs.clone(),
+        Config {
+            hidden_volume_root: hidden_root.to_path_buf(),
+            state_file_path: state_path.to_path_buf(),
+            overlay_mode: OverlayMode::Explicit,
+            overlays: vec![OverlayConfig {
+                name: "home".to_string(),
+                lower: PathBuf::from("/"),
+                upper: upper_home,
+                work: work_home,
+                target: PathBuf::from("/home"),
+            }],
+            ..Config::test_default()
+        },
+        state_path.to_path_buf(),
+        builder,
+    );
+    manager.set_verbosity(Verbosity::Normal);
+    {
+        let mut cached = manager.cached_state.borrow_mut();
+        *cached = Some(StateFile {
+            state: SystemState::Inactive,
+            config_fingerprint: Some(fingerprint),
+            nixos_generation: Some("123".to_string()),
+            ..StateFile::default()
+        });
+    }
+    manager
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn test_fast_path_kept_when_cached_generation_still_present() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+
+    let manager = fast_path_manager(hidden_root, &state_path, &fs, true);
+    let result = Arc::new(Mutex::new(manager)).lock().unwrap().activate(true);
+    assert!(result.is_err());
+    assert!(logs_contain("Fast path: fingerprint matches"));
+    // The generation is still on disk, so the fast path is not dropped.
+    assert!(!logs_contain("no longer present in /nix"));
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn test_fast_path_dropped_when_cached_generation_missing() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+
+    // No profile symlink on disk: decoy GC removed the cached generation.
+    let manager = fast_path_manager(hidden_root, &state_path, &fs, false);
+    let result = Arc::new(Mutex::new(manager)).lock().unwrap().activate(true);
+    assert!(result.is_err());
+    // The plan still matched the fingerprint, but the requisites check forces a
+    // rebuild because the generation's closure is gone.
+    assert!(logs_contain("Fast path: fingerprint matches"));
+    assert!(logs_contain("no longer present in /nix"));
+}

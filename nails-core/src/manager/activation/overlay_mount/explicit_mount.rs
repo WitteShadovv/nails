@@ -1,23 +1,27 @@
 //! Explicit mode overlay mounting (pre-configured overlays)
 
-use super::{MountTracker, clean_stale_network_config};
-use crate::manager::activation::guards::NixDaemonGuard;
+use super::MountFailureMode;
 use crate::{Filesystem, NailsError, NailsManager, Result, Verbosity};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 impl<F: Filesystem> NailsManager<F> {
-    /// Mount overlays in Explicit mode (pre-configured overlays)
+    /// Mount overlays in Explicit mode (pre-configured overlays).
+    ///
+    /// Explicit mode uses the configured overlays verbatim after the platform
+    /// policy checks, then hands them to the shared loop in
+    /// [`mount_overlay_targets`](NailsManager::mount_overlay_targets) with
+    /// [`MountFailureMode::FailFast`].
     pub(in crate::manager::activation) fn mount_explicit_overlays(
         &self,
-        tracker: &mut MountTracker<F>,
+        tracker: &mut super::MountTracker<F>,
         strategy_options: &crate::overlay::OverlayStrategyOptions,
         verbosity: Verbosity,
         direct_mounts: &mut usize,
         pivot_mounts: &mut usize,
         leaking_targets: &mut Vec<PathBuf>,
     ) -> Result<()> {
-        // Explicit mode: use pre-configured overlays (legacy behavior)
-        // Security check: fail if no overlays configured (would leave system unprotected)
+        // Security check: fail if no overlays configured (would leave system
+        // unprotected).
         if self.config.overlays.is_empty() {
             return Err(NailsError::ConfigError(
                 "Explicit mode configured but no overlays defined - system would have NO forensic protection. \
@@ -28,8 +32,8 @@ impl<F: Filesystem> NailsManager<F> {
         // Refuse overlaying anything the active platform never overlays (the
         // pseudo-filesystems and the hidden-root mount) or keeps read-only (the
         // base-OS trees such as /usr on an FHS host). This is the policy-driven
-        // replacement for the former hardcoded /bin,/usr block: on NixOS those
-        // two trees are legitimately overlaid, while on Debian /usr is read-only.
+        // replacement for the former hardcoded /bin,/usr block: on NixOS those two
+        // trees are legitimately overlaid, while on Debian /usr is read-only.
         let policy = crate::platform::detect_platform(&self.filesystem)?.overlay_policy();
         for overlay in &self.config.overlays {
             let target = overlay.target.as_path();
@@ -43,9 +47,8 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
-        // A target that covers the hidden volume (for example through a
-        // symlink the lexical config check cannot see) would hide the layers
-        // it writes to.
+        // A target that covers the hidden volume (for example through a symlink the
+        // lexical config check cannot see) would hide the layers it writes to.
         let targets: Vec<PathBuf> = self
             .config
             .overlays
@@ -54,142 +57,17 @@ impl<F: Filesystem> NailsManager<F> {
             .collect();
         crate::preflight::ensure_targets_clear(&self.filesystem, &self.config, &targets)?;
 
-        let nix_in_targets = self
-            .config
-            .overlays
-            .iter()
-            .any(|overlay| overlay.target == Path::new("/nix"));
-        let mut nix_guard = NixDaemonGuard::new(nix_in_targets);
-        if nix_in_targets && !crate::runtime_safety::should_skip_host_interaction() {
-            crate::manager::helpers::cache_nix_overlay_runtime_commands().map_err(|err| {
-                NailsError::NixOSError(format!(
-                    "Failed to cache /nix overlay runtime commands before /nix overlay: {}",
-                    err
-                ))
-            })?;
-        }
-        if nix_in_targets {
-            tracing::info!("Stopping nix-daemon before /nix overlay...");
-            let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();
-        }
-
-        let mut nix_overlay_succeeded = false;
-
-        for overlay in &self.config.overlays {
-            // Clear stale opaque markers on NAILS-managed dirs (currently
-            // /etc/nixos) so a previous cycle cannot hide lower-layer contents
-            // (e.g. flake.nix under /etc/nixos). Scoped: user uppers and /nix are
-            // never touched, so intended whiteouts survive.
-            let stripped =
-                crate::overlay::opaque::strip_managed_opaque(&overlay.upper, &overlay.target);
-            if stripped > 0 {
-                tracing::warn!(
-                    upper = %overlay.upper.display(),
-                    count = stripped,
-                    "Stripped {} opaque overlay dir(s) from upper layer {}",
-                    stripped,
-                    overlay.upper.display()
-                );
-            }
-
-            // Compute extra lower layers from bind-mounted content.
-            // overlayfs cannot follow bind mounts in the lower layer.
-            let extra_lowers = match self.filesystem.find_submount_sources(&overlay.target) {
-                Ok(sources) if !sources.is_empty() => {
-                    let extra = crate::overlay::bind_sync::compute_extra_lower_dirs(
-                        &overlay.target,
-                        &sources,
-                    );
-                    if !extra.is_empty() {
-                        tracing::info!(
-                            target = %overlay.target.display(),
-                            count = extra.len(),
-                            extra = ?extra,
-                            "Adding {} extra lower layer(s) for bind mount visibility on {}",
-                            extra.len(),
-                            overlay.target.display()
-                        );
-                    }
-                    extra
-                }
-                Ok(_) => Vec::new(),
-                Err(e) => {
-                    tracing::warn!(
-                        target = %overlay.target.display(),
-                        error = %e,
-                        "Failed to detect submount sources for {}: {}",
-                        overlay.target.display(),
-                        e
-                    );
-                    Vec::new()
-                }
-            };
-
-            // Build lower layer refs: primary lower first, then extras
-            let mut lower_refs: Vec<&std::path::Path> = vec![&overlay.lower];
-            for extra in &extra_lowers {
-                lower_refs.push(extra.as_path());
-            }
-
-            // DNS preservation - clean stale network config before mounting /etc
-            if overlay.target == Path::new("/etc")
-                && let Err(e) = clean_stale_network_config(&overlay.upper, &self.filesystem)
-            {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to clean stale network config from /etc upper layer: {}",
-                    e
-                );
-                // Continue anyway - this is best-effort
-            }
-
-            // Use universal overlay mounting algorithm
-            match crate::overlay::mount_overlay_with_strategy(
-                &self.filesystem,
-                &lower_refs,
-                &overlay.upper,
-                &overlay.work,
-                &overlay.target,
-                strategy_options,
-            ) {
-                Ok(mount_result) => {
-                    self.handle_mount_success(
-                        tracker,
-                        overlay,
-                        &mount_result,
-                        verbosity,
-                        direct_mounts,
-                        pivot_mounts,
-                        leaking_targets,
-                        &mut nix_overlay_succeeded,
-                    )?;
-                }
-                Err(e) => {
-                    // Explicit mode: fail fast on mount errors (original behavior)
-                    tracing::error!(
-                        error = %e,
-                        target = %overlay.target.display(),
-                        rollback = true,
-                        "Overlay mount failed"
-                    );
-
-                    if let Err(rollback_err) = tracker.rollback_all() {
-                        tracing::error!(
-                            error = %rollback_err,
-                            context = "mount_failure_recovery",
-                            rollback = true,
-                            "Rollback failed during mount failure recovery"
-                        );
-                    }
-                    return Err(e);
-                }
-            }
-        }
-
-        if nix_overlay_succeeded {
-            self.restore_nix_security_model(&mut nix_guard)?;
-        }
-
-        Ok(())
+        let overlays = self.config.overlays.clone();
+        self.mount_overlay_targets(
+            tracker,
+            &overlays,
+            Vec::new(),
+            MountFailureMode::FailFast,
+            strategy_options,
+            verbosity,
+            direct_mounts,
+            pivot_mounts,
+            leaking_targets,
+        )
     }
 }

@@ -337,6 +337,17 @@ impl<F: Filesystem> NailsManager<F> {
     }
 
     fn replace_symlink(link: &Path, target: &Path) -> Result<()> {
+        // Refuse a self-referential symlink. `/run/current-system -> /run/current-system`
+        // is a dangling self-loop that breaks system activation, and it is exactly
+        // what a `/run/current-system` fallback on a malformed host would ask for.
+        // Fail closed rather than create it.
+        if link == target {
+            return Err(NailsError::OverlayError(format!(
+                "Refusing to point symlink {} at itself",
+                link.display()
+            )));
+        }
+
         match std::fs::symlink_metadata(link) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 std::fs::remove_file(link).map_err(|err| {

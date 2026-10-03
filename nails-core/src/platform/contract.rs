@@ -6,7 +6,7 @@
 //! reboot never shells out (so the ESP, bootloader and EFI NVRAM stay untouched).
 
 use super::{
-    FakePlatform, FhsPlatform, MountHooks, NixOsPlatform, Platform, PlatformKind,
+    FakePlatform, FhsPlatform, MountHooks, NixOsPlatform, NixRuntime, Platform, PlatformKind,
     UnsupportedPlatform,
 };
 use crate::constants::ENV_SYSTEM_PROFILE_PATH;
@@ -34,6 +34,17 @@ fn assert_contract<F: Filesystem + 'static, P: Platform<F>>(platform: &P, fs: &F
         PlatformKind::Unsupported => MountHooks::None,
     };
     assert_eq!(policy.mount_hooks, expected_hooks);
+
+    // The /nix runtime is resolved from the host, not the target name: nothing
+    // to do when /nix is not a target; Native only on NixOS; Foreign (daemon
+    // stop/start only, no store bind or current-system restore) everywhere else
+    // /nix is overlaid, including a refused/undetected host.
+    assert_eq!(platform.nix_runtime(false), NixRuntime::None);
+    let expected_runtime = match kind {
+        PlatformKind::NixOs => NixRuntime::Native,
+        PlatformKind::Fhs | PlatformKind::Unsupported => NixRuntime::Foreign,
+    };
+    assert_eq!(platform.nix_runtime(true), expected_runtime);
 
     // A refused host guards and overlays nothing; a supported one never lists a
     // read-only tree it does not also keep out of overlay enumeration.

@@ -58,7 +58,37 @@ impl<F: Filesystem> NailsManager<F> {
             verbosity,
         )?;
 
-        Ok((plan.fast_path_generation, Some(plan.fingerprint)))
+        // The fingerprint matching does not prove the cached generation's closure
+        // still exists: the decoy's garbage collector may have removed it between
+        // sessions. Before carrying the fast path forward, confirm the hidden
+        // profile still resolves to that generation; if it is gone (or now points
+        // elsewhere) drop the fast path so Step 9 does a full rebuild instead of
+        // switching to a vanished closure.
+        let fast_path_generation = match plan.fast_path_generation {
+            Some(generation) => self.verify_fast_path_generation(generation),
+            None => None,
+        };
+
+        Ok((fast_path_generation, Some(plan.fingerprint)))
+    }
+
+    /// Keep `generation` as the fast path only when the on-disk hidden profile
+    /// still resolves to it; otherwise warn and return `None` to force a rebuild.
+    fn verify_fast_path_generation(&self, generation: String) -> Option<String> {
+        let Some(builder) = self.nixos_builder.as_ref() else {
+            return Some(generation);
+        };
+        match builder.cached_generation() {
+            Ok(Some(on_disk)) if on_disk == generation => Some(generation),
+            other => {
+                tracing::warn!(
+                    generation = %generation,
+                    found = ?other,
+                    "Cached hidden NixOS generation is no longer present in /nix; forcing a full rebuild"
+                );
+                None
+            }
+        }
     }
 }
 

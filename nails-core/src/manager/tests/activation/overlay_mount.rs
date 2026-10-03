@@ -471,6 +471,110 @@ fn test_activate_refuses_a_leaky_exclusion_even_without_preflight() {
     assert!(fs.get_mounted_paths().is_empty(), "nothing may be mounted");
 }
 
+// ========== /nix runtime gating (T-084) ==========
+
+#[test]
+fn test_nix_on_foreign_host_only_cycles_daemon() {
+    // On a Nix-on-foreign host (Nix installed on Debian/Ubuntu) overlaying /nix
+    // must only stop and start nix-daemon — never the NixOS store self-bind or the
+    // /run/current-system restore. The host is FHS, so the merged loop resolves the
+    // Foreign /nix runtime from the platform, not from the target name.
+    let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/home", "/nix"]);
+    let mock_hidden_vol = temp_dir.path();
+
+    // Declare a Debian host so detection resolves to FHS (Foreign /nix runtime).
+    fs.mock_add_file("/etc/os-release", "ID=debian\nVERSION_ID=\"12\"\n");
+    fs.mock_add_file("/proc/1/comm", "systemd");
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlay_mode: OverlayMode::Auto,
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path.clone(),
+    )));
+
+    // Clear any recorder residue left on this thread by earlier work.
+    let _ = crate::manager::helpers::drain_recorded_service_actions();
+
+    let result = manager.lock().unwrap().activate(true);
+    assert!(result.is_ok(), "activation should succeed: {result:?}");
+
+    // Only the daemon was cycled, stop then start, and nothing else nix-related.
+    let actions = crate::manager::helpers::drain_recorded_service_actions();
+    assert_eq!(
+        actions,
+        vec![
+            "stop:nix-daemon".to_string(),
+            "start:nix-daemon".to_string()
+        ],
+        "foreign /nix must only stop then start nix-daemon: {actions:?}"
+    );
+
+    // No NixOS store self-bind and no /run/current-system symlink restore happened.
+    assert!(
+        !fs.is_mounted(Path::new("/nix/store")).unwrap(),
+        "no /nix/store self-bind may be created on a foreign host"
+    );
+    assert_eq!(
+        fs.mock_get_symlink_target(Path::new("/run/current-system")),
+        None,
+        "no /run/current-system restore may happen on a foreign host"
+    );
+
+    // /nix was still overlaid.
+    let state = manager.lock().unwrap().current_state().unwrap();
+    if let SystemState::Active { overlays, .. } = state {
+        assert!(overlays.contains(&PathBuf::from("/nix")));
+    } else {
+        panic!("Expected Active state, got {state:?}");
+    }
+}
+
+#[test]
+fn test_nix_on_nixos_host_restores_store_bind_through_merged_loop() {
+    // The counterpart to the foreign test: a NixOS host takes the Native path, so
+    // the merged loop restores the read-only /nix/store self-bind after overlaying.
+    let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/home", "/nix"]);
+    let mock_hidden_vol = temp_dir.path();
+
+    fs.mock_add_file("/etc/os-release", "ID=nixos\nVERSION_ID=\"24.11\"\n");
+    fs.mock_add_file("/proc/1/comm", "systemd");
+    fs.mock_set_path_exists("/nix/store", true);
+    fs.mock_set_path_type("/nix/store", PathKind::Dir);
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlay_mode: OverlayMode::Auto,
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path.clone(),
+    )));
+
+    let _ = crate::manager::helpers::drain_recorded_service_actions();
+
+    let result = manager.lock().unwrap().activate(true);
+    assert!(result.is_ok(), "activation should succeed: {result:?}");
+
+    // The Native path self-binds /nix/store read-only after the overlay.
+    assert!(
+        fs.is_mounted(Path::new("/nix/store")).unwrap(),
+        "NixOS activation must restore the /nix/store self-bind"
+    );
+}
+
 // ========== Explicit Mode ==========
 
 #[test]

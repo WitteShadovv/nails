@@ -30,7 +30,7 @@ fn test_restore_nix_security_model_self_binds_nix_store_in_test_runtime() {
         },
         state_path,
     );
-    let mut guard = NixDaemonGuard::new(false);
+    let mut guard = NixDaemonGuard::new(crate::platform::NixRuntime::None, &[]);
 
     manager.restore_nix_security_model(&mut guard).unwrap();
 
@@ -80,7 +80,7 @@ fn test_restore_nix_security_model_clears_stale_init_namespace_flag_in_test_runt
         ..crate::StateFile::default()
     });
 
-    let mut guard = NixDaemonGuard::new(false);
+    let mut guard = NixDaemonGuard::new(crate::platform::NixRuntime::None, &[]);
     manager.restore_nix_security_model(&mut guard).unwrap();
 
     // The test runtime never forks into the init namespace, so restore records no
@@ -122,7 +122,7 @@ fn test_restore_nix_security_model_self_binds_without_any_submount_sources() {
         },
         state_path,
     );
-    let mut guard = NixDaemonGuard::new(false);
+    let mut guard = NixDaemonGuard::new(crate::platform::NixRuntime::None, &[]);
 
     manager.restore_nix_security_model(&mut guard).unwrap();
 
@@ -222,6 +222,20 @@ fn test_replace_symlink_reports_create_error() {
     let err = NailsManager::<MockFilesystem>::replace_symlink(&link, &target).unwrap_err();
 
     assert!(err.to_string().contains("Failed to create symlink"));
+}
+
+#[test]
+fn test_replace_symlink_refuses_link_equal_target() {
+    // A self-referential symlink (link == target) is a dangling self-loop; the
+    // /run/current-system fallback on a malformed host would ask for exactly this,
+    // and it must be refused rather than created.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let link = temp_dir.path().join("run-current-system");
+
+    let err = NailsManager::<MockFilesystem>::replace_symlink(&link, &link).unwrap_err();
+    assert!(err.to_string().contains("at itself"), "{err}");
+    // Nothing was created.
+    assert!(std::fs::symlink_metadata(&link).is_err());
 }
 
 #[test]

@@ -141,6 +141,10 @@ fn test_explicit_nix_overlay_restores_nix_store_bind_mount() {
     std::fs::create_dir_all(&work_dir).expect("work dir");
 
     let fs = MockFilesystem::new();
+    // The /nix/store self-bind restore is NixOS-native behaviour, gated on the
+    // platform: declare a NixOS host so the merged loop takes the Native path.
+    fs.mock_add_file("/etc/os-release", "ID=nixos\nVERSION_ID=\"24.11\"\n");
+    fs.mock_add_file("/proc/1/comm", "systemd");
     fs.mock_set_path_exists("/", true);
     fs.mock_set_path_exists("/nix", true);
     fs.mock_set_path_exists("/nix/store", true);
