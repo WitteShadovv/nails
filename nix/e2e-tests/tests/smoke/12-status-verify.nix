@@ -85,11 +85,10 @@ in
     print(f"✓ Verify --json returns valid JSON (exit={verify2_rc})")
 
     print("\n=== Test 5b: Verify human headline never overclaims ===")
-    # No --config, so verify falls back to the binary-derived hidden-volume root
-    # and legitimately warns that it is accessible (exit 10); this check is about
-    # the human headline wording, not the posture, so tolerate the warning exit.
-    verify_rc, verify_human = machine.execute("nails --no-log-file verify")
-    assert verify_rc in (0, 10, 11), f"unexpected verify exit {verify_rc}: {verify_human}"
+    # Run against the headless config: without one, verify falls back to the
+    # binary-derived hidden-volume root (the store bin dir) and warns that it is
+    # accessible, so the run never reaches the clean headline this checks.
+    verify_human = machine.succeed(f"nails --no-log-file --config {headless_config} verify")
     assert "No traces found" not in verify_human, verify_human
     assert "System appears clean" not in verify_human, verify_human
     assert "not proof of absence" in verify_human.lower(), verify_human
