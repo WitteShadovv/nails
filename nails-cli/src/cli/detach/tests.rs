@@ -791,6 +791,55 @@ fn panic_hook_keeps_paths_and_payload_off_stderr() {
 }
 
 #[test]
+fn run_detached_close_command_rejects_empty_argv() {
+    let err = super::run_detached_close_command(&[]).expect_err("empty argv must be refused");
+    assert!(err.to_string().contains("nothing to run"), "{err}");
+}
+
+#[test]
+fn run_detached_close_command_discards_streams_and_hides_the_command_line() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let fake_systemd_run = temp_dir.path().join("fake-systemd-run");
+    let log = temp_dir.path().join("systemd-run.log");
+    let shell_path = locate_shell_path();
+    write_executable_script(
+        &fake_systemd_run,
+        &format!(
+            "#!{}\nprintf '%s\\n' \"$@\" > '{}'\nexit 0\n",
+            shell_path.display(),
+            log.display()
+        ),
+    );
+
+    let mut env = EnvGuard::lock();
+    env.set(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run);
+
+    super::run_detached_close_command(&["veracrypt".to_string(), "-d".to_string()])
+        .expect("fake systemd-run should accept the close command");
+
+    let recorded = fs::read_to_string(&log).expect("recorder wrote the argv");
+    // The streams are always discarded, regardless of the debug escape hatch.
+    assert!(
+        recorded.contains("--property=StandardOutput=null"),
+        "{recorded}"
+    );
+    assert!(
+        recorded.contains("--property=StandardError=null"),
+        "{recorded}"
+    );
+    // PID 1 sees only the neutral description, never the close command line.
+    assert!(
+        recorded.contains(&format!(
+            "--description={}",
+            super::NEUTRAL_UNIT_DESCRIPTION
+        )),
+        "{recorded}"
+    );
+    // The close command's own argv is passed after the `--` separator.
+    assert!(recorded.contains("veracrypt"), "{recorded}");
+}
+
+#[test]
 fn journal_relinquish_command_is_built_via_the_tool_resolver() {
     // The pre-detach relinquish resolves journalctl through the trust-checked
     // host-tool resolver (Program::Tool), not from the caller's PATH, and runs

@@ -338,6 +338,20 @@ fn render_template(root: &Path, title: &str) -> String {
 # [sleep_policy]
 # mode = "warn"
 
+# What the emergency panic button does after it tears down the overlays. The
+# overlays always come down; closing the encrypted backend is a separate, opt-in
+# step. Without it the hidden filesystem stays mounted and readable after an
+# emergency until you close it by hand (the emergency output prints the exact
+# sequence). The --lock-backend flag forces it for a single run.
+#   lock_backend (default false): lazy-unmount the hidden root and mark its
+#     device-mapper stack for deferred removal, so the master key is wiped from
+#     kernel memory when the last reference drops.
+#   close_command: an explicit close command (argv, no shell) for a backend that
+#     is not device-mapper based, run through the journal-free detached path.
+# [emergency]
+# lock_backend = false
+# close_command = ["veracrypt", "-d"]
+
 # Terminal colors while the hidden environment is active.
 # [color_scheme]
 # enabled = true

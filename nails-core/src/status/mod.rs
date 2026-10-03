@@ -296,6 +296,14 @@ impl<F: Filesystem> StatusCommand<F> {
         let hidden_toplevel = state_file.hidden_toplevel().map(str::to_string);
         let last_switch_warning = state_file.last_switch_warning().map(str::to_string);
 
+        // Whether the hidden root is still a live mount. Expected while active;
+        // in the Decoy posture it is the signature of an emergency teardown that
+        // did not close the backend, which the CLI reports as Critical.
+        let hidden_root_mounted = self
+            .filesystem
+            .is_mounted(&self.config.hidden_volume_root)
+            .unwrap_or(false);
+
         // Build report
         let report = StatusReport {
             state: state_file.state,
@@ -314,6 +322,7 @@ impl<F: Filesystem> StatusCommand<F> {
             hidden_root_total,
             hidden_root_used,
             hidden_root_available,
+            hidden_root_mounted,
             load_outcome,
             persona_mode: self.config.persona.mode,
         };
@@ -431,6 +440,7 @@ impl Default for StatusReport {
             hidden_root_total: None,
             hidden_root_used: None,
             hidden_root_available: None,
+            hidden_root_mounted: false,
             load_outcome: LoadOutcome::Missing,
             persona_mode: crate::config::PersonaMode::SharedHome,
         }

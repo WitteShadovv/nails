@@ -295,9 +295,43 @@ Disadvantages:
   reverted until a reboot
 - More cleanup happens in-process instead of being delegated to a reboot
 - Relies on in-process cleanup rather than reboot guarantees
-- The hidden volume should still be closed afterwards (see below); reboot if you
-  are unsure cleanup was complete
+- **The encrypted backend is left open by default.** Overlay teardown always
+  runs, but closing the backend is opt-in (see
+  [Closing the backend after an emergency](#closing-the-backend-after-an-emergency)).
+  Without the opt-in the hidden filesystem stays **mounted and readable** after
+  the emergency and the master key stays in kernel memory until you close it.
 - Higher risk of incomplete cleanup if interrupted
+
+#### Closing the backend after an emergency
+
+Because the binary and `state.json` live on the hidden root, a plain `umount`
+plus `cryptsetup close` fails with `EBUSY` while the process is still running
+from it, so the backend close is a separate step. There are two ways to do it:
+
+- **Opt in and let NAILS do it.** Set `[emergency] lock_backend = true` in
+  `nails.toml`, or pass `nails emergency --lock-backend` for a single run. After
+  the overlays are down NAILS calls `sync`, lazy-unmounts the hidden root
+  (`MNT_DETACH`), and marks the hidden root's device-mapper stack for deferred
+  removal (`dmsetup remove --deferred`, the userspace equivalent of
+  `cryptsetup close --deferred`). The mount detaches immediately; the kernel
+  removes the device and wipes the key once the last reference — the NAILS
+  process — drops at exit, and a loop device set up with autoclear detaches with
+  it. For a non-device-mapper backend, set `[emergency] close_command` to the
+  argv that closes it; it runs through the journal-free detached path so its
+  command line never reaches the decoy journal.
+- **Close it by hand.** Without the opt-in, the emergency output (and
+  `nails status` / `nails verify`) report **Critical — hidden root still mounted
+  at `<path>`** and print the exact sequence to run, for example:
+
+  ```text
+  umount <hidden-root>
+  cryptsetup close <mapper>
+  ```
+
+Every failure is reported loudly; nothing is suppressed. **Tradeoff:** the
+device-removal kernel messages may still reach the journal, and only a power-off
+or reboot clears all kernel and RAM residue — `nails emergency --poweroff` does
+this after the teardown.
 
 ### Panic Switch
 
@@ -453,7 +487,7 @@ Take immediate action if you observe:
 | Overlay mounts still visible in `findmnt` | Critical | Run `emergency` or reboot |
 | Shell history contains hidden commands | Critical | Truncate files, investigate |
 | NAILS process still running | High | Kill process, re-run deactivation |
-| Hidden volume still mounted | High | Unmount and close immediately if not already rebooting |
+| Hidden root still mounted | Critical | Hidden filesystem is readable and the key is in RAM; close the backend (`[emergency] lock_backend`, `--lock-backend`, or the printed manual sequence) or reboot |
 | Recently-used.xbel shows hidden files | Medium | Clear file, check GNOME settings |
 | Journal contains NAILS entries | Medium | Clear journal, configure volatile logging |
 

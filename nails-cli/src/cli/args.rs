@@ -378,6 +378,17 @@ pub struct EmergencyArgs {
     /// A reboot clears RAM. Mutually exclusive with `--poweroff`.
     #[arg(long)]
     pub reboot: bool,
+
+    /// Close the encrypted backend after the teardown: lazy-unmount the hidden
+    /// root and mark its device-mapper stack for deferred removal, wiping the
+    /// master key from kernel memory when the last reference drops.
+    ///
+    /// Forces the close for this run regardless of the `[emergency] lock_backend`
+    /// config key. Without it (and without the key) the hidden filesystem stays
+    /// mounted and readable after the emergency, and the printed sequence closes
+    /// it by hand.
+    #[arg(long)]
+    pub lock_backend: bool,
 }
 
 /// `nails recover` arguments

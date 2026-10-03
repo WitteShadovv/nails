@@ -61,6 +61,10 @@ pub struct StatusData {
     /// Bytes available on the hidden volume.
     #[serde(skip_serializing_if = "Option::is_none")]
     hidden_root_available_bytes: Option<u64>,
+    /// Whether the hidden root is still a live mount point. `true` in the Decoy
+    /// posture is the signature of an emergency teardown that did not close the
+    /// backend: the hidden filesystem is still readable and its key is in RAM.
+    hidden_root_mounted: bool,
     /// OpSec reminders.
     opsec_reminders: Vec<OpSecReminderJson>,
 }
@@ -140,6 +144,7 @@ pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusDat
         hidden_root_total_bytes: report.hidden_root_total,
         hidden_root_used_bytes: report.hidden_root_used,
         hidden_root_available_bytes: report.hidden_root_available,
+        hidden_root_mounted: report.hidden_root_mounted,
         opsec_reminders: report
             .opsec_reminders
             .iter()
@@ -180,6 +185,7 @@ pub fn build_status_data_unknown(reason: String) -> StatusData {
         hidden_root_total_bytes: None,
         hidden_root_used_bytes: None,
         hidden_root_available_bytes: None,
+        hidden_root_mounted: false,
         opsec_reminders: Vec::new(),
     }
 }

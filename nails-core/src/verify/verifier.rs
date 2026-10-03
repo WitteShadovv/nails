@@ -169,6 +169,12 @@ impl<F: Filesystem> Verifier<F> {
             // targets, classified from the live mount table.
             findings.extend(self.check_nails_owned_mounts()?);
             checks_run += 1;
+
+            // 1d. Flag a hidden root still mounted while no hidden session is
+            // active — the signature of an emergency teardown that did not close
+            // the backend.
+            findings.extend(self.check_hidden_root_mounted()?);
+            checks_run += 1;
         }
 
         // 2. Check for artifact files from the shared registry.
@@ -367,6 +373,50 @@ impl<F: Filesystem> Verifier<F> {
                     ),
                 )
                 .with_fix_guidance("Run 'nails deactivate' to unmount overlays"),
+            );
+        }
+
+        Ok(findings)
+    }
+
+    /// Flag the hidden volume root still being a live mount point while no hidden
+    /// session is active.
+    ///
+    /// A mounted hidden root is expected while active, so this fires only when the
+    /// recorded state is Inactive (or absent): overlays torn down, state reset,
+    /// yet the backend still mounted — the signature of an emergency teardown that
+    /// did not close the backend, which leaves the hidden filesystem readable and
+    /// the master key in RAM. Reported Critical with the manual close guidance.
+    /// Needs a configured hidden root to have a path to check.
+    fn check_hidden_root_mounted(&self) -> Result<Vec<Finding>> {
+        let mut findings = Vec::new();
+
+        let Some(hidden_root) = self.hidden_root() else {
+            return Ok(findings);
+        };
+
+        // Expected while active; only a non-active state makes a mounted root a
+        // problem. An absent state file is treated as non-active (nothing claims
+        // an active session).
+        let active = self
+            .state
+            .as_ref()
+            .is_some_and(|state| matches!(state.state, crate::state::SystemState::Active { .. }));
+        if active {
+            return Ok(findings);
+        }
+
+        if self.filesystem.is_mounted(hidden_root).unwrap_or(false) {
+            findings.push(
+                Finding::new(
+                    Severity::Critical,
+                    "mount",
+                    format!("hidden root still mounted at {}", hidden_root.display()),
+                )
+                .with_fix_guidance(
+                    "The hidden filesystem is still readable and its key is in RAM; \
+                     unmount it and close the encrypted backend, or reboot",
+                ),
             );
         }
 

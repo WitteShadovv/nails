@@ -132,9 +132,34 @@ pub fn execute(
         );
     }
 
+    // A hidden root still mounted in the Decoy posture — overlays gone, state
+    // inactive — is the signature of an emergency teardown that did not close the
+    // backend: the hidden filesystem is still readable and its key is still in
+    // RAM. Report it loudly as Critical and fail closed, regardless of the
+    // otherwise-safe posture.
+    let hidden_root_critical = report.hidden_root_mounted && report.posture == Posture::Decoy;
+    if hidden_root_critical && !json {
+        println!();
+        println!(
+            "{}",
+            style.marked(
+                nails_core::output::Mark::Fail,
+                format!(
+                    "Critical: hidden root still mounted at {}",
+                    hidden_volume_root.display()
+                )
+            )
+        );
+        println!("  The hidden filesystem is still readable; close the encrypted backend.");
+    }
+
     // The posture always drives the exit code: safe postures exit 0, dangerous or
-    // unknown ones fail closed.
+    // unknown ones fail closed. A still-mounted hidden root overrides an otherwise
+    // safe posture and fails closed too.
     let _ = std::io::stdout().flush();
+    if hidden_root_critical {
+        return ExitStatus::DegradedReboot;
+    }
     status_exit_code(report.posture)
 }
 

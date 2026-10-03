@@ -442,5 +442,59 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
     })
 }
 
+/// Run an external backend-close command as a journal-free detached transient
+/// unit.
+///
+/// Used for the emergency `[emergency] close_command` opt-in: a backend that is
+/// not device-mapper based (so deferred `dmsetup` removal cannot reach it) is
+/// closed by an explicit argv, with no shell. It runs through the same
+/// `systemd-run` handoff the activate/deactivate workers use so its streams are
+/// discarded (`StandardOutput`/`StandardError=null`) and PID 1 logs only the
+/// neutral unit description — the command line, which may name the backend, never
+/// reaches the decoy journal. Unlike the worker handoffs this does not re-exec
+/// NAILS and does not exit the process: it dispatches the unit and returns, so
+/// the caller can report the result and continue the teardown.
+///
+/// The debug escape hatch is deliberately not honoured here: the close command's
+/// argv can carry a backend path, so its streams are always discarded regardless
+/// of `NAILS_DETACH_DEBUG_JOURNAL`.
+pub fn run_detached_close_command(argv: &[String]) -> Result<(), NailsError> {
+    if argv.is_empty() {
+        return Err(NailsError::InvalidState(
+            "close_command is empty; nothing to run".to_string(),
+        ));
+    }
+
+    let mut cmd = Command::new(systemd_run_program()?);
+    cmd.arg("--slice=system.slice")
+        .arg("--collect")
+        .arg("--quiet")
+        .arg(format!("--description={NEUTRAL_UNIT_DESCRIPTION}"))
+        .arg("--working-directory=/")
+        .arg(format!(
+            "--setenv=PATH={}",
+            detached_path_env().to_string_lossy()
+        ))
+        // Always discard the streams: the close command's argv may name the
+        // backend, so the debug journal escape hatch must not reroute it.
+        .arg("--property=StandardOutput=null")
+        .arg("--property=StandardError=null")
+        .arg("--");
+    cmd.args(argv);
+
+    let output = cmd.output().map_err(|e| {
+        NailsError::InvalidState(format!("Failed to execute the close command: {}", e))
+    })?;
+
+    if !output.status.success() {
+        return Err(NailsError::InvalidState(format!(
+            "close command transient unit failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

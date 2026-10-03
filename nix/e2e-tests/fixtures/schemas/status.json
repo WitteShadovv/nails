@@ -21,6 +21,7 @@
         "overlays",
         "remaining_mounts",
         "overlay_verification",
+        "hidden_root_mounted",
         "opsec_reminders"
       ],
       "properties": {
@@ -121,6 +122,7 @@
         "hidden_root_total_bytes": { "type": "integer", "minimum": 0 },
         "hidden_root_used_bytes": { "type": "integer", "minimum": 0 },
         "hidden_root_available_bytes": { "type": "integer", "minimum": 0 },
+        "hidden_root_mounted": { "type": "boolean" },
         "opsec_reminders": {
           "type": "array",
           "items": {

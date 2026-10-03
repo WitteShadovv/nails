@@ -85,6 +85,9 @@ pub mod deactivation;
 // Status command module (State Query with Overlay Verification)
 pub mod status;
 
+// Backend close/lock after an emergency teardown.
+pub mod backend_lock;
+
 // Shell instrumentation module (Shell Prompt Instrumentation Scripts)
 pub mod shell;
 

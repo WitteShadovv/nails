@@ -109,6 +109,8 @@ is the `name` key of each `[[overlays]]` table.
 | `backend_watch.enabled` | boolean | `true` | Start the in-session backend watcher at activation. The watcher polls the hidden backend and alerts you when it fails. `false` runs no long-lived component. See [Backend watcher](#backend-watcher). |
 | `backend_watch.poll_interval_secs` | integer (seconds) | `5` | Seconds between the watcher's probes of the hidden backend. |
 | `sleep_policy.mode` | `"warn"`, `"block"` or `"teardown"` | `"warn"` | What to do about system sleep (suspend/hibernate) while a session is active. Suspending keeps the whole session — overlays, the open dm-crypt mapper and the master key — resident in RAM behind the decoy lock screen. `warn` only surfaces a pre-flight warning when the host would suspend an active session. `block` holds a sleep/idle inhibitor for the life of the session so the host cannot suspend while active; released at deactivation. `teardown` holds a sleep *delay* inhibitor and runs the bounded emergency teardown when the host is about to sleep, within logind's `InhibitDelayMaxSec` window. Also set the decoy's logind lid switch to `ignore`/`lock`. See [Sleep policy](#sleep-policy). |
+| `emergency.close_command` | array of strings | unset | An explicit close command (argv, no shell) for a backend that is not device-mapper based (so deferred `dmsetup` removal cannot reach it). When `lock_backend` runs, this is dispatched through the journal-free detached path after the device-mapper stack is marked for deferred removal, so the command line never reaches the decoy journal. Unset relies on the device-mapper deferred removal and loop autoclear alone. See [Emergency backend close](#emergency-backend-close). |
+| `emergency.lock_backend` | boolean | `false` | Close the encrypted backend after the emergency teardown: lazy-unmount the hidden root and mark its device-mapper stack for deferred removal, so the master key is wiped from kernel memory when the last reference drops. Off by default, so after an emergency the hidden filesystem stays mounted and readable until you close it by hand (the emergency output prints the exact sequence). The `--lock-backend` flag forces it for a single run. See [Emergency backend close](#emergency-backend-close). |
 <!-- END config-keys -->
 
 The Key and Default columns are generated from the code, and
@@ -330,3 +332,39 @@ which holds a logind inhibitor for the life of the session:
 
 The inhibitor appears in `systemd-inhibit --list` under neutral, non-product
 names, and nothing is written to the decoy disk.
+
+## Emergency backend close
+
+`nails emergency` always tears down the overlays. It deliberately leaves the
+encrypted backend **open**: the binary and `state.json` live on the hidden root,
+so while this process is still running from it a plain `umount` plus
+`cryptsetup close` fails with `EBUSY`. Closing the backend — wiping the master
+key from kernel memory — is therefore a separate, opt-in step.
+
+Without the opt-in, the hidden filesystem stays mounted and readable after an
+emergency, and the master key stays in RAM until you close it. The emergency
+output (and `nails status` / `nails verify`) report this as **Critical — hidden
+root still mounted at `<path>`** and print the exact manual sequence:
+
+```text
+umount <hidden-root>
+cryptsetup close <mapper>
+```
+
+Set `[emergency] lock_backend = true` (or pass `--lock-backend` for a single
+run) to have the teardown do it for you. After the overlays are down it calls
+`sync`, lazy-unmounts the hidden root (`MNT_DETACH`), and marks the hidden
+root's device-mapper stack for deferred removal (`dmsetup remove --deferred`,
+the userspace equivalent of `cryptsetup close --deferred`). The mount detaches
+from the namespace immediately; the kernel removes the device and wipes the key
+once the last reference — this process — drops at exit, and a loop device set up
+with autoclear detaches with it.
+
+For a backend that is not device-mapper based, set `close_command` to the argv
+(no shell) that closes it; it runs through the same journal-free detached path
+the activate/deactivate workers use, so its command line never reaches the decoy
+journal.
+
+Every failure is reported loudly; nothing is suppressed. Device-removal kernel
+messages may still reach the journal. Powering off or rebooting afterwards is
+still the only way to clear all kernel and RAM residue.

@@ -135,6 +135,49 @@ mod tests {
     }
 
     #[test]
+    fn emergency_config_defaults_to_no_lock_and_no_close_command() {
+        let config = EmergencyConfig::default();
+        assert!(!config.lock_backend);
+        assert!(config.close_command.is_none());
+    }
+
+    #[test]
+    fn emergency_config_empty_table_fills_default() {
+        let config: EmergencyConfig = toml::from_str("").unwrap();
+        assert_eq!(config, EmergencyConfig::default());
+    }
+
+    #[test]
+    fn emergency_config_parses_lock_backend_and_close_command() {
+        let config: EmergencyConfig =
+            toml::from_str("lock_backend = true\nclose_command = [\"veracrypt\", \"-d\"]").unwrap();
+        assert!(config.lock_backend);
+        assert_eq!(
+            config.close_command.as_deref(),
+            Some(["veracrypt".to_string(), "-d".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn emergency_config_rejects_unknown_key() {
+        assert!(toml::from_str::<EmergencyConfig>("lock_backnd = true").is_err());
+    }
+
+    #[test]
+    fn emergency_table_parses_inside_full_config() {
+        let config: super::Config =
+            toml::from_str("[emergency]\nlock_backend = true\n").expect("full config parses");
+        assert!(config.emergency.lock_backend);
+    }
+
+    #[test]
+    fn emergency_table_rejects_unknown_key_inside_full_config() {
+        let err = toml::from_str::<super::Config>("[emergency]\nbogus = true\n")
+            .expect_err("unknown key in [emergency] must be rejected");
+        assert!(err.to_string().contains("bogus"), "{err}");
+    }
+
+    #[test]
     fn sleep_policy_round_trips_through_toml() {
         let config = SleepPolicyConfig {
             mode: SleepPolicyMode::Teardown,
@@ -196,6 +239,40 @@ pub struct SleepPolicyConfig {
     /// [`SleepPolicyMode::Warn`].
     #[serde(default)]
     pub mode: SleepPolicyMode,
+}
+
+/// `[emergency]` configuration table.
+///
+/// Controls what the emergency panic button does *after* it has torn down the
+/// overlays. Overlay teardown always runs; closing the encrypted backend is a
+/// separate, opt-in step because it is irreversible for the running session and,
+/// since the binary and `state.json` live on the hidden root, it can only be
+/// reached by a lazy unmount plus deferred device removal.
+///
+/// Mirrors the other nested tables: every key is optional and unknown keys are
+/// rejected, so a typo fails loudly instead of silently selecting a default.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmergencyConfig {
+    /// Lazy-unmount the hidden root and mark its device-mapper stack for deferred
+    /// removal once the overlays are down, so the master key is wiped from kernel
+    /// memory when the last reference drops.
+    ///
+    /// Off by default: without it the hidden filesystem stays mounted and
+    /// readable after an emergency, and the operator closes the backend by hand
+    /// from the printed sequence. The `--lock-backend` flag forces it for a
+    /// single run regardless of this value.
+    #[serde(default)]
+    pub lock_backend: bool,
+
+    /// An explicit close command (argv, no shell) for a backend that is not
+    /// device-mapper based, run through the journal-free detached path.
+    ///
+    /// When set it runs in addition to the lazy unmount, after the device-mapper
+    /// stack has been marked for deferred removal. Empty (the default) relies on
+    /// the device-mapper deferred removal and loop autoclear alone.
+    #[serde(default)]
+    pub close_command: Option<Vec<String>>,
 }
 
 /// Application configuration
@@ -389,6 +466,15 @@ pub struct Config {
     #[serde(default)]
     pub sleep_policy: SleepPolicyConfig,
 
+    /// What the emergency panic button does after overlay teardown.
+    ///
+    /// Overlay teardown always runs; closing the encrypted backend (lazy unmount
+    /// plus deferred device removal, wiping the key from RAM) is opt-in. Off by
+    /// default, so after an emergency the hidden filesystem stays mounted and
+    /// readable until the operator closes it. See [`EmergencyConfig`].
+    #[serde(default)]
+    pub emergency: EmergencyConfig,
+
     /// Neutral active-state indicator prepended to the shell prompt while the
     /// hidden environment is active.
     ///
@@ -492,4 +578,5 @@ pub const CONFIG_KEYS: &[&str] = &[
     "persona",
     "backend_watch",
     "sleep_policy",
+    "emergency",
 ];

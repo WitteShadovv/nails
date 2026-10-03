@@ -76,25 +76,44 @@ pub fn execute(
 
     let power_action = requested_power_action(args);
 
+    // The `--lock-backend` flag forces the backend close for this run; otherwise
+    // the opt-in comes from the `[emergency] lock_backend` config key.
+    let lock_requested = args.lock_backend || manager.config().emergency.lock_backend;
+
     match manager.emergency_deactivate() {
         Ok(report) => {
+            // Opt-in: close the encrypted backend (lazy unmount + deferred
+            // device-mapper removal), wiping the key from RAM when the last
+            // reference drops. Off by default, so the hidden filesystem stays
+            // mounted until the operator closes it by hand.
+            let lock_outcome = lock_requested.then(|| perform_backend_lock(&manager));
+
             let backend_commands = backend_close_commands(&manager);
+            let hidden_root = manager.config().hidden_volume_root.clone();
+            let still_mounted = manager
+                .filesystem()
+                .is_mounted(&hidden_root)
+                .unwrap_or(false);
 
             // Dispatch the requested power action after the teardown completes.
             // Powering off or rebooting is the only way to clear RAM, so it is
             // offered only once the overlays are gone.
             let power_note = dispatch_power_action(&manager, power_action);
 
+            let view = EmergencyView {
+                report: &report,
+                backend_commands: &backend_commands,
+                lock_outcome: lock_outcome.as_ref(),
+                hidden_root: &hidden_root,
+                hidden_root_still_mounted: still_mounted,
+                power_action,
+                power_note: &power_note,
+            };
+
             if json {
-                print_emergency_json(&report, &backend_commands, power_action, &power_note);
+                print_emergency_json(&view);
             } else {
-                render_emergency_success(
-                    settings,
-                    &report,
-                    &backend_commands,
-                    power_action,
-                    &power_note,
-                );
+                render_emergency_success(settings, &view);
             }
             ExitStatus::Ok
         }
@@ -170,27 +189,53 @@ fn run_countdown(secs: u64) {
     }
 }
 
-/// The exact commands to close the encrypted backend, derived from the hidden
-/// volume's mount source (mount point, device, and dm name when present).
+/// The exact commands to close the encrypted backend by hand, derived from the
+/// hidden volume's device-mapper / loop chain.
 ///
-/// The overlays come down during the teardown, but the encrypted backend stays
-/// open so its key remains in RAM until the operator closes it. Best-effort: an
-/// unreadable mount source yields no command lines and the generic dismount
-/// guidance still applies.
+/// The overlays come down during the teardown, but without the `lock_backend`
+/// opt-in the encrypted backend stays open so its key remains in RAM until the
+/// operator closes it. Best-effort: an unreadable or already-unmounted root
+/// yields no command lines and the generic dismount guidance still applies.
 fn backend_close_commands<F: Filesystem>(manager: &NailsManager<F>) -> Vec<String> {
     let root = manager.config().hidden_volume_root.clone();
-    let Ok(Some(source)) = manager.filesystem().mount_source(&root) else {
-        return Vec::new();
-    };
-
-    let mut lines = Vec::new();
-    lines.push(format!("umount {}", root.display()));
-    if let Some(dm_name) = &source.dm_name {
-        lines.push(format!("cryptsetup close {dm_name}"));
-    } else if let Some(device) = &source.device {
-        lines.push(format!("# backend device: {device}"));
+    match nails_core::backend_lock::resolve_backend_chain(manager.filesystem(), &root) {
+        Ok(Some(chain)) => nails_core::backend_lock::manual_close_sequence(&chain),
+        _ => Vec::new(),
     }
-    lines
+}
+
+/// Perform the opt-in backend close: lazy-unmount the hidden root and mark its
+/// device-mapper stack for deferred removal, plus any explicit `close_command`.
+///
+/// Returns the core [`BackendLockReport`](nails_core::backend_lock::BackendLockReport),
+/// with a failed or dispatched `close_command` folded into it. Nothing is
+/// suppressed: every failure is reported.
+fn perform_backend_lock<F: Filesystem>(
+    manager: &NailsManager<F>,
+) -> nails_core::backend_lock::BackendLockReport {
+    let hidden_root = manager.config().hidden_volume_root.clone();
+    let mut report = nails_core::backend_lock::lock_backend(manager.filesystem(), &hidden_root);
+
+    if let Some(argv) = manager.config().emergency.close_command.clone() {
+        match crate::cli::detach::run_detached_close_command(&argv) {
+            Ok(()) => report.close_command_dispatched = true,
+            Err(e) => report.errors.push(format!("close_command failed: {e}")),
+        }
+    }
+
+    report
+}
+
+/// Everything the emergency success output renders, gathered once so the human
+/// and JSON renderers stay in step.
+struct EmergencyView<'a> {
+    report: &'a DeactivationReport,
+    backend_commands: &'a [String],
+    lock_outcome: Option<&'a nails_core::backend_lock::BackendLockReport>,
+    hidden_root: &'a Path,
+    hidden_root_still_mounted: bool,
+    power_action: Option<PostTeardownPower>,
+    power_note: &'a Option<String>,
 }
 
 /// The `data` payload for a successful `emergency --json`.
@@ -211,7 +256,14 @@ struct EmergencyData {
     runtime_journal_scrubbed: bool,
     /// Result of the opt-in post-unmount history-truncation check, if it ran.
     history_truncation_verified: Option<bool>,
-    /// The exact commands to close the encrypted backend.
+    /// Whether the hidden root is still mounted after the teardown. `true` means
+    /// the hidden filesystem is still browsable and the key is still in RAM.
+    hidden_root_still_mounted: bool,
+    /// The hidden-root path, so a still-mounted warning names it.
+    hidden_root: String,
+    /// The outcome of the opt-in backend close, when it was requested.
+    backend_lock: Option<BackendLockData>,
+    /// The exact commands to close the encrypted backend by hand.
     backend_close_commands: Vec<String>,
     /// The requested post-teardown power action, if any.
     power_action: Option<&'static str>,
@@ -219,6 +271,30 @@ struct EmergencyData {
     power_result: Option<String>,
     /// The recovery steps the operator should still take.
     recovery_guidance: Vec<&'static str>,
+}
+
+/// The JSON view of an opt-in backend-close attempt.
+#[derive(Debug, Serialize)]
+struct BackendLockData {
+    /// Whether the lazy unmount of the hidden root succeeded.
+    unmounted: bool,
+    /// Device-mapper devices marked for deferred removal.
+    dm_deferred: Vec<String>,
+    /// Whether an explicit `close_command` was dispatched.
+    close_command_dispatched: bool,
+    /// Every failure encountered during the close.
+    errors: Vec<String>,
+}
+
+impl BackendLockData {
+    fn from_report(report: &nails_core::backend_lock::BackendLockReport) -> Self {
+        Self {
+            unmounted: report.unmounted,
+            dm_deferred: report.dm_deferred.clone(),
+            close_command_dispatched: report.close_command_dispatched,
+            errors: report.errors.clone(),
+        }
+    }
 }
 
 fn power_action_name(action: Option<PostTeardownPower>) -> Option<&'static str> {
@@ -229,12 +305,8 @@ fn power_action_name(action: Option<PostTeardownPower>) -> Option<&'static str> 
 }
 
 /// Print the success envelope for a completed emergency teardown.
-fn print_emergency_json(
-    report: &DeactivationReport,
-    backend_commands: &[String],
-    power_action: Option<PostTeardownPower>,
-    power_note: &Option<String>,
-) {
+fn print_emergency_json(view: &EmergencyView) {
+    let report = view.report;
     let data = EmergencyData {
         status: "complete",
         detached_overlays: report.unmounted_overlays.clone(),
@@ -243,22 +315,20 @@ fn print_emergency_json(
         page_cache_dropped: report.page_cache_dropped,
         runtime_journal_scrubbed: report.runtime_journal_scrubbed,
         history_truncation_verified: report.history_truncation_verified,
-        backend_close_commands: backend_commands.to_vec(),
-        power_action: power_action_name(power_action),
-        power_result: power_note.clone(),
+        hidden_root_still_mounted: view.hidden_root_still_mounted,
+        hidden_root: view.hidden_root.display().to_string(),
+        backend_lock: view.lock_outcome.map(BackendLockData::from_report),
+        backend_close_commands: view.backend_commands.to_vec(),
+        power_action: power_action_name(view.power_action),
+        power_result: view.power_note.clone(),
         recovery_guidance: EMERGENCY_RECOVERY_GUIDANCE.to_vec(),
     };
     Envelope::success("emergency", data).print();
 }
 
 /// Render the human-readable success output for a completed emergency teardown.
-fn render_emergency_success(
-    settings: &OutputSettings,
-    report: &DeactivationReport,
-    backend_commands: &[String],
-    power_action: Option<PostTeardownPower>,
-    power_note: &Option<String>,
-) {
+fn render_emergency_success(settings: &OutputSettings, view: &EmergencyView) {
+    let report = view.report;
     let style = settings.stdout_style();
     println!(
         "{}",
@@ -309,23 +379,73 @@ fn render_emergency_success(
         None => {}
     }
 
-    if let Some(note) = power_note {
+    render_backend_lock_outcome(view);
+
+    if let Some(note) = view.power_note {
         println!("  Power action: {note}");
-    } else if power_action.is_none() {
+    } else if view.power_action.is_none() && !view.hidden_root_still_mounted {
         println!("  The decoy greeter will reappear");
     }
 
-    if !backend_commands.is_empty() {
-        println!();
-        println!("  Close the encrypted backend when it is safe to do so:");
-        for command in backend_commands {
-            println!("    {command}");
-        }
-    }
+    render_hidden_root_status(settings, view);
 
     eprintln!();
     for line in emergency_recovery_guidance(settings) {
         eprintln!("{line}");
+    }
+}
+
+/// Report the outcome of the opt-in backend close, loudly on any failure.
+fn render_backend_lock_outcome(view: &EmergencyView) {
+    let Some(outcome) = view.lock_outcome else {
+        return;
+    };
+
+    if outcome.unmounted {
+        println!("  Hidden root lazy-unmounted");
+    }
+    if !outcome.dm_deferred.is_empty() {
+        println!(
+            "  Backend marked for deferred removal: {}",
+            outcome.dm_deferred.join(", ")
+        );
+    }
+    if outcome.close_command_dispatched {
+        println!("  Backend close command dispatched");
+    }
+    for error in &outcome.errors {
+        println!("  ! Backend close error: {error}");
+    }
+}
+
+/// Report whether the hidden root is still mounted, and how to close it.
+///
+/// A still-mounted hidden root after an emergency is a Critical condition: the
+/// hidden filesystem is browsable and the key is still in RAM. The exact manual
+/// close sequence is printed so the operator can finish the job.
+fn render_hidden_root_status(settings: &OutputSettings, view: &EmergencyView) {
+    let style = settings.stdout_style();
+    if view.hidden_root_still_mounted {
+        println!();
+        println!(
+            "{}",
+            style.marked(
+                Mark::Fail,
+                format!(
+                    "Critical: hidden root still mounted at {}",
+                    view.hidden_root.display()
+                )
+            )
+        );
+        println!("  The hidden filesystem is still readable and its key is still in RAM.");
+        if !view.backend_commands.is_empty() {
+            println!("  Close the encrypted backend when it is safe to do so:");
+            for command in view.backend_commands {
+                println!("    {command}");
+            }
+        }
+    } else if view.lock_outcome.is_some() {
+        println!("  Hidden root closed; the key is wiped as the last reference drops");
     }
 }
 
@@ -503,6 +623,19 @@ mod tests {
         let start = Instant::now();
         run_countdown(0);
         assert!(start.elapsed() < std::time::Duration::from_millis(200));
+    }
+
+    #[test]
+    fn lock_backend_flag_is_accepted_by_clap() {
+        use crate::cli::args::{Cli, Commands};
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["nails", "emergency", "--lock-backend"])
+            .expect("clap should accept --lock-backend");
+        match cli.command {
+            Commands::Emergency(args) => assert!(args.lock_backend),
+            _ => panic!("expected the emergency command"),
+        }
     }
 
     #[test]

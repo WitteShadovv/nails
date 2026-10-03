@@ -346,6 +346,15 @@ pub struct StatusReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hidden_root_available: Option<u64>,
 
+    /// Whether the hidden-volume root is still a live mount point.
+    ///
+    /// Expected while a hidden session is active. When it is `true` in the Decoy
+    /// posture — overlays gone, state inactive — the hidden filesystem is still
+    /// mounted and readable with its key in RAM, the signature of an emergency
+    /// teardown that did not close the backend. The CLI reports that as Critical.
+    #[serde(default)]
+    pub hidden_root_mounted: bool,
+
     /// How the state file was loaded (P1-03: unified load outcome)
     #[serde(skip, default = "default_load_outcome")]
     pub load_outcome: LoadOutcome,

@@ -78,6 +78,7 @@ impl Config {
             risky_services: None,
             accept_persistent_decoy: false,
             sleep_policy: super::types::SleepPolicyConfig::default(),
+            emergency: super::types::EmergencyConfig::default(),
         }
     }
 }
