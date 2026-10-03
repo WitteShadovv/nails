@@ -86,28 +86,40 @@ in
         assert status["overlays"] == [], status
         assert_no_overlays(expected_overlays)
 
-    with subtest("emergency fails closed while activation is in progress"):
+    with subtest("the activation is interrupted, leaving a stuck Activating state"):
+        # SIGKILL the parked activation so nothing finishes or rolls back the
+        # switch: state.json stays frozen at Activating. This is the realistic
+        # precondition for an emergency from this state (a crashed or killed
+        # activation), without racing a still-live owner.
+        pid = machine.succeed("pgrep -x nails").strip().splitlines()[0]
+        machine.succeed(f"kill -9 {pid}")
+        machine.succeed(f"rm -f {gate_path}")
+        machine.wait_until_fails("pgrep -x nails", timeout=60)
+
+        status = read_status_json(config_path=headless_config)
+        assert_status_state("activating", payload=status)
+
+    with subtest("emergency tears down from the stuck Activating state"):
+        # Emergency is state-independent: from a non-Active state it enumerates
+        # the live NAILS mounts from the kernel mount table, tears them down and
+        # converges to Inactive instead of refusing.
         prefix = "/run/nails-tests/emergency-from-activating"
         result = run_shellless_transient_command(
             prefix,
             ["nails", "--config", headless_config, "emergency"],
             unit_name="nails-emergency-from-activating",
-            timeout=30,
+            timeout=60,
         )
 
-        assert result["rc"] == 1, f"Expected emergency to fail from Activating, got: {result}"
-        assert "Activating" in result["stderr"], result
-        assert "Must be ACTIVE" in result["stderr"], result
+        assert result["rc"] == 0, f"Expected emergency to succeed from Activating, got: {result}"
 
-        status = read_status_json(config_path=headless_config)
-        assert_status_state("activating", payload=status)
-        assert status["overlays"] == [], status
         assert_no_overlays(expected_overlays)
+        status = read_status_json(config_path=headless_config)
+        assert_status_state("inactive", payload=status)
 
-    with subtest("releasing activation allows a real active session to be emergency-cleaned"):
-        machine.succeed(f"rm -f {gate_path}")
-        rc, stdout, stderr = wait_for_captured_command("emergency-activating-primary", timeout=240)
-        assert rc == 0, f"Expected activation success, got rc={rc}, stdout={stdout!r}, stderr={stderr!r}"
+    with subtest("a fresh activation after the teardown can be emergency-cleaned"):
+        # The gate file is gone, so this activation runs straight through.
+        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
         status = read_status_json(config_path=headless_config)
         assert status["state"]["kind"] == "active", status
         assert_status_overlays(expected_overlays, status)

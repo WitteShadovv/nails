@@ -245,7 +245,7 @@ main() {
 	"$nails" verify || fail "verify failed"
 
 	log "emergency teardown (fast, no reboot)"
-	"$nails" emergency --no-countdown || fail "emergency failed"
+	"$nails" emergency || fail "emergency failed"
 	assert_no_overlays
 
 	log "overlay-only activation (round 2, deactivate teardown)"

@@ -161,8 +161,8 @@ distroVm.buildVmTest {
     with subtest("status, verify and emergency operate on the active session"):
         machine.succeed(f"{nails} status")
         machine.succeed(f"{nails} verify")
-        # Emergency tears the session down fast; no countdown in a test.
-        machine.succeed(f"{nails} emergency --no-countdown")
+        # Emergency starts immediately; a countdown is opt-in.
+        machine.succeed(f"{nails} emergency")
 
     with subtest("deactivation with a reboot restores the decoy"):
         # Re-activate so deactivate has a session to restore, then deactivate and
