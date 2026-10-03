@@ -132,6 +132,7 @@ fn test_deactivate_uses_overlay_metadata_when_active_overlay_list_is_incomplete(
     overlay_status.insert(
         PathBuf::from("/home"),
         crate::OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/"),
             upper_dir: upper_home.clone(),
@@ -142,6 +143,7 @@ fn test_deactivate_uses_overlay_metadata_when_active_overlay_list_is_incomplete(
     overlay_status.insert(
         PathBuf::from("/etc"),
         crate::OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/etc"),
             lower_dir: PathBuf::from("/"),
             upper_dir: upper_etc.clone(),

@@ -4,6 +4,7 @@
 //! overlay mounting algorithm.
 
 use crate::process::RiskyServicePolicy;
+use serde::{Deserialize, Serialize};
 
 /// Options for controlling overlay mounting strategy
 ///
@@ -117,13 +118,18 @@ impl Default for OverlayStrategyOptions {
 /// meaning: a process that opened the directory before the mount keeps resolving
 /// the original inode under both methods, so leakage is tracked separately via
 /// [`MountResult::surviving_writers`] rather than inferred from the method.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MountMethod {
     /// Direct overlay mount over the target directory.
+    #[default]
     Direct,
     /// Pivot fallback: the overlay is mounted on a staging path and then
     /// bind-mounted over the target (used when a direct mount is rejected).
     Pivot,
+    /// Snapshot pivot: the target's filesystem cannot host an overlay (vfat,
+    /// exfat, ntfs), so its contents are copied to a tmpfs that becomes the
+    /// overlay lower layer and the result is bind-mounted over the target.
+    SnapshotPivot,
 }
 
 /// A write-capable process still referencing an overlay target after Phase 2.

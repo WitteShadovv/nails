@@ -206,6 +206,7 @@ fn write_state_with_overlay(
     overlay_status.insert(
         target.to_path_buf(),
         crate::OverlayInfo {
+            mount_method: Default::default(),
             mount_path: target.to_path_buf(),
             lower_dir: PathBuf::from("/"),
             upper_dir: upper_dir.to_path_buf(),
@@ -375,6 +376,7 @@ fn active_manager_with_overlays(
         overlay_status.insert(
             path.clone(),
             crate::OverlayInfo {
+                mount_method: Default::default(),
                 mount_path: path.clone(),
                 lower_dir: PathBuf::from("/"),
                 upper_dir: hidden_root.join(format!("overlays/{index}/upper")),

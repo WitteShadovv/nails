@@ -107,6 +107,7 @@ fn restart_services_after_failure(services: &[String]) {
 /// match result.method {
 ///     MountMethod::Direct => println!("Mounted directly"),
 ///     MountMethod::Pivot => println!("Mounted via the pivot fallback"),
+///     MountMethod::SnapshotPivot => println!("Mounted via the snapshot pivot"),
 /// }
 /// if result.surviving_writers() > 0 {
 ///     println!(
@@ -163,7 +164,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
         );
 
         return Ok(MountResult {
-            method: MountMethod::Pivot,
+            method: MountMethod::SnapshotPivot,
             stopped_services: Vec::new(),
             // Snapshot pivot is used for filesystems with no active writers, so
             // there is nothing left referencing the target.

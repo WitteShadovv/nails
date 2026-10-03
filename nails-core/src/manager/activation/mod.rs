@@ -42,6 +42,20 @@ mod tests;
 use gate::maybe_block_after_activating_state_transition;
 use guards::SessionRestartGuard;
 
+/// What an activation call actually did.
+///
+/// Distinguishes a real activation (overlays mounted, state advanced to Active)
+/// from a no-op on an already-verifiably-active system, so the caller can run the
+/// shell integration and colour sequences only on a genuine activation and report
+/// an already-active system with its own message and a success exit code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivationOutcome {
+    /// The system was mounted and switched during this call.
+    Activated,
+    /// The system was already verifiably active; nothing was mounted or changed.
+    AlreadyActive,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SessionRestartPhase {
     None,
@@ -187,7 +201,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// touching the graphical session, so it keeps the session and allows
     /// pivot fallback regardless of the secure CLI defaults carried by
     /// [`ActivateOptions::default`].
-    pub fn activate(&mut self, no_preflight: bool) -> Result<()> {
+    pub fn activate(&mut self, no_preflight: bool) -> Result<ActivationOutcome> {
         let options = crate::ActivateOptions {
             kill_session: false,
             no_pivot: false,
@@ -197,6 +211,67 @@ impl<F: Filesystem> NailsManager<F> {
             ..crate::ActivateOptions::default()
         };
         self.activate_with_options(options, no_preflight)
+    }
+
+    /// Decide whether activation may proceed, based on the reconciled state.
+    ///
+    /// `state.json` lives on the hidden root and survives reboots and crashes, so
+    /// an `Active` left behind by an unclean shutdown must not make activation a
+    /// silent no-op (which would then write the shell integration onto the bare
+    /// decoy home). This consults [`reconcile_state`](NailsManager::reconcile_state)
+    /// and maps the outcome:
+    ///
+    /// * `Ok(Some(AlreadyActive))` — the system is already verifiably active, so
+    ///   the caller returns that outcome and does nothing.
+    /// * `Ok(None)` — activation should proceed: the state is Inactive, or a stale
+    ///   file from a previous boot was just reset to Inactive.
+    /// * `Err(..)` — the system is inconsistent, interrupted or unreadable;
+    ///   activation is refused with remediation pointing at `nails emergency`.
+    fn reconcile_gate_for_activation(
+        &self,
+        verbosity: Verbosity,
+    ) -> Result<Option<ActivationOutcome>> {
+        use crate::state::EffectiveState;
+
+        match self.reconcile_state()? {
+            EffectiveState::VerifiedActive { .. } => {
+                if verbosity >= Verbosity::Normal {
+                    tracing::info!(
+                        event = "result",
+                        "System already active and verified against the mount table, nothing to do"
+                    );
+                }
+                Ok(Some(ActivationOutcome::AlreadyActive))
+            }
+            EffectiveState::StaleFromPreviousBoot => {
+                tracing::warn!(
+                    event = "stale_state_reset",
+                    "Persisted active state is from a previous boot with nothing mounted; \
+                     reset to inactive, proceeding to activate"
+                );
+                Ok(None)
+            }
+            EffectiveState::Inactive => Ok(None),
+            EffectiveState::Degraded { reason, remaining } => {
+                Err(NailsError::InvalidState(format!(
+                    "refusing to activate: {reason}. Hidden writes may be reaching the decoy disk. \
+                 Run 'nails emergency' to tear down the remaining NAILS mount(s) ({}) before \
+                 activating again.",
+                    format_mount_list(&remaining)
+                )))
+            }
+            EffectiveState::Interrupted { phase, .. } => Err(NailsError::InvalidState(format!(
+                "refusing to activate: a previous {} was interrupted and left the system in an \
+                 unknown state. Run 'nails emergency' to reset before activating again.",
+                phase.as_str()
+            ))),
+            EffectiveState::Unknown => Err(NailsError::InvalidState(
+                "refusing to activate: the persisted state is unreadable, so the current state \
+                 is unknown. Run 'nails emergency' and recover the hidden volume before \
+                 activating again."
+                    .to_string(),
+            )),
+        }
     }
 
     /// Activate overlays with custom activation options.
@@ -232,7 +307,7 @@ impl<F: Filesystem> NailsManager<F> {
         &mut self,
         options: crate::ActivateOptions,
         no_preflight: bool,
-    ) -> Result<()> {
+    ) -> Result<ActivationOutcome> {
         use crate::{StateGuard, Stopwatch};
 
         let total_timer = Stopwatch::start();
@@ -249,17 +324,19 @@ impl<F: Filesystem> NailsManager<F> {
             profile.require_supported()?;
         }
 
-        // Step 1: Capture current state and context once.
-        let previous_state = self.current_state()?;
         let verbosity = self.verbosity;
 
-        // Step 2: Idempotent check - if already active, return early.
-        if previous_state.is_active() {
-            if verbosity >= Verbosity::Normal {
-                tracing::info!(event = "result", state = ?previous_state, "System already active, nothing to do");
-            }
-            return Ok(());
+        // Step 1: Reconcile the persisted state against the boot and the live
+        // kernel mount table before trusting it (see `reconcile_gate_for_activation`).
+        // A verifiably active system is a no-op; a stale file is reset here and we
+        // proceed; an inconsistent, interrupted or unreadable state refuses rather
+        // than mounting on top of possible hidden leakage.
+        if let Some(outcome) = self.reconcile_gate_for_activation(verbosity)? {
+            return Ok(outcome);
         }
+
+        // The reconciled state is now Inactive (either genuinely, or just reset).
+        let previous_state = self.current_state()?;
 
         tracing::info!(event = "activation_started", state_from = ?previous_state, "Activation started");
 
@@ -471,7 +548,7 @@ impl<F: Filesystem> NailsManager<F> {
             );
         }
 
-        Ok(())
+        Ok(ActivationOutcome::Activated)
     }
 
     /// Write the best-effort overlay-status notification after mounting.
@@ -568,6 +645,20 @@ impl<F: Filesystem> NailsManager<F> {
                 Some(truncated)
             }
         }
+    }
+}
+
+/// Join mount points into a comma-separated list for a refusal message, or a
+/// placeholder when the kernel reported none still live.
+fn format_mount_list(mounts: &[std::path::PathBuf]) -> String {
+    if mounts.is_empty() {
+        "none still listed".to_string()
+    } else {
+        mounts
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 

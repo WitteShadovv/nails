@@ -35,6 +35,7 @@ fn create_temp_state_file(state_file: &StateFile) -> NamedTempFile {
 /// Helper to create overlay info
 fn create_overlay_info(mount_path: &str) -> OverlayInfo {
     OverlayInfo {
+        mount_method: Default::default(),
         mount_path: PathBuf::from(mount_path),
         lower_dir: PathBuf::from(format!("{}-lower", mount_path)),
         upper_dir: PathBuf::from(format!("{}-upper", mount_path)),

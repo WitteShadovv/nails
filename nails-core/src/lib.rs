@@ -130,8 +130,8 @@ pub use filesystem::{Filesystem, MockFilesystem, PathKind, RealFilesystem};
 pub use hidden_root::{AttachState, HiddenRoot};
 pub use manager::deactivation::{DeactivationMode, DeactivationOrchestrator};
 pub use manager::{
-    HostEffects, MountInfo, MountTracker, MountType, NailsManager, RegistryInputs, ResetUpperPlan,
-    apply_exclusion_filter, build_overlay_targets, build_registry,
+    ActivationOutcome, HostEffects, MountInfo, MountTracker, MountType, NailsManager,
+    RegistryInputs, ResetUpperPlan, apply_exclusion_filter, build_overlay_targets, build_registry,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 pub use manager::{SimulatedHostEffects, SimulatedReboot};

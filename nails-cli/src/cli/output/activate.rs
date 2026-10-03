@@ -87,7 +87,7 @@ pub fn print_activate_progress(phase: &'static str) {
 
 /// Print the final activation result line in NDJSON.
 pub fn print_activate_json_result<F: nails_core::Filesystem>(
-    result: &Result<(), nails_core::NailsError>,
+    result: &Result<nails_core::ActivationOutcome, nails_core::NailsError>,
     duration: f64,
     manager: &nails_core::NailsManager<F>,
     shell_setup: Option<&nails_core::ShellSetupResult>,
@@ -101,12 +101,12 @@ pub fn print_activate_json_result<F: nails_core::Filesystem>(
 }
 
 fn build_activate_json_output<F: nails_core::Filesystem>(
-    result: &Result<(), nails_core::NailsError>,
+    result: &Result<nails_core::ActivationOutcome, nails_core::NailsError>,
     duration: f64,
     manager: &nails_core::NailsManager<F>,
     shell_setup: Option<&nails_core::ShellSetupResult>,
 ) -> ActivateResultEvent {
-    use nails_core::NailsError;
+    use nails_core::{ActivationOutcome, NailsError};
 
     let state = manager_state_json(manager);
 
@@ -119,7 +119,20 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
     });
 
     match result {
-        Ok(_) => ActivateResultEvent {
+        Ok(ActivationOutcome::AlreadyActive) => ActivateResultEvent {
+            schema_version: SCHEMA_VERSION,
+            command: "activate",
+            event_type: "result",
+            ok: true,
+            status: "already_active",
+            duration,
+            state,
+            message: "System is already active; nothing to do".to_string(),
+            failed_checks: None,
+            // No activation ran, so no shell integration was applied.
+            shell_instructions: None,
+        },
+        Ok(ActivationOutcome::Activated) => ActivateResultEvent {
             schema_version: SCHEMA_VERSION,
             command: "activate",
             event_type: "result",
@@ -180,18 +193,33 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
 /// Results go to stdout and failures to stderr, each painted with that
 /// stream's style; under `--quiet` only the result line is printed.
 pub fn print_activate_human<F: nails_core::Filesystem>(
-    result: &Result<(), nails_core::NailsError>,
+    result: &Result<nails_core::ActivationOutcome, nails_core::NailsError>,
     duration: f64,
     manager: &nails_core::NailsManager<F>,
     shell_setup: Option<&nails_core::ShellSetupResult>,
     settings: &OutputSettings,
 ) {
-    use nails_core::NailsError;
+    use nails_core::{ActivationOutcome, NailsError};
 
     let err = settings.stderr_style();
 
     match result {
-        Ok(_) => {
+        Ok(ActivationOutcome::AlreadyActive) => {
+            // A verified-active no-op: report it plainly and never claim a fresh
+            // activation. Nothing was mounted and no shell integration ran.
+            let out = settings.stdout_style();
+            println!(
+                "{}",
+                out.paint_bold(
+                    format_args!(
+                        "{} System already active; nothing to do",
+                        out.glyph(Mark::Pass)
+                    ),
+                    Tone::Green
+                )
+            );
+        }
+        Ok(ActivationOutcome::Activated) => {
             // The success summary (stdout) is built as a string so it can be
             // snapshotted at each verbosity without capturing the process stdout.
             print!(
@@ -406,7 +434,12 @@ mod tests {
     #[test]
     fn test_json_success_no_shell() {
         let (manager, _tempdir) = TestWorld::new().manager();
-        let output = build_activate_json_output(&Ok(()), 1.5, &manager, None);
+        let output = build_activate_json_output(
+            &Ok(nails_core::ActivationOutcome::Activated),
+            1.5,
+            &manager,
+            None,
+        );
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(output.event_type, "result");
         assert_eq!(output.status, "success");
@@ -423,10 +456,52 @@ mod tests {
     fn test_json_success_with_shell() {
         let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_rc_modified();
-        let output = build_activate_json_output(&Ok(()), 2.3, &manager, Some(&setup));
+        let output = build_activate_json_output(
+            &Ok(nails_core::ActivationOutcome::Activated),
+            2.3,
+            &manager,
+            Some(&setup),
+        );
         assert_eq!(output.event_type, "result");
         assert_eq!(output.status, "success");
         assert!(output.shell_instructions.is_some());
+    }
+
+    #[test]
+    fn test_json_already_active_distinct_from_success() {
+        // An already-active no-op reports a success exit (ok=true) but with its
+        // own status and message — never "Activation complete" — and never any
+        // shell instructions, since no activation ran.
+        let (manager, _tempdir) = TestWorld::new().manager();
+        let setup = make_shell_setup_rc_modified();
+        let output = build_activate_json_output(
+            &Ok(nails_core::ActivationOutcome::AlreadyActive),
+            0.0,
+            &manager,
+            Some(&setup),
+        );
+        assert!(output.ok);
+        assert_eq!(output.status, "already_active");
+        assert!(
+            !output.message.contains("Activation complete"),
+            "already-active message must differ from a fresh activation: {}",
+            output.message
+        );
+        assert!(output.shell_instructions.is_none());
+    }
+
+    #[test]
+    fn test_human_already_active_message_is_distinct() {
+        // The human already-active line goes to stdout and must not claim a fresh
+        // activation completed.
+        let (manager, _tempdir) = TestWorld::new().manager();
+        print_activate_human(
+            &Ok(nails_core::ActivationOutcome::AlreadyActive),
+            0.0,
+            &manager,
+            None,
+            &settings_at(nails_core::Verbosity::Normal),
+        );
     }
 
     #[test]
@@ -519,13 +594,25 @@ mod tests {
     #[test]
     fn test_human_success_no_shell() {
         let (manager, _tempdir) = TestWorld::new().manager();
-        print_activate_human(&Ok(()), 1.5, &manager, None, &OutputSettings::default());
+        print_activate_human(
+            &Ok(nails_core::ActivationOutcome::Activated),
+            1.5,
+            &manager,
+            None,
+            &OutputSettings::default(),
+        );
     }
 
     #[test]
     fn test_human_success_quiet() {
         let (manager, _tempdir) = TestWorld::new().manager();
-        print_activate_human(&Ok(()), 1.5, &manager, None, &quiet_settings());
+        print_activate_human(
+            &Ok(nails_core::ActivationOutcome::Activated),
+            1.5,
+            &manager,
+            None,
+            &quiet_settings(),
+        );
     }
 
     #[test]
@@ -533,7 +620,7 @@ mod tests {
         let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_rc_modified();
         print_activate_human(
-            &Ok(()),
+            &Ok(nails_core::ActivationOutcome::Activated),
             1.0,
             &manager,
             Some(&setup),
@@ -546,7 +633,7 @@ mod tests {
         let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_no_rc();
         print_activate_human(
-            &Ok(()),
+            &Ok(nails_core::ActivationOutcome::Activated),
             1.0,
             &manager,
             Some(&setup),
@@ -559,7 +646,7 @@ mod tests {
         let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_with_warning();
         print_activate_human(
-            &Ok(()),
+            &Ok(nails_core::ActivationOutcome::Activated),
             1.0,
             &manager,
             Some(&setup),
@@ -571,7 +658,13 @@ mod tests {
     fn test_human_success_shell_quiet_suppresses_instructions() {
         let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_rc_modified();
-        print_activate_human(&Ok(()), 1.0, &manager, Some(&setup), &quiet_settings());
+        print_activate_human(
+            &Ok(nails_core::ActivationOutcome::Activated),
+            1.0,
+            &manager,
+            Some(&setup),
+            &quiet_settings(),
+        );
     }
 
     #[test]

@@ -141,6 +141,7 @@ fn test_successful_deactivation_unmounts_all_tracked_overlays_in_lifo_order() {
         overlay_status.insert(
             target.clone(),
             crate::OverlayInfo {
+                mount_method: Default::default(),
                 mount_path: target.clone(),
                 lower_dir: PathBuf::from("/"),
                 upper_dir,

@@ -81,7 +81,9 @@ fn test_activate_from_non_inactive_returns_error() {
         state_path.clone(),
     )));
 
-    // Manually write Active state to file (bypass transition validation)
+    // Manually write an Active state (current boot) that records no overlays and
+    // has nothing actually mounted: the exact stale-no-op bug. Reconciliation must
+    // see it as inconsistent and refuse, rather than silently returning success.
     let state_file = StateFile {
         state: SystemState::Active {
             activated_at: Utc::now(),
@@ -96,18 +98,13 @@ fn test_activate_from_non_inactive_returns_error() {
     // Force manager to reload state from disk
     *manager.lock().unwrap().cached_state.borrow_mut() = None;
 
-    // activate() is idempotent - calling from Active state should succeed (no-op)
+    // Activation refuses an Active state that the kernel cannot confirm.
     let result = manager.lock().unwrap().activate(true);
+    let err = result.expect_err("activate must refuse a degraded active state, not no-op");
+    let message = err.to_string();
     assert!(
-        result.is_ok(),
-        "Activate should be idempotent and succeed from Active state"
-    );
-
-    // Verify state is still Active (unchanged)
-    let final_state = manager.lock().unwrap().current_state().unwrap();
-    assert!(
-        final_state.is_active(),
-        "State should remain Active after idempotent activate"
+        message.contains("nails emergency"),
+        "refusal should point at recovery: {message}"
     );
 }
 
@@ -655,7 +652,9 @@ fn test_activate_verbose_mode_detailed_output() {
 
 #[test]
 #[tracing_test::traced_test]
-fn test_activate_already_active_logged() {
+fn test_activate_already_active_is_verified_no_op() {
+    use crate::ActivationOutcome;
+    use crate::manager::state_management::reconcile_mounts_override;
     use std::sync::Arc;
 
     // Create mock hidden volume structure in temp dir
@@ -666,11 +665,12 @@ fn test_activate_already_active_logged() {
 
     let fs = MockFilesystem::new();
 
-    // Setup initial state file as ALREADY ACTIVE
+    // Setup initial state file as ACTIVE recording a /home overlay, in the
+    // current boot.
     let initial_state = StateFile {
         state: SystemState::Active {
             activated_at: Utc::now(),
-            overlays: vec![],
+            overlays: vec![std::path::PathBuf::from("/home")],
         },
         ..StateFile::default()
     };
@@ -690,12 +690,98 @@ fn test_activate_already_active_logged() {
 
     let manager_arc = Arc::new(Mutex::new(manager));
 
-    // Run activate (should be idempotent)
-    let result = manager_arc.lock().unwrap().activate(false);
-    assert!(result.is_ok(), "Activate should succeed idempotently");
+    // The kernel confirms /home is a NAILS persistent overlay, so the system is
+    // verifiably active: activation is a no-op on every flag path and the state
+    // is left untouched.
+    let mounts = crate::filesystem::NailsMounts {
+        persistent_overlays: vec![std::path::PathBuf::from("/home")],
+        ..Default::default()
+    };
+    let _mounts_guard = reconcile_mounts_override::arm(mounts);
 
-    // Verify "already active" message was logged
+    let outcome = manager_arc
+        .lock()
+        .unwrap()
+        .activate(false)
+        .expect("verified-active activation is a success no-op");
+    assert_eq!(outcome, ActivationOutcome::AlreadyActive);
     assert!(logs_contain("already active"));
+
+    // State is unchanged and still Active.
+    assert!(
+        manager_arc
+            .lock()
+            .unwrap()
+            .current_state()
+            .unwrap()
+            .is_active()
+    );
+}
+
+#[test]
+fn test_activate_already_active_exit_ok_on_every_flag_path() {
+    use crate::ActivationOutcome;
+    use crate::manager::state_management::reconcile_mounts_override;
+    use std::sync::{Arc, Mutex};
+
+    // Three flag combinations that reach the shared reconcile before any preflight
+    // or session handling: default, keep-session, and no-preflight. All must treat
+    // a verified-active system as an AlreadyActive no-op (exit 0, nothing mounted).
+    let options = [
+        crate::ActivateOptions::default(),
+        crate::ActivateOptions {
+            kill_session: false,
+            ..crate::ActivateOptions::default()
+        },
+        crate::ActivateOptions {
+            skip_flake_validation: true,
+            ..crate::ActivateOptions::default()
+        },
+    ];
+    let no_preflight = [false, false, true];
+
+    for (opts, skip) in options.into_iter().zip(no_preflight) {
+        let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+        let mock_hidden_vol = temp_dir.path();
+        std::fs::create_dir_all(mock_hidden_vol).unwrap();
+        let state_path = mock_hidden_vol.join("state.json");
+
+        let initial_state = StateFile {
+            state: SystemState::Active {
+                activated_at: Utc::now(),
+                overlays: vec![std::path::PathBuf::from("/home")],
+            },
+            ..StateFile::default()
+        };
+        initial_state
+            .save_with_custom_root(&state_path, mock_hidden_vol)
+            .expect("Should save initial state");
+
+        let config = Config {
+            hidden_volume_root: mock_hidden_vol.to_path_buf(),
+            state_file_path: state_path.clone(),
+            overlays: vec![],
+            ..Config::test_default()
+        };
+        let manager = Arc::new(Mutex::new(NailsManager::new(
+            MockFilesystem::new(),
+            config,
+            state_path.clone(),
+        )));
+
+        let mounts = crate::filesystem::NailsMounts {
+            persistent_overlays: vec![std::path::PathBuf::from("/home")],
+            ..Default::default()
+        };
+        let _mounts_guard = reconcile_mounts_override::arm(mounts);
+
+        let outcome = manager
+            .lock()
+            .unwrap()
+            .activate_with_options(opts, skip)
+            .expect("verified-active system is always a success no-op");
+        assert_eq!(outcome, ActivationOutcome::AlreadyActive);
+    }
 }
 
 // ============================================================================

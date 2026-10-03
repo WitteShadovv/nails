@@ -278,6 +278,7 @@ fn test_rollback_clears_overlay_status_and_nixos_generation() {
         overlay_status.insert(
             PathBuf::from("/home"),
             OverlayInfo {
+                mount_method: Default::default(),
                 mount_path: PathBuf::from("/home"),
                 lower_dir: PathBuf::from("/"),
                 upper_dir: upper_dir.clone(),

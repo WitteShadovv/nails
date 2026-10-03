@@ -93,6 +93,22 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     /// This method **never returns Err** - all failures are handled gracefully
     /// and converted to warnings in the result.
     pub fn shell_setup(&self) -> Result<Option<ShellSetupResult>> {
+        // Skip every write when the operator's home is not on a NAILS overlay.
+        // Activation only reaches here on a genuine mount, but a caller that lost
+        // the race (or a home that never got overlaid) must not have the rc block,
+        // autostart entry or prompt scripts written against the bare decoy home,
+        // where they would persist the hidden binary path on the decoy disk. The
+        // per-write guards below are the second line of defence; this is the first.
+        if let Ok(home) = self.resolve_target_home_dir()
+            && !self.target_home_on_hidden_overlay(&home)
+        {
+            tracing::warn!(
+                "Skipping shell integration: {} is not on a NAILS overlay",
+                home.display()
+            );
+            return Ok(None);
+        }
+
         // Generate and write scripts (best-effort, log failures)
         let mut warnings = Vec::new();
 

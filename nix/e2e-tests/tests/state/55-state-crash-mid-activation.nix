@@ -26,6 +26,7 @@ in
     ${testHelpers.readStatusJsonFn}
     ${testHelpers.waitForStatusStateFn}
     ${assertions.assertStatusStateFn}
+    ${assertions.assertOverlayMountedFn}
     ${assertions.assertNoOverlaysFn}
     ${stateHelpers.captureCommandFns}
     ${stateHelpers.installSlowNixosRebuildGateFn}
@@ -62,5 +63,18 @@ in
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
         payload = read_status_json(config_path=headless_config)
         assert_status_state("Inactive", payload=payload)
+
+    with subtest("re-activation resets the stale transitional state and really mounts"):
+        # state.json still records the crashed boot's transitional state. The boot
+        # id now differs, so reconciliation must treat it as stale, reset it to
+        # Inactive and go on to actually mount overlays rather than refuse or
+        # silently no-op.
+        machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
+        machine.succeed(
+            f"nails --config {headless_config} activate --overlay-only --session keep -y"
+        )
+        wait_for_status_state("Active", config_path=headless_config, timeout=180)
+        assert_overlay_mounted("/home")
+        assert_status_state("Active", config_path=headless_config)
   '';
 }

@@ -290,6 +290,26 @@ impl NailsMounts {
         m
     }
 
+    /// Every mount point NAILS owns in the live table, as a flat list.
+    ///
+    /// Used by state reconciliation to report what is still mounted when the
+    /// persisted state disagrees with the kernel. Includes overlay targets
+    /// (persistent and ephemeral), pivot staging binds, fresh-home persona
+    /// binds and the `/nix/store` restore bind when NAILS also overlaid `/nix`.
+    pub fn owned_mount_points(&self) -> Vec<PathBuf> {
+        let mut points = Vec::new();
+        points.extend(self.persistent_overlays.iter().cloned());
+        points.extend(self.ephemeral_overlays.iter().cloned());
+        points.extend(self.pivot_binds.iter().cloned());
+        points.extend(self.persona_binds.iter().cloned());
+        if self.nix_overlay_present
+            && let Some(bind) = &self.nix_store_bind
+        {
+            points.push(bind.clone());
+        }
+        points
+    }
+
     /// Whether `target` is a mount NAILS created and may therefore unmount.
     ///
     /// `target` must already be canonicalized, since mountinfo records canonical

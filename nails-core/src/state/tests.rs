@@ -7,6 +7,7 @@ use super::*;
 #[test]
 fn test_overlay_info_creation() {
     let overlay = OverlayInfo {
+        mount_method: Default::default(),
         mount_path: PathBuf::from("/home"),
         lower_dir: PathBuf::from("/home"),
         upper_dir: PathBuf::from("/mnt/data/overlays/home/upper"),
@@ -24,6 +25,7 @@ fn test_overlay_info_creation() {
 #[test]
 fn test_overlay_info_serialization() {
     let overlay = OverlayInfo {
+        mount_method: Default::default(),
         mount_path: PathBuf::from("/home"),
         lower_dir: PathBuf::from("/home"),
         upper_dir: PathBuf::from("/mnt/data/overlays/home/upper"),
@@ -64,6 +66,7 @@ fn test_state_file_serialization() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/home"),
             upper_dir: PathBuf::from("/mnt/data/overlays/home/upper"),
@@ -331,6 +334,7 @@ fn test_save_load_round_trip_with_active_state() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/home"),
             upper_dir: PathBuf::from("/mnt/data/overlays/home/upper"),
@@ -388,6 +392,7 @@ fn test_save_load_multiple_overlays() {
         overlay_status.insert(
             PathBuf::from(mount),
             OverlayInfo {
+                mount_method: Default::default(),
                 mount_path: PathBuf::from(mount),
                 lower_dir: PathBuf::from(mount),
                 upper_dir: PathBuf::from(format!("/mnt/data/overlays/{}/upper", name)),
@@ -1102,6 +1107,7 @@ fn test_integration_deactivate_panic_triggers_stateguard_rollback() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/"),
             upper_dir: upper_dir.clone(),
@@ -1632,6 +1638,7 @@ fn test_version_migration_preserves_data() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/home"),
             upper_dir: PathBuf::from("/mnt/data/overlays/home/upper"),

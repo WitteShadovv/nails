@@ -485,7 +485,15 @@ fn major_version(version: &str) -> u32 {
 }
 
 /// Read the kernel boot id, returning `None` when it is unavailable or empty.
-fn read_boot_id() -> Option<String> {
+///
+/// Exposed to the crate so state reconciliation can compare a persisted boot id
+/// against the current one. Both the save-time stamp and the reconcile-time read
+/// go through here, so a test can drive both sides with [`test_boot_id`].
+pub(crate) fn read_boot_id() -> Option<String> {
+    #[cfg(test)]
+    if let Some(value) = test_boot_id::get() {
+        return value;
+    }
     match std::fs::read_to_string(BOOT_ID_PATH) {
         Ok(s) => {
             let trimmed = s.trim();
@@ -496,6 +504,44 @@ fn read_boot_id() -> Option<String> {
             }
         }
         Err(_) => None,
+    }
+}
+
+/// Test-only override for the kernel boot id.
+///
+/// Reconciliation decides a state file is stale when its stamped boot id differs
+/// from the current one. Both values come from [`read_boot_id`], so a test arms
+/// one boot id, saves an `Active` state (stamped with it), then arms a different
+/// boot id before reconciling to drive the stale-reset path hermetically. The
+/// override is thread-local and the guard clears it on drop so it never leaks
+/// into another test sharing the worker thread.
+#[cfg(test)]
+pub(crate) mod test_boot_id {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static OVERRIDE: RefCell<Option<Option<String>>> = const { RefCell::new(None) };
+    }
+
+    /// The armed override, if any: `Some(value)` means `read_boot_id` returns
+    /// `value`; the outer `None` means no override is active.
+    pub(crate) fn get() -> Option<Option<String>> {
+        OVERRIDE.with(|cell| cell.borrow().clone())
+    }
+
+    /// Arm the override so `read_boot_id` returns `value` until the guard drops.
+    pub(crate) fn arm(value: Option<&str>) -> Guard {
+        OVERRIDE.with(|cell| *cell.borrow_mut() = Some(value.map(str::to_string)));
+        Guard
+    }
+
+    /// Clears the override when dropped.
+    pub(crate) struct Guard;
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OVERRIDE.with(|cell| *cell.borrow_mut() = None);
+        }
     }
 }
 

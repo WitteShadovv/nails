@@ -72,6 +72,7 @@ fn status_command_fixture() -> Fixture<StatusCommand<MockFilesystem>> {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/"),
             upper_dir: hidden_root.join("home-upper"),
@@ -152,6 +153,7 @@ fn emergency_fixture() -> Fixture<(NailsManager<MockFilesystem>, DeactivationOrc
         overlay_status.insert(
             overlay_path.clone(),
             OverlayInfo {
+                mount_method: Default::default(),
                 mount_path: overlay_path.clone(),
                 lower_dir: PathBuf::from("/"),
                 upper_dir: hidden_root

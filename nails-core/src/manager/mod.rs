@@ -55,6 +55,7 @@ pub mod state_management;
 mod tests;
 
 // Re-export key types for convenience
+pub use activation::ActivationOutcome;
 pub use deactivation::HostEffects;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use deactivation::{SimulatedHostEffects, SimulatedReboot};

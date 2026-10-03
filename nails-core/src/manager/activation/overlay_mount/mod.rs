@@ -149,6 +149,12 @@ impl<F: Filesystem> NailsManager<F> {
                     tracing::info!("  ✓ {} mounted (pivot fallback)", overlay.target.display());
                 }
             }
+            MountMethod::SnapshotPivot => {
+                *pivot_mounts += 1;
+                if verbosity >= Verbosity::Verbose {
+                    tracing::info!("  ✓ {} mounted (snapshot pivot)", overlay.target.display());
+                }
+            }
         }
 
         // The security-relevant signal: a target still referenced by surviving
@@ -235,6 +241,7 @@ impl<F: Filesystem> NailsManager<F> {
             upper_dir: overlay.upper.clone(),
             work_dir: overlay.work.clone(),
             mounted_at: Utc::now(),
+            mount_method: mount_result.method,
         };
 
         // Update cached state with this mount

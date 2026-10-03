@@ -59,7 +59,7 @@ fn test_vfat_boot_uses_snapshot_pivot_bypassing_no_pivot() {
         "vfat target should use snapshot pivot: {:?}",
         result.err()
     );
-    assert_eq!(result.unwrap().method, MountMethod::Pivot);
+    assert_eq!(result.unwrap().method, MountMethod::SnapshotPivot);
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn test_exfat_target_uses_snapshot_pivot() {
     );
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().method, MountMethod::Pivot);
+    assert_eq!(result.unwrap().method, MountMethod::SnapshotPivot);
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn test_ntfs_target_uses_snapshot_pivot() {
     );
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().method, MountMethod::Pivot);
+    assert_eq!(result.unwrap().method, MountMethod::SnapshotPivot);
 }
 
 #[test]

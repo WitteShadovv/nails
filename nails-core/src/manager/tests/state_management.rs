@@ -245,6 +245,7 @@ fn test_verify_overlay_status_active_with_mounted_overlays_ok() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/home"),
             upper_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
@@ -288,6 +289,7 @@ fn test_verify_overlay_status_active_with_missing_overlay_error() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/home"),
             upper_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
@@ -334,6 +336,7 @@ fn test_verify_overlay_status_inactive_with_mounted_overlay_error() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/home"),
             upper_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
@@ -377,6 +380,7 @@ fn test_verify_overlay_status_transitional_state_skipped() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/home"),
             upper_dir: PathBuf::from("/mnt/hidden-volume/overlays/home/upper"),
@@ -516,4 +520,96 @@ fn test_reset_upper_flags_nix_store() {
         plan.resets_nix_store,
         "resetting /nix must flag the Nix store warning"
     );
+}
+
+// ========== reconcile_state() ==========
+
+#[test]
+fn test_reconcile_state_resets_stale_active_keeping_build_metadata() {
+    use crate::state::{EffectiveState, test_boot_id};
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let hidden_root = temp_dir.path();
+    std::fs::create_dir_all(hidden_root).unwrap();
+    let state_path = hidden_root.join("state.json");
+
+    // Save an Active state stamped with a previous boot id, carrying cached build
+    // metadata that must survive the reset.
+    {
+        let _boot = test_boot_id::arm(Some("boot-previous"));
+        let state = StateFile {
+            state: SystemState::Active {
+                activated_at: Utc::now(),
+                overlays: vec![PathBuf::from("/home")],
+            },
+            nixos_generation: Some("gen-abc".to_string()),
+            config_fingerprint: Some("fp-123".to_string()),
+            ..StateFile::default()
+        };
+        state
+            .save_with_custom_root(&state_path, hidden_root)
+            .unwrap();
+    }
+
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+    let manager = NailsManager::new(MockFilesystem::new(), config, state_path.clone());
+
+    // Reconcile under a different boot id: the state is stale and is reset.
+    let effective = {
+        let _boot = test_boot_id::arm(Some("boot-current"));
+        manager.reconcile_state().expect("reconcile")
+    };
+    assert_eq!(effective, EffectiveState::StaleFromPreviousBoot);
+
+    // The on-disk state is reset to Inactive but keeps the build metadata.
+    let reloaded = StateFile::load(&state_path).expect("reload");
+    assert_eq!(reloaded.state, SystemState::Inactive);
+    assert!(reloaded.overlay_status.is_empty());
+    assert_eq!(reloaded.nixos_generation.as_deref(), Some("gen-abc"));
+    assert_eq!(reloaded.config_fingerprint.as_deref(), Some("fp-123"));
+}
+
+#[test]
+fn test_reconcile_state_reports_degraded_without_resetting() {
+    use crate::state::EffectiveState;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let hidden_root = temp_dir.path();
+    std::fs::create_dir_all(hidden_root).unwrap();
+    let state_path = hidden_root.join("state.json");
+
+    // Active in the current boot recording an overlay that is not actually
+    // mounted -> degraded, which must never be auto-reset.
+    let state = StateFile {
+        state: SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+        },
+        ..StateFile::default()
+    };
+    state
+        .save_with_custom_root(&state_path, hidden_root)
+        .unwrap();
+
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+    let manager = NailsManager::new(MockFilesystem::new(), config, state_path.clone());
+
+    // No mount override: the real (empty of NAILS overlays) table is consulted, so
+    // /home is not an owned overlay and the state is degraded.
+    let effective = manager.reconcile_state().expect("reconcile");
+    assert!(matches!(effective, EffectiveState::Degraded { .. }));
+
+    // The state is left untouched (still Active).
+    let reloaded = StateFile::load(&state_path).expect("reload");
+    assert!(reloaded.state.is_active());
 }

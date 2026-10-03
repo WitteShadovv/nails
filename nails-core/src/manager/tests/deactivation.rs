@@ -64,6 +64,7 @@ fn test_deactivate_failure_at_unmount_ends_degraded() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/"),
             upper_dir: upper_dir.clone(),
@@ -186,6 +187,7 @@ fn test_deactivate_successful_unmounts_all_overlays() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/"),
             upper_dir: upper_dir.clone(),
@@ -283,6 +285,7 @@ fn test_deactivate_requests_reboot_only_after_successful_teardown() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/"),
             upper_dir: upper_dir.clone(),
@@ -373,6 +376,7 @@ fn test_deactivate_does_not_request_reboot_after_failed_teardown() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/"),
             upper_dir: upper_dir.clone(),
@@ -470,6 +474,7 @@ fn manager_ready_for_reboot_step() -> (
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/"),
             upper_dir: upper_dir.clone(),
@@ -672,6 +677,7 @@ fn test_deactivate_partial_failure_ends_degraded_without_remount() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/"),
             upper_dir: upper_home.clone(),
@@ -682,6 +688,7 @@ fn test_deactivate_partial_failure_ends_degraded_without_remount() {
     overlay_status.insert(
         PathBuf::from("/etc"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/etc"),
             lower_dir: PathBuf::from("/"),
             upper_dir: upper_etc.clone(),
@@ -821,6 +828,7 @@ fn setup_active_with_etc_overlay() -> (
             sf.overlay_status.insert(
                 PathBuf::from("/etc"),
                 OverlayInfo {
+                    mount_method: Default::default(),
                     mount_path: PathBuf::from("/etc"),
                     lower_dir: PathBuf::from("/"),
                     upper_dir: upper_etc.clone(),
@@ -899,6 +907,7 @@ fn setup_active_with_home_overlay() -> (
             sf.overlay_status.insert(
                 PathBuf::from("/home"),
                 OverlayInfo {
+                    mount_method: Default::default(),
                     mount_path: PathBuf::from("/home"),
                     lower_dir: PathBuf::from("/"),
                     upper_dir: upper_home.clone(),

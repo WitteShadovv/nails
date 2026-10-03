@@ -398,3 +398,38 @@ fn test_shell_setup_writes_xdg_autostart_entry() {
     assert!(content.contains("notify-dispatch"));
     assert!(!content.contains("Exec=nails notify-dispatch"));
 }
+
+#[test]
+#[serial]
+fn test_shell_setup_skips_all_writes_when_home_not_on_overlay() {
+    use crate::target_user::TargetUser;
+
+    let mut env = EnvGuard::lock();
+    env.set("SHELL", "/bin/bash");
+
+    let fs = MockFilesystem::new();
+    let config = Config {
+        hidden_volume_root: "/mnt/data".into(),
+        ..Config::default()
+    };
+
+    let operator = TargetUser::for_test(1000, 1000, "testuser", "/home/testuser", "/bin/bash");
+    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(operator);
+    // The operator's home sits on the bare decoy disk, not a NAILS overlay, so the
+    // integration must write nothing: an rc block here would persist the hidden
+    // binary path on the decoy disk.
+    shell.set_mountinfo_override(HOME_ON_DECOY_DISK);
+
+    let result = shell.shell_setup().expect("shell_setup never errors");
+    assert!(
+        result.is_none(),
+        "shell_setup must be skipped when the home is not on a NAILS overlay"
+    );
+
+    // No rc block was written into the decoy home.
+    assert!(
+        fs.read_file_content(Path::new("/home/testuser/.bashrc"))
+            .is_err(),
+        "no rc file may be written off an overlay"
+    );
+}

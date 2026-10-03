@@ -44,6 +44,7 @@ pub(crate) use crate::NailsError;
 mod file;
 mod guard;
 mod lock;
+mod reconcile;
 #[cfg(test)]
 mod tests;
 mod transitions;
@@ -52,11 +53,20 @@ mod transitions;
 pub use file::{LoadOutcome, LoadResult, StateFile};
 pub use guard::StateGuard;
 pub use lock::{EMERGENCY_LOCK_TIMEOUT, StateLock};
+pub use reconcile::{EffectiveState, InterruptedPhase, reconcile};
+
+// Kernel boot id reader, shared with state reconciliation in the manager.
+pub(crate) use file::read_boot_id;
 
 // Test-only save-failure seam, reachable crate-wide for the deactivation
 // regression tests even though `file` is a private module.
 #[cfg(test)]
 pub(crate) use file::save_probe;
+
+// Test-only boot-id override, so the manager's reconcile tests can drive the
+// stale-from-previous-boot path without a real reboot.
+#[cfg(test)]
+pub(crate) use file::test_boot_id;
 
 /// Check if a path is within the hidden volume
 ///
@@ -262,6 +272,14 @@ pub struct OverlayInfo {
 
     /// Timestamp when this overlay was mounted
     pub mounted_at: DateTime<Utc>,
+
+    /// How this overlay was mounted (direct mount, or pivot fallback).
+    ///
+    /// Recorded per target so `status` can report the method without
+    /// re-deriving it from the live mount table. A state file written before
+    /// this field existed deserializes to [`MountMethod::Direct`].
+    #[serde(default)]
+    pub mount_method: crate::overlay::MountMethod,
 }
 
 /// Information about a failed overlay mount attempt

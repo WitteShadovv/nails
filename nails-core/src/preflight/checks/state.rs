@@ -18,9 +18,12 @@ use crate::{Filesystem, Result, SystemState};
 ///
 /// The following states block activation with specific guidance:
 /// - **Active**: System already active - user should run `nails deactivate` first
-/// - **Activating**: Activation in progress - user should wait or reboot if stuck
-/// - **Deactivating**: Deactivation in progress - user should wait for completion
-/// - **Emergency**: System in emergency state - user must reboot to reset
+/// - **Activating**: Activation in progress - user should wait, or run
+///   `nails emergency` if no activation is running
+/// - **Deactivating**: Deactivation in progress - user should wait, or run
+///   `nails emergency` if no deactivation is running
+/// - **Degraded**: Partial teardown left mounts behind - user should run
+///   `nails emergency` before activating again
 ///
 /// # State Machine Integration
 ///
@@ -83,10 +86,10 @@ impl<F: Filesystem> PreFlightCheck<F> for StateCheck {
                 "System is already active. Run 'nails deactivate' first or use 'nails status' to check state.".into(),
             )),
             SystemState::Activating { .. } => Ok(CheckResult::Fail(
-                "System is currently activating. Wait for completion or reboot if stuck.".into(),
+                "System is currently activating. Wait for it to finish, or run 'nails emergency' if no activation is in progress.".into(),
             )),
             SystemState::Deactivating { .. } => Ok(CheckResult::Fail(
-                "System is currently deactivating. Wait for completion or reboot if stuck.".into(),
+                "System is currently deactivating. Wait for it to finish, or run 'nails emergency' if no deactivation is in progress.".into(),
             )),
             SystemState::Degraded { .. } => Ok(CheckResult::Fail(
                 "System is degraded after a partial teardown. Run 'nails recover' before activating."
@@ -167,7 +170,7 @@ mod tests {
         assert!(result.is_fail());
         assert_eq!(
             result.message(),
-            "System is currently activating. Wait for completion or reboot if stuck."
+            "System is currently activating. Wait for it to finish, or run 'nails emergency' if no activation is in progress."
         );
     }
 
@@ -182,10 +185,11 @@ mod tests {
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
         assert!(result.message().contains("deactivating"));
+        assert!(result.message().contains("nails emergency"));
         assert!(
-            result
-                .message()
-                .contains("Wait for completion or reboot if stuck")
+            !result.message().to_lowercase().contains("reboot"),
+            "transitional-state guidance must not mention rebooting: {}",
+            result.message()
         );
     }
 

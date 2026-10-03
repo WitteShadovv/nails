@@ -151,6 +151,7 @@ fn write_active_harness() -> Harness {
     overlay_status.insert(
         PathBuf::from(CONTRACT_TARGET),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from(CONTRACT_TARGET),
             lower_dir: PathBuf::from(CONTRACT_TARGET),
             upper_dir: harness.hidden_root.join("upper/home"),

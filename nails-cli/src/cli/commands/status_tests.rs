@@ -354,6 +354,7 @@ fn execute_status_no_color_verbose_active_shows_overlay_details_and_logs() {
     overlay_status.insert(
         PathBuf::from("/home"),
         OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/home"),
             upper_dir: hidden_root.join("overlays/home/upper"),

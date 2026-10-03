@@ -370,8 +370,12 @@ pub fn execute(
     let result = manager.activate_with_options(options, skip_preflight);
     let duration = start.elapsed().as_secs_f64();
 
-    // If activation succeeded, set up shell instrumentation (non-critical)
-    let shell_setup_result = if result.is_ok() {
+    // Run the shell integration only on a genuine activation, never on an
+    // already-active no-op: the overlays are freshly mounted, so the rc block,
+    // autostart entry and colour scheme land in the hidden home. The core
+    // `shell_setup` additionally refuses to write when the target home is not on
+    // a NAILS overlay, so a lost race still cannot touch the decoy disk.
+    let shell_setup_result = if matches!(result, Ok(nails_core::ActivationOutcome::Activated)) {
         use nails_core::ShellInstrumentation;
         let mut shell =
             ShellInstrumentation::new(nails_core::RealFilesystem, manager.config().clone());

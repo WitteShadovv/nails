@@ -530,4 +530,136 @@ impl<F: Filesystem> NailsManager<F> {
 
         Ok(())
     }
+
+    /// Reconcile the persisted state against the current boot and the live kernel
+    /// mount table, returning the [`EffectiveState`](crate::state::EffectiveState)
+    /// the commands act on.
+    ///
+    /// This is the manager-side wrapper around the pure
+    /// [`reconcile`](crate::state::reconcile) function. It loads the state file
+    /// fresh (bypassing the cache), discovers the NAILS-owned mounts from
+    /// `/proc/self/mountinfo`, reads the current kernel boot id and probes whether
+    /// the recorded owner process is still alive, then collapses all of that into
+    /// a single effective state.
+    ///
+    /// A state written under a *previous* boot that no longer corresponds to any
+    /// live mount is reset to Inactive and persisted here — the cached build
+    /// metadata (`nixos_generation`, `config_fingerprint`) survives the reset
+    /// because it is still valid across a reboot. Every other disagreement
+    /// (overlays missing, mounts live while inactive, a crashed transitional
+    /// state, an unreadable file) is reported and never auto-reset, so an
+    /// inconsistent system fails closed.
+    pub(crate) fn reconcile_state(&self) -> Result<crate::state::EffectiveState> {
+        use crate::state::{EffectiveState, reconcile};
+
+        let load = StateFile::load_with_outcome(&self.state_file_path)?;
+        let mounts = discover_reconcile_mounts(&self.config.hidden_volume_root);
+        let current_boot_id = crate::state::read_boot_id();
+        let owner_alive = pid_is_alive(load.state_file.owner_pid);
+
+        let effective = reconcile(
+            &load.state_file,
+            &load.outcome,
+            &mounts,
+            current_boot_id.as_deref(),
+            owner_alive,
+        );
+
+        if matches!(effective, EffectiveState::StaleFromPreviousBoot) {
+            self.reset_stale_state_to_inactive(&load.state_file)?;
+        }
+
+        Ok(effective)
+    }
+
+    /// Reset a stale-from-previous-boot state file to Inactive, keeping the cached
+    /// build metadata, and update the in-memory cache to match.
+    ///
+    /// `nixos_generation` and `config_fingerprint` are deliberately preserved:
+    /// they describe the hidden build, which outlives a reboot, so the next
+    /// activation can still take its fast path. The overlay tracking is cleared
+    /// because nothing is mounted.
+    fn reset_stale_state_to_inactive(&self, previous: &StateFile) -> Result<()> {
+        let mut reset = previous.clone();
+        reset.state = SystemState::Inactive;
+        reset.overlay_status.clear();
+        reset.failed_overlays.clear();
+        reset.nix_store_init_namespace_bound = false;
+        reset.last_modified = Utc::now();
+        reset.save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root)?;
+        *self.cached_state.borrow_mut() = Some(reset);
+        tracing::warn!(
+            event = "stale_state_reset",
+            "Persisted active state was written under a previous boot and nothing is mounted; \
+             reset to Inactive (kept cached build metadata)"
+        );
+        Ok(())
+    }
+}
+
+/// Whether a recorded owner pid is still a live process.
+///
+/// Reconciliation only consults this for a transitional state (Activating /
+/// Deactivating) left behind within the current boot, to tell an in-flight
+/// operation from a crashed one once the exclusive state lock is held. A pid of
+/// `0` is the "unset" sentinel and is never alive.
+fn pid_is_alive(pid: u32) -> bool {
+    pid != 0 && Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Discover the NAILS-owned mounts for reconciliation.
+///
+/// Reads the real `/proc/self/mountinfo` in production; a read failure degrades
+/// to "no NAILS mounts", which keeps reconciliation fail-closed (an Active state
+/// then reconciles to Degraded rather than trusting an unreadable table).
+#[cfg(not(test))]
+fn discover_reconcile_mounts(hidden_root: &Path) -> crate::filesystem::NailsMounts {
+    crate::filesystem::NailsMounts::discover(Some(hidden_root)).unwrap_or_else(|e| {
+        tracing::warn!(
+            error = %e,
+            "Could not read the mount table during reconcile; treating no overlays as live"
+        );
+        crate::filesystem::NailsMounts::default()
+    })
+}
+
+/// Test build: consult the injected mount-table override so reconcile tests can
+/// drive the verified/degraded/inconsistent cases without a real overlay, and
+/// otherwise read the real table (empty of NAILS overlays in a test run).
+#[cfg(test)]
+fn discover_reconcile_mounts(hidden_root: &Path) -> crate::filesystem::NailsMounts {
+    if let Some(mounts) = reconcile_mounts_override::get() {
+        return mounts;
+    }
+    crate::filesystem::NailsMounts::discover(Some(hidden_root)).unwrap_or_default()
+}
+
+/// Test-only override for the mount table that [`NailsManager::reconcile_state`]
+/// reads. Thread-local with a drop guard so it never leaks into another test
+/// sharing the worker thread.
+#[cfg(test)]
+pub(crate) mod reconcile_mounts_override {
+    use crate::filesystem::NailsMounts;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static OVERRIDE: RefCell<Option<NailsMounts>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn get() -> Option<NailsMounts> {
+        OVERRIDE.with(|cell| cell.borrow().clone())
+    }
+
+    pub(crate) fn arm(mounts: NailsMounts) -> Guard {
+        OVERRIDE.with(|cell| *cell.borrow_mut() = Some(mounts));
+        Guard
+    }
+
+    pub(crate) struct Guard;
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OVERRIDE.with(|cell| *cell.borrow_mut() = None);
+        }
+    }
 }

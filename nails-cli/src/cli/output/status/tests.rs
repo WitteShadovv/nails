@@ -70,6 +70,7 @@ fn active_report_with_overlay_details() -> StatusReport {
     overlay_details.insert(
         PathBuf::from("/home"),
         nails_core::OverlayInfo {
+            mount_method: Default::default(),
             mount_path: PathBuf::from("/home"),
             lower_dir: PathBuf::from("/home"),
             upper_dir: PathBuf::from("/mnt/hidden/home/.upper"),
