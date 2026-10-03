@@ -2101,7 +2101,7 @@ Owns: `nails-core/src/reporter.rs`, `nails-cli/src/cli/output/activate.rs`, `nai
 
 Owns: `nails-core/src/manager/activation/nixos_switch.rs`, `nails-core/src/nixos/fingerprint.rs`, `nails-cli/src/cli/commands/reapply.rs`, `nix/e2e-tests/tests/nixos/27-activate-full-rebuild.nix`
 
-- [ ] **T-089: Build the hidden NixOS toplevel explicitly, cache its store path (not the decoy generation), and switch to it before the session restarts** (critical · effort L)
+- [x] **T-089: Build the hidden NixOS toplevel explicitly, cache its store path (not the decoy generation), and switch to it before the session restarts** (critical · effort L)
 
   **Problem:** The slow path runs `nixos-rebuild test` (`nails-core/src/nixos/builder/switch.rs` ~189-214), which activates but never creates a system-profile generation. `nails-core/src/manager/activation/nixos_switch.rs:133` then stores `builder.current_system_generation()`, i.e. `readlink(/nix/var/nix/profiles/system)` — the **decoy** generation — and the comment at `nixos_switch.rs:47-50` wrongly claims `nixos-rebuild test` writes the system profile. Deactivation keeps `nixos_generation` + `config_fingerprint`, so the next activation with an unchanged fingerprint (`nixos_build.rs:92-104`) runs `system-<decoy>-link/bin/switch-to-configuration test` and reports success while silently applying the decoy config. The fingerprint hashes only `hardware-configuration.nix` and `configuration.nix` (`nixos_build.rs:37-69`), ignoring `flake.nix`, `flake.lock`, imported modules and the flake ref. The session is also restarted (`activation/mod.rs:360-384`) *before* the switch (:386-455), so with autologin the decoy session runs first and a failed switch only logs a warning.
 
@@ -2109,7 +2109,7 @@ Owns: `nails-core/src/manager/activation/nixos_switch.rs`, `nails-core/src/nixos
 
   **Done when:** `rg current_system_generation nails-core/src/manager` is empty; the stored value is a `/nix/store/...-nixos-system-*` path; editing `flake.lock` or an imported module changes the fingerprint; a missing cached path falls back to the slow path. A real-rebuild VM test replaces `nix/e2e-tests/tests/nixos/27-activate-full-rebuild.nix`: full-mode activate, deactivate (with reboot), activate again, with a hidden-config marker present after the second activation and the fast path taken. `session/33-session-kill-graphical.nix` asserts switch-before-restart, and a failing hidden config with `switch_required=true` leaves no overlays. `cargo test` and `clippy` pass.
 
-- [ ] **T-090: Report activation truthfully: an ActivationOutcome with warnings, consistent already-active handling, and nails reapply** (high · effort M)
+- [x] **T-090: Report activation truthfully: an ActivationOutcome with warnings, consistent already-active handling, and nails reapply** (high · effort M)
 
   **Problem:** `activation/mod.rs:396-460` stores a switch/rebuild failure in `nixos_switch_warning`, emits only `tracing::warn` (:510-516) and returns `Ok(())`. The CLI then prints a green '✓ Activation complete in Xs' (`nails-cli/src/cli/output/activate.rs:141-151`), emits JSON status `success` with no warnings field (:4-15, :79-87) and exits 0 (`commands/activate/mod.rs:405-408`). In the default GUI path the worker is detached and its output goes to the journal (`detach.rs:237-238`), so the only signal is a notification that may never arrive. Already-active handling is inconsistent: `--no-kill-session`/`--no-preflight` print 'complete in 0.0s' and exit 0, while the default path fails the CLI state check and exits 2 (`preflight/checks/state.rs:81-83`). A fixed hidden config can only be applied with a full deactivate (which reboots) then activate.
 
@@ -2117,7 +2117,7 @@ Owns: `nails-core/src/manager/activation/nixos_switch.rs`, `nails-core/src/nixos
 
   **Done when:** CLI snapshot tests show a switch failure with `switch_required=false` producing human text containing 'with warnings', JSON status `success_with_warnings` with a `warnings` array, and the documented exit code; already-active gives exit 0 with the same message under default flags and `--no-kill-session`; status rendering shows the 'not applied' line after a failed switch; `nix/e2e-tests/tests/nixos/30-rebuild-failure-rollback.nix` asserts the warning outcome and exit code, and `nails reapply` applies the hidden marker once the config is fixed. `cargo test` and `clippy` pass.
 
-- [ ] **T-091: E2E coverage of the real offline NixOS rebuild, default auto mode, sudo invocation, re-activation and an impermanent decoy profile** (high · effort L)
+- [x] **T-091: E2E coverage of the real offline NixOS rebuild, default auto mode, sudo invocation, re-activation and an impermanent decoy profile** (high · effort L)
 
   **Problem:** Every activation in `nix/e2e-tests` either uses `--overlay-only` (~48 files, incl. `lib/shell-helpers.nix:31` `activate_for_user`), stubs `nixos-rebuild` on PATH (27-33, 49, 79; detached activation propagates PATH so 33/49 hit the stub too), or fails in preflight (19, 21). About 69/80 files use `overlay_mode: explicit` (`lib/test-helpers.nix:9-45` overlays only /etc, /home, /root, /srv, /tmp), while the product default is Auto (overlays /var and /nix); Auto appears only in `26-config-exclusions`, which excludes /var, /tmp and /nix. The only real `nixos-rebuild` (30) fails at evaluation by design, nothing references `/var/lib/nixos`, and there is no impermanent (tmpfs root + /persist) profile — so applying the hidden declarative config is never exercised.
 
@@ -2125,7 +2125,7 @@ Owns: `nails-core/src/manager/activation/nixos_switch.rs`, `nails-core/src/nixos
 
   **Done when:** test 27 has no stub on PATH and asserts the hidden marker and service exist during the session and are gone after deactivation; the `ci` subset contains an auto-mode activate/deactivate test; a sudo-from-testuser test exists with no HOME injection; the re-activation test applies the hidden config on the fast path; the impermanent decoy profile exists and is used by at least the real-rebuild and forensic tests; all new tests pass locally via `nix build .#checks.x86_64-linux.<name>`.
 
-- [ ] **T-092: Settle the /var/lib/nixos drift with a control run and a canary hidden user; add state-machine and path-containment property tests** (medium · effort M)
+- [x] **T-092: Settle the /var/lib/nixos drift with a control run and a canary hidden user; add state-machine and path-containment property tests** (medium · effort M)
 
   **Problem:** The post-deactivation drift observed in evaluation — rewrites of `/persist/var/lib/nixos` `declarative-users`/`declarative-groups`, `uid-map`, `gid-map`, `auto-subuid-map` — was never root-caused: there was no control run (plain reboot without activation) and no comparison of contents versus mtimes. Likely contributors are boot-time `update-users-groups` and the decoy `switch-to-configuration switch` during standard deactivation. No test declares a hidden user (`users.users` appears only in `nix/e2e-tests/lib/vm-config.nix`), so recommending one blindly could create a new trace. Separately, the containment-critical functions `is_on_hidden_volume_internal` (`state/mod.rs:88`) and `apply_exclusion_filter` (`manager/helpers.rs:211`) have only example tests, and `update_state` keeps a second hand-written transition table (`state_management.rs:256-264`) that can drift from `state/transitions.rs`.
 
@@ -2137,7 +2137,7 @@ Owns: `nails-core/src/manager/activation/nixos_switch.rs`, `nails-core/src/nixos
 
 Owns: `nails-core/src/nixos/config/prepare.rs`, `nails-cli/src/cli/commands/init.rs`, `nails-core/src/preflight/checks/nixos_config/mod.rs`
 
-- [ ] **T-093: Platform-specific init and preflight registration; preflight writes nothing; generic errors are not NixOS-named** (medium · effort M)
+- [x] **T-093: Platform-specific init and preflight registration; preflight writes nothing; generic errors are not NixOS-named** (medium · effort M)
 
   **Problem**
   - `NixOSConfigCheck` and `NixOSBuildTargetCheck` are registered whenever `--overlay-only` is unset (`nails-core/src/manager/preflight_runner.rs:177-194`, duplicated in `nails-cli/src/cli/commands/activate/dry_run.rs:232-233`). On a non-NixOS host these fire and fail with NixOS-only guidance ("Ensure NixOS is properly installed.").

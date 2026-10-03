@@ -15,6 +15,13 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
+- `nails reapply` applies a fixed hidden NixOS configuration in place while active; a failed hidden
+  switch is now reported as "activated with warnings" (JSON `success_with_warnings`, exit code 9)
+  and `nails status` shows the hidden configuration as not applied.
+- E2E coverage for the real offline hidden NixOS rebuild, default auto-mode overlay lifecycle,
+  fast-path re-activation, an impermanent decoy profile, and a control-run plus canary-user check
+  for `/var/lib/nixos` drift, alongside an exhaustive state-transition-table test and
+  path-containment property tests.
 - Privileged commands (`activate`, `deactivate`, `emergency`) now fail fast when run without root,
   printing a `sudo <command>` hint and exiting without writing a log or state file.
 - Pre-flight failures now show each check's own remediation and finish with one ordered list of
@@ -118,6 +125,13 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- NAILS builds and caches the hidden NixOS system toplevel explicitly and switches to it before
+  restarting the session, failing closed by default (new `nixos.switch_required` option); the
+  config fingerprint now covers the whole hidden config tree.
+- `nails init` and pre-flight checks are platform-aware: a non-NixOS (FHS/Debian) host gets no NixOS
+  layout or NixOS-only checks, unsupported hosts are refused before any write, and generic
+  symlink/reboot failures use typed `UnsupportedFilesystem`/`RebootFailed` errors instead of the
+  NixOS error.
 - Human console output no longer prints a per-line timestamp (the precise timestamp is kept only in
   the JSON log file), and overlay activation now shows a per-overlay `mounting <path> (i/N)`
   progress line.
