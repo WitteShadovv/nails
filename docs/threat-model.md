@@ -68,3 +68,42 @@ Two consequences are explicitly **not** defended against:
 Fresh-home persona mode reduces the first consequence by starting the hidden
 session from a clean home, so the decoy's accounts and clients are not visible; it
 does not change the shared network identity.
+
+## Known residual changes: /var/lib/nixos drift
+
+On a NixOS decoy, `/var/lib/nixos` holds the declarative account bookkeeping
+(`declarative-users`, `declarative-groups`, `uid-map`, `gid-map`,
+`auto-subuid-map`). Earlier evaluation saw these files change across a hidden
+session and could not say whether NAILS caused it, because there was no control
+run and the comparison was by mtime rather than by contents.
+
+The drift is now bounded by a disk-forensic E2E test on the impermanent decoy
+profile (`nix/e2e-tests/tests/nixos/34-var-lib-nixos-drift.nix`), where only
+`/persist/var/lib/nixos` survives a power-off. It snapshots that tree by content
+hash and compares three runs:
+
+- **Control** — a plain reboot with no hidden session. The decoy's own
+  boot-time `update-users-groups` and `switch-to-configuration` rewrite the
+  declarative-account and id-map files on every boot, so this churn is ordinary
+  boot noise, not a NAILS artefact. It is the baseline every other run is measured
+  against.
+- **Standard deactivation** and **emergency deactivation** — a hidden session is
+  activated with `/var` overlaid, so the hidden `switch-to-configuration` writes
+  its user state into the overlay upper on the hidden volume, not onto the decoy.
+  After teardown the persisted `/var/lib/nixos` must show no change beyond the
+  control set and the allowlisted boot churn above.
+
+To make containment falsifiable, the hidden configuration declares a canary user
+and group (`hiddencanary`, uid/gid 64123) that exist nowhere in the decoy. The
+test proves the canary is live during the hidden session and then asserts its
+name and id appear on **no** persisted or regenerated decoy state — not in
+`/persist/var/lib/nixos`, `/etc/passwd`, `/etc/group`, or the journal — after both
+deactivation modes. A leak means the overlay is not covering the `/var/lib/nixos`
+bind submount and the hidden account reached the decoy disk; that is a
+containment failure to fix in the overlay handling for `/var/lib/nixos`
+(evaluating `userborn`/`systemd-sysusers`), never to document away.
+
+Confirming the containment requires a Nix host: the overlay semantics for the
+`/var/lib/nixos` bind and the offline closure of the canary-augmented fixture
+cannot be evaluated in the offline sandbox. Run
+`nix build .#checks.x86_64-linux.var-lib-nixos-drift`.

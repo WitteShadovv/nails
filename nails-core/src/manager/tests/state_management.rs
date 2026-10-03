@@ -620,3 +620,166 @@ fn test_reconcile_state_reports_degraded_without_resetting() {
     let reloaded = StateFile::load(&state_path).expect("reload");
     assert!(reloaded.state.is_active());
 }
+
+// ========== update_state table vs SystemState methods (exhaustive 5x5) ==========
+//
+// `update_state` keeps its own hand-written transition table, separate from the
+// `SystemState` transition methods in `state/transitions.rs`. The two can drift.
+// These tests pin both to one canonical 5x5 policy so a change to either side
+// that is not reflected in the other fails here.
+
+/// The five `SystemState` variants, in the order the canonical table indexes
+/// them. Timestamps are fixed so the diagonal (same value for `from` and `to`)
+/// compares equal and exercises the idempotent branch of `update_state`.
+fn sample_states() -> [SystemState; 5] {
+    let t = Utc::now();
+    [
+        SystemState::Inactive,
+        SystemState::Activating { started_at: t },
+        SystemState::Active {
+            activated_at: t,
+            overlays: vec![],
+            decoy_writers: Vec::new(),
+        },
+        SystemState::Deactivating { started_at: t },
+        SystemState::Degraded {
+            since: t,
+            reason: "pinned".into(),
+            remaining_mounts: vec![],
+        },
+    ]
+}
+
+/// Canonical transition policy, indexed `[from][to]` over
+/// `[Inactive, Activating, Active, Deactivating, Degraded]`.
+///
+/// Every `true` is justified by a `SystemState` transition method (and the
+/// agreement tests below assert that justification holds):
+/// - `Inactive -> Activating`          `begin_activation`
+/// - `Activating -> Active`            `complete_activation`
+/// - `Active -> Deactivating`          `begin_deactivation`
+/// - `Deactivating -> Inactive`        `complete_deactivation`
+/// - `Degraded|Inactive -> Inactive`   `recover`
+/// - `{Activating,Active,Deactivating,Degraded} -> Degraded`  `enter_degraded`
+/// - the diagonal                      idempotent re-save of the same state
+///
+/// `Inactive -> Degraded` is intentionally `false`: `enter_degraded` is an
+/// infallible constructor the rollback paths call from a live state, never from
+/// Inactive (nothing has been torn down), and `update_state` is the authority on
+/// what may be persisted. `trigger_emergency` is likewise outside this table: it
+/// drives straight to Inactive from any state through `force_state`, not through
+/// `update_state`.
+const CANONICAL_TRANSITIONS: [[bool; 5]; 5] = [
+    //        to: In     Ag     Av     De     Dg
+    /* In */
+    [true, true, false, false, false],
+    /* Ag */ [false, true, true, false, true],
+    /* Av */ [false, false, true, true, true],
+    /* De */ [true, false, false, true, true],
+    /* Dg */ [true, false, false, false, true],
+];
+
+/// Build a manager whose persisted state is `from`, ready for an `update_state`
+/// attempt. Uses a real temp dir as the hidden-volume root so the state file
+/// saves pass the on-volume check.
+fn manager_in_state(temp: &std::path::Path, from: &SystemState) -> NailsManager<MockFilesystem> {
+    let state_path = temp.join("state.json");
+    let config = Config {
+        hidden_volume_root: temp.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+    let mut manager = NailsManager::new(MockFilesystem::new(), config, state_path);
+    manager
+        .force_state(from.clone())
+        .expect("force_state seeds the starting state");
+    manager
+}
+
+#[test]
+fn update_state_table_matches_canonical_policy() {
+    let states = sample_states();
+    for (i, from) in states.iter().enumerate() {
+        for (j, to) in states.iter().enumerate() {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let mut manager = manager_in_state(temp.path(), from);
+            let accepted = manager.update_state(to.clone()).is_ok();
+            assert_eq!(
+                accepted, CANONICAL_TRANSITIONS[i][j],
+                "update_state accepted={accepted} for {from:?} -> {to:?}, \
+                 canonical policy says {}",
+                CANONICAL_TRANSITIONS[i][j]
+            );
+        }
+    }
+}
+
+#[test]
+fn transition_methods_agree_with_canonical_policy() {
+    use SystemState::{Activating, Active, Deactivating, Degraded, Inactive};
+
+    let states = sample_states();
+    let idx = |s: &SystemState| match s {
+        Inactive => 0,
+        Activating { .. } => 1,
+        Active { .. } => 2,
+        Deactivating { .. } => 3,
+        Degraded { .. } => 4,
+    };
+
+    for from in &states {
+        let i = idx(from);
+
+        // Fallible methods: Ok exactly where the canonical table says so, and the
+        // produced variant is the expected target column.
+        let begin_act = from.begin_activation();
+        assert_eq!(begin_act.is_ok(), CANONICAL_TRANSITIONS[i][1] && i == 0);
+        if let Ok(next) = begin_act {
+            assert_eq!(idx(&next), 1);
+        }
+
+        let complete_act = from.complete_activation(vec![], Vec::new());
+        assert_eq!(complete_act.is_ok(), CANONICAL_TRANSITIONS[i][2] && i == 1);
+        if let Ok(next) = complete_act {
+            assert_eq!(idx(&next), 2);
+        }
+
+        let begin_deact = from.begin_deactivation();
+        assert_eq!(begin_deact.is_ok(), CANONICAL_TRANSITIONS[i][3] && i == 2);
+        if let Ok(next) = begin_deact {
+            assert_eq!(idx(&next), 3);
+        }
+
+        let complete_deact = from.complete_deactivation();
+        assert_eq!(
+            complete_deact.is_ok(),
+            CANONICAL_TRANSITIONS[i][0] && i == 3
+        );
+        if let Ok(next) = complete_deact {
+            assert_eq!(idx(&next), 0);
+        }
+
+        // recover: Ok from Inactive and Degraded, always landing on Inactive, and
+        // both are Inactive-column trues in the table.
+        let recovered = from.recover();
+        let recover_ok = matches!(from, Inactive | Degraded { .. });
+        assert_eq!(recovered.is_ok(), recover_ok);
+        if let Ok(next) = recovered {
+            assert_eq!(idx(&next), 0);
+            assert!(CANONICAL_TRANSITIONS[i][0]);
+        }
+
+        // enter_degraded: infallible and always yields Degraded; the table marks
+        // the Degraded column true for every live state but false for Inactive,
+        // the one deliberate divergence from this permissive constructor.
+        let degraded = from.enter_degraded("pinned".into(), vec![]);
+        assert_eq!(idx(&degraded), 4);
+        assert_eq!(CANONICAL_TRANSITIONS[i][4], i != 0);
+
+        // trigger_emergency: infallible, always Inactive, applied through
+        // force_state rather than this table.
+        let emergency = from.trigger_emergency().expect("emergency always succeeds");
+        assert_eq!(idx(&emergency), 0);
+    }
+}
