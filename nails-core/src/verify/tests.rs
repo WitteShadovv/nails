@@ -365,12 +365,13 @@ fn test_memory_status_with_swap_enabled() {
         .collect();
     assert_eq!(memory_findings.len(), 2); // swap warning + RAM warning
 
-    // Check swap warning
+    // Check swap finding: a plain disk partition can leak memory, so it is
+    // reported as Critical (not Info), matching the pre-flight classification.
     let swap_finding = memory_findings
         .iter()
-        .find(|f| f.message.contains("Swap is enabled"))
+        .find(|f| f.message.contains("Swap can leak memory"))
         .unwrap();
-    assert_eq!(swap_finding.severity, Severity::Info);
+    assert_eq!(swap_finding.severity, Severity::Critical);
     assert!(swap_finding.fix_guidance.is_some());
 
     // Check RAM warning

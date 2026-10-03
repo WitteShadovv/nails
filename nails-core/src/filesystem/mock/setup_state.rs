@@ -128,12 +128,21 @@ impl MockFilesystem {
         }
     }
 
-    /// Set whether swap is enabled
+    /// Seed `/proc/swaps` so [`crate::preflight::classify_swap`] sees swap as
+    /// enabled or disabled.
+    ///
+    /// `true` installs a plain disk partition (classified as a failure); `false`
+    /// installs a header-only table (no active swap). Tests that need a specific
+    /// device shape (zram, dm-crypt, file) write `/proc/swaps` directly with
+    /// [`Self::mock_add_file`].
     pub fn mock_set_swap_enabled(&self, enabled: bool) {
-        *self
-            .swap_enabled
-            .lock()
-            .expect("MockFilesystem mutex poisoned") = enabled;
+        let content = if enabled {
+            "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n\
+             /dev/sda2\tpartition\t8388604\t0\t-2\n"
+        } else {
+            "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+        };
+        self.mock_add_file("/proc/swaps", content);
     }
 
     /// Set whether a path exists

@@ -874,6 +874,127 @@ fn test_ensure_hidden_hardware_configuration_bootstraps_from_base_config() {
     assert_eq!(fs.mock_get_permissions(&hidden_base), Some(0o600));
 }
 
+/// Build a MockFilesystem wired for `ensure_hidden_hardware_configuration` with
+/// the given decoy hardware-configuration.nix content, and return the staged
+/// base config text.
+fn seeded_hidden_base(decoy_hardware: &str) -> String {
+    let fs = MockFilesystem::new();
+    let hidden_path = std::path::PathBuf::from("/mnt/hidden");
+    let base_hardware = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
+
+    fs.mock_set_path_exists("/etc", true);
+    fs.mock_set_path_type("/etc", PathKind::Dir);
+    fs.mock_set_writable("/etc", true);
+    fs.mock_set_path_exists("/etc/nixos", true);
+    fs.mock_set_path_type("/etc/nixos", PathKind::Dir);
+    fs.mock_set_writable("/etc/nixos", true);
+    fs.mock_set_path_exists(base_hardware.to_str().unwrap(), true);
+    fs.mock_set_path_type(base_hardware.to_str().unwrap(), PathKind::File);
+    fs.mock_set_file_content(base_hardware.to_str().unwrap(), decoy_hardware);
+
+    fs.mock_set_path_exists("/mnt", true);
+    fs.mock_set_path_type("/mnt", PathKind::Dir);
+    fs.mock_set_writable("/mnt", true);
+    fs.mock_set_path_exists(hidden_path.to_str().unwrap(), true);
+    fs.mock_set_path_type(hidden_path.to_str().unwrap(), PathKind::Dir);
+    fs.mock_set_writable(hidden_path.to_str().unwrap(), true);
+    fs.mock_set_path_exists("/mnt/hidden/etc", true);
+    fs.mock_set_path_type("/mnt/hidden/etc", PathKind::Dir);
+    fs.mock_set_writable("/mnt/hidden/etc", true);
+    fs.mock_set_path_exists("/mnt/hidden/etc/nixos", true);
+    fs.mock_set_path_type("/mnt/hidden/etc/nixos", PathKind::Dir);
+    fs.mock_set_writable("/mnt/hidden/etc/nixos", true);
+
+    ensure_hidden_hardware_configuration(&fs, &hidden_path, &base_hardware).unwrap();
+
+    let hidden_base = hidden_path.join("etc/nixos/hardware-configuration.base.nix");
+    <MockFilesystem as Filesystem>::read_file_content(&fs, &hidden_base).unwrap()
+}
+
+/// Assert the generated base config contains no active (uncommented) swapDevices
+/// assignment with a device in it.
+fn assert_no_active_swap(base: &str) {
+    for line in base.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("swapDevices") {
+            // Only an empty list may remain uncommented.
+            let bracket = line.find('[').and_then(|o| line.rfind(']').map(|c| (o, c)));
+            if let Some((o, c)) = bracket {
+                assert!(
+                    c > o && line[o + 1..c].trim().is_empty(),
+                    "active swapDevices leaked into the hidden config: {line}"
+                );
+            } else {
+                panic!("active swapDevices leaked into the hidden config: {line}");
+            }
+        }
+        assert!(
+            !trimmed.starts_with("device = \"/dev/disk/by-uuid")
+                || line.trim_start().starts_with('#'),
+            "a swap device path leaked uncommented into the hidden config: {line}"
+        );
+    }
+}
+
+#[test]
+fn test_seeded_hidden_config_strips_single_line_swap_devices() {
+    let decoy = "{ config, lib, pkgs, modulesPath, ... }:\n{\n  \
+                 imports = [ (modulesPath + \"/installer/scan/not-detected.nix\") ];\n  \
+                 swapDevices = [ { device = \"/dev/disk/by-uuid/dead-beef\"; } ];\n}\n";
+    let base = seeded_hidden_base(decoy);
+    assert_no_active_swap(&base);
+    assert!(
+        base.contains("# ") && base.contains("swapDevices"),
+        "swapDevices must be preserved as a comment: {base}"
+    );
+}
+
+#[test]
+fn test_seeded_hidden_config_strips_multi_line_swap_devices() {
+    let decoy = "{ config, lib, pkgs, modulesPath, ... }:\n{\n  \
+                 imports = [ (modulesPath + \"/installer/scan/not-detected.nix\") ];\n  \
+                 swapDevices =\n    [ { device = \"/dev/disk/by-uuid/dead-beef\"; }\n    ];\n}\n";
+    let base = seeded_hidden_base(decoy);
+    assert_no_active_swap(&base);
+    // Every line of the multi-line block must be commented.
+    for line in base.lines() {
+        if line.contains("/dev/disk/by-uuid/dead-beef") {
+            assert!(
+                line.trim_start().starts_with('#'),
+                "multi-line swap device must be commented: {line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_seeded_hidden_config_keeps_empty_swap_devices() {
+    let decoy = "{ config, lib, pkgs, modulesPath, ... }:\n{\n  \
+                 imports = [ (modulesPath + \"/installer/scan/not-detected.nix\") ];\n  \
+                 swapDevices = [ ];\n}\n";
+    let base = seeded_hidden_base(decoy);
+    assert_no_active_swap(&base);
+    assert!(
+        base.contains("swapDevices = [ ];"),
+        "an already-empty swapDevices must be preserved verbatim: {base}"
+    );
+}
+
+#[test]
+fn test_seeded_hidden_config_comments_resume_device() {
+    let decoy = "{ config, lib, pkgs, modulesPath, ... }:\n{\n  \
+                 boot.resumeDevice = \"/dev/disk/by-uuid/dead-beef\";\n}\n";
+    let base = seeded_hidden_base(decoy);
+    for line in base.lines() {
+        if line.contains("resumeDevice") {
+            assert!(
+                line.trim_start().starts_with('#'),
+                "resumeDevice must be commented out: {line}"
+            );
+        }
+    }
+}
+
 #[test]
 fn test_ensure_hidden_hardware_configuration_updates_existing_hidden_file() {
     let fs = MockFilesystem::new();

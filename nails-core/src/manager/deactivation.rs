@@ -351,6 +351,14 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
+        // A swap device that reappeared while the hidden session ran would have
+        // paged memory to the decoy disk; surface it before teardown. Skipped in
+        // emergency mode, which must stay fast and best-effort.
+        if kind == ManagerDeactivationKind::Normal {
+            let hidden_root = self.config().hidden_volume_root.clone();
+            self.recheck_swap_posture("before deactivation", &hidden_root);
+        }
+
         if kind == ManagerDeactivationKind::Normal
             && requires_decoy_restore(self)?
             && select_system_profile(self.filesystem())?.is_none()

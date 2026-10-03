@@ -284,29 +284,27 @@ fn test_is_mounted_returns_false_when_not_mounted() {
 // ============================================================================
 
 #[test]
-fn test_swap_is_enabled_detects_active_swap() {
-    // GIVEN: MockFilesystem with swap enabled
+fn test_swap_classifier_detects_active_swap() {
+    use nails_core::preflight::{SwapSeverity, classify_swap};
+
+    // GIVEN: MockFilesystem seeded with an active disk swap
     let fs = MockFilesystem::new();
     fs.mock_set_swap_enabled(true);
 
-    // WHEN: Checking swap status
-    let result = fs.swap_is_enabled();
-
-    // THEN: Returns true
-    assert!(result.unwrap());
+    // WHEN/THEN: The shared classifier reports a failing posture
+    assert_eq!(classify_swap(&fs).severity, SwapSeverity::Fail);
 }
 
 #[test]
-fn test_swap_is_enabled_detects_disabled_swap() {
-    // GIVEN: MockFilesystem with swap disabled
+fn test_swap_classifier_detects_disabled_swap() {
+    use nails_core::preflight::{SwapSeverity, classify_swap};
+
+    // GIVEN: MockFilesystem with no active swap
     let fs = MockFilesystem::new();
     fs.mock_set_swap_enabled(false);
 
-    // WHEN: Checking swap status
-    let result = fs.swap_is_enabled();
-
-    // THEN: Returns false
-    assert!(!result.unwrap());
+    // WHEN/THEN: The shared classifier passes
+    assert_eq!(classify_swap(&fs).severity, SwapSeverity::Pass);
 }
 
 // ============================================================================
@@ -435,8 +433,11 @@ fn test_mock_filesystem_new_starts_empty() {
     // THEN: No paths mounted
     assert!(fs.get_mounted_paths().is_empty());
 
-    // AND: Swap disabled by default
-    assert!(!fs.swap_is_enabled().unwrap());
+    // AND: No swap active by default
+    assert_eq!(
+        nails_core::preflight::classify_swap(&fs).severity,
+        nails_core::preflight::SwapSeverity::Pass
+    );
 }
 
 #[test]
@@ -444,14 +445,12 @@ fn test_mock_filesystem_reset_clears_state() {
     // GIVEN: MockFilesystem with some state
     let fs = MockFilesystem::new();
     fs.mock_set_mounted(Path::new("/home"), true);
-    fs.mock_set_swap_enabled(true);
 
     // WHEN: Resetting state
     fs.reset();
 
     // THEN: All state cleared
     assert!(fs.get_mounted_paths().is_empty());
-    assert!(!fs.swap_is_enabled().unwrap());
 }
 
 #[test]
@@ -658,5 +657,8 @@ fn test_mock_filesystem_default_trait() {
 
     // THEN: Behaves same as ::new()
     assert!(fs.get_mounted_paths().is_empty());
-    assert!(!fs.swap_is_enabled().unwrap());
+    assert_eq!(
+        nails_core::preflight::classify_swap(&fs).severity,
+        nails_core::preflight::SwapSeverity::Pass
+    );
 }

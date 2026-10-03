@@ -4,6 +4,7 @@ use super::types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, 
 use crate::artifacts::{self, ArtifactKind, ArtifactScope, ArtifactSeverity};
 use crate::config::Config;
 use crate::filesystem::ProcessMatch;
+use crate::preflight::SwapSeverity;
 use crate::state::StateFile;
 use crate::{Filesystem, Result};
 use std::collections::BTreeSet;
@@ -718,16 +719,33 @@ impl<F: Filesystem> Verifier<F> {
     fn check_memory_status(&self) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        // Check if swap is enabled
-        if self.filesystem.swap_is_enabled()? {
-            findings.push(
+        // Classify swap per device, matching the pre-flight check exactly: a disk
+        // or file swap (or hibernation) can leak memory to persistent storage and
+        // is critical; ephemeral encrypted swap warns; RAM-only zram passes.
+        let posture = crate::preflight::classify_swap(&self.filesystem);
+        match posture.severity {
+            SwapSeverity::Pass => {}
+            SwapSeverity::Warn => findings.push(
                 Finding::new(
-                    Severity::Info,
+                    Severity::Warn,
                     "memory",
-                    "Swap is enabled - sensitive data may persist in swap space",
+                    format!("Swap posture warning: {}", posture.findings.join("; ")),
                 )
-                .with_fix_guidance("Consider disabling swap: swapoff -a"),
-            );
+                .with_fix_guidance("Confirm the encrypted swap key is never persisted"),
+            ),
+            SwapSeverity::Fail => findings.push(
+                Finding::new(
+                    Severity::Critical,
+                    "memory",
+                    format!(
+                        "Swap can leak memory to persistent storage: {}",
+                        posture.findings.join("; ")
+                    ),
+                )
+                .with_fix_guidance(
+                    "Disable disk and file swap (swapoff -a) and hibernation; keep only RAM-only zram",
+                ),
+            ),
         }
 
         // Always add RAM persistence warning as Info

@@ -173,10 +173,11 @@ impl fmt::Display for CheckResult {
 ///     }
 ///
 ///     fn run(&self, fs: &F) -> Result<CheckResult> {
-///         match fs.swap_is_enabled() {
-///             Ok(true) => Ok(CheckResult::fail("Swap is enabled - disable before activation".to_string())),
-///             Ok(false) => Ok(CheckResult::Pass("Swap is disabled".to_string())),
-///             Err(e) => Err(e),
+///         match fs.read_file_content(std::path::Path::new("/proc/swaps")) {
+///             Ok(table) if table.lines().count() > 1 => {
+///                 Ok(CheckResult::fail("Swap is enabled - disable before activation".to_string()))
+///             }
+///             _ => Ok(CheckResult::Pass("Swap is disabled".to_string())),
 ///         }
 ///     }
 /// }

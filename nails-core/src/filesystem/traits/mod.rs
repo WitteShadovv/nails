@@ -174,13 +174,6 @@ pub trait Filesystem: Send + Sync + Clone {
     ) -> Result<crate::filesystem::NailsMounts>;
 
     // ------------------------------------------------------------------------
-    // Swap Management
-    // ------------------------------------------------------------------------
-
-    /// Check if swap is enabled.
-    fn swap_is_enabled(&self) -> Result<bool>;
-
-    // ------------------------------------------------------------------------
     // Bind Mount Operations (Pivot Mount Strategy)
     // ------------------------------------------------------------------------
 

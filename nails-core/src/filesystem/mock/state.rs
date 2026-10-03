@@ -50,7 +50,6 @@ pub enum MockOp {
 /// # Design
 ///
 /// - `mounted`: HashSet of currently mounted paths
-/// - `swap_enabled`: Boolean flag for swap status
 /// - `paths`: HashMap storing path metadata
 /// - `busy`: HashSet of paths marked as busy (open files)
 /// - `tmpfs_mounts`: HashSet of paths with tmpfs mounted
@@ -68,7 +67,6 @@ pub enum MockOp {
 #[derive(Debug, Clone)]
 pub struct MockFilesystem {
     pub(super) mounted: Arc<Mutex<HashSet<PathBuf>>>,
-    pub(super) swap_enabled: Arc<Mutex<bool>>,
     pub(super) paths: Arc<Mutex<HashMap<PathBuf, PathInfo>>>,
     pub(super) busy: Arc<Mutex<HashSet<PathBuf>>>,
     /// Paths whose `is_mounted` check fails, mapped to the error message to
@@ -165,7 +163,6 @@ impl MockFilesystem {
     pub fn new() -> Self {
         Self {
             mounted: Arc::new(Mutex::new(HashSet::new())),
-            swap_enabled: Arc::new(Mutex::new(false)),
             paths: Arc::new(Mutex::new(HashMap::new())),
             busy: Arc::new(Mutex::new(HashSet::new())),
             is_mounted_errors: Arc::new(Mutex::new(HashMap::new())),
@@ -227,10 +224,6 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();
-        *self
-            .swap_enabled
-            .lock()
-            .expect("MockFilesystem mutex poisoned") = false;
         self.paths
             .lock()
             .expect("MockFilesystem mutex poisoned")

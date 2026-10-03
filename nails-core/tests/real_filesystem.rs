@@ -189,16 +189,16 @@ fn test_real_filesystem_is_mounted_detects_root() {
 // ============================================================================
 
 #[test]
-fn test_real_filesystem_swap_is_enabled_checks_proc_swaps() {
+fn test_real_filesystem_swap_classification_reads_proc_swaps() {
     // GIVEN: RealFilesystem
     let fs = RealFilesystem;
 
-    // WHEN: Checking if swap is enabled
-    let result = fs.swap_is_enabled();
+    // WHEN: Classifying swap through the shared classifier
+    let posture = nails_core::preflight::classify_swap(&fs);
 
-    // THEN: Should return Ok(bool) without error
-    // (Actual value depends on system configuration)
-    assert!(result.is_ok());
+    // THEN: It returns a posture without panicking; the exact severity depends
+    // on the host's swap and hibernation configuration.
+    let _ = posture.severity;
 }
 
 // ============================================================================

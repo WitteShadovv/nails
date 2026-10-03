@@ -1,14 +1,13 @@
-//! System operations: swap detection and NAILS process detection.
+//! System operations: NAILS process detection.
+//!
+//! Swap posture is classified per device by
+//! [`crate::preflight::classify_swap`], which reads `/proc/swaps` and the
+//! relevant `/sys` entries through the [`crate::Filesystem`] trait.
 
 use crate::Result;
 use crate::filesystem::ProcessMatch;
 use std::collections::HashSet;
 use std::path::Path;
-
-pub(super) fn swap_is_enabled() -> Result<bool> {
-    let swaps = std::fs::read_to_string("/proc/swaps")?;
-    Ok(swaps.lines().count() > 1)
-}
 
 pub(super) fn nails_process_running() -> Result<bool> {
     let proc_path = Path::new("/proc");

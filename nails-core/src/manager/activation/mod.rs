@@ -893,6 +893,10 @@ impl<F: Filesystem> NailsManager<F> {
                 if let Err(e) = write_notification(&hidden_root, &notif) {
                     tracing::warn!("Failed to write rebuild success notification: {}", e);
                 }
+                // switch-to-configuration starts swap.target and can re-enable a
+                // disk swap the operator turned off to pass pre-flight. Re-classify
+                // now and warn loudly if a leaking swap reappeared.
+                self.recheck_swap_posture("after the NixOS switch", &hidden_root);
                 outcome
             }
             Err(e) => {
@@ -928,6 +932,31 @@ impl<F: Filesystem> NailsManager<F> {
                     "NixOS switch/rebuild failed after overlays were mounted; preserving active session and overlays"
                 );
                 HiddenConfigOutcome::Failed { reason: truncated }
+            }
+        }
+    }
+
+    /// Re-classify swap and hibernation and, if a device that can leak memory to
+    /// persistent storage is active, log loudly and write a critical
+    /// notification. `phase` names the point in the flow for the operator.
+    ///
+    /// Runs after the NixOS switch (which starts `swap.target` and can re-enable
+    /// a disk swap the operator turned off to pass pre-flight) and before
+    /// deactivation. RAM-only zram never trips this.
+    pub(crate) fn recheck_swap_posture(&self, phase: &str, hidden_root: &Path) {
+        let posture = crate::preflight::classify_swap(self.filesystem());
+        if posture.severity == crate::preflight::SwapSeverity::Fail {
+            let detail = posture.findings.join("; ");
+            tracing::error!("swap can leak memory to persistent storage {phase}: {detail}");
+            let notif = Notification {
+                title: "Swap re-enabled".to_string(),
+                body: format!("Swap can leak memory to persistent storage {phase}: {detail}"),
+                urgency: "critical".to_string(),
+                icon: Some("dialog-error".to_string()),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            };
+            if let Err(e) = write_notification(hidden_root, &notif) {
+                tracing::warn!("Failed to write swap re-check notification: {}", e);
             }
         }
     }

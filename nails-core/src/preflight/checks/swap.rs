@@ -1,32 +1,225 @@
-//! Swap pre-flight check
+//! Swap and hibernation pre-flight classification.
 //!
-//! Validates that swap is disabled for memory security before activation.
+//! A single swap can defeat the forensic guarantees: memory (including
+//! decryption keys and traces of the hidden session) can be paged out to
+//! persistent storage, and a hibernation image writes the whole of RAM to disk.
+//!
+//! Not every swap is equal, though. RAM-only `zram` (the Fedora default and
+//! NixOS `zramSwap`) never touches persistent storage, so failing on it merely
+//! trains users to bypass all pre-flight checks. This module classifies swap
+//! *per device* instead of with a single boolean:
+//!
+//! - `/dev/zramN` passes only when `/sys/block/zramN/backing_dev` reads `none`
+//!   (no disk backing); a backed zram device fails.
+//! - dm-crypt swap (`/dev/mapper/*`) whose crypttab entry is keyed from a random
+//!   ephemeral source (`/dev/urandom`, `/dev/random`, or the `swap` option)
+//!   warns rather than fails: its contents are unrecoverable after reboot, but
+//!   it is still worth surfacing.
+//! - every other device (plain partition, file swap, or a mapper without a
+//!   random key) fails.
+//!
+//! Hibernation is classified separately: a configured `/sys/power/resume` or a
+//! `resume=` on the kernel command line means a hibernation image can be written
+//! to disk, so it fails.
+//!
+//! # No writes
+//!
+//! Every probe reads the filesystem through the [`Filesystem`] trait; nothing
+//! here calls `swapoff` or mutates anything. The same classifier backs the
+//! pre-flight check, `verify`, and the post-switch re-check, so all three report
+//! identical verdicts.
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result};
+use std::path::{Path, PathBuf};
 
-/// Pre-flight check to validate swap is disabled
+/// The kernel's active-swap table.
+const PROC_SWAPS: &str = "/proc/swaps";
+/// Maps a dm-crypt mapper name to its backing device and key source.
+const CRYPTTAB: &str = "/etc/crypttab";
+/// The booted kernel command line (carries `resume=` when hibernation is wired).
+const PROC_CMDLINE: &str = "/proc/cmdline";
+/// `major:minor` of the configured hibernation resume device (`0:0` when unset).
+const SYS_POWER_RESUME: &str = "/sys/power/resume";
+
+/// Severity of a swap/hibernation posture, ordered `Pass < Warn < Fail` so the
+/// worst finding across devices wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SwapSeverity {
+    /// No device or hibernation channel can write memory to persistent storage.
+    Pass,
+    /// Only ephemeral encrypted swap is active; surfaced but not blocking.
+    Warn,
+    /// At least one channel can leak memory to persistent storage.
+    Fail,
+}
+
+/// The aggregated swap/hibernation posture of the running system.
+#[derive(Debug, Clone)]
+pub struct SwapPosture {
+    /// The worst severity across all swap devices and the hibernation check.
+    pub severity: SwapSeverity,
+    /// Human-readable description of each non-passing finding.
+    pub findings: Vec<String>,
+}
+
+/// Classify every active swap device plus the hibernation channel.
+///
+/// Reads `/proc/swaps`, the relevant `/sys` and crypttab entries, and the kernel
+/// command line through `fs`. A missing `/proc/swaps` (or an empty one) means no
+/// swap is active and classifies as [`SwapSeverity::Pass`].
+pub fn classify_swap<F: Filesystem>(fs: &F) -> SwapPosture {
+    let mut severity = SwapSeverity::Pass;
+    let mut findings = Vec::new();
+
+    let swaps = fs
+        .read_file_content(Path::new(PROC_SWAPS))
+        .unwrap_or_default();
+
+    // The first line of /proc/swaps is a header; every later line is a device.
+    for line in swaps.lines().skip(1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut cols = line.split_whitespace();
+        let Some(filename) = cols.next() else {
+            continue;
+        };
+        let kind = cols.next().unwrap_or("");
+        let (device_severity, detail) = classify_device(fs, filename, kind);
+        if device_severity != SwapSeverity::Pass {
+            severity = severity.max(device_severity);
+            findings.push(detail);
+        }
+    }
+
+    for detail in hibernation_findings(fs) {
+        severity = severity.max(SwapSeverity::Fail);
+        findings.push(detail);
+    }
+
+    SwapPosture { severity, findings }
+}
+
+/// Classify a single `/proc/swaps` entry by its filename and type column.
+fn classify_device<F: Filesystem>(fs: &F, filename: &str, kind: &str) -> (SwapSeverity, String) {
+    if let Some(zram) = filename.strip_prefix("/dev/")
+        && zram.starts_with("zram")
+    {
+        let backing_path = PathBuf::from(format!("/sys/block/{zram}/backing_dev"));
+        // zram is RAM-only unless a backing device is explicitly configured;
+        // the attribute reads `none` in that default case. Treat an
+        // unreadable attribute as the default (RAM-only).
+        let backing = fs
+            .read_file_content(&backing_path)
+            .map(|v| v.trim().to_string())
+            .unwrap_or_else(|_| "none".to_string());
+        return if backing == "none" {
+            (SwapSeverity::Pass, String::new())
+        } else {
+            (
+                SwapSeverity::Fail,
+                format!(
+                    "zram swap {filename} is backed by a disk device ({backing}); \
+                     paged-out memory can reach persistent storage"
+                ),
+            )
+        };
+    }
+
+    if kind == "file" {
+        return (
+            SwapSeverity::Fail,
+            format!("file-backed swap {filename} writes memory to the decoy disk"),
+        );
+    }
+
+    if let Some(name) = filename.strip_prefix("/dev/mapper/") {
+        return if crypttab_random_key(fs, name) {
+            (
+                SwapSeverity::Warn,
+                format!(
+                    "encrypted swap {filename} is keyed from an ephemeral random source; \
+                     its contents are unrecoverable after reboot but it is still active"
+                ),
+            )
+        } else {
+            (
+                SwapSeverity::Fail,
+                format!(
+                    "swap device {filename} is not keyed from a random ephemeral source; \
+                     paged-out memory may be recoverable from disk"
+                ),
+            )
+        };
+    }
+
+    (
+        SwapSeverity::Fail,
+        format!("disk swap {filename} writes memory to persistent storage"),
+    )
+}
+
+/// Whether the crypttab entry for `name` is keyed from a random ephemeral
+/// source: a `/dev/urandom`/`/dev/random` keyfile, or the `swap` option (which
+/// makes systemd format the device with a fresh random key on every boot).
+fn crypttab_random_key<F: Filesystem>(fs: &F, name: &str) -> bool {
+    let Ok(content) = fs.read_file_content(Path::new(CRYPTTAB)) else {
+        return false;
+    };
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.first() != Some(&name) {
+            continue;
+        }
+        let keyfile = fields.get(2).copied().unwrap_or("");
+        let options = fields.get(3).copied().unwrap_or("");
+        if keyfile == "/dev/urandom" || keyfile == "/dev/random" {
+            return true;
+        }
+        return options.split(',').any(|o| o.trim() == "swap");
+    }
+    false
+}
+
+/// Hibernation findings: a configured resume device or a `resume=` kernel
+/// argument, either of which lets a hibernation image write memory to disk.
+fn hibernation_findings<F: Filesystem>(fs: &F) -> Vec<String> {
+    let mut out = Vec::new();
+
+    if let Ok(resume) = fs.read_file_content(Path::new(SYS_POWER_RESUME)) {
+        let resume = resume.trim();
+        if !resume.is_empty() && resume != "0:0" {
+            out.push(format!(
+                "hibernation resume device is configured ({resume}); \
+                 a hibernation image can write memory to disk"
+            ));
+        }
+    }
+
+    if let Ok(cmdline) = fs.read_file_content(Path::new(PROC_CMDLINE))
+        && cmdline.split_whitespace().any(|t| t.starts_with("resume="))
+    {
+        out.push(
+            "kernel command line sets resume=; hibernation can write memory to disk".to_string(),
+        );
+    }
+
+    out
+}
+
+/// Pre-flight check to validate swap cannot leak memory to persistent storage.
 ///
 /// # Security
 ///
-/// Swap must be disabled before activation because sensitive data
-/// (including encryption keys) could be written to persistent storage,
-/// defeating the plausible deniability guarantee.
-///
-/// # Rationale
-///
-/// - **Memory forensics**: Sensitive data in RAM could be written to swap partition
-/// - **Persistence**: Swap contents persist after shutdown (unlike RAM)
-/// - **Decryption keys**: Encryption keys in memory could leak to swap
-/// - **Plausible deniability**: Swap could contain evidence of hidden environment usage
-///
-/// # Failure Guidance
-///
-/// When swap is enabled, the check provides actionable guidance:
-/// - Clear explanation of the problem ("Swap is enabled")
-/// - Exact command to fix it (`sudo swapoff -a`)
-///
-/// Error messages include fix guidance.
+/// Swap and hibernation are the two channels through which RAM contents
+/// (including encryption keys and traces of the hidden session) can reach the
+/// decoy disk, defeating plausible deniability. RAM-only `zram` is permitted
+/// because it never touches persistent storage.
 ///
 /// # Example
 ///
@@ -37,7 +230,7 @@ use crate::{Filesystem, Result};
 /// let fs = MockFilesystem::new();
 /// let check = SwapCheck::new();
 ///
-/// // Simulate swap disabled
+/// // No swap active: the check passes.
 /// fs.mock_set_swap_enabled(false);
 /// let result = check.run(&fs).unwrap();
 /// assert!(result.is_pass());
@@ -58,19 +251,27 @@ impl<F: Filesystem> PreFlightCheck<F> for SwapCheck {
     }
 
     fn description(&self) -> &'static str {
-        "Validates swap is disabled for memory security"
+        "Validates swap cannot leak memory to persistent storage"
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        if fs.swap_is_enabled()? {
-            Ok(CheckResult::fail_with(
-                "Swap is enabled; sensitive memory could be written to persistent storage",
-                "Disable all active swap: sudo swapoff -a",
-            ))
-        } else {
-            Ok(CheckResult::Pass(
-                "Swap is disabled - memory is secure".into(),
-            ))
+        let posture = classify_swap(fs);
+        match posture.severity {
+            SwapSeverity::Pass => Ok(CheckResult::Pass(
+                "no swap can leak memory to persistent storage (RAM-only zram is permitted)".into(),
+            )),
+            SwapSeverity::Warn => Ok(CheckResult::Warn(format!(
+                "swap posture warning: {}",
+                posture.findings.join("; ")
+            ))),
+            SwapSeverity::Fail => Ok(CheckResult::fail_with(
+                format!(
+                    "swap can leak memory to persistent storage: {}",
+                    posture.findings.join("; ")
+                ),
+                "Disable disk and file swap (sudo swapoff -a) and hibernation (remove resume=); \
+                 keep only RAM-only zram.",
+            )),
         }
     }
 }
@@ -80,60 +281,220 @@ mod tests {
     use super::*;
     use crate::filesystem::MockFilesystem;
 
-    #[test]
-    fn test_swap_check_default_trait() {
-        // SwapCheck implements Default
-        let _check = SwapCheck;
+    /// A `/proc/swaps` header plus the given device lines.
+    fn proc_swaps(entries: &[&str]) -> String {
+        let mut out = String::from("Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n");
+        for e in entries {
+            out.push_str(e);
+            out.push('\n');
+        }
+        out
     }
 
     #[test]
     fn test_swap_check_trait_metadata() {
-        // Verifies SwapCheck implements PreFlightCheck trait
-        // Verifies name() returns "swap" and description() is correct
         let check = SwapCheck::new();
-
         assert_eq!(
             <SwapCheck as PreFlightCheck<MockFilesystem>>::name(&check),
             "swap"
         );
         assert_eq!(
             <SwapCheck as PreFlightCheck<MockFilesystem>>::description(&check),
-            "Validates swap is disabled for memory security"
+            "Validates swap cannot leak memory to persistent storage"
         );
     }
 
     #[test]
-    fn test_swap_check_pass_when_swap_disabled() {
-        // Given swap is disabled, When SwapCheck runs, Then returns Pass
-        // Given MockFilesystem simulates swap disabled, Then test verifies Pass
+    fn no_swap_passes() {
         let fs = MockFilesystem::new();
-        fs.mock_set_swap_enabled(false);
-
-        let check = SwapCheck::new();
-        let result = check.run(&fs).unwrap();
-
-        assert!(result.is_pass());
-        assert_eq!(result.message(), "Swap is disabled - memory is secure");
+        fs.mock_add_file(PROC_SWAPS, &proc_swaps(&[]));
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_pass(), "{result:?}");
     }
 
     #[test]
-    fn test_swap_check_fail_when_swap_enabled() {
-        // Given swap is enabled, When SwapCheck runs, Then returns Fail with fix guidance
-        // Given MockFilesystem simulates swap enabled, Then test verifies Fail with command
+    fn missing_proc_swaps_passes() {
         let fs = MockFilesystem::new();
-        fs.mock_set_swap_enabled(true);
+        // /proc/swaps absent entirely: no swap is active.
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_pass(), "{result:?}");
+    }
 
-        let check = SwapCheck::new();
-        let result = check.run(&fs).unwrap();
-
-        assert!(result.is_fail());
-        assert_eq!(
-            result.message(),
-            "Swap is enabled; sensitive memory could be written to persistent storage"
+    #[test]
+    fn zram_without_backing_passes() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/zram0 partition 8388604 0 100"]),
         );
+        fs.mock_add_file("/sys/block/zram0/backing_dev", "none\n");
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_pass(), "{result:?}");
+    }
+
+    #[test]
+    fn zram_without_backing_dev_attribute_passes() {
+        let fs = MockFilesystem::new();
+        // The attribute is absent; a zram device is RAM-only by default.
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/zram0 partition 8388604 0 100"]),
+        );
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_pass(), "{result:?}");
+    }
+
+    #[test]
+    fn zram_with_backing_fails() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/zram0 partition 8388604 0 100"]),
+        );
+        fs.mock_add_file("/sys/block/zram0/backing_dev", "/dev/sda3\n");
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+        assert!(result.message().contains("zram0"));
+        assert!(result.remediation().is_some());
+    }
+
+    #[test]
+    fn partition_swap_fails() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/sda2 partition 8388604 0 -2"]),
+        );
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+        assert!(result.message().contains("/dev/sda2"));
+    }
+
+    #[test]
+    fn file_swap_fails() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(PROC_SWAPS, &proc_swaps(&["/swapfile file 2097148 0 -3"]));
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+        assert!(result.message().contains("/swapfile"));
+    }
+
+    #[test]
+    fn dmcrypt_random_key_warns() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/mapper/cryptswap partition 8388604 0 -2"]),
+        );
+        fs.mock_add_file(CRYPTTAB, "cryptswap /dev/sda2 /dev/urandom swap\n");
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_warn(), "{result:?}");
+        assert!(result.message().contains("cryptswap"));
+    }
+
+    #[test]
+    fn dmcrypt_swap_option_warns() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/mapper/cryptswap partition 8388604 0 -2"]),
+        );
+        fs.mock_add_file(
+            CRYPTTAB,
+            "cryptswap /dev/sda2 none swap,cipher=aes-xts-plain64\n",
+        );
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_warn(), "{result:?}");
+    }
+
+    #[test]
+    fn dmcrypt_fixed_key_fails() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/mapper/cryptswap partition 8388604 0 -2"]),
+        );
+        fs.mock_add_file(CRYPTTAB, "cryptswap /dev/sda2 /etc/keys/swap.key luks\n");
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+    }
+
+    #[test]
+    fn dmcrypt_without_crypttab_fails() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/mapper/cryptswap partition 8388604 0 -2"]),
+        );
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+    }
+
+    #[test]
+    fn hibernation_resume_device_fails() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(PROC_SWAPS, &proc_swaps(&[]));
+        fs.mock_add_file(SYS_POWER_RESUME, "259:2\n");
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+        assert!(result.message().contains("hibernation"));
+    }
+
+    #[test]
+    fn hibernation_resume_zero_passes() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(PROC_SWAPS, &proc_swaps(&[]));
+        fs.mock_add_file(SYS_POWER_RESUME, "0:0\n");
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_pass(), "{result:?}");
+    }
+
+    #[test]
+    fn hibernation_cmdline_resume_fails() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(PROC_SWAPS, &proc_swaps(&[]));
+        fs.mock_add_file(
+            PROC_CMDLINE,
+            "BOOT_IMAGE=/vmlinuz root=UUID=abc resume=UUID=def quiet\n",
+        );
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+        assert!(result.message().contains("resume="));
+    }
+
+    #[test]
+    fn worst_severity_wins() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&[
+                "/dev/zram0 partition 8388604 0 100",
+                "/dev/mapper/cryptswap partition 8388604 0 -2",
+                "/dev/sda2 partition 8388604 0 -3",
+            ]),
+        );
+        fs.mock_add_file("/sys/block/zram0/backing_dev", "none\n");
+        fs.mock_add_file(CRYPTTAB, "cryptswap /dev/sdb2 /dev/urandom swap\n");
+        // zram passes, cryptswap warns, sda2 fails => overall Fail.
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+    }
+
+    #[test]
+    fn classifier_performs_no_writes() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/sda2 partition 8388604 0 -2"]),
+        );
+        fs.mock_add_file(SYS_POWER_RESUME, "259:2\n");
+        let before = fs.mock_ops().len();
+        let _ = classify_swap(&fs);
         assert_eq!(
-            result.remediation(),
-            Some("Disable all active swap: sudo swapoff -a")
+            fs.mock_ops().len(),
+            before,
+            "swap classification must not write: {:?}",
+            fs.mock_ops()
         );
     }
 }

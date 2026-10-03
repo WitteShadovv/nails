@@ -46,10 +46,6 @@ impl Filesystem for MockFilesystem {
         self.discover_nails_mounts_impl(hidden_root)
     }
 
-    fn swap_is_enabled(&self) -> Result<bool> {
-        self.swap_is_enabled_impl()
-    }
-
     fn bind_mount(&self, source: &Path, target: &Path) -> Result<()> {
         self.bind_mount_impl(source, target)
     }

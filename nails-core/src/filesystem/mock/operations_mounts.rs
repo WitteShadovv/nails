@@ -244,13 +244,6 @@ impl MockFilesystem {
             .cloned()
     }
 
-    pub(super) fn swap_is_enabled_impl(&self) -> Result<bool> {
-        Ok(*self
-            .swap_enabled
-            .lock()
-            .expect("MockFilesystem mutex poisoned"))
-    }
-
     pub(super) fn mount_tmpfs_impl(&self, target: &Path, size: &str) -> Result<()> {
         let test_dir = crate::config::EphemeralOverlayDir {
             path: target.to_path_buf(),

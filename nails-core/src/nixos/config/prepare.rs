@@ -204,13 +204,23 @@ pub fn ensure_hidden_hardware_configuration<F: Filesystem>(
     if !base_exists && !hardware_exists {
         // Fresh hidden store: seed the base from the decoy hardware config, then
         // install the wrapper.
-        let seed = fs.read_file_content(base_hardware_config).map_err(|e| {
+        let raw_seed = fs.read_file_content(base_hardware_config).map_err(|e| {
             NailsError::NixOSError(format!(
                 "Failed to bootstrap hidden hardware-configuration.nix from {}: {}",
                 base_hardware_config.display(),
                 e
             ))
         })?;
+        // Never carry the decoy's swap or hibernation into the hidden system: a
+        // switch-to-configuration would re-enable a disk swap the operator turned
+        // off, paging hidden-session memory to the decoy disk.
+        let (seed, neutralized) = neutralize_swap_in_hardware_config(&raw_seed);
+        if neutralized {
+            tracing::warn!(
+                "Stripped swapDevices/resumeDevice from the seeded hidden hardware configuration \
+                 to keep the hidden system free of disk swap and hibernation"
+            );
+        }
         fs.write_file_content(&hidden_base, &seed).map_err(|e| {
             NailsError::NixOSError(format!(
                 "Failed to write hidden hardware-configuration.base.nix at {}: {}",
@@ -257,6 +267,77 @@ pub fn ensure_hidden_hardware_configuration<F: Filesystem>(
     })?;
 
     Ok(())
+}
+
+/// Comment out any active `swapDevices` definition and `resumeDevice` line in a
+/// `hardware-configuration.nix`, returning the rewritten text and whether
+/// anything was changed.
+///
+/// This works at the line level rather than parsing Nix: it comments the
+/// `swapDevices` assignment (single- or multi-line) and any `resumeDevice` /
+/// `boot.resumeDevice` line. An already-empty `swapDevices = [ ];` is left
+/// untouched so the common NixOS default does not trigger a spurious warning.
+/// Commenting is conservative: valid Nix stays valid, and the hidden system
+/// simply inherits no swap or hibernation from the decoy.
+fn neutralize_swap_in_hardware_config(content: &str) -> (String, bool) {
+    let mut out = String::with_capacity(content.len() + 32);
+    let mut changed = false;
+    let mut in_swap_block = false;
+
+    for line in content.lines() {
+        if in_swap_block {
+            out.push_str("# ");
+            out.push_str(line);
+            out.push('\n');
+            changed = true;
+            if line.contains(']') {
+                in_swap_block = false;
+            }
+            continue;
+        }
+
+        let trimmed = line.trim_start();
+
+        if trimmed.starts_with("swapDevices") {
+            let opens = line.contains('[');
+            let closes = line.contains(']');
+            // `swapDevices = [ ];` with nothing between the brackets is already
+            // empty; leave it so the NixOS default does not warn.
+            if opens
+                && closes
+                && let (Some(open), Some(close)) = (line.find('['), line.rfind(']'))
+                && close > open
+                && line[open + 1..close].trim().is_empty()
+            {
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            }
+            out.push_str("# ");
+            out.push_str(line);
+            out.push('\n');
+            changed = true;
+            // Multi-line definition (`swapDevices =` then the list on later
+            // lines): keep commenting until the closing bracket.
+            if !closes {
+                in_swap_block = true;
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("resumeDevice") || trimmed.starts_with("boot.resumeDevice") {
+            out.push_str("# ");
+            out.push_str(line);
+            out.push('\n');
+            changed = true;
+            continue;
+        }
+
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    (out, changed)
 }
 
 /// Stage the complete hidden NixOS config before pre-flight checks run.
@@ -341,4 +422,65 @@ pub fn stage_hidden_config_symlink<F: Filesystem>(fs: &F, hidden_path: &Path) ->
         })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod swap_neutralize_tests {
+    use super::neutralize_swap_in_hardware_config;
+
+    #[test]
+    fn single_line_swap_devices_is_commented() {
+        let input = "{\n  swapDevices = [ { device = \"/dev/sda2\"; } ];\n}\n";
+        let (out, changed) = neutralize_swap_in_hardware_config(input);
+        assert!(changed);
+        assert!(out.contains("# "), "{out}");
+        for line in out.lines() {
+            if line.contains("/dev/sda2") {
+                assert!(line.trim_start().starts_with('#'), "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn multi_line_swap_devices_is_fully_commented() {
+        let input = "{\n  swapDevices =\n    [ { device = \"/dev/sda2\"; }\n      { device = \"/dev/sdb2\"; }\n    ];\n}\n";
+        let (out, changed) = neutralize_swap_in_hardware_config(input);
+        assert!(changed);
+        for line in out.lines() {
+            if line.contains("/dev/sd") || line.trim_start().starts_with("];") {
+                assert!(
+                    line.trim_start().starts_with('#'),
+                    "line not commented: {line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_swap_devices_is_left_untouched() {
+        let input = "{\n  swapDevices = [ ];\n}\n";
+        let (out, changed) = neutralize_swap_in_hardware_config(input);
+        assert!(!changed);
+        assert!(out.contains("swapDevices = [ ];"));
+    }
+
+    #[test]
+    fn resume_device_is_commented() {
+        let input = "{\n  boot.resumeDevice = \"/dev/sda2\";\n}\n";
+        let (out, changed) = neutralize_swap_in_hardware_config(input);
+        assert!(changed);
+        for line in out.lines() {
+            if line.contains("resumeDevice") {
+                assert!(line.trim_start().starts_with('#'), "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn config_without_swap_is_unchanged() {
+        let input = "{\n  imports = [ ./hardware.nix ];\n}\n";
+        let (out, changed) = neutralize_swap_in_hardware_config(input);
+        assert!(!changed);
+        assert_eq!(out, input);
+    }
 }

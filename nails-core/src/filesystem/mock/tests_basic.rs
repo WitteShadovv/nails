@@ -7,17 +7,14 @@ use std::path::Path;
 fn test_mock_filesystem_new_starts_empty() {
     let fs = MockFilesystem::new();
     assert!(fs.get_mounted_paths().is_empty());
-    assert!(!fs.swap_is_enabled().unwrap());
 }
 
 #[test]
 fn test_mock_filesystem_reset_clears_state() {
     let fs = MockFilesystem::new();
     fs.mock_set_mounted(Path::new("/home"), true);
-    fs.mock_set_swap_enabled(true);
     fs.reset();
     assert!(fs.get_mounted_paths().is_empty());
-    assert!(!fs.swap_is_enabled().unwrap());
 }
 
 #[test]
@@ -45,15 +42,18 @@ fn test_mock_set_mounted_can_unmount() {
 }
 
 #[test]
-fn test_mock_filesystem_swap_is_disabled_by_default() {
+fn test_mock_set_swap_enabled_drives_classifier() {
+    use crate::preflight::{SwapSeverity, classify_swap};
+
     let fs = MockFilesystem::new();
-    assert!(!fs.swap_is_enabled().unwrap());
+    // No /proc/swaps seeded: nothing is active.
+    assert_eq!(classify_swap(&fs).severity, SwapSeverity::Pass);
 
     fs.mock_set_swap_enabled(true);
-    assert!(fs.swap_is_enabled().unwrap());
+    assert_eq!(classify_swap(&fs).severity, SwapSeverity::Fail);
 
     fs.mock_set_swap_enabled(false);
-    assert!(!fs.swap_is_enabled().unwrap());
+    assert_eq!(classify_swap(&fs).severity, SwapSeverity::Pass);
 }
 
 #[test]

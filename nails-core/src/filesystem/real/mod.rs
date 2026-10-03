@@ -102,10 +102,6 @@ impl Filesystem for RealFilesystem {
         crate::filesystem::NailsMounts::discover(hidden_root)
     }
 
-    fn swap_is_enabled(&self) -> Result<bool> {
-        system_ops::swap_is_enabled()
-    }
-
     fn path_exists(&self, path: &Path) -> Result<bool> {
         file_ops::path_exists(path)
     }
