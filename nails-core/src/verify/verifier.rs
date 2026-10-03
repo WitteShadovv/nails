@@ -3,19 +3,54 @@
 use super::types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
 use crate::artifacts::{self, ArtifactKind, ArtifactScope, ArtifactSeverity};
 use crate::config::Config;
+use crate::filesystem::ProcessMatch;
 use crate::state::StateFile;
 use crate::{Filesystem, Result};
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 /// `/sys/block`, enumerated for open dm-crypt mappers and loop devices.
 const SYS_BLOCK_DIR: &str = "/sys/block";
 
-/// Kernel mount table, read to find the device backing the hidden volume.
+/// Kernel mount table, read to find the device backing the hidden volume and to
+/// enumerate overlay mounts.
 const SELF_MOUNTINFO: &str = "/proc/self/mountinfo";
+
+/// The system account database, parsed to discover every real user's home so the
+/// history scan covers each one rather than a hardcoded `/root` and a
+/// non-existent `/home` file.
+const PASSWD_FILE: &str = "/etc/passwd";
+
+/// Smallest uid treated as a real (non-system) login account on the hosts NAILS
+/// targets. Combined with a login shell, this selects the humans whose homes the
+/// deep scan should cover.
+const FIRST_LOGIN_UID: u32 = 1000;
 
 /// Base-OS trees whose writable, non-overlay presence on the decoy block device
 /// leaks a hidden session's package and `/usr` writes. `/` is checked separately.
 const OS_TREE_MOUNTS: &[&str] = &["/usr", "/bin", "/sbin", "/lib", "/lib64"];
+
+/// Per-home relative paths whose contents are searched for a reference to the
+/// configured hidden volume root.
+const DESKTOP_RECENT_FILES: &[&str] = &[
+    ".local/share/recently-used.xbel",
+    ".config/VeraCrypt/History.xml",
+    ".config/VeraCrypt/Favorite Volumes.xml",
+];
+
+/// Shell history files, relative to a home, searched for NAILS commands.
+const HISTORY_FILES: &[&str] = &[".bash_history", ".zsh_history"];
+
+/// Where a verification run is pointed: the live host, or an offline image.
+#[derive(Debug, Clone)]
+enum VerifyContext {
+    /// Scanning the running host. Live checks (processes, mounts, block devices,
+    /// platform scanners) apply.
+    Host,
+    /// Scanning a read-only mounted decoy image or partition rooted at this path.
+    /// Every filesystem path is rebased under it, and live checks are skipped.
+    Offline { root: PathBuf },
+}
 
 /// Forensic validation verifier
 ///
@@ -26,6 +61,7 @@ pub struct Verifier<F: Filesystem> {
     config: Option<Config>,
     state: Option<StateFile>,
     state_file_status: StateFileStatus,
+    context: VerifyContext,
 }
 
 impl<F: Filesystem> Verifier<F> {
@@ -36,6 +72,7 @@ impl<F: Filesystem> Verifier<F> {
             config: None,
             state: None,
             state_file_status: StateFileStatus::NotChecked,
+            context: VerifyContext::Host,
         }
     }
 
@@ -51,7 +88,47 @@ impl<F: Filesystem> Verifier<F> {
             config: Some(config),
             state,
             state_file_status,
+            context: VerifyContext::Host,
         }
+    }
+
+    /// Point this verifier at an offline image mounted read-only at `root`.
+    ///
+    /// Every filesystem path the verifier resolves is rebased under `root`, and
+    /// the live-only checks (running processes, the kernel mount table, open
+    /// block devices and the host platform scanners) are skipped, because they
+    /// describe the machine running `verify`, not the image under inspection.
+    pub fn offline_under(mut self, root: PathBuf) -> Self {
+        self.context = VerifyContext::Offline { root };
+        self
+    }
+
+    /// Whether this run is scanning an offline image rather than the live host.
+    fn is_offline(&self) -> bool {
+        matches!(self.context, VerifyContext::Offline { .. })
+    }
+
+    /// Rebase an absolute path under the offline root, if any.
+    ///
+    /// On the live host this returns `path` unchanged. For an offline image at
+    /// `/mnt/decoy`, `/etc/passwd` becomes `/mnt/decoy/etc/passwd`, so the same
+    /// checks read the image instead of the running system.
+    fn rebase(&self, path: &Path) -> PathBuf {
+        match &self.context {
+            VerifyContext::Host => path.to_path_buf(),
+            VerifyContext::Offline { root } => {
+                let relative = path.strip_prefix("/").unwrap_or(path);
+                root.join(relative)
+            }
+        }
+    }
+
+    /// The hidden volume root from config, when configured and non-empty.
+    fn hidden_root(&self) -> Option<&Path> {
+        self.config
+            .as_ref()
+            .map(|config| config.hidden_volume_root.as_path())
+            .filter(|root| !root.as_os_str().is_empty())
     }
 
     /// Run the verification process
@@ -66,40 +143,57 @@ impl<F: Filesystem> Verifier<F> {
     pub fn run(&self, deep: bool) -> Result<VerifyResult> {
         let mut findings = Vec::new();
         let mut config_paths_checked: usize = 0;
+        let mut checks_run: usize = 0;
 
-        // 1. Check for overlay mounts
-        findings.extend(self.check_overlay_mounts()?);
+        let offline = self.is_offline();
 
-        // 1b. While active, flag a writable non-overlay decoy OS tree.
-        findings.extend(self.check_writable_decoy_mounts()?);
+        // Live-only checks: these describe the running machine, not an image.
+        if !offline {
+            // 1. Leftover overlays whose upper layer sits under the hidden root.
+            findings.extend(self.check_overlay_upperdirs()?);
+            checks_run += 1;
 
-        // 2. Check for artifact files
+            // 1b. While active, flag a writable non-overlay decoy OS tree.
+            findings.extend(self.check_writable_decoy_mounts()?);
+            checks_run += 1;
+        }
+
+        // 2. Check for artifact files from the shared registry.
         findings.extend(self.check_artifact_files()?);
+        checks_run += 1;
 
-        // 3. Check for nails processes
-        findings.extend(self.check_nails_processes()?);
+        if !offline {
+            // 3. Check for nails processes (honest, identity-based match).
+            findings.extend(self.check_nails_processes()?);
+            checks_run += 1;
 
-        // 4. Check memory status
-        findings.extend(self.check_memory_status()?);
+            // 4. Check memory status (swap warnings).
+            findings.extend(self.check_memory_status()?);
+            checks_run += 1;
 
-        // 4b. Name-independent open crypt mapper / loop device detection
-        findings.extend(self.check_block_devices()?);
+            // 4b. Name-independent open crypt mapper / loop device detection.
+            findings.extend(self.check_block_devices()?);
+            checks_run += 1;
+        }
 
-        // 5. Config-aware checks (if config is available)
-        if let Some(ref config) = self.config {
+        // 5. Config-aware checks run against live locations only.
+        if !offline && let Some(ref config) = self.config {
             let (config_findings, paths_checked) = self.check_config_paths(config)?;
             findings.extend(config_findings);
             config_paths_checked = paths_checked;
+            checks_run += 1;
         }
 
-        // 6. State-aware checks (if state is available)
-        if let Some(ref state) = self.state {
+        // 6. State-aware checks (if state is available).
+        if !offline && let Some(ref state) = self.state {
             findings.extend(self.check_state(state)?);
+            checks_run += 1;
         }
 
-        // 7. Deep scan if requested
+        // 7. Deep scan if requested (homes, histories, temp directories).
         if deep {
             findings.extend(self.deep_scan()?);
+            checks_run += 1;
         }
 
         // Determine overall status
@@ -117,41 +211,105 @@ impl<F: Filesystem> Verifier<F> {
             ScanDepth::Standard
         };
 
-        if self.config.is_some() {
-            Ok(VerifyResult::new_config_aware(
+        let areas_not_checked = self.areas_not_checked(deep);
+
+        let mut result = if self.config.is_some() {
+            VerifyResult::new_config_aware(
                 status,
                 findings,
                 scan_depth,
                 config_paths_checked,
                 self.state_file_status.clone(),
-            ))
+            )
         } else {
-            Ok(VerifyResult::new(status, findings, scan_depth))
-        }
+            VerifyResult::new(status, findings, scan_depth)
+        };
+        result.checks_run = checks_run;
+        result.areas_not_checked = areas_not_checked;
+        Ok(result)
     }
 
-    /// Check for active overlay mounts
-    fn check_overlay_mounts(&self) -> Result<Vec<Finding>> {
+    /// The honest list of areas this run did not inspect, so the headline can say
+    /// what a clean result does *not* prove.
+    fn areas_not_checked(&self, deep: bool) -> Vec<String> {
+        let mut areas = Vec::new();
+        areas.push("the systemd journal (not searched by verify)".to_string());
+        if !deep {
+            areas.push(
+                "shell histories and temp directories (/tmp, /var/tmp); re-run with --deep"
+                    .to_string(),
+            );
+        }
+        if self.is_offline() {
+            areas.push(
+                "live processes, mounts and open block devices (offline image scan)".to_string(),
+            );
+        }
+        areas.push("renamed or unknown artifacts not in the registry".to_string());
+        areas.push("a byte-for-byte comparison of the decoy disk against a baseline".to_string());
+        areas
+    }
+
+    /// Flag every overlay mount whose `upperdir` sits under the configured hidden
+    /// volume root, at any mount point.
+    ///
+    /// Reads `/proc/self/mountinfo` rather than probing a fixed list of mount
+    /// points, so a leftover overlay at `/var`, `/nix`, `/srv` or anywhere else
+    /// is caught, not only `/home`, `/etc` and `/root`. Attribution is by the
+    /// overlay's upper layer: an overlay whose writable layer lives on the hidden
+    /// volume is unambiguously one NAILS mounted, regardless of the mount point's
+    /// name. Without a configured hidden root there is nothing to attribute, so
+    /// this reports nothing (the config-path check still covers configured
+    /// targets).
+    fn check_overlay_upperdirs(&self) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        // Check common mount points for overlay filesystems
-        let mount_points = vec![
-            std::path::Path::new("/home"),
-            std::path::Path::new("/etc"),
-            std::path::Path::new("/root"),
-        ];
+        let Some(hidden_root) = self.hidden_root() else {
+            return Ok(findings);
+        };
 
-        for mount_point in mount_points {
-            if self.filesystem.is_overlay_mounted(mount_point)? {
-                findings.push(
-                    Finding::new(
-                        Severity::Critical,
-                        "mount",
-                        format!("Overlay mount found at {}", mount_point.display()),
-                    )
-                    .with_fix_guidance("Run 'nails deactivate' to unmount overlays"),
-                );
+        let Ok(mountinfo) = self.filesystem.read_file_content(Path::new(SELF_MOUNTINFO)) else {
+            return Ok(findings);
+        };
+
+        for line in mountinfo.lines() {
+            let Some((pre, post)) = line.split_once(" - ") else {
+                continue;
+            };
+            // Pre-separator fields: id parent maj:min root mountpoint options ...
+            let Some(mount_point) = pre.split(' ').nth(4) else {
+                continue;
+            };
+            // Post-separator fields: fstype source super_opts.
+            let post_fields: Vec<&str> = post.split(' ').collect();
+            let Some(fstype) = post_fields.first() else {
+                continue;
+            };
+            if *fstype != "overlay" {
+                continue;
             }
+            let Some(super_opts) = post_fields.get(2) else {
+                continue;
+            };
+            let Some(upperdir) = super_opts
+                .split(',')
+                .find_map(|opt| opt.strip_prefix("upperdir="))
+            else {
+                continue;
+            };
+            if !Path::new(upperdir).starts_with(hidden_root) {
+                continue;
+            }
+            findings.push(
+                Finding::new(
+                    Severity::Critical,
+                    "mount",
+                    format!(
+                        "Leftover overlay at {mount_point} (upper layer {upperdir} on the hidden volume)"
+                    ),
+                )
+                .with_fix_guidance("Run 'nails deactivate' to unmount overlays"),
+            );
         }
 
         Ok(findings)
@@ -183,11 +341,7 @@ impl<F: Filesystem> Verifier<F> {
             return Ok(findings);
         };
 
-        let hidden_root = self
-            .config
-            .as_ref()
-            .map(|config| config.hidden_volume_root.clone())
-            .filter(|root| !root.as_os_str().is_empty());
+        let hidden_root = self.hidden_root();
 
         for line in mountinfo.lines() {
             let Some((pre, post)) = line.split_once(" - ") else {
@@ -213,7 +367,7 @@ impl<F: Filesystem> Verifier<F> {
                 continue;
             }
             // A tree that lives under the hidden volume is supposed to be writable.
-            if let Some(ref root) = hidden_root
+            if let Some(root) = hidden_root
                 && mount_point.starts_with(root)
             {
                 continue;
@@ -248,28 +402,34 @@ impl<F: Filesystem> Verifier<F> {
     /// Iterates [`artifacts::ARTIFACTS`] and flags every entry that resolves to a
     /// single filesystem path and still exists. Absolute paths (runtime and
     /// decoy traces) are always checked; hidden-root paths are checked against
-    /// the configured hidden volume root when a config is available. Content
-    /// markers and bare basenames do not map to one path — they are covered by
-    /// the base-config pre-flight check and the disk-image harness instead.
+    /// the configured hidden volume root when a config is available. In an
+    /// offline image scan the hidden-root paths are skipped — the hidden volume
+    /// is not part of the decoy image, and finding its own files there is not the
+    /// point — while decoy and runtime paths are rebased under the image root.
+    /// Content markers and bare basenames do not map to one path; they are
+    /// covered by the base-config pre-flight check and the disk-image harness.
     fn check_artifact_files(&self) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
-        let hidden_root = self
-            .config
-            .as_ref()
-            .map(|config| config.hidden_volume_root.as_path());
+        let hidden_root = self.hidden_root();
+        let offline = self.is_offline();
 
         for artifact in artifacts::ARTIFACTS {
             let resolved = match artifact.kind {
                 ArtifactKind::HiddenRootPath => {
-                    hidden_root.and_then(|root| artifact.resolve_path(root))
+                    if offline {
+                        None
+                    } else {
+                        hidden_root.and_then(|root| artifact.resolve_path(root))
+                    }
                 }
                 _ => artifact.resolve_path(Path::new("")),
             };
             let Some(path) = resolved else {
                 continue;
             };
+            let probe = self.rebase(&path);
 
-            if self.filesystem.path_exists(&path)? {
+            if self.filesystem.path_exists(&probe)? {
                 findings.push(
                     Finding::new(
                         map_artifact_severity(artifact.severity),
@@ -360,13 +520,9 @@ impl<F: Filesystem> Verifier<F> {
     /// configured hidden volume root, used to tell the hidden volume's own
     /// backing device apart from any other open crypt mapper or loop device.
     fn hidden_volume_backing_sources(&self) -> Vec<String> {
-        let Some(config) = self.config.as_ref() else {
+        let Some(root) = self.hidden_root() else {
             return Vec::new();
         };
-        let root = config.hidden_volume_root.as_path();
-        if root.as_os_str().is_empty() {
-            return Vec::new();
-        }
 
         let Ok(mountinfo) = self.filesystem.read_file_content(Path::new(SELF_MOUNTINFO)) else {
             return Vec::new();
@@ -393,20 +549,34 @@ impl<F: Filesystem> Verifier<F> {
         sources
     }
 
-    /// Check for nails-related processes
+    /// Check for nails-related processes, distinguishing the real binary from an
+    /// unrelated command that merely mentions "nails".
+    ///
+    /// A strong match (the process runs the NAILS binary, or was invoked as
+    /// `nails`) is Critical: a hidden session's worker is still live. A weak
+    /// match (any other command line that contains "nails", such as an editor on
+    /// a config file, `grep`, `sed` or `tee`) is only Info, so routine use of the
+    /// tool's name never produces a critical false positive.
     fn check_nails_processes(&self) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        // Check if nails processes are running
-        if self.filesystem.nails_process_running()? {
-            findings.push(
-                Finding::new(
-                    Severity::Critical,
+        for ProcessMatch { strong, detail, .. } in self.filesystem.nails_process_matches()? {
+            if strong {
+                findings.push(
+                    Finding::new(
+                        Severity::Critical,
+                        "process",
+                        format!("NAILS process is running: {detail}"),
+                    )
+                    .with_fix_guidance("Stop all nails processes before deactivation"),
+                );
+            } else {
+                findings.push(Finding::new(
+                    Severity::Info,
                     "process",
-                    "NAILS-related process is currently running",
-                )
-                .with_fix_guidance("Stop all nails processes before deactivation"),
-            );
+                    format!("A process references NAILS on its command line: {detail}"),
+                ));
+            }
         }
 
         Ok(findings)
@@ -438,22 +608,20 @@ impl<F: Filesystem> Verifier<F> {
         Ok(findings)
     }
 
-    /// Perform deep scan of temporary directories and logs
+    /// Perform deep scan of temporary directories, user homes and shell history.
     fn deep_scan(&self) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        // Deep scan paths - recursively scan for any nails-related files
-        let deep_scan_paths = vec!["/tmp", "/var/tmp", "/var/log"];
-
+        // 1. Temporary and log directories: recursively scan for nails-named
+        //    files, tolerating directories we cannot enter.
+        let deep_scan_paths = ["/tmp", "/var/tmp", "/var/log"];
         for base_path in deep_scan_paths {
-            let path_buf = std::path::PathBuf::from(base_path);
+            let path_buf = self.rebase(Path::new(base_path));
             if self.filesystem.path_exists(&path_buf)? && self.filesystem.is_directory(&path_buf)? {
-                // Recursively scan for files matching "nails" pattern
-                let matching_files = self
+                let scan = self
                     .filesystem
-                    .find_files_with_pattern(&path_buf, "nails")?;
-
-                for file in matching_files {
+                    .scan_files_with_pattern(&path_buf, "nails")?;
+                for file in scan.matches {
                     findings.push(
                         Finding::new(
                             Severity::Warn,
@@ -463,59 +631,154 @@ impl<F: Filesystem> Verifier<F> {
                         .with_fix_guidance(format!("Delete file: rm {}", file.display())),
                     );
                 }
+                for unreadable in scan.unreadable {
+                    findings.push(Finding::new(
+                        Severity::Info,
+                        "file",
+                        format!(
+                            "Directory not checked (permission denied): {}",
+                            unreadable.display()
+                        ),
+                    ));
+                }
             }
         }
 
-        // Check history files for nails commands
-        let history_files = vec![
-            "/root/.bash_history",
-            "/root/.zsh_history",
-            "/home/.bash_history",
-            "/home/.zsh_history",
-        ];
+        // 2. Per-home history and desktop recency files.
+        for home in self.user_homes() {
+            findings.extend(self.scan_home(&home)?);
+        }
 
-        for history_file in history_files {
-            let path_buf = std::path::PathBuf::from(history_file);
-            if self.filesystem.path_exists(&path_buf)? {
-                // Read file contents and check for nails commands
-                match self.filesystem.read_file_content(&path_buf) {
-                    Ok(content) => {
-                        if content.to_lowercase().contains("nails") {
-                            findings.push(
-                                Finding::new(
-                                    Severity::Warn,
-                                    "file",
-                                    format!(
-                                        "Shell history contains nails commands: {}",
-                                        history_file
-                                    ),
-                                )
-                                .with_fix_guidance(format!(
-                                    "Edit history to remove nails commands: nano {}",
-                                    history_file
-                                )),
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        // File exists but cannot be read (permissions or binary file)
-                        findings.push(
-                            Finding::new(
-                                Severity::Info,
-                                "file",
-                                format!(
-                                    "History file exists (cannot read contents): {}",
-                                    history_file
-                                ),
-                            )
-                            .with_fix_guidance("Review history manually if needed"),
-                        );
-                    }
+        Ok(findings)
+    }
+
+    /// Scan one user's home for shell history containing nails commands and for
+    /// desktop recency files that name the configured hidden root.
+    fn scan_home(&self, home: &Path) -> Result<Vec<Finding>> {
+        let mut findings = Vec::new();
+
+        for history in HISTORY_FILES {
+            let path = home.join(history);
+            let probe = self.rebase(&path);
+            if !self.filesystem.path_exists(&probe)? {
+                continue;
+            }
+            match self.filesystem.read_file_content(&probe) {
+                Ok(content) if content.to_lowercase().contains("nails") => {
+                    findings.push(
+                        Finding::new(
+                            Severity::Warn,
+                            "file",
+                            format!("Shell history contains nails commands: {}", path.display()),
+                        )
+                        .with_fix_guidance(format!(
+                            "Edit history to remove nails commands: nano {}",
+                            path.display()
+                        )),
+                    );
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    findings.push(
+                        Finding::new(
+                            Severity::Info,
+                            "file",
+                            format!(
+                                "History file exists (cannot read contents): {}",
+                                path.display()
+                            ),
+                        )
+                        .with_fix_guidance("Review history manually if needed"),
+                    );
+                }
+            }
+        }
+
+        // Desktop recency files only matter when they name the hidden root, so
+        // there is nothing to look for without a configured hidden root.
+        if let Some(hidden_root) = self.hidden_root() {
+            let needle = hidden_root.to_string_lossy().to_string();
+            for recent in DESKTOP_RECENT_FILES {
+                let path = home.join(recent);
+                let probe = self.rebase(&path);
+                if !self.filesystem.path_exists(&probe)? {
+                    continue;
+                }
+                if let Ok(content) = self.filesystem.read_file_content(&probe)
+                    && content.contains(&needle)
+                {
+                    findings.push(
+                        Finding::new(
+                            Severity::Warn,
+                            "file",
+                            format!(
+                                "Desktop recency file references the hidden volume root: {}",
+                                path.display()
+                            ),
+                        )
+                        .with_fix_guidance(format!(
+                            "Remove the entry that names {} from {}",
+                            needle,
+                            path.display()
+                        )),
+                    );
                 }
             }
         }
 
         Ok(findings)
+    }
+
+    /// The home directories to scan: root, every real login account from
+    /// `/etc/passwd`, and `$SUDO_USER` when verify was run under sudo.
+    ///
+    /// Parsing `/etc/passwd` directly (rather than resolving a single user) is
+    /// what makes the scan cover *every* user's history instead of the old
+    /// hardcoded `/root` plus a bare `/home` history file that never exists. In an
+    /// offline image scan the file is read from under the image root.
+    fn user_homes(&self) -> Vec<PathBuf> {
+        let mut homes: BTreeSet<PathBuf> = BTreeSet::new();
+        // Root's home is always present and always worth scanning.
+        homes.insert(PathBuf::from("/root"));
+
+        let passwd_path = self.rebase(Path::new(PASSWD_FILE));
+        if let Ok(content) = self.filesystem.read_file_content(&passwd_path) {
+            for line in content.lines() {
+                let fields: Vec<&str> = line.split(':').collect();
+                if fields.len() < 7 {
+                    continue;
+                }
+                let uid: u32 = match fields[2].parse() {
+                    Ok(uid) => uid,
+                    Err(_) => continue,
+                };
+                let home = fields[5];
+                let shell = fields[6];
+                let has_login_shell =
+                    !shell.is_empty() && !shell.ends_with("/nologin") && !shell.ends_with("/false");
+                let is_real_user = uid == 0 || (uid >= FIRST_LOGIN_UID && has_login_shell);
+                if is_real_user && !home.is_empty() {
+                    homes.insert(PathBuf::from(home));
+                }
+            }
+        }
+
+        // Prefer the invoking user's real home when running under sudo on the
+        // live host; an offline scan has no meaningful live environment.
+        if !self.is_offline()
+            && let Ok(sudo_user) = std::env::var("SUDO_USER")
+            && !sudo_user.is_empty()
+            && let Ok(content) = self.filesystem.read_file_content(Path::new(PASSWD_FILE))
+        {
+            for line in content.lines() {
+                let fields: Vec<&str> = line.split(':').collect();
+                if fields.len() >= 7 && fields[0] == sudo_user && !fields[5].is_empty() {
+                    homes.insert(PathBuf::from(fields[5]));
+                }
+            }
+        }
+
+        homes.into_iter().collect()
     }
 
     /// Check config-specific paths for residual artifacts
@@ -525,6 +788,16 @@ impl<F: Filesystem> Verifier<F> {
     fn check_config_paths(&self, config: &Config) -> Result<(Vec<Finding>, usize)> {
         let mut findings = Vec::new();
         let mut paths_checked: usize = 0;
+
+        // When verify runs from the hidden environment with nothing activated
+        // (state reads Inactive), the hidden volume being mounted and the state
+        // file existing are the *expected* situation, not residue. Flagging them
+        // would make every clean run warn about itself, so they are suppressed
+        // and an Inactive assertion is recorded instead.
+        let host_context_inactive = self
+            .state
+            .as_ref()
+            .is_some_and(|state| matches!(state.state, crate::state::SystemState::Inactive));
 
         // 1. Check config overlay mount points for residual mounts
         for overlay in &config.overlays {
@@ -548,7 +821,7 @@ impl<F: Filesystem> Verifier<F> {
         // 2. Check hidden volume path for accessibility
         let hidden_vol = &config.hidden_volume_root;
         paths_checked += 1;
-        if self.filesystem.path_exists(hidden_vol)? {
+        if !host_context_inactive && self.filesystem.path_exists(hidden_vol)? {
             findings.push(
                 Finding::new(
                     Severity::Warn,
@@ -596,7 +869,7 @@ impl<F: Filesystem> Verifier<F> {
         // 4. Check state file location
         let state_path = &config.state_file_path;
         paths_checked += 1;
-        if self.filesystem.path_exists(state_path)? {
+        if !host_context_inactive && self.filesystem.path_exists(state_path)? {
             findings.push(
                 Finding::new(
                     Severity::Warn,
@@ -608,6 +881,15 @@ impl<F: Filesystem> Verifier<F> {
                 )
                 .with_fix_guidance("State file should only exist on hidden volume when active"),
             );
+        }
+
+        if host_context_inactive {
+            findings.push(Finding::new(
+                Severity::Info,
+                "context",
+                "State reads Inactive; findings about the hidden volume itself are suppressed \
+                 (its presence is expected while mounted)",
+            ));
         }
 
         Ok((findings, paths_checked))

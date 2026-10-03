@@ -168,6 +168,10 @@ impl Filesystem for RealFilesystem {
         system_ops::nails_process_running()
     }
 
+    fn nails_process_matches(&self) -> Result<Vec<crate::filesystem::ProcessMatch>> {
+        system_ops::nails_process_matches()
+    }
+
     fn read_file_content(&self, path: &Path) -> Result<String> {
         file_ops::read_file_content(path)
     }
@@ -188,6 +192,14 @@ impl Filesystem for RealFilesystem {
 
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
         file_ops::find_files_with_pattern(self, dir, pattern)
+    }
+
+    fn scan_files_with_pattern(
+        &self,
+        dir: &Path,
+        pattern: &str,
+    ) -> Result<crate::filesystem::PatternScan> {
+        file_ops::scan_files_with_pattern(dir, pattern)
     }
 
     fn mount_tmpfs(&self, target: &Path, size: &str) -> Result<()> {

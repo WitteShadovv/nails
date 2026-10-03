@@ -73,7 +73,12 @@ pub fn execute(
         }
     };
 
-    let verifier = Verifier::with_config(filesystem, config, state, state_file_status);
+    let mut verifier = Verifier::with_config(filesystem, config, state, state_file_status);
+    if args.offline
+        && let Some(ref root) = args.root
+    {
+        verifier = verifier.offline_under(root.clone());
+    }
 
     let result = match verifier.run(args.deep) {
         Ok(result) => result,

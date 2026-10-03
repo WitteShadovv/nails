@@ -122,12 +122,24 @@ impl Filesystem for MockFilesystem {
         self.nails_process_running_impl()
     }
 
+    fn nails_process_matches(&self) -> Result<Vec<super::super::ProcessMatch>> {
+        self.nails_process_matches_impl()
+    }
+
     fn read_file_content(&self, path: &Path) -> Result<String> {
         self.read_file_content_impl(path)
     }
 
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
         self.find_files_with_pattern_impl(dir, pattern)
+    }
+
+    fn scan_files_with_pattern(
+        &self,
+        dir: &Path,
+        pattern: &str,
+    ) -> Result<super::super::PatternScan> {
+        self.scan_files_with_pattern_impl(dir, pattern)
     }
 
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {

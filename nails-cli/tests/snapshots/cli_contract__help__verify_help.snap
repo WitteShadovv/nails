@@ -20,11 +20,17 @@ Options:
       --deep
           Perform deep scan (slower, more thorough)
 
+      --offline
+          Scan a read-only mounted decoy image or partition instead of the live host. Requires `--root`; live checks (processes, mounts, block devices) are skipped and every path is read from under the image root
+
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
 
   -q, --quiet
           Print only errors and the final result
+
+      --root <MOUNT>
+          Root of the mounted decoy image to scan in `--offline` mode
 
       --color <WHEN>
           When to use colour

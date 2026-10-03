@@ -5,6 +5,31 @@ use super::types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, 
 use crate::MockFilesystem;
 use crate::filesystem::PathKind;
 
+/// A `/proc/self/mountinfo` line for an overlay at `mount_point` whose upper
+/// layer lives on the hidden volume `/mnt/hidden`, i.e. one NAILS mounted.
+#[cfg(test)]
+fn hidden_overlay_line(mount_point: &str) -> String {
+    format!(
+        "30 1 0:50 / {mount_point} rw,relatime - overlay overlay \
+         rw,lowerdir={mount_point},upperdir=/mnt/hidden/overlays/x/upper,\
+         workdir=/mnt/hidden/overlays/x/work\n"
+    )
+}
+
+/// A config-aware verifier (hidden root `/mnt/hidden`, no active state) over a
+/// crafted `/proc/self/mountinfo`, used to exercise the upperdir overlay scan.
+#[cfg(test)]
+fn overlay_verifier(mountinfo: &str) -> (MockFilesystem, Verifier<MockFilesystem>) {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/proc/self/mountinfo", mountinfo);
+    let config = crate::config::Config {
+        hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+        ..crate::config::Config::default()
+    };
+    let verifier = Verifier::with_config(fs.clone(), config, None, StateFileStatus::NotChecked);
+    (fs, verifier)
+}
+
 // ========================================================================
 // Data Structure Tests
 // ========================================================================
@@ -99,11 +124,9 @@ fn test_scan_depth_variants() {
 
 #[test]
 fn test_comprehensive_scan_with_all_check_types() {
-    let fs = MockFilesystem::new();
-    let verifier = Verifier::new(fs.clone());
+    let (fs, verifier) = overlay_verifier(&hidden_overlay_line("/home"));
 
     // Set up findings from all check types
-    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true); // mount
     fs.mock_set_path_exists("/run/nails", true); // file (runtime artifact)
     fs.mock_set_swap_enabled(true); // memory
     fs.mock_set_path_exists("/root/.bash_history", true); // deep scan
@@ -196,16 +219,12 @@ fn test_finding_without_fix_guidance_omits_field() {
 
 #[test]
 fn test_overlay_mount_detection() {
-    let fs = MockFilesystem::new();
-    let verifier = Verifier::new(fs.clone());
-
-    // Set up a mounted overlay
-    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true);
+    // An overlay at /home whose upper layer is on the hidden volume is flagged
+    // from the mount table, by upperdir, not from a fixed list of mount points.
+    let (_fs, verifier) = overlay_verifier(&hidden_overlay_line("/home"));
 
     let result = verifier.run(false).unwrap();
     assert_eq!(result.status, VerifyStatus::Critical);
-    // 1 mount + 1 RAM info warning = 2 total
-    assert_eq!(result.findings.len(), 2);
 
     let mount_finding = result
         .findings
@@ -215,6 +234,39 @@ fn test_overlay_mount_detection() {
     assert_eq!(mount_finding.severity, Severity::Critical);
     assert!(mount_finding.message.contains("/home"));
     assert!(mount_finding.fix_guidance.is_some());
+}
+
+#[test]
+fn test_overlay_leftover_at_var_is_detected() {
+    // The old three-path loop (/home, /etc, /root) would miss a leftover /var
+    // overlay; the upperdir scan catches it wherever it is mounted.
+    let (_fs, verifier) = overlay_verifier(&hidden_overlay_line("/var"));
+
+    let result = verifier.run(false).unwrap();
+    let mount_findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "mount")
+        .collect();
+    assert_eq!(mount_findings.len(), 1, "{:?}", result.findings);
+    assert_eq!(mount_findings[0].severity, Severity::Critical);
+    assert!(mount_findings[0].message.contains("/var"));
+}
+
+#[test]
+fn test_overlay_with_foreign_upperdir_is_not_flagged() {
+    // An overlay whose upper layer is not on the hidden volume is somebody
+    // else's overlay and must not be attributed to NAILS.
+    let (_fs, verifier) = overlay_verifier(
+        "30 1 0:50 / /var rw,relatime - overlay overlay \
+         rw,lowerdir=/var,upperdir=/opt/other/upper,workdir=/opt/other/work\n",
+    );
+    let result = verifier.run(false).unwrap();
+    assert!(
+        result.findings.iter().all(|f| f.category != "mount"),
+        "a foreign-upperdir overlay must not be flagged: {:?}",
+        result.findings
+    );
 }
 
 #[test]
@@ -323,12 +375,13 @@ fn test_deep_scan_finds_history_files() {
 
 #[test]
 fn test_multiple_critical_findings() {
-    let fs = MockFilesystem::new();
-    let verifier = Verifier::new(fs.clone());
-
-    // Set up multiple critical issues
-    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true);
-    fs.mock_set_overlay_mounted(std::path::Path::new("/etc"), true);
+    // Two hidden-volume overlays at different mount points.
+    let mountinfo = format!(
+        "{}{}",
+        hidden_overlay_line("/home"),
+        hidden_overlay_line("/etc")
+    );
+    let (_fs, verifier) = overlay_verifier(&mountinfo);
 
     let result = verifier.run(false).unwrap();
     assert_eq!(result.status, VerifyStatus::Critical);
@@ -343,11 +396,8 @@ fn test_multiple_critical_findings() {
 
 #[test]
 fn test_status_determination_priority() {
-    let fs = MockFilesystem::new();
-    let verifier = Verifier::new(fs.clone());
-
-    // Set up both critical and warning findings
-    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true); // Critical
+    // Set up both critical (overlay) and warning (runtime artifact) findings.
+    let (fs, verifier) = overlay_verifier(&hidden_overlay_line("/home"));
     fs.mock_set_path_exists("/run/nails", true); // Warning (runtime artifact)
 
     let result = verifier.run(false).unwrap();
@@ -381,10 +431,7 @@ fn test_ac9_overlay_mounted_critical_exit_1() {
     // AC: Given verify runs and finds artifacts
     // When overlay mounts exist
     // Then output "CRITICAL" with list, exit code 1
-    let fs = MockFilesystem::new();
-    let verifier = Verifier::new(fs.clone());
-
-    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true);
+    let (_fs, verifier) = overlay_verifier(&hidden_overlay_line("/home"));
 
     let result = verifier.run(false).unwrap();
 
@@ -490,12 +537,13 @@ fn test_ac9_json_output_valid() {
 #[test]
 fn test_ac9_multiple_findings_all_reported() {
     // AC: Test multiple findings all reported
-    let fs = MockFilesystem::new();
-    let verifier = Verifier::new(fs.clone());
-
-    // Set up multiple findings
-    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true);
-    fs.mock_set_overlay_mounted(std::path::Path::new("/etc"), true);
+    // Set up multiple findings: two hidden-volume overlays plus two artifacts.
+    let mountinfo = format!(
+        "{}{}",
+        hidden_overlay_line("/home"),
+        hidden_overlay_line("/etc")
+    );
+    let (fs, verifier) = overlay_verifier(&mountinfo);
     fs.mock_set_path_exists("/run/nails", true);
     fs.mock_set_path_exists("/mnt/nails-pivot", true);
 
@@ -711,29 +759,36 @@ fn test_history_file_exists_but_unreadable() {
 
 #[test]
 fn test_deep_scan_multiple_history_files_with_content() {
-    // Test multiple history files all containing nails commands
+    // History under root and under a real login account from /etc/passwd are both
+    // scanned; the old hardcoded bare-`/home` history file (which never exists) is
+    // gone, so a real user's home must be discovered from passwd.
     let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/passwd",
+        "root:x:0:0:root:/root:/bin/bash\n\
+         alice:x:1000:1000:Alice:/home/alice:/bin/bash\n\
+         daemon:x:2:2:daemon:/usr/sbin:/usr/sbin/nologin\n",
+    );
     let verifier = Verifier::new(fs.clone());
 
-    // Set up multiple history files with nails commands
     fs.mock_set_path_exists("/root/.bash_history", true);
     fs.mock_set_file_content("/root/.bash_history", "nails activate\nls\n");
 
     fs.mock_set_path_exists("/root/.zsh_history", true);
     fs.mock_set_file_content("/root/.zsh_history", "NAILS deactivate\ncd /home\n");
 
-    fs.mock_set_path_exists("/home/.bash_history", true);
-    fs.mock_set_file_content("/home/.bash_history", "nails status\n");
+    fs.mock_set_path_exists("/home/alice/.bash_history", true);
+    fs.mock_set_file_content("/home/alice/.bash_history", "nails status\n");
 
     let result = verifier.run(true).unwrap();
 
-    // Should find all three history files with nails commands
+    // Should find all three history files with nails commands.
     let history_findings: Vec<_> = result
         .findings
         .iter()
         .filter(|f| f.message.contains("Shell history contains nails commands"))
         .collect();
-    assert_eq!(history_findings.len(), 3);
+    assert_eq!(history_findings.len(), 3, "{:?}", history_findings);
 
     // All should be warnings with fix guidance
     for finding in history_findings {
@@ -786,14 +841,14 @@ fn test_deep_scan_all_temp_directories() {
 
 #[test]
 fn test_check_all_overlay_mount_points() {
-    // Test that all three mount points are checked
-    let fs = MockFilesystem::new();
-    let verifier = Verifier::new(fs.clone());
-
-    // Set up all three overlay mount points
-    fs.mock_set_overlay_mounted(std::path::Path::new("/home"), true);
-    fs.mock_set_overlay_mounted(std::path::Path::new("/etc"), true);
-    fs.mock_set_overlay_mounted(std::path::Path::new("/root"), true);
+    // Overlays at three mount points, all with upper layers on the hidden volume.
+    let mountinfo = format!(
+        "{}{}{}",
+        hidden_overlay_line("/home"),
+        hidden_overlay_line("/etc"),
+        hidden_overlay_line("/root"),
+    );
+    let (_fs, verifier) = overlay_verifier(&mountinfo);
 
     let result = verifier.run(false).unwrap();
 

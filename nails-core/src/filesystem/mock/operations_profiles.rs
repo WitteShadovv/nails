@@ -1,3 +1,4 @@
+use super::super::{PatternScan, ProcessMatch};
 use super::{MockFilesystem, MockOp};
 use crate::target_user::TargetUser;
 use crate::{NailsError, Result};
@@ -9,6 +10,49 @@ impl MockFilesystem {
             .nails_process_running
             .lock()
             .expect("MockFilesystem mutex poisoned"))
+    }
+
+    pub(super) fn nails_process_matches_impl(&self) -> Result<Vec<ProcessMatch>> {
+        if let Some(matches) = self
+            .nails_process_matches
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clone()
+        {
+            return Ok(matches);
+        }
+        // Fall back to the boolean: a configured "process running" means the real
+        // binary is live (a strong match), so tests that set only the boolean
+        // still see a critical process finding.
+        if self.nails_process_running_impl()? {
+            Ok(vec![ProcessMatch {
+                pid: 1,
+                strong: true,
+                detail: "mock: a NAILS process is running".to_string(),
+            }])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    pub(super) fn scan_files_with_pattern_impl(
+        &self,
+        dir: &Path,
+        pattern: &str,
+    ) -> Result<PatternScan> {
+        let unreadable: Vec<PathBuf> = self
+            .unreadable_dirs
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .iter()
+            .filter(|path| path.starts_with(dir))
+            .cloned()
+            .collect();
+        let matches = self.find_files_with_pattern_impl(dir, pattern)?;
+        Ok(PatternScan {
+            matches,
+            unreadable,
+        })
     }
 
     pub(super) fn read_file_content_impl(&self, path: &Path) -> Result<String> {

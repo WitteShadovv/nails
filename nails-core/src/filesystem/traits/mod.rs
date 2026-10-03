@@ -51,6 +51,41 @@ pub struct MountSource {
     pub label: Option<String>,
 }
 
+/// The result of a permission-tolerant recursive file scan.
+///
+/// Unlike a plain `Vec<PathBuf>`, this separates the matched files from the
+/// directories that could not be read, so a caller (verify) can report an
+/// unreadable directory as information rather than letting an `EACCES` abort the
+/// whole walk. An unprivileged `verify --deep` over `/tmp` therefore never fails
+/// on a `systemd-private-*` directory it is not allowed to enter.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PatternScan {
+    /// Files whose name contains the pattern.
+    pub matches: Vec<PathBuf>,
+    /// Directories that existed but could not be read (permission denied).
+    pub unreadable: Vec<PathBuf>,
+}
+
+/// One process whose command line references NAILS, classified by how strong the
+/// match is.
+///
+/// A plain substring match ("nails" anywhere in the command line) is weak: it
+/// also fires on `sed`, `tee` or an editor operating on a config file, so it is
+/// only ever reported as information. A strong match means the process is really
+/// the NAILS binary — its `/proc/<pid>/exe` shares an inode with the running
+/// binary, or its `argv[0]` basename is exactly `nails` — and warrants a critical
+/// finding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessMatch {
+    /// The process id.
+    pub pid: u32,
+    /// Whether this is a strong (binary identity) match rather than a weak
+    /// (substring) one.
+    pub strong: bool,
+    /// A short human-readable description of what matched.
+    pub detail: String,
+}
+
 // ============================================================================
 // Core Filesystem Trait
 // ============================================================================
@@ -272,11 +307,51 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Check if any NAILS-related processes are currently running.
     fn nails_process_running(&self) -> Result<bool>;
 
+    /// Enumerate the running processes whose command line references NAILS,
+    /// classified by match strength (see [`ProcessMatch`]).
+    ///
+    /// This is the honest replacement for the bare
+    /// [`nails_process_running`](Self::nails_process_running) boolean: it lets
+    /// `verify` distinguish the real NAILS binary still running (a critical leak)
+    /// from an unrelated process that merely mentions "nails" on its command line
+    /// (information only). The caller's own process and its ancestors are excluded.
+    ///
+    /// The default implementation preserves the old behaviour by reporting a
+    /// single weak match when [`nails_process_running`](Self::nails_process_running)
+    /// is true, so a filesystem that does not override it never over-reports.
+    fn nails_process_matches(&self) -> Result<Vec<ProcessMatch>> {
+        if self.nails_process_running()? {
+            Ok(vec![ProcessMatch {
+                pid: 0,
+                strong: false,
+                detail: "a process command line references NAILS".to_string(),
+            }])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     /// Read the contents of a text file.
     fn read_file_content(&self, path: &Path) -> Result<String>;
 
     /// Find files matching a pattern in a directory (recursive).
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>>;
+
+    /// Recursively find files matching a pattern, tolerating directories that
+    /// cannot be read.
+    ///
+    /// Behaves like [`find_files_with_pattern`](Self::find_files_with_pattern)
+    /// but, instead of aborting on a directory that returns `EACCES`, records it
+    /// in [`PatternScan::unreadable`] and continues. The default implementation
+    /// delegates to [`find_files_with_pattern`](Self::find_files_with_pattern)
+    /// and reports nothing unreadable, so an implementation that cannot tell the
+    /// difference degrades gracefully.
+    fn scan_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<PatternScan> {
+        Ok(PatternScan {
+            matches: self.find_files_with_pattern(dir, pattern)?,
+            unreadable: Vec::new(),
+        })
+    }
 
     /// Write content to a file atomically (write to temp, then rename).
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()>;

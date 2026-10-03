@@ -19,6 +19,8 @@
         "scan_depth",
         "config_aware",
         "config_paths_checked",
+        "checks_run",
+        "areas_not_checked",
         "state_file_status"
       ],
       "properties": {
@@ -49,6 +51,11 @@
         },
         "config_aware": { "type": "boolean" },
         "config_paths_checked": { "type": "integer", "minimum": 0 },
+        "checks_run": { "type": "integer", "minimum": 0 },
+        "areas_not_checked": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
         "state_file_status": {
           "oneOf": [
             {

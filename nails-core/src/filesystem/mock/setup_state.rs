@@ -1,4 +1,4 @@
-use super::super::{MountInfo, MountSource};
+use super::super::{MountInfo, MountSource, ProcessMatch};
 use super::MockFilesystem;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -484,6 +484,30 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned");
         *is_running = running;
+    }
+
+    /// Set the classified process matches returned by
+    /// [`Filesystem::nails_process_matches`](crate::Filesystem::nails_process_matches).
+    ///
+    /// Lets a test drive the honest process check directly — a weak (substring)
+    /// match that verify must treat as information, or a strong (binary identity)
+    /// match it must treat as critical — instead of only toggling the boolean.
+    pub fn mock_set_nails_process_matches(&self, matches: Vec<ProcessMatch>) {
+        *self
+            .nails_process_matches
+            .lock()
+            .expect("MockFilesystem mutex poisoned") = Some(matches);
+    }
+
+    /// Mark a directory as unreadable, so
+    /// [`Filesystem::scan_files_with_pattern`](crate::Filesystem::scan_files_with_pattern)
+    /// reports it under [`PatternScan::unreadable`](crate::filesystem::PatternScan::unreadable)
+    /// rather than walking it. Models an `EACCES` on `/tmp/systemd-private-*`.
+    pub fn mock_set_unreadable_dir(&self, dir: &str) {
+        self.unreadable_dirs
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(PathBuf::from(dir));
     }
 
     /// Set mock file contents for reading

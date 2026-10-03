@@ -1,7 +1,7 @@
 //! File and path operations for RealFilesystem.
 
 use super::RealFilesystem;
-use crate::filesystem::{DiskUsage, Filesystem};
+use crate::filesystem::{DiskUsage, Filesystem, PatternScan};
 use crate::target_user::TargetUser;
 use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
@@ -498,6 +498,50 @@ pub(super) fn find_files_with_pattern(
     }
 
     Ok(matching_files)
+}
+
+pub(super) fn scan_files_with_pattern(dir: &Path, pattern: &str) -> Result<PatternScan> {
+    let mut scan = PatternScan::default();
+    scan_files_tolerant(dir, &pattern.to_lowercase(), &mut scan);
+    Ok(scan)
+}
+
+/// Walk `dir` recursively, collecting files whose name contains `pattern` and
+/// recording directories that cannot be read instead of failing on them.
+///
+/// `pattern` is already lowercased by the caller. A directory that cannot be
+/// opened (permission denied, or a race that removes it mid-walk) is appended to
+/// [`PatternScan::unreadable`] and skipped, so an unprivileged scan of `/tmp`
+/// never aborts on a `systemd-private-*` directory owned by another service.
+fn scan_files_tolerant(dir: &Path, pattern: &str, scan: &mut PatternScan) {
+    if !dir.is_dir() {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => {
+            scan.unreadable.push(dir.to_path_buf());
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // `file_type()` avoids a `stat` per entry and does not follow symlinks,
+        // so a symlinked directory is treated as a file and never recursed into.
+        match entry.file_type() {
+            Ok(file_type) if file_type.is_dir() => scan_files_tolerant(&path, pattern, scan),
+            Ok(file_type) if file_type.is_file() => {
+                if let Some(name) = path.file_name()
+                    && name.to_string_lossy().to_lowercase().contains(pattern)
+                {
+                    scan.matches.push(path);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 pub(super) fn file_size(path: &Path) -> Result<u64> {

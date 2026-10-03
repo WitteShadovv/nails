@@ -304,6 +304,16 @@ pub struct VerifyArgs {
     /// Perform deep scan (slower, more thorough)
     #[arg(long)]
     pub deep: bool,
+
+    /// Scan a read-only mounted decoy image or partition instead of the live
+    /// host. Requires `--root`; live checks (processes, mounts, block devices)
+    /// are skipped and every path is read from under the image root.
+    #[arg(long, requires = "root")]
+    pub offline: bool,
+
+    /// Root of the mounted decoy image to scan in `--offline` mode.
+    #[arg(long, value_name = "MOUNT", requires = "offline")]
+    pub root: Option<std::path::PathBuf>,
 }
 
 /// `nails check` (alias `doctor`) arguments

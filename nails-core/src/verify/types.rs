@@ -102,6 +102,13 @@ pub struct VerifyResult {
     pub config_paths_checked: usize,
     /// Explicit state-file status observed for this verify run
     pub state_file_status: StateFileStatus,
+    /// Number of distinct check groups this run executed, surfaced in the honest
+    /// headline so a clean result states how much was actually inspected.
+    pub checks_run: usize,
+    /// Areas this run did not inspect. A clean result is "no known artifacts
+    /// found", not proof the system is untouched; this names what was skipped so
+    /// the headline never overclaims.
+    pub areas_not_checked: Vec<String>,
 }
 
 impl VerifyResult {
@@ -114,6 +121,8 @@ impl VerifyResult {
             config_aware: false,
             config_paths_checked: 0,
             state_file_status: StateFileStatus::NotChecked,
+            checks_run: 0,
+            areas_not_checked: Vec::new(),
         }
     }
 
@@ -132,6 +141,8 @@ impl VerifyResult {
             config_aware: true,
             config_paths_checked,
             state_file_status,
+            checks_run: 0,
+            areas_not_checked: Vec::new(),
         }
     }
 
@@ -144,6 +155,8 @@ impl VerifyResult {
             config_aware: false,
             config_paths_checked: 0,
             state_file_status: StateFileStatus::NotChecked,
+            checks_run: 0,
+            areas_not_checked: Vec::new(),
         }
     }
 }

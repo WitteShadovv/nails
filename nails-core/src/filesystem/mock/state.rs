@@ -1,4 +1,4 @@
-use super::super::{MountInfo, MountSource};
+use super::super::{MountInfo, MountSource, ProcessMatch};
 use chrono::{DateTime, Utc};
 use nix::errno::Errno;
 use std::collections::{HashMap, HashSet};
@@ -82,6 +82,15 @@ pub struct MockFilesystem {
     pub(super) unmount_should_fail: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) unmount_graceful_fails: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) nails_process_running: Arc<Mutex<bool>>,
+    /// Explicit classified process matches returned by
+    /// [`Filesystem::nails_process_matches`](crate::Filesystem::nails_process_matches).
+    /// When unset, the match list is derived from `nails_process_running` (a
+    /// single strong match when it is true), so tests that only set the boolean
+    /// keep their meaning.
+    pub(super) nails_process_matches: Arc<Mutex<Option<Vec<ProcessMatch>>>>,
+    /// Directories that [`Filesystem::scan_files_with_pattern`](crate::Filesystem::scan_files_with_pattern)
+    /// reports as unreadable (permission denied) rather than walking.
+    pub(super) unreadable_dirs: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) file_contents: Arc<Mutex<HashMap<PathBuf, String>>>,
     #[allow(clippy::type_complexity)]
     pub(super) files_with_pattern: Arc<Mutex<HashMap<(PathBuf, String), Vec<PathBuf>>>>,
@@ -164,6 +173,8 @@ impl MockFilesystem {
             unmount_should_fail: Arc::new(Mutex::new(HashSet::new())),
             unmount_graceful_fails: Arc::new(Mutex::new(HashSet::new())),
             nails_process_running: Arc::new(Mutex::new(false)),
+            nails_process_matches: Arc::new(Mutex::new(None)),
+            unreadable_dirs: Arc::new(Mutex::new(HashSet::new())),
             file_contents: Arc::new(Mutex::new(HashMap::new())),
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
             mounted_overlays: Arc::new(Mutex::new(HashMap::new())),

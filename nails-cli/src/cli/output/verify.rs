@@ -19,6 +19,8 @@ pub struct VerifyData {
     scan_depth: ScanDepthJson,
     config_aware: bool,
     config_paths_checked: usize,
+    checks_run: usize,
+    areas_not_checked: Vec<String>,
     state_file_status: StateFileStatus,
 }
 
@@ -83,6 +85,8 @@ impl VerifyData {
             },
             config_aware: result.config_aware,
             config_paths_checked: result.config_paths_checked,
+            checks_run: result.checks_run,
+            areas_not_checked: result.areas_not_checked.clone(),
             state_file_status: result.state_file_status.clone(),
         }
     }
@@ -110,11 +114,16 @@ pub fn verify_exit_status(status: VerifyStatus) -> ExitStatus {
 pub fn print_verify_result(result: &VerifyResult, style: Style) {
     use nails_core::{Severity, VerifyStatus};
 
+    let depth = match result.scan_depth {
+        nails_core::ScanDepth::Standard => "standard",
+        nails_core::ScanDepth::Deep => "deep",
+    };
     let header = match result.status {
         VerifyStatus::Secure => style.paint_bold(
             format_args!(
-                "{} SECURE: No traces found. System appears clean.",
-                style.glyph(Mark::Pass)
+                "{} No known artifacts found ({} checks, {depth} scan). This is not proof of absence.",
+                style.glyph(Mark::Pass),
+                result.checks_run,
             ),
             Tone::Green,
         ),
@@ -170,6 +179,18 @@ pub fn print_verify_result(result: &VerifyResult, style: Style) {
                     style.paint(guidance, Tone::Dim)
                 );
             }
+        }
+    }
+
+    if !result.areas_not_checked.is_empty() {
+        println!();
+        println!("{}", style.paint("Not checked by this run:", Tone::Dim));
+        for area in &result.areas_not_checked {
+            println!(
+                "  {} {}",
+                style.glyph(Mark::Arrow),
+                style.paint(area, Tone::Dim)
+            );
         }
     }
 }
