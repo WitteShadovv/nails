@@ -53,7 +53,7 @@
         },
         "posture": {
           "type": "string",
-          "enum": ["decoy", "active", "degraded", "inconsistent", "unknown"]
+          "enum": ["decoy", "active", "transitioning", "degraded", "inconsistent", "unknown"]
         },
         "remediation": { "type": "string", "minLength": 1 },
         "remaining_mounts": {

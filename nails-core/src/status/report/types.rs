@@ -87,6 +87,10 @@ pub enum Posture {
     Decoy,
     /// Hidden environment active and every tracked overlay is verified.
     Active,
+    /// A NAILS activation or deactivation is in progress: the persisted state is
+    /// transitional and its owner process is still alive. A benign, transient
+    /// condition, distinct from a crashed transition whose owner is gone.
+    Transitioning,
     /// Active but one or more overlays are missing from the kernel.
     Degraded,
     /// NAILS overlays are mounted while the persisted state is not active.
@@ -110,7 +114,17 @@ impl Posture {
                 DegradedKind::ActiveOverlaysMissing => Posture::Degraded,
                 DegradedKind::InactiveMountsLive => Posture::Inconsistent,
             },
-            EffectiveState::Interrupted { .. } => Posture::Inconsistent,
+            // A transition whose owner process is still alive is genuinely in
+            // progress, not a crash: report it as transitional (a safe, transient
+            // posture). Only an interrupted transition whose owner is gone is the
+            // dangerous, must-recover case.
+            EffectiveState::Interrupted { owner_alive, .. } => {
+                if *owner_alive {
+                    Posture::Transitioning
+                } else {
+                    Posture::Inconsistent
+                }
+            }
             EffectiveState::StaleFromPreviousBoot => {
                 if live_mounts {
                     Posture::Inconsistent
@@ -125,7 +139,10 @@ impl Posture {
     /// Whether this posture is a safe, expected outcome (exit 0). The dangerous
     /// and unknown postures all fail closed.
     pub fn is_safe(&self) -> bool {
-        matches!(self, Posture::Decoy | Posture::Active)
+        matches!(
+            self,
+            Posture::Decoy | Posture::Active | Posture::Transitioning
+        )
     }
 
     /// The shared mark for this posture.
@@ -137,6 +154,7 @@ impl Posture {
         match self {
             Posture::Decoy => Mark::Neutral,
             Posture::Active => Mark::Pass,
+            Posture::Transitioning => Mark::Neutral,
             Posture::Degraded | Posture::Inconsistent => Mark::Fail,
             Posture::Unknown => Mark::Warn,
         }
@@ -147,6 +165,7 @@ impl Posture {
         match self {
             Posture::Decoy => "DECOY",
             Posture::Active => "ACTIVE",
+            Posture::Transitioning => "TRANSITIONING",
             Posture::Degraded => "DEGRADED",
             Posture::Inconsistent => "INCONSISTENT",
             Posture::Unknown => "UNKNOWN",
@@ -158,6 +177,7 @@ impl Posture {
         match self {
             Posture::Decoy => "decoy",
             Posture::Active => "active",
+            Posture::Transitioning => "transitioning",
             Posture::Degraded => "degraded",
             Posture::Inconsistent => "inconsistent",
             Posture::Unknown => "unknown",
@@ -169,6 +189,7 @@ impl Posture {
         match self {
             Posture::Decoy => "Decoy system in use - no hidden environment mounted",
             Posture::Active => "Hidden environment active, all overlays verified",
+            Posture::Transitioning => "A NAILS activation or deactivation is in progress",
             Posture::Degraded => {
                 "Active but overlays are missing - hidden writes may reach the decoy disk"
             }
@@ -181,7 +202,7 @@ impl Posture {
     /// the system is in a safe state.
     pub fn remediation(&self) -> Option<&'static str> {
         match self {
-            Posture::Decoy | Posture::Active => None,
+            Posture::Decoy | Posture::Active | Posture::Transitioning => None,
             Posture::Degraded | Posture::Inconsistent => {
                 Some("Run `nails emergency` to tear down the remaining NAILS mounts")
             }

@@ -16,7 +16,7 @@ use std::path::Path;
 /// [`ExitStatus::InvalidState`].
 fn status_exit_code(posture: Posture) -> ExitStatus {
     match posture {
-        Posture::Decoy | Posture::Active => ExitStatus::Ok,
+        Posture::Decoy | Posture::Active | Posture::Transitioning => ExitStatus::Ok,
         Posture::Degraded | Posture::Inconsistent => ExitStatus::DegradedReboot,
         Posture::Unknown => ExitStatus::InvalidState,
     }

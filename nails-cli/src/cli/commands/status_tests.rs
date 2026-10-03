@@ -10,6 +10,9 @@ fn status_exit_code_is_driven_by_the_posture() {
     // Safe postures exit 0; the dangerous ones fail closed.
     assert_eq!(status_exit_code(Posture::Decoy), ExitStatus::Ok);
     assert_eq!(status_exit_code(Posture::Active), ExitStatus::Ok);
+    // An in-progress transition is a safe, transient posture: exit 0, so a
+    // concurrent `nails status` during activation does not report failure.
+    assert_eq!(status_exit_code(Posture::Transitioning), ExitStatus::Ok);
     assert_eq!(
         status_exit_code(Posture::Degraded),
         ExitStatus::DegradedReboot

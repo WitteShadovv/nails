@@ -554,6 +554,28 @@ fn posture_maps_each_effective_state() {
         ),
         Posture::Inconsistent
     );
+    // A transition whose owner process is still alive is in progress, not a
+    // crash: it is the benign Transitioning posture, for both phases.
+    assert_eq!(
+        Posture::from_effective(
+            &EffectiveState::Interrupted {
+                phase: InterruptedPhase::Activating,
+                owner_alive: true,
+            },
+            false
+        ),
+        Posture::Transitioning
+    );
+    assert_eq!(
+        Posture::from_effective(
+            &EffectiveState::Interrupted {
+                phase: InterruptedPhase::Deactivating,
+                owner_alive: true,
+            },
+            true
+        ),
+        Posture::Transitioning
+    );
     assert_eq!(
         Posture::from_effective(&EffectiveState::StaleFromPreviousBoot, false),
         Posture::Decoy
@@ -615,12 +637,14 @@ fn status_command_reports_decoy_writers_recorded_at_activation() {
 fn posture_safety_and_remediation() {
     assert!(Posture::Decoy.is_safe());
     assert!(Posture::Active.is_safe());
+    assert!(Posture::Transitioning.is_safe());
     assert!(!Posture::Degraded.is_safe());
     assert!(!Posture::Inconsistent.is_safe());
     assert!(!Posture::Unknown.is_safe());
 
     assert!(Posture::Decoy.remediation().is_none());
     assert!(Posture::Active.remediation().is_none());
+    assert!(Posture::Transitioning.remediation().is_none());
     assert!(
         Posture::Degraded
             .remediation()
