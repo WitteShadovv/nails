@@ -138,7 +138,10 @@ Every check should have tests covering:
 - Edge cases (boundary conditions, error handling)
 - Integration with `PreFlightRegistry`
 
-Aim for 100% code coverage (enforced by CI).
+Cover every branch a check can take. CI enforces a single production-code
+line-coverage floor (defined in `.config/coverage.toml`), not a per-check 100%
+target; test infrastructure such as `MockFilesystem` is excluded from the
+figure.
 
 ### 4. Register with the CLI
 
@@ -186,7 +189,7 @@ Good: "Storage not ready: Missing /etc/ directory. Create with: sudo mkdir -p /m
 Checks should be safe to run multiple times without side effects (except auto-creation features).
 
 ### 5. Test Coverage
-All checks require comprehensive unit tests with 100% coverage. Use `MockFilesystem` for deterministic testing.
+All checks require comprehensive unit tests exercising every branch. Use `MockFilesystem` for deterministic testing; it is test-only infrastructure and does not count toward the coverage figure.
 
 ## Auto-creation Pattern
 

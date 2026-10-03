@@ -36,6 +36,7 @@ on:
           - cache-warm
           - stress
           - benchmarks
+          - mutants
           - lockfile
           - flake-lock
           - pre-commit
@@ -76,7 +77,7 @@ jobs:
             # The pinned-input refreshes are opt-in: they run only on their
             # monthly schedule or when dispatched by name, because each opens a
             # pull request.
-            run='["advisories","fetcher-canary","reproducibility","cache-warm","stress","benchmarks"]'
+            run='["advisories","fetcher-canary","reproducibility","cache-warm","stress","benchmarks","mutants"]'
           else
             run=$(jq -cn --arg task "$TASK" '[$task]')
           fi
@@ -355,6 +356,47 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # Mutation testing of the core teardown, overlay and state-machine modules:
+  # cargo-mutants changes each mutable spot and re-runs the tests, so a mutation
+  # the suite still passes marks a gap no coverage percentage would reveal.
+  # Heavy, so it runs weekly rather than on the gate, and the full report is
+  # uploaded as an artifact for triage; a surviving mutant is to be read, not a
+  # reason to fail the job.
+  mutants:
+    name: Mutation testing
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'mutants')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install test tools
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.72,just@1.49.0
+          fallback: none
+
+      # `just mutants` scopes the run to state/, overlay/ and cleanup/.
+      - name: Mutate the core modules
+        run: just mutants
+
+      - name: Upload the mutants report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: mutants-report
+          path: target/mutants/
+          if-no-files-found: error
+          retention-days: 30
+
   # Monthly transitive refresh: #54's fixes were lockfile-only bumps that
   # Dependabot's direct-dependency updates never proposed. `cargo update` moves
   # every dependency to the newest version its requirement allows, then the
@@ -584,7 +626,7 @@ jobs:
   # broken build or a missing result.
   report-ci:
     name: Report CI status
-    needs: [tasks, fetcher-canary, reproducibility, cache-warm, stress, benchmarks]
+    needs: [tasks, fetcher-canary, reproducibility, cache-warm, stress, benchmarks, mutants]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5

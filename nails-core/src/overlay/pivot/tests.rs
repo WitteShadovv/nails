@@ -333,3 +333,57 @@ fn snapshot_pivot_sizes_tmpfs_from_measured_content_not_a_fixed_gigabyte() {
     assert_ne!(recorded, "1G");
     assert!(recorded.parse::<u64>().unwrap() < DEFAULT_MAX_SNAPSHOT_BYTES);
 }
+
+#[test]
+fn pivot_mount_info_round_trips_through_clone() {
+    let info = PivotMountInfo {
+        target: PathBuf::from("/var"),
+        staging: PathBuf::from("/mnt/nails-pivot/var"),
+        upper: PathBuf::from("/mnt/hidden/var-upper"),
+        work: PathBuf::from("/mnt/hidden/var-work"),
+        lower: PathBuf::from("/var"),
+        is_ephemeral: true,
+    };
+
+    assert_eq!(info, info.clone());
+    assert!(info.is_ephemeral);
+    assert_eq!(info.staging, PathBuf::from("/mnt/nails-pivot/var"));
+}
+
+#[test]
+fn pivot_ephemeral_mount_rolls_back_tmpfs_when_overlay_fails() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/run", true);
+    fs.mock_set_path_exists("/mnt", true);
+    let config = crate::config::EphemeralOverlayDir {
+        path: PathBuf::from("/run"),
+        tmpfs_upper_size: "1G".to_string(),
+        tmpfs_work_size: "512M".to_string(),
+    };
+    // The staging overlay fails after the tmpfs is up, forcing the cleanup path.
+    fs.mock_set_mount_should_fail("/mnt/nails-pivot/run", true);
+
+    let result = pivot_ephemeral_mount(&fs, &config, Path::new("/run"));
+    assert!(result.is_err(), "overlay failure should propagate");
+    assert!(
+        !fs.is_mounted(Path::new("/run/nails/run-ephemeral"))
+            .unwrap_or(false),
+        "the tmpfs must be unmounted after the overlay step fails"
+    );
+}
+
+#[test]
+fn unmount_pivot_overlay_is_idempotent_without_mounts() {
+    let fs = MockFilesystem::new();
+    let info = PivotMountInfo {
+        target: PathBuf::from("/var"),
+        staging: PathBuf::from("/mnt/nails-pivot/var"),
+        upper: PathBuf::from("/mnt/hidden/var-upper"),
+        work: PathBuf::from("/mnt/hidden/var-work"),
+        lower: PathBuf::from("/var"),
+        is_ephemeral: false,
+    };
+
+    // Nothing is mounted, so teardown has nothing to do and must still succeed.
+    assert!(unmount_pivot_overlay(&fs, &info).is_ok());
+}

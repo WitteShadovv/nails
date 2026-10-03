@@ -26,7 +26,7 @@ Tier 3 is everything a contributor must pass to merge. Tier 4 catches what a per
 | `.github/workflows/e2e.yml` | PRs to `main`, push to `main`, nightly, dispatch, `workflow_call` | `e2e-result` | 3 (affected) and 4 (nightly full) | `runner` input, default `ubuntu-24.04` | `just e2e` |
 | `.github/workflows/e2e-hetzner.yml` | Manual dispatch only | — | 4 | a provisioned Hetzner server | `just e2e` on that runner |
 | `.github/workflows/distro-e2e.yml` | Nightly, `distro-e2e` PR label, dispatch, `workflow_call` | — (informational) | 4 | `runner` input, default `ubuntu-24.04` (KVM) | `nix build .#legacyPackages.x86_64-linux.e2e-distro.<scenario>` |
-| `.github/workflows/scheduled.yml` | Weekly, twice-weekly and monthly schedules, dispatch with a `task` input | — | 4 | `ubuntu-24.04` | `just deny-full`, `just stress`, `cargo bench` |
+| `.github/workflows/scheduled.yml` | Weekly, twice-weekly and monthly schedules, dispatch with a `task` input | — | 4 | `ubuntu-24.04` | `just deny-full`, `just stress`, `cargo bench`, `just mutants` |
 | `.github/workflows/reproducibility.yml` | `workflow_call` from `release.yml`, weekly from `scheduled.yml` | — | 4 | `ubuntu-24.04` | `nix build .#nails-release` |
 | `.github/workflows/release.yml` | Push of `v*` tags, dispatch from a tag | — | release | `ubuntu-24.04` (E2E on the `e2e-runner` input) | `python3 -m ci.release check` |
 
@@ -44,7 +44,7 @@ Every work job runs in parallel. None waits for another; each is gated only on t
 |---|---|---|
 | `changes` | always | `python3 -m ci.changes` decides which filters the change matches (`rust`, `deps`, `nix`, `workflows`). The path rules live in `ci/changes.py` and nowhere else. |
 | `lint` | `rust` | Fails on a `Cargo.lock` that does not match the manifests (`cargo metadata --locked`), then `just fmt-check`, `just lint` (clippy with `--locked -D warnings`, which also enforces the [lint policy](#lint-policy)), `just line-count` and the orphan module check. |
-| `rust` | `rust` | `just coverage` (cargo-llvm-cov over nextest with the `ci` profile) and `just doctest`. The line-coverage threshold is defined once, in the `justfile`, and the figure goes to the job summary. The tests run against a private `TMPDIR` that must be empty afterwards. |
+| `rust` | `rust` | `just coverage` (cargo-llvm-cov over nextest with the `ci` profile) and `just doctest`. The production-code line-coverage threshold is defined once, in `.config/coverage.toml`, and the figure goes to the job summary. The tests run against a private `TMPDIR` that must be empty afterwards. |
 | `deps` | `rust` or `deps` | `just deny bans licenses sources`; advisories and the `deny.toml` ignore expiry check only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changed. |
 | `privileged-mounts` | `rust` | The `#[ignore]`d real-overlayfs tests, built unprivileged and run as root in a private mount namespace. |
 | `nix-build` | `rust` or `nix` | `nix build .#nails-release` (the release derivation) and a smoke test of the archive: contents, `nails --version` and `checksums.txt`. |
@@ -58,8 +58,9 @@ Every work job runs in parallel. None waits for another; each is gated only on t
 - **One Rust cache.** Every Rust job uses the rust-cache key `ci`; only the `rust` job saves it, and only on `main`. `scheduled.yml` restores the same key twice a week so it does not expire.
 - **Gate time.** The lean parallel layout targets about 3.5 minutes for a Rust-only pull request on a warm cache (the `rust` job sets the critical path; a docs-only pull request is under a minute). This figure has to be measured on a hosted runner once the `ci` cache is warm on `main` and the confirmed number recorded here; the sandbox used for development cannot time it.
 - **Flaky tests.** The nextest `ci` profile (`.config/nextest.toml`) retries a failed test once and kills a test after three 60-second slow periods. A test that passes on its retry is listed as FLAKY in the job summary and flagged with a warning; a red run uploads `target/nextest/ci/junit.xml` as the `junit` artifact. The weekly `stress` job in `scheduled.yml` runs `just stress`, which hunts order- and timing-dependent tests the gate's single run would miss: the suite threaded, then with `--test-threads=1`, then shuffled with a seed it prints (set `SHUFFLE_SEED` to replay a reported ordering), then repeated through nextest with no retries so any single failure fails the job.
+- **Mutation testing.** The weekly `mutants` job in `scheduled.yml` runs `just mutants`, which has cargo-mutants change each mutable spot in the core teardown, overlay and state-machine modules (`state/`, `overlay/`, `cleanup/`) and re-run the tests. A mutation the suite still passes is a test gap that no coverage percentage would reveal; the full report uploads as the `mutants-report` artifact for triage and a surviving mutant never fails the job.
 - **Fork-safe.** No job in `ci.yml` writes to the pull request, so a fork pull request and any other run with a read-only token pass the gate. Only `report-status` has a write permission (`issues: write`), and it runs only on pushes to `main`.
-- **One coverage threshold.** The line-coverage floor is the `coverage_threshold` in the `justfile` and nowhere else; `just coverage` enforces it locally and in CI, and the percentage goes to the job summary. There is no Codecov step: the external upload added a token and a flaky network call without gating anything, so coverage is enforced only by the threshold and kept as the `coverage-report` artifact.
+- **One coverage threshold.** The line-coverage floor is `line_threshold` in `.config/coverage.toml` and nowhere else; `just coverage` reads it and enforces it locally and in CI, and the percentage goes to the job summary. The figure measures production code only: the in-memory filesystem mock, the shared test fixtures and every test file are excluded, so test infrastructure that never ships cannot inflate it. There is no Codecov step: the external upload added a token and a flaky network call without gating anything, so coverage is enforced only by the threshold and kept as the `coverage-report` artifact.
 - **Advisories gate dependency changes only.** A newly published RustSec advisory does not fail unrelated PRs or `main`; the weekly `just deny-full` run in `scheduled.yml` reports it, including advisories for crates that never ship (other targets, dev-dependencies). See [security-validation.md](security-validation.md#dependency-policy).
 - **E2E tests are not folded into `gate`.** They run in `e2e.yml`, whose `e2e-result` job is the status to require.
 - **Off the pull request path.** The SBOM is generated only by the release workflow; the benchmarks run weekly in `scheduled.yml` (see [Benchmarks](#benchmarks)) and the E2E performance tests nightly in `e2e.yml`. No pull request job checks a timing budget.
@@ -234,7 +235,7 @@ The `justfile` is the single source of these commands; `just --list` shows them 
 ```bash
 just check        # formatting, clippy, file sizes and the tests (the pre-push gate)
 just ci-rust      # everything the ci.yml Rust jobs run, including coverage
-just coverage     # line coverage; the threshold is defined only in the justfile
+just coverage     # line coverage; the threshold is defined only in .config/coverage.toml
 just line-count   # the Rust file size check alone
 just deny         # dependency policy over the shipped graph
 just deny-full    # the full-graph policy scan scheduled.yml runs weekly

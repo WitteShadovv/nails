@@ -1,10 +1,9 @@
 # Task runner shared by local development and CI; `just` lists the recipes.
 # The tools come from the flake dev shell (`nix develop`). Every cargo call
 # passes `--locked` so a stale Cargo.lock fails here exactly as it does in CI.
-# The line-coverage floor lives in `coverage_threshold` and nowhere else: CI
-# calls `just coverage`, and local runs reach the same number through `ci-rust`.
-
-coverage_threshold := "85"
+# The line-coverage floor lives in `.config/coverage.toml` and nowhere else: the
+# `coverage` recipe reads the number from there, CI calls `just coverage`, and
+# local runs reach the same number through `ci-rust`.
 
 [private]
 default:
@@ -38,18 +37,32 @@ test:
 doctest:
     cargo test --doc --workspace --all-features --locked
 
-# Line coverage over nextest; fails below coverage_threshold.
+# Line coverage over nextest, measuring production code only; fails below the
+# floor in .config/coverage.toml.
 coverage:
     #!/usr/bin/env bash
     set -euo pipefail
+    # The single source of truth for the floor: read it here and nowhere else.
+    threshold=$(sed -n 's/^[[:space:]]*line_threshold[[:space:]]*=[[:space:]]*//p' \
+        .config/coverage.toml | tr -d ' "')
+    if [ -z "$threshold" ]; then
+        echo "No line_threshold in .config/coverage.toml" >&2
+        exit 1
+    fi
+    # Test infrastructure never ships, so it must not count toward the figure:
+    # the in-memory filesystem mock, the shared test fixtures and the platform
+    # test doubles, plus every test file (inline `tests.rs`, `*_tests.rs`, the
+    # `tests/` integration trees and the benches). Keeping them out of the
+    # report is what makes this number production-only.
+    ignore='(/tests/|/tests\.rs$|_tests\.rs$|/mock/|/test_support|/fake\.rs$|/contract\.rs$|/config/testing\.rs$|/benches/)'
     # Every report lands under target/coverage, so nothing is written outside
     # the build directory. In CI the percentage also goes to the job summary.
     out=target/coverage
     mkdir -p "$out"
     cargo llvm-cov --no-report nextest --workspace --all-features --locked
-    cargo llvm-cov report --cobertura --output-path "$out/cobertura.xml"
-    cargo llvm-cov report --lcov --output-path "$out/lcov.info"
-    cargo llvm-cov report --html --output-dir "$out/html"
+    cargo llvm-cov report --ignore-filename-regex "$ignore" --cobertura --output-path "$out/cobertura.xml"
+    cargo llvm-cov report --ignore-filename-regex "$ignore" --lcov --output-path "$out/lcov.info"
+    cargo llvm-cov report --ignore-filename-regex "$ignore" --html --output-dir "$out/html"
     # The root <coverage> element carries the overall rate. -m1 stops at it:
     # piping thousands of per-file matches into `head` kills grep with SIGPIPE,
     # which pipefail turns into a failed recipe.
@@ -58,12 +71,12 @@ coverage:
         exit 1
     }
     pct=$(awk "BEGIN { printf \"%.2f\", ${rate} * 100 }")
-    echo "Line coverage: ${pct}% (threshold {{ coverage_threshold }}%)"
+    echo "Line coverage: ${pct}% (threshold ${threshold}%)"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-        echo "Line coverage: ${pct}% (threshold {{ coverage_threshold }}%)" >> "$GITHUB_STEP_SUMMARY"
+        echo "Line coverage: ${pct}% (threshold ${threshold}%)" >> "$GITHUB_STEP_SUMMARY"
     fi
-    awk "BEGIN { exit !(${pct} >= {{ coverage_threshold }}) }" || {
-        echo "Coverage ${pct}% is below the {{ coverage_threshold }}% threshold" >&2
+    awk "BEGIN { exit !(${pct} >= ${threshold}) }" || {
+        echo "Coverage ${pct}% is below the ${threshold}% threshold" >&2
         exit 1
     }
 
@@ -161,3 +174,15 @@ stress iterations="10":
         cargo nextest run --workspace --all-features --locked --no-fail-fast --retries 0
     done
     echo "no flaky tests across {{ iterations }} iterations"
+
+# --- Mutation testing ---
+
+# Mutate the core teardown, overlay and state machine modules and check the
+# tests catch each mutation. Heavy, so it runs weekly in scheduled.yml rather
+# than on the gate; a surviving mutant means a test gap, never a build failure.
+mutants:
+    cargo mutants --package nails-core --all-features \
+        -f 'nails-core/src/state/**/*.rs' \
+        -f 'nails-core/src/overlay/**/*.rs' \
+        -f 'nails-core/src/cleanup/**/*.rs' \
+        --output target/mutants

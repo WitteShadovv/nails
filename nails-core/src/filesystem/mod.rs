@@ -37,6 +37,11 @@
 //! ```
 
 // Submodules
+// The in-memory mock is test-only infrastructure: it exists so downstream tests
+// can drive the filesystem seam without real syscalls. Gating it behind the same
+// switch as the other test fixtures keeps it out of release builds and out of the
+// coverage figure, so the headline measures production code alone.
+#[cfg(any(test, feature = "test-support"))]
 pub mod mock;
 pub mod mount_info;
 pub mod mountinfo;
@@ -45,6 +50,7 @@ pub mod safe_path;
 mod traits;
 
 // Re-exports
+#[cfg(any(test, feature = "test-support"))]
 pub use mock::{MockFilesystem, MockOp, PathKind};
 pub use mount_info::MountInfo;
 pub use mountinfo::{

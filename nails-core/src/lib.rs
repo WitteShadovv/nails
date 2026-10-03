@@ -129,7 +129,9 @@ pub use config::{
     EphemeralOverlayDir, LoadedConfig, OverlayConfig, OverlayMode, ValueSource,
 };
 pub use error::{NailsError, Result};
-pub use filesystem::{Filesystem, MockFilesystem, PathKind, RealFilesystem};
+pub use filesystem::{Filesystem, RealFilesystem};
+#[cfg(any(test, feature = "test-support"))]
+pub use filesystem::{MockFilesystem, PathKind};
 pub use hidden_root::{AttachState, HiddenRoot};
 pub use manager::deactivation::{DeactivationMode, DeactivationOrchestrator};
 pub use manager::{

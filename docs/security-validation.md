@@ -143,7 +143,10 @@ cargo nextest run --no-fail-fast --status-level all
 cargo llvm-cov --all-features --workspace --all-targets --cobertura --output-path ./coverage/cobertura.xml
 ```
 
-The CI coverage threshold is **85%**.
+CI enforces a single line-coverage floor over production code, defined once in
+`.config/coverage.toml` and read by `just coverage`. The in-memory filesystem
+mock, the shared test fixtures and every test file are excluded, so the figure
+measures only code that ships.
 
 ## Public release behavior
 
