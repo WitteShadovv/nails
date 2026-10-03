@@ -48,6 +48,24 @@ operators, and contributors in the next stages of the project.
 - More lifecycle hardening around optional or higher-risk paths such as `/boot` overlays.
 - Continued performance and regression monitoring where it improves operator safety or reliability.
 
+### Broader platform support
+
+The platform layer is built so a new distribution is a backend plus a detection-table entry, not a
+rewrite. Planned phases, roughly in order:
+
+- **Fedora support.** A validated backend for the Fedora family, including its usr-merge layout,
+  session/display-manager handling, and package-drift scanners (dnf/rpm).
+- **Arch support.** A validated backend for Arch and close derivatives, with pacman-based drift
+  scanning.
+- **Full `/usr` overlay mode.** Today `/usr` and the core roots are kept read-only as a leak guard.
+  A future mode would overlay `/usr` safely so package installs inside the hidden session are
+  possible without leaking payloads to the decoy disk.
+- **Cross-distro evaluation.** Extend the disk-image leak checks and the VM/container smoke tiers so
+  every supported distribution is exercised end-to-end, with adding a distribution being one list
+  entry.
+- **Boot-time redesign.** Revisit activation/deactivation around boot so non-NixOS hosts gain a
+  safer recovery and reduced-reboot path.
+
 ## How to read this roadmap
 
 In general, NAILS prioritizes:

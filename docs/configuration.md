@@ -4,6 +4,18 @@ nails reads one strict TOML file, `nails.toml`. This page lists every key it
 accepts and explains how the overlay keys decide what the hidden environment
 protects.
 
+## Platform support
+
+nails runs on NixOS (full, declarative hidden configuration) and on the Debian
+family in overlay-only mode (Debian 12+, Ubuntu 24.04+; `ID_LIKE=debian`
+derivatives are accepted provisionally without a version gate). Older releases,
+non-merged-`/usr` layouts, other distributions, ostree/image-based hosts and
+non-systemd hosts are refused at detection with a documented message. On the
+Debian family there is no declarative config layer, so overlay-only is implicit:
+the `nixos_*` keys below are inert and the hidden session is OverlayFS alone,
+with `/usr` and the core binary roots kept read-only as the leak guard. See the
+[platform support matrix](../README.md#platform-support) for the full table.
+
 ## Where the file lives
 
 - By default nails reads `config/nails.toml` next to its own binary, after

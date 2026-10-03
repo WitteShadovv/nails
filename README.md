@@ -4,17 +4,19 @@
 
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust 1.93+](https://img.shields.io/badge/rust-1.93+-orange.svg)](https://www.rust-lang.org/)
-[![NixOS](https://img.shields.io/badge/NixOS-required-5277C3.svg)](https://nixos.org/)
+[![Platforms](https://img.shields.io/badge/platforms-NixOS%20%7C%20Debian%2012%2B%20%7C%20Ubuntu%2024.04%2B-5277C3.svg)](#platform-support)
 [![CI](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml/badge.svg)](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/WitteShadovv/nails?display_name=tag)](https://github.com/WitteShadovv/nails/releases)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha-yellow.svg)](#project-status)
 
 </div>
 
-> **A NixOS-only CLI for layering a hidden environment over a decoy system.**
+> **A CLI for layering a hidden environment over a decoy system, with first-class NixOS support and an overlay-only mode for the Debian family.**
 
-NAILS is a NixOS-only tool that layers a hidden environment on top of a believable decoy system by
-combining a user-managed hidden storage backend, OverlayFS, and declarative NixOS configuration.
+NAILS layers a hidden environment on top of a believable decoy system by combining a user-managed
+hidden storage backend, OverlayFS, and — on NixOS — declarative configuration. NixOS is the
+first-class platform; Debian 12+ and Ubuntu 24.04+ run in a reduced overlay-only mode. See
+[Platform support](#platform-support) for what each platform does and the hosts NAILS refuses.
 
 > [!WARNING]
 > NAILS is **alpha** security software. It is intended for technically experienced users who can
@@ -58,12 +60,30 @@ NAILS is designed for a narrow threat model and operational style.
 
 | Requirement | Notes |
 |---|---|
-| NixOS | Required |
+| Supported platform | NixOS, Debian 12+, or Ubuntu 24.04+. See [Platform support](#platform-support); other hosts are refused at detection. |
 | Hidden storage backend | Any mounted, writable Linux filesystem that can host an overlayfs upper (symlinks, trusted xattrs, `d_type`, whiteouts) — e.g. ext4, xfs, btrfs, f2fs. NFS, CIFS/SMB, 9p, most FUSE mounts, and FAT/exFAT/NTFS cannot. See [docs/backends.md](docs/backends.md) for what is tested and the hazards of each backend. |
 | Root access | Required for `activate`, `deactivate`, and `emergency` |
 | Rust 1.93+ | Only needed to build from source |
 | Amnesic decoy | Required. The decoy must keep no durable record of the hidden session: volatile journald, no active rsyslog/syslog-ng/auditd, no swap or hibernation. Activation fails closed otherwise (override with `--accept-persistent-decoy`). See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
 | Impermanence-style setup | Strongly recommended for the strongest documented posture; see [docs/decoy-requirements.md](docs/decoy-requirements.md) |
+
+### Platform support
+
+NAILS detects the host from `/etc/os-release` and the running init, then selects a backend. The
+matrix below matches what detection actually accepts.
+
+| Platform | Support | Notes |
+|---|---|---|
+| NixOS | Full | Declarative hidden configuration: `nixos-rebuild`, profile switching, and the full `/nix` + `/run/current-system` restoration. |
+| Debian 12+ | Overlay-only | Hidden session is OverlayFS alone — no declarative config layer. `/usr` and the core roots stay read-only as the leak guard; a volatile journald journal (and no active rsyslog/syslog-ng/auditd) is required. Requires the merged-usr layout. |
+| Ubuntu 24.04+ | Overlay-only | As Debian; `/snap` is excluded from the overlay. |
+| Debian family derivatives | Provisional | A host whose `ID_LIKE` names `debian`/`ubuntu` is accepted on the same overlay-only terms, but its base release is not version-gated. |
+| Fedora, Arch, other distributions | Refused | No validated backend yet; detection declines with a documented message. Planned — see [ROADMAP.md](ROADMAP.md). |
+| ostree / image-based hosts | Refused | NAILS cannot overlay an immutable system. |
+| Non-systemd hosts (OpenRC, runit, …) | Refused | Teardown and session handling require systemd. |
+
+Older releases (Debian 11 and earlier, Ubuntu before 24.04) are refused because they predate the
+merged-usr layout the read-only `/usr` guard depends on.
 
 ### Important constraints
 

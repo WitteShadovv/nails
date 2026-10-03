@@ -945,7 +945,10 @@ fn test_activate_explicit_mode_rejects_critical_system_root_overlay_bin() {
     );
     fs.mock_set_path_exists("/bin", true);
     // A Debian/Ubuntu (FHS) host keeps /bin read-only, so overlaying it is refused
-    // by the platform policy rather than a hardcoded block.
+    // by the platform policy rather than a hardcoded block. /bin is the usr-merge
+    // symlink into /usr that a supported release ships, so detection accepts the
+    // host and the refusal comes from the overlay policy, not a non-merged refusal.
+    fs.mock_set_path_type("/bin", PathKind::Symlink);
     fs.mock_add_file("/etc/os-release", "ID=debian\nVERSION_ID=\"12\"\n");
     fs.mock_add_file("/proc/1/comm", "systemd");
 

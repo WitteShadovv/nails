@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use super::debian::{self, FamilySupport};
 use super::{HostProfile, PlatformKind};
 use crate::Result;
 use crate::filesystem::Filesystem;
@@ -18,6 +19,21 @@ const OSTREE_MARKER: &str = "/run/ostree-booted";
 const CURRENT_SYSTEM: &str = "/run/current-system";
 /// Standard os-release location.
 const OS_RELEASE: &str = "/etc/os-release";
+/// Core root directories that a usr-merged layout keeps as symlinks into `/usr`.
+/// If any is a real directory, the host is not merged and the `/usr` read-only
+/// leak guard does not cover it.
+const CORE_ROOT_DIRS: &[&str] = &["/bin", "/sbin", "/lib"];
+
+/// Whether a Debian-family host has the merged-usr layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UsrMerge {
+    /// `/bin`, `/sbin` and `/lib` are symlinks into `/usr` (or absent, so the
+    /// probe cannot contradict a merged layout). Only matched hosts reach the
+    /// probe, and every supported release ships them as symlinks.
+    Merged,
+    /// At least one core root is a real directory outside `/usr`.
+    NotMerged,
+}
 
 /// Detect the running host.
 ///
@@ -45,6 +61,7 @@ pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
     let pid1 = read_optional(fs, Path::new(PID1_COMM));
     let pid1_comm = pid1.as_deref().map(str::trim).map(str::to_string);
     let is_systemd = pid1_comm.as_deref() == Some("systemd");
+    let usr_merge = probe_usr_merge(fs);
 
     let (kind, unsupported_reason) = classify(
         is_ostree,
@@ -52,6 +69,7 @@ pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
         pid1_comm.as_deref(),
         &fields,
         has_current_system,
+        usr_merge,
     );
 
     Ok(HostProfile {
@@ -121,17 +139,38 @@ fn unquote(value: &str) -> &str {
     }
 }
 
+/// Probe whether the host uses the merged-usr layout.
+///
+/// Returns [`UsrMerge::NotMerged`] as soon as a core root (`/bin`, `/sbin`,
+/// `/lib`) is present as a real directory rather than a symlink into `/usr`. A
+/// core root that is absent or unreadable cannot prove a split layout, so it is
+/// skipped — real supported hosts always carry these as symlinks.
+fn probe_usr_merge<F: Filesystem>(fs: &F) -> UsrMerge {
+    for dir in CORE_ROOT_DIRS {
+        let path = Path::new(dir);
+        let exists = fs.path_exists(path).unwrap_or(false);
+        let is_symlink = fs.is_symlink(path).unwrap_or(false);
+        if exists && !is_symlink {
+            return UsrMerge::NotMerged;
+        }
+    }
+    UsrMerge::Merged
+}
+
 /// Resolve the host facts to a [`PlatformKind`] and, when unsupported, a reason.
 ///
 /// Refusals come first: an ostree / image-based host and a non-systemd PID 1 are
 /// both declined, because NAILS cannot safely lay a hidden overlay over an
-/// immutable image or drive teardown without systemd.
+/// immutable image or drive teardown without systemd. A systemd host is then
+/// resolved to NixOS, a supported Debian-family release, or a documented refusal
+/// (unsupported distribution, release below the minimum, or a non-merged layout).
 fn classify(
     is_ostree: bool,
     is_systemd: bool,
     pid1_comm: Option<&str>,
     fields: &OsReleaseFields,
     has_current_system: bool,
+    usr_merge: UsrMerge,
 ) -> (PlatformKind, Option<String>) {
     if is_ostree {
         return (
@@ -162,7 +201,22 @@ fn classify(
         return (PlatformKind::NixOs, None);
     }
 
-    (PlatformKind::Fhs, None)
+    match debian::classify_family(
+        fields.id.as_deref(),
+        &fields.id_like,
+        fields.version_id.as_deref(),
+    ) {
+        FamilySupport::Supported => {
+            if usr_merge == UsrMerge::NotMerged {
+                return (
+                    PlatformKind::Unsupported,
+                    Some(debian::USR_MERGE_REFUSAL.to_string()),
+                );
+            }
+            (PlatformKind::Fhs, None)
+        }
+        FamilySupport::Refused(reason) => (PlatformKind::Unsupported, Some(reason)),
+    }
 }
 
 #[cfg(test)]
@@ -185,6 +239,8 @@ mod tests {
         "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\nPRETTY_NAME=\"Ubuntu 24.04 LTS\"\n";
     const FEDORA: &str = "ID=fedora\nVERSION_ID=40\n";
     const ARCH: &str = "ID=arch\nBUILD_ID=rolling\n";
+    const DEBIAN11: &str = "ID=debian\nVERSION_ID=\"11\"\n";
+    const UBUNTU22: &str = "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"22.04\"\n";
 
     #[test]
     fn nixos_by_id() {
@@ -232,18 +288,75 @@ mod tests {
     }
 
     #[test]
-    fn fedora_is_fhs_not_debian_like() {
+    fn fedora_is_refused_with_documented_reason() {
         let profile = detect(&host(FEDORA, "systemd")).unwrap();
-        assert_eq!(profile.kind, PlatformKind::Fhs);
-        assert_eq!(profile.version_id.as_deref(), Some("40"));
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
         assert!(!profile.is_debian_like());
+        let err = profile.require_supported().unwrap_err();
+        assert!(err.to_string().contains("fedora"));
     }
 
     #[test]
-    fn arch_is_fhs() {
+    fn arch_is_refused_with_documented_reason() {
         let profile = detect(&host(ARCH, "systemd")).unwrap();
-        assert_eq!(profile.kind, PlatformKind::Fhs);
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
         assert_eq!(profile.id.as_deref(), Some("arch"));
+        assert!(profile.require_supported().is_err());
+    }
+
+    #[test]
+    fn unknown_id_is_refused() {
+        let profile = detect(&host("ID=voidlinux\nVERSION_ID=\"rolling\"\n", "systemd")).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
+        assert!(profile.require_supported().is_err());
+    }
+
+    #[test]
+    fn missing_os_release_id_on_systemd_is_refused() {
+        // A systemd host with no identifiable ID is not NixOS and not a known
+        // family, so it is declined rather than treated as a generic FHS host.
+        let profile = detect(&host("PRETTY_NAME=\"Mystery Linux\"\n", "systemd")).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
+        assert!(profile.require_supported().is_err());
+    }
+
+    #[test]
+    fn debian_below_minimum_is_refused() {
+        let profile = detect(&host(DEBIAN11, "systemd")).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
+        let err = profile.require_supported().unwrap_err();
+        assert!(err.to_string().contains("minimum"));
+    }
+
+    #[test]
+    fn ubuntu_below_minimum_is_refused() {
+        let profile = detect(&host(UBUNTU22, "systemd")).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
+        assert!(profile.require_supported().is_err());
+    }
+
+    #[test]
+    fn non_merged_debian_layout_is_refused() {
+        // A supported release whose /bin is a real directory is not usr-merged,
+        // so the /usr leak guard does not cover it: refuse.
+        let fs = host(DEBIAN12, "systemd");
+        fs.mock_set_path_type("/bin", crate::filesystem::PathKind::Dir);
+        let profile = detect(&fs).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
+        let err = profile.require_supported().unwrap_err();
+        assert!(err.to_string().contains("usr-merged"));
+    }
+
+    #[test]
+    fn merged_debian_layout_passes() {
+        // Core roots present as symlinks into /usr are a merged layout.
+        let fs = host(DEBIAN12, "systemd");
+        for dir in ["/bin", "/sbin", "/lib"] {
+            fs.mock_set_path_type(dir, crate::filesystem::PathKind::Symlink);
+        }
+        let profile = detect(&fs).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Fhs);
+        profile.require_supported().unwrap();
     }
 
     #[test]

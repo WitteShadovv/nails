@@ -36,6 +36,7 @@ use crate::filesystem::Filesystem;
 use crate::process::ProcessRunner;
 
 mod config_layer;
+mod debian;
 mod detect;
 mod discover;
 mod fhs;
