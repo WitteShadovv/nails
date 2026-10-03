@@ -142,6 +142,17 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- The CLI and persisted state are now driven by the platform model: generic "Overlay environment
+  manager" about/help text, a NixOS-only `--nixos-flake` (replacing `--flake`), activation progress
+  steps whose total and labels follow the active path (7 with a declarative layer, 5 overlay-only /
+  FHS) so NixOS steps never render off-path, no rebuild notification when no layer ran, a
+  de-duplicated kill-session prompt, and a typed per-platform state section that surfaces the
+  hidden-system generation on NixOS only.
+- Shell-history anti-forensics no longer writes to the decoy disk after unmount by default, kills
+  every interactive shell (including root's) before teardown so in-memory history is never flushed,
+  offers an opt-in same-inode (`O_NOFOLLOW`, no `O_CREAT`) history overwrite instead of temp+rename,
+  and warns when the operator's shell flushes history incrementally (zsh `INC_APPEND_HISTORY`/
+  `SHARE_HISTORY`, bash `history -a` in `PROMPT_COMMAND`).
 - NAILS builds and caches the hidden NixOS system toplevel explicitly and switches to it before
   restarting the session, failing closed by default (new `nixos.switch_required` option); the
   config fingerprint now covers the whole hidden config tree.
@@ -393,6 +404,10 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Security
 
+- Deactivation makes no write to any decoy filesystem after unmount by default (whole-file
+  truncation and secure-delete are no longer forced), removing the deactivation-time artifact the
+  post-unmount scrub left on the decoy; the pre-teardown shell kill plus an amnesic decoy base are
+  the defenses, and a warn-only preflight flags shells that flush history incrementally.
 - `unmount` refuses any mount NAILS did not create, so stale state can no longer lazily force-detach
   a real `/home`, `/nix`, or `/boot`.
 - Configured paths in `nails.toml` are validated when the file is loaded: a relative or
