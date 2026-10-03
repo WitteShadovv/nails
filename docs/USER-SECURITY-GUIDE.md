@@ -593,6 +593,36 @@ Masking changes what *runs* in the hidden session. It does **not** roll back rem
 anything the hidden session did through a shared account, token or sync client stays on the decoy's
 online services and is never undone.
 
+#### Remote state and sync clients
+
+Deactivation discards the overlay upper dirs and nothing else. It cannot reach state a remote server
+or another device already holds. This matters most for **two-way sync and account-bound clients** —
+Syncthing, Nextcloud/Dropbox, an IMAP client's Sent folder, browser sync, messaging apps — that run
+under the decoy identity in `shared-home` mode:
+
+1. The hidden session writes to a synced folder (or sends mail, or saves a browser tab). The write
+   lands on the overlay upper, invisible on the decoy disk while the session is active.
+2. The decoy client, being live in the hidden session, **pushes that data to the server or peer**
+   before deactivation.
+3. On deactivation the overlay upper is thrown away, but the server/peer still has the data. The decoy
+   client resumes from its pre-activation local state, reconciles with the remote, and **pulls the
+   hidden data back down onto the decoy disk**, where a later disk examiner can recover it.
+
+The overlay cannot prevent this: the leak happens on a remote you do not control and returns through a
+client doing exactly its job. **Deactivation is not a rollback of your online accounts.**
+
+**Mitigations, strongest first:**
+
+- Use **`persona.mode = "fresh-home"`** and do not start the decoy's account-bound clients in the
+  hidden session (mask them under `[persona] mask_inherited`, or disable them on the decoy). The hidden
+  session then runs from a clean home with no decoy sync configuration, so nothing hidden is ever
+  handed to the decoy's remotes. Sign in to any clients you need from the clean home instead.
+- If you must use `shared-home`, **quit or disconnect every sync, cloud, mail and messaging client**
+  before doing sensitive work, and treat anything they touched as already on the decoy and on the
+  remote.
+- Do not rely on "create some decoy activity" advice while such clients are connected — see the
+  qualifications on the pre- and post-session checklists below.
+
 #### Shared network identifiers
 
 The overlay shares the host's network identity between the decoy and the hidden session.
@@ -739,7 +769,10 @@ Before activating the hidden environment:
 [ ] Accepted that shared accounts and network identifiers (machine-id,
     hostname, MAC, NetworkManager/VPN profiles) are not isolated by the
     overlay, or applied the hidden network-identity snippet
-[ ] Decoy system has plausible recent activity
+[ ] Decoy system has plausible recent activity (generated only with sync and
+    account clients disconnected, or in fresh-home mode — see "Remote state and
+    sync clients"; activity created while a sync client is connected can be
+    pulled back onto the decoy after deactivation)
 [ ] All unsaved work is saved (activation may kill session)
 [ ] No other users logged in who might observe
 [ ] Screen lock configured for interruption
@@ -849,7 +882,10 @@ After deactivation completes:
 [ ] Verify hidden backend is not mounted or open
 [ ] Check recently-used.xbel if using GNOME
 [ ] Review last hour of journal: journalctl --since "1 hour ago"
-[ ] Create some decoy activity (browsing, document editing)
+[ ] Create some decoy activity (browsing, document editing) — only with sync,
+    cloud and account clients disconnected, or in fresh-home mode, so the
+    activity cannot be reconciled against anything the hidden session left on a
+    remote (see "Remote state and sync clients")
 [ ] Verify decoy system appears normal
 ```
 

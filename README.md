@@ -308,6 +308,23 @@ A fully separate hidden account (`separate-user`) is planned but not yet availab
 [`docs/configuration.md`](docs/configuration.md#persona-modes) and the
 [user security guide](docs/USER-SECURITY-GUIDE.md) for details and trade-offs.
 
+### Remote state and sync clients
+
+Deactivation discards the overlay upper dirs; it does **not** roll back state a remote already holds.
+In `shared-home` mode the decoy's two-way sync and account clients (Syncthing, Nextcloud/Dropbox, IMAP
+Sent folders, browser sync, messaging apps) are live in the hidden session, so data the hidden session
+writes to a synced folder is pushed to the server or peer. After deactivation the decoy client resumes
+from its pre-activation local state, reconciles with the remote, and **pulls that data back onto the
+decoy disk**, where a later examiner can recover it. The overlay cannot prevent this; the leak lives on
+a remote you do not control.
+
+Mitigation: run sensitive work in **`fresh-home`** mode with the decoy's account-bound clients masked
+(`[persona] mask_inherited`) or disabled, so nothing hidden is handed to the decoy's remotes; or, in
+`shared-home`, disconnect every sync, cloud, mail and messaging client first. Do not generate "decoy
+activity" while such clients are connected. See
+[Remote state and sync clients](docs/USER-SECURITY-GUIDE.md#remote-state-and-sync-clients) in the
+security guide.
+
 ## Reproducible release artifact
 
 NAILS has one canonical Nix-built Linux release artifact:
