@@ -124,15 +124,29 @@ in
   # non-strict mypy, exactly what `just ci-python` runs locally. It is seconds,
   # not the VM tests. The stand-alone scripts/ are not covered yet; they join
   # once the forensics runners that still fail ruff are removed.
+  #
+  # The suite also reads the repository data its tooling validates, so the
+  # fileset carries those inputs: deny.toml (the advisory-ignore config),
+  # docs/ci.md plus .github/workflows (the workflow-documentation check), and
+  # the E2E metadata sources the shard planner's tests scan (default.nix, the
+  # tests tree and the checked-in weights). git is a tool because changes.py
+  # shells out to it and its tests build throwaway repositories.
   ci-python = lint "ci-python" {
     files = fs.unions [
       ../ci
       ../pyproject.toml
+      ../deny.toml
+      ../docs/ci.md
+      ../.github/workflows
+      ./e2e-tests/default.nix
+      ./e2e-tests/tests
+      ./e2e-tests/shard-durations.json
     ];
     tools = [
       pkgs.python3
       pkgs.ruff
       pkgs.mypy
+      pkgs.git
     ];
     script = ''
       # ruff and mypy write their caches under HOME; the copied source is the

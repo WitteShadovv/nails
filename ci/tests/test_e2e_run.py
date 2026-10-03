@@ -93,7 +93,9 @@ class RunBuildTest(unittest.TestCase):
         self.log = self.tmp / "nix.log"
         fake = bin_dir / "nix"
         fake.write_text(
-            "#!/usr/bin/env bash\n"
+            # Resolve bash from PATH rather than /usr/bin/env, which does not
+            # exist in the hermetic Nix build sandbox the ci-python check runs in.
+            f"#!{shutil.which('bash')}\n"
             'case "$1" in\n'
             "  eval)\n"
             '    attr="$3"; name="${attr##*.e2e.}"; name="${name%.drvPath}"\n'
@@ -322,7 +324,9 @@ class RunDriversTest(unittest.TestCase):
         }.items():
             driver = self.tmp / name / "bin" / "nixos-test-driver"
             driver.parent.mkdir(parents=True)
-            driver.write_text("#!/usr/bin/env bash\n" + script, encoding="utf-8")
+            # Resolve bash from PATH rather than /usr/bin/env, which does not
+            # exist in the hermetic Nix build sandbox the ci-python check runs in.
+            driver.write_text(f"#!{shutil.which('bash')}\n" + script, encoding="utf-8")
             driver.chmod(0o755)
             self.drivers[name] = self.tmp / name
 
