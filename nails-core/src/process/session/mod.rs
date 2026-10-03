@@ -1,6 +1,6 @@
 //! Session Detection and Management
 //!
-//! Provides logind-first session termination for the `--kill-session` flag.
+//! Provides logind-first session termination for the `--session kill` flag.
 //! The goal is to stop the display manager, terminate the user's graphical
 //! session (and all user processes that could leak to underlays), then
 //! restart the display manager and user manager after activation.

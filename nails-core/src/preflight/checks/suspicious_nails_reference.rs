@@ -32,8 +32,8 @@ impl<F: Filesystem> PreFlightCheck<F> for SuspiciousNailsReferenceCheck {
                 "Base /etc/nixos NixOS config contains no suspicious hidden or NAILS references"
                     .into(),
             )),
-            false => Ok(CheckResult::Fail(
-                "Base /etc/nixos NixOS config contains suspicious hidden or NAILS references. Refusing activation before any side effects.".into(),
+            false => Ok(CheckResult::fail(
+                "Base /etc/nixos NixOS config contains suspicious hidden or NAILS references. Refusing activation before any side effects.".to_string(),
             )),
         }
     }

@@ -14,7 +14,7 @@ use crate::{
 use crate::process::{SessionCommandExecutor, detect_session_context_with_executor};
 
 impl<F: Filesystem> NailsManager<F> {
-    /// Handle --kill-session flag
+    /// Handle --session kill flag
     /// Kill graphical session only after pre-flight checks succeed.
     pub(super) fn handle_session_kill(
         verbosity: Verbosity,
@@ -25,7 +25,7 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         if verbosity >= Verbosity::Normal {
-            tracing::info!("Detecting session type for --kill-session...");
+            tracing::info!("Detecting session type for --session kill...");
         }
 
         let session = detect_session_context()?;
@@ -60,14 +60,14 @@ impl<F: Filesystem> NailsManager<F> {
             }
             SessionKind::Tty => {
                 if verbosity >= Verbosity::Normal {
-                    tracing::warn!("--kill-session requested, but running in TTY - skipping");
+                    tracing::warn!("--session kill requested, but running in TTY - skipping");
                 }
                 Ok(SessionRestartPlan::default())
             }
             SessionKind::Ssh => {
                 if verbosity >= Verbosity::Normal {
                     tracing::warn!(
-                        "--kill-session requested over SSH - skipping session termination"
+                        "--session kill requested over SSH - skipping session termination"
                     );
                 }
                 Ok(SessionRestartPlan::default())
@@ -87,7 +87,7 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
-    /// Handle --kill-session flag with injectable executor (for testing)
+    /// Handle --session kill flag with injectable executor (for testing)
     #[cfg(test)]
     pub(super) fn handle_session_kill_with_executor<E: SessionCommandExecutor>(
         verbosity: Verbosity,
@@ -99,7 +99,7 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         if verbosity >= Verbosity::Normal {
-            tracing::info!("Detecting session type for --kill-session...");
+            tracing::info!("Detecting session type for --session kill...");
         }
 
         let session = detect_session_context_with_executor(executor)?;
@@ -111,14 +111,14 @@ impl<F: Filesystem> NailsManager<F> {
             }
             SessionKind::Tty => {
                 if verbosity >= Verbosity::Normal {
-                    tracing::warn!("--kill-session requested, but running in TTY - skipping");
+                    tracing::warn!("--session kill requested, but running in TTY - skipping");
                 }
                 Ok(SessionRestartPlan::default())
             }
             SessionKind::Ssh => {
                 if verbosity >= Verbosity::Normal {
                     tracing::warn!(
-                        "--kill-session requested over SSH - skipping session termination"
+                        "--session kill requested over SSH - skipping session termination"
                     );
                 }
                 Ok(SessionRestartPlan::default())

@@ -341,7 +341,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// of the risky steps and rolls back to `previous_state` if any step returns
     /// early or panics; `guard.commit()` disarms the rollback on success.
     ///
-    /// Options control session management (`--kill-session`), process restart
+    /// Options control session management (`--session kill`), process restart
     /// behaviour, pivot policy (`--accept-pivot-risks` / `--no-pivot`) and prompt
     /// skipping (`--yes`).
     ///
@@ -439,7 +439,7 @@ impl<F: Filesystem> NailsManager<F> {
             options.allow_persistent_journal,
         )?;
 
-        // Step 4: Handle --kill-session before taking the StateGuard.
+        // Step 4: Handle --session kill before taking the StateGuard.
         if verbosity >= Verbosity::Normal {
             if no_preflight {
                 tracing::info!(

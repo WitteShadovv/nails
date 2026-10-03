@@ -166,7 +166,7 @@ fn test_preflight_check_fails_activation_aborted() {
         NailsError::PreFlightCheckFailed(failures) => {
             assert!(!failures.is_empty());
             // Should contain hidden-volume check failure
-            assert!(failures.iter().any(|(name, _)| name == "hidden-volume"));
+            assert!(failures.iter().any(|(name, _, _)| name == "hidden-volume"));
         }
         _ => panic!("Expected PreFlightCheckFailed error"),
     }
@@ -333,7 +333,8 @@ fn test_preflight_multiple_checks_fail_all_reported() {
                 "Should report at least 2 failures (hidden-volume and swap)"
             );
 
-            let failure_names: Vec<&str> = failures.iter().map(|(name, _)| name.as_str()).collect();
+            let failure_names: Vec<&str> =
+                failures.iter().map(|(name, _, _)| name.as_str()).collect();
             assert!(
                 failure_names.contains(&"hidden-volume"),
                 "Should report hidden-volume failure"
@@ -563,9 +564,9 @@ fn test_suspicious_reference_preflight_fails_before_activation_state_or_mounts()
 
     match result.unwrap_err() {
         NailsError::PreFlightCheckFailed(failures) => {
-            let (_, message) = failures
+            let (_, message, _) = failures
                 .iter()
-                .find(|(name, _)| name == "suspicious-nails-reference")
+                .find(|(name, _, _)| name == "suspicious-nails-reference")
                 .expect("suspicious-nails-reference failure should be reported");
             assert!(message.contains("before any side effects"));
         }
@@ -655,9 +656,9 @@ fn test_preflight_flake_builder_fails_when_default_flake_is_missing() {
 
     match result.unwrap_err() {
         NailsError::PreFlightCheckFailed(failures) => {
-            let (_, message) = failures
+            let (_, message, _) = failures
                 .iter()
-                .find(|(name, _)| name == "nixos-build-target")
+                .find(|(name, _, _)| name == "nixos-build-target")
                 .expect("nixos-build-target failure should be reported");
             assert!(message.contains("flake.nix not found"));
             assert!(message.contains(nixos_dir.to_str().unwrap()));
@@ -712,9 +713,9 @@ fn test_preflight_fails_when_explicit_flake_is_missing() {
 
     match result.unwrap_err() {
         NailsError::PreFlightCheckFailed(failures) => {
-            let (_, message) = failures
+            let (_, message, _) = failures
                 .iter()
-                .find(|(name, _)| name == "nixos-build-target")
+                .find(|(name, _, _)| name == "nixos-build-target")
                 .expect("nixos-build-target failure should be reported");
             assert!(message.contains("flake.nix not found"));
             assert!(message.contains(explicit_flake_dir.to_str().unwrap()));

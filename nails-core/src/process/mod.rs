@@ -16,7 +16,7 @@
 //! - **Detection** (`detection.rs`): Parse `/proc` to find processes using target directories
 //! - **Classification** (`classification.rs`): Classify processes by restart safety
 //! - **Restart** (`restart.rs`): Stop and restart processes using systemd or signals
-//! - **Session** (`session.rs`): Detect and manage graphical sessions for `--kill-session` flag
+//! - **Session** (`session.rs`): Detect and manage graphical sessions for `--session kill` flag
 //! - **Run** (`run.rs`): [`ProcessRunner`], which starts external programs and owns binary
 //!   resolution and the test-runtime guard
 //!

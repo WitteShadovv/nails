@@ -82,18 +82,18 @@ impl<F: Filesystem> PreFlightCheck<F> for StateCheck {
             SystemState::Inactive => Ok(CheckResult::Pass(
                 "System is inactive - ready for activation".into(),
             )),
-            SystemState::Active { .. } => Ok(CheckResult::Fail(
-                "System is already active. Run 'nails deactivate' first or use 'nails status' to check state.".into(),
+            SystemState::Active { .. } => Ok(CheckResult::fail(
+                "System is already active. Run 'nails deactivate' first or use 'nails status' to check state.".to_string(),
             )),
-            SystemState::Activating { .. } => Ok(CheckResult::Fail(
-                "System is currently activating. Wait for it to finish, or run 'nails emergency' if no activation is in progress.".into(),
+            SystemState::Activating { .. } => Ok(CheckResult::fail(
+                "System is currently activating. Wait for it to finish, or run 'nails emergency' if no activation is in progress.".to_string(),
             )),
-            SystemState::Deactivating { .. } => Ok(CheckResult::Fail(
-                "System is currently deactivating. Wait for it to finish, or run 'nails emergency' if no deactivation is in progress.".into(),
+            SystemState::Deactivating { .. } => Ok(CheckResult::fail(
+                "System is currently deactivating. Wait for it to finish, or run 'nails emergency' if no deactivation is in progress.".to_string(),
             )),
-            SystemState::Degraded { .. } => Ok(CheckResult::Fail(
+            SystemState::Degraded { .. } => Ok(CheckResult::fail(
                 "System is degraded after a partial teardown. Run 'nails recover' before activating."
-                    .into(),
+                    .to_string(),
             )),
         }
     }

@@ -64,7 +64,7 @@ impl<F: Filesystem> PreFlightCheck<F> for SymlinkSupportCheck {
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
         if !fs.supports_symlinks(&self.hidden_volume_root)? {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "Filesystem at {} does not support symbolic links. \
                  The hidden volume must be formatted with a Linux filesystem (e.g. ext4). \
                  FAT32 and exFAT do not support symlinks.",

@@ -135,10 +135,14 @@ impl<F: Filesystem> NailsManager<F> {
             SuspiciousNailsReferenceCheck::new(self.config.hidden_volume_root.clone());
         match suspicious_check.run(&self.filesystem)? {
             crate::CheckResult::Pass(_) | crate::CheckResult::Warn(_) => {}
-            crate::CheckResult::Fail(message) => {
+            crate::CheckResult::Fail {
+                message,
+                remediation,
+            } => {
                 return Err(NailsError::PreFlightCheckFailed(vec![(
                     suspicious_check_name::<F>(),
                     message,
+                    remediation,
                 )]));
             }
         }
@@ -179,6 +183,7 @@ impl<F: Filesystem> NailsManager<F> {
             return Err(NailsError::PreFlightCheckFailed(vec![(
                 "nixos-config-staging".to_string(),
                 e.to_string(),
+                None,
             )]));
         }
 
@@ -223,6 +228,7 @@ impl<F: Filesystem> NailsManager<F> {
                     NailsError::PreFlightCheckFailed(vec![(
                         "nixos-build-target".to_string(),
                         message,
+                        None,
                     )])
                 }
                 other => other,
@@ -248,6 +254,10 @@ impl<F: Filesystem> NailsManager<F> {
             AttachState::Unattached(reason) => Err(NailsError::PreFlightCheckFailed(vec![(
                 "hidden-root".to_string(),
                 reason,
+                Some(
+                    "Mount the hidden storage at its configured root, then re-run activation."
+                        .to_string(),
+                ),
             )])),
         }
     }
@@ -257,9 +267,13 @@ impl<F: Filesystem> NailsManager<F> {
         let check = OverlayTargetsCheck::new(self.config.clone());
         match check.run(&self.filesystem)? {
             crate::CheckResult::Pass(_) | crate::CheckResult::Warn(_) => Ok(()),
-            crate::CheckResult::Fail(message) => Err(NailsError::PreFlightCheckFailed(vec![(
+            crate::CheckResult::Fail {
+                message,
+                remediation,
+            } => Err(NailsError::PreFlightCheckFailed(vec![(
                 <OverlayTargetsCheck as PreFlightCheck<F>>::name(&check).to_string(),
                 message,
+                remediation,
             )])),
         }
     }
@@ -384,7 +398,7 @@ mod tests {
         match manager.enforce_hidden_root_attached().unwrap_err() {
             NailsError::PreFlightCheckFailed(failures) => {
                 assert!(
-                    failures.iter().any(|(name, _)| name == "hidden-root"),
+                    failures.iter().any(|(name, _, _)| name == "hidden-root"),
                     "expected a hidden-root failure, got {failures:?}"
                 );
             }
@@ -417,7 +431,7 @@ mod tests {
         {
             NailsError::PreFlightCheckFailed(failures) => {
                 assert!(
-                    failures.iter().any(|(name, _)| name == "hidden-root"),
+                    failures.iter().any(|(name, _, _)| name == "hidden-root"),
                     "expected a hidden-root failure, got {failures:?}"
                 );
             }

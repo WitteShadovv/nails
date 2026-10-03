@@ -47,6 +47,9 @@ pub mod manager;
 // Pre-flight validation system
 pub mod preflight;
 
+/// Actionable diagnostics rendering (remediation lists, error hints).
+pub mod reporter;
+
 // Forensic validation system
 pub mod verify;
 
@@ -159,6 +162,7 @@ pub use preflight::{
     PreFlightRegistry, SpaceCheck, StateCheck, StorageReadinessCheck,
     SuspiciousNailsReferenceCheck, SwapCheck,
 };
+pub use reporter::{Diagnostic, remediation_steps};
 
 // Forensic validation exports
 pub use verify::{

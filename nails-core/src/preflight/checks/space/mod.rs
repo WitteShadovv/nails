@@ -148,7 +148,7 @@ impl<F: Filesystem> PreFlightCheck<F> for SpaceCheck {
             )))
         } else {
             // FAIL: < 50% of minimum (blocked)
-            Ok(CheckResult::Fail(format!(
+            Ok(CheckResult::fail(format!(
                 "Only {} available. Free up at least {} before activation.",
                 Self::format_space(available_mb),
                 Self::format_space(minimum_mb)

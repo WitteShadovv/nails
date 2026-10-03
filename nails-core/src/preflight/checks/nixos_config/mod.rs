@@ -87,8 +87,8 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
         // Check 1: Base hardware-configuration.nix exists
         let base_config = PathBuf::from("/etc/nixos/hardware-configuration.nix");
         if !fs.path_exists(&base_config)? {
-            return Ok(CheckResult::Fail(
-                "Base /etc/nixos/hardware-configuration.nix not found. Ensure NixOS is properly installed.".into()
+            return Ok(CheckResult::fail(
+                "Base /etc/nixos/hardware-configuration.nix not found. Ensure NixOS is properly installed.".to_string()
             ));
         }
 
@@ -96,16 +96,16 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
         let base_config_nix = PathBuf::from("/etc/nixos/configuration.nix");
         let base_flake = PathBuf::from("/etc/nixos/flake.nix");
         if !fs.path_exists(&base_config_nix)? && !fs.path_exists(&base_flake)? {
-            return Ok(CheckResult::Fail(
+            return Ok(CheckResult::fail(
                 "Base NixOS config missing: neither /etc/nixos/configuration.nix nor /etc/nixos/flake.nix exists."
-                    .into(),
+                    .to_string(),
             ));
         }
 
         // Check 3: Hidden etc/nixos directory exists
         let hidden_etc_nixos = self.hidden_storage_path.join("etc/nixos");
         if !fs.path_exists(&hidden_etc_nixos)? {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "Hidden storage missing etc/nixos/ directory at {}. Create this directory with modified hardware-configuration.nix.",
                 hidden_etc_nixos.display()
             )));
@@ -119,7 +119,7 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
         // hidden NixOS layout.
         let modified_config = hidden_etc_nixos.join("hardware-configuration.nix");
         if !fs.path_exists(&modified_config)? {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "Modified hardware-configuration.nix not found at {}. Run `nails init <root>` to stage the hidden NixOS layout.",
                 modified_config.display()
             )));
@@ -129,7 +129,7 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
         let content = fs.read_file_content(&modified_config)?;
         let expected_import = crate::artifacts::NIXOS_IMPORT_MARKER;
         if !crate::nixos::contains_nails_import(&content) {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "Modified hardware-configuration.nix missing hidden import. Add: imports = [ ... {} ];",
                 expected_import
             )));
@@ -144,7 +144,7 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
             .hidden_storage_path
             .join("config/nixos/configuration.nix");
         if !fs.path_exists(&hidden_config)? {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "Hidden configuration.nix not found at {}. Run `nails init <root>` to stage the hidden NixOS layout.",
                 hidden_config.display()
             )));
@@ -165,7 +165,7 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
             &hidden_etc_nixos,
             &hidden_module,
         )? {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "NixOS configuration failed to parse before mounting: {message}"
             )));
         }

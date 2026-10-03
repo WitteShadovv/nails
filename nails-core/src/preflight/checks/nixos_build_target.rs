@@ -75,7 +75,7 @@ impl NixOSBuildTargetCheck {
 
         // Check 2: Directory must exist
         if !fs.path_exists(&dir)? {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "Flake directory '{}' not found.",
                 dir.display()
             )));
@@ -84,7 +84,7 @@ impl NixOSBuildTargetCheck {
         // Check 3: flake.nix must exist in directory
         let flake_nix = dir.join("flake.nix");
         if !fs.path_exists(&flake_nix)? {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "flake.nix not found in '{}'.",
                 dir.display()
             )));
@@ -98,7 +98,7 @@ impl NixOSBuildTargetCheck {
 
     fn check_selected_flake_dir<F: Filesystem>(&self, fs: &F, dir: &Path) -> Result<CheckResult> {
         if !fs.path_exists(dir)? {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "Flake directory '{}' not found.",
                 dir.display()
             )));
@@ -106,7 +106,7 @@ impl NixOSBuildTargetCheck {
 
         let flake_nix = dir.join("flake.nix");
         if !fs.path_exists(&flake_nix)? {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "flake.nix not found in '{}'.",
                 dir.display()
             )));
@@ -146,7 +146,7 @@ impl NixOSBuildTargetCheck {
             HostTarget::OverlayOnly => {
                 CheckResult::Pass("Overlay-only: no NixOS build target".to_string())
             }
-            HostTarget::None => CheckResult::Fail(
+            HostTarget::None => CheckResult::fail(
                 "No NixOS configuration found. Provide --flake or ensure /etc/nixos contains flake.nix or configuration.nix.".to_string()
             ),
         })

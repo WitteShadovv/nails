@@ -105,7 +105,7 @@ impl HostToolsCheck {
         for item in &missing {
             message.push_str(&format!("\n  {} (package: {})", item.tool, item.package));
         }
-        CheckResult::Fail(message)
+        CheckResult::fail(message)
     }
 }
 

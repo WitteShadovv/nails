@@ -130,7 +130,7 @@ impl<F: Filesystem> PreFlightCheck<F> for MountNamespaceCheck {
         let self_ns = match namespace_id(SELF_NS) {
             Ok(id) => id,
             Err(e) => {
-                return Ok(CheckResult::Fail(format!(
+                return Ok(CheckResult::fail(format!(
                     "Cannot read {SELF_NS} to verify the mount namespace ({e}). \
                      Run activation as root from a host shell."
                 )));
@@ -143,7 +143,7 @@ impl<F: Filesystem> PreFlightCheck<F> for MountNamespaceCheck {
         let init_ns = match namespace_id(INIT_NS) {
             Ok(id) => id,
             Err(e) => {
-                return Ok(CheckResult::Fail(format!(
+                return Ok(CheckResult::fail(format!(
                     "Cannot read {INIT_NS} to compare against PID 1's mount namespace ({e}). \
                      Run activation as root from a host shell, not inside a container."
                 )));
@@ -151,12 +151,12 @@ impl<F: Filesystem> PreFlightCheck<F> for MountNamespaceCheck {
         };
 
         if !namespaces_match(self_ns, init_ns) {
-            return Ok(CheckResult::Fail(
+            return Ok(CheckResult::fail(
                 "NAILS is running in a private mount namespace, not PID 1's. Overlay mounts \
                  would stay invisible to the rest of the system and the decoy disk would keep \
                  showing through. Run activation from a host root shell - not under `unshare -m`, \
                  a service with MountFlags=private, or a container."
-                    .into(),
+                    .to_string(),
             ));
         }
 
@@ -164,7 +164,7 @@ impl<F: Filesystem> PreFlightCheck<F> for MountNamespaceCheck {
         let mountinfo = match std::fs::read_to_string(MOUNTINFO) {
             Ok(content) => content,
             Err(e) => {
-                return Ok(CheckResult::Fail(format!(
+                return Ok(CheckResult::fail(format!(
                     "Cannot read {MOUNTINFO} to verify root mount propagation ({e}). \
                      Run activation as root from a host shell."
                 )));
@@ -172,12 +172,12 @@ impl<F: Filesystem> PreFlightCheck<F> for MountNamespaceCheck {
         };
 
         if !root_has_shared_propagation(&mountinfo) {
-            return Ok(CheckResult::Fail(
+            return Ok(CheckResult::fail(
                 "The root mount `/` does not have shared propagation, so overlay mounts would \
                  not reach the rest of the system. Make `/` shared (`mount --make-rshared /`) \
                  and run activation from a host root shell - not under `unshare -m` or a service \
                  with MountFlags=private."
-                    .into(),
+                    .to_string(),
             ));
         }
 

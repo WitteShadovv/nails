@@ -97,7 +97,7 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
     fn run(&self, fs: &F) -> Result<CheckResult> {
         // Step 1: Check path exists
         if !fs.path_exists(&self.hidden_volume_root)? {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "Hidden volume not found at {}. Mount volume before activation.",
                 self.hidden_volume_root.display()
             )));
@@ -105,7 +105,7 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
 
         // Step 2: Check path is mounted
         if !fs.is_mounted(&self.hidden_volume_root)? {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "Hidden volume at {} is not mounted. Unlock the hidden storage backend and mount its filesystem at this path before activation (see docs/backends.md).",
                 self.hidden_volume_root.display()
             )));
@@ -113,7 +113,7 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
 
         // Step 3: Check path is writable
         if !fs.is_writable(&self.hidden_volume_root)? {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "Hidden volume at {} is not writable. Check permissions.",
                 self.hidden_volume_root.display()
             )));

@@ -33,7 +33,7 @@ impl CheckRow {
         let (status, message) = match result {
             CheckResult::Pass(msg) => ("pass", msg.clone()),
             CheckResult::Warn(msg) => ("warn", msg.clone()),
-            CheckResult::Fail(msg) => ("fail", msg.clone()),
+            CheckResult::Fail { message, .. } => ("fail", message.clone()),
         };
         Self {
             name,
@@ -394,7 +394,7 @@ mod tests {
         let mut rows = rows();
         rows.push(CheckRow::from_result(
             "c".into(),
-            &CheckResult::Fail("boom".into()),
+            &CheckResult::fail("boom".to_string()),
         ));
         let report = report(rows);
         assert!(!report.ready);

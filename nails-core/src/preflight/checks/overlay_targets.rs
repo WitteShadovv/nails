@@ -345,7 +345,7 @@ impl<F: Filesystem> PreFlightCheck<F> for OverlayTargetsCheck {
         }
 
         if !problems.is_empty() {
-            return Ok(CheckResult::Fail(problems.join("; ")));
+            return Ok(CheckResult::fail(problems.join("; ")));
         }
 
         let accepted = self.config.accepted_leaky_exclusions(tmp_is_tmpfs);

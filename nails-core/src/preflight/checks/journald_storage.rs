@@ -144,12 +144,12 @@ impl<F: Filesystem> PreFlightCheck<F> for JournaldStorageCheck {
             ));
         }
 
-        Ok(CheckResult::Fail(
+        Ok(CheckResult::fail(
             "journald keeps a persistent journal on the decoy disk (/var/log/journal). \
              Records written before /var is overlaid can survive deactivation and reboot. \
              Set Storage=volatile in journald.conf, or pass --allow-persistent-journal to \
              accept the risk."
-                .into(),
+                .to_string(),
         ))
     }
 }

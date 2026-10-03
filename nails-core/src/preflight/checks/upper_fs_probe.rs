@@ -96,7 +96,7 @@ fn classify(missing: MissingCapability, fstype: Option<&str>) -> CheckResult {
         None => String::new(),
     };
 
-    CheckResult::Fail(format!(
+    CheckResult::fail(format!(
         "The hidden root cannot host an overlayfs upper layer: {cause}.{detected} \
          Overlayfs needs a local Linux filesystem that supports trusted (or user) \
          xattrs, a valid readdir d_type, and whiteouts; NFS, CIFS/SMB, 9p, most \
@@ -138,7 +138,7 @@ impl<F: Filesystem> PreFlightCheck<F> for UpperFsCapabilityCheck {
                     .flatten();
                 Ok(classify(missing, fstype.as_deref()))
             }
-            Err(ProbeError::Scaffold(e)) => Ok(CheckResult::Fail(format!(
+            Err(ProbeError::Scaffold(e)) => Ok(CheckResult::fail(format!(
                 "Could not verify the hidden root at {} can host an overlayfs upper layer ({e}). \
                  Ensure it is a mounted, writable, local Linux filesystem and retry.",
                 self.hidden_volume_root.display()

@@ -1,14 +1,29 @@
 use nix::errno::Errno;
 use thiserror::Error;
 
+/// One failed pre-flight check: its name, the problem, and the concrete action
+/// that clears it (when the check named one).
+///
+/// Carrying the remediation alongside the message lets the CLI state each
+/// problem once and then print a single deduplicated list of actions, rather
+/// than inlining `Run: ...` fragments into every failure line.
+pub type PreFlightFailure = (String, String, Option<String>);
+
+/// A collection of [`PreFlightFailure`]s in check-execution order.
+pub type PreFlightFailures = Vec<PreFlightFailure>;
+
 /// Format pre-flight check failures for display
 ///
-/// Converts a list of (check_name, error_message) tuples into a formatted
-/// multi-line string for error output.
-fn format_preflight_errors(errors: &[(String, String)]) -> String {
+/// Converts the (check_name, message, remediation) tuples into a formatted
+/// multi-line string for error output. The remediation, when present, is shown
+/// on its own indented line so the problem and its fix read as a pair.
+fn format_preflight_errors(errors: &[PreFlightFailure]) -> String {
     errors
         .iter()
-        .map(|(name, msg)| format!("  - [{}] {}", name, msg))
+        .map(|(name, msg, remediation)| match remediation {
+            Some(fix) => format!("  - [{}] {}\n    fix: {}", name, msg, fix),
+            None => format!("  - [{}] {}", name, msg),
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -96,13 +111,13 @@ pub enum NailsError {
     /// ```
     /// # use nails_core::NailsError;
     /// let failures = vec![
-    ///     ("swap-check".to_string(), "Swap is enabled - disable before activation".to_string()),
-    ///     ("space-check".to_string(), "Insufficient disk space: 100 MB available, 500 MB required".to_string()),
+    ///     ("swap-check".to_string(), "Swap is enabled".to_string(), Some("sudo swapoff -a".to_string())),
+    ///     ("space-check".to_string(), "Insufficient disk space: 100 MB available, 500 MB required".to_string(), None),
     /// ];
     /// let err = NailsError::PreFlightCheckFailed(failures);
     /// ```
     #[error("Pre-flight checks failed:\n{}", format_preflight_errors(.0))]
-    PreFlightCheckFailed(Vec<(String, String)>),
+    PreFlightCheckFailed(crate::error::PreFlightFailures),
 
     /// Configuration error (invalid format, missing required field, etc.)
     #[error("Configuration error: {0}")]
@@ -278,6 +293,45 @@ pub enum NailsError {
     IoError(#[from] std::io::Error),
 }
 
+impl NailsError {
+    /// A single, concrete next step for this error, when one exists.
+    ///
+    /// The CLI shows this below the error line so a failure names not just what
+    /// went wrong but what to do about it. Errors whose message is already fully
+    /// actionable, or for which no general advice applies, return `None` and are
+    /// shown without a hint rather than with filler guidance.
+    pub fn hint(&self) -> Option<&'static str> {
+        match self {
+            NailsError::PermissionDenied(_) => Some("Re-run the command as root (sudo)."),
+            NailsError::OperationInProgress { .. } => Some(
+                "Wait for the running operation to finish, or clear a stale lock if none is running.",
+            ),
+            NailsError::LockPoisoned(_) => Some(
+                "A previous run crashed while holding the lock; re-run once no nails process is active.",
+            ),
+            NailsError::SwapDisableFailed => Some("Disable swap manually: sudo swapoff -a"),
+            NailsError::ConfigNotFound { .. } => {
+                Some("Create nails.toml or pass its path with --config.")
+            }
+            NailsError::UnsafeConfigPath { .. } => Some(
+                "Point the configuration paths at the hidden volume, not a decoy or world-writable location.",
+            ),
+            NailsError::UnsupportedPlatform { .. } => {
+                Some("This host is not a supported platform; see the platform requirements.")
+            }
+            NailsError::DeactivationIncomplete { .. } => {
+                Some("Reboot to clear the remaining mounts, then verify with `nails status`.")
+            }
+            NailsError::RefusedUnmanagedUnmount { .. } => Some(
+                "Unmount the path yourself if it is safe to do so; nails will not touch a mount it did not create.",
+            ),
+            // Pre-flight failures carry their own per-check remediation list, and
+            // the remaining variants are already specific about the fault.
+            _ => None,
+        }
+    }
+}
+
 /// Result type alias for NAILS operations
 ///
 /// All public functions return Result<T, NailsError> for explicit error handling.
@@ -342,6 +396,7 @@ mod tests {
         let err = NailsError::PreFlightCheckFailed(vec![(
             "hidden-volume".to_string(),
             "Hidden volume not mounted".to_string(),
+            None,
         )]);
         assert!(err.to_string().contains("Pre-flight checks failed"));
         assert!(err.to_string().contains("hidden-volume"));
@@ -456,8 +511,11 @@ mod tests {
         let _err2 = NailsError::InvalidState("test".into());
         let _err3 = NailsError::OverlayError("test".into());
         let _err4 = NailsError::NixOSError("test".into());
-        let _err5 =
-            NailsError::PreFlightCheckFailed(vec![("test-check".to_string(), "test".to_string())]);
+        let _err5 = NailsError::PreFlightCheckFailed(vec![(
+            "test-check".to_string(),
+            "test".to_string(),
+            None,
+        )]);
         let _err6 = NailsError::ConfigError("test".into());
         let _err7 = NailsError::InvalidArgument("test".into());
         let _err8 = NailsError::IoError(std::io::Error::other("test"));

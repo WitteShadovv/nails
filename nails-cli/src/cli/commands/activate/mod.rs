@@ -233,7 +233,10 @@ pub fn execute(
             );
             match suspicious_check.run(mgr.filesystem()) {
                 Ok(nails_core::CheckResult::Pass(_)) | Ok(nails_core::CheckResult::Warn(_)) => {}
-                Ok(nails_core::CheckResult::Fail(message)) => {
+                Ok(nails_core::CheckResult::Fail {
+                    message,
+                    remediation,
+                }) => {
                     return report_error(
                         json,
                         "activate",
@@ -243,6 +246,7 @@ pub fn execute(
                             nails_core::NailsError::PreFlightCheckFailed(vec![(
                                 suspicious_check_name(),
                                 message,
+                                remediation,
                             )])
                             .to_string(),
                         ),

@@ -180,7 +180,7 @@ fn failing_check_is_reported_through_tracing() {
     match err {
         NailsError::PreFlightCheckFailed(failures) => {
             assert!(
-                failures.iter().any(|(name, _)| name == "hidden-volume"),
+                failures.iter().any(|(name, _, _)| name == "hidden-volume"),
                 "expected the hidden-volume check among {failures:?}"
             );
         }

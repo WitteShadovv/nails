@@ -95,7 +95,7 @@ impl<F: Filesystem> PreFlightCheck<F> for OverlayCompatibilityCheck {
             let size = fs.get_directory_size(target)?;
 
             if size > self.max_snapshot_bytes {
-                return Ok(CheckResult::Fail(format!(
+                return Ok(CheckResult::fail(format!(
                     "Cannot overlay {} ({}, {}): exceeds {} snapshot limit. \
                      Add {} to overlay_exclusions.",
                     target.display(),

@@ -319,7 +319,7 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
         }
 
         if !issues.is_empty() {
-            Ok(CheckResult::Fail(format!(
+            Ok(CheckResult::fail(format!(
                 "Storage not ready: {}",
                 issues.join(". ")
             )))

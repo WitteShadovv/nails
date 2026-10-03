@@ -144,7 +144,7 @@ fn kill_graphical_session_with_executor<E: SessionCommandExecutor>(
 
     let target_uid = ctx.target_uid.ok_or_else(|| {
         NailsError::InvalidState(
-            "Unable to determine target user for --kill-session. Run via sudo from the GUI session"
+            "Unable to determine target user for --session kill. Run via sudo from the GUI session"
                 .to_string(),
         )
     })?;

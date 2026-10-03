@@ -59,11 +59,40 @@ pub enum CheckResult {
     Pass(String),
     /// Check passed with warning - activation can proceed but user should be aware
     Warn(String),
-    /// Check failed - activation is blocked
-    Fail(String),
+    /// Check failed - activation is blocked.
+    ///
+    /// `message` states the problem; `remediation`, when present, is the single
+    /// concrete action that clears it (a command to run, a volume to mount).
+    /// Keeping the two apart lets the diagnostics layer state every problem once
+    /// and then gather one deduplicated, ordered list of actions, instead of
+    /// burying `Run: ...` fragments inside each failure line.
+    Fail {
+        /// What is wrong.
+        message: String,
+        /// The one action that fixes it, if there is a specific one.
+        remediation: Option<String>,
+    },
 }
 
 impl CheckResult {
+    /// Construct a failure with no specific remediation.
+    ///
+    /// The diagnostics layer shows the generic guidance for such a failure.
+    pub fn fail(message: impl Into<String>) -> Self {
+        CheckResult::Fail {
+            message: message.into(),
+            remediation: None,
+        }
+    }
+
+    /// Construct a failure with a concrete remediation action.
+    pub fn fail_with(message: impl Into<String>, remediation: impl Into<String>) -> Self {
+        CheckResult::Fail {
+            message: message.into(),
+            remediation: Some(remediation.into()),
+        }
+    }
+
     /// Returns true if the check result is a Pass
     pub fn is_pass(&self) -> bool {
         matches!(self, CheckResult::Pass(_))
@@ -76,7 +105,7 @@ impl CheckResult {
 
     /// Returns true if the check result is a Failure
     pub fn is_fail(&self) -> bool {
-        matches!(self, CheckResult::Fail(_))
+        matches!(self, CheckResult::Fail { .. })
     }
 
     /// Returns the message contained in the result
@@ -84,7 +113,15 @@ impl CheckResult {
         match self {
             CheckResult::Pass(msg) => msg,
             CheckResult::Warn(msg) => msg,
-            CheckResult::Fail(msg) => msg,
+            CheckResult::Fail { message, .. } => message,
+        }
+    }
+
+    /// Returns the remediation action for a failure, if one was attached.
+    pub fn remediation(&self) -> Option<&str> {
+        match self {
+            CheckResult::Fail { remediation, .. } => remediation.as_deref(),
+            _ => None,
         }
     }
 }
@@ -98,7 +135,7 @@ impl fmt::Display for CheckResult {
         let mark = match self {
             CheckResult::Pass(_) => Mark::Pass,
             CheckResult::Warn(_) => Mark::Warn,
-            CheckResult::Fail(_) => Mark::Fail,
+            CheckResult::Fail { .. } => Mark::Fail,
         };
         f.write_str(&crate::output::style(Stream::Stderr).marked(mark, self.message()))
     }
@@ -137,7 +174,7 @@ impl fmt::Display for CheckResult {
 ///
 ///     fn run(&self, fs: &F) -> Result<CheckResult> {
 ///         match fs.swap_is_enabled() {
-///             Ok(true) => Ok(CheckResult::Fail("Swap is enabled - disable before activation".to_string())),
+///             Ok(true) => Ok(CheckResult::fail("Swap is enabled - disable before activation".to_string())),
 ///             Ok(false) => Ok(CheckResult::Pass("Swap is disabled".to_string())),
 ///             Err(e) => Err(e),
 ///         }
@@ -165,7 +202,7 @@ pub trait PreFlightCheck<F: Filesystem>: Send + Sync {
     ///
     /// * `Ok(CheckResult::Pass(_))` - Check succeeded
     /// * `Ok(CheckResult::Warn(_))` - Check passed with warnings
-    /// * `Ok(CheckResult::Fail(_))` - Check failed (blocks activation)
+    /// * `Ok(CheckResult::fail(_))` - Check failed (blocks activation)
     /// * `Err(_)` - Check encountered an error during execution
     fn run(&self, fs: &F) -> Result<CheckResult>;
 }
@@ -255,22 +292,26 @@ impl<F: Filesystem> PreFlightRegistry<F> {
     /// Even when Err is returned, all results are included in the error message.
     pub fn run_all(&self, fs: &F) -> Result<Vec<(String, CheckResult)>> {
         let mut results: Vec<(String, CheckResult)> = Vec::new();
-        let mut failed_checks: Vec<(String, String)> = Vec::new();
+        let mut failed_checks: crate::error::PreFlightFailures = Vec::new();
 
         for check in &self.checks {
             let name = check.name().to_string();
             match check.run(fs) {
                 Ok(result) => {
                     if result.is_fail() {
-                        failed_checks.push((name.clone(), result.message().to_string()));
+                        failed_checks.push((
+                            name.clone(),
+                            result.message().to_string(),
+                            result.remediation().map(str::to_string),
+                        ));
                     }
                     results.push((name, result));
                 }
                 Err(e) => {
                     // Convert execution error to Fail result
                     let fail_msg = format!("Check execution error: {}", e);
-                    failed_checks.push((name.clone(), fail_msg.clone()));
-                    results.push((name, CheckResult::Fail(fail_msg)));
+                    failed_checks.push((name.clone(), fail_msg.clone(), None));
+                    results.push((name, CheckResult::fail(fail_msg)));
                 }
             }
         }
@@ -313,7 +354,7 @@ impl<F: Filesystem> PreFlightRegistry<F> {
                     all_passed = false;
                     results.push((
                         name,
-                        CheckResult::Fail(format!("Check execution error: {}", e)),
+                        CheckResult::fail(format!("Check execution error: {}", e)),
                     ));
                 }
             }
@@ -351,19 +392,19 @@ mod tests {
     fn test_check_result_is_pass() {
         assert!(CheckResult::Pass("ok".to_string()).is_pass());
         assert!(!CheckResult::Warn("w".to_string()).is_pass());
-        assert!(!CheckResult::Fail("f".to_string()).is_pass());
+        assert!(!CheckResult::fail("f".to_string()).is_pass());
     }
 
     #[test]
     fn test_check_result_is_warn() {
         assert!(CheckResult::Warn("w".to_string()).is_warn());
         assert!(!CheckResult::Pass("ok".to_string()).is_warn());
-        assert!(!CheckResult::Fail("f".to_string()).is_warn());
+        assert!(!CheckResult::fail("f".to_string()).is_warn());
     }
 
     #[test]
     fn test_check_result_is_fail() {
-        assert!(CheckResult::Fail("f".to_string()).is_fail());
+        assert!(CheckResult::fail("f".to_string()).is_fail());
         assert!(!CheckResult::Pass("ok".to_string()).is_fail());
         assert!(!CheckResult::Warn("w".to_string()).is_fail());
     }
@@ -379,7 +420,7 @@ mod tests {
             "warn msg"
         );
         assert_eq!(
-            CheckResult::Fail("fail msg".to_string()).message(),
+            CheckResult::fail("fail msg".to_string()).message(),
             "fail msg"
         );
     }
@@ -400,7 +441,7 @@ mod tests {
 
     #[test]
     fn test_check_result_display_fail() {
-        let result = CheckResult::Fail("Critical issue".to_string());
+        let result = CheckResult::fail("Critical issue".to_string());
         let s = format!("{}", result);
         assert!(s.contains("Critical issue") || s.contains("FAIL"));
     }
@@ -433,10 +474,10 @@ mod tests {
     fn test_check_result_display_follows_stderr_colour_only() {
         let _guard = crate::output::RenderStateTestGuard::new();
         crate::output::configure(true, false, false);
-        assert!(!format!("{}", CheckResult::Fail("x".into())).contains('\u{001b}'));
+        assert!(!format!("{}", CheckResult::fail("x".to_string())).contains('\u{001b}'));
 
         crate::output::configure(false, true, false);
-        assert!(format!("{}", CheckResult::Fail("x".into())).contains('\u{001b}'));
+        assert!(format!("{}", CheckResult::fail("x".to_string())).contains('\u{001b}'));
     }
 
     #[test]

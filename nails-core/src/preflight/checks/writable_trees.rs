@@ -80,7 +80,7 @@ impl<F: Filesystem> PreFlightCheck<F> for WritableTreesCheck {
         }
 
         if !leaking.is_empty() {
-            return Ok(CheckResult::Fail(format!(
+            return Ok(CheckResult::fail(format!(
                 "these base-OS trees would stay writable on the decoy (neither overlaid nor kept \
                  read-only), leaking the hidden session's package and /usr writes to the decoy \
                  disk: {}. Overlay them or keep them read-only for the session.",

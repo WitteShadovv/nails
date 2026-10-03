@@ -253,6 +253,7 @@ impl<F: Filesystem> NailsManager<F> {
                         NailsError::PreFlightCheckFailed(vec![(
                             "nixos-build-target".to_string(),
                             message,
+                            None,
                         )])
                     }
                     other => other,
@@ -360,7 +361,7 @@ impl<F: Filesystem> NailsManager<F> {
         // events only; the subscriber the CLI installs honours `--quiet`/`--json`
         // and chooses the stream, so the core never prints check results ad hoc
         // (and never reports the same check twice).
-        let mut failed_checks: Vec<(String, String)> = Vec::new();
+        let mut failed_checks: crate::error::PreFlightFailures = Vec::new();
 
         for (name, result) in &results {
             match result {
@@ -370,9 +371,12 @@ impl<F: Filesystem> NailsManager<F> {
                 crate::preflight::CheckResult::Warn(msg) => {
                     tracing::warn!(check = %name, result = "warn", msg = %msg, "Preflight check warning");
                 }
-                crate::preflight::CheckResult::Fail(msg) => {
-                    tracing::error!(check = %name, result = "fail", msg = %msg, "Preflight check failed");
-                    failed_checks.push((name.clone(), msg.clone()));
+                crate::preflight::CheckResult::Fail {
+                    message,
+                    remediation,
+                } => {
+                    tracing::error!(check = %name, result = "fail", msg = %message, "Preflight check failed");
+                    failed_checks.push((name.clone(), message.clone(), remediation.clone()));
                 }
             }
         }

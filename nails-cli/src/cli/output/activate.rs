@@ -203,16 +203,15 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
                 failed_checks: Some(
                     failures
                         .iter()
-                        .map(|(name, reason)| FailedCheckJson {
+                        .map(|(name, reason, remediation)| FailedCheckJson {
                             name: name.clone(),
                             reason: reason.clone(),
-                            // The per-check `reason` already carries the specific
-                            // remediation (for example "commit a flake.lock"), so
-                            // the generic hint must stay neutral rather than
-                            // assuming every failure is an unmounted hidden volume.
-                            fix: Some(
-                                "Resolve the reported check and retry activation".to_string(),
-                            ),
+                            // Prefer the check's own remediation; fall back to the
+                            // neutral generic action rather than assuming every
+                            // failure is an unmounted hidden volume.
+                            fix: Some(remediation.clone().unwrap_or_else(|| {
+                                "Resolve the reported check and retry activation".to_string()
+                            })),
                         })
                         .collect(),
                 ),
@@ -289,7 +288,7 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
                     Tone::Red
                 )
             );
-            for (name, reason) in failures {
+            for (name, reason, _remediation) in failures {
                 eprintln!(
                     "  {} {}: {}",
                     err.glyph(Mark::Bullet),
@@ -297,15 +296,32 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
                     reason
                 );
             }
-            eprintln!(
-                "\n  {}",
-                err.paint(
-                    "Fix: Resolve the checks listed above and retry activation",
-                    Tone::Yellow
-                )
-            );
+            // One ordered, deduplicated remediation list drawn from the checks
+            // that named a concrete fix; a missing hidden volume that cascades
+            // into several failures therefore shows a single step. When no check
+            // named a fix, fall back to the neutral generic action.
+            let steps = nails_core::remediation_steps(failures);
+            if steps.is_empty() {
+                eprintln!(
+                    "\n  {}",
+                    err.paint(
+                        format_args!("Fix: {}", nails_core::reporter::GENERIC_REMEDIATION),
+                        Tone::Yellow
+                    )
+                );
+            } else {
+                eprintln!("\n  {}", err.paint("To fix:", Tone::Yellow));
+                for step in steps {
+                    eprintln!(
+                        "    {} {}",
+                        err.glyph(Mark::Bullet),
+                        err.paint(step, Tone::Yellow)
+                    );
+                }
+            }
         }
         Err(e) => {
+            let diagnostic = nails_core::Diagnostic::from_error(e);
             eprintln!(
                 "{}",
                 err.paint_bold(
@@ -317,6 +333,11 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
                 "  {}",
                 err.paint("Automatic rollback completed.", Tone::Dim)
             );
+            // Surface the error's single concrete next step when it has one, so
+            // the failure names not just what went wrong but what to do about it.
+            if let Some(hint) = diagnostic.hint {
+                eprintln!("  {}", err.paint(format_args!("Fix: {hint}"), Tone::Yellow));
+            }
             if let Some(state) = manager_state_label(manager) {
                 eprintln!("  {}: {}", err.paint("Current state", Tone::Dim), state);
             }
@@ -647,8 +668,8 @@ mod tests {
     fn test_json_preflight_failure() {
         let (manager, _tempdir) = TestWorld::new().manager();
         let err = NailsError::PreFlightCheckFailed(vec![
-            ("hidden_volume".to_string(), "not mounted".to_string()),
-            ("swap".to_string(), "swap enabled".to_string()),
+            ("hidden_volume".to_string(), "not mounted".to_string(), None),
+            ("swap".to_string(), "swap enabled".to_string(), None),
         ]);
         let output = build_activate_json_output(&Err(err), 0.1, &manager, None);
         let json = serde_json::to_value(&output).unwrap();
@@ -671,6 +692,7 @@ mod tests {
             "flake.lock not found in '/tmp/flake-target'. Activation does not run \
              'nix flake update' automatically; commit a flake.lock and retry activation."
                 .to_string(),
+            None,
         )]);
         let output = build_activate_json_output(&Err(err), 0.1, &manager, None);
         let checks = output.failed_checks.expect("failed checks present");
@@ -812,6 +834,7 @@ mod tests {
         let err = NailsError::PreFlightCheckFailed(vec![(
             "hidden_volume".to_string(),
             "not mounted".to_string(),
+            None,
         )]);
         print_activate_human(&Err(err), 0.1, &manager, None, &OutputSettings::default());
     }

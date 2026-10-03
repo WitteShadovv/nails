@@ -63,8 +63,9 @@ impl<F: Filesystem> PreFlightCheck<F> for SwapCheck {
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
         if fs.swap_is_enabled()? {
-            Ok(CheckResult::Fail(
-                "Swap is enabled. Disable swap: sudo swapoff -a".into(),
+            Ok(CheckResult::fail_with(
+                "Swap is enabled; sensitive memory could be written to persistent storage",
+                "Disable all active swap: sudo swapoff -a",
             ))
         } else {
             Ok(CheckResult::Pass(
@@ -128,7 +129,11 @@ mod tests {
         assert!(result.is_fail());
         assert_eq!(
             result.message(),
-            "Swap is enabled. Disable swap: sudo swapoff -a"
+            "Swap is enabled; sensitive memory could be written to persistent storage"
+        );
+        assert_eq!(
+            result.remediation(),
+            Some("Disable all active swap: sudo swapoff -a")
         );
     }
 }
