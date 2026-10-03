@@ -33,6 +33,7 @@ fn build_registry_includes_the_shared_checks() {
         flake_target_already_validated: false,
         selected_flake_dir: None,
         operator: None,
+        allow_persistent_journal: false,
     };
 
     let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
@@ -66,6 +67,7 @@ fn overlay_only_registry_drops_the_nixos_checks() {
         flake_target_already_validated: false,
         selected_flake_dir: None,
         operator: None,
+        allow_persistent_journal: false,
     };
 
     let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
@@ -92,10 +94,10 @@ fn activation_and_check_build_identical_check_lists() {
     // the same `preflight_registry`, so for the same inputs the sequence of
     // check names is identical — only individual checks' write behaviour differs.
     let activation = manager
-        .preflight_registry(false, false)
+        .preflight_registry(false, false, false)
         .expect("activation registry");
     let check = manager
-        .preflight_registry(false, true)
+        .preflight_registry(false, true, false)
         .expect("check registry");
 
     let activation_names = check_names(&activation.run_all_detailed(&MockFilesystem::new()).0);
@@ -121,6 +123,7 @@ fn read_only_registry_creates_nothing() {
         flake_target_already_validated: false,
         selected_flake_dir: None,
         operator: None,
+        allow_persistent_journal: false,
     };
 
     let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
@@ -172,7 +175,7 @@ fn failing_check_is_reported_through_tracing() {
     let manager = NailsManager::new(fs, config, state_path);
 
     let err = manager
-        .run_preflight_checks(true)
+        .run_preflight_checks(true, false)
         .expect_err("an unmounted hidden volume must fail preflight");
     match err {
         NailsError::PreFlightCheckFailed(failures) => {

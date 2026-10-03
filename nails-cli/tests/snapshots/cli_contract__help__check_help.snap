@@ -26,6 +26,11 @@ Options:
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
 
+      --allow-persistent-journal
+          Report a persistent decoy journal as a warning instead of a failure
+
+          Mirrors `activate --allow-persistent-journal` so `check`/`--dry-run` reflects what activation would do.
+
   -q, --quiet
           Print only errors and the final result
 

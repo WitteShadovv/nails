@@ -781,3 +781,14 @@ fn panic_hook_keeps_paths_and_payload_off_stderr() {
         "the default panic line leaked to stderr: {stderr}"
     );
 }
+
+#[test]
+fn journal_relinquish_command_is_built_via_the_tool_resolver() {
+    // The pre-detach relinquish resolves journalctl through the trust-checked
+    // host-tool resolver (Program::Tool), not from the caller's PATH, and runs
+    // exactly `journalctl --relinquish-var`.
+    use nails_core::process::ProcessCommand;
+
+    let expected = ProcessCommand::tool("journalctl").arg("--relinquish-var");
+    assert_eq!(super::journal_relinquish_command(), expected);
+}

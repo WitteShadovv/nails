@@ -26,6 +26,7 @@ impl<F: Filesystem> NailsManager<F> {
         overlay_only: bool,
         verbosity: Verbosity,
         pre_activation_cleanup: bool,
+        allow_persistent_journal: bool,
     ) -> Result<()> {
         // The overlay-target floor holds even with --no-preflight, and runs
         // before every side effect below (symlink probe, history cleanup,
@@ -186,7 +187,7 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         let step_timer = Stopwatch::start();
-        self.run_preflight_checks(overlay_only)?;
+        self.run_preflight_checks(overlay_only, allow_persistent_journal)?;
 
         if verbosity >= Verbosity::Normal {
             // Pre-flight checks event with duration_ms field
@@ -411,7 +412,7 @@ mod tests {
         let staged = root.join("etc/nixos/nails/configuration.nix");
 
         match manager
-            .run_preflight_phase(false, true, Verbosity::Normal, false)
+            .run_preflight_phase(false, true, Verbosity::Normal, false, false)
             .unwrap_err()
         {
             NailsError::PreFlightCheckFailed(failures) => {
@@ -438,7 +439,7 @@ mod tests {
         let staged = root.join("etc/nixos/nails/configuration.nix");
 
         manager
-            .run_preflight_phase(true, true, Verbosity::Normal, false)
+            .run_preflight_phase(true, true, Verbosity::Normal, false, false)
             .expect("--no-preflight never fails the preflight phase");
 
         assert!(
@@ -470,7 +471,7 @@ mod tests {
 
         let staged = root.join("etc/nixos/nails/configuration.nix");
         manager
-            .run_preflight_phase(true, false, Verbosity::Normal, false)
+            .run_preflight_phase(true, false, Verbosity::Normal, false, false)
             .expect("an attached root passes the preflight phase");
 
         assert!(
@@ -489,7 +490,7 @@ mod tests {
         let staged = root.join("etc/nixos/nails/configuration.nix");
 
         manager
-            .run_preflight_phase(true, true, Verbosity::Normal, false)
+            .run_preflight_phase(true, true, Verbosity::Normal, false, false)
             .expect("overlay-only --no-preflight passes the preflight phase");
 
         assert!(
@@ -518,7 +519,7 @@ mod tests {
         let staged = root.join("etc/nixos/nails/configuration.nix");
 
         manager
-            .run_preflight_phase(true, false, Verbosity::Normal, false)
+            .run_preflight_phase(true, false, Verbosity::Normal, false, false)
             .expect("an FHS host passes the preflight phase");
 
         assert!(

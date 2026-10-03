@@ -32,7 +32,7 @@ mod gate;
 mod guards;
 mod nixos_build;
 mod nixos_switch;
-mod overlay_mount;
+pub(crate) mod overlay_mount;
 mod preflight;
 pub(crate) mod rollback;
 mod session;
@@ -436,6 +436,7 @@ impl<F: Filesystem> NailsManager<F> {
             options.overlay_only,
             verbosity,
             options.pre_activation_cleanup,
+            options.allow_persistent_journal,
         )?;
 
         // Step 4: Handle --kill-session before taking the StateGuard.

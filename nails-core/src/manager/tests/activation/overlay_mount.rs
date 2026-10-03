@@ -1481,3 +1481,106 @@ fn test_read_only_guard_fails_closed_when_root_is_busy() {
     assert!(!fs.mock_is_read_only_guarded(Path::new("/")));
     assert!(!fs.mock_is_read_only_guarded(Path::new("/usr")));
 }
+
+#[test]
+#[serial]
+fn test_var_overlay_rehomes_journald_with_restart_flush_and_fd_check() {
+    // A successful /var overlay relinquishes the persistent journal before the
+    // mount, then re-homes journald with a real restart (stop socket, stop
+    // service, start socket, start service), flushes, and verifies its fds.
+    let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/var"]);
+    let mock_hidden_vol = temp_dir.path();
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlay_mode: OverlayMode::Auto,
+        overlay_exclusions: vec![],
+        overlay_exclusions_remove: vec![],
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path.clone(),
+    )));
+
+    let _ = crate::manager::helpers::drain_recorded_service_actions();
+
+    let result = manager.lock().unwrap().activate(true);
+    assert!(result.is_ok(), "activation should succeed: {result:?}");
+
+    let actions = crate::manager::helpers::drain_recorded_service_actions();
+    let idx = |needle: &str| {
+        actions
+            .iter()
+            .position(|a| a == needle)
+            .unwrap_or_else(|| panic!("missing {needle} in {actions:?}"))
+    };
+
+    let relinquish = idx("journalctl:relinquish-var");
+    let stop_socket = idx("stop:systemd-journald.socket");
+    let stop_service = idx("stop:systemd-journald");
+    let start_socket = idx("start:systemd-journald.socket");
+    let start_service = idx("start:systemd-journald");
+    let flush = idx("journalctl:flush");
+    let verify = idx("verify-journald-fds");
+
+    assert!(
+        relinquish < stop_socket,
+        "relinquish-var must precede the restart: {actions:?}"
+    );
+    assert!(
+        stop_socket < stop_service && stop_service < start_socket && start_socket < start_service,
+        "journald restart must stop socket, stop service, then start both: {actions:?}"
+    );
+    assert!(
+        start_service < flush && flush < verify,
+        "flush then fd verification must follow the restart: {actions:?}"
+    );
+}
+
+#[test]
+#[serial]
+fn test_var_overlay_rolls_back_when_journald_fds_not_in_overlay() {
+    // If journald's fds do not resolve into the overlay after the restart, the
+    // whole activation rolls back rather than leaking to the decoy journal.
+    use crate::manager::activation::overlay_mount::{
+        JournaldFdCheck, set_forced_journald_fd_check,
+    };
+
+    let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/var"]);
+    let mock_hidden_vol = temp_dir.path();
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlay_mode: OverlayMode::Auto,
+        overlay_exclusions: vec![],
+        overlay_exclusions_remove: vec![],
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path.clone(),
+    )));
+
+    set_forced_journald_fd_check(Some(JournaldFdCheck::NotInOverlay));
+    let result = manager.lock().unwrap().activate(true);
+    // Reset immediately so the forced outcome cannot leak into another test.
+    set_forced_journald_fd_check(None);
+
+    assert!(
+        result.is_err(),
+        "activation must fail when journald fds are off the overlay"
+    );
+    assert!(
+        !fs.is_mounted(Path::new("/var")).unwrap(),
+        "/var overlay must be unmounted after the re-home rollback"
+    );
+}

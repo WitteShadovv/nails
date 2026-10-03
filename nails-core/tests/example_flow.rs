@@ -182,7 +182,7 @@ fn test_preflight_check_rejection() {
     let manager = NailsManager::new(fs, config, state_path);
 
     // run_preflight_checks should fail because hidden volume doesn't "exist" in the mock
-    let result = manager.run_preflight_checks(false);
+    let result = manager.run_preflight_checks(false, false);
     assert!(
         result.is_err(),
         "Preflight should reject when hidden volume not present in mock"

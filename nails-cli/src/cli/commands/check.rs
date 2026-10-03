@@ -58,17 +58,18 @@ pub fn execute(
     // hidden NixOS layout only happens on the activation path, never here.
     let manager = super::build_nixos_manager(config, state_path, overlay_only);
 
-    let registry = match manager.preflight_registry(overlay_only, true) {
-        Ok(registry) => registry,
-        Err(e) => {
-            return report_error(
-                json,
-                COMMAND,
-                ExitStatus::Failed,
-                ErrorBody::new("check_error", format!("could not assemble checks: {e}")),
-            );
-        }
-    };
+    let registry =
+        match manager.preflight_registry(overlay_only, true, args.allow_persistent_journal) {
+            Ok(registry) => registry,
+            Err(e) => {
+                return report_error(
+                    json,
+                    COMMAND,
+                    ExitStatus::Failed,
+                    ErrorBody::new("check_error", format!("could not assemble checks: {e}")),
+                );
+            }
+        };
 
     let (results, _) = registry.run_all_detailed(manager.filesystem());
     let checks: Vec<CheckRow> = results

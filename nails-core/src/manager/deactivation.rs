@@ -4,7 +4,10 @@
 //! `DeactivationOrchestrator`, with thin wrappers for mode-specific pre/post work.
 
 use super::NailsManager;
-use super::{ensure_run_current_system_symlink, select_system_profile, start_service_and_socket};
+use super::{
+    ensure_run_current_system_symlink, restart_service_and_socket, select_system_profile,
+    start_service_and_socket,
+};
 use crate::cleanup::history::{history_cleanup_homes, truncate_all_history_files_for_homes};
 use crate::deactivation::test_gate::maybe_block_after_deactivating_state_transition;
 #[cfg(not(test))]
@@ -442,7 +445,11 @@ impl<F: Filesystem> NailsManager<F> {
         }
         if overlay_context.var_was_overlaid {
             tracing::info!("Restarting systemd-journald...");
-            start_service_and_socket("systemd-journald");
+            // A real restart, not a start: after the /var overlay is torn down
+            // journald is still running with its fds on the (now unmounted)
+            // overlay, so a plain start is a no-op that leaves it detached from the
+            // base journal. Restarting forces it to reopen on the decoy's /var.
+            restart_service_and_socket("systemd-journald");
         }
 
         let _report = result?;

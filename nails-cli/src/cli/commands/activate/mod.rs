@@ -61,6 +61,7 @@ pub fn execute(
         overlay_only,
         risky_services: _,
         terminate_interactive: _,
+        allow_persistent_journal,
     } = *args;
     let verbosity = settings.verbosity;
     let json = settings.is_json();
@@ -103,6 +104,7 @@ pub fn execute(
         let check_args = crate::cli::args::CheckArgs {
             overlay_only,
             nixos_flake: nixos_flake.clone(),
+            allow_persistent_journal,
         };
         return super::check::execute(settings, &check_args, config_override);
     }
@@ -306,7 +308,8 @@ pub fn execute(
 
         {
             let mgr = &manager;
-            if let Err(e) = mgr.run_preflight_checks(overlay_only) {
+            if let Err(e) = mgr.run_preflight_checks(overlay_only, options.allow_persistent_journal)
+            {
                 return report_error(
                     json,
                     "activate",

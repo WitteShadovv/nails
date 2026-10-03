@@ -660,7 +660,7 @@ fn test_init_generated_config_is_preflight_ready_for_activation() {
     stage_hidden_nixos_config(&fs, &hidden_root, false).unwrap();
 
     let manager = NailsManager::new(fs.clone(), config.clone(), config.state_file_path.clone());
-    manager.run_preflight_checks(false).unwrap();
+    manager.run_preflight_checks(false, false).unwrap();
 
     let work_nix = hidden_root.join(".work/nix");
     assert_eq!(fs.mock_get_permissions(&work_nix), Some(0o700));

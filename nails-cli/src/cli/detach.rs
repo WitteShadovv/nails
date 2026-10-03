@@ -7,7 +7,7 @@ use nails_core::constants::{
     ENV_DETACHED, ENV_DISPLAY_MANAGER, ENV_FORCE_DETACH, ENV_LOGIND_AVAILABLE, ENV_SESSION_ID,
     ENV_SKIP_DETACH, ENV_TARGET_UID, ENV_TARGET_USER,
 };
-use nails_core::process::SYSTEM_TOOL_DIRS;
+use nails_core::process::{ProcessCommand, ProcessRunner, RealProcessRunner, SYSTEM_TOOL_DIRS};
 use nails_core::{NailsError, SessionContext, SessionKind, detect_session_context};
 
 /// The NixOS setuid-wrapper directory, prepended to the detached worker's search
@@ -135,6 +135,30 @@ fn report_session_detach(exe_path: &Path, json: bool) {
 
 fn should_skip_detach() -> bool {
     env::var_os(ENV_SKIP_DETACH).is_some()
+}
+
+/// The `journalctl --relinquish-var` command run before a detach handoff.
+///
+/// Resolved through [`nails_core::process::Program::Tool`], so it comes from the
+/// same fixed, root-owned system directories the process runner uses, never from
+/// the caller's `PATH`.
+fn journal_relinquish_command() -> ProcessCommand {
+    ProcessCommand::tool("journalctl").arg("--relinquish-var")
+}
+
+/// Hand the persistent journal back to volatile storage before detaching.
+///
+/// `journalctl --relinquish-var` makes journald stop writing to the on-disk
+/// `/var/log/journal` and buffer to the volatile `/run/log/journal` instead, so
+/// nothing lands on the persistent decoy journal between this handoff and the
+/// point the detached worker overlays `/var`. Best-effort and deliberately
+/// ordered before the `systemd-run` spawn below: a host without a persistent
+/// journal (or without journald, or a test runtime where the runner refuses host
+/// commands) simply has nothing to relinquish.
+fn relinquish_journal_before_detach() {
+    if let Err(err) = RealProcessRunner.run(&journal_relinquish_command()) {
+        tracing::debug!(%err, "journalctl --relinquish-var before detach was skipped");
+    }
 }
 
 /// Resolve the `systemd-run` program to execute for a detach handoff.
@@ -285,6 +309,11 @@ pub fn maybe_detach_for_session_kill(
         NailsError::InvalidState(format!("Failed to get current executable path: {}", e))
     })?;
 
+    // Relinquish the persistent journal before handing off, so journald is not
+    // still writing to the base /var/log/journal while the worker prepares to
+    // overlay /var.
+    relinquish_journal_before_detach();
+
     // Build systemd-run command.
     //
     // No --scope flag creates a proper transient service, and no --unit lets
@@ -366,6 +395,10 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
     })?;
 
     let argv: Vec<OsString> = std::env::args_os().collect();
+
+    // Relinquish the persistent journal before handing off (see the session-kill
+    // path above for the rationale).
+    relinquish_journal_before_detach();
 
     // No --unit (systemd auto-names `run-u<NNN>.service`) and a neutral
     // --description keep the product name and hidden-root command line out of the

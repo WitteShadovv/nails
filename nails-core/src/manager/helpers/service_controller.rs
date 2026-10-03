@@ -63,6 +63,22 @@ fn run_systemctl(args: &[&str]) -> std::result::Result<std::process::Output, std
     )
 }
 
+/// Run `journalctl` with the given arguments through the shared runner.
+///
+/// Resolved through the trust-checked host-tool resolver at call time: the
+/// journal control verbs run after `/var` is overlaid but `journalctl` itself
+/// lives outside `/var` (the system profile on NixOS, `/usr/bin` on an FHS
+/// host), so no pre-overlay cache is needed. Bounded by a short deadline so a
+/// hung flush cannot freeze activation.
+fn run_journalctl(args: &[&str]) -> std::result::Result<std::process::Output, std::io::Error> {
+    let path = super::command_cache::nixos_tool_path("journalctl");
+    run_command(
+        &ProcessCommand::exact(path)
+            .args(args)
+            .deadline(std::time::Duration::from_secs(30)),
+    )
+}
+
 /// The cached `nix` command, resolved against the pre-overlay store when set.
 fn nix_command(args: &[&str]) -> ProcessCommand {
     let path = super::NIX_COMMAND_PATH
@@ -396,6 +412,71 @@ impl ServiceController {
             .map_err(|err| io_context_error(&format!("starting {service}"), err))
     }
 
+    /// Restart a service and its socket: stop the socket first (so socket
+    /// activation cannot race the restart), stop the service, then start the
+    /// socket and service again.
+    ///
+    /// Unlike [`start_service_and_socket`](Self::start_service_and_socket), this
+    /// forces an *already-active* unit to tear down and reopen. systemd-journald
+    /// re-homing relies on that: a plain `start` on the still-running journald is
+    /// a no-op that leaves it holding the pre-overlay `/var/log/journal` file
+    /// descriptors, so the hidden session's records keep landing on the decoy
+    /// disk; a restart makes journald close those fds and reopen under the
+    /// freshly mounted overlay.
+    pub fn restart_service_and_socket(service: &str) -> std::result::Result<(), std::io::Error> {
+        if Self::should_skip() {
+            #[cfg(test)]
+            {
+                recorder::record(format!("stop:{service}.socket"));
+                recorder::record(format!("stop:{service}"));
+                recorder::record(format!("start:{service}.socket"));
+                recorder::record(format!("start:{service}"));
+            }
+            return Ok(());
+        }
+
+        let socket_name = format!("{service}.socket");
+        tracing::debug!(service, "Stopping {socket_name} before restart");
+        let _ = run_systemctl(&["stop", socket_name.as_str()]);
+        tracing::debug!(service, "Stopping {service} before restart");
+        let _ = run_systemctl(&["stop", service]);
+
+        Self::start_service_and_socket(service)
+    }
+
+    /// Hand the persistent journal back to volatile storage.
+    ///
+    /// `journalctl --relinquish-var` makes journald stop writing to the on-disk
+    /// `/var/log/journal` and flush to the volatile `/run/log/journal` instead,
+    /// so no further records land on the persistent decoy journal between here
+    /// and the point `/var` is overlaid. Best-effort: a host without a persistent
+    /// journal (or without journald) simply has nothing to relinquish.
+    pub fn relinquish_journal_var() -> std::result::Result<(), std::io::Error> {
+        if Self::should_skip() {
+            #[cfg(test)]
+            recorder::record("journalctl:relinquish-var");
+            return Ok(());
+        }
+
+        run_journalctl(&["--relinquish-var"]).map(|_| ())
+    }
+
+    /// Flush volatile journal records into the persistent journal.
+    ///
+    /// Run after `/var` is overlaid and journald has reopened: `journalctl
+    /// --flush` moves anything journald buffered in `/run/log/journal` into
+    /// `/var/log/journal`, which now resolves into the overlay upper, so those
+    /// records never touch the decoy disk.
+    pub fn flush_journal() -> std::result::Result<(), std::io::Error> {
+        if Self::should_skip() {
+            #[cfg(test)]
+            recorder::record("journalctl:flush");
+            return Ok(());
+        }
+
+        run_journalctl(&["--flush"]).map(|_| ())
+    }
+
     /// Best-effort restart of services that were stopped during overlay mounting
     /// when the mount ultimately fails. Starts both socket and service for each,
     /// logging — never propagating — a failure so teardown always completes.
@@ -423,6 +504,16 @@ impl ServiceController {
 pub(crate) fn start_service_and_socket(service: &str) {
     if let Err(err) = ServiceController::start_service_and_socket(service) {
         tracing::warn!(service, %err, "failed to start service");
+    }
+}
+
+/// Best-effort wrapper around [`ServiceController::restart_service_and_socket`].
+///
+/// Teardown and re-home call sites must always run to completion, so a failed
+/// restart is logged, not propagated.
+pub(crate) fn restart_service_and_socket(service: &str) {
+    if let Err(err) = ServiceController::restart_service_and_socket(service) {
+        tracing::warn!(service, %err, "failed to restart service");
     }
 }
 

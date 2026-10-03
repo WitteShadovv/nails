@@ -41,6 +41,9 @@ pub struct RegistryInputs {
     /// `None` (the default used by unit tests that build inputs directly) makes
     /// that check report a skipped Pass instead of inspecting anything.
     pub operator: Option<crate::TargetUser>,
+    /// Accept a persistent decoy journal (the `--allow-persistent-journal` flag):
+    /// the journald-storage check then warns instead of failing.
+    pub allow_persistent_journal: bool,
 }
 
 /// Assemble the pre-flight check registry for a set of [`RegistryInputs`].
@@ -64,9 +67,9 @@ pub fn build_registry<F: Filesystem>(
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
         BackendDetectCheck, BinaryLocationCheck, HiddenVolumeCheck, HostToolsCheck,
-        InheritedAutostartCheck, MountNamespaceCheck, NixOSBuildTargetCheck, NixOSConfigCheck,
-        OverlayCompatibilityCheck, OverlayTargetsCheck, SnapshotMemoryCheck, SpaceCheck,
-        StateCheck, StorageReadinessCheck, SuspiciousNailsReferenceCheck, SwapCheck,
+        InheritedAutostartCheck, JournaldStorageCheck, MountNamespaceCheck, NixOSBuildTargetCheck,
+        NixOSConfigCheck, OverlayCompatibilityCheck, OverlayTargetsCheck, SnapshotMemoryCheck,
+        SpaceCheck, StateCheck, StorageReadinessCheck, SuspiciousNailsReferenceCheck, SwapCheck,
         SymlinkSupportCheck, UpperFsCapabilityCheck, WritableTreesCheck,
     };
 
@@ -196,6 +199,13 @@ pub fn build_registry<F: Filesystem>(
 
     registry.add_check(Box::new(SwapCheck));
 
+    // Refuses a persistent decoy journal (where hidden-session records logged
+    // before /var is overlaid would survive on the decoy disk) unless the operator
+    // accepts the risk with --allow-persistent-journal.
+    registry.add_check(Box::new(JournaldStorageCheck::new(
+        inputs.allow_persistent_journal,
+    )));
+
     registry.add_check(Box::new(SpaceCheck::new(
         config.hidden_volume_root.clone(),
         config.minimum_space_mb,
@@ -271,6 +281,7 @@ impl<F: Filesystem> NailsManager<F> {
         &self,
         overlay_only: bool,
         read_only: bool,
+        allow_persistent_journal: bool,
     ) -> Result<PreFlightRegistry<F>> {
         let flake_target_already_validated = self
             .nixos_builder
@@ -290,6 +301,7 @@ impl<F: Filesystem> NailsManager<F> {
             // Resolve the operator best-effort so the inherited-autostart check
             // can inspect the decoy state; an unresolved operator simply skips it.
             operator: crate::TargetUser::resolve().ok(),
+            allow_persistent_journal,
         };
 
         build_registry(&self.filesystem, &self.config, &inputs)
@@ -333,9 +345,13 @@ impl<F: Filesystem> NailsManager<F> {
     /// // Activate with preflight checks (no_preflight = false)
     /// let result = manager.activate(false);
     /// ```
-    pub fn run_preflight_checks(&self, overlay_only: bool) -> Result<()> {
+    pub fn run_preflight_checks(
+        &self,
+        overlay_only: bool,
+        allow_persistent_journal: bool,
+    ) -> Result<()> {
         // Activation keeps the auto-creating storage check: `read_only = false`.
-        let registry = self.preflight_registry(overlay_only, false)?;
+        let registry = self.preflight_registry(overlay_only, false, allow_persistent_journal)?;
 
         // Run all checks (always get full results for display)
         let (results, all_passed) = registry.run_all_detailed(&self.filesystem);

@@ -341,6 +341,17 @@ impl<F: Filesystem> NailsManager<F> {
             let staged_submounts =
                 self.stage_submounts(&overlay.target, tracker, &mut submount_attachments);
 
+            // Hand the persistent journal back to volatile storage before /var is
+            // overlaid, so journald is not still writing to the base
+            // /var/log/journal when the overlay goes on. Covers the paths where
+            // journald is not stopped as an overlay writer (e.g. a pivot mount);
+            // when it was stopped, this is simply a no-op. Best-effort.
+            if overlay.target == Path::new("/var")
+                && let Err(e) = crate::manager::helpers::ServiceController::relinquish_journal_var()
+            {
+                tracing::warn!(error = %e, "journalctl --relinquish-var before /var overlay failed");
+            }
+
             match crate::overlay::mount_overlay_with_strategy(
                 &self.filesystem,
                 &lower_refs,
@@ -519,6 +530,13 @@ impl<F: Filesystem> NailsManager<F> {
                 continue;
             }
 
+            // journald on /var is re-homed by the dedicated block below, which
+            // forces a real restart and verifies its fds land in the overlay. A
+            // plain start here would leave it holding the pre-overlay journal fds.
+            if overlay.target == Path::new("/var") && service == "systemd-journald" {
+                continue;
+            }
+
             start_service_and_socket(service);
             tracing::info!(
                 service = %service,
@@ -532,16 +550,37 @@ impl<F: Filesystem> NailsManager<F> {
             *nix_overlay_succeeded = true;
         }
 
-        // After /var overlay is mounted, unconditionally restart systemd-journald
-        // to ensure all logs are written to the overlay (prevents underlay leakage)
-        if overlay.target == Path::new("/var") {
-            start_service_and_socket("systemd-journald");
-            tracing::info!(
-                "Restarted systemd-journald after /var overlay mount (prevents log leakage)"
-            );
-        }
-
         tracker.push_mount(MountInfo::persistent(overlay.target.clone()));
+
+        // After /var overlay is mounted, re-home journald onto the overlay: a real
+        // restart (not a no-op start on the still-running unit) so it drops the
+        // pre-overlay /var/log/journal fds and reopens under the overlay, a flush
+        // so any volatile records move into the overlay, and a check that its
+        // journal fds actually resolve into the overlay upper. If they do not,
+        // journald is still writing to the decoy journal, so the whole activation
+        // is rolled back rather than leaking the hidden session. The mount is
+        // already tracked above, so the rollback unmounts the /var overlay too.
+        if overlay.target == Path::new("/var")
+            && let Err(e) = self.rehome_journald_onto_overlay()
+        {
+            tracing::error!(
+                error = %e,
+                rollback = true,
+                "journald did not re-home onto the /var overlay; rolling back activation"
+            );
+            if let Err(rollback_err) = tracker.rollback_all() {
+                tracing::error!(
+                    error = %rollback_err,
+                    context = "journald_rehome_failure",
+                    rollback = true,
+                    "Rollback failed after journald re-home failure"
+                );
+            }
+            // journald was restarted above but its fds are off the overlay (or the
+            // overlay is now gone); bring it back onto the base /var.
+            crate::manager::helpers::start_service_and_socket("systemd-journald");
+            return Err(e);
+        }
 
         // After /etc overlay is mounted, inject the NAILS import block into the
         // overlayed hardware-configuration.nix. Writes land in the upper layer —
@@ -602,6 +641,47 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         Ok(())
+    }
+
+    /// Re-home systemd-journald onto the freshly mounted `/var` overlay.
+    ///
+    /// Restarts journald (forcing it to drop the pre-overlay `/var/log/journal`
+    /// file descriptors and reopen under the overlay), flushes any volatile
+    /// records into the now-overlaid persistent journal, then verifies journald's
+    /// journal fds resolve into the overlay upper. A positive mismatch — journald
+    /// still holding fds on the decoy's base `/var` — is an error so the caller
+    /// rolls the activation back; an indeterminate result (journald absent, or its
+    /// fds not inspectable) is logged and tolerated rather than aborting a
+    /// legitimate activation.
+    fn rehome_journald_onto_overlay(&self) -> Result<()> {
+        crate::manager::helpers::restart_service_and_socket("systemd-journald");
+        tracing::info!(
+            "Restarted systemd-journald after /var overlay mount (prevents log leakage)"
+        );
+
+        if let Err(err) = crate::manager::helpers::ServiceController::flush_journal() {
+            // A failed flush leaves at most volatile records in /run (tmpfs), which
+            // never reach the decoy disk, so it is logged rather than fatal.
+            tracing::warn!(error = %err, "journalctl --flush after /var overlay failed");
+        }
+
+        match journald_fds_resolve_into_overlay() {
+            JournaldFdCheck::InOverlay => {
+                tracing::debug!("journald journal fds resolve into the /var overlay upper");
+                Ok(())
+            }
+            JournaldFdCheck::Indeterminate => {
+                tracing::warn!(
+                    "could not confirm journald journal fds are on the /var overlay; continuing"
+                );
+                Ok(())
+            }
+            JournaldFdCheck::NotInOverlay => Err(NailsError::InvalidState(
+                "systemd-journald is still writing to the base /var after the overlay mount; \
+                 refusing to leak the hidden session to the decoy journal"
+                    .into(),
+            )),
+        }
     }
 
     /// Keep the decoy's base-OS trees read-only for the duration of the session.
@@ -724,4 +804,131 @@ impl<F: Filesystem> NailsManager<F> {
 
         Ok(())
     }
+}
+
+/// Outcome of inspecting systemd-journald's open journal file descriptors after
+/// the `/var` overlay is mounted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JournaldFdCheck {
+    /// Every persistent-journal fd journald holds is backed by the overlay, so
+    /// the hidden session's records land on the overlay upper, not the decoy.
+    InOverlay,
+    /// journald still holds a persistent-journal fd on the base `/var`: records
+    /// are leaking to the decoy journal, so activation must roll back.
+    NotInOverlay,
+    /// journald could not be inspected (not running, no persistent-journal fds, or
+    /// `/proc` unreadable). Tolerated rather than treated as a leak.
+    Indeterminate,
+}
+
+// In a test or runtime-safety context, force the fd check to a given outcome.
+// Host inspection is skipped there, so a test that needs to exercise the re-home
+// rollback path pins the result to `JournaldFdCheck::NotInOverlay`.
+#[cfg(test)]
+thread_local! {
+    static FORCED_JOURNALD_FD_CHECK: std::cell::Cell<Option<JournaldFdCheck>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_forced_journald_fd_check(value: Option<JournaldFdCheck>) {
+    FORCED_JOURNALD_FD_CHECK.with(|cell| cell.set(value));
+}
+
+/// Decide whether journald's journal fds resolve into the `/var` overlay.
+///
+/// In a test or runtime-safety context no host is touched: the check records that
+/// it ran and returns the forced outcome (if a test pinned one) or
+/// [`JournaldFdCheck::Indeterminate`]. On a real host it inspects journald's open
+/// file descriptors.
+fn journald_fds_resolve_into_overlay() -> JournaldFdCheck {
+    if crate::runtime_safety::should_skip_host_interaction() {
+        #[cfg(test)]
+        {
+            crate::manager::helpers::record_service_action("verify-journald-fds");
+            if let Some(forced) = FORCED_JOURNALD_FD_CHECK.with(std::cell::Cell::get) {
+                return forced;
+            }
+        }
+        return JournaldFdCheck::Indeterminate;
+    }
+
+    inspect_journald_journal_fds()
+}
+
+/// Inspect systemd-journald's open persistent-journal fds on a real host.
+///
+/// Finds journald by its process name, then compares the device of each open
+/// `/var/log/journal/...` fd — read through `/proc/<pid>/fd/<n>`, so it reflects
+/// the *open file*, not the path — against the device of the overlaid
+/// `/var/log/journal`. A pre-overlay fd still refers to the underlying base file
+/// (a different device) even though its symlink text is unchanged, so a device
+/// mismatch is a positive leak signal.
+fn inspect_journald_journal_fds() -> JournaldFdCheck {
+    use std::os::unix::fs::MetadataExt;
+
+    let Some(pid) = find_pid_by_comm("systemd-journal") else {
+        return JournaldFdCheck::Indeterminate;
+    };
+
+    let overlay_dev = match std::fs::metadata("/var/log/journal") {
+        Ok(meta) => meta.dev(),
+        Err(_) => return JournaldFdCheck::Indeterminate,
+    };
+
+    let fd_dir = format!("/proc/{pid}/fd");
+    let entries = match std::fs::read_dir(&fd_dir) {
+        Ok(entries) => entries,
+        Err(_) => return JournaldFdCheck::Indeterminate,
+    };
+
+    let mut found_persistent_fd = false;
+    for entry in entries.flatten() {
+        let fd_path = entry.path();
+        let Ok(target) = std::fs::read_link(&fd_path) else {
+            continue;
+        };
+        // Only persistent-journal fds matter: a volatile /run/log/journal fd is on
+        // tmpfs and never reaches the decoy disk.
+        if !target.to_string_lossy().starts_with("/var/log/journal/") {
+            continue;
+        }
+        // Stat through /proc/<pid>/fd/<n> so the device belongs to the open file,
+        // not to whatever currently occupies that path through the overlay.
+        let Ok(meta) = std::fs::metadata(&fd_path) else {
+            continue;
+        };
+        found_persistent_fd = true;
+        if meta.dev() != overlay_dev {
+            return JournaldFdCheck::NotInOverlay;
+        }
+    }
+
+    if found_persistent_fd {
+        JournaldFdCheck::InOverlay
+    } else {
+        JournaldFdCheck::Indeterminate
+    }
+}
+
+/// Find the PID of the first process whose `comm` matches `name`.
+///
+/// `comm` is truncated by the kernel to 15 bytes, so callers pass the truncated
+/// form (journald's is `systemd-journal`). Returns `None` when no match is found
+/// or `/proc` cannot be read.
+fn find_pid_by_comm(name: &str) -> Option<u32> {
+    let entries = std::fs::read_dir("/proc").ok()?;
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(pid) = file_name.to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        let comm_path = format!("/proc/{pid}/comm");
+        if let Ok(comm) = std::fs::read_to_string(&comm_path)
+            && comm.trim_end() == name
+        {
+            return Some(pid);
+        }
+    }
+    None
 }

@@ -69,7 +69,7 @@ pub use preflight_runner::{RegistryInputs, build_registry};
 // Re-export crate-internal helpers so sub-modules (e.g., activation) can use `super::*`
 pub(crate) use helpers::{
     clean_stale_network_config, create_overlay_config, ensure_run_current_system_symlink,
-    select_system_profile, start_service_and_socket,
+    restart_service_and_socket, select_system_profile, start_service_and_socket,
 };
 
 /// Central orchestrator for all NAILS operations

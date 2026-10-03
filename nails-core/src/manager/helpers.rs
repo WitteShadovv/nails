@@ -19,7 +19,9 @@ static NIX_COMMAND_PATH: OnceLock<PathBuf> = OnceLock::new();
 static CURRENT_SYSTEM_PROFILE: OnceLock<PathBuf> = OnceLock::new();
 
 pub(crate) use runtime_cache::{cache_nix_overlay_runtime_commands, cached_current_system_profile};
-pub(crate) use service_controller::{ServiceController, start_service_and_socket};
+pub(crate) use service_controller::{
+    ServiceController, restart_service_and_socket, start_service_and_socket,
+};
 
 #[cfg(test)]
 pub(crate) use service_controller::recorder::drain as drain_recorded_service_actions;

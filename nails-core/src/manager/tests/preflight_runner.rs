@@ -231,7 +231,7 @@ fn test_preflight_success_creates_missing_state_json_not_state_directory() {
     let manager = NailsManager::new(fs, config, state_path.clone());
 
     manager
-        .run_preflight_checks(false)
+        .run_preflight_checks(false, false)
         .expect("preflight should create initial state.json");
 
     assert!(state_path.is_file(), "preflight should create state.json");
@@ -285,7 +285,7 @@ fn test_preflight_rejects_state_path_directory() {
     };
 
     let manager = NailsManager::new(fs, config, state_path.clone());
-    let err = manager.run_preflight_checks(false).unwrap_err();
+    let err = manager.run_preflight_checks(false, false).unwrap_err();
 
     assert!(
         err.to_string().contains("State path must be a file"),

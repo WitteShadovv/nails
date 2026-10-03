@@ -129,6 +129,15 @@ pub struct ActivateOptions {
     /// choice, not from the detach-handoff skip flag: a detached worker still
     /// validates the flake post-overlay, while a real `--no-preflight` opts out.
     pub skip_flake_validation: bool,
+
+    /// Accept a persistent decoy journal (the `--allow-persistent-journal` flag).
+    ///
+    /// Off by default: the journald-storage pre-flight check fails when
+    /// systemd-journald keeps a persistent journal on the decoy disk. Setting
+    /// this downgrades that failure to a warning, so an operator who understands
+    /// that records logged before `/var` is overlaid may survive on the decoy can
+    /// proceed anyway.
+    pub allow_persistent_journal: bool,
 }
 
 impl Default for ActivateOptions {
@@ -149,6 +158,7 @@ impl Default for ActivateOptions {
             session_kill_confirmed: false,
             pre_activation_cleanup: DEFAULT_PRE_ACTIVATION_CLEANUP,
             skip_flake_validation: false,
+            allow_persistent_journal: false,
         }
     }
 }
@@ -355,6 +365,7 @@ mod tests {
             session_kill_confirmed: false,
             pre_activation_cleanup: true,
             skip_flake_validation: false,
+            allow_persistent_journal: false,
         };
         assert!(opts.validate().is_ok());
     }

@@ -94,6 +94,11 @@ Options:
 
           Off by default: activation refuses to SIGKILL a program a user is working in and aborts before mounting. This flag ends them anyway.
 
+      --allow-persistent-journal
+          Accept a persistent decoy journal instead of refusing activation
+
+          By default activation refuses a host whose systemd-journald keeps a persistent journal on the decoy disk, because records written before `/var` is overlaid can survive deactivation and reboot. This flag accepts that risk.
+
   -h, --help
           Print help (see a summary with '-h')
 
