@@ -214,11 +214,25 @@ install -m0755 ./result/bin/nails /mnt/data/nails
    sudo nails deactivate
    ```
 
-7. **After reboot, verify from the decoy side.**
+7. **Verify from the hidden side, before handing the machine over.**
+
+   The binary lives on the hidden volume, not on the decoy, so run `verify`
+   from the hidden environment — while it is still mounted, before
+   `deactivate`:
 
    ```bash
-   nails verify
+   sudo nails verify --deep
    ```
+
+   To inspect the decoy itself for leftovers, mount its image or partition
+   read-only and scan it offline, again from the hidden side:
+
+   ```bash
+   sudo nails verify --offline --root /mnt/decoy
+   ```
+
+   A clean result reports what it checked and lists what it did not; it is
+   evidence against known artifacts, not proof the decoy is untouched.
 
 ## Command overview
 
@@ -229,7 +243,7 @@ install -m0755 ./result/bin/nails /mnt/data/nails
 | `sudo nails deactivate` | Return to decoy state and reboot |
 | `sudo nails emergency` | Remove overlays without waiting for a reboot |
 | `nails status` | Show current state, security posture, and hidden-volume disk usage |
-| `nails verify` | Scan for known/common host artifacts after deactivation |
+| `nails verify` | Scan for known/common host artifacts (from the hidden side, live or `--offline`) |
 | `sudo nails reset-upper <TARGET>` | Delete a target's persistent overlay upper (while deactivated) |
 | `nails notify-dispatch` | Dispatch pending desktop notifications on login |
 | `nails config path\|show\|validate` | Locate, inspect or check the configuration file |

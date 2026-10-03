@@ -281,41 +281,63 @@ Disadvantages:
 
 ### Running Deep Verification
 
-After returning to the decoy state, run a verification scan:
+The `nails` binary lives on the hidden volume, not on the decoy, so run
+`verify` **from the hidden side** — while the hidden environment is still
+mounted, before `deactivate`:
 
 ```bash
 # Basic verification
-nails verify
+sudo nails verify
 
 # Deep verification (more thorough, slower)
-nails verify --deep
+sudo nails verify --deep
 
 # JSON output for scripting
-nails verify --deep --json
+sudo nails verify --deep --json
 ```
+
+To inspect the decoy itself for leftovers, mount its image or partition
+read-only and scan it offline (again from the hidden side, which has the
+binary):
+
+```bash
+sudo nails verify --offline --root /mnt/decoy
+```
+
+In offline mode every path is read from under `--root`, and the live-only
+checks (running processes, the kernel mount table, open block devices and
+the platform package-drift scan) are skipped.
 
 **What `nails verify` checks:**
 
 | Check | Basic | Deep |
 |-------|-------|------|
-| Active overlay mounts | Yes | Yes |
-| Known NAILS artifact paths | Yes | Yes |
-| Running NAILS processes | Yes | Yes |
+| Leftover overlays (by `upperdir` on the hidden volume, from `/proc/self/mountinfo`) | Yes | Yes |
+| Known NAILS artifact paths (shared registry) | Yes | Yes |
+| Running NAILS processes (binary identity, not a name substring) | Yes | Yes |
+| Open crypt mappers / loop devices (name-independent) | Yes | Yes |
 | Memory state warnings | Yes | Yes |
-| Shell history files (`~/.bash_history`, etc.) | No | Yes |
-| `/tmp` and `/var/tmp` contents | No | Yes |
-| `/var/log` for NAILS references | No | Yes |
-| Recently-used file tracking | No | Yes |
+| Platform package drift (apt/dpkg on Debian vs. activation baseline) | Yes | Yes |
+| Shell history files, every home from `/etc/passwd` | No | Yes |
+| `/tmp`, `/var/tmp` and `/var/log` for NAILS-named files | No | Yes |
+| `recently-used.xbel` / VeraCrypt config naming the hidden root | No | Yes |
 
 **Interpreting results:**
 
+The headline never claims the system is clean. A run with no findings prints:
+
 ```
-Verification PASSED   # No known artifacts detected
-Verification WARNING  # Some checks inconclusive
-Verification FAILED   # Artifacts detected - take action
+No known artifacts found (N checks, <depth> scan). This is not proof of absence.
 ```
 
-> **Important:** A passing verification is evidence, not proof. It checks for known/common artifacts but cannot detect all possible traces.
+followed by the list of areas the run did not inspect (for example, the
+systemd journal, or shell histories when `--deep` was not given). Exit codes:
+`0` clean, `10` warnings, `11` critical findings, `2` the scan could not run.
+
+> **Important:** A clean verification is evidence against *known* artifacts,
+> not proof the decoy is untouched. It cannot detect every possible trace, and
+> it names what it skipped so you do not read more into a clean result than it
+> supports.
 
 ### Manual Verification Checklist
 
