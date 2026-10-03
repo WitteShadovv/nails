@@ -13,6 +13,14 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      distro-runner:
+        description: >-
+          runs-on label for the distro container smoke jobs. A hosted
+          ubuntu-24.04 runs the privileged containers directly; override for a
+          self-hosted runner.
+        type: string
+        default: ubuntu-24.04
 
 permissions:
   contents: read
@@ -262,6 +270,56 @@ jobs:
         env:
           BIN: ${{ steps.build.outputs.bin }}
         run: sudo unshare --mount --propagation private "$BIN" --ignored --test-threads=1
+
+  # The cheap, KVM-free distribution smoke tier: the static musl binary driven
+  # through the overlay-only lifecycle inside a privileged systemd container for
+  # each supported FHS distribution. It runs on every PR that touches the Rust
+  # crates (the `rust` filter already matches nails-core/ and nails-cli/), but is
+  # NOT part of `gate` -- it stays informational until promoted, matching the
+  # KVM-based `distro-e2e.yml` VM tier it complements (see docs/ci.md).
+  distro-smoke:
+    name: distro-smoke (${{ matrix.image }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ${{ inputs.distro-runner || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [debian:12, debian:13, ubuntu:24.04]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          shared-key: ci
+          save-if: false
+
+      # Docker needs root to boot a privileged container; the build runs as the
+      # workflow user, so only the driver is elevated and the binary is built
+      # ahead of it.
+      - name: Build the static musl binary
+        run: |
+          RUSTFLAGS="-C target-feature=+crt-static" \
+            cargo build --release --locked --target x86_64-unknown-linux-musl -p nails-cli
+
+      - name: Run the container smoke scenario
+        env:
+          NAILS_BIN: target/x86_64-unknown-linux-musl/release/nails
+        run: sudo --preserve-env=NAILS_BIN scripts/distro-smoke/run.sh "${{ matrix.image }}"
 
   # The canonical release derivation and a smoke test of its archive.
   nix-build:

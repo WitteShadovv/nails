@@ -21,7 +21,7 @@ Tier 3 is everything a contributor must pass to merge. Tier 4 catches what a per
 
 | Workflow | Trigger | Required check | Tier | Runner | Local `just` recipe |
 |---|---|---|---|---|---|
-| `.github/workflows/ci.yml` | PRs to `main`, push to `main`, dispatch | `gate` | 3 | `ubuntu-24.04` | `just ci-rust`, `just deny` |
+| `.github/workflows/ci.yml` | PRs to `main`, push to `main`, dispatch | `gate` (the `distro-smoke` jobs are informational, not on `gate`) | 3 | `ubuntu-24.04`; `distro-smoke` reads the `distro-runner` input | `just ci-rust`, `just deny`, `scripts/distro-smoke/run.sh` |
 | `.github/workflows/pr-title.yml` | Pull request opened, edited, synchronized, reopened | `pr-title` | 3 | `ubuntu-24.04` | the commit-msg hook |
 | `.github/workflows/e2e.yml` | PRs to `main`, push to `main`, nightly, dispatch, `workflow_call` | `e2e-result` | 3 (affected) and 4 (nightly full) | `runner` input, default `ubuntu-24.04` | `just e2e` |
 | `.github/workflows/e2e-hetzner.yml` | Manual dispatch only | — | 4 | a provisioned Hetzner server | `just e2e` on that runner |
@@ -129,9 +129,34 @@ The target is that `mode=all` finishes in at most 10 shards and about 20 minutes
 - **Secrets.** `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID` and `RUNNER_REGISTRATION` (a fine-grained PAT with repository `administration: write`) live in a `hetzner` deployment environment for secret scoping; the environment carries no required reviewers, so it is not an approval gate. `CACHIX_AUTH_TOKEN` is passed on to `e2e.yml` as usual.
 - **Status.** The server-type ladder, the pinned runner version and KVM nesting need a live dispatch to confirm against current Hetzner inventory; adjust `HCLOUD_CANDIDATES` and `RUNNER_VERSION` in the workflow if a run reports none available.
 
-### The portable distribution lane
+### The portable distribution lanes
 
-`distro-e2e.yml` boots real Debian and Ubuntu cloud images on the NixOS test driver through `numtide/nix-vm-test` (`nix/distro-tests/`), so overlay-only regressions on a non-NixOS host are caught instead of passing unseen. It is informational and gates no merge until promoted to a required check; the NixOS `e2e.yml` suite is unchanged and stays NixOS-only.
+Two lanes exercise the overlay-only backend on a non-NixOS host, so regressions there are caught instead of passing unseen. They are complementary, not redundant: the container lane is cheap and runs per PR; the VM lane is thorough and runs nightly. Both are informational and gate no merge until promoted; the NixOS `e2e.yml` suite is unchanged and stays NixOS-only.
+
+| | Container lane (`distro-smoke` in `ci.yml`) | VM lane (`distro-e2e.yml`) |
+|---|---|---|
+| Test host | Privileged systemd **container** per distro | Real cloud image in a **KVM VM** on the NixOS test driver |
+| KVM needed | No | Yes (`/dev/kvm`) |
+| Runs | Every PR touching `nails-core/` or `nails-cli/` | Nightly, `distro-e2e` PR label, dispatch, `workflow_call` |
+| Reboot in the lifecycle | No (a container cannot reboot) | Yes |
+| Decoy leak check | Compares the decoy files in place (weaker) | Host-side `strings` scan of the raw decoy disk image |
+
+#### The container lane (`distro-smoke`)
+
+`scripts/distro-smoke/run.sh` boots a privileged systemd container for each of `debian:12`, `debian:13` and `ubuntu:24.04` and drives the static musl binary through the full overlay-only lifecycle (`scripts/distro-smoke/scenario.sh`). Because a container needs no KVM, the `distro-smoke` matrix job runs on an ordinary hosted runner on every PR, giving the Debian/Ubuntu backend per-PR regression coverage the KVM VM lane cannot afford.
+
+- **Trigger.** The `distro-smoke` job in `ci.yml`, gated on the `rust` path filter, so it runs whenever a PR (or a push to `main`) changes `nails-core/` or `nails-cli/`. It is **not** part of the `gate` required check: a red `distro-smoke` is informational until the lane is promoted.
+- **Runner.** Read from the `distro-runner` workflow input (default `ubuntu-24.04`); override it with a self-hosted label on dispatch. A hosted `ubuntu-24.04` can boot a privileged container, so no KVM is required.
+- **Host requirements.** The driver needs a reachable Docker daemon and root (the CI step runs it under `sudo`). The container runs `--privileged --cgroupns=host` with a cgroup2 host and a `/sys/fs/cgroup` bind so its systemd can manage cgroups and the scenario can `losetup`/`mount`; a self-hosted runner without those cannot host this lane.
+- **Bootstrap.** Stock `debian`/`ubuntu` images ship no init, and NAILS refuses a non-systemd host, so the driver first installs `systemd` plus the loop/ext4/mount tools into the image and commits a local tag before booting `/sbin/init`. `cryptsetup` is optional: the hidden root falls back from LUKS to plain ext4 when it is absent.
+- **Coverage.** Platform detection (the overlay-only backend is selected), the decoy-persistence preflight (satisfied with a volatile journal; the VM lane owns the refusal branch), overlay-only activation of the seven FHS trees, the read-only `/usr`/`/usr/local` guard (writes fail with `EROFS`, with a pre-activation negative control), `status`, `verify`, the `emergency` and `deactivate` teardowns, and an in-container before/after check that the decoy markers are byte-identical and no hidden canary leaked.
+- **Reboot and leak-check caveats.** A container cannot reboot, so the scenario masks the power targets and tolerates `deactivate`'s reboot dispatch failing after the teardown has run; the reboot path itself is covered only by the VM lane. The in-place decoy comparison is a weaker leak check than the VM lane's disk-image `strings` scan — this lane does not claim parity with it.
+- **Run locally.** `sudo scripts/distro-smoke/run.sh debian:12` (then `debian:13`, `ubuntu:24.04`). Set `NAILS_BIN=/path/to/nails` to skip the musl build and reuse an existing static binary; set `KEEP_CONTAINER=1` to leave a failed container running for inspection.
+- **Adding a distribution** is one entry in the `image` matrix of the `distro-smoke` job once its backend and detection land.
+
+#### The VM lane (`distro-e2e.yml`)
+
+`distro-e2e.yml` boots real Debian and Ubuntu cloud images on the NixOS test driver through `numtide/nix-vm-test` (`nix/distro-tests/`), the thorough counterpart to the container lane above.
 
 - **Trigger.** A nightly schedule, a pull request that gets the `distro-e2e` label, manual dispatch, and `workflow_call`.
 - **Runner.** Each VM needs KVM, so the `runner` input selects where the jobs run (a hosted `ubuntu-24.04` exposes `/dev/kvm`; a self-hosted KVM runner is a label list). The matrix is planned by `python3 -m ci.e2e distro-plan` and kept at or below eight parallel jobs (distributions times their shards).
