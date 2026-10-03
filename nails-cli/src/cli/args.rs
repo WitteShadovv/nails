@@ -6,16 +6,52 @@
 //! means.
 
 use clap::error::ErrorKind;
-use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
 use std::ffi::OsString;
 use std::path::PathBuf;
+
+/// The workflow description shown in `nails --help` (long form).
+const ROOT_LONG_ABOUT: &str = "\
+Overlay environment manager.
+
+NAILS layers a hidden environment over a decoy system using OverlayFS. The
+binary and its configuration live on the hidden volume, so you run it by its
+full path from the mounted volume (e.g. `sudo /mnt/data/nails status`), never
+from a copy on the decoy disk.
+
+The workflow has four steps:
+  1. Open and mount the hidden backend (e.g. unlock the LUKS/VeraCrypt volume).
+  2. `init <root>` once, to lay out the hidden volume.
+  3. `activate` to mount the overlays and apply the platform layer.
+  4. `deactivate` to return to the decoy and reboot, or `emergency` to tear
+     everything down now. If a run is interrupted and the system is stuck,
+     `recover` reconciles the state and finishes the teardown.";
+
+/// The EXIT STATUS table shown in `nails --help`, kept in step with the
+/// [`ExitStatus`](crate::cli::output::ExitStatus) enum by `exit_status_help_lists_every_code`.
+const EXIT_STATUS_HELP: &str = "\
+EXIT STATUS:
+  0    success
+  1    the operation failed
+  2    command-line usage error
+  3    the configuration file or environment was unusable
+  4    a pre-flight check refused the operation
+  5    the operation needs privileges it did not have
+  6    the on-disk state could not be trusted
+  7    the system is degraded or a reboot is required to finish
+  8    the host is not one NAILS can operate on
+  9    completed, but with a warning the caller should act on
+  10   verify found warnings
+  11   verify found critical artifacts
+  130  cancelled by a signal (SIGINT/SIGTERM)";
 
 /// Overlay environment manager
 #[derive(Parser, Debug)]
 #[command(name = "nails")]
 #[command(author = "NAILS Project")]
 #[command(version)]
-#[command(about = "Overlay environment manager", long_about = None)]
+#[command(about = "Overlay environment manager", long_about = ROOT_LONG_ABOUT)]
+#[command(after_long_help = EXIT_STATUS_HELP)]
 pub struct Cli {
     #[command(flatten)]
     pub global: GlobalArgs,
@@ -111,7 +147,7 @@ pub enum ColorChoice {
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct GlobalArgs {
     /// Path to the configuration file (overrides binary-relative discovery)
-    #[arg(short = 'c', long, global = true, value_name = "PATH")]
+    #[arg(short = 'c', long, global = true, value_name = "PATH", value_hint = ValueHint::FilePath)]
     pub config: Option<PathBuf>,
 
     /// More diagnostics on stderr: -v for debug, -vv for trace
@@ -173,12 +209,18 @@ pub enum Commands {
     #[command(subcommand)]
     Config(ConfigCommand),
     /// Dispatch pending desktop notifications (called by XDG autostart on login)
-    #[command(name = "notify-dispatch")]
+    #[command(name = "notify-dispatch", hide = true)]
     NotifyDispatch,
 }
 
 /// `nails activate` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(after_long_help = "\
+EXAMPLES:
+  nails activate                      Mount the overlays and apply the layer
+  nails activate --session keep       Keep the current graphical session
+  nails activate --overlay-only       Mount overlays, skip the platform layer
+  nails activate --dry-run            Preview without changing anything")]
 pub struct ActivateArgs {
     /// Skip pre-flight checks (DANGEROUS - expert use only)
     #[arg(long)]
@@ -199,11 +241,11 @@ pub struct ActivateArgs {
     #[arg(short = 'y', long)]
     pub yes: bool,
 
-    /// NixOS layer: flake reference (e.g., /etc/nixos#hostname)
+    /// NixOS layer: flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
     ///
     /// Only applies on NixOS. When set, this value is passed directly to
     /// `nixos-rebuild --flake` instead of auto-detecting the flake path. Supports
-    /// attribute selection (e.g., /etc/nixos#amnesia-virtualbox).
+    /// attribute selection after the `#`.
     #[arg(
         long = "nixos-flake",
         value_name = "FLAKE_REF",
@@ -271,6 +313,10 @@ impl ActivateArgs {
 
 /// `nails deactivate` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(after_long_help = "\
+EXAMPLES:
+  nails deactivate                    Restore the decoy and reboot
+  nails deactivate -y                 Skip the confirmation prompt")]
 pub struct DeactivateArgs {
     /// Skip shell history cleanup
     ///
@@ -293,10 +339,16 @@ pub struct DeactivateArgs {
 /// hidden configuration while the system is active, reporting the same
 /// [`nails_core::ActivationOutcome`] activation does.
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(after_long_help = "\
+EXAMPLES:
+  nails reapply                       Rebuild and switch the hidden config")]
 pub struct ReapplyArgs {}
 
 /// `nails emergency` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(after_long_help = "\
+EXAMPLES:
+  nails emergency                     Tear everything down immediately")]
 pub struct EmergencyArgs {
     /// Skip the 3-second countdown (proceed immediately)
     #[arg(long)]
@@ -309,10 +361,18 @@ pub struct EmergencyArgs {
 /// against the live mount table and tears down whatever NAILS mounts remain,
 /// resetting the state to the decoy.
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(after_long_help = "\
+EXAMPLES:
+  nails recover                       Reconcile a stuck state and finish teardown")]
 pub struct RecoverArgs {}
 
 /// `nails status` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(after_long_help = "\
+EXAMPLES:
+  nails status                        Show the current state and uptime
+  nails status --details              Add resolved paths and overlay details
+  nails status --json                 Emit a machine-readable envelope")]
 pub struct StatusArgs {
     /// Show resolved paths and overlay mount details
     #[arg(long)]
@@ -321,6 +381,11 @@ pub struct StatusArgs {
 
 /// `nails verify` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(after_long_help = "\
+EXAMPLES:
+  nails verify                        Scan the live host for NAILS artifacts
+  nails verify --deep                 Slower, more thorough scan
+  nails verify --offline --root /mnt  Scan a mounted decoy image")]
 pub struct VerifyArgs {
     /// Perform deep scan (slower, more thorough)
     #[arg(long)]
@@ -333,18 +398,23 @@ pub struct VerifyArgs {
     pub offline: bool,
 
     /// Root of the mounted decoy image to scan in `--offline` mode.
-    #[arg(long, value_name = "MOUNT", requires = "offline")]
+    #[arg(long, value_name = "MOUNT", value_hint = ValueHint::DirPath, requires = "offline")]
     pub root: Option<std::path::PathBuf>,
 }
 
 /// `nails check` (alias `doctor`) arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(after_long_help = "\
+EXAMPLES:
+  nails check                         Report readiness to activate
+  nails doctor                        Same, via the alias
+  nails check --overlay-only          Skip the platform-layer checks")]
 pub struct CheckArgs {
     /// Check as for an overlay-only activation (skip the platform-layer checks)
     #[arg(long)]
     pub overlay_only: bool,
 
-    /// NixOS layer: check against a specific flake reference (e.g. /etc/nixos#hostname)
+    /// NixOS layer: check a specific flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
     #[arg(
         long = "nixos-flake",
         value_name = "FLAKE_REF",
@@ -362,6 +432,12 @@ pub struct CheckArgs {
 
 /// `nails config` subcommands
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+#[command(after_long_help = "\
+EXAMPLES:
+  nails config path                   Print the resolved config file path
+  nails config show                   Print the effective configuration
+  nails config show --example         Print a commented example config
+  nails config validate ./nails.toml  Strictly check a config file")]
 pub enum ConfigCommand {
     /// Print the resolved configuration file path and whether it exists
     Path,
@@ -386,14 +462,20 @@ pub enum ConfigCommand {
     /// Check a configuration file strictly (syntax, types, unknown keys)
     Validate {
         /// File to check (default: the resolved configuration file)
+        #[arg(value_hint = ValueHint::FilePath)]
         path: Option<PathBuf>,
     },
 }
 
 /// `nails init` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(after_long_help = "\
+EXAMPLES:
+  nails init /mnt/data                Lay out the hidden volume at /mnt/data
+  nails init /mnt/data --no-hardware-config   Skip the hidden NixOS layout")]
 pub struct InitArgs {
     /// Path to the mounted hidden volume to initialize
+    #[arg(value_hint = ValueHint::DirPath)]
     pub path: PathBuf,
 
     /// Initialize a path that is not a mounted volume of its own
@@ -409,7 +491,7 @@ pub struct InitArgs {
     ///
     /// Overrides the default `/etc/nixos/hardware-configuration.nix`. On a
     /// non-NixOS host the layout is skipped unless this is given.
-    #[arg(long, value_name = "PATH", conflicts_with = "no_hardware_config")]
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath, conflicts_with = "no_hardware_config")]
     pub hardware_config: Option<PathBuf>,
 
     /// Do not create the hidden NixOS layout at all
@@ -419,8 +501,13 @@ pub struct InitArgs {
 
 /// `nails reset-upper` arguments
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[command(after_long_help = "\
+EXAMPLES:
+  nails reset-upper /home             Delete the persistent /home upper
+  nails reset-upper /nix -y           Delete the /nix upper without prompting")]
 pub struct ResetUpperArgs {
     /// Overlay target whose persistent upper to delete (e.g. /home, /etc, /nix)
+    #[arg(value_hint = ValueHint::DirPath)]
     pub target: PathBuf,
 
     /// Proceed without the confirmation prompt
@@ -442,6 +529,62 @@ mod tests {
     #[test]
     fn cli_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn exit_status_help_lists_every_code() {
+        use crate::cli::output::ExitStatus;
+
+        // Listing every variant here means adding one to the enum without a row in
+        // the EXIT STATUS help table fails this test.
+        let all = [
+            ExitStatus::Ok,
+            ExitStatus::Failed,
+            ExitStatus::Usage,
+            ExitStatus::Config,
+            ExitStatus::PreflightRefused,
+            ExitStatus::NeedsRoot,
+            ExitStatus::InvalidState,
+            ExitStatus::DegradedReboot,
+            ExitStatus::Unsupported,
+            ExitStatus::SuccessWithWarnings,
+            ExitStatus::VerifyWarning,
+            ExitStatus::VerifyCritical,
+            ExitStatus::Cancelled,
+        ];
+
+        for status in all {
+            let code = status.code().to_string();
+            assert!(
+                EXIT_STATUS_HELP
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(&format!("{code} "))),
+                "EXIT STATUS help is missing a row for exit code {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn notify_dispatch_is_hidden_from_help() {
+        let command = Cli::command();
+        let notify = command
+            .get_subcommands()
+            .find(|cmd| cmd.get_name() == "notify-dispatch")
+            .expect("notify-dispatch subcommand exists");
+        assert!(
+            notify.is_hide_set(),
+            "notify-dispatch must be hidden from help"
+        );
+    }
+
+    #[test]
+    fn recover_is_a_visible_subcommand() {
+        let command = Cli::command();
+        let recover = command
+            .get_subcommands()
+            .find(|cmd| cmd.get_name() == "recover")
+            .expect("recover subcommand exists");
+        assert!(!recover.is_hide_set(), "recover must be visible in help");
     }
 
     #[test]

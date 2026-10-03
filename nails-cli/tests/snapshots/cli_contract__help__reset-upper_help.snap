@@ -54,4 +54,8 @@ Options:
   -h, --help
           Print help (see a summary with '-h')
 
+EXAMPLES:
+  nails reset-upper /home             Delete the persistent /home upper
+  nails reset-upper /nix -y           Delete the /nix upper without prompting
+
 ----- stderr -----

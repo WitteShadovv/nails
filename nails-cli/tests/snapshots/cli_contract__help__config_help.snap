@@ -51,4 +51,10 @@ Options:
   -h, --help
           Print help (see a summary with '-h')
 
+EXAMPLES:
+  nails config path                   Print the resolved config file path
+  nails config show                   Print the effective configuration
+  nails config show --example         Print a commented example config
+  nails config validate ./nails.toml  Strictly check a config file
+
 ----- stderr -----

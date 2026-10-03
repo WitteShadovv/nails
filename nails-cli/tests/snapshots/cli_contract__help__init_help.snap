@@ -62,4 +62,8 @@ Options:
   -h, --help
           Print help (see a summary with '-h')
 
+EXAMPLES:
+  nails init /mnt/data                Lay out the hidden volume at /mnt/data
+  nails init /mnt/data --no-hardware-config   Skip the hidden NixOS layout
+
 ----- stderr -----

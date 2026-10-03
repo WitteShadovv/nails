@@ -47,6 +47,7 @@ const HELP_INVOCATIONS: &[&[&str]] = &[
     &["--version"],
     &["activate", "--help"],
     &["deactivate", "--help"],
+    &["reapply", "--help"],
     &["emergency", "--help"],
     &["recover", "--help"],
     &["status", "--help"],
@@ -55,6 +56,9 @@ const HELP_INVOCATIONS: &[&[&str]] = &[
     &["init", "--help"],
     &["reset-upper", "--help"],
     &["config", "--help"],
+    &["config", "path", "--help"],
+    &["config", "show", "--help"],
+    &["config", "validate", "--help"],
     &["notify-dispatch", "--help"],
 ];
 

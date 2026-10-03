@@ -54,4 +54,9 @@ Options:
   -h, --help
           Print help (see a summary with '-h')
 
+EXAMPLES:
+  nails verify                        Scan the live host for NAILS artifacts
+  nails verify --deep                 Slower, more thorough scan
+  nails verify --offline --root /mnt  Scan a mounted decoy image
+
 ----- stderr -----

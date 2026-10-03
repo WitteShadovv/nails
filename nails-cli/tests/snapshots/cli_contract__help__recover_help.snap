@@ -45,4 +45,7 @@ Options:
   -h, --help
           Print help (see a summary with '-h')
 
+EXAMPLES:
+  nails recover                       Reconcile a stuck state and finish teardown
+
 ----- stderr -----

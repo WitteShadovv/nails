@@ -21,7 +21,7 @@ Options:
           Check as for an overlay-only activation (skip the platform-layer checks)
 
       --nixos-flake <FLAKE_REF>
-          NixOS layer: check against a specific flake reference (e.g. /etc/nixos#hostname)
+          NixOS layer: check a specific flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
 
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
@@ -55,5 +55,10 @@ Options:
 
   -h, --help
           Print help (see a summary with '-h')
+
+EXAMPLES:
+  nails check                         Report readiness to activate
+  nails doctor                        Same, via the alias
+  nails check --overlay-only          Skip the platform-layer checks
 
 ----- stderr -----

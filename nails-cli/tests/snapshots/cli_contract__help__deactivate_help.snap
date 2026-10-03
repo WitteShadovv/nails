@@ -55,4 +55,8 @@ Options:
   -h, --help
           Print help (see a summary with '-h')
 
+EXAMPLES:
+  nails deactivate                    Restore the decoy and reboot
+  nails deactivate -y                 Skip the confirmation prompt
+
 ----- stderr -----

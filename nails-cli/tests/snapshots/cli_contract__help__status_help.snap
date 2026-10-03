@@ -48,4 +48,9 @@ Options:
   -h, --help
           Print help (see a summary with '-h')
 
+EXAMPLES:
+  nails status                        Show the current state and uptime
+  nails status --details              Add resolved paths and overlay details
+  nails status --json                 Emit a machine-readable envelope
+
 ----- stderr -----
