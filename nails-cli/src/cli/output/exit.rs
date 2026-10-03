@@ -36,6 +36,11 @@ pub enum ExitStatus {
     /// The host is not one NAILS can operate on (ostree / image-based, or a
     /// non-systemd PID 1), so the command refused before touching any state.
     Unsupported,
+    /// The operation completed but with a warning the caller should act on — for
+    /// `activate`/`reapply`, the overlays are up but the hidden NixOS
+    /// configuration was not applied. Distinct from success so a script can tell a
+    /// clean activation from one that only mounted the overlays.
+    SuccessWithWarnings,
     /// `verify` found warnings.
     VerifyWarning,
     /// `verify` found critical artifacts.
@@ -55,6 +60,7 @@ impl ExitStatus {
             ExitStatus::InvalidState => 6,
             ExitStatus::DegradedReboot => 7,
             ExitStatus::Unsupported => 8,
+            ExitStatus::SuccessWithWarnings => 9,
             ExitStatus::VerifyWarning => 10,
             ExitStatus::VerifyCritical => 11,
         }
@@ -81,6 +87,7 @@ mod tests {
         assert_eq!(ExitStatus::InvalidState.code(), 6);
         assert_eq!(ExitStatus::DegradedReboot.code(), 7);
         assert_eq!(ExitStatus::Unsupported.code(), 8);
+        assert_eq!(ExitStatus::SuccessWithWarnings.code(), 9);
         assert_eq!(ExitStatus::VerifyWarning.code(), 10);
         assert_eq!(ExitStatus::VerifyCritical.code(), 11);
     }

@@ -321,6 +321,48 @@ fn test_status_json_includes_hidden_root_disk_figures() {
 }
 
 #[test]
+fn test_status_json_includes_hidden_config_warning_when_switch_failed() {
+    let mut report = active_report();
+    report.last_switch_warning =
+        Some("hidden NixOS configuration was not applied (boom)".to_string());
+
+    let data = super::json::build_status_data(&report);
+    let value = serde_json::to_value(&data).unwrap();
+
+    assert_eq!(
+        value["hidden_config_warning"],
+        "hidden NixOS configuration was not applied (boom)"
+    );
+}
+
+#[test]
+fn test_status_json_omits_hidden_config_warning_when_applied() {
+    // active_report() leaves last_switch_warning at None.
+    let data = super::json::build_status_data(&active_report());
+    let value = serde_json::to_value(&data).unwrap();
+
+    assert!(value.get("hidden_config_warning").is_none());
+}
+
+#[test]
+fn test_print_status_human_renders_not_applied_line() {
+    let mut report = active_report();
+    report.last_switch_warning =
+        Some("hidden NixOS configuration was not applied (boom)".to_string());
+    // Smoke: the human renderer accepts the warning without panicking; the line
+    // itself is asserted through the report field in the core status tests.
+    print_status_human(
+        &report,
+        false,
+        std::path::Path::new("/etc/nails.toml"),
+        std::path::Path::new("/mnt/hidden/state.json"),
+        std::path::Path::new("/mnt/hidden"),
+        std::path::Path::new("/mnt/hidden/logs/nails.log"),
+        COLOR,
+    );
+}
+
+#[test]
 fn test_status_json_omits_hidden_root_disk_figures_when_absent() {
     // inactive_report() leaves the hidden_root_* figures at None.
     let data = super::json::build_status_data(&inactive_report());

@@ -14,7 +14,7 @@
 //! would rewrite the bootloader, ESP or EFI NVRAM and leave evidence the hidden
 //! mode existed.
 
-use super::{ensure_run_current_system_symlink, select_system_profile};
+use super::{HiddenConfigOutcome, ensure_run_current_system_symlink, select_system_profile};
 use crate::platform::ConfigLayer;
 use crate::{Filesystem, NailsError, NailsManager, Result, Verbosity};
 
@@ -24,21 +24,31 @@ impl<F: Filesystem> NailsManager<F> {
     ///
     /// The build and switch run through the platform
     /// [`ConfigLayer`](crate::platform::ConfigLayer): a host without a layer (FHS /
-    /// Debian, or an overlay-only run) skips them entirely. The manager keeps
-    /// ownership of the `/run/current-system` preparation and of persisting the
-    /// resulting toplevel store path + fingerprint into its state cache.
+    /// Debian, or an overlay-only run) skips them entirely and reports
+    /// [`HiddenConfigOutcome::NotRequested`]. The manager keeps ownership of the
+    /// `/run/current-system` preparation and of persisting the resulting toplevel
+    /// store path + fingerprint into its state cache.
+    ///
+    /// Returns [`HiddenConfigOutcome::Applied`] on a successful switch (carrying
+    /// the toplevel store path and whether the fast path was taken), or `Err` when
+    /// the build or switch failed — the caller turns that into
+    /// [`HiddenConfigOutcome::Failed`].
     pub(super) fn switch_nixos_profile(
         &self,
         fast_path_toplevel: &Option<String>,
         new_fingerprint: &Option<String>,
         verbosity: Verbosity,
-    ) -> Result<()> {
+    ) -> Result<HiddenConfigOutcome> {
         let Some(layer) = self.config_layer() else {
-            return Ok(());
+            return Ok(HiddenConfigOutcome::NotRequested);
         };
         let Some(builder) = self.nixos_builder.as_ref() else {
-            return Ok(());
+            return Ok(HiddenConfigOutcome::NotRequested);
         };
+
+        // The fast path is taken when a cached toplevel was carried forward
+        // (fingerprint unchanged and the store path still present).
+        let fast_path = fast_path_toplevel.is_some();
 
         // Ensure /run/current-system points at the right profile.
         if let Some(system_profile) = select_system_profile(&self.filesystem)? {
@@ -61,25 +71,33 @@ impl<F: Filesystem> NailsManager<F> {
         )?;
 
         // --- Persist toplevel store path + fingerprint --------------------
-        let mut cached = self.cached_state.borrow_mut();
-        if let Some(ref mut state_file) = *cached {
-            // The flake path (and the fast path) yields a store path to cache; the
-            // legacy `nixos-rebuild test` path yields none, so the fingerprint is
-            // still recorded but no toplevel is cached.
-            if let Some(toplevel) = applied_toplevel {
-                state_file.hidden_toplevel = Some(toplevel);
-            }
-            state_file.config_fingerprint = new_fingerprint.clone();
+        // The flake path (and the fast path) yields a store path to cache; the
+        // legacy `nixos-rebuild test` path yields none, so the fingerprint is
+        // still recorded but no toplevel is cached. The toplevel reported in the
+        // outcome falls back to the carried-forward fast-path path when the layer
+        // returned none.
+        let toplevel = applied_toplevel.or_else(|| fast_path_toplevel.clone());
+        {
+            let mut cached = self.cached_state.borrow_mut();
+            if let Some(ref mut state_file) = *cached {
+                if let Some(ref toplevel) = toplevel {
+                    state_file.hidden_toplevel = Some(toplevel.clone());
+                }
+                state_file.config_fingerprint = new_fingerprint.clone();
 
-            drop(cached);
-            if let Err(e) = self.save_cached_state()
-                && verbosity >= Verbosity::Debug
-            {
-                tracing::warn!("Failed to save hidden_toplevel to state: {}", e);
+                drop(cached);
+                if let Err(e) = self.save_cached_state()
+                    && verbosity >= Verbosity::Debug
+                {
+                    tracing::warn!("Failed to save hidden_toplevel to state: {}", e);
+                }
             }
         }
 
-        Ok(())
+        Ok(HiddenConfigOutcome::Applied {
+            toplevel,
+            fast_path,
+        })
     }
 }
 
@@ -225,9 +243,19 @@ mod tests {
             .inactive()
             .manager();
 
-        manager
+        let outcome = manager
             .switch_nixos_profile(&None, &Some("new-fp".to_string()), Verbosity::Quiet)
             .unwrap();
+        assert!(
+            matches!(
+                outcome,
+                HiddenConfigOutcome::Applied {
+                    fast_path: false,
+                    toplevel: Some(_)
+                }
+            ),
+            "a full build reports Applied on the slow path: {outcome:?}"
+        );
 
         let calls = recorded.calls();
         assert!(
@@ -275,13 +303,23 @@ mod tests {
             .inactive()
             .manager();
 
-        manager
+        let outcome = manager
             .switch_nixos_profile(
                 &Some(TOPLEVEL.to_string()),
                 &Some("fp".to_string()),
                 Verbosity::Quiet,
             )
             .unwrap();
+        assert!(
+            matches!(
+                outcome,
+                HiddenConfigOutcome::Applied {
+                    fast_path: true,
+                    ..
+                }
+            ),
+            "reusing the cached toplevel reports the fast path: {outcome:?}"
+        );
 
         let calls = recorded.calls();
         assert!(

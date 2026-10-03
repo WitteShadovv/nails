@@ -194,6 +194,7 @@ fn test_status_command_active_verified() {
         },
         overlay_status,
         hidden_toplevel: Some("generation-123".to_string()),
+        last_switch_warning: Some("hidden NixOS configuration was not applied (boom)".to_string()),
         ..StateFile::default()
     };
     let temp_file = create_temp_state_file(&state_file);
@@ -209,6 +210,11 @@ fn test_status_command_active_verified() {
     assert!(report.uptime.is_some());
     assert_eq!(report.activated_at, Some(activated_at));
     assert_eq!(report.hidden_toplevel, Some("generation-123".to_string()));
+    assert_eq!(
+        report.last_switch_warning,
+        Some("hidden NixOS configuration was not applied (boom)".to_string()),
+        "a persisted switch warning is surfaced in the status report"
+    );
 
     // Verify uptime is approximately 2 hours
     let uptime = report.uptime.unwrap();
@@ -443,6 +449,7 @@ fn test_status_report_serialization() {
         overlays: vec![],
         overlay_verification: VerificationStatus::NotApplicable,
         hidden_toplevel: None,
+        last_switch_warning: None,
         activated_at: None,
         uptime: None,
         formatted_uptime: String::new(),

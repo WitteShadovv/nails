@@ -29,6 +29,7 @@ fn command_writes_logs(command: &Commands) -> bool {
         command,
         Commands::Activate(_)
             | Commands::Deactivate(_)
+            | Commands::Reapply(_)
             | Commands::Emergency(_)
             | Commands::ResetUpper(_)
     )

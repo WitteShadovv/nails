@@ -22,6 +22,7 @@ pub fn execute_command(cli: Cli, settings: &OutputSettings) -> ExitStatus {
     match cli.command {
         Commands::Activate(args) => commands::activate::execute(settings, &args, config),
         Commands::Deactivate(args) => commands::deactivate::execute(settings, &args, config),
+        Commands::Reapply(args) => commands::reapply::execute(settings, &args, config),
         Commands::Emergency(args) => commands::emergency::execute(settings, &args, config),
         Commands::Status(args) => commands::status::execute(settings, &args, config),
         Commands::Verify(args) => commands::verify::execute(settings, &args, config),

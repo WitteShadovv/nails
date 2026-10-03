@@ -47,6 +47,11 @@ pub struct StatusData {
     /// Store path of the hidden NixOS system toplevel (if available).
     #[serde(skip_serializing_if = "Option::is_none")]
     hidden_toplevel: Option<String>,
+    /// Reason the hidden NixOS configuration was not applied on the last
+    /// activation (overlays up, declarative config not in force). Omitted when the
+    /// hidden configuration is in force or none was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hidden_config_warning: Option<String>,
     /// Total size of the hidden volume's filesystem in bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     hidden_root_total_bytes: Option<u64>,
@@ -131,6 +136,7 @@ pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusDat
         overlay_verification: VerificationJson::from(&report.overlay_verification),
         persona_mode: Some(report.persona_mode.as_str()),
         hidden_toplevel: report.hidden_toplevel.clone(),
+        hidden_config_warning: report.last_switch_warning.clone(),
         hidden_root_total_bytes: report.hidden_root_total,
         hidden_root_used_bytes: report.hidden_root_used,
         hidden_root_available_bytes: report.hidden_root_available,
@@ -170,6 +176,7 @@ pub fn build_status_data_unknown(reason: String) -> StatusData {
         overlay_verification: VerificationJson::NotApplicable,
         persona_mode: None,
         hidden_toplevel: None,
+        hidden_config_warning: None,
         hidden_root_total_bytes: None,
         hidden_root_used_bytes: None,
         hidden_root_available_bytes: None,

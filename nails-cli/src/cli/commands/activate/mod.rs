@@ -176,6 +176,24 @@ pub fn execute(
         tracing::debug!(error = %e, "platform detection failed; continuing without a host profile");
     }
 
+    // Short-circuit a verifiably active system to the same no-op outcome and exit
+    // code on every flag path, before the session-kill pre-flight below (whose
+    // StateCheck would otherwise refuse an already-active system with a different
+    // exit code). The in-core reconcile gate still makes the authoritative
+    // decision once activation proceeds; this only keeps the default,
+    // session-killing path consistent with the keep-session and --no-preflight
+    // paths, all of which report "already active" and exit 0.
+    if manager.is_verified_active() {
+        let already_active =
+            Ok::<_, nails_core::NailsError>(nails_core::ActivationOutcome::AlreadyActive);
+        if json {
+            output::print_activate_json_result(&already_active, 0.0, &manager, None);
+        } else {
+            output::print_activate_human(&already_active, 0.0, &manager, None, settings);
+        }
+        return ExitStatus::Ok;
+    }
+
     // Detect a graphical session up front: it decides both whether we detach
     // and whether we must confirm the session kill, and that confirmation has
     // to come before any pre-flight staging writes to the hidden volume.
@@ -382,27 +400,28 @@ pub fn execute(
     // autostart entry and colour scheme land in the hidden home. The core
     // `shell_setup` additionally refuses to write when the target home is not on
     // a NAILS overlay, so a lost race still cannot touch the decoy disk.
-    let shell_setup_result = if matches!(result, Ok(nails_core::ActivationOutcome::Activated)) {
-        use nails_core::ShellInstrumentation;
-        let mut shell =
-            ShellInstrumentation::new(nails_core::RealFilesystem, manager.config().clone());
-        // Attach the operator so rc and autostart files land symlink-safe and
-        // owned by them; fall back to a best-effort root-owned write otherwise.
-        match nails_core::TargetUser::resolve() {
-            Ok(user) => shell = shell.with_target_user(user),
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "Could not resolve the operator; shell integration files will be written \
-                     best-effort without ownership"
-                );
+    let shell_setup_result =
+        if matches!(result, Ok(nails_core::ActivationOutcome::Activated { .. })) {
+            use nails_core::ShellInstrumentation;
+            let mut shell =
+                ShellInstrumentation::new(nails_core::RealFilesystem, manager.config().clone());
+            // Attach the operator so rc and autostart files land symlink-safe and
+            // owned by them; fall back to a best-effort root-owned write otherwise.
+            match nails_core::TargetUser::resolve() {
+                Ok(user) => shell = shell.with_target_user(user),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Could not resolve the operator; shell integration files will be written \
+                         best-effort without ownership"
+                    );
+                }
             }
-        }
-        // shell_setup() never returns Err, only Ok(Some) or Ok(None)
-        shell.shell_setup().ok().flatten()
-    } else {
-        None
-    };
+            // shell_setup() never returns Err, only Ok(Some) or Ok(None)
+            shell.shell_setup().ok().flatten()
+        } else {
+            None
+        };
 
     // Output results based on flags
     if json {
@@ -422,9 +441,12 @@ pub fn execute(
         );
     }
 
-    // Return the appropriate exit status: a pre-flight refusal and an unsupported
-    // host are each distinguished from an ordinary activation failure.
-    match result {
+    // Return the appropriate exit status: an activation that mounted the overlays
+    // but could not apply the hidden NixOS configuration reports a distinct
+    // success-with-warnings code, and a pre-flight refusal and an unsupported host
+    // are each distinguished from an ordinary activation failure.
+    match &result {
+        Ok(outcome) if !outcome.warnings().is_empty() => ExitStatus::SuccessWithWarnings,
         Ok(_) => ExitStatus::Ok,
         Err(nails_core::NailsError::PreFlightCheckFailed(_)) => ExitStatus::PreflightRefused,
         Err(nails_core::NailsError::UnsupportedPlatform { .. }) => ExitStatus::Unsupported,

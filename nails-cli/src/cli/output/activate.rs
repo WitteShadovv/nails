@@ -31,6 +31,10 @@ struct ActivateResultEvent {
     /// Processes that kept writing to the decoy after the overlays came up.
     /// Empty when activation left none behind (or did not complete).
     decoy_writers: Vec<DecoyWriterJson>,
+    /// Non-fatal warnings the activation carried — currently a hidden NixOS
+    /// configuration that was not applied. Omitted when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     failed_checks: Option<Vec<FailedCheckJson>>,
@@ -171,24 +175,42 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
             duration,
             state,
             decoy_writers,
+            warnings: Vec::new(),
             message: "System is already active; nothing to do".to_string(),
             failed_checks: None,
             // No activation ran, so no shell integration was applied.
             shell_instructions: None,
         },
-        Ok(ActivationOutcome::Activated) => ActivateResultEvent {
-            schema_version: SCHEMA_VERSION,
-            command: "activate",
-            event_type: "result",
-            ok: true,
-            status: "success",
-            duration,
-            state,
-            decoy_writers,
-            message: format!("Activation complete in {:.1}s", duration),
-            failed_checks: None,
-            shell_instructions: shell_instructions_json,
-        },
+        Ok(outcome @ ActivationOutcome::Activated { .. }) => {
+            let warnings = outcome.warnings();
+            // A failed hidden switch is reported truthfully: a distinct status and
+            // a warnings array, not a clean "success".
+            let (status, message) = if warnings.is_empty() {
+                (
+                    "success",
+                    format!("Activation complete in {:.1}s", duration),
+                )
+            } else {
+                (
+                    "success_with_warnings",
+                    format!("Activated with warnings: {}", warnings.join("; ")),
+                )
+            };
+            ActivateResultEvent {
+                schema_version: SCHEMA_VERSION,
+                command: "activate",
+                event_type: "result",
+                ok: true,
+                status,
+                duration,
+                state,
+                decoy_writers,
+                warnings,
+                message,
+                failed_checks: None,
+                shell_instructions: shell_instructions_json,
+            }
+        }
         Err(e) => match e {
             NailsError::PreFlightCheckFailed(failures) => ActivateResultEvent {
                 schema_version: SCHEMA_VERSION,
@@ -199,6 +221,7 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
                 duration,
                 state,
                 decoy_writers,
+                warnings: Vec::new(),
                 message: "Pre-flight checks failed".to_string(),
                 failed_checks: Some(
                     failures
@@ -226,6 +249,7 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
                 duration,
                 state,
                 decoy_writers,
+                warnings: Vec::new(),
                 message: format!("Activation failed: {}", e),
                 failed_checks: None,
                 shell_instructions: None,
@@ -266,7 +290,7 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
                 )
             );
         }
-        Ok(ActivationOutcome::Activated) => {
+        Ok(outcome @ ActivationOutcome::Activated { .. }) => {
             let out = settings.stdout_style();
             // The success summary (stdout) is built as a string so it can be
             // snapshotted at each verbosity without capturing the process stdout.
@@ -274,6 +298,23 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
                 "{}",
                 render_activate_success(duration, shell_setup, settings)
             );
+            // A hidden NixOS configuration that did not apply is a warning, not a
+            // clean success: name it after the completion summary, in warning style
+            // and even under --quiet, so an activation that only mounted the
+            // overlays is never reported as fully done.
+            for warning in outcome.warnings() {
+                println!(
+                    "{}",
+                    out.paint(
+                        format_args!(
+                            "{} Activated with warnings: {}",
+                            out.glyph(Mark::Warn),
+                            warning
+                        ),
+                        Tone::Yellow
+                    )
+                );
+            }
             // Writers left on the decoy are a security warning, so report them
             // even in quiet mode, after the completion summary.
             for line in decoy_writer_lines(&manager_decoy_writers(manager), out) {
@@ -527,13 +568,87 @@ mod tests {
         }
     }
 
+    /// A genuine activation whose hidden NixOS switch failed with
+    /// `switch_required = false`: overlays up, configuration not applied.
+    fn activated_with_failed_switch() -> Result<nails_core::ActivationOutcome, NailsError> {
+        Ok(nails_core::ActivationOutcome::Activated {
+            hidden_config: nails_core::HiddenConfigOutcome::Failed {
+                reason: "build failed".to_string(),
+            },
+        })
+    }
+
+    // ── hidden-config warnings ───────────────────────────────────────────────
+
+    #[test]
+    fn test_json_failed_switch_reports_success_with_warnings() {
+        let (manager, _tempdir) = TestWorld::new().manager();
+        let output =
+            build_activate_json_output(&activated_with_failed_switch(), 1.0, &manager, None);
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["status"], "success_with_warnings");
+        let warnings = json["warnings"].as_array().expect("warnings array present");
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0]
+                .as_str()
+                .unwrap()
+                .contains("hidden NixOS configuration was not applied")
+        );
+    }
+
+    #[test]
+    fn test_json_clean_switch_has_no_warnings_field() {
+        let (manager, _tempdir) = TestWorld::new().manager();
+        let output = build_activate_json_output(
+            &Ok(nails_core::ActivationOutcome::Activated {
+                hidden_config: nails_core::HiddenConfigOutcome::Applied {
+                    toplevel: Some("/nix/store/aaa-nixos-system-host".to_string()),
+                    fast_path: false,
+                },
+            }),
+            1.0,
+            &manager,
+            None,
+        );
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["status"], "success");
+        assert!(
+            json.get("warnings").is_none(),
+            "a clean activation omits the warnings field"
+        );
+    }
+
+    #[test]
+    fn test_human_failed_switch_mentions_with_warnings() {
+        let (manager, _tempdir) = TestWorld::new().manager();
+        // Render through the public entry point to confirm it does not panic and
+        // produces the warning wording; the message content is asserted via the
+        // JSON path above and the outcome's own `warnings()`.
+        print_activate_human(
+            &activated_with_failed_switch(),
+            1.0,
+            &manager,
+            None,
+            &settings_at(nails_core::Verbosity::Normal),
+        );
+        let outcome = activated_with_failed_switch().unwrap();
+        assert!(
+            outcome.warnings()[0].contains("not applied"),
+            "the warning names the unapplied hidden configuration"
+        );
+    }
+
     // ── decoy writers ──────────────────────────────────────────────────────────
 
     #[test]
     fn test_json_success_lists_writers_left_on_the_decoy() {
         let (_dir, manager) = make_active_manager_with_writer();
         let output = build_activate_json_output(
-            &Ok(nails_core::ActivationOutcome::Activated),
+            &Ok(nails_core::ActivationOutcome::Activated {
+                hidden_config: nails_core::HiddenConfigOutcome::NotRequested,
+            }),
             1.0,
             &manager,
             None,
@@ -550,7 +665,9 @@ mod tests {
     fn test_json_result_always_carries_decoy_writers() {
         let (manager, _tempdir) = TestWorld::new().manager();
         let output = build_activate_json_output(
-            &Ok(nails_core::ActivationOutcome::Activated),
+            &Ok(nails_core::ActivationOutcome::Activated {
+                hidden_config: nails_core::HiddenConfigOutcome::NotRequested,
+            }),
             1.0,
             &manager,
             None,
@@ -581,7 +698,9 @@ mod tests {
         let (_dir, manager) = make_active_manager_with_writer();
         assert_eq!(manager_decoy_writers(&manager), vec![tail_writer()]);
         print_activate_human(
-            &Ok(nails_core::ActivationOutcome::Activated),
+            &Ok(nails_core::ActivationOutcome::Activated {
+                hidden_config: nails_core::HiddenConfigOutcome::NotRequested,
+            }),
             1.0,
             &manager,
             None,
@@ -595,7 +714,9 @@ mod tests {
     fn test_json_success_no_shell() {
         let (manager, _tempdir) = TestWorld::new().manager();
         let output = build_activate_json_output(
-            &Ok(nails_core::ActivationOutcome::Activated),
+            &Ok(nails_core::ActivationOutcome::Activated {
+                hidden_config: nails_core::HiddenConfigOutcome::NotRequested,
+            }),
             1.5,
             &manager,
             None,
@@ -617,7 +738,9 @@ mod tests {
         let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_rc_modified();
         let output = build_activate_json_output(
-            &Ok(nails_core::ActivationOutcome::Activated),
+            &Ok(nails_core::ActivationOutcome::Activated {
+                hidden_config: nails_core::HiddenConfigOutcome::NotRequested,
+            }),
             2.3,
             &manager,
             Some(&setup),
@@ -756,7 +879,9 @@ mod tests {
     fn test_human_success_no_shell() {
         let (manager, _tempdir) = TestWorld::new().manager();
         print_activate_human(
-            &Ok(nails_core::ActivationOutcome::Activated),
+            &Ok(nails_core::ActivationOutcome::Activated {
+                hidden_config: nails_core::HiddenConfigOutcome::NotRequested,
+            }),
             1.5,
             &manager,
             None,
@@ -768,7 +893,9 @@ mod tests {
     fn test_human_success_quiet() {
         let (manager, _tempdir) = TestWorld::new().manager();
         print_activate_human(
-            &Ok(nails_core::ActivationOutcome::Activated),
+            &Ok(nails_core::ActivationOutcome::Activated {
+                hidden_config: nails_core::HiddenConfigOutcome::NotRequested,
+            }),
             1.5,
             &manager,
             None,
@@ -781,7 +908,9 @@ mod tests {
         let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_rc_modified();
         print_activate_human(
-            &Ok(nails_core::ActivationOutcome::Activated),
+            &Ok(nails_core::ActivationOutcome::Activated {
+                hidden_config: nails_core::HiddenConfigOutcome::NotRequested,
+            }),
             1.0,
             &manager,
             Some(&setup),
@@ -794,7 +923,9 @@ mod tests {
         let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_no_rc();
         print_activate_human(
-            &Ok(nails_core::ActivationOutcome::Activated),
+            &Ok(nails_core::ActivationOutcome::Activated {
+                hidden_config: nails_core::HiddenConfigOutcome::NotRequested,
+            }),
             1.0,
             &manager,
             Some(&setup),
@@ -807,7 +938,9 @@ mod tests {
         let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_with_warning();
         print_activate_human(
-            &Ok(nails_core::ActivationOutcome::Activated),
+            &Ok(nails_core::ActivationOutcome::Activated {
+                hidden_config: nails_core::HiddenConfigOutcome::NotRequested,
+            }),
             1.0,
             &manager,
             Some(&setup),
@@ -820,7 +953,9 @@ mod tests {
         let (manager, _tempdir) = TestWorld::new().manager();
         let setup = make_shell_setup_rc_modified();
         print_activate_human(
-            &Ok(nails_core::ActivationOutcome::Activated),
+            &Ok(nails_core::ActivationOutcome::Activated {
+                hidden_config: nails_core::HiddenConfigOutcome::NotRequested,
+            }),
             1.0,
             &manager,
             Some(&setup),

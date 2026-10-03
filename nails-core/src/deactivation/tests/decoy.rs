@@ -151,6 +151,7 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
         },
         hidden_toplevel: Some("6".to_string()),
         config_fingerprint: Some("deadbeefcafebabe".to_string()),
+        last_switch_warning: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: chrono::Utc::now(),

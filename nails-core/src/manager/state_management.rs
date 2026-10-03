@@ -248,10 +248,11 @@ impl<F: Filesystem> NailsManager<F> {
         if let SystemState::Inactive = new_state {
             state_file.overlay_status.clear();
             state_file.hidden_toplevel = None;
+            state_file.last_switch_warning = None;
             tracing::debug!(
                 action = "rollback",
                 target_state = "Inactive",
-                fields_cleared = "overlay_status,hidden_toplevel",
+                fields_cleared = "overlay_status,hidden_toplevel,last_switch_warning",
                 "Rollback to Inactive"
             );
         }

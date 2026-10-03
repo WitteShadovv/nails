@@ -1,4 +1,12 @@
-# Test 30: Rebuild Failure Preserves Activation
+# Test 30: A failed hidden switch is reported truthfully, and `nails reapply`
+# applies the configuration once it is fixed.
+#
+# With `nixos_switch_required = false` a broken hidden configuration must not
+# roll the overlays back: activation keeps the overlays and the session, exits
+# with the dedicated success-with-warnings code (9), and reports
+# `success_with_warnings` with a warnings array under `--json`. After the hidden
+# configuration is fixed, `nails reapply` re-runs the build + switch in place
+# (no reboot) and applies the hidden marker.
 
 { self, ... }:
 let
@@ -47,8 +55,10 @@ in
             machine.succeed(f"cat {stem}.stderr"),
         )
 
-    def run_current_system_target():
-        return machine.succeed("readlink -f /run/current-system").strip()
+    def last_json_line(text):
+        lines = [line for line in text.splitlines() if line.strip()]
+        assert lines, f"expected at least one output line, got: {text!r}"
+        return json.loads(lines[-1])
 
     def install_nixos_rebuild_wrapper(log_path):
         real_nixos_rebuild = machine.succeed("bash -lc 'command -v nixos-rebuild'").strip()
@@ -64,83 +74,76 @@ in
         )
         return "PATH=/tmp/nails-wrapper/bin:$PATH"
 
-    def assert_active_state_file(path):
-        payload = json.loads(machine.succeed("cat " + shlex.quote(path)))
-        state_value = payload.get("state")
-        if isinstance(state_value, dict):
-            assert "Active" in state_value, payload
-        else:
-            assert str(state_value).lower().startswith("active"), payload
-        assert payload.get("overlay_status", {}), payload
-        return payload
+    def write_broken_hidden_config():
+        machine.succeed("""cat > /mnt/data/config/nixos/configuration.nix <<'EOF'
+    { ... }: {
+      environment.etc."nails-hidden-marker".text = ;
+    }
+    EOF""")
 
-    def assert_active_status_local(config_path):
-        payload = json.loads(machine.succeed(f"nails --config {config_path} status --json"))["data"]
-        assert str(payload["state"]["kind"]).startswith("active"), f"Expected active state, got: {payload}"
-
-    def path_exists(path):
-        rc, _stdout, _stderr = run_command_capture(
-            "path-exists",
-            f"test -e {shlex.quote(path)}",
-        )
-        return rc == 0
-
-    def assert_no_overlays_local(paths):
-        for path in paths:
-            machine.fail(
-                "/bin/sh -lc "
-                + shlex.quote(
-                    "while IFS=' ' read -r _ mountpoint fstype _; do "
-                    + f"[ \"$mountpoint\" = {shlex.quote(path)} ] && [ \"$fstype\" = overlay ] && exit 0; "
-                    + "done < /proc/self/mounts; exit 1"
-                )
-            )
+    def write_fixed_hidden_config():
+        machine.succeed("""cat > /mnt/data/config/nixos/configuration.nix <<'EOF'
+    { ... }: {
+      environment.etc."nails-hidden-marker".text = "present";
+    }
+    EOF""")
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
     headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
+    # Keep the overlays and session on a failed switch instead of rolling back,
+    # so the warning outcome is observable.
+    machine.succeed(
+        f"printf '\\nnixos_switch_required = false\\n' >> {shlex.quote(headless_config)}"
+    )
 
-    with subtest("prepare broken hidden configuration"):
+    with subtest("prepare a broken hidden configuration"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed("""cat > /mnt/data/config/nixos/configuration.nix <<'EOF'
-    { ... }: {
-      environment.etc."nails-broken-marker".text = ;
-    }
-    EOF""")
-        baseline_run_current = run_current_system_target()
+        write_broken_hidden_config()
         wrapper_env = install_nixos_rebuild_wrapper("/run/nixos-rebuild-failure.log")
 
-    with subtest("failed rebuild preserves activation and surfaces diagnostics"):
+    with subtest("a failed switch exits 9 and reports success_with_warnings"):
         rc, stdout, stderr = run_command_capture(
             "rebuild-failure",
-            f"{wrapper_env} nails --config {headless_config} activate --session keep -y",
+            f"{wrapper_env} nails --config {headless_config} activate --session keep -y --json",
         )
-        assert rc == 0, f"Expected activation success-with-warning, got rc={rc} stdout={stdout!r} stderr={stderr!r}"
-        combined_output = stdout + stderr
-        assert "Activation started" in combined_output, \
-            f"Expected activation attempt output, got: {combined_output!r}"
-        assert "Activation complete" in combined_output, \
-            f"Expected activation completion output despite rebuild failure, got: {combined_output!r}"
-        assert path_exists("/run/nixos-rebuild-failure.log"), \
-            f"Expected wrapper log proving nixos-rebuild execution, got output: {combined_output!r}"
-        rebuild_log = machine.succeed("cat /run/nixos-rebuild-failure.log")
-        assert rebuild_log.strip(), "Expected non-empty nixos-rebuild wrapper log"
-        assert "test" in rebuild_log, \
-            f"Expected wrapped nixos-rebuild test invocation, got: {rebuild_log!r}"
+        assert rc == 9, f"expected success-with-warnings exit code 9, got rc={rc} stderr={stderr!r}"
+        result = last_json_line(stdout)
+        assert result["status"] == "success_with_warnings", result
+        assert result["ok"] is True, result
+        warnings = result.get("warnings", [])
+        assert warnings, f"expected a non-empty warnings array, got: {result}"
+        assert any("not applied" in w for w in warnings), warnings
 
-    with subtest("failed rebuild leaves overlays mounted and active state intact"):
-        assert_active_status_local(headless_config)
+    with subtest("the failed switch leaves overlays mounted and state active"):
+        payload = json.loads(
+            machine.succeed(f"nails --config {headless_config} status --json")
+        )["data"]
+        assert str(payload["state"]["kind"]).startswith("active"), payload
+        assert payload.get("hidden_config_warning"), \
+            f"status must report the hidden configuration as not applied, got: {payload}"
         machine.succeed("mountpoint -q /etc")
         machine.succeed("mountpoint -q /home")
-        machine.succeed("test -e /etc/nixos/nails/configuration.nix")
-        restored_run_current = run_current_system_target()
-        assert restored_run_current == baseline_run_current, \
-            f"Expected failed test rebuild to preserve decoy /run/current-system {baseline_run_current!r}, got {restored_run_current!r}"
-        state_payload = assert_active_state_file("/mnt/data/state.json")
-        assert state_payload.get("failed_overlays", []) == [], \
-            f"Expected preserved activation to leave no failed overlay residue, got: {state_payload}"
-        machine.succeed("grep -R \"NixOS Rebuild Failed\" /mnt/data/notifications")
+
+    with subtest("reapply applies the hidden marker once the config is fixed"):
+        write_fixed_hidden_config()
+        rc, stdout, stderr = run_command_capture(
+            "reapply",
+            f"{wrapper_env} nails --config {headless_config} reapply --json",
+        )
+        assert rc == 0, f"expected reapply to succeed, got rc={rc} stdout={stdout!r} stderr={stderr!r}"
+        result = last_json_line(stdout)
+        assert result["status"] == "success", result
+        machine.succeed("test -e /etc/nails-hidden-marker")
+        machine.succeed("grep -q present /etc/nails-hidden-marker")
+
+    with subtest("status no longer reports the hidden configuration as unapplied"):
+        payload = json.loads(
+            machine.succeed(f"nails --config {headless_config} status --json")
+        )["data"]
+        assert not payload.get("hidden_config_warning"), \
+            f"a clean reapply must clear the status warning, got: {payload}"
   '';
 }

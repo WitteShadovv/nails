@@ -199,6 +199,7 @@ fn test_state_file_serialization() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        last_switch_warning: None,
     };
 
     // Serialize to JSON
@@ -414,6 +415,7 @@ fn test_save_load_round_trip_with_inactive_state() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        last_switch_warning: None,
     };
 
     // Save through the real durable path so the file carries a valid digest.
@@ -472,6 +474,7 @@ fn test_save_load_round_trip_with_active_state() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        last_switch_warning: None,
     };
 
     // Save through the real durable path so the file carries a valid digest.
@@ -532,6 +535,7 @@ fn test_save_load_multiple_overlays() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        last_switch_warning: None,
     };
 
     // Save through the real durable path so the file carries a valid digest.
@@ -726,6 +730,7 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        last_switch_warning: None,
     };
 
     // Use save_with_root to test actual atomic write logic
@@ -811,6 +816,7 @@ fn test_persist_race_condition_handling() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        last_switch_warning: None,
     };
 
     // save_with_root should handle the existing file (overwrite it)
@@ -856,6 +862,7 @@ fn create_test_manager_with_state(
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        last_switch_warning: None,
     };
     // Save through the durable path so the file carries a valid integrity digest.
     state_file
@@ -1409,6 +1416,7 @@ fn test_state_file_permissions_are_0600() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        last_switch_warning: None,
     };
     state
         .save_with_root(&state_path, mock_hidden_vol_root)
@@ -1448,6 +1456,7 @@ fn test_checksum_round_trip_save_load() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        last_switch_warning: None,
     };
 
     state

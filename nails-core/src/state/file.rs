@@ -111,6 +111,18 @@ pub struct StateFile {
     #[serde(default)]
     pub config_fingerprint: Option<String>,
 
+    /// Reason the hidden NixOS configuration was not applied on the last
+    /// activation, when the switch failed but the overlays and session were kept
+    /// (`nixos_switch_required = false`).
+    ///
+    /// `None` when the last switch applied cleanly, was not requested (an
+    /// overlay-only run or an FHS host), or activation rolled back. The detached
+    /// GUI worker exits before the operator sees any console output, so this is
+    /// the durable record `nails status` reads to report a hidden configuration
+    /// that is NOT in force. Cleared on a later clean switch and on rollback.
+    #[serde(default)]
+    pub last_switch_warning: Option<String>,
+
     /// Currently mounted overlays with their configuration
     pub overlay_status: HashMap<PathBuf, OverlayInfo>,
 
@@ -195,6 +207,7 @@ impl Default for StateFile {
             state: SystemState::Inactive,
             hidden_toplevel: None,
             config_fingerprint: None,
+            last_switch_warning: None,
             overlay_status: HashMap::new(),
             failed_overlays: Vec::new(),
             nix_store_init_namespace_bound: false,

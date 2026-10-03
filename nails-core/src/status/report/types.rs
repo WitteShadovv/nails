@@ -300,6 +300,13 @@ pub struct StatusReport {
     /// successful activation (if available).
     pub hidden_toplevel: Option<String>,
 
+    /// Reason the hidden NixOS configuration was not applied on the last
+    /// activation, when the switch failed but the overlays were kept. `None` when
+    /// the hidden configuration is in force (or none was requested). Surfaced so a
+    /// detached-run failure is visible in `nails status`.
+    #[serde(default)]
+    pub last_switch_warning: Option<String>,
+
     /// When the system was activated (None for inactive)
     pub activated_at: Option<DateTime<Utc>>,
 

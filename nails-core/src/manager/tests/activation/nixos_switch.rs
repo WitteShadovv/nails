@@ -85,9 +85,21 @@ fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
     )));
 
     let result = manager.lock().unwrap().activate(true);
+    // The outcome is reported truthfully: activation succeeded (overlays up), but
+    // the hidden NixOS configuration was not applied, carried as a warning.
+    let outcome = result.expect("post-overlay rebuild failure should preserve activation");
     assert!(
-        result.is_ok(),
-        "post-overlay rebuild failure should preserve activation: {result:?}"
+        matches!(
+            outcome,
+            crate::ActivationOutcome::Activated {
+                hidden_config: crate::HiddenConfigOutcome::Failed { .. }
+            }
+        ),
+        "a failed switch with switch_required=false reports a Failed hidden config: {outcome:?}"
+    );
+    assert!(
+        !outcome.warnings().is_empty(),
+        "a failed hidden switch carries an operator warning"
     );
 
     let manager_guard = manager.lock().unwrap();
@@ -102,6 +114,12 @@ fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
     assert!(loaded.overlay_status.contains_key(&PathBuf::from("/etc")));
     assert!(loaded.overlay_status.contains_key(&PathBuf::from("/home")));
     assert!(loaded.failed_overlays.is_empty());
+    // The outcome is persisted so `nails status` can report the hidden
+    // configuration as NOT applied after a detached run.
+    assert!(
+        loaded.last_switch_warning.is_some(),
+        "a failed switch must be recorded in state for status to surface it"
+    );
     assert!(fs.is_mounted(Path::new("/etc")).unwrap());
     assert!(fs.is_mounted(Path::new("/home")).unwrap());
 

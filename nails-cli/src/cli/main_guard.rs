@@ -26,7 +26,7 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 pub fn requires_root(command: &Commands) -> bool {
     match command {
         Commands::Activate(args) => !args.dry_run,
-        Commands::Deactivate(_) | Commands::Emergency(_) => true,
+        Commands::Deactivate(_) | Commands::Emergency(_) | Commands::Reapply(_) => true,
         _ => false,
     }
 }
@@ -36,6 +36,7 @@ fn subcommand_name(command: &Commands) -> &'static str {
     match command {
         Commands::Activate(_) => "activate",
         Commands::Deactivate(_) => "deactivate",
+        Commands::Reapply(_) => "reapply",
         Commands::Emergency(_) => "emergency",
         Commands::Status(_) => "status",
         Commands::Verify(_) => "verify",

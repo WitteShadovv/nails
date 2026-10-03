@@ -151,6 +151,8 @@ pub enum Commands {
     Activate(ActivateArgs),
     /// Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
     Deactivate(DeactivateArgs),
+    /// Reapply the hidden NixOS configuration while active (rebuild + switch-to-configuration test)
+    Reapply(ReapplyArgs),
     /// Emergency mode: rapid deactivation with countdown
     Emergency(EmergencyArgs),
     /// Show current status and uptime
@@ -281,6 +283,14 @@ pub struct DeactivateArgs {
     #[arg(short = 'y', long)]
     pub yes: bool,
 }
+
+/// `nails reapply` arguments
+///
+/// Reapply takes no options of its own: it rebuilds and switches to the current
+/// hidden configuration while the system is active, reporting the same
+/// [`nails_core::ActivationOutcome`] activation does.
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReapplyArgs {}
 
 /// `nails emergency` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]

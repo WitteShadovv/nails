@@ -15,6 +15,7 @@ Usage: nails [OPTIONS] <COMMAND>
 Commands:
   activate         Activate the hidden NixOS environment (mount overlayfs + switch profiles)
   deactivate       Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
+  reapply          Reapply the hidden NixOS configuration while active (rebuild + switch-to-configuration test)
   emergency        Emergency mode: rapid deactivation with countdown
   status           Show current status and uptime
   verify           Verify system is clean of NAILS artifacts

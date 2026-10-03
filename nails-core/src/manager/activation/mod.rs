@@ -49,12 +49,92 @@ use guards::SessionRestartGuard;
 /// from a no-op on an already-verifiably-active system, so the caller can run the
 /// shell integration and colour sequences only on a genuine activation and report
 /// an already-active system with its own message and a success exit code.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// A genuine activation carries [`HiddenConfigOutcome`]: the overlays can be up
+/// and the session restarted while the hidden NixOS switch failed (when
+/// `nixos_switch_required = false`). The caller turns that into a truthful
+/// "activated with warnings" report and a distinct exit code instead of claiming
+/// a clean success.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActivationOutcome {
-    /// The system was mounted and switched during this call.
-    Activated,
+    /// The system was mounted during this call. `hidden_config` records whether
+    /// the hidden NixOS configuration was applied, not requested, or failed while
+    /// the overlays were kept.
+    Activated {
+        /// Outcome of the post-overlay hidden NixOS build + switch.
+        hidden_config: HiddenConfigOutcome,
+    },
     /// The system was already verifiably active; nothing was mounted or changed.
     AlreadyActive,
+}
+
+/// Outcome of the post-overlay hidden NixOS build + `switch-to-configuration
+/// test` step.
+///
+/// Reported truthfully even when the switch fails but the overlays and the
+/// restarted session are kept (`nixos_switch_required = false`): the operator is
+/// then told the hidden declarative configuration was not applied rather than
+/// seeing a clean success.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HiddenConfigOutcome {
+    /// The hidden toplevel was built (or reused on the fast path) and switched to.
+    Applied {
+        /// Store path of the toplevel switched to, when one is known (the flake
+        /// and fast paths yield one; the legacy `nixos-rebuild test` path does not).
+        toplevel: Option<String>,
+        /// Whether the fast path (cached toplevel, unchanged fingerprint) was taken.
+        fast_path: bool,
+    },
+    /// No declarative configuration was requested: an overlay-only run, or a host
+    /// with no config layer (FHS / Debian).
+    NotRequested,
+    /// The build or switch failed; the overlays and session were kept and this
+    /// reason is surfaced as an activation warning.
+    Failed {
+        /// Human-readable reason the switch did not apply.
+        reason: String,
+    },
+}
+
+impl HiddenConfigOutcome {
+    /// The failure reason, when the hidden configuration was not applied.
+    pub fn failure_reason(&self) -> Option<&str> {
+        match self {
+            HiddenConfigOutcome::Failed { reason } => Some(reason.as_str()),
+            _ => None,
+        }
+    }
+}
+
+impl ActivationOutcome {
+    /// Whether this was a no-op on an already-active system.
+    pub fn is_already_active(&self) -> bool {
+        matches!(self, ActivationOutcome::AlreadyActive)
+    }
+
+    /// The hidden-config outcome of a genuine activation, if any.
+    pub fn hidden_config(&self) -> Option<&HiddenConfigOutcome> {
+        match self {
+            ActivationOutcome::Activated { hidden_config } => Some(hidden_config),
+            ActivationOutcome::AlreadyActive => None,
+        }
+    }
+
+    /// The operator-facing warnings this outcome carries (currently only a failed
+    /// hidden NixOS switch). Empty when activation was fully clean.
+    pub fn warnings(&self) -> Vec<String> {
+        match self
+            .hidden_config()
+            .and_then(HiddenConfigOutcome::failure_reason)
+        {
+            Some(reason) => {
+                vec![format!(
+                    "hidden NixOS configuration was not applied ({reason})"
+                )]
+            }
+            None => Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -271,6 +351,23 @@ impl<F: Filesystem> NailsManager<F> {
             ..crate::ActivateOptions::default()
         };
         self.activate_with_options(options, no_preflight)
+    }
+
+    /// Whether the system is verifiably active right now: the state file says
+    /// Active and every recorded overlay is present in the live kernel mount
+    /// table.
+    ///
+    /// The `activate` command uses this to short-circuit an already-active system
+    /// to the same no-op outcome and exit code on every flag path, before the
+    /// session-kill pre-flight (whose `StateCheck` would otherwise refuse with a
+    /// different exit code). A read error or any non-active effective state returns
+    /// `false` so activation proceeds and the in-core reconcile gate makes the
+    /// authoritative decision.
+    pub fn is_verified_active(&self) -> bool {
+        matches!(
+            self.reconcile_state(),
+            Ok(crate::state::EffectiveState::VerifiedActive { .. })
+        )
     }
 
     /// Decide whether activation may proceed, based on the reconciled state.
@@ -556,9 +653,9 @@ impl<F: Filesystem> NailsManager<F> {
             5,
             "[5/7] Running NixOS switch/rebuild...",
         );
-        let nixos_switch_warning =
+        let hidden_config =
             guard.run_post_overlay_nixos_switch(&fast_path_toplevel, &new_fingerprint, verbosity);
-        if let Some(reason) = nixos_switch_warning.as_deref()
+        if let HiddenConfigOutcome::Failed { reason } = &hidden_config
             && guard.config().nixos_switch_required
         {
             return Err(NailsError::NixOSError(format!(
@@ -567,6 +664,13 @@ impl<F: Filesystem> NailsManager<F> {
                  the overlays and session and only warn instead)."
             )));
         }
+
+        // Record the outcome in state so `nails status` can report a hidden
+        // configuration that was not applied — the detached GUI path exits before
+        // the operator sees any console output, so state is the only durable
+        // signal. Cleared (set to None) on a clean switch so a later success
+        // overwrites a stale warning.
+        guard.record_switch_warning(hidden_config.failure_reason());
 
         // Step 9: Restart session / display manager, now that the hidden
         // configuration is in force.
@@ -626,7 +730,7 @@ impl<F: Filesystem> NailsManager<F> {
             );
         }
 
-        if let Some(warning) = nixos_switch_warning {
+        if let Some(warning) = hidden_config.failure_reason() {
             tracing::warn!(
                 event = "activation_completed_with_warning",
                 preserve_activation = true,
@@ -635,7 +739,53 @@ impl<F: Filesystem> NailsManager<F> {
             );
         }
 
-        Ok(ActivationOutcome::Activated)
+        Ok(ActivationOutcome::Activated { hidden_config })
+    }
+
+    /// Re-run the hidden NixOS build + `switch-to-configuration test` against the
+    /// current hidden configuration while the system is already active, without
+    /// remounting anything.
+    ///
+    /// This is what `nails reapply` calls: once a fixed hidden configuration has
+    /// landed in the overlaid `/etc/nixos`, the operator applies it in place
+    /// instead of a full deactivate (which reboots) followed by a fresh activate.
+    /// It refuses unless the system is verifiably active, re-uses the same
+    /// fast-path cache as activation, and persists the outcome so `nails status`
+    /// stays truthful.
+    pub fn reapply_hidden_config(&self) -> Result<ActivationOutcome> {
+        use crate::state::EffectiveState;
+
+        match self.reconcile_state()? {
+            EffectiveState::VerifiedActive { .. } => {}
+            _ => {
+                return Err(NailsError::InvalidState(
+                    "reapply needs a verifiably active hidden environment; run 'nails activate' \
+                     first, then reapply once the hidden configuration is fixed"
+                        .to_string(),
+                ));
+            }
+        }
+
+        let verbosity = self.verbosity;
+        let (fast_path_toplevel, new_fingerprint) = self.build_nixos_profile(verbosity)?;
+        let hidden_config =
+            self.run_post_overlay_nixos_switch(&fast_path_toplevel, &new_fingerprint, verbosity);
+        self.record_switch_warning(hidden_config.failure_reason());
+        if let Err(e) = self.save_cached_state() {
+            tracing::warn!("Failed to persist reapply outcome to state: {}", e);
+        }
+
+        Ok(ActivationOutcome::Activated { hidden_config })
+    }
+
+    /// Record (or clear) the last hidden NixOS switch warning in the cached state
+    /// so it is written out with the next state save. `None` clears a prior
+    /// warning after a clean switch.
+    pub(crate) fn record_switch_warning(&self, warning: Option<&str>) {
+        let mut cached = self.cached_state.borrow_mut();
+        if let Some(ref mut state_file) = *cached {
+            state_file.last_switch_warning = warning.map(ToString::to_string);
+        }
     }
 
     /// Log the security label and any writers left on the decoy once the
@@ -712,20 +862,26 @@ impl<F: Filesystem> NailsManager<F> {
     }
 
     /// Run the post-overlay NixOS switch/rebuild and emit the matching
-    /// notification. Returns a warning string when the switch failed but the
-    /// activation was preserved; `None` on success.
+    /// notification. Returns the [`HiddenConfigOutcome`]: `Applied` on success,
+    /// `NotRequested` when the host has no declarative layer, or `Failed` when the
+    /// switch failed but the activation was preserved.
+    ///
+    /// The failure notification written here is the detached GUI worker's outcome
+    /// signal: the worker runs this same code, so a failed switch surfaces as a
+    /// login notification even though its console output went to the journal.
     fn run_post_overlay_nixos_switch(
         &self,
         fast_path_toplevel: &Option<String>,
         new_fingerprint: &Option<String>,
         verbosity: Verbosity,
-    ) -> Option<String> {
+    ) -> HiddenConfigOutcome {
         let switch_result =
             self.switch_nixos_profile(fast_path_toplevel, new_fingerprint, verbosity);
         let hidden_root = self.config().hidden_volume_root.clone();
 
         match switch_result {
-            Ok(()) => {
+            Ok(outcome @ HiddenConfigOutcome::NotRequested) => outcome,
+            Ok(outcome) => {
                 tracing::info!("NixOS profile switch complete");
                 let notif = Notification {
                     title: "NixOS Rebuild Complete".to_string(),
@@ -737,7 +893,7 @@ impl<F: Filesystem> NailsManager<F> {
                 if let Err(e) = write_notification(&hidden_root, &notif) {
                     tracing::warn!("Failed to write rebuild success notification: {}", e);
                 }
-                None
+                outcome
             }
             Err(e) => {
                 let error_msg = e.to_string();
@@ -771,7 +927,7 @@ impl<F: Filesystem> NailsManager<F> {
                     preserve_activation = true,
                     "NixOS switch/rebuild failed after overlays were mounted; preserving active session and overlays"
                 );
-                Some(truncated)
+                HiddenConfigOutcome::Failed { reason: truncated }
             }
         }
     }

@@ -187,6 +187,20 @@ pub fn print_status_human(
             println!();
             println!("Hidden system:      {}", toplevel);
         }
+
+        // A hidden NixOS configuration that did not apply on the last activation
+        // is reported as a warning: the overlays are up, but the declarative
+        // configuration is NOT in force.
+        if let Some(ref warning) = report.last_switch_warning {
+            println!();
+            println!(
+                "  {}",
+                style.marked(
+                    Mark::Warn,
+                    format_args!("hidden configuration NOT applied ({warning})"),
+                )
+            );
+        }
     } else if let SystemState::Inactive = report.state {
         println!();
         println!("Run 'nails activate' to mount hidden environment");
