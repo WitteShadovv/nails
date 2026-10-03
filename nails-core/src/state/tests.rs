@@ -1850,6 +1850,31 @@ fn test_save_fsyncs_file_and_directory() {
 }
 
 #[test]
+fn test_save_refuses_a_symlinked_path_component() {
+    // A symlink planted between the hidden root and state.json — even one that
+    // stays inside the root — must not be traversed: SafeRoot resolves the write
+    // with RESOLVE_NO_SYMLINKS, so a swapped-in link cannot redirect the
+    // privileged state write. `is_on_hidden_volume` accepts this path (the link
+    // canonicalizes back inside the root); the containment helper is the backstop.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join("real")).unwrap();
+    std::os::unix::fs::symlink("real", root.join("link")).unwrap();
+
+    let state_path = root.join("link/state.json");
+    let err = StateFile::default()
+        .save_with_root(&state_path, root.to_str().unwrap())
+        .unwrap_err();
+
+    assert!(
+        err.to_string().contains("symlink") || err.to_string().contains("escapes"),
+        "expected a containment refusal, got: {err}"
+    );
+    // Nothing was written through the link.
+    assert!(!root.join("real/state.json").exists());
+}
+
+#[test]
 fn test_stale_temp_files_removed_on_load() {
     let temp_dir = tempfile::tempdir().unwrap();
     let mock_root = temp_dir.path().to_str().unwrap();

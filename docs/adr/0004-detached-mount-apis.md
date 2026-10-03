@@ -123,12 +123,22 @@ way.
 - "No hidden-root path is opened outside the helper" is enforced by review with
   `rg`, not by clippy `disallowed-methods`: that lint is global and cannot tell a
   hidden-root `std::fs` open from a legitimate decoy-root one, so enabling it
-  would fire on hundreds of valid call sites. The remaining hidden-root call
-  sites to route through `SafeRoot` as they are next touched are the state-file
-  write (`state/file.rs`), the opaque-xattr handling (`overlay/opaque.rs`), the
-  notification signal file, and the pivot/snapshot scaffolding under T-069; the
-  grep gate for the old leak-prone patterns rides with the T-074 artifact
-  registry.
+  would fire on hundreds of valid call sites. The hidden-root *write* sites now
+  route through `SafeRoot`: overlay upper/work creation
+  (`Filesystem::create_hidden_dir_all`), the state-file write
+  (`state/file.rs::save_internal`, resolved relative to the hidden root) and the
+  notification directory and signal files (`notification/mod.rs`, via
+  `SafeRoot::create_dir_all`/`create_new` with `fchmod`/`fchown` on the returned
+  descriptors). `SafeRoot` gained `create_new` (exclusive create returning the
+  handle) and `open_dir` (a directory fd for `fchmod`/`fchown`) for these. The
+  remaining call sites to route as they are next touched are the opaque-xattr
+  handling (`overlay/opaque.rs`, deferred to T-040: it is name-scoped to the one
+  managed `/etc/nixos` upper and already uses `l*xattr`, which does not follow the
+  final-component symlink) and the pivot/snapshot scaffolding under T-069. The
+  notification *read* path (`read_pending`/`clear_*`) runs as the unprivileged
+  operator over files they already own and creates nothing, so it stays on
+  `std::fs` until `SafeRoot` grows a contained directory listing. The grep gate
+  for the old leak-prone patterns rides with the T-074 artifact registry.
 - The modern mount syscalls (`fsmount`/`move_mount`, `open_tree`) are recorded as
   the intended direction but remain unproven here. They must be validated on a
   privileged host / VM before any switch away from `mount(2)` and fork/`setns`.

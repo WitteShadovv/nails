@@ -273,7 +273,7 @@ impl StateFile {
             )));
         }
 
-        self.save_internal(path)
+        self.save_internal(path, hidden_volume_root)
     }
 
     /// Save state file with default hidden volume root (production)
@@ -287,11 +287,18 @@ impl StateFile {
             )));
         }
 
-        self.save_internal(path)
+        self.save_internal(path, hidden_volume_root)
     }
 
     /// Internal save implementation (shared by test and production).
-    fn save_internal(&self, path: &Path) -> Result<()> {
+    ///
+    /// The write is routed through [`crate::filesystem::SafeRoot`] anchored on the
+    /// hidden volume root, so a symlink or `..` planted at any component between
+    /// the root and `state.json` cannot redirect this privileged write onto the
+    /// decoy filesystem. `SafeRoot` performs the temp-then-rename atomic write
+    /// (unique `O_EXCL` temp under the parent dir fd, `fsync`, `renameat`, parent
+    /// `fsync`) that the previous `tempfile`-based path did, with containment added.
+    fn save_internal(&self, path: &Path, hidden_volume_root: &str) -> Result<()> {
         // Test-only: let a regression test force this save to fail at a precise
         // target state, standing in for an ENOSPC/EROFS write failure without a
         // read-only filesystem. Compiled out of the production path entirely.
@@ -312,36 +319,31 @@ impl StateFile {
         let json = serde_json::to_string_pretty(&final_state)
             .map_err(|e| NailsError::ConfigError(format!("Failed to serialize state: {}", e)))?;
 
-        // 3. Create parent directory if needed.
-        let dir = path.parent().unwrap_or(Path::new("."));
-        std::fs::create_dir_all(dir)?;
-
-        // 4. Write to a temp file in the same directory (same filesystem so the
-        //    rename is atomic), then make the bytes durable before the rename.
-        let temp = tempfile::NamedTempFile::new_in(dir)?;
-        std::io::Write::write_all(&mut temp.as_file(), json.as_bytes())?;
-
-        // 5. Permissions 0600 (owner read/write only).
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(temp.path())?.permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(temp.path(), perms)?;
-        }
-
-        // 6. fsync the temp file so its data reaches disk before the rename.
-        temp.as_file().sync_all()?;
-        #[cfg(test)]
-        sync_probe::record_file_sync();
-
-        // 7. Atomic rename over the target (overwrites any existing file).
-        temp.persist(path).map_err(|e| {
-            std::io::Error::other(format!("Failed to persist state file: {}", e.error))
+        // 3. Resolve the state path relative to the hidden root. Validation above
+        //    already proved the path lies beneath the root; the relative remainder
+        //    is what SafeRoot resolves, contained, beneath its pinned root fd.
+        let root = Path::new(hidden_volume_root);
+        let relative = path.strip_prefix(root).map_err(|_| {
+            NailsError::InvalidState(format!(
+                "State file path {} is not beneath the hidden volume root {}",
+                path.display(),
+                hidden_volume_root
+            ))
         })?;
 
-        // 8. fsync the directory so the rename itself is durable across a crash.
-        sync_dir(dir)?;
+        // 4. Contained atomic write at mode 0600: SafeRoot creates any missing
+        //    parent (0700), writes to a unique O_EXCL temp under the parent dir fd,
+        //    fsyncs it, renames it into place and fsyncs the parent directory.
+        let safe_root = crate::filesystem::SafeRoot::open(root)?;
+        safe_root.write_atomic(relative, json.as_bytes(), 0o600)?;
+
+        // The durability fsyncs (file before rename, directory after) both run
+        // inside write_atomic; record them for the durability regression test.
+        #[cfg(test)]
+        {
+            sync_probe::record_file_sync();
+            sync_probe::record_dir_sync();
+        }
 
         Ok(())
     }
@@ -572,9 +574,10 @@ pub(crate) mod test_boot_id {
 
 /// Remove stale temp siblings left by an interrupted atomic write.
 ///
-/// `tempfile::NamedTempFile` names its files with a `.tmp` prefix; if a save
-/// crashed between creating the temp file and the rename, the leftover would
-/// otherwise accumulate on the hidden volume forever.
+/// The hidden-root atomic write (`SafeRoot::write_atomic`) names its temps with a
+/// `.nails-tmp.` prefix; older `tempfile`-based writes used a `.tmp` prefix. If a
+/// save crashed between creating the temp file and the rename, the leftover would
+/// otherwise accumulate on the hidden volume forever, so both prefixes are swept.
 fn remove_stale_temp_files(dir: &Path) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -583,7 +586,9 @@ fn remove_stale_temp_files(dir: &Path) {
     let now = std::time::SystemTime::now();
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let is_temp = name.to_str().is_some_and(|name| name.starts_with(".tmp"));
+        let is_temp = name
+            .to_str()
+            .is_some_and(|name| name.starts_with(".tmp") || name.starts_with(".nails-tmp"));
         if !is_temp {
             continue;
         }
@@ -599,15 +604,6 @@ fn remove_stale_temp_files(dir: &Path) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
-}
-
-/// fsync a directory so a rename into it is durable across a crash.
-fn sync_dir(dir: &Path) -> Result<()> {
-    let handle = std::fs::File::open(dir)?;
-    handle.sync_all()?;
-    #[cfg(test)]
-    sync_probe::record_dir_sync();
-    Ok(())
 }
 
 /// Test-only observation seam for the durability fsyncs.

@@ -21,9 +21,10 @@ use nails_core::filesystem::{
 use nails_core::notification::notifications_dir;
 use nails_core::{NailsError, StateLock};
 use proptest::prelude::*;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
-use tempfile::TempDir;
+
+mod common;
+use common::{components, fixture, is_plain, join, resolve};
 
 /// Cases per property: enough to mix every component kind, small enough
 /// that each suite finishes in well under a second.
@@ -32,78 +33,6 @@ const CASES: u32 = 64;
 // ---------------------------------------------------------------------------
 // Containment
 // ---------------------------------------------------------------------------
-
-/// Components a generated path is made of. `a`, `b` are real directories and
-/// `new` does not exist; the others are traversal segments or symlinks that
-/// the fixture creates in every directory: `in` points at its own directory,
-/// `up` at its parent, `out` at a directory outside the volume and `loop` at
-/// itself.
-const COMPONENTS: &[&str] = &["a", "b", "new", ".", "..", "in", "up", "out", "loop"];
-
-/// Components that can never leave the directory they start from.
-const PLAIN: &[&str] = &["a", "b", "new"];
-
-struct Fixture {
-    _dir: TempDir,
-    base: PathBuf,
-    outside: PathBuf,
-}
-
-/// `base/vol/a/b` with the symlinks of [`COMPONENTS`] in each directory and
-/// `base/outside` next to the volume.
-fn fixture() -> Fixture {
-    let dir = TempDir::new().unwrap();
-    // Resolve the tempdir itself so only links created here are symlinks.
-    let base = dir.path().canonicalize().unwrap();
-    let outside = base.join("outside");
-    let vol = base.join("vol");
-    std::fs::create_dir_all(vol.join("a/b")).unwrap();
-    std::fs::create_dir(&outside).unwrap();
-    for parent in [vol.clone(), vol.join("a"), vol.join("a/b")] {
-        symlink(".", parent.join("in")).unwrap();
-        symlink("..", parent.join("up")).unwrap();
-        symlink(&outside, parent.join("out")).unwrap();
-        symlink("loop", parent.join("loop")).unwrap();
-    }
-    Fixture {
-        _dir: dir,
-        base,
-        outside,
-    }
-}
-
-/// `start` followed by `components` and `leaf`, joined as text so `.` and
-/// `..` survive exactly as written.
-fn join(start: &str, components: &[&str], leaf: &str) -> String {
-    let mut path = start.to_string();
-    for component in components.iter().chain(std::iter::once(&leaf)) {
-        if !component.is_empty() {
-            path.push('/');
-            path.push_str(component);
-        }
-    }
-    path
-}
-
-/// Where `path` really points: the longest existing ancestor with every
-/// symlink resolved, followed by the part that does not exist yet.
-fn resolve(path: &Path) -> PathBuf {
-    for ancestor in path.ancestors() {
-        if let Ok(real) = ancestor.canonicalize() {
-            let rest = path.strip_prefix(ancestor).unwrap();
-            return real.join(rest);
-        }
-    }
-    path.to_path_buf()
-}
-
-fn components(max: usize) -> impl Strategy<Value = Vec<&'static str>> {
-    prop::collection::vec(prop::sample::select(COMPONENTS), 0..=max)
-}
-
-fn is_plain(components: &[&str]) -> bool {
-    components.iter().all(|c| PLAIN.contains(c))
-}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(CASES))]

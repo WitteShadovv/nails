@@ -124,11 +124,95 @@ impl SafeRoot {
             .flags(OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC)
             .resolve(containment_flags());
 
-        let mut cur = self.try_clone_root()?;
+        // Start from a *readable* fd on the root rather than the `O_PATH` anchor,
+        // so that a file written directly under the root (parents empty) can still
+        // have its parent directory `fsync`-ed for durability — `fsync` rejects an
+        // `O_PATH` fd with `EBADF`.
+        let mut cur = self.open_root_dir_rw()?;
         for comp in parents {
             cur = openat2(cur.as_fd(), *comp, how).map_err(|e| self.resolve_error(relative, e))?;
         }
         Ok((cur, leaf))
+    }
+
+    /// Reopen the root itself as a readable directory fd beneath the pinned
+    /// `O_PATH` anchor. Used where the root is the parent of the operation and a
+    /// `fsync`-able (non-`O_PATH`) fd is needed.
+    fn open_root_dir_rw(&self) -> Result<OwnedFd> {
+        let how = OpenHow::new()
+            .flags(OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC)
+            .resolve(containment_flags());
+        openat2(self.dir_fd.as_fd(), ".", how).map_err(|e| self.resolve_error(Path::new("."), e))
+    }
+
+    /// Open the directory at `relative` beneath the root as a readable directory
+    /// fd (`O_RDONLY | O_DIRECTORY`, no symlink traversal).
+    ///
+    /// The returned fd anchors ownership and mode changes (`fchown`/`fchmod`) on
+    /// the directory itself, so a symlink swapped in at the path after creation
+    /// cannot redirect them off the hidden root.
+    pub fn open_dir(&self, relative: &Path) -> Result<OwnedFd> {
+        let how = OpenHow::new()
+            .flags(OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC)
+            .resolve(containment_flags());
+        self.resolve(relative, how)
+    }
+
+    /// Open the file at `relative` beneath the root for read and write, creating
+    /// it (mode `mode`) if it does not exist, returning the handle.
+    ///
+    /// Missing ancestors are created first (mode 0700). The open is `O_NOFOLLOW`,
+    /// so a symlink planted at the final component is refused rather than
+    /// followed; the file is neither truncated nor required to be new, which suits
+    /// a reused lock file. Unlike [`SafeRoot::create_new`] it is not exclusive.
+    pub fn open_rw_create(&self, relative: &Path, mode: u32) -> Result<std::fs::File> {
+        if let Some(parent) = relative.parent().filter(|p| !p.as_os_str().is_empty()) {
+            self.create_dir_all(parent)?;
+        }
+        let how = OpenHow::new()
+            .flags(OFlag::O_RDWR | OFlag::O_CREAT | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
+            .mode(Mode::from_bits_truncate(mode))
+            .resolve(containment_flags());
+        let fd = self.resolve(relative, how)?;
+        Ok(std::fs::File::from(fd))
+    }
+
+    /// Exclusively create the file at `relative` beneath the root with mode
+    /// `mode`, returning the open write handle.
+    ///
+    /// Missing ancestors are created first (mode 0700). The file itself is created
+    /// `O_CREAT | O_EXCL | O_NOFOLLOW`: an entry already present at the name —
+    /// including a planted symlink — is reported as [`std::io::ErrorKind::AlreadyExists`]
+    /// rather than followed, so a caller can retry under a different name without
+    /// ever writing through a link. Operating on the returned descriptor (not the
+    /// path) lets callers `fchmod`/`fchown` it without reopening.
+    pub fn create_new(&self, relative: &Path, mode: u32) -> Result<std::fs::File> {
+        if let Some(parent) = relative.parent().filter(|p| !p.as_os_str().is_empty()) {
+            self.create_dir_all(parent)?;
+        }
+        let _ = safe_components(relative, &self.root)?;
+        let how = OpenHow::new()
+            .flags(
+                OFlag::O_WRONLY
+                    | OFlag::O_CREAT
+                    | OFlag::O_EXCL
+                    | OFlag::O_NOFOLLOW
+                    | OFlag::O_CLOEXEC,
+            )
+            .mode(Mode::from_bits_truncate(mode))
+            .resolve(containment_flags());
+        match openat2(self.dir_fd.as_fd(), relative, how) {
+            Ok(fd) => Ok(std::fs::File::from(fd)),
+            Err(Errno::EEXIST) => Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "an entry already exists at {} under hidden root {}",
+                    relative.display(),
+                    self.root.display()
+                ),
+            ))),
+            Err(e) => Err(self.resolve_error(relative, e)),
+        }
     }
 
     /// Atomically write `content` to `relative` with mode `mode`.
@@ -542,6 +626,66 @@ mod tests {
             err.to_string().contains("symlink") || err.to_string().contains("escapes"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn create_new_is_exclusive_and_sets_mode() {
+        let dir = tmp_root();
+        let root = SafeRoot::open(dir.path()).unwrap();
+
+        let file = root
+            .create_new(Path::new("notifications/a.json"), 0o600)
+            .unwrap();
+        drop(file);
+        let meta = std::fs::metadata(dir.path().join("notifications/a.json")).unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o600);
+
+        // A second create at the same name is refused as AlreadyExists, never a
+        // silent overwrite.
+        let err = root
+            .create_new(Path::new("notifications/a.json"), 0o600)
+            .unwrap_err();
+        let NailsError::IoError(io) = &err else {
+            panic!("expected IoError, got {err}");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::AlreadyExists, "{err}");
+    }
+
+    #[test]
+    fn create_new_refuses_a_planted_symlink_at_the_name() {
+        let dir = tmp_root();
+        let outside = tmp_root();
+        std::fs::create_dir(dir.path().join("notifications")).unwrap();
+        // Plant `notifications/evil.json -> /outside/evil.json`. An O_EXCL|O_NOFOLLOW
+        // create must refuse the link rather than write through it.
+        symlink(
+            outside.path().join("evil.json"),
+            dir.path().join("notifications/evil.json"),
+        )
+        .unwrap();
+        let root = SafeRoot::open(dir.path()).unwrap();
+
+        let err = root
+            .create_new(Path::new("notifications/evil.json"), 0o600)
+            .unwrap_err();
+        let NailsError::IoError(io) = &err else {
+            panic!("expected IoError, got {err}");
+        };
+        // The planted link reads as "already exists" (O_EXCL), never followed.
+        assert_eq!(io.kind(), std::io::ErrorKind::AlreadyExists, "{err}");
+        assert!(!outside.path().join("evil.json").exists());
+    }
+
+    #[test]
+    fn open_dir_refuses_a_symlinked_directory() {
+        let dir = tmp_root();
+        let outside = tmp_root();
+        symlink(outside.path(), dir.path().join("link")).unwrap();
+        let root = SafeRoot::open(dir.path()).unwrap();
+        assert!(root.open_dir(Path::new("link")).is_err());
+        // A real directory opens fine.
+        root.create_dir_all(Path::new("real")).unwrap();
+        assert!(root.open_dir(Path::new("real")).is_ok());
     }
 
     #[test]

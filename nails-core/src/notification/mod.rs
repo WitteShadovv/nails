@@ -14,10 +14,10 @@
 //! 3. The dispatch command reads pending files, calls `notify-send`, and deletes them
 
 use crate::Result;
+use crate::filesystem::SafeRoot;
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 
 /// Build the environment overrides handed to `notify-send` so it reaches the
@@ -104,21 +104,40 @@ pub fn notifications_dir(hidden_volume_root: &Path) -> PathBuf {
 /// name already exists (same title written in the same millisecond), an
 /// incrementing numeric suffix is appended so no notification is overwritten.
 pub fn write_notification(hidden_volume_root: &Path, notification: &Notification) -> Result<()> {
+    // Anchor every create under the hidden root through SafeRoot, so a symlink or
+    // `..` planted at the `notifications` component cannot redirect this
+    // root-privileged write onto the decoy filesystem.
+    let safe_root = SafeRoot::open(hidden_volume_root).map_err(|e| {
+        crate::NailsError::IoError(std::io::Error::other(format!(
+            "Failed to open hidden root {} for notifications: {e}",
+            hidden_volume_root.display()
+        )))
+    })?;
+    let rel_dir = Path::new("notifications");
+    // `dir` is used for diagnostics only; all operations go through `safe_root`.
     let dir = notifications_dir(hidden_volume_root);
-    std::fs::create_dir_all(&dir).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!(
-                "Failed to create notifications dir {}: {}",
-                dir.display(),
-                e
-            ),
-        ))
+    safe_root.create_dir_all(rel_dir).map_err(|e| {
+        crate::NailsError::IoError(std::io::Error::other(format!(
+            "Failed to create notifications dir {}: {e}",
+            dir.display()
+        )))
+    })?;
+
+    // Open the directory as a descriptor so permissions and ownership are set on
+    // the directory itself, never through a path that a symlink could redirect.
+    let dir_fd = safe_root.open_dir(rel_dir).map_err(|e| {
+        crate::NailsError::IoError(std::io::Error::other(format!(
+            "Failed to open notifications dir {}: {e}",
+            dir.display()
+        )))
     })?;
 
     // Set the notifications directory to 0o700 (owner rwx only).
     // The directory is chown'd to the target user below so they can manage files.
-    if let Err(e) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)) {
+    if let Err(e) = nix::sys::stat::fchmod(
+        dir_fd.as_fd(),
+        nix::sys::stat::Mode::from_bits_truncate(0o700),
+    ) {
         tracing::warn!(
             dir = %dir.display(),
             error = %e,
@@ -153,9 +172,10 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
     };
 
     // Hand the directory to the operator so the user-run dispatcher can delete
-    // the files it processes.
+    // the files it processes. Operate on the open descriptor so a symlink race on
+    // the path cannot redirect the chown.
     if let Some(user) = target_user.as_ref()
-        && let Err(e) = chown_to_user(&dir, user)
+        && let Err(e) = fchown_to_user(&dir_fd, user)
     {
         tracing::warn!(
             dir = %dir.display(),
@@ -186,7 +206,8 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
     })?;
 
     let base = format!("{}_{}", timestamp, safe_title);
-    let (path, mut file) = create_signal_file(&dir, &base)?;
+    let (relative, mut file) = create_signal_file(&safe_root, rel_dir, &base)?;
+    let path = hidden_volume_root.join(&relative);
 
     file.write_all(json.as_bytes()).map_err(|e| {
         crate::NailsError::IoError(std::io::Error::new(
@@ -204,7 +225,10 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
     // the operator, so a path-based chmod could be redirected through a symlink
     // swapped in after the create. The file is chown'd to the target user below
     // so dispatch_all can read and delete it.
-    if let Err(e) = file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+    if let Err(e) = nix::sys::stat::fchmod(
+        file.as_fd(),
+        nix::sys::stat::Mode::from_bits_truncate(0o600),
+    ) {
         tracing::warn!(
             path = %path.display(),
             error = %e,
@@ -228,28 +252,29 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
     Ok(())
 }
 
-/// Create a new signal file named `{base}.json` in `dir`, or `{base}_{n}.json`
-/// when that name is taken.
+/// Create a new signal file named `{base}.json` under `rel_dir` (relative to the
+/// hidden root `safe_root` anchors), or `{base}_{n}.json` when that name is taken,
+/// returning the created path *relative to the hidden root* and the open handle.
 ///
-/// The create is exclusive so two notifications written in the same
-/// millisecond with the same title cannot silently overwrite one another. It
-/// matters for safety too: once the operator owns the directory they can plant
-/// entries in it, and an exclusive create treats a symlink at the name as taken
-/// instead of following it to a file root would then overwrite. The file is
-/// born 0600, so it is never readable by anyone else while it is written.
-fn create_signal_file(dir: &Path, base: &str) -> Result<(PathBuf, std::fs::File)> {
+/// The create is exclusive so two notifications written in the same millisecond
+/// with the same title cannot silently overwrite one another. It matters for
+/// safety too: once the operator owns the directory they can plant entries in it,
+/// and [`SafeRoot::create_new`] treats a symlink at the name as taken (and
+/// refuses to traverse any symlinked component) instead of following it to a file
+/// a root-privileged write would then overwrite. The file is born 0600, so it is
+/// never readable by anyone else while it is written.
+fn create_signal_file(
+    safe_root: &SafeRoot,
+    rel_dir: &Path,
+    base: &str,
+) -> Result<(PathBuf, std::fs::File)> {
     const MAX_COLLISION_SUFFIXES: u32 = 10_000;
-    let mut path = dir.join(format!("{}.json", base));
+    let mut relative = rel_dir.join(format!("{}.json", base));
     let mut attempt: u32 = 0;
     loop {
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-        {
-            Ok(file) => return Ok((path, file)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+        match safe_root.create_new(&relative, 0o600) {
+            Ok(file) => return Ok((relative, file)),
+            Err(crate::NailsError::IoError(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 attempt += 1;
                 if attempt > MAX_COLLISION_SUFFIXES {
                     return Err(crate::NailsError::IoError(std::io::Error::new(
@@ -260,25 +285,16 @@ fn create_signal_file(dir: &Path, base: &str) -> Result<(PathBuf, std::fs::File)
                         ),
                     )));
                 }
-                path = dir.join(format!("{}_{}.json", base, attempt));
+                relative = rel_dir.join(format!("{}_{}.json", base, attempt));
             }
             Err(e) => {
-                return Err(crate::NailsError::IoError(std::io::Error::new(
-                    e.kind(),
-                    format!(
-                        "Failed to create notification file {}: {}",
-                        path.display(),
-                        e
-                    ),
-                )));
+                return Err(crate::NailsError::IoError(std::io::Error::other(format!(
+                    "Failed to create notification file {}: {e}",
+                    relative.display()
+                ))));
             }
         }
     }
-}
-
-/// Change `path`'s ownership to the operator's numeric uid and gid.
-fn chown_to_user(path: &Path, user: &crate::TargetUser) -> std::io::Result<()> {
-    std::os::unix::fs::chown(path, Some(user.uid), Some(user.gid))
 }
 
 /// Change the ownership of an open file descriptor to the operator. Using the fd

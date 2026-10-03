@@ -1,4 +1,5 @@
 use super::*;
+use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
 fn make_notification(title: &str, body: &str) -> Notification {
@@ -101,6 +102,25 @@ fn test_write_notification_returns_error_when_notifications_path_cannot_be_creat
         err.to_string()
             .contains("Failed to create notifications dir")
     );
+}
+
+#[test]
+fn test_write_refuses_a_symlinked_notifications_dir() {
+    // A symlink planted at the `notifications` name must not be traversed: the
+    // root-privileged write would otherwise land outside the hidden root.
+    let dir = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    std::os::unix::fs::symlink(outside.path(), notifications_dir(dir.path())).unwrap();
+
+    let err = write_notification(dir.path(), &make_notification("Blocked", "body")).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Failed to create notifications dir"),
+        "expected a containment refusal, got: {err}"
+    );
+    // Nothing was written through the link.
+    let leaked = std::fs::read_dir(outside.path()).unwrap().count();
+    assert_eq!(leaked, 0, "a notification leaked through the symlink");
 }
 
 #[test]
@@ -599,12 +619,14 @@ fn signal_file_create_does_not_follow_a_planted_symlink() {
     std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o644)).unwrap();
     std::os::unix::fs::symlink(&victim, dir.path().join("signal.json")).unwrap();
 
-    let (path, mut file) = create_signal_file(dir.path(), "signal").unwrap();
+    let safe_root = crate::filesystem::SafeRoot::open(dir.path()).unwrap();
+    let (relative, mut file) = create_signal_file(&safe_root, Path::new(""), "signal").unwrap();
     file.write_all(b"payload").unwrap();
 
     // The planted name counts as taken, so the write lands on a fresh suffixed
     // file and the symlink's target is left exactly as it was.
-    assert_eq!(path, dir.path().join("signal_1.json"));
+    assert_eq!(relative, PathBuf::from("signal_1.json"));
+    let path = dir.path().join(&relative);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "payload");
     assert_eq!(std::fs::read_to_string(&victim).unwrap(), "original");
     let victim_mode = victim.metadata().unwrap().permissions().mode() & 0o777;

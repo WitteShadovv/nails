@@ -12,9 +12,10 @@
 //! is no stale PID file to reap. The lock file lives on the hidden volume, never
 //! on the decoy system, so holding it leaves no decoy-side artifact.
 
+use crate::filesystem::SafeRoot;
 use crate::{NailsError, Result};
 use nix::fcntl::{Flock, FlockArg};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -42,18 +43,14 @@ impl StateLock {
     }
 
     /// Open (creating if needed) the lock file with owner-only permissions.
-    fn open_lock_file(path: &Path) -> Result<File> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut opts = OpenOptions::new();
-        opts.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        Ok(opts.open(path)?)
+    ///
+    /// The state directory is the hidden-volume path the lock lives in, so the
+    /// open is anchored there through [`SafeRoot`]: the lock file is resolved
+    /// with `O_NOFOLLOW` beneath the pinned directory fd, so a symlink swapped in
+    /// at `.lock` is refused instead of redirecting the create onto the decoy.
+    fn open_lock_file(state_dir: &Path) -> Result<File> {
+        let safe_root = SafeRoot::open(state_dir)?;
+        safe_root.open_rw_create(Path::new(Self::LOCK_FILE_NAME), 0o600)
     }
 
     /// Take the lock without blocking.
@@ -63,7 +60,7 @@ impl StateLock {
     /// mutating command (activate, deactivate, init, recover) takes.
     pub fn try_acquire(state_dir: &Path) -> Result<Self> {
         let path = Self::lock_path(state_dir);
-        let file = Self::open_lock_file(&path)?;
+        let file = Self::open_lock_file(state_dir)?;
         match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
             Ok(flock) => Ok(Self::finish(flock, path)),
             Err((file, _errno)) => {
@@ -81,7 +78,7 @@ impl StateLock {
     pub fn acquire_with_timeout(state_dir: &Path, timeout: Duration) -> Result<Option<Self>> {
         let path = Self::lock_path(state_dir);
         let deadline = Instant::now() + timeout;
-        let mut file = Self::open_lock_file(&path)?;
+        let mut file = Self::open_lock_file(state_dir)?;
         loop {
             match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
                 Ok(flock) => return Ok(Some(Self::finish(flock, path))),
@@ -152,6 +149,22 @@ mod tests {
         let lock = StateLock::try_acquire(dir.path()).unwrap();
         assert_eq!(lock.path(), StateLock::lock_path(dir.path()));
         assert!(lock.path().exists());
+    }
+
+    #[test]
+    fn acquire_refuses_a_symlinked_lock_file() {
+        // A symlink planted at `.lock` must not be followed: the open is anchored
+        // through SafeRoot with O_NOFOLLOW, so the lock cannot be redirected onto
+        // another file (which flock would then pin and the PID write would clobber).
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("victim");
+        std::fs::write(&victim, "original").unwrap();
+        std::os::unix::fs::symlink(&victim, StateLock::lock_path(dir.path())).unwrap();
+
+        assert!(StateLock::try_acquire(dir.path()).is_err());
+        // The link's target is untouched.
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "original");
     }
 
     #[test]
