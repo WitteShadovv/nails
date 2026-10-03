@@ -1341,13 +1341,18 @@ fn test_real_overwrite_file_in_place_missing_file_errors() {
     let temp_dir = tempfile::tempdir().unwrap();
     let path = temp_dir.path().join("does-not-exist");
     let realfs = RealFilesystem;
-    // The parent exists but the file does not; open_rw_create would normally
-    // create it, but the caller contract is existence-checked, and here we assert
-    // the method still succeeds by creating-or-opening without panicking. The
-    // important invariant (same inode on an existing file) is covered above.
-    let result = realfs.overwrite_file_in_place(&path, "x\n");
-    assert!(result.is_ok());
-    assert_eq!(fs::read_to_string(&path).unwrap(), "x\n");
+    // The parent exists but the file does not. In-place overwrite opens
+    // `O_RDWR` without `O_CREAT`, so a missing file is a NotFound error rather
+    // than being created: the opt-in decoy edit never plants a history file that
+    // was not already there. This matches the MockFilesystem contract.
+    let err = realfs.overwrite_file_in_place(&path, "x\n").unwrap_err();
+    match err {
+        NailsError::IoError(io) => {
+            assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+        }
+        other => panic!("expected NotFound IoError, got {other:?}"),
+    }
+    assert!(!path.exists(), "a missing file must not be created");
 }
 
 #[test]

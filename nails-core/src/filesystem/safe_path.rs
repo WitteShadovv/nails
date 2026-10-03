@@ -177,6 +177,22 @@ impl SafeRoot {
         Ok(std::fs::File::from(fd))
     }
 
+    /// Open the existing file at `relative` beneath the root for read and write,
+    /// returning the handle. The file is NOT created: a missing file surfaces as
+    /// an error (ENOENT) rather than being created, and no ancestors are made.
+    ///
+    /// The open is `O_RDWR | O_NOFOLLOW`, so a symlink planted at the final
+    /// component is refused rather than followed, and the existing inode, owner
+    /// and mode are preserved. The file is neither truncated nor positioned;
+    /// callers that want to rewrite it truncate the returned handle themselves.
+    pub fn open_rw_existing(&self, relative: &Path) -> Result<std::fs::File> {
+        let how = OpenHow::new()
+            .flags(OFlag::O_RDWR | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
+            .resolve(containment_flags());
+        let fd = self.resolve(relative, how)?;
+        Ok(std::fs::File::from(fd))
+    }
+
     /// Exclusively create the file at `relative` beneath the root with mode
     /// `mode`, returning the open write handle.
     ///

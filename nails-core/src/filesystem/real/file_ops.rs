@@ -197,13 +197,13 @@ pub(super) fn overwrite_file_in_place(path: &Path, content: &str) -> Result<()> 
         )))
     })?;
 
-    // The caller existence-checks and resolves the path first, so the file is
-    // present: opening it beneath the symlink-safe parent root keeps the existing
-    // inode, owner and mode (the mode argument only applies to a fresh create,
-    // which does not happen for an existing file). `O_NOFOLLOW` refuses a symlink
-    // planted at the final component.
+    // Open the existing file beneath the symlink-safe parent root without
+    // `O_CREAT`: a missing file is reported rather than created, so the opt-in
+    // edit never plants a decoy history file that was not already there. The
+    // existing inode, owner and mode are preserved, and `O_NOFOLLOW` refuses a
+    // symlink planted at the final component.
     let root = crate::filesystem::SafeRoot::open(parent)?;
-    let mut file = root.open_rw_create(Path::new(file_name), 0o600)?;
+    let mut file = root.open_rw_existing(Path::new(file_name))?;
 
     // Truncate on the same inode, then rewrite — no temp file, no rename.
     file.set_len(0).map_err(|e| {
