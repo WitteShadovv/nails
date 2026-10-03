@@ -125,6 +125,9 @@ pub struct MockFilesystem {
     pub(super) directory_sizes: Arc<Mutex<HashMap<PathBuf, u64>>>,
     #[allow(clippy::type_complexity)]
     pub(super) submount_sources: Arc<Mutex<HashMap<PathBuf, Vec<(PathBuf, PathBuf)>>>>,
+    /// Classified submounts per target, returned by
+    /// [`Filesystem::find_submounts`](crate::Filesystem::find_submounts).
+    pub(super) submounts: Arc<Mutex<HashMap<PathBuf, Vec<crate::filesystem::Submount>>>>,
     /// Paths a read-only self-bind guard was applied to via
     /// [`Filesystem::remount_read_only`](crate::Filesystem::remount_read_only).
     pub(super) read_only_guards: Arc<Mutex<HashSet<PathBuf>>>,
@@ -188,6 +191,7 @@ impl MockFilesystem {
             copy_tree_should_fail: Arc::new(Mutex::new(HashSet::new())),
             directory_sizes: Arc::new(Mutex::new(HashMap::new())),
             submount_sources: Arc::new(Mutex::new(HashMap::new())),
+            submounts: Arc::new(Mutex::new(HashMap::new())),
             read_only_guards: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -325,6 +329,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.submount_sources
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.submounts
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();

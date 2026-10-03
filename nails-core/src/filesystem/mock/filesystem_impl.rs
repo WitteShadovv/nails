@@ -199,4 +199,8 @@ impl Filesystem for MockFilesystem {
     fn find_submount_sources(&self, target: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
         self.find_submount_sources_impl(target)
     }
+
+    fn find_submounts(&self, target: &Path) -> Result<Vec<crate::filesystem::Submount>> {
+        self.find_submounts_impl(target)
+    }
 }

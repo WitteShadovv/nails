@@ -231,6 +231,14 @@ pub(super) fn find_submount_sources(target: &Path) -> Result<Vec<(PathBuf, PathB
     ))
 }
 
+pub(super) fn find_submounts(target: &Path) -> Result<Vec<crate::filesystem::Submount>> {
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")?;
+    let canonical_target = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf());
+    Ok(super::classify_submounts(&mountinfo, &canonical_target))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

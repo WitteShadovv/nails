@@ -51,6 +51,6 @@ pub use mountinfo::{
     MountEntry, NailsMounts, OverlayOpts, escape_overlay_path, parse_mountinfo, parse_overlay_opts,
     read_mountinfo,
 };
-pub use real::RealFilesystem;
+pub use real::{RealFilesystem, Submount};
 pub use safe_path::SafeRoot;
 pub use traits::*;

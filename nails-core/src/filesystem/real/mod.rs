@@ -18,6 +18,9 @@ mod mount_ops;
 mod submount;
 mod system_ops;
 
+pub use submount::Submount;
+pub(crate) use submount::classify_submounts;
+
 #[cfg(test)]
 pub(crate) use submount::parse_submount_sources;
 
@@ -260,6 +263,10 @@ impl Filesystem for RealFilesystem {
 
     fn find_submount_sources(&self, target: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
         dir_ops::find_submount_sources(target)
+    }
+
+    fn find_submounts(&self, target: &Path) -> Result<Vec<Submount>> {
+        dir_ops::find_submounts(target)
     }
 }
 

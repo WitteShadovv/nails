@@ -42,12 +42,31 @@ pub struct MountEntry {
     pub root: PathBuf,
     /// Where the mount appears in the namespace.
     pub mount_point: PathBuf,
+    /// Per-mount options before the ` - ` separator (`rw,relatime`, `ro,nosuid`…).
+    ///
+    /// This is the VFS mount-flag field, not the per-superblock options, so it is
+    /// where a mount's read-only-ness is recorded independent of how the
+    /// filesystem itself was mounted. [`read_only`](MountEntry::read_only) reads
+    /// it to decide whether a hidden submount can be re-attached read-only or
+    /// needs its own nested overlay.
+    pub mount_opts: String,
     /// Filesystem type after the ` - ` separator (e.g. `overlay`, `ext4`).
     pub fstype: String,
     /// Mount source after the ` - ` separator (device or bind source).
     pub source: PathBuf,
     /// Per-superblock options after the ` - ` separator.
     pub super_opts: String,
+}
+
+impl MountEntry {
+    /// Whether this mount is read-only, from its per-mount option field.
+    ///
+    /// The VFS records read-only-ness as a bare `ro` token in the per-mount
+    /// options (field 6 of mountinfo), so the check is an exact token match
+    /// rather than a substring test — `relatime` must never be mistaken for `ro`.
+    pub fn read_only(&self) -> bool {
+        self.mount_opts.split(',').any(|opt| opt == "ro")
+    }
 }
 
 /// Overlay options recovered from a mount's super-option string.
@@ -151,6 +170,7 @@ fn parse_line(line: &str) -> Option<MountEntry> {
         dev: tokens[2].to_string(),
         root: PathBuf::from(unescape(tokens[3])),
         mount_point: PathBuf::from(unescape(tokens[4])),
+        mount_opts: tokens[5].to_string(),
         fstype: tokens[sep + 1].to_string(),
         source: PathBuf::from(unescape(tokens[sep + 2])),
         super_opts: tokens[sep + 3].to_string(),
@@ -366,6 +386,32 @@ mod tests {
             PathBuf::from("/mnt/hidden root\tx\\y")
         );
         assert_eq!(entries[0].fstype, "ext4");
+    }
+
+    #[test]
+    fn parse_mountinfo_captures_per_mount_options_and_read_only_flag() {
+        let content = "\
+36 35 98:0 / /ro rw,relatime - ext4 /dev/sda1 ro
+37 35 98:1 / /snap/app/7 ro,nodev,relatime - squashfs /dev/loop3 ro
+38 35 98:2 / /var/log rw,nosuid,nodev - ext4 /dev/sdb1 rw";
+        let entries = parse_mountinfo(content);
+        assert_eq!(entries.len(), 3);
+        // The per-mount options field (not the super options after ` - `) decides
+        // read-only-ness.
+        assert_eq!(entries[0].mount_opts, "rw,relatime");
+        assert!(!entries[0].read_only());
+        assert_eq!(entries[1].mount_opts, "ro,nodev,relatime");
+        assert!(entries[1].read_only());
+        assert_eq!(entries[2].mount_opts, "rw,nosuid,nodev");
+        assert!(!entries[2].read_only());
+    }
+
+    #[test]
+    fn read_only_matches_whole_token_not_substring() {
+        // `relatime` contains neither a bare `ro` token nor should it ever read as
+        // read-only.
+        let entry = &parse_mountinfo("36 35 98:0 / /x rw,relatime - ext4 /dev/sda1 rw")[0];
+        assert!(!entry.read_only());
     }
 
     #[test]

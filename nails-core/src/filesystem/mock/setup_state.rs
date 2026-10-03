@@ -266,6 +266,16 @@ impl MockFilesystem {
             .insert(target.to_path_buf(), sources);
     }
 
+    /// Set the classified submounts returned by
+    /// [`Filesystem::find_submounts`](crate::Filesystem::find_submounts) for a
+    /// target, so a test can drive the parent-overlay re-attach plan.
+    pub fn mock_set_submounts(&self, target: &Path, submounts: Vec<crate::filesystem::Submount>) {
+        self.submounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(target.to_path_buf(), submounts);
+    }
+
     /// Set free space for a path
     pub fn mock_set_free_space(&self, path: &Path, bytes: u64) {
         let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");

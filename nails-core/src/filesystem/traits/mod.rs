@@ -376,4 +376,15 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Returns `(mount_point, source_path)` pairs for bind mounts nested within
     /// `target`. Used to compute extra lower layers for overlayfs.
     fn find_submount_sources(&self, target: &Path) -> Result<Vec<(PathBuf, PathBuf)>>;
+
+    /// Classify every submount nested under `target` into a re-attach, nested
+    /// overlay or extra-lower plan.
+    ///
+    /// This is the superset of [`find_submount_sources`](Self::find_submount_sources):
+    /// the extra-lower binds it returns are the same, but it also reports the
+    /// read-only mounts that must be re-attached over the parent overlay (snap
+    /// squashfs, an ESP, tmpfs) and the writable decoy-backed partitions that need
+    /// their own nested overlay. The parent-overlay mount loop and preflight both
+    /// consume it; see [`Submount`](crate::filesystem::Submount).
+    fn find_submounts(&self, target: &Path) -> Result<Vec<crate::filesystem::Submount>>;
 }

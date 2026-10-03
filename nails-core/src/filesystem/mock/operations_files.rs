@@ -253,4 +253,15 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned");
         Ok(sources.get(target).cloned().unwrap_or_default())
     }
+
+    pub(super) fn find_submounts_impl(
+        &self,
+        target: &Path,
+    ) -> Result<Vec<crate::filesystem::Submount>> {
+        let submounts = self
+            .submounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned");
+        Ok(submounts.get(target).cloned().unwrap_or_default())
+    }
 }

@@ -55,6 +55,20 @@ const UNIVERSAL_NEVER_OVERLAY: &[&str] = &["/proc", "/sys", "/dev", "/run"];
 /// directories, so the merged symlinks are not guarded a second time.
 const FHS_CORE_ROOTS: &[&str] = &["/usr", "/bin", "/sbin", "/lib", "/lib64"];
 
+/// Top-level trees an FHS host keeps out of overlay enumeration beyond the core
+/// binary roots.
+///
+/// These are never overlaid wholesale: `/snap` holds the per-revision squashfs
+/// mounts of installed snaps (Ubuntu), `/.snapshots` the snapper/btrfs snapshot
+/// roots, and `/sysroot`, `/ostree` and `/efi` the ostree and boot/ESP
+/// infrastructure. Overlaying any of them is either meaningless (an ESP is vfat,
+/// a snapshot tree is immutable) or actively breaks the host (an overlay on
+/// `/snap` hides the squashfs submounts so snaps stop launching). The live
+/// submounts nested beneath `/snap` are kept visible by re-attaching them over
+/// the parent overlay instead (see the submount re-attach step), not by
+/// overlaying the root.
+const FHS_EXTRA_EXCLUSIONS: &[&str] = &["/snap", "/.snapshots", "/sysroot", "/ostree", "/efi"];
+
 /// The whole decoy root. Bind-remounted read-only on an FHS host so a write that
 /// is not caught by an overlay (a new top-level directory, a package payload
 /// under `/usr`) is refused with `EROFS` instead of reaching the decoy disk.
@@ -121,7 +135,11 @@ impl OverlayPolicy {
         Self {
             mount_hooks: MountHooks::Fhs,
             never_overlay: Self::universal_never_overlay(),
-            default_exclusions: FHS_CORE_ROOTS.iter().map(PathBuf::from).collect(),
+            default_exclusions: FHS_CORE_ROOTS
+                .iter()
+                .chain(FHS_EXTRA_EXCLUSIONS.iter())
+                .map(PathBuf::from)
+                .collect(),
             read_only,
         }
     }
@@ -272,6 +290,44 @@ mod tests {
             assert!(
                 policy.default_exclusions.contains(&PathBuf::from(tree)),
                 "a read-only tree must also be excluded from overlay: {tree}"
+            );
+        }
+    }
+
+    #[test]
+    fn fhs_excludes_snap_snapshot_and_boot_roots() {
+        // Snap squashfs roots, snapshot roots and the ostree/boot infrastructure
+        // are excluded from overlay enumeration on an FHS host.
+        let policy = OverlayPolicy::fhs();
+        for tree in ["/snap", "/.snapshots", "/sysroot", "/ostree", "/efi"] {
+            assert!(
+                policy.default_exclusions.contains(&PathBuf::from(tree)),
+                "FHS default exclusions must contain {tree}"
+            );
+            assert!(
+                policy.overlay_exclusions().contains(&PathBuf::from(tree)),
+                "FHS overlay exclusions must contain {tree}"
+            );
+        }
+        // These are enumeration exclusions, not read-only guards: overlaying them
+        // is wrong, but they are not bind-remounted read-only like /usr.
+        for tree in ["/snap", "/.snapshots", "/sysroot", "/ostree", "/efi"] {
+            assert!(
+                !policy.read_only.contains(&PathBuf::from(tree)),
+                "{tree} must not be a read-only guard target"
+            );
+        }
+    }
+
+    #[test]
+    fn nixos_does_not_exclude_snap_or_snapshot_roots() {
+        // The snap/snapshot/ostree exclusions are FHS data and must not leak into
+        // the NixOS policy.
+        let policy = OverlayPolicy::nixos();
+        for tree in ["/snap", "/.snapshots", "/sysroot", "/ostree", "/efi"] {
+            assert!(
+                !policy.default_exclusions.contains(&PathBuf::from(tree)),
+                "NixOS default exclusions must not contain {tree}"
             );
         }
     }
