@@ -281,15 +281,23 @@ pub fn build_overlay_targets<F: Filesystem>(fs: &F, config: &Config) -> Result<V
         OverlayMode::Auto => {
             // Dynamic enumeration: enumerate root dirs + apply exclusions
             let all_dirs = fs.enumerate_root_directories()?;
-            let exclusions = config.compute_effective_exclusions();
+            let mut exclusions = config.compute_effective_exclusions();
+
+            // Fold the active platform's overlay policy in. The base-OS trees it
+            // keeps read-only or treats as immutable (`/usr`, `/bin`, `/sbin`,
+            // `/lib*` on FHS; the core roots on NixOS) are not overlay targets,
+            // and the pseudo-filesystems plus the hidden-root mount are never
+            // overlaid. Carrying these as platform data (rather than the former
+            // unconditional `/bin`,`/usr` retain hack) keeps a NixOS-only
+            // exclusion from leaking onto Debian and vice versa.
+            let policy = crate::platform::detect_platform(fs)?.overlay_policy();
+            exclusions.extend(policy.overlay_exclusions());
+            if !config.hidden_volume_root.as_os_str().is_empty() {
+                exclusions.push(config.hidden_volume_root.clone());
+            }
 
             // Apply exclusion filtering (separate helper for clarity)
-            let mut targets = apply_exclusion_filter(all_dirs, &exclusions);
-
-            // Safety: never overlay core binary roots even if exclusions are misconfigured.
-            // Overlaying /bin or /usr can hide shells/coreutils inside the VM (breaks tests).
-            let critical = [Path::new("/bin"), Path::new("/usr")];
-            targets.retain(|p| !critical.contains(&p.as_path()));
+            let targets = apply_exclusion_filter(all_dirs, &exclusions);
 
             if !targets.is_empty() {
                 tracing::info!("Dynamic overlay targets: {} directories", targets.len());

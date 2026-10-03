@@ -513,6 +513,20 @@ impl<F: Filesystem> NailsManager<F> {
         let nixos_switch_warning =
             guard.run_post_overlay_nixos_switch(&generation, &new_fingerprint, verbosity);
 
+        // Step 9.5: Keep the decoy's base-OS trees read-only for the session. This
+        // runs after every decoy-writing step (the NixOS switch above) so those
+        // writes still land, then closes the decoy: on an FHS host the decoy root
+        // and /usr become read-only, so a stray hidden-session write is refused
+        // with EROFS instead of reaching the decoy disk. A no-op on NixOS, where
+        // the overlays already carry the protection. The guards are armed on the
+        // rollback so a later failure returns write access, and recorded in state
+        // so deactivation and emergency teardown undo exactly these binds.
+        let read_only_guards = guard.apply_read_only_guard()?;
+        if !read_only_guards.is_empty() {
+            activation_mounts.set_read_only_guards(read_only_guards.clone());
+            guard.record_read_only_guards(&read_only_guards)?;
+        }
+
         // Step 10: Finalize - transition to Active.
         emit_progress(verbosity, "finalize", 7, "[7/7] Finalizing activation...");
         let current = guard.current_state()?;

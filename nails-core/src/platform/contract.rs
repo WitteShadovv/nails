@@ -6,7 +6,7 @@
 //! reboot never shells out (so the ESP, bootloader and EFI NVRAM stay untouched).
 
 use super::{
-    FakePlatform, FhsPlatform, NixOsPlatform, OverlayPolicy, Platform, PlatformKind,
+    FakePlatform, FhsPlatform, MountHooks, NixOsPlatform, Platform, PlatformKind,
     UnsupportedPlatform,
 };
 use crate::constants::ENV_SYSTEM_PROFILE_PATH;
@@ -26,13 +26,34 @@ fn assert_contract<F: Filesystem + 'static, P: Platform<F>>(platform: &P, fs: &F
 
     let kind = platform.kind();
 
-    // Kind and overlay policy agree.
-    let expected_policy = match kind {
-        PlatformKind::NixOs => OverlayPolicy::NixOs,
-        PlatformKind::Fhs => OverlayPolicy::Fhs,
-        PlatformKind::Unsupported => OverlayPolicy::None,
+    // Kind and the policy's mount hooks agree.
+    let policy = platform.overlay_policy();
+    let expected_hooks = match kind {
+        PlatformKind::NixOs => MountHooks::NixOs,
+        PlatformKind::Fhs => MountHooks::Fhs,
+        PlatformKind::Unsupported => MountHooks::None,
     };
-    assert_eq!(platform.overlay_policy(), expected_policy);
+    assert_eq!(policy.mount_hooks, expected_hooks);
+
+    // A refused host guards and overlays nothing; a supported one never lists a
+    // read-only tree it does not also keep out of overlay enumeration.
+    if kind == PlatformKind::Unsupported {
+        assert!(policy.read_only.is_empty());
+        assert!(policy.default_exclusions.is_empty());
+    } else {
+        for tree in &policy.read_only {
+            // The whole decoy root is kept read-only but is not a top-level
+            // overlay-enumeration entry, so it is exempt from the subset rule.
+            if tree == std::path::Path::new("/") {
+                continue;
+            }
+            assert!(
+                policy.default_exclusions.contains(tree),
+                "read-only tree {} must also be excluded from overlay",
+                tree.display()
+            );
+        }
+    }
 
     // Only a refused host offers no host-command directories.
     assert_eq!(

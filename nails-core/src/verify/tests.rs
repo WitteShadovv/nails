@@ -1284,3 +1284,104 @@ fn test_verify_state_with_failed_overlays_info() {
     assert_eq!(info_findings.len(), 1);
     assert_eq!(info_findings[0].severity, Severity::Info);
 }
+
+/// Build an active-state verifier over a crafted `/proc/self/mountinfo`.
+#[cfg(test)]
+fn active_verifier_with_mountinfo(mountinfo: &str) -> Verifier<MockFilesystem> {
+    use crate::SystemState;
+    use crate::state::StateFile;
+    use chrono::Utc;
+
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/proc/self/mountinfo", mountinfo);
+    let state = StateFile {
+        state: SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![],
+        },
+        ..StateFile::default()
+    };
+    let config = crate::config::Config {
+        hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+        ..crate::config::Config::default()
+    };
+    Verifier::with_config(fs, config, Some(state), StateFileStatus::NotChecked)
+}
+
+fn writable_mount_findings(result: &crate::verify::VerifyResult) -> Vec<&Finding> {
+    result
+        .findings
+        .iter()
+        .filter(|f| f.category == "mount" && f.message.contains("Writable non-overlay decoy mount"))
+        .collect()
+}
+
+#[test]
+fn test_verify_flags_writable_non_overlaid_decoy_root() {
+    let verifier =
+        active_verifier_with_mountinfo("23 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n");
+    let result = verifier.run(false).unwrap();
+    let findings = writable_mount_findings(&result);
+    assert_eq!(findings.len(), 1, "{:?}", result.findings);
+    assert_eq!(findings[0].severity, Severity::Critical);
+    assert!(findings[0].message.contains('/'));
+}
+
+#[test]
+fn test_verify_accepts_read_only_decoy_root_and_usr() {
+    let verifier = active_verifier_with_mountinfo(
+        "23 1 8:1 / / ro,relatime - ext4 /dev/sda1 ro\n\
+         36 23 8:1 /usr /usr ro,relatime - ext4 /dev/sda1 ro\n",
+    );
+    let result = verifier.run(false).unwrap();
+    assert!(
+        writable_mount_findings(&result).is_empty(),
+        "a read-only decoy root must not be flagged: {:?}",
+        result.findings
+    );
+}
+
+#[test]
+fn test_verify_ignores_writable_non_os_tree() {
+    // An ext4 /home that is not an overlay is not reported by this OS-tree check.
+    let verifier = active_verifier_with_mountinfo(
+        "23 1 8:1 / / ro,relatime - ext4 /dev/sda1 ro\n\
+         40 23 8:2 /home /home rw,relatime - ext4 /dev/sdb1 rw\n",
+    );
+    let result = verifier.run(false).unwrap();
+    assert!(
+        writable_mount_findings(&result).is_empty(),
+        "/home is out of scope for the OS-tree check: {:?}",
+        result.findings
+    );
+}
+
+#[test]
+fn test_verify_writable_decoy_check_is_inactive_only() {
+    // The same writable root, but with no active state, is not flagged: a
+    // writable decoy root is expected when nothing is hidden.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/proc/self/mountinfo",
+        "23 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n",
+    );
+    let config = crate::config::Config::default();
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+    assert!(writable_mount_findings(&result).is_empty());
+}
+
+#[test]
+fn test_verify_overlaid_decoy_tree_is_not_flagged() {
+    // /usr presented as an overlay mount is protection, not a leak.
+    let verifier = active_verifier_with_mountinfo(
+        "23 1 8:1 / / ro,relatime - ext4 /dev/sda1 ro\n\
+         36 23 0:40 / /usr rw,relatime - overlay overlay rw,lowerdir=/usr\n",
+    );
+    let result = verifier.run(false).unwrap();
+    assert!(
+        writable_mount_findings(&result).is_empty(),
+        "an overlaid /usr is protection: {:?}",
+        result.findings
+    );
+}

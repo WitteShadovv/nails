@@ -336,6 +336,58 @@ pub(super) fn bind_mount(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Bind-remount a path on itself read-only.
+///
+/// A plain `MS_REMOUNT|MS_RDONLY` on a mount the kernel considers writable can be
+/// refused, so the tree is first self-bound (`MS_BIND`) and the fresh bind is
+/// then remounted read-only. The stacked bind is what [`unmount_bind`] later
+/// removes to restore write access.
+pub(super) fn remount_read_only(target: &Path) -> Result<()> {
+    let map_err = |e: nix::errno::Errno, stage: &str| -> NailsError {
+        if e == nix::errno::Errno::EACCES || e == nix::errno::Errno::EPERM {
+            NailsError::PermissionDenied("Read-only remount requires root privileges".to_string())
+        } else if e == nix::errno::Errno::EBUSY {
+            NailsError::MountBusy {
+                path: target.to_path_buf(),
+                suggestion: "Tree has active references and cannot be remounted read-only"
+                    .to_string(),
+            }
+        } else {
+            NailsError::OverlayError(format!(
+                "Failed to {stage} {} read-only: {e}",
+                target.display()
+            ))
+        }
+    };
+
+    nix::mount::mount(
+        Some(target),
+        target,
+        None::<&str>,
+        nix::mount::MsFlags::MS_BIND,
+        None::<&str>,
+    )
+    .map_err(|e| map_err(e, "self-bind"))?;
+
+    nix::mount::mount(
+        Some(target),
+        target,
+        None::<&str>,
+        nix::mount::MsFlags::MS_BIND
+            | nix::mount::MsFlags::MS_REMOUNT
+            | nix::mount::MsFlags::MS_RDONLY,
+        None::<&str>,
+    )
+    .map_err(|e| {
+        // The self-bind landed but the read-only remount did not; drop the bind so
+        // the guard does not leave a redundant writable bind stacked on the tree.
+        let _ = nix::mount::umount(target);
+        map_err(e, "remount")
+    })?;
+
+    Ok(())
+}
+
 /// Unmount a bind mount (idempotent).
 pub(super) fn unmount_bind(fs: &RealFilesystem, target: &Path) -> Result<()> {
     if !fs.is_mounted(target)? {

@@ -158,6 +158,19 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Unmount a bind mount from target (idempotent).
     fn unmount_bind(&self, target: &Path) -> Result<()>;
 
+    /// Bind-remount `target` on itself read-only.
+    ///
+    /// Performs `mount(target, target, MS_BIND)` followed by
+    /// `mount(target, target, MS_BIND|MS_REMOUNT|MS_RDONLY)`, leaving one
+    /// read-only self-bind stacked at `target`. The read-only guard uses this to
+    /// keep a writable OS tree (`/usr` and the real-dir core binary roots on an
+    /// FHS host) read-only for the duration of a hidden session, so hidden
+    /// writes never reach the decoy disk. Undone with [`unmount_bind`]. A busy
+    /// target surfaces as [`NailsError::MountBusy`] so the guard can fail closed.
+    ///
+    /// [`unmount_bind`]: Self::unmount_bind
+    fn remount_read_only(&self, target: &Path) -> Result<()>;
+
     // ------------------------------------------------------------------------
     // Tmpfs Operations (Extended Overlay Strategy)
     // ------------------------------------------------------------------------

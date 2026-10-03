@@ -28,33 +28,29 @@ pub fn get_default_hidden_volume_root() -> String {
 
 /// Default exclusion list for dynamic overlay enumeration
 ///
-/// These directories are excluded by default because they are:
+/// These are the host-independent defaults only. They are excluded because they
+/// are:
 /// - Kernel-managed virtual filesystems (/proc, /sys, /dev)
 /// - Runtime state directories (/run)
 /// - Mount point directories (/mnt)
-/// - Note: /boot is NOT excluded — it is overlayed via snapshot pivot on vfat partitions
-///   (contents copied to tmpfs in RAM, then overlayed)
-/// - System library symlinks common in NixOS (/lib, /lib64, /sbin)
 /// - Filesystem recovery directory (/lost+found)
+/// - Note: /boot is NOT excluded — it is overlayed via snapshot pivot on vfat
+///   partitions (contents copied to tmpfs in RAM, then overlayed)
+///
+/// The base-OS trees that must not be overlaid (`/usr`, `/bin`, `/sbin`, `/lib*`)
+/// are *not* listed here: they are platform data now, carried by
+/// [`Platform::overlay_policy`](crate::platform::Platform::overlay_policy), so a
+/// NixOS-specific exclusion never leaks onto Debian and vice versa. The overlay
+/// enumeration in [`build_overlay_targets`](crate::build_overlay_targets) folds
+/// the active platform's policy in on top of these defaults.
 ///
 /// Directories like /etc, /home, /nix, /var, /tmp, /srv, /root, /opt, /media
 /// ARE included by default for maximum forensic protection.
 ///
 /// Users can add more exclusions via `overlay_exclusions` or remove
 /// defaults via `overlay_exclusions_remove` in `nails.toml`.
-pub const DEFAULT_OVERLAY_EXCLUSIONS: &[&str] = &[
-    "/proc",
-    "/sys",
-    "/dev",
-    "/run",
-    "/mnt",
-    "/bin",
-    "/usr",
-    "/lib",
-    "/lib64",
-    "/sbin",
-    "/lost+found",
-];
+pub const DEFAULT_OVERLAY_EXCLUSIONS: &[&str] =
+    &["/proc", "/sys", "/dev", "/run", "/mnt", "/lost+found"];
 
 /// CLI argument overrides for configuration
 ///

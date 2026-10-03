@@ -124,6 +124,17 @@ pub struct StateFile {
     #[serde(default)]
     pub nix_store_init_namespace_bound: bool,
 
+    /// Decoy OS trees bind-remounted read-only for the session.
+    ///
+    /// On an FHS host the activation keeps the decoy root (`/`) and `/usr` (plus
+    /// any non-usr-merged core binary roots) read-only while hidden is active, so
+    /// hidden-session writes cannot reach the decoy disk. Each entry is a
+    /// read-only self-bind that deactivation and emergency teardown must undo to
+    /// return write access to the host. Empty on platforms whose protection comes
+    /// from overlays alone (NixOS). Cleared on deactivation.
+    #[serde(default)]
+    pub read_only_guards: Vec<PathBuf>,
+
     /// Timestamp of last state modification
     pub last_modified: DateTime<Utc>,
 
@@ -167,6 +178,7 @@ impl Default for StateFile {
             overlay_status: HashMap::new(),
             failed_overlays: Vec::new(),
             nix_store_init_namespace_bound: false,
+            read_only_guards: Vec::new(),
             last_modified: Utc::now(),
             boot_id: None,
             owner_pid: 0,

@@ -269,6 +269,57 @@ impl<F: Filesystem> NailsManager<F> {
         Ok(())
     }
 
+    /// Keep the decoy's base-OS trees read-only for the duration of the session.
+    ///
+    /// Resolves the active platform's read-only policy against the live filesystem
+    /// (the whole decoy root and `/usr`, plus any non-usr-merged core binary roots
+    /// on an FHS host) and bind-remounts each read-only, failing closed: a tree it
+    /// cannot keep read-only rolls back every guard made so far and aborts
+    /// activation. Returns the trees actually guarded, for the caller to record in
+    /// state and arm for teardown. A no-op (empty result) on a platform whose
+    /// decoy protection comes from overlays alone, such as NixOS.
+    pub(crate) fn apply_read_only_guard(&self) -> Result<Vec<PathBuf>> {
+        let policy = crate::platform::detect_platform(&self.filesystem)?.overlay_policy();
+        let trees = policy.resolve_read_only(&self.filesystem)?;
+        if trees.is_empty() {
+            return Ok(Vec::new());
+        }
+        crate::platform::guard_read_only_trees(&self.filesystem, &trees)
+    }
+
+    /// Persist the read-only guard set so deactivation and emergency teardown undo
+    /// exactly those binds.
+    pub(super) fn record_read_only_guards(&self, guards: &[PathBuf]) -> Result<()> {
+        let mut cached = self.cached_state.borrow_mut();
+        if let Some(ref mut state_file) = *cached {
+            if state_file.read_only_guards == guards {
+                return Ok(());
+            }
+            state_file.read_only_guards = guards.to_vec();
+            drop(cached);
+            self.save_cached_state()?;
+        }
+        Ok(())
+    }
+
+    /// Undo the read-only guards activation recorded, returning write access to the
+    /// decoy OS trees. Best-effort and idempotent: `unmount_bind` is a no-op for a
+    /// tree that is not currently guarded, so a partial or repeated teardown is
+    /// safe. Called from deactivation and emergency teardown.
+    pub(crate) fn teardown_read_only_guards(&self, guards: &[PathBuf]) {
+        for tree in guards.iter().rev() {
+            if let Err(error) = self.filesystem.unmount_bind(tree) {
+                tracing::warn!(
+                    tree = %tree.display(),
+                    error = %error,
+                    "Best-effort removal of a read-only guard failed; continuing teardown"
+                );
+            } else {
+                tracing::info!(tree = %tree.display(), "Removed read-only guard from decoy OS tree");
+            }
+        }
+    }
+
     /// Record failed overlay mounts in state for status reporting
     pub(super) fn record_failed_overlays(
         &self,

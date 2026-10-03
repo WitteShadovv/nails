@@ -10,8 +10,9 @@
 //! be scattered across the CLI, the manager, the mount loop and the pre-flight
 //! checks:
 //!
-//! - [`Platform::overlay_policy`] — whether the mount loop applies the NixOS
-//!   `/nix` + `/var` + `/etc` handling, a plain FHS overlay, or nothing.
+//! - [`Platform::overlay_policy`] — the trees this host overlays, never overlays
+//!   or keeps read-only, plus which mount hooks the loop runs (the NixOS
+//!   `/nix` + `/var` + `/etc` handling, a plain FHS overlay, or nothing).
 //! - [`Platform::host_command_dirs`] — where host tools are found.
 //! - [`Platform::restore_base_system`] — the decoy-restore step on deactivation.
 //!
@@ -40,6 +41,7 @@ mod discover;
 mod fhs;
 pub mod host_commands;
 mod nixos;
+pub mod ro_guard;
 mod unsupported;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -54,6 +56,7 @@ pub use discover::{HostTarget, discover_host_target};
 pub use fhs::FhsPlatform;
 pub use host_commands::HostCommands;
 pub use nixos::NixOsPlatform;
+pub use ro_guard::{MountHooks, OverlayPolicy, guard_read_only_trees};
 pub use unsupported::UnsupportedPlatform;
 
 /// The single literal for the NixOS system-profile binary directory, and the
@@ -75,22 +78,6 @@ pub enum PlatformKind {
     Fhs,
     /// A host NAILS refuses: ostree / image-based, or non-systemd PID 1.
     Unsupported,
-}
-
-/// How the overlay mount loop should treat this host.
-///
-/// Informational for now: the mount loop is rewired onto it in the chunk that
-/// owns the overlay code. It records the decision so no other layer has to ask
-/// "is this NixOS?" again.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayPolicy {
-    /// Overlay directories plus the NixOS-specific `/nix`, `/var` and `/etc`
-    /// handling (pivot/bind mounts, service stop/start around `/nix`).
-    NixOs,
-    /// Overlay directories with no distro-specific mount hooks.
-    Fhs,
-    /// No overlays: the host is refused.
-    None,
 }
 
 /// What [`Platform::restore_base_system`] did to return the host to the decoy.
@@ -185,7 +172,8 @@ pub trait Platform<F: Filesystem>: std::fmt::Debug + Send + Sync {
     /// Which family this backend serves.
     fn kind(&self) -> PlatformKind;
 
-    /// How the overlay mount loop should treat this host.
+    /// The overlay policy for this host: which trees are overlaid, never
+    /// overlaid, or kept read-only, and which distro-specific mount hooks run.
     fn overlay_policy(&self) -> OverlayPolicy;
 
     /// Directories searched, in order, for host tools on this platform.

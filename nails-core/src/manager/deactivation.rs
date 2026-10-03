@@ -141,6 +141,10 @@ struct OverlayContext {
     /// namespace (set only when the manager and init namespaces differed). The
     /// manager-namespace unmount cannot reach it, so teardown undoes it directly.
     nix_store_init_namespace_bound: bool,
+    /// Decoy OS trees activation bind-remounted read-only for the session, to undo
+    /// so the host regains write access (the decoy root and `/usr` on an FHS host;
+    /// empty on NixOS).
+    read_only_guards: Vec<PathBuf>,
 }
 
 fn requires_decoy_restore<F: Filesystem>(manager: &NailsManager<F>) -> Result<bool> {
@@ -195,10 +199,16 @@ fn inspect_overlay_context<F: Filesystem>(manager: &NailsManager<F>) -> Result<O
         .map(|state_file| state_file.nix_store_init_namespace_bound)
         .unwrap_or(false);
 
+    let read_only_guards = cached
+        .as_ref()
+        .map(|state_file| state_file.read_only_guards.clone())
+        .unwrap_or_default();
+
     Ok(OverlayContext {
         nix_was_overlaid: overlay_paths.iter().any(|p| p == Path::new("/nix")),
         var_was_overlaid: overlay_paths.iter().any(|p| p == Path::new("/var")),
         nix_store_init_namespace_bound,
+        read_only_guards,
     })
 }
 
@@ -221,6 +231,17 @@ fn overlay_context_from_mounts<F: Filesystem>(manager: &NailsManager<F>) -> Resu
         .chain(mounts.ephemeral_overlays.iter())
         .any(|p| p == Path::new("/var"));
 
+    // The recorded guard list cannot be trusted on a corrupt state, so re-derive
+    // the trees the active platform's policy would have kept read-only and undo
+    // those. `unmount_bind` is idempotent, so undoing a tree that was never
+    // guarded is a harmless no-op, and this makes sure an emergency teardown
+    // always returns write access to the decoy.
+    let read_only_guards = crate::platform::detect_platform(manager.filesystem())
+        .ok()
+        .map(|platform| platform.overlay_policy())
+        .and_then(|policy| policy.resolve_read_only(manager.filesystem()).ok())
+        .unwrap_or_default();
+
     Ok(OverlayContext {
         nix_was_overlaid: mounts.nix_overlay_present,
         var_was_overlaid,
@@ -228,6 +249,7 @@ fn overlay_context_from_mounts<F: Filesystem>(manager: &NailsManager<F>) -> Resu
         // init-namespace bind is invisible in the manager's mount table, so it is
         // left for manual recovery rather than guessed at.
         nix_store_init_namespace_bound: false,
+        read_only_guards,
     })
 }
 
@@ -305,6 +327,17 @@ impl<F: Filesystem> NailsManager<F> {
         } else {
             inspect_overlay_context(self)?
         };
+
+        // Return write access to the decoy OS trees before the overlays stacked on
+        // them come down, so a host that was kept read-only for the session is
+        // writable again regardless of what the rest of teardown does.
+        if !overlay_context.read_only_guards.is_empty() {
+            tracing::info!(
+                guards = ?overlay_context.read_only_guards,
+                "Removing read-only guards from decoy OS trees"
+            );
+            self.teardown_read_only_guards(&overlay_context.read_only_guards);
+        }
 
         if overlay_context.nix_was_overlaid {
             tracing::info!("Stopping nix-daemon before /nix overlay unmount...");

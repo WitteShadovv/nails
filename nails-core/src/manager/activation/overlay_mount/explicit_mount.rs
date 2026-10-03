@@ -25,11 +25,19 @@ impl<F: Filesystem> NailsManager<F> {
             ));
         }
 
-        let critical = [Path::new("/bin"), Path::new("/usr")];
+        // Refuse overlaying anything the active platform never overlays (the
+        // pseudo-filesystems and the hidden-root mount) or keeps read-only (the
+        // base-OS trees such as /usr on an FHS host). This is the policy-driven
+        // replacement for the former hardcoded /bin,/usr block: on NixOS those
+        // two trees are legitimately overlaid, while on Debian /usr is read-only.
+        let policy = crate::platform::detect_platform(&self.filesystem)?.overlay_policy();
         for overlay in &self.config.overlays {
-            if critical.contains(&overlay.target.as_path()) {
+            let target = overlay.target.as_path();
+            if policy.is_never_overlay(target, &self.config.hidden_volume_root)
+                || policy.read_only.iter().any(|tree| tree == target)
+            {
                 return Err(NailsError::InvalidState(format!(
-                    "Overlaying critical system root {} is blocked for safety",
+                    "Overlaying system tree {} is blocked: it is kept read-only or must never be overlaid on this platform",
                     overlay.target.display()
                 )));
             }

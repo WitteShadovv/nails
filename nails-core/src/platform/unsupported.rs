@@ -38,7 +38,7 @@ impl<F: Filesystem> Platform<F> for UnsupportedPlatform {
     }
 
     fn overlay_policy(&self) -> OverlayPolicy {
-        OverlayPolicy::None
+        OverlayPolicy::none()
     }
 
     fn host_command_dirs(&self) -> &'static [&'static str] {
@@ -81,9 +81,9 @@ mod tests {
     #[test]
     fn reports_no_overlay_policy() {
         let platform = UnsupportedPlatform::new("nope");
-        assert_eq!(
-            <UnsupportedPlatform as Platform<MockFilesystem>>::overlay_policy(&platform),
-            OverlayPolicy::None
-        );
+        let policy = <UnsupportedPlatform as Platform<MockFilesystem>>::overlay_policy(&platform);
+        assert_eq!(policy.mount_hooks, crate::platform::MountHooks::None);
+        assert!(policy.read_only.is_empty());
+        assert!(policy.default_exclusions.is_empty());
     }
 }

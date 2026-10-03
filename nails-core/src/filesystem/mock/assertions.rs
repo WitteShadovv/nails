@@ -90,4 +90,17 @@ impl MockFilesystem {
             .get(target)
             .cloned()
     }
+
+    /// Whether a read-only self-bind guard is currently applied to `target`.
+    ///
+    /// Set by [`Filesystem::remount_read_only`](crate::Filesystem::remount_read_only)
+    /// and cleared by [`Filesystem::unmount_bind`](crate::Filesystem::unmount_bind),
+    /// so tests can assert both that the guard went on and that a rollback took it
+    /// back off.
+    pub fn mock_is_read_only_guarded(&self, target: &Path) -> bool {
+        self.read_only_guards
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .contains(target)
+    }
 }

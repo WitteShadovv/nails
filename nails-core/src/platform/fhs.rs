@@ -24,7 +24,7 @@ impl<F: Filesystem> Platform<F> for FhsPlatform {
     }
 
     fn overlay_policy(&self) -> OverlayPolicy {
-        OverlayPolicy::Fhs
+        OverlayPolicy::fhs()
     }
 
     fn host_command_dirs(&self) -> &'static [&'static str] {
@@ -59,11 +59,10 @@ mod tests {
     }
 
     #[test]
-    fn reports_overlay_only_policy() {
+    fn reports_fhs_mount_hooks_and_read_only_usr() {
         let platform = FhsPlatform;
-        assert_eq!(
-            <FhsPlatform as Platform<MockFilesystem>>::overlay_policy(&platform),
-            OverlayPolicy::Fhs
-        );
+        let policy = <FhsPlatform as Platform<MockFilesystem>>::overlay_policy(&platform);
+        assert_eq!(policy.mount_hooks, crate::platform::MountHooks::Fhs);
+        assert!(policy.read_only.contains(&std::path::PathBuf::from("/usr")));
     }
 }

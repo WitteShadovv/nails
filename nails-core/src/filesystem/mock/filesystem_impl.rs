@@ -58,6 +58,10 @@ impl Filesystem for MockFilesystem {
         self.unmount_bind_impl(target)
     }
 
+    fn remount_read_only(&self, target: &Path) -> Result<()> {
+        self.remount_read_only_impl(target)
+    }
+
     fn mount_tmpfs(&self, target: &Path, size: &str) -> Result<()> {
         self.mount_tmpfs_impl(target, size)
     }

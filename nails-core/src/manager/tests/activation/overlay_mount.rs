@@ -840,6 +840,10 @@ fn test_activate_explicit_mode_rejects_critical_system_root_overlay_bin() {
         "{ config, lib, pkgs, ... }:\n{ }",
     );
     fs.mock_set_path_exists("/bin", true);
+    // A Debian/Ubuntu (FHS) host keeps /bin read-only, so overlaying it is refused
+    // by the platform policy rather than a hardcoded block.
+    fs.mock_add_file("/etc/os-release", "ID=debian\nVERSION_ID=\"12\"\n");
+    fs.mock_add_file("/proc/1/comm", "systemd");
 
     let upper_bin = mock_hidden_vol.join("overlays/bin/upper");
     let work_bin = mock_hidden_vol.join("overlays/bin/work");
@@ -869,7 +873,8 @@ fn test_activate_explicit_mode_rejects_critical_system_root_overlay_bin() {
     let err = manager.lock().unwrap().activate(true).unwrap_err();
     assert!(
         err.to_string()
-            .contains("Overlaying critical system root /bin is blocked")
+            .contains("Overlaying system tree /bin is blocked"),
+        "got: {err}"
     );
     assert!(fs.mock_ops().is_empty());
 }
@@ -1274,4 +1279,101 @@ fn test_activation_inject_happens_after_etc_overlay_mount() {
         etc_mount_idx.unwrap() < inject_idx.unwrap(),
         "inject_import_block must run after /etc overlay mount"
     );
+}
+
+// ========== Read-only guard (T-083) ==========
+
+/// Build a manager over a Debian/Ubuntu (FHS) mock whose decoy root and /usr are
+/// real directories, so the read-only policy resolves to [/, /usr].
+fn fhs_guard_manager() -> (
+    tempfile::TempDir,
+    MockFilesystem,
+    NailsManager<MockFilesystem>,
+) {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/os-release", "ID=debian\nVERSION_ID=\"12\"\n");
+    fs.mock_add_file("/proc/1/comm", "systemd");
+    fs.mock_set_path_type("/", PathKind::Dir);
+    fs.mock_set_path_type("/usr", PathKind::Dir);
+    // usr-merge symlinks resolve into /usr and must not be guarded twice.
+    for link in ["/bin", "/sbin", "/lib", "/lib64"] {
+        fs.mock_set_is_symlink(link, true);
+    }
+
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        ..Config::test_default()
+    };
+    let manager = NailsManager::new(fs.clone(), config, state_path);
+    (temp_dir, fs, manager)
+}
+
+#[test]
+fn test_read_only_guard_applies_and_tears_down_on_fhs() {
+    let (_tmp, fs, manager) = fhs_guard_manager();
+
+    let guarded = manager
+        .apply_read_only_guard()
+        .expect("read-only guard applies on an FHS host");
+    assert_eq!(
+        guarded,
+        vec![PathBuf::from("/"), PathBuf::from("/usr")],
+        "the decoy root and /usr are guarded; usr-merge symlinks are not"
+    );
+    assert!(fs.mock_is_read_only_guarded(Path::new("/")));
+    assert!(fs.mock_is_read_only_guarded(Path::new("/usr")));
+
+    manager.teardown_read_only_guards(&guarded);
+    assert!(!fs.mock_is_read_only_guarded(Path::new("/")));
+    assert!(!fs.mock_is_read_only_guarded(Path::new("/usr")));
+}
+
+#[test]
+fn test_read_only_guard_is_a_no_op_on_nixos() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/os-release", "ID=nixos\nVERSION_ID=\"24.11\"\n");
+    fs.mock_add_file("/proc/1/comm", "systemd");
+    fs.mock_set_path_type("/", PathKind::Dir);
+    fs.mock_set_path_type("/usr", PathKind::Dir);
+
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        ..Config::test_default()
+    };
+    let manager = NailsManager::new(fs.clone(), config, state_path);
+
+    let guarded = manager.apply_read_only_guard().expect("no-op succeeds");
+    assert!(
+        guarded.is_empty(),
+        "NixOS protects the decoy with overlays, not a guard"
+    );
+    assert!(!fs.mock_is_read_only_guarded(Path::new("/")));
+}
+
+#[test]
+fn test_read_only_guard_fails_closed_when_root_is_busy() {
+    let (_tmp, fs, manager) = fhs_guard_manager();
+    // The decoy root cannot be remounted read-only (active references): the guard
+    // must fail and leave nothing behind.
+    fs.mock_set_mount_fail_errno("/", nix::errno::Errno::EBUSY);
+
+    let error = manager
+        .apply_read_only_guard()
+        .expect_err("a busy root must fail the guard closed");
+    assert!(
+        matches!(error, NailsError::MountBusy { .. }),
+        "got: {error}"
+    );
+    assert!(!fs.mock_is_read_only_guarded(Path::new("/")));
+    assert!(!fs.mock_is_read_only_guarded(Path::new("/usr")));
 }

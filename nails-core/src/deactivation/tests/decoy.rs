@@ -156,6 +156,7 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
         boot_id: None,
         owner_pid: 0,
         nix_store_init_namespace_bound: false,
+        read_only_guards: Vec::new(),
         integrity_sha256: None,
     };
     state_file

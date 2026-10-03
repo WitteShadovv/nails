@@ -92,9 +92,26 @@ in
     headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
 
+    # The decoy's own root inode, the top-level entry list, and the /bin/sh and
+    # /usr/bin/env links must survive the workflow unchanged: a hidden switch that
+    # rewrote them on the decoy (instead of the overlay upper), or a stray write
+    # that created a new top-level directory, would move these.
+    def os_root_fingerprint():
+        root_stat = machine.succeed("stat -c '%i %Y %Z' /").strip()
+        top_level = machine.succeed("ls -1A / | sort").strip()
+        # readlink (not stat) so the recorded value is the decoy's own link target,
+        # which a rewrite to a hidden store path would change.
+        links = machine.succeed(
+            "for p in /bin/sh /usr/bin/env; do "
+            "printf '%s -> ' \"$p\"; readlink \"$p\" 2>/dev/null || echo '(absent)'; "
+            "done"
+        ).strip()
+        return (root_stat, top_level, links)
+
     with subtest("capture the decoy baseline (live and image)"):
         initial_files = listed("/home /etc /var")
         initial_sums = summed("/home /etc")
+        initial_os_root = os_root_fingerprint()
         baseline_image = disk_forensics.snapshot(machine, "baseline")
         baseline_fls = disk_forensics.fls_paths(disk_forensics.run_fls(baseline_image))
 
@@ -132,6 +149,21 @@ in
             if initial_sums[path] != final_sums[path]
         )
         assert not changed, f"file contents changed after the workflow: {changed}"
+
+    with subtest("the decoy root, top-level entries and /bin/sh, /usr/bin/env are unchanged"):
+        final_os_root = os_root_fingerprint()
+        assert final_os_root[0] == initial_os_root[0], (
+            f"the decoy root inode/mtime/ctime changed: "
+            f"{initial_os_root[0]!r} -> {final_os_root[0]!r}"
+        )
+        assert final_os_root[1] == initial_os_root[1], (
+            "the top-level entry list changed after the workflow:\n"
+            f"before:\n{initial_os_root[1]}\nafter:\n{final_os_root[1]}"
+        )
+        assert final_os_root[2] == initial_os_root[2], (
+            "/bin/sh or /usr/bin/env was rewritten on the decoy:\n"
+            f"before:\n{initial_os_root[2]}\nafter:\n{final_os_root[2]}"
+        )
 
     with subtest("no overlay or hidden-volume mount remains"):
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp", "/var", "/opt", "/boot"])

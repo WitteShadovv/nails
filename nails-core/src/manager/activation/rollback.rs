@@ -138,6 +138,7 @@ fn unmount_graceful_then_force<F: Filesystem>(filesystem: &F, path: &Path) -> bo
 pub(super) struct ActivationMounts<F: Filesystem> {
     filesystem: F,
     mounts: Vec<MountInfo>,
+    read_only_guards: Vec<PathBuf>,
     residue: Rc<RefCell<Vec<PathBuf>>>,
     disarmed: bool,
 }
@@ -153,9 +154,16 @@ impl<F: Filesystem> ActivationMounts<F> {
         Self {
             filesystem,
             mounts,
+            read_only_guards: Vec::new(),
             residue,
             disarmed: false,
         }
+    }
+
+    /// Record the read-only guards applied after the overlays, so a rollback
+    /// returns write access to the decoy OS trees before the overlays come down.
+    pub(super) fn set_read_only_guards(&mut self, guards: Vec<PathBuf>) {
+        self.read_only_guards = guards;
     }
 
     /// Disarm the guard after a successful activation so the overlays stay mounted.
@@ -166,7 +174,24 @@ impl<F: Filesystem> ActivationMounts<F> {
 
 impl<F: Filesystem> Drop for ActivationMounts<F> {
     fn drop(&mut self) {
-        if self.disarmed || self.mounts.is_empty() {
+        if self.disarmed || (self.mounts.is_empty() && self.read_only_guards.is_empty()) {
+            return;
+        }
+
+        // Undo the read-only guards first so the decoy OS trees are writable again
+        // before the overlays stacked on them are removed. Best-effort: a failure
+        // here must not stop the overlay rollback.
+        for tree in self.read_only_guards.iter().rev() {
+            if let Err(error) = self.filesystem.unmount_bind(tree) {
+                tracing::error!(
+                    tree = %tree.display(),
+                    error = %error,
+                    "Rollback could not remove the read-only guard; the decoy tree may stay read-only"
+                );
+            }
+        }
+
+        if self.mounts.is_empty() {
             return;
         }
 

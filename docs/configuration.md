@@ -74,7 +74,7 @@ is the `name` key of each `[[overlays]]` table.
 | `overlays` | array of tables | `[]` | Explicit mode: one `[[overlays]]` table per overlay. Ignored in auto mode; explicit mode without any table refuses to activate. |
 | `overlays[].lower` | path | required | Read-only lower layer, normally the same directory as `target`. |
 | `overlays[].name` | string | required | Human-readable label for the overlay. |
-| `overlays[].target` | path | required | Mount point. `/bin` and `/usr` are refused. |
+| `overlays[].target` | path | required | Mount point. A tree the platform keeps read-only or never overlays (for example `/usr` on an FHS host) is refused. |
 | `overlays[].upper` | path | required | Writable upper layer, where everything the hidden session writes under `target` ends up. Must lie inside `hidden_volume_root`. |
 | `overlays[].work` | path | required | overlayfs work directory, on the same filesystem as `upper`. Must lie inside `hidden_volume_root`. |
 | `minimum_space_mb` | integer (MB) | `500` | Free space the hidden volume needs. The pre-flight check warns below this value and blocks activation below half of it; `activate --no-preflight` skips the check. |
@@ -103,10 +103,16 @@ and describe any new row.
 
 Auto mode is the default. At activation nails lists the entries directly under
 `/` and overlays every directory that is not excluded. The effective exclusion
-list is the [default exclusions](#default-exclusions), plus
-`overlay_exclusions`, minus `overlay_exclusions_remove`. Symlinks and files at
-the top level are skipped; on merged-`/usr` distributions this already skips
-`/bin`, `/lib`, `/lib64` and `/sbin`.
+list is the [default exclusions](#default-exclusions), plus the active
+platform's base-OS trees, plus `overlay_exclusions`, minus
+`overlay_exclusions_remove`. Symlinks and files at the top level are skipped; on
+merged-`/usr` distributions this already skips `/bin`, `/lib`, `/lib64` and
+`/sbin`. Which base-OS trees are left out of overlay is platform data, not a
+config default: on an FHS host (Debian/Ubuntu) `/usr` and the real-directory
+core binary roots are excluded and kept read-only for the session instead (see
+the [safety floor](#safety-floor)); on NixOS `/bin` and `/usr` are overlaid, so
+the hidden `switch-to-configuration` rewrites of `/bin/sh` and `/usr/bin/env`
+land in the overlay upper rather than on the decoy disk.
 
 Each target `/<name>` gets its upper layer at `<hidden_volume_root>/<name>`
 and its work directory at `<hidden_volume_root>/.work/<name>`, both created
@@ -141,11 +147,6 @@ no table reach the decoy disk, so auto mode is the safer choice.
 | `/dev` | Device nodes, kept in memory by the kernel and udev (devtmpfs). |
 | `/run` | Runtime state on a tmpfs that running services depend on. It is lost at shutdown, so writes never reach a disk. |
 | `/mnt` | Holds the hidden volume's default mount point, `/mnt/data`. Overlaying it would stack an overlay on the volume that stores the overlay layers. |
-| `/bin` | Holds the shell (`/bin/sh`), or is a symlink to `/usr/bin`. Part of the [safety floor](#safety-floor). |
-| `/usr` | System programs and libraries. Part of the [safety floor](#safety-floor). Software the hidden session installs into `/usr` is written to the decoy disk. |
-| `/lib` | Shared libraries and the dynamic loader, or a symlink to `/usr/lib`. System files, not session data. |
-| `/lib64` | The 64-bit dynamic loader, or a symlink to `/usr/lib64`. System files, not session data. |
-| `/sbin` | System administration programs, or a symlink to `/usr/sbin`. System files, not session data. |
 | `/lost+found` | Recovery directory used by `fsck`; empty in normal use. |
 <!-- END default-exclusions -->
 
@@ -153,10 +154,17 @@ no table reach the decoy disk, so auto mode is the safer choice.
 
 Some limits hold whatever the configuration says:
 
-- `/bin` and `/usr` are never overlaid. Auto mode drops them even when
-  `overlay_exclusions_remove` lists them, and explicit mode refuses to activate
-  with either as a target. Hiding the shell and core programs while activation
-  runs would leave the system unusable.
+- The base OS stays read-only while hidden is active. Each platform's overlay
+  policy decides how: on an FHS host (Debian/Ubuntu) the decoy root and `/usr`
+  (plus any non-merged `/bin`, `/sbin`, `/lib*`) are bind-remounted read-only
+  for the session, so a stray write — a package payload, a `/usr/local` change,
+  a new top-level directory — is refused with `EROFS` instead of reaching the
+  decoy disk, and write access is returned on deactivation and emergency
+  teardown. On NixOS `/bin` and `/usr` are overlaid instead, so the hidden
+  switch's rewrites stay off the decoy. Either way, auto mode drops these trees
+  even when `overlay_exclusions_remove` lists them, and explicit mode refuses to
+  activate with a read-only or never-overlaid tree as a target. Activation is
+  refused outright if any base-OS tree would be left writable and non-overlaid.
 - `/proc`, `/sys`, `/dev` and `/run` can be removed from the exclusions, but
   nails logs a warning when they are. They are kernel-managed or in-memory
   filesystems: overlaying them fails or breaks running services, and they hold

@@ -203,6 +203,11 @@ fn test_apply_exclusion_filter_sorts_results() {
 fn test_build_overlay_targets_auto_mode_with_defaults() {
     let fs = MockFilesystem::new();
 
+    // A Debian/Ubuntu (FHS) host: its overlay policy excludes /usr and /bin
+    // (kept read-only) from overlay enumeration.
+    fs.mock_add_file("/etc/os-release", "ID=debian\nVERSION_ID=\"12\"\n");
+    fs.mock_add_file("/proc/1/comm", "systemd");
+
     // Setup root directories (typical Linux system)
     fs.mock_set_root_directories(vec![
         PathBuf::from("/home"),

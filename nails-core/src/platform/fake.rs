@@ -13,7 +13,6 @@ use crate::process::ProcessRunner;
 #[derive(Debug, Clone)]
 pub struct FakePlatform {
     kind: PlatformKind,
-    overlay_policy: OverlayPolicy,
     restore_outcome: RestoreOutcome,
     has_config_layer: bool,
 }
@@ -22,7 +21,6 @@ impl Default for FakePlatform {
     fn default() -> Self {
         Self {
             kind: PlatformKind::Fhs,
-            overlay_policy: OverlayPolicy::Fhs,
             restore_outcome: RestoreOutcome::NotRequired,
             has_config_layer: false,
         }
@@ -32,14 +30,8 @@ impl Default for FakePlatform {
 impl FakePlatform {
     /// A fake with the given kind and matching defaults.
     pub fn new(kind: PlatformKind) -> Self {
-        let overlay_policy = match kind {
-            PlatformKind::NixOs => OverlayPolicy::NixOs,
-            PlatformKind::Fhs => OverlayPolicy::Fhs,
-            PlatformKind::Unsupported => OverlayPolicy::None,
-        };
         Self {
             kind,
-            overlay_policy,
             restore_outcome: RestoreOutcome::NotRequired,
             // Only NixOS carries a declarative config layer by default.
             has_config_layer: kind == PlatformKind::NixOs,
@@ -54,12 +46,6 @@ impl FakePlatform {
     /// A fake standing in for an FHS host.
     pub fn fhs() -> Self {
         Self::new(PlatformKind::Fhs)
-    }
-
-    /// Override the overlay policy.
-    pub fn with_overlay_policy(mut self, policy: OverlayPolicy) -> Self {
-        self.overlay_policy = policy;
-        self
     }
 
     /// Override the restore outcome returned by
@@ -82,7 +68,11 @@ impl<F: Filesystem> Platform<F> for FakePlatform {
     }
 
     fn overlay_policy(&self) -> OverlayPolicy {
-        self.overlay_policy
+        match self.kind {
+            PlatformKind::NixOs => OverlayPolicy::nixos(),
+            PlatformKind::Fhs => OverlayPolicy::fhs(),
+            PlatformKind::Unsupported => OverlayPolicy::none(),
+        }
     }
 
     fn host_command_dirs(&self) -> &'static [&'static str] {

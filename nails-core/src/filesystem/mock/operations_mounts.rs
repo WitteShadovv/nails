@@ -387,6 +387,54 @@ impl MockFilesystem {
         Ok(())
     }
 
+    pub(super) fn remount_read_only_impl(&self, target: &Path) -> Result<()> {
+        // A configured mount failure for this target drives the fail-closed path:
+        // EBUSY surfaces as MountBusy so the guard rolls back, other errnos map to
+        // their usual errors.
+        if let Some(errno) = self
+            .mount_should_fail
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(target)
+            .copied()
+        {
+            return Err(match errno {
+                nix::errno::Errno::EBUSY => NailsError::MountBusy {
+                    path: target.to_path_buf(),
+                    suggestion: "Mock: tree marked busy for read-only remount".to_string(),
+                },
+                nix::errno::Errno::EACCES | nix::errno::Errno::EPERM => {
+                    NailsError::PermissionDenied(
+                        "Mock: read-only remount lacks privileges".to_string(),
+                    )
+                }
+                other => NailsError::OverlayError(format!(
+                    "Mock read-only remount failure for {}: {other}",
+                    target.display()
+                )),
+            });
+        }
+
+        // Record the guard as a read-only self-bind so unmount_bind undoes it.
+        self.bind_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(target.to_path_buf(), target.to_path_buf());
+        self.mounted
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(target.to_path_buf());
+        self.nails_owned_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(target.to_path_buf());
+        self.read_only_guards
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(target.to_path_buf());
+        Ok(())
+    }
+
     pub(super) fn unmount_bind_impl(&self, target: &Path) -> Result<()> {
         if !self
             .bind_mounts
@@ -418,6 +466,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .remove(target);
         self.nails_owned_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .remove(target);
+        self.read_only_guards
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .remove(target);

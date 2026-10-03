@@ -631,18 +631,20 @@ fn test_compute_effective_exclusions_defaults_only() {
 
     let exclusions = config.compute_effective_exclusions();
 
-    assert_eq!(exclusions.len(), 11);
+    // Only the host-independent defaults; the base-OS core roots now live in the
+    // platform policy, not the config defaults.
+    assert_eq!(exclusions.len(), 6);
     assert!(exclusions.contains(&PathBuf::from("/proc")));
     assert!(exclusions.contains(&PathBuf::from("/sys")));
     assert!(exclusions.contains(&PathBuf::from("/dev")));
     assert!(exclusions.contains(&PathBuf::from("/run")));
     assert!(exclusions.contains(&PathBuf::from("/mnt")));
     assert!(!exclusions.contains(&PathBuf::from("/boot")));
-    assert!(exclusions.contains(&PathBuf::from("/bin")));
-    assert!(exclusions.contains(&PathBuf::from("/usr")));
-    assert!(exclusions.contains(&PathBuf::from("/lib")));
-    assert!(exclusions.contains(&PathBuf::from("/lib64")));
-    assert!(exclusions.contains(&PathBuf::from("/sbin")));
+    assert!(!exclusions.contains(&PathBuf::from("/bin")));
+    assert!(!exclusions.contains(&PathBuf::from("/usr")));
+    assert!(!exclusions.contains(&PathBuf::from("/lib")));
+    assert!(!exclusions.contains(&PathBuf::from("/lib64")));
+    assert!(!exclusions.contains(&PathBuf::from("/sbin")));
     assert!(exclusions.contains(&PathBuf::from("/lost+found")));
 }
 
@@ -655,7 +657,7 @@ fn test_compute_effective_exclusions_with_user_additions() {
 
     let exclusions = config.compute_effective_exclusions();
 
-    assert_eq!(exclusions.len(), 13);
+    assert_eq!(exclusions.len(), 8);
     assert!(exclusions.contains(&PathBuf::from("/proc")));
     assert!(exclusions.contains(&PathBuf::from("/custom1")));
     assert!(exclusions.contains(&PathBuf::from("/custom2")));
@@ -674,8 +676,8 @@ fn test_compute_effective_exclusions_with_user_removals() {
 
     let exclusions = config.compute_effective_exclusions();
 
-    // /boot is not a default, so only two entries are removed
-    assert_eq!(exclusions.len(), 9);
+    // /boot and /lib are not defaults any more, so only /mnt is actually removed.
+    assert_eq!(exclusions.len(), 5);
     assert!(exclusions.contains(&PathBuf::from("/proc")));
     assert!(!exclusions.contains(&PathBuf::from("/mnt")));
     assert!(!exclusions.contains(&PathBuf::from("/boot")));
@@ -705,7 +707,8 @@ fn test_compute_effective_exclusions_combined_add_and_remove() {
 
     let exclusions = config.compute_effective_exclusions();
 
-    assert_eq!(exclusions.len(), 11);
+    // 6 defaults + /custom - /mnt.
+    assert_eq!(exclusions.len(), 6);
     assert!(exclusions.contains(&PathBuf::from("/custom")));
     assert!(!exclusions.contains(&PathBuf::from("/mnt")));
 }

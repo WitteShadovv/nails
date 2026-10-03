@@ -13,6 +13,10 @@ const SYS_BLOCK_DIR: &str = "/sys/block";
 /// Kernel mount table, read to find the device backing the hidden volume.
 const SELF_MOUNTINFO: &str = "/proc/self/mountinfo";
 
+/// Base-OS trees whose writable, non-overlay presence on the decoy block device
+/// leaks a hidden session's package and `/usr` writes. `/` is checked separately.
+const OS_TREE_MOUNTS: &[&str] = &["/usr", "/bin", "/sbin", "/lib", "/lib64"];
+
 /// Forensic validation verifier
 ///
 /// Performs systematic checks to validate that no NAILS artifacts remain
@@ -65,6 +69,9 @@ impl<F: Filesystem> Verifier<F> {
 
         // 1. Check for overlay mounts
         findings.extend(self.check_overlay_mounts()?);
+
+        // 1b. While active, flag a writable non-overlay decoy OS tree.
+        findings.extend(self.check_writable_decoy_mounts()?);
 
         // 2. Check for artifact files
         findings.extend(self.check_artifact_files()?);
@@ -143,6 +150,92 @@ impl<F: Filesystem> Verifier<F> {
                         format!("Overlay mount found at {}", mount_point.display()),
                     )
                     .with_fix_guidance("Run 'nails deactivate' to unmount overlays"),
+                );
+            }
+        }
+
+        Ok(findings)
+    }
+
+    /// While a hidden session is active, flag any base-OS tree on the decoy that
+    /// is mounted writable and is not an overlay.
+    ///
+    /// The read-only invariant ([`crate::platform::ro_guard`]) says the decoy's
+    /// base-OS trees are either overlaid or kept read-only for the session. A
+    /// writable, non-overlay mount of `/` or `/usr` (and the other core binary
+    /// roots) backed by a real block device means hidden-session writes are
+    /// reaching the decoy disk — the exact leak the invariant exists to prevent —
+    /// so it is reported Critical. The walk reads `/proc/self/mountinfo` directly
+    /// rather than trusting recorded state; it runs only in the active state,
+    /// since a writable decoy root is expected when nothing is hidden.
+    fn check_writable_decoy_mounts(&self) -> Result<Vec<Finding>> {
+        let mut findings = Vec::new();
+
+        let active = self
+            .state
+            .as_ref()
+            .is_some_and(|state| matches!(state.state, crate::state::SystemState::Active { .. }));
+        if !active {
+            return Ok(findings);
+        }
+
+        let Ok(mountinfo) = self.filesystem.read_file_content(Path::new(SELF_MOUNTINFO)) else {
+            return Ok(findings);
+        };
+
+        let hidden_root = self
+            .config
+            .as_ref()
+            .map(|config| config.hidden_volume_root.clone())
+            .filter(|root| !root.as_os_str().is_empty());
+
+        for line in mountinfo.lines() {
+            let Some((pre, post)) = line.split_once(" - ") else {
+                continue;
+            };
+            let pre_fields: Vec<&str> = pre.split(' ').collect();
+            // mountinfo pre fields: id parent maj:min root mountpoint options ...
+            let (Some(mount_point), Some(options)) = (pre_fields.get(4), pre_fields.get(5)) else {
+                continue;
+            };
+            let post_fields: Vec<&str> = post.split(' ').collect();
+            // mountinfo post fields: fstype source superopts.
+            let (Some(fstype), Some(source)) = (post_fields.first(), post_fields.get(1)) else {
+                continue;
+            };
+
+            let mount_point = Path::new(mount_point);
+            let is_os_tree = mount_point == Path::new("/")
+                || OS_TREE_MOUNTS
+                    .iter()
+                    .any(|tree| mount_point == Path::new(tree));
+            if !is_os_tree {
+                continue;
+            }
+            // A tree that lives under the hidden volume is supposed to be writable.
+            if let Some(ref root) = hidden_root
+                && mount_point.starts_with(root)
+            {
+                continue;
+            }
+            let writable = options.split(',').any(|opt| opt == "rw");
+            let is_overlay = *fstype == "overlay";
+            let block_backed = source.starts_with("/dev/");
+            if writable && !is_overlay && block_backed {
+                findings.push(
+                    Finding::new(
+                        Severity::Critical,
+                        "mount",
+                        format!(
+                            "Writable non-overlay decoy mount at {} ({fstype} on {source}); \
+                             hidden-session writes are reaching the decoy disk",
+                            mount_point.display()
+                        ),
+                    )
+                    .with_fix_guidance(
+                        "The decoy OS tree must be overlaid or kept read-only while hidden is \
+                         active; run 'nails deactivate' and re-activate",
+                    ),
                 );
             }
         }

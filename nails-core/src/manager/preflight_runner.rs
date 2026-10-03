@@ -67,7 +67,7 @@ pub fn build_registry<F: Filesystem>(
         InheritedAutostartCheck, MountNamespaceCheck, NixOSBuildTargetCheck, NixOSConfigCheck,
         OverlayCompatibilityCheck, OverlayTargetsCheck, SnapshotMemoryCheck, SpaceCheck,
         StateCheck, StorageReadinessCheck, SuspiciousNailsReferenceCheck, SwapCheck,
-        SymlinkSupportCheck, UpperFsCapabilityCheck,
+        SymlinkSupportCheck, UpperFsCapabilityCheck, WritableTreesCheck,
     };
 
     let mut registry = PreFlightRegistry::new();
@@ -80,6 +80,11 @@ pub fn build_registry<F: Filesystem>(
     // file, its logs or the binary, and an exclusion that leaks to the decoy
     // disk, while the decoy session is still intact.
     registry.add_check(Box::new(OverlayTargetsCheck::new(config.clone())));
+
+    // Refuses activation when a base-OS tree (e.g. /usr) would be left writable on
+    // the decoy — neither overlaid nor kept read-only — while the decoy session is
+    // still intact, so the read-only invariant is enforced before any mount.
+    registry.add_check(Box::new(WritableTreesCheck::new(config.clone())));
 
     // Runs before the session kill so a private mount namespace or a non-shared
     // root is caught while the decoy session is still intact.

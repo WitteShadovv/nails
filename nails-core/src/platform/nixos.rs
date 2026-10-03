@@ -30,7 +30,7 @@ impl<F: Filesystem> Platform<F> for NixOsPlatform {
     }
 
     fn overlay_policy(&self) -> OverlayPolicy {
-        OverlayPolicy::NixOs
+        OverlayPolicy::nixos()
     }
 
     fn host_command_dirs(&self) -> &'static [&'static str] {

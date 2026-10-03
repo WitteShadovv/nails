@@ -203,6 +203,10 @@ impl Filesystem for RealFilesystem {
         mount_ops::unmount_bind(self, target)
     }
 
+    fn remount_read_only(&self, target: &Path) -> Result<()> {
+        mount_ops::remount_read_only(target)
+    }
+
     fn file_size(&self, path: &Path) -> Result<u64> {
         file_ops::file_size(path)
     }
