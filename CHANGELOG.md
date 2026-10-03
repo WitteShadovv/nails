@@ -13,6 +13,22 @@ of this changelog for that version becomes the release notes word for word, and
 
 ## [Unreleased]
 
+### Upgrading
+
+This release breaks compatibility with earlier state, config and CLI surfaces; there are no
+compatibility shims.
+
+- Configuration moves from `nails.yaml` (YAML) to strict `config/nails.toml` (TOML): convert each
+  key by hand, unknown keys are now rejected, and `nails init` regenerates a documented template.
+- Invoke the binary from the hidden volume by full path (`sudo "$ROOT/nails" …`); nails is never on
+  the decoy `PATH`. Several `activate`/`deactivate` flags were renamed or removed (for example
+  `--no-kill-session` is now `--session keep`).
+- Exit codes and the JSON envelope changed (`schema_version = 1`); scripts that parsed the old
+  output must be updated against the new exit-code table and envelope.
+- The on-disk state schema changed (adds `boot_id`, removes the `Emergency` state). Delete any
+  pre-existing `state.json` from a clean inactive system; do not hand-edit it — use `nails recover`
+  to reconcile a stuck state.
+
 ### Added
 
 - `nails recover` reconciles a stuck state and finishes an interrupted, degraded or corrupt-state
@@ -161,6 +177,10 @@ of this changelog for that version becomes the release notes word for word, and
   planner and an informational `distro-e2e` CI workflow.
 - A filesystem contract suite run against both the in-memory mock and the real filesystem, and a
   weekly mutation-testing job.
+- A `[sleep_policy]` configuration table (`warn` by default, `block` or `teardown`) with a
+  `sleep-policy` pre-flight check that warns when logind would suspend an active session, and a
+  session sleep guard that holds a logind inhibitor (`block`) or runs the bounded emergency
+  teardown on `PrepareForSleep` (`teardown`).
 
 ### Changed
 
@@ -344,6 +364,11 @@ of this changelog for that version becomes the release notes word for word, and
   documented message.
 - Coverage is measured over production code only against one threshold in
   `.config/coverage.toml`; the filesystem mock no longer ships in release builds.
+- Operator docs now invoke the binary from the hidden volume by full path (`sudo "$ROOT/nails" …`,
+  one mount point throughout) and add a CLI/exit-code/JSON reference, a hidden-generation panic
+  switch snippet (root-owned oneshot, scoped polkit rule, keybinding, with a NOPASSWD warning), and
+  replace the hand-deletion of `state.json` and decoy-side verification guidance with `nails
+  recover` and pre-reboot/offline verification.
 
 ### Removed
 

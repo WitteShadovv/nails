@@ -2628,6 +2628,8 @@ Owns: `nails-core/src/preflight/checks/sleep_policy.rs`, `nails-core/src/config/
 
 - [ ] **T-116: Suspend/hibernate while active: preflight warning, documented lid policy, opt-in sleep_policy block|teardown** (medium · effort M)
 
+  _Status: implemented on overhaul — `[sleep_policy]` config (warn/block/teardown), the `sleep-policy` preflight warning with a fixture-parse unit test, and the `/run`-backed sleep guard (block inhibitor; teardown via the bounded `emergency_deactivate` on `PrepareForSleep`), wired into activation/deactivation, plus the lid-switch opsec docs. Remaining: the three E2E 'Done when' cases (block holds/releases an inhibitor, teardown on simulated suspend, warn-only) and live-bus zbus inhibitor/PrepareForSleep verification are not authored — untestable in this sandbox (unix sockets/nix unavailable); to be added to nix/e2e-tests in a later wave._
+
   **Problem**
   Nothing handles suspend or hibernate: no logind inhibitor, no `PrepareForSleep` handler, no `HandleLidSwitch` check (grep across `nails-core/src` finds only session-termination use of logind). logind defaults to `HandleLidSwitch=suspend` and desktops auto-suspend, so closing the lid leaves an active hidden session resident in RAM; on resume the decoy login unlocks the still-live session. The only guidance today is `docs/USER-SECURITY-GUIDE.md:397` ("Power off completely (not suspend)"). A permanent block inhibitor can overheat a closed laptop, and teardown-on-sleep is bounded by logind `InhibitDelayMaxSec` (default 5s), so it must reuse the bounded emergency path.
 
@@ -2647,7 +2649,9 @@ Owns: `nails-core/src/preflight/checks/sleep_policy.rs`, `nails-core/src/config/
 
 Owns: `README.md`, `docs/USER-SECURITY-GUIDE.md`, `docs/configuration.md`
 
-- [ ] **T-117: Operator docs for the new command/flag/config/exit-code surface, full-path invocation, panic path and upgrade notes** (medium · effort M)
+- [x] **T-117: Operator docs for the new command/flag/config/exit-code surface, full-path invocation, panic path and upgrade notes** (medium · effort M)
+
+  _Status: done on overhaul — README and the security guide use one mount point and the full-path `sudo "$ROOT/nails" …` form, add a CLI/exit-code/JSON reference (cross-checked against args.rs and ExitStatus), a hidden-generation panic switch snippet with the NOPASSWD warning, and replace `sudo rm state.json`/decoy-side verify with `nails recover` and pre-reboot/offline verification; the required CHANGELOG 'Upgrading' subsection was added at integration (config TOML migration, renamed/removed flags, exit-code/JSON changes, state schema incl. boot_id and the removed Emergency state). The config-reference 'every Config field' done-when is covered by nails-core/tests/config_reference.rs._
 
   **Problem**
   The docs disagree on the mount point and the invocation form. The install section mounts `/mnt/hidden` (README.md:83-88) while Quick start mounts `/mnt/hidden-volume` and runs `nails init /mnt/hidden-volume` with no sudo on a root-owned fresh mount (README.md:120-166). The command table (README.md:179-182) and the guide (USER-SECURITY-GUIDE.md:128-132,446,479) use bare `sudo nails ...`, even though the guide says to run the binary from the hidden volume and flags `/usr/local/bin/nails` as wrong (USER-SECURITY-GUIDE.md:93,115). sudo's `secure_path` excludes the hidden root, so copy-pasted commands fail or push users toward a decoy-side PATH install, and mixing mount points yields mismatched binary-derived roots. The guide still tells operators to `sudo rm /mnt/hidden-volume/state.json` (USER-SECURITY-GUIDE.md:518) and to verify from the decoy side (README.md:90-94). No upgrade notes exist (CHANGELOG has no Upgrading section) even though this branch changes the config format (YAML to TOML), flags, exit codes, the JSON shape and the state schema.
