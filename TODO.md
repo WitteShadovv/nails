@@ -2452,6 +2452,8 @@ Owns: `nails-core/src/manager/deactivation.rs`, `nails-core/src/emergency.rs`, `
   - `nails recover` resets Interrupted/Degraded to Inactive after teardown (unit + E2E).
   - `rg 'deactivate --force|reboot if stuck|Reboot to reset' nails-core nails-cli docs README.md` returns nothing; `SystemState::Emergency` no longer exists; cargo test and clippy pass.
 
+  _Status: Wave 19 landed `nails recover` (reconciles recorded vs live state, backs up a corrupt state file to `state.json.bad`, tears down via mount discovery, resets to Inactive), emergency from any state (clean Inactive is a no-op success), fixed guidance (`verify`, deactivate hint, USER-SECURITY-GUIDE), E2E 74/75/76 aligned and 55/12 re-open the volume and run `recover`; the RAM copy landed with T-108 as the neutral `/run/overlay-runtime/control`. Remaining: SIGTERM a live `owner_pid` before emergency teardown, status overlay-mismatch next step ("run nails recover or nails emergency"), show the `/run` copy emergency command in the activation summary/notification, and the backend-lazily-unmounted E2E (shared with T-108)._
+
 - [ ] **T-108: Detect a failing hidden backend during a session: a RAM copy of the binary, config and manifest, plus an alerting watcher** (medium · effort L)
 
   **Problem**
@@ -2469,7 +2471,9 @@ Owns: `nails-core/src/manager/deactivation.rs`, `nails-core/src/emergency.rs`, `
   - No unit/file/directory created by the watcher contains "nails" in its name.
   - E2E: lazily unmounting the backend mid-session produces a user alert, and `emergency` run from the `/run` copy tears down all overlays with the hidden root gone; cargo test and clippy pass.
 
-- [ ] **T-109: Emergency ends the hidden graphical session and the services the hidden config added instead of leaving them running until reboot** (high · effort M)
+  _Status: Wave 19 landed the `/run/overlay-runtime` copy (binary, effective config, mount manifest; 0700, removed at deactivate/emergency/recover), the `[backend_watch]` config, `watcher.rs` debounce/alert state machine, the hidden `watch` subcommand run as the transient unit `overlay-runtime-monitor`, and emergency/recover falling back to the `/run` config copy; no created name contains "nails" (unit-tested). Remaining: the VM E2E that lazily unmounts the backend mid-session, asserts the user alert, and runs emergency from the `/run` copy (fits the T-111 `faults/` group); live check of the transient unit and notify-send paths._
+
+- [x] **T-109: Emergency ends the hidden graphical session and the services the hidden config added instead of leaving them running until reboot** (high · effort M)
 
   **Problem**
   - Emergency sets `with_switch_script_execution(kind == Normal)` (`nails-core/src/manager/deactivation.rs:492`), so no decoy switch runs, and the orchestrator only restores `/run/current-system` (`deactivation/orchestrator/mod.rs:332-385`).
@@ -2487,7 +2491,9 @@ Owns: `nails-core/src/manager/deactivation.rs`, `nails-core/src/emergency.rs`, `
   - Unit test: emergency stops exactly the recorded unit difference and calls session termination before unmount.
   - `emergency.rs` docs and the guide no longer claim a decoy switch or an "immediate" full return; cargo test and clippy pass.
 
-- [ ] **T-110: Emergency: detach first, clean up afterwards, no global sync, a time budget, immediate by default with optional --poweroff/--reboot, and an honest result** (high · effort L)
+  _Status: Done in wave 19 (session/unit-diff teardown and display-manager restart; E2E `security/80-emergency-graphical.nix` needs a Nix runner)._
+
+- [x] **T-110: Emergency: detach first, clean up afterwards, no global sync, a time budget, immediate by default with optional --poweroff/--reboot, and an honest result** (high · effort L)
 
   **Problem**
   - `execute_emergency_cleanup` forces `secure_delete` and `sanitize_memory` (`deactivation/orchestrator/cleanup.rs:63-71`, `manager/deactivation.rs:302-303`) and runs as step 2, before `unmount_overlays` in step 3 (`orchestrator/mod.rs:225-311`). `sanitize_memory` runs an external global `sync` with no timeout then writes `drop_caches` (`cleanup/manager.rs:259-293`); `secure_delete` overwrites files on the hidden upper. On a slow/stalled backend this delays the only step that matters.
@@ -2509,7 +2515,9 @@ Owns: `nails-core/src/manager/deactivation.rs`, `nails-core/src/emergency.rs`, `
   - human + JSON output list lazily detached overlays, killed shells, cleanup errors, the history-verification result and not-done items; degraded runs exit 7.
   - E2E `security/78-cleanup-fast-mode.nix` asserts emergency as root reports "page cache dropped" and completes under 10s; `03`, `74`, `75`, `77` and `lib/emergency.nix` are updated and pass; cargo test and clippy pass.
 
-- [ ] **T-111: Fault-injection E2E tests and a strict harness that stops masking unclosable backends** (high · effort L)
+  _Status: Done in wave 19 (detach first, `write_kernel_tunable` drop_caches after unmount, opt-in `--countdown`, `--poweroff`/`--reboot`, REBOOT REQUIRED exit 7; per-unmount worker-thread deadline and killed-shell reporting not added; nix E2E pending evaluation)._
+
+- [x] **T-111: Fault-injection E2E tests and a strict harness that stops masking unclosable backends** (high · effort L)
 
   **Problem**
   - Crash tests pass without exercising recovery: `state/55` and `smoke/12` never re-open the LUKS volume after `machine.crash()`. `StateFile::load` returns Inactive for a missing file (`state/file.rs:300-354`), so `assert_status_state("Inactive")` (`55:70`) and `state == "Inactive"` (`smoke/12:127`) always pass. `performance/07` re-formats after each crash.
@@ -2529,7 +2537,9 @@ Owns: `nails-core/src/manager/deactivation.rs`, `nails-core/src/emergency.rs`, `
   - Fault tests (a)-(h) exist, are tagged `faults`, run in the full suite, and pass once their product fixes land.
   - Test (d) fails and lists the holders whenever emergency leaves the hidden filesystem busy.
 
-- [ ] **T-112: Command surface and help: hide internal commands, workflow help with EXAMPLES and EXIT STATUS, value hints, neutral examples** (medium · effort S)
+  _Status: Done in wave 19 (strict harness, `faults/90-95` plus state/55 and 58 tagged `faults`, 55/12 re-open and recover, 75 aligned; suspend/hibernate phase stays nightly follow-up; all pending a Nix runner)._
+
+- [x] **T-112: Command surface and help: hide internal commands, workflow help with EXAMPLES and EXIT STATUS, value hints, neutral examples** (medium · effort S)
 
   **Problem**
   - `nails --help` repeats the name with `long_about = None` (`nails-cli/src/cli/args.rs:14`); no examples, no exit codes, no explanation of the workflow or the binary-location rule.
@@ -2548,6 +2558,8 @@ Owns: `nails-core/src/manager/deactivation.rs`, `nails-core/src/emergency.rs`, `
   - Root long help explains the workflow and binary-location rule; every command's long help has EXAMPLES; a test asserts every `ExitStatus` variant appears in the EXIT STATUS help text.
   - `rg amnesia nails-cli/src` returns nothing; path args have value hints.
   - cargo `--help` snapshot tests pass; E2E `contract/65-help-version-no-leak.nix` passes.
+
+  _Status: Done in wave 19 (workflow help, EXIT STATUS, EXAMPLES, hidden `notify-dispatch`/`watch`, value hints, neutral examples, `contract/65-help-version-no-leak.nix` pending a Nix runner)._
 
 ## Wave 20: Runtime journal handling + fixture trim/persona E2E
 

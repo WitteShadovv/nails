@@ -15,6 +15,24 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
+- `nails recover` reconciles a stuck state and finishes an interrupted, degraded or corrupt-state
+  teardown from the live mount table (a corrupt state file is kept as `state.json.bad`), and
+  `nails emergency` now runs from any state; on a clean inactive system both are a no-op success.
+- An in-session backend watcher (`[backend_watch]`) alerts the user when the hidden backend fails
+  mid-session and, only when opted in, runs emergency after a debounce; activation keeps a RAM copy
+  of the binary, config and mount manifest under `/run` so emergency stays runnable without the
+  hidden volume.
+- Emergency ends the hidden graphical session and stops the services the hidden configuration
+  started, then restarts the display manager so the decoy greeter returns.
+- `nails emergency --countdown <SECS>` (opt-in, with a Ctrl+C hint) and `--poweroff`/`--reboot`
+  after teardown; the result lists detached and force-detached overlays, cleanup errors, the
+  page-cache and history results and the backend-close commands, and a degraded teardown prints
+  REBOOT REQUIRED and exits 7.
+- Root `--help` explains the workflow and lists exit codes, every command has EXAMPLES, and path
+  arguments carry shell value hints.
+- Fault-injection E2E group (`faults`) and a strict hidden-volume teardown helper that fails and
+  lists holders when the encrypted backend cannot be closed.
+
 - SIGINT/SIGTERM during an in-progress activation now cancel it and roll the system back to
   Inactive (exit code 130), SIGHUP no longer aborts a running operation, and mutating commands
   survive out-of-memory pressure (`OOMPolicy=continue` on the transient units plus a lowered OOM
@@ -141,6 +159,11 @@ of this changelog for that version becomes the release notes word for word, and
   weekly mutation-testing job.
 
 ### Changed
+
+- Emergency teardown starts immediately, detaches the overlays first and runs cleanup afterwards;
+  it drops only clean page cache after unmount (no global `sync`, no secure-delete of the encrypted
+  upper) and no longer claims memory sanitization or a decoy switch. `--no-countdown` is removed.
+- Internal commands (`notify-dispatch`, `watch`) are hidden from help.
 
 - Processes blocking an overlay target are now classified by write capability rather than mere
   presence: a writable or directory file descriptor (parsed from `/proc/PID/fdinfo` open flags), a
