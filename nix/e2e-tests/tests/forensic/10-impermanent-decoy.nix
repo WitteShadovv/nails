@@ -60,10 +60,15 @@ in
     config_path = "/tmp/nails-impermanent.toml"
     write_auto_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    # Auto mode overlays /nix, and the overlay-targets pre-flight check refuses a
+    # binary that lives under an overlay target, so activate with a copy on the
+    # hidden volume.
+    hidden_nails = "/mnt/data/nails"
+    machine.succeed(f"install -m 0755 ${self.packages.x86_64-linux.nails}/bin/nails {hidden_nails}")
 
     with subtest("an auto-mode session overlays /var and /nix and writes to the hidden upper"):
         machine.succeed(
-            f"nails --config {config_path} activate --overlay-only --session keep -y"
+            f"{hidden_nails} --config {config_path} activate --overlay-only --session keep -y"
         )
         assert_status_state("active", config_path=config_path)
         for path in ["/etc", "/var", "/nix"]:
