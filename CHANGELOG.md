@@ -15,6 +15,11 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
+- Privileged commands (`activate`, `deactivate`, `emergency`) now fail fast when run without root,
+  printing a `sudo <command>` hint and exiting without writing a log or state file.
+- Pre-flight failures now show each check's own remediation and finish with one ordered list of
+  fixes.
+
 - A configurable active-state prompt label (empty by default) and a guard that writes the shell rc
   block and autostart entry only when the target lives on a NAILS overlay, warning and skipping
   otherwise.
@@ -113,6 +118,9 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- Human console output no longer prints a per-line timestamp (the precise timestamp is kept only in
+  the JSON log file), and overlay activation now shows a per-overlay `mounting <path> (i/N)`
+  progress line.
 - Desktop notifications now dispatch through the shared bounded process runner with a cleared,
   allowlisted environment: the operator's session variables (`XDG_RUNTIME_DIR`,
   `DBUS_SESSION_BUS_ADDRESS`, display) are passed explicitly while the fixed `PATH` is applied last.
