@@ -41,6 +41,13 @@ fn main() -> std::process::ExitCode {
     let settings = OutputSettings::detect(&cli.global);
     settings.install();
 
+    // Refuse privileged commands run without root before logging is initialised
+    // or any handler runs, so an unprivileged invocation writes no log or state
+    // file and the operator gets one clear `sudo` instruction.
+    if let Some(status) = nails::cli::main_guard::enforce_root(&cli.command, &settings) {
+        return status.to_exit_code();
+    }
+
     let log_file = !cli.global.no_log_file && command_writes_logs(&cli.command);
     nails::cli::logging::init_subscriber(
         &settings,

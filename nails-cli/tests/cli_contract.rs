@@ -536,6 +536,50 @@ fn exit_code_4_preflight_refused_on_check() {
 }
 
 #[test]
+fn exit_code_5_needs_root_on_privileged_commands_run_unprivileged() {
+    // The integration binary carries `test-hooks`, so the root gate is off by
+    // default (the rest of the suite drives activate/deactivate/emergency
+    // unprivileged). `NAILS_TEST_ENFORCE_ROOT` turns it on for this case; the
+    // sandbox runs as a non-root user, so each privileged command must refuse
+    // with code 5 and a copy-pasteable sudo hint before touching anything.
+    for subcommand in ["activate", "deactivate", "emergency"] {
+        let harness = Harness::new();
+        let output = nails()
+            .arg("--config")
+            .arg(&harness.config)
+            .env("NAILS_TEST_ENFORCE_ROOT", "1")
+            .arg(subcommand)
+            .output()
+            .expect("run privileged command unprivileged");
+
+        assert_eq!(
+            output.status.code(),
+            Some(5),
+            "{subcommand} should exit 5 when run without root",
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("must run as root") && stderr.contains("sudo"),
+            "{subcommand} stderr missing sudo hint: {stderr}",
+        );
+        assert!(
+            stderr.contains(subcommand),
+            "{subcommand} hint should name the subcommand: {stderr}",
+        );
+        // The gate runs before logging init and before the handler, so no log or
+        // state file is created on the hidden root.
+        assert!(
+            !harness.state_path.exists(),
+            "{subcommand} must not create a state file when refused",
+        );
+        assert!(
+            !harness.log_path.exists(),
+            "{subcommand} must not create a log directory when refused",
+        );
+    }
+}
+
+#[test]
 fn exit_code_6_invalid_state_on_reset_upper_while_active() {
     // reset-upper refuses when the system is not Inactive, before touching data.
     let harness = write_active_harness();

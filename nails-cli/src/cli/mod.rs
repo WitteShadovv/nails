@@ -2,6 +2,7 @@ pub mod args;
 pub mod commands;
 mod detach;
 pub mod logging;
+pub mod main_guard;
 pub mod output;
 
 // Re-export main types for convenience
