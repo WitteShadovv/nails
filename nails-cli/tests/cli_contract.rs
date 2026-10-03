@@ -59,6 +59,7 @@ const HELP_INVOCATIONS: &[&[&str]] = &[
     &["config", "path", "--help"],
     &["config", "show", "--help"],
     &["config", "validate", "--help"],
+    &["completions", "--help"],
     &["notify-dispatch", "--help"],
 ];
 
@@ -175,11 +176,12 @@ fn write_active_harness() -> Harness {
     harness
 }
 
-/// Load a committed JSON Schema fixture (shared with the E2E suite).
+/// Load a committed JSON Schema (the canonical set under `docs/schemas/`, shared
+/// with the E2E contract tests). `name` is the command, e.g. `"status"`.
 fn load_schema(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../nix/e2e-tests/fixtures/schemas")
-        .join(name);
+        .join("../docs/schemas")
+        .join(format!("{name}.schema.json"));
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {name}: {e}"));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {name}: {e}"))
 }
@@ -258,6 +260,38 @@ fn help_and_version_carry_no_blocked_substrings() {
     }
 }
 
+#[test]
+fn completions_print_to_stdout_and_write_no_files() {
+    for shell in ["bash", "zsh", "fish"] {
+        // Run with the working directory set to a fresh empty temp dir so any
+        // stray file a completion generator might write would land here and be
+        // detected. `nails completions` must only print to stdout.
+        let dir = tempfile::tempdir().unwrap();
+        let output = nails()
+            .current_dir(dir.path())
+            .args(["completions", shell])
+            .output()
+            .expect("run completions");
+        assert!(output.status.success(), "completions {shell} should exit 0");
+        assert!(
+            !output.stdout.is_empty(),
+            "completions {shell} should print a script to stdout"
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "completions {shell} should print nothing to stderr"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "completions {shell} wrote files: {leftovers:?}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // status --json: schema + snapshot for each state shape
 // ---------------------------------------------------------------------------
@@ -302,7 +336,7 @@ fn status_json_missing_state_matches_schema_and_snapshot() {
     let harness = Harness::new(); // no state file written
     let (code, value) = run_json(&harness.config, &["status"]);
     assert_eq!(code, 0, "status always exits 0: {value}");
-    assert_matches_schema(&load_schema("status.json"), &value);
+    assert_matches_schema(&load_schema("status"), &value);
     assert_eq!(value["data"]["state"]["kind"], "inactive");
     insta::assert_json_snapshot!("status_json_missing", redact_status(value));
 }
@@ -313,7 +347,7 @@ fn status_json_inactive_matches_schema_and_snapshot() {
     harness.write_state(SystemState::Inactive);
     let (code, value) = run_json(&harness.config, &["status"]);
     assert_eq!(code, 0);
-    assert_matches_schema(&load_schema("status.json"), &value);
+    assert_matches_schema(&load_schema("status"), &value);
     assert_eq!(value["data"]["state"]["kind"], "inactive");
     insta::assert_json_snapshot!("status_json_inactive", redact_status(value));
 }
@@ -325,7 +359,7 @@ fn status_json_active_matches_schema_and_snapshot() {
     // An active state whose overlay is not a live NAILS overlay is degraded, and
     // a dangerous posture fails closed with the degraded/reboot exit code.
     assert_eq!(code, 7);
-    assert_matches_schema(&load_schema("status.json"), &value);
+    assert_matches_schema(&load_schema("status"), &value);
     assert_eq!(value["data"]["state"]["kind"], "active");
     assert_eq!(value["data"]["posture"], "degraded");
     assert_eq!(value["data"]["overlays"][0]["status"], "not_mounted");
@@ -340,7 +374,7 @@ fn status_json_tampered_state_is_unknown_and_matches_schema() {
     let (code, value) = run_json(&harness.config, &["status"]);
     // An untrusted state file means the real state is unknown: fail closed.
     assert_eq!(code, 6, "an unknown posture exits InvalidState");
-    assert_matches_schema(&load_schema("status.json"), &value);
+    assert_matches_schema(&load_schema("status"), &value);
     assert_eq!(value["data"]["state"]["kind"], "unknown");
     assert_eq!(value["data"]["posture"], "unknown");
     insta::assert_json_snapshot!("status_json_tampered", redact_status(value));
@@ -357,7 +391,7 @@ fn status_json_degraded_matches_schema_and_snapshot() {
     let (code, value) = run_json(&harness.config, &["status"]);
     // A persisted Degraded teardown reconciles to an inconsistent posture.
     assert_eq!(code, 7);
-    assert_matches_schema(&load_schema("status.json"), &value);
+    assert_matches_schema(&load_schema("status"), &value);
     assert_eq!(value["data"]["state"]["kind"], "degraded");
     assert_eq!(value["data"]["posture"], "inconsistent");
     insta::assert_json_snapshot!("status_json_degraded", redact_status(value));
@@ -376,7 +410,7 @@ fn verify_json_matches_schema_and_snapshot() {
     // The schema is enforced over the whole document; only the stable structural
     // envelope is snapshotted.
     assert!(matches!(code, 0 | 10 | 11), "unexpected verify exit {code}");
-    assert_matches_schema(&load_schema("verify.json"), &value);
+    assert_matches_schema(&load_schema("verify"), &value);
     assert_eq!(value["command"], "verify");
     assert_eq!(value["data"]["config_aware"], true);
     let projection = serde_json::json!({
@@ -394,6 +428,92 @@ fn verify_json_matches_schema_and_snapshot() {
 }
 
 // ---------------------------------------------------------------------------
+// activate / deactivate / emergency schemas: representative-document round-trip
+//
+// These commands need root and a live overlay to run for real (covered in the
+// VM tier), so here we only guard that the committed schemas compile and accept
+// the exact documents the renderers emit, and reject a malformed one.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn activate_schema_accepts_progress_result_and_error_lines() {
+    let schema = load_schema("activate");
+    let progress = serde_json::json!({
+        "schema_version": 1, "command": "activate", "type": "progress", "phase": "mounting"
+    });
+    assert_matches_schema(&schema, &progress);
+
+    let result = serde_json::json!({
+        "schema_version": 1, "command": "activate", "type": "result",
+        "ok": true, "status": "success", "duration": 1.5,
+        "state": {"kind": "active"},
+        "decoy_writers": [],
+        "message": "Activation complete in 1.5s"
+    });
+    assert_matches_schema(&schema, &result);
+
+    let error = serde_json::json!({
+        "schema_version": 1, "command": "activate", "ok": false,
+        "error": {"code": "usage", "message": "no terminal to confirm on"}
+    });
+    assert_matches_schema(&schema, &error);
+
+    // A result line that drops a required field is rejected by every branch.
+    let bad = serde_json::json!({
+        "schema_version": 1, "command": "activate", "type": "result", "ok": true
+    });
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(
+        !validator.is_valid(&bad),
+        "incomplete result must be rejected"
+    );
+}
+
+#[test]
+fn deactivate_schema_accepts_the_success_envelope() {
+    let schema = load_schema("deactivate");
+    let value = serde_json::json!({
+        "schema_version": 1, "command": "deactivate", "ok": true,
+        "data": {
+            "status": "reboot_requested",
+            "recovery_guidance": ["Important: Hidden storage may still be mounted."]
+        }
+    });
+    assert_matches_schema(&schema, &value);
+
+    let error = serde_json::json!({
+        "schema_version": 1, "command": "deactivate", "ok": false,
+        "error": {"code": "mount_busy", "message": "overlay busy: /home", "hint": "retry"}
+    });
+    assert_matches_schema(&schema, &error);
+}
+
+#[test]
+fn emergency_schema_accepts_a_complete_teardown() {
+    let schema = load_schema("emergency");
+    let value = serde_json::json!({
+        "schema_version": 1, "command": "emergency", "ok": true,
+        "data": {
+            "status": "complete",
+            "detached_overlays": ["/home", "/etc"],
+            "force_detached_overlays": [],
+            "cleanup_errors": [],
+            "page_cache_dropped": true,
+            "runtime_journal_scrubbed": true,
+            "history_truncation_verified": null,
+            "hidden_root_still_mounted": false,
+            "hidden_root": "/mnt/data",
+            "backend_lock": null,
+            "backend_close_commands": ["cryptsetup close data0"],
+            "power_action": null,
+            "power_result": null,
+            "recovery_guidance": ["Reboot to clear RAM."]
+        }
+    });
+    assert_matches_schema(&schema, &value);
+}
+
+// ---------------------------------------------------------------------------
 // Error envelope
 // ---------------------------------------------------------------------------
 
@@ -403,7 +523,7 @@ fn config_failure_is_one_error_envelope_on_stdout() {
     let missing = dir.path().join("missing.toml");
     let (code, value) = run_json(&missing, &["status"]);
     assert_eq!(code, 3, "a missing explicit config exits Config(3)");
-    assert_matches_schema(&load_schema("status.json"), &value);
+    assert_matches_schema(&load_schema("status"), &value);
     assert_eq!(value["ok"], false);
     assert_eq!(value["error"]["code"], "config");
     insta::assert_json_snapshot!("error_envelope_config", value, {

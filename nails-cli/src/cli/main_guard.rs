@@ -48,6 +48,7 @@ fn subcommand_name(command: &Commands) -> &'static str {
         Commands::Init(_) => "init",
         Commands::ResetUpper(_) => "reset-upper",
         Commands::Config(_) => "config",
+        Commands::Completions(_) => "completions",
         Commands::NotifyDispatch => "notify-dispatch",
         Commands::Watch => "watch",
         Commands::SleepGuard => "sleep-guard",

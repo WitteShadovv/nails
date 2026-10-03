@@ -75,6 +75,7 @@ pub fn execute_command(cli: Cli, settings: &OutputSettings) -> ExitStatus {
         Commands::Init(args) => commands::init::execute(settings, &args, config),
         Commands::ResetUpper(args) => commands::reset_upper::execute(settings, &args, config),
         Commands::Config(command) => commands::config::execute(settings, config, &command),
+        Commands::Completions(args) => commands::completions::execute(&args),
         Commands::NotifyDispatch => commands::notify_dispatch::execute(settings, config),
         Commands::Watch => commands::watch::execute(settings, config),
         Commands::SleepGuard => commands::sleep_guard::execute(settings, config),

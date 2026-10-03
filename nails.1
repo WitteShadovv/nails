@@ -1,0 +1,130 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH nails 1 1980-01-01 nails "NAILS Manual"
+.SH NAME
+nails \- Overlay environment manager
+.SH SYNOPSIS
+\fBnails\fR [\fB\-c\fR|\fB\-\-config\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-color\fR] [\fB\-\-ascii\fR] [\fB\-\-json\fR] [\fB\-\-no\-log\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Overlay environment manager.
+.PP
+NAILS layers a hidden environment over a decoy system using OverlayFS. The
+binary and its configuration live on the hidden volume, so you run it by its
+full path from the mounted volume (e.g. `sudo /mnt/data/nails status`), never
+from a copy on the decoy disk.
+.PP
+The workflow has four steps:
+  1. Open and mount the hidden backend (e.g. unlock the LUKS/VeraCrypt volume).
+  2. `init <root>` once, to lay out the hidden volume.
+  3. `activate` to mount the overlays and apply the platform layer.
+  4. `deactivate` to return to the decoy and reboot, or `emergency` to tear
+     everything down now. If a run is interrupted and the system is stuck,
+     `recover` reconciles the state and finishes the teardown.
+.SH OPTIONS
+.TP
+\fB\-c\fR, \fB\-\-config\fR \fI<PATH>\fR
+Path to the configuration file (overrides binary\-relative discovery)
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+More diagnostics on stderr: \-v for debug, \-vv for trace
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Print only errors and the final result
+.TP
+\fB\-\-color\fR \fI<WHEN>\fR [default: auto]
+When to use colour
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto: Colour a stream only when it is a terminal, TERM is not `dumb` and NO_COLOR is unset or empty
+.IP \(bu 2
+always: Always colour, even when piped
+.IP \(bu 2
+never: Never colour
+.RE
+.TP
+\fB\-\-ascii\fR
+Use ASCII markers instead of Unicode symbols and box drawing
+.TP
+\fB\-\-json\fR
+Print machine\-readable JSON on stdout
+.TP
+\fB\-\-no\-log\-file\fR
+Do not write the log file on the hidden volume (diagnostics still go to stderr)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+nails\-activate(1)
+Activate the hidden environment (mount overlays and apply the platform layer)
+.TP
+nails\-deactivate(1)
+Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
+.TP
+nails\-reapply(1)
+Reapply the hidden configuration layer while active (platforms with a layer only)
+.TP
+nails\-emergency(1)
+Emergency teardown: detach overlays immediately, best\-effort cleanup
+.TP
+nails\-recover(1)
+Reconcile a stuck state and finish an interrupted or degraded teardown
+.TP
+nails\-status(1)
+Show current status and uptime
+.TP
+nails\-verify(1)
+Verify system is clean of NAILS artifacts
+.TP
+nails\-check(1)
+Check readiness to activate without making any changes (alias: doctor)
+.TP
+nails\-init(1)
+Initialize NAILS directory structure on a hidden volume
+.TP
+nails\-reset\-upper(1)
+Delete a target\*(Aqs persistent overlay upper on the hidden volume
+.TP
+nails\-config(1)
+Inspect and check the configuration file (nails.toml)
+.TP
+nails\-completions(1)
+Print a shell completion script on stdout (for `source <(...)`)
+.TP
+nails\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+EXAMPLES:
+  # Run by full path from the mounted backend, never from a decoy copy.
+  sudo /mnt/data/nails init /mnt/data   Lay out the hidden volume (once)
+  sudo /mnt/data/nails activate         Mount the overlays and apply the layer
+  /mnt/data/nails status \-\-json         Machine\-readable state and uptime
+  sudo /mnt/data/nails deactivate       Restore the decoy and reboot
+  sudo /mnt/data/nails emergency        Tear everything down immediately
+  source <(/mnt/data/nails completions bash)   Load completions in the session
+
+EXIT STATUS:
+  0    success
+  1    the operation failed
+  2    command\-line usage error
+  3    the configuration file or environment was unusable
+  4    a pre\-flight check refused the operation
+  5    the operation needs privileges it did not have
+  6    the on\-disk state could not be trusted
+  7    the system is degraded or a reboot is required to finish
+  8    the host is not one NAILS can operate on
+  9    completed, but with a warning the caller should act on
+  10   verify found warnings
+  11   verify found critical artifacts
+  130  cancelled by a signal (SIGINT/SIGTERM)
+.SH VERSION
+v0.2.0
+.SH AUTHORS
+NAILS Project

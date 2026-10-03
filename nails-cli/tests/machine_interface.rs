@@ -1,7 +1,7 @@
 //! Contract tests for the machine-readable (`--json`) interface.
 //!
-//! These validate real command output against the JSON Schema fixtures the E2E
-//! suite uses (`nix/e2e-tests/fixtures/schemas/*.json`), so a drift in the CLI
+//! These validate real command output against the canonical JSON Schemas the E2E
+//! suite uses (`docs/schemas/*.schema.json`), so a drift in the CLI
 //! envelope is caught here long before a VM run. A small dependency-free checker
 //! covers the JSON Schema subset the fixtures use (`type`, `required`,
 //! `properties`, `items`, `enum`, `const`, `oneOf`, `additionalProperties:false`,
@@ -14,8 +14,8 @@ use serde_json::Value;
 
 fn schema_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../nix/e2e-tests/fixtures/schemas")
-        .join(name)
+        .join("../docs/schemas")
+        .join(format!("{name}.schema.json"))
 }
 
 fn load_schema(name: &str) -> Value {
@@ -169,7 +169,7 @@ fn run_json(config: &std::path::Path, args: &[&str]) -> (i32, Value) {
 
 #[test]
 fn status_json_matches_the_fixture_schema() {
-    let schema = load_schema("status.json");
+    let schema = load_schema("status");
     let (_dir, config) = isolated_config();
     let (code, value) = run_json(&config, &["status"]);
 
@@ -185,7 +185,7 @@ fn status_json_matches_the_fixture_schema() {
 
 #[test]
 fn verify_json_matches_the_fixture_schema() {
-    let schema = load_schema("verify.json");
+    let schema = load_schema("verify");
     let (_dir, config) = isolated_config();
     let (code, value) = run_json(&config, &["verify"]);
 

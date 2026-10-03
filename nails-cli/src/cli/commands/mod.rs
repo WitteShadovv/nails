@@ -15,6 +15,7 @@ use crate::cli::output::exit::ExitStatus;
 
 pub mod activate;
 pub mod check;
+pub mod completions;
 pub mod config;
 pub mod deactivate;
 pub mod emergency;

@@ -1,0 +1,62 @@
+---
+source: nails-cli/tests/cli_contract.rs
+info:
+  program: nails
+  args:
+    - completions
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Print a shell completion script on stdout (for `source <(...)`)
+
+Usage: nails completions [OPTIONS] <SHELL>
+
+Arguments:
+  <SHELL>
+          Shell to generate a completion script for
+
+          [possible values: bash, elvish, fish, powershell, zsh]
+
+Options:
+  -c, --config <PATH>
+          Path to the configuration file (overrides binary-relative discovery)
+
+  -v, --verbose...
+          More diagnostics on stderr: -v for debug, -vv for trace
+
+  -q, --quiet
+          Print only errors and the final result
+
+      --color <WHEN>
+          When to use colour
+
+          Possible values:
+          - auto:   Colour a stream only when it is a terminal, TERM is not `dumb` and NO_COLOR is unset or empty
+          - always: Always colour, even when piped
+          - never:  Never colour
+
+          [default: auto]
+
+      --ascii
+          Use ASCII markers instead of Unicode symbols and box drawing
+
+      --json
+          Print machine-readable JSON on stdout
+
+      --no-log-file
+          Do not write the log file on the hidden volume (diagnostics still go to stderr)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+EXAMPLES:
+  source <(nails completions bash)    Load completions in the current shell
+  nails completions zsh               Print the zsh completion script
+  nails completions fish              Print the fish completion script
+
+The script is written to stdout only; nothing is installed, so running this from
+the hidden session leaves no completion file on the decoy.
+
+----- stderr -----

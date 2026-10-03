@@ -36,6 +36,8 @@ test-hooks = ["nails-core/test-hooks"]
 [dependencies]
 # Workspace dependencies
 clap = { workspace = true, features = ["derive", "cargo"] }
+# Shell completion scripts for `nails completions <shell>`, written to stdout.
+clap_complete = { workspace = true }
 colored = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -72,3 +74,7 @@ nails-cli = { path = ".", features = ["test-hooks"] }
 insta = { workspace = true }
 insta-cmd = { workspace = true }
 jsonschema = { workspace = true }
+# Man page and Markdown reference generators, used only by the `cli_reference`
+# test that regenerates `nails.1` and `docs/cli.md` and fails when they drift.
+clap_mangen = { workspace = true }
+clap-markdown = { workspace = true }

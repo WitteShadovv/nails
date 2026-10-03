@@ -37,6 +37,7 @@ Commands:
   init         Initialize NAILS directory structure on a hidden volume
   reset-upper  Delete a target's persistent overlay upper on the hidden volume
   config       Inspect and check the configuration file (nails.toml)
+  completions  Print a shell completion script on stdout (for `source <(...)`)
   help         Print this message or the help of the given subcommand(s)
 
 Options:
@@ -73,6 +74,15 @@ Options:
 
   -V, --version
           Print version
+
+EXAMPLES:
+  # Run by full path from the mounted backend, never from a decoy copy.
+  sudo /mnt/data/nails init /mnt/data   Lay out the hidden volume (once)
+  sudo /mnt/data/nails activate         Mount the overlays and apply the layer
+  /mnt/data/nails status --json         Machine-readable state and uptime
+  sudo /mnt/data/nails deactivate       Restore the decoy and reboot
+  sudo /mnt/data/nails emergency        Tear everything down immediately
+  source <(/mnt/data/nails completions bash)   Load completions in the session
 
 EXIT STATUS:
   0    success

@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://nails.local/e2e/fixtures/status.schema.json",
+  "$id": "https://nails.local/schemas/status.schema.json",
   "title": "NAILS status --json",
   "description": "Machine-readable status envelope: one document with schema_version, command, ok, and either data (success) or error (pre-dispatch failure).",
   "type": "object",

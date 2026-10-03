@@ -27,9 +27,24 @@ The workflow has four steps:
      everything down now. If a run is interrupted and the system is stuck,
      `recover` reconciles the state and finishes the teardown.";
 
-/// The EXIT STATUS table shown in `nails --help`, kept in step with the
-/// [`ExitStatus`](crate::cli::output::ExitStatus) enum by `exit_status_help_lists_every_code`.
+/// The EXAMPLES and EXIT STATUS sections shown at the foot of `nails --help`.
+///
+/// Examples use neutral placeholders only (`/mnt/data` for the mounted backend,
+/// `/mnt/usb` for an offline image): no default hidden path appears here, so the
+/// security binary scan and `help_and_version_carry_no_blocked_substrings` stay
+/// green. The EXIT STATUS table is kept in step with the
+/// [`ExitStatus`](crate::cli::output::ExitStatus) enum by
+/// `exit_status_help_lists_every_code`.
 const EXIT_STATUS_HELP: &str = "\
+EXAMPLES:
+  # Run by full path from the mounted backend, never from a decoy copy.
+  sudo /mnt/data/nails init /mnt/data   Lay out the hidden volume (once)
+  sudo /mnt/data/nails activate         Mount the overlays and apply the layer
+  /mnt/data/nails status --json         Machine-readable state and uptime
+  sudo /mnt/data/nails deactivate       Restore the decoy and reboot
+  sudo /mnt/data/nails emergency        Tear everything down immediately
+  source <(/mnt/data/nails completions bash)   Load completions in the session
+
 EXIT STATUS:
   0    success
   1    the operation failed
@@ -208,6 +223,8 @@ pub enum Commands {
     /// Inspect and check the configuration file (nails.toml)
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Print a shell completion script on stdout (for `source <(...)`)
+    Completions(CompletionsArgs),
     /// Dispatch pending desktop notifications (called by XDG autostart on login)
     #[command(name = "notify-dispatch", hide = true)]
     NotifyDispatch,
@@ -552,6 +569,22 @@ pub struct ResetUpperArgs {
     /// a terminal, refusing to run without one.
     #[arg(short = 'y', long)]
     pub yes: bool,
+}
+
+/// `nails completions` arguments
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[command(after_long_help = "\
+EXAMPLES:
+  source <(nails completions bash)    Load completions in the current shell
+  nails completions zsh               Print the zsh completion script
+  nails completions fish              Print the fish completion script
+
+The script is written to stdout only; nothing is installed, so running this from
+the hidden session leaves no completion file on the decoy.")]
+pub struct CompletionsArgs {
+    /// Shell to generate a completion script for
+    #[arg(value_enum)]
+    pub shell: clap_complete::Shell,
 }
 
 #[cfg(test)]

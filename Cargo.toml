@@ -14,6 +14,12 @@ repository = "https://github.com/WitteShadovv/nails"
 [workspace.dependencies]
 # CLI and argument parsing
 clap = { version = "4.6.1", features = ["derive", "cargo"] }
+# Shell completion generation for `nails completions <shell>` (stdout only).
+clap_complete = "4.6.1"
+# Man page and Markdown CLI reference generation, used only by the
+# `cli_reference` staleness test that keeps `nails.1` and `docs/cli.md` current.
+clap_mangen = "0.2.31"
+clap-markdown = "0.1.5"
 
 # Error handling (AR6, AR7)
 thiserror = "2.0"

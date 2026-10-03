@@ -33,7 +33,7 @@ in
     ${contractHelpers.runCommandCaptureFn}
     ${contractHelpers.assertJsonSchemaValidFn}
 
-    verify_schema = "${./../../fixtures/schemas/verify.json}"
+    verify_schema = "${./../../../../docs/schemas/verify.schema.json}"
 
     with subtest("boot and write the headless config"):
         machine.start()

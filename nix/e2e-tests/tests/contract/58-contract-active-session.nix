@@ -42,8 +42,8 @@ in
     ${contractHelpers.assertNoAnsiFn}
     ${contractHelpers.assertAsciiOnlyFn}
 
-    status_schema = "${./../../fixtures/schemas/status.json}"
-    verify_schema = "${./../../fixtures/schemas/verify.json}"
+    status_schema = "${./../../../../docs/schemas/status.schema.json}"
+    verify_schema = "${./../../../../docs/schemas/verify.schema.json}"
 
     with subtest("boot and prepare hidden volume"):
         machine.start()

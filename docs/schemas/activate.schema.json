@@ -1,0 +1,140 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nails.local/schemas/activate.schema.json",
+  "title": "NAILS activate --json",
+  "description": "A single line of the activate --json NDJSON stream. Each line is one document: zero or more progress events, then exactly one terminal line, which is either a result event (activation ran) or a plain error envelope (a pre-dispatch failure such as a usage, config or state error).",
+  "oneOf": [
+    {
+      "title": "progress event",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "command", "type", "phase"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "command": { "const": "activate" },
+        "type": { "const": "progress" },
+        "phase": { "type": "string", "minLength": 1 }
+      }
+    },
+    {
+      "title": "result event",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "command",
+        "type",
+        "ok",
+        "status",
+        "duration",
+        "state",
+        "decoy_writers",
+        "message"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "command": { "const": "activate" },
+        "type": { "const": "result" },
+        "ok": { "type": "boolean" },
+        "status": {
+          "type": "string",
+          "enum": ["success", "success_with_warnings", "already_active", "error"]
+        },
+        "duration": { "type": "number", "minimum": 0 },
+        "state": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "inactive",
+                "activating",
+                "active",
+                "deactivating",
+                "degraded",
+                "unknown"
+              ]
+            },
+            "reason": { "type": "string", "minLength": 1 },
+            "remaining_mounts": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "decoy_writers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pid", "name", "targets"],
+            "properties": {
+              "pid": { "type": "integer", "minimum": 0 },
+              "name": { "type": "string", "minLength": 1 },
+              "service": { "type": "string", "minLength": 1 },
+              "targets": {
+                "type": "array",
+                "items": { "type": "string", "pattern": "^/" }
+              }
+            }
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "message": { "type": "string" },
+        "failed_checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "reason"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "reason": { "type": "string", "minLength": 1 },
+              "fix": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "shell_instructions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["shell_type", "prompt_script", "alias_script", "instructions"],
+          "properties": {
+            "shell_type": { "type": "string", "minLength": 1 },
+            "prompt_script": { "type": "string", "minLength": 1 },
+            "alias_script": { "type": "string", "minLength": 1 },
+            "instructions": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "title": "error envelope",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "command", "ok", "error"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "command": { "const": "activate" },
+        "ok": { "const": false },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1 },
+            "message": { "type": "string", "minLength": 1 },
+            "hint": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  ]
+}

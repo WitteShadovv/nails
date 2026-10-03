@@ -3,7 +3,7 @@
 ## Layout
 
 - `lib/`: shared Nix/Python helper snippets and VM profiles
-- `fixtures/`: reusable schemas and config files
+- `fixtures/`: reusable config files and captured forensic tool output
 - `tests/**`: auto-discovered NixOS tests
 
 ## Canonical skeleton
@@ -176,7 +176,7 @@ allowlist of volatile paths instead (see `tests/forensic/06-snapshot-diff.nix`).
 
 ## Adding a fixture
 
-Add files under `fixtures/configs/` or `fixtures/schemas/` and reference them from tests via `${./../../fixtures/...}` (from nested tests) or copied paths inside the VM.
+Add files under `fixtures/configs/` and reference them from tests via `${./../../fixtures/...}` (from nested tests) or copied paths inside the VM. The canonical `--json` schemas live at the repository root in `docs/schemas/`; contract tests reference them directly (`${./../../../../docs/schemas/...}`) so the published contract and the one the tests enforce cannot drift.
 
 ## Portable distribution tier (`nix/distro-tests/`)
 

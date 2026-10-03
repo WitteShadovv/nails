@@ -215,6 +215,14 @@
             install -m 0755 ${nails}/bin/nails "$stage_dir/nails"
             install -m 0644 ${./LICENSE} "$stage_dir/LICENSE"
             install -m 0644 ${./README.md} "$stage_dir/README.md"
+            # Operator-facing documentation and the generated man page travel with
+            # the tarball on the hidden root. The completion scripts and man page
+            # are never installed into decoy paths; `nails completions` prints to
+            # stdout and the man page is read from here, not from /usr/share/man.
+            install -m 0644 ${./nails.1} "$stage_dir/nails.1"
+            install -Dm 0644 ${./docs/cli.md} "$stage_dir/docs/cli.md"
+            install -Dm 0644 ${./docs/operator-guide.md} "$stage_dir/docs/operator-guide.md"
+            install -Dm 0644 ${./docs/threat-model.md} "$stage_dir/docs/threat-model.md"
 
             tar \
               --sort=name \
