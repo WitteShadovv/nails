@@ -505,6 +505,12 @@ compatibility shims.
   decoy filesystem; on a kernel without `openat2` activation fails closed.
 - The self-hosted E2E runner tarball is verified against a pinned SHA-256 during Hetzner
   provisioning, so a tampered or truncated download aborts before it runs as root.
+- Opt-in emergency backend close/lock (`[emergency] lock_backend` or `nails emergency
+  --lock-backend`, with an optional `close_command` for non-dm backends) lazy-unmounts the hidden
+  root and defers device-mapper removal so the encryption key is wiped from RAM once the last
+  reference drops; `nails emergency`, `nails status` and `nails verify` now report "hidden root
+  still mounted at <path>" as Critical whenever the hidden root is left mounted, and without the
+  opt-in the exact manual close sequence is printed.
 
 ## [0.2.0] - 2026-05-08
 

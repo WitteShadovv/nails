@@ -2678,7 +2678,7 @@ Owns: `README.md`, `docs/USER-SECURITY-GUIDE.md`, `docs/configuration.md`
 
 Owns: `nails-cli/src/cli/commands/emergency.rs`, `nails-cli/src/cli/commands/status.rs`, `nails-cli/src/cli/detach.rs`
 
-- [ ] **T-118: Opt-in backend close/lock after emergency and loud reporting when the hidden root is still mounted** (high · effort M)
+- [x] **T-118: Opt-in backend close/lock after emergency and loud reporting when the hidden root is still mounted** (high · effort M)
 
   **Problem:** No code path ever unmounts or closes the hidden backend. `run_deactivation` (`nails-core/src/manager/deactivation.rs:394`, emergency wrapper at `:548`) only tears down overlays. After `nails emergency` the hidden filesystem stays mounted and browsable, the dm-crypt mapper stays open, and the master key stays in kernel memory. The user only sees "Dismount the hidden volume when it is safe to do so" (`nails-cli/src/cli/commands/emergency.rs:120-135`, where the JSON is a hardcoded string). Unlocking backends stays out of scope. The state.json write to the hidden root is required and stays. Because the binary and state.json live on the hidden root, a plain `umount` plus `cryptsetup close` fails with EBUSY.
 
