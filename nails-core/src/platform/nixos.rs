@@ -5,7 +5,10 @@
 //! mount hooks and build-target selection move behind it in their owning chunks.
 
 use super::config_layer::restore_decoy_system;
-use super::{ConfigLayer, NixOsConfigLayer, OverlayPolicy, Platform, PlatformKind, RestoreOutcome};
+use super::{
+    ArtifactScanner, ConfigLayer, NixOsConfigLayer, NixOsStateNoteScanner, OverlayPolicy, Platform,
+    PlatformKind, RestoreOutcome,
+};
 use crate::Result;
 use crate::filesystem::Filesystem;
 use crate::process::ProcessRunner;
@@ -42,6 +45,15 @@ impl<F: Filesystem> Platform<F> for NixOsPlatform {
         F: 'static,
     {
         Some(Box::new(NixOsConfigLayer))
+    }
+
+    fn artifact_scanners(&self) -> Vec<Box<dyn ArtifactScanner<F>>>
+    where
+        F: 'static,
+    {
+        // NixOS has no package-database baseline to diff; it only records that
+        // the expected /var/lib/nixos drift is deliberately not treated as a leak.
+        vec![Box::new(NixOsStateNoteScanner)]
     }
 
     /// Return the host to the decoy generation on deactivation.

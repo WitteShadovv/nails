@@ -144,6 +144,7 @@ impl<F: Filesystem> Verifier<F> {
         let mut findings = Vec::new();
         let mut config_paths_checked: usize = 0;
         let mut checks_run: usize = 0;
+        let mut scanner_not_checked: Vec<String> = Vec::new();
 
         let offline = self.is_offline();
 
@@ -173,6 +174,13 @@ impl<F: Filesystem> Verifier<F> {
 
             // 4b. Name-independent open crypt mapper / loop device detection.
             findings.extend(self.check_block_devices()?);
+            checks_run += 1;
+
+            // 4c. Platform-specific, read-only drift scanners (apt/dpkg on
+            //     Debian, the /var/lib/nixos note on NixOS).
+            let (scan_findings, scan_not_checked) = self.run_platform_scanners();
+            findings.extend(scan_findings);
+            scanner_not_checked = scan_not_checked;
             checks_run += 1;
         }
 
@@ -211,7 +219,8 @@ impl<F: Filesystem> Verifier<F> {
             ScanDepth::Standard
         };
 
-        let areas_not_checked = self.areas_not_checked(deep);
+        let mut areas_not_checked = self.areas_not_checked(deep);
+        areas_not_checked.extend(scanner_not_checked);
 
         let mut result = if self.config.is_some() {
             VerifyResult::new_config_aware(
@@ -248,6 +257,43 @@ impl<F: Filesystem> Verifier<F> {
         areas.push("renamed or unknown artifacts not in the registry".to_string());
         areas.push("a byte-for-byte comparison of the decoy disk against a baseline".to_string());
         areas
+    }
+
+    /// Run the detected platform's read-only drift scanners, returning their
+    /// findings and the areas they could not inspect.
+    ///
+    /// The host is detected from the live filesystem; a detection failure (an
+    /// unreadable `/etc/os-release`, say) is not fatal — it simply means no
+    /// platform scanner runs. Scanners are dispatched by platform kind rather
+    /// than through a boxed trait object so this stays free of a `'static` bound
+    /// on the verifier.
+    fn run_platform_scanners(&self) -> (Vec<Finding>, Vec<String>) {
+        use crate::platform::{
+            ArtifactScanner, DebianPackageDriftScanner, NixOsStateNoteScanner, PlatformKind,
+        };
+
+        let Ok(profile) = crate::platform::detect(&self.filesystem) else {
+            return (Vec::new(), Vec::new());
+        };
+
+        let rebase = |path: &Path| self.rebase(path);
+        let hidden = self.hidden_root();
+        let mut findings = Vec::new();
+        let mut not_checked = Vec::new();
+
+        let scan =
+            |scanner: &dyn ArtifactScanner<F>| scanner.scan(&self.filesystem, &rebase, hidden);
+        let result = match profile.kind {
+            PlatformKind::NixOs => scan(&NixOsStateNoteScanner),
+            PlatformKind::Fhs => scan(&DebianPackageDriftScanner),
+            PlatformKind::Unsupported => return (findings, not_checked),
+        };
+        if let Ok(outcome) = result {
+            findings.extend(outcome.findings);
+            not_checked.extend(outcome.not_checked);
+        }
+
+        (findings, not_checked)
     }
 
     /// Flag every overlay mount whose `upperdir` sits under the configured hidden

@@ -43,6 +43,7 @@ pub mod host_commands;
 pub(crate) mod nix_foreign;
 mod nixos;
 pub mod ro_guard;
+mod scanners;
 pub mod service_manager;
 mod unsupported;
 
@@ -59,6 +60,10 @@ pub use fhs::FhsPlatform;
 pub use host_commands::HostCommands;
 pub use nixos::NixOsPlatform;
 pub use ro_guard::{MountHooks, OverlayPolicy, guard_read_only_trees};
+pub use scanners::{
+    ArtifactScan, ArtifactScanner, DebianPackageDriftScanner, NixOsStateNoteScanner,
+    PACKAGE_BASELINE_DIR,
+};
 pub use service_manager::{ServiceManager, SessionManager, SystemdControl};
 pub use unsupported::UnsupportedPlatform;
 
@@ -258,6 +263,21 @@ pub trait Platform<F: Filesystem>: std::fmt::Debug + Send + Sync {
         F: 'static,
     {
         None
+    }
+
+    /// The read-only drift scanners this platform contributes to `verify`.
+    ///
+    /// A generic artifact-path check only finds the files NAILS writes; it
+    /// cannot tell that a hidden session changed the host's package set, because
+    /// the package manager's databases are not NAILS files. Each backend returns
+    /// the scanners that cover its own system state (see [`ArtifactScanner`]).
+    /// The default is none, so a platform only lights up the scans it actually
+    /// has.
+    fn artifact_scanners(&self) -> Vec<Box<dyn ArtifactScanner<F>>>
+    where
+        F: 'static,
+    {
+        Vec::new()
     }
 
     /// Restore the base (decoy) system during deactivation.

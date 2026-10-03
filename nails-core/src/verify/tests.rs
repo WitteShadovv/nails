@@ -270,6 +270,59 @@ fn test_overlay_with_foreign_upperdir_is_not_flagged() {
 }
 
 #[test]
+fn test_offline_scan_finds_planted_indicator_and_skips_live_checks() {
+    use crate::filesystem::ProcessMatch;
+
+    // A read-only decoy image mounted at /mnt/decoy with a leftover /run/nails.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/decoy/run/nails", true);
+    // A live NAILS process and a hidden-volume overlay that an offline scan must
+    // ignore: they describe the machine running verify, not the image.
+    fs.mock_set_nails_process_matches(vec![ProcessMatch {
+        pid: 7,
+        strong: true,
+        detail: "live worker".to_string(),
+    }]);
+    fs.mock_add_file("/proc/self/mountinfo", &hidden_overlay_line("/home"));
+
+    let config = crate::config::Config {
+        hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+        ..crate::config::Config::default()
+    };
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked)
+        .offline_under(std::path::PathBuf::from("/mnt/decoy"));
+
+    let result = verifier.run(false).unwrap();
+
+    // The planted runtime artifact under the image root is found...
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|f| f.category == "file" && f.message.contains("/run/nails")),
+        "offline scan missed the planted indicator: {:?}",
+        result.findings
+    );
+    // ...while the live process and mount checks are skipped entirely.
+    assert!(
+        result
+            .findings
+            .iter()
+            .all(|f| f.category != "process" && f.category != "mount"),
+        "offline scan reported a live-only finding: {:?}",
+        result.findings
+    );
+    assert!(
+        result
+            .areas_not_checked
+            .iter()
+            .any(|area| area.contains("offline image scan")),
+        "offline scan did not disclose its skipped areas: {:?}",
+        result.areas_not_checked
+    );
+}
+
+#[test]
 fn test_artifact_file_detection() {
     let fs = MockFilesystem::new();
     let verifier = Verifier::new(fs.clone());

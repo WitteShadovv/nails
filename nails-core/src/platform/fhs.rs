@@ -8,7 +8,7 @@
 //! reboot or the overlay teardown returns the host to its original state), so
 //! [`Platform::restore_base_system`] keeps its no-op default.
 
-use super::{OverlayPolicy, Platform, PlatformKind};
+use super::{ArtifactScanner, DebianPackageDriftScanner, OverlayPolicy, Platform, PlatformKind};
 use crate::filesystem::Filesystem;
 
 /// Directories an FHS host exposes host tools under.
@@ -35,6 +35,16 @@ impl<F: Filesystem> Platform<F> for FhsPlatform {
         // Debian/Ubuntu package GDM as `gdm3`; probe it before the upstream
         // `gdm` name so the session layer finds the real unit on those hosts.
         &["gdm3", "gdm", "sddm", "lightdm", "greetd", "ly"]
+    }
+
+    fn artifact_scanners(&self) -> Vec<Box<dyn ArtifactScanner<F>>>
+    where
+        F: 'static,
+    {
+        // The Debian package-drift scan is the validated FHS scanner. It is
+        // self-gating: on a non-Debian FHS host the apt/dpkg databases simply do
+        // not exist, so the scan finds nothing to compare and reports nothing.
+        vec![Box::new(DebianPackageDriftScanner)]
     }
 
     // restore_base_system: the default no-op is correct — an FHS host has no
