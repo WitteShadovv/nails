@@ -9,7 +9,10 @@ let
 in
 {
   name = "state-crash-mid-activation";
-  meta.tags = [ "state" ];
+  meta.tags = [
+    "state"
+    "faults"
+  ];
 
   nodes.machine =
     { ... }:
@@ -59,17 +62,33 @@ in
         machine.wait_for_unit("multi-user.target")
         write_headless_config(headless_config)
 
-    with subtest("reboot returns to decoy-safe inactive view with no overlays mounted"):
+    with subtest("the crashed boot's Activating state is reconciled, not trusted"):
+        # Re-open the hidden backend so status actually reads the state file that
+        # survived the crash. Reading it while the backend is closed would hit a
+        # missing file that defaults to Inactive, making the assertion vacuous.
+        # The file still records the crashed boot's Activating state, but the boot
+        # id now differs, so reconciliation must surface it as a safe-to-reset
+        # stale state: the raw recorded kind is still "activating", while the
+        # reconciled posture is the decoy, and no overlays are mounted.
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
         payload = read_status_json(config_path=headless_config)
-        assert_status_state("Inactive", payload=payload)
+        assert payload["state"]["kind"] == "activating", payload
+        assert payload["posture"] == "decoy", payload
 
-    with subtest("re-activation resets the stale transitional state and really mounts"):
-        # state.json still records the crashed boot's transitional state. The boot
-        # id now differs, so reconciliation must treat it as stale, reset it to
-        # Inactive and go on to actually mount overlays rather than refuse or
-        # silently no-op.
-        machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
+    with subtest("recover clears the stale transitional state (T-107)"):
+        # recover is the state-independent cleanup added in T-107: it reconciles
+        # the stale Activating file against the live mount table and resets it to
+        # Inactive without requiring an Active state and without rebooting.
+        # Reverting that fix removes the recover command, so this subtest fails.
+        machine.succeed(f"nails --config {headless_config} recover")
+        payload = read_status_json(config_path=headless_config)
+        assert payload["state"]["kind"] == "inactive", payload
+        assert payload["posture"] == "decoy", payload
+
+    with subtest("re-activation after the reset really mounts the overlays"):
+        # With the stale state reconciled away, a fresh activation must actually
+        # mount overlays rather than refuse or silently no-op.
         machine.succeed(
             f"nails --config {headless_config} activate --overlay-only --session keep -y"
         )

@@ -140,15 +140,33 @@ in
     assert_status_state("Active", config_path=headless_config)
     print("✓ Non-root status fails closed and reports the permission failure explicitly")
 
-    print("\n=== Test 9: Status after deactivation ===")
+    print("\n=== Test 9: Status reconciles a stale Active after a crash ===")
+    # A hard crash leaves state.json (on the hidden backend) still recording
+    # Active while nothing is mounted. Re-open the backend after the reboot so
+    # status actually reads that surviving file: reading it while the backend is
+    # closed would hit a missing file that defaults to inactive, making the
+    # assertion vacuous and letting a broken reconciliation pass unnoticed.
     machine.crash()
     machine.start()
     machine.wait_for_unit("multi-user.target")
+    write_headless_config(headless_config)
+    machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
 
-    status_json = json.loads(machine.succeed("nails status --json"))["data"]
-    assert status_json["state"]["kind"] == "inactive", \
-        f"Expected inactive after deactivation, got: {status_json}"
-    print("✓ Status shows Inactive after deactivation")
+    crashed = read_status_json(config_path=headless_config)
+    # The raw recorded state is still Active, but the boot id now differs, so the
+    # reconciled posture must flag it as the safe-to-reset decoy, not trust it.
+    assert crashed["state"]["kind"] == "active", crashed
+    assert crashed["posture"] == "decoy", crashed
+    print("✓ Status surfaces the stale Active but reconciles the posture to decoy")
+
+    print("\n=== Test 10: recover clears the stale Active state (T-107) ===")
+    # recover is the state-independent cleanup added in T-107; reverting that fix
+    # removes the recover command, so this assertion fails.
+    machine.succeed(f"nails --config {headless_config} recover")
+    recovered = read_status_json(config_path=headless_config)
+    assert recovered["state"]["kind"] == "inactive", recovered
+    assert recovered["posture"] == "decoy", recovered
+    print("✓ recover resets the stale state to inactive")
 
     print("\n=== All Status/Verify Tests Passed ===")
   '';

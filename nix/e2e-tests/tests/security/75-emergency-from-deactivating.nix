@@ -84,31 +84,37 @@ in
         assert status["overlays"] == [], status
         assert_expected_overlays(expected_overlays)
 
-    with subtest("emergency fails closed while deactivation is in progress"):
+    with subtest("the deactivation is interrupted, leaving a stuck Deactivating state"):
+        # SIGKILL the parked deactivation so nothing finishes the teardown: the
+        # overlays stay mounted and state.json is frozen at Deactivating. This is
+        # the realistic precondition for an emergency from this state (a stuck or
+        # crashed teardown), without the race of signalling a still-live owner.
+        pid = machine.succeed("pgrep -x nails").strip().splitlines()[0]
+        machine.succeed(f"kill -9 {pid}")
+        machine.succeed(f"rm -f {gate_path}")
+        machine.wait_until_fails("pgrep -x nails", timeout=60)
+
+        status = read_status_json(config_path=headless_config)
+        assert_status_state("deactivating", payload=status)
+        assert_expected_overlays(expected_overlays)
+
+    with subtest("emergency finishes the teardown from the stuck Deactivating state"):
+        # Emergency is state-independent after T-107: from a non-Active state it
+        # enumerates the live NAILS overlays from the kernel mount table and tears
+        # them down, converging to Inactive without requiring an Active state and
+        # without a reboot.
         prefix = "/run/nails-tests/emergency-from-deactivating"
         result = run_shellless_transient_command(
             prefix,
             ["nails", "--config", headless_config, "emergency"],
             unit_name="nails-emergency-from-deactivating",
-            timeout=30,
+            timeout=60,
         )
 
-        assert result["rc"] == 1, f"Expected emergency to fail from Deactivating, got: {result}"
-        assert "Deactivating" in result["stderr"], result
-        assert "Must be ACTIVE" in result["stderr"], result
+        assert result["rc"] == 0, f"Expected emergency to succeed from Deactivating, got: {result}"
 
-        status = read_status_json(config_path=headless_config)
-        assert_status_state("deactivating", payload=status)
-        assert status["overlays"] == [], status
-        assert_expected_overlays(expected_overlays)
-
-    with subtest("releasing deactivation completes cleanup and converges to inactive"):
-        machine.succeed(f"rm -f {gate_path}")
-        machine.wait_for_shutdown()
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
+        assert_no_overlays(expected_overlays)
         status = read_status_json(config_path=headless_config)
         assert_status_state("inactive", payload=status)
-        assert_no_overlays(expected_overlays)
   '';
 }

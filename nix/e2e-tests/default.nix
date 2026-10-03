@@ -188,6 +188,7 @@ let
     overlay = namesWithTag "overlay";
     state = namesWithTag "state";
     contract = namesWithTag "contract";
+    faults = namesWithTag "faults";
     ci = ciNames;
     all = testNames;
   };

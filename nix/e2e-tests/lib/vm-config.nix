@@ -58,6 +58,7 @@
     sleuthkit # For forensic analysis (fls, etc.)
     coreutils # Basic utilities
     util-linux # For mount operations
+    psmisc # fuser, for listing processes that keep a mount or backend busy
   ];
 
   # Provide a baseline /etc/nixos tree matching a normal NixOS install.

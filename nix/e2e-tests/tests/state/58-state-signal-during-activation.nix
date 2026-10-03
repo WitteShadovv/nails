@@ -16,7 +16,10 @@ let
 in
 {
   name = "state-signal-during-activation";
-  meta.tags = [ "state" ];
+  meta.tags = [
+    "state"
+    "faults"
+  ];
 
   nodes.machine =
     { ... }:
