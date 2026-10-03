@@ -120,6 +120,10 @@ pub(super) fn default_minimum_space_mb() -> u64 {
     500
 }
 
+pub(super) fn default_rebuild_space_mb() -> u64 {
+    4096
+}
+
 pub(super) fn default_clear_history() -> bool {
     true
 }
@@ -184,6 +188,7 @@ impl Default for Config {
                 },
             ],
             minimum_space_mb: default_minimum_space_mb(),
+            rebuild_space_mb: default_rebuild_space_mb(),
             overlay_mode: OverlayMode::Auto,
             overlay_exclusions: vec![],
             overlay_exclusions_remove: vec![],

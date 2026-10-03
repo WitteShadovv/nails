@@ -556,10 +556,11 @@ pub(crate) fn classify_nixos_failure_category(stderr: &str, stdout: &str) -> &'s
         || lower.contains("while evaluating")
     {
         "configuration"
+    } else if lower.contains("no space left on device") {
+        "hidden-volume-full"
     } else if lower.contains("structure needs cleaning")
         || lower.contains("read-only file system")
         || lower.contains("input/output error")
-        || lower.contains("no space left on device")
         || lower.contains("permission denied")
         || lower.contains("stale file handle")
     {
@@ -579,6 +580,9 @@ pub(crate) fn format_classified_nixos_failure(context: &str, stderr: &str, stdou
         }
         "network/substituter" => {
             "Check network access, substituters/caches, or retry later. This is not caused by overlay activation itself."
+        }
+        "hidden-volume-full" => {
+            "The hidden volume is full: the NixOS rebuild could not write its store delta. Free space or enlarge the hidden volume, then run 'nails reapply'."
         }
         "environment/filesystem" => {
             "This looks like a host or filesystem problem; Nails did not attempt an automatic repair. Fix the environment and retry."

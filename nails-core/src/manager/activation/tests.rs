@@ -626,3 +626,88 @@ fn failed_session_restart_unmounts_before_restart_and_restores_inactive() {
         "all steps before the restart must be unmounts, got {events:?}"
     );
 }
+
+// --- Rebuild-floor space re-check (T-096) --------------------------------
+
+/// Build an inactive manager whose hidden volume lives at a known path, with a
+/// NixOS builder attached, the given free space, and the given rebuild floor.
+fn rebuild_space_manager(
+    hidden_root: &str,
+    available_bytes: u64,
+    rebuild_space_mb: u64,
+) -> (NailsManager<MockFilesystem>, tempfile::TempDir) {
+    use crate::TestWorld;
+    use crate::nixos::NixOSBuilder;
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_disk_usage(
+        Path::new(hidden_root),
+        100 * 1024 * 1024 * 1024,
+        available_bytes,
+    );
+
+    let config = Config {
+        hidden_volume_root: PathBuf::from(hidden_root),
+        state_file_path: PathBuf::from(hidden_root).join("state.json"),
+        log_path: PathBuf::from(hidden_root).join("logs"),
+        overlays: Vec::new(),
+        rebuild_space_mb,
+        ..Config::test_default()
+    };
+
+    let builder = NixOSBuilder::new_with_flake_ref(
+        "/etc/nixos#host".to_string(),
+        PathBuf::from(hidden_root).join("nails-system"),
+    );
+
+    TestWorld::new()
+        .with_filesystem(fs)
+        .with_config(config)
+        .with_nixos(builder)
+        .inactive()
+        .manager()
+}
+
+#[test]
+fn rebuild_expected_only_without_a_cached_toplevel() {
+    let (manager, _tmp) = rebuild_space_manager("/mnt/hidden-a", 8 * 1024 * 1024 * 1024, 4096);
+    // No cached toplevel + a builder + a config layer => a full build will run.
+    assert!(manager.rebuild_expected(&None));
+    // A carried-forward fast-path toplevel skips the build.
+    assert!(!manager.rebuild_expected(&Some("/nix/store/x-nixos-system".to_string())));
+}
+
+#[test]
+fn rebuild_space_check_fails_below_the_rebuild_floor() {
+    // 2 GiB free with a 4 GiB rebuild floor: a rebuild is expected, so the
+    // post-mount re-check must fail before any build runs.
+    let (manager, _tmp) = rebuild_space_manager("/mnt/hidden-b", 2 * 1024 * 1024 * 1024, 4096);
+    assert!(manager.rebuild_expected(&None));
+    let err = manager
+        .ensure_rebuild_space_before_build(&None)
+        .unwrap_err();
+    let text = err.to_string();
+    assert!(text.contains("rebuild_space_mb"), "{text}");
+    assert!(text.contains("rolled back"), "{text}");
+}
+
+#[test]
+fn rebuild_space_check_passes_above_the_rebuild_floor() {
+    // 8 GiB free with a 4 GiB floor: the re-check passes.
+    let (manager, _tmp) = rebuild_space_manager("/mnt/hidden-c", 8 * 1024 * 1024 * 1024, 4096);
+    assert!(manager.ensure_rebuild_space_before_build(&None).is_ok());
+}
+
+#[test]
+fn rebuild_space_check_skips_when_no_rebuild_is_expected() {
+    // A carried-forward fast-path toplevel means no build, so even a tiny volume
+    // passes the rebuild re-check (the base floor still guards overlay-only).
+    let (manager, _tmp) = rebuild_space_manager("/mnt/hidden-d", 64 * 1024 * 1024, 4096);
+    let fast_path = Some("/nix/store/x-nixos-system".to_string());
+    assert!(!manager.rebuild_expected(&fast_path));
+    assert!(
+        manager
+            .ensure_rebuild_space_before_build(&fast_path)
+            .is_ok()
+    );
+}

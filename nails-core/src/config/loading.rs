@@ -241,8 +241,14 @@ fn render_template(root: &Path, title: &str) -> String {
 # Show OpSec reminders based on session uptime.
 # show_opsec_reminders = true
 
-# Minimum free space on the hidden volume for activation, in MB.
+# Minimum free space on the hidden volume for activation, in MB. The pre-flight
+# check fails below this floor (no warn band).
 # minimum_space_mb = 500
+
+# Free space required when a hidden NixOS build is expected (no cached toplevel
+# or the configuration changed), in MB. Re-checked after the overlays mount and
+# before the build; activation rolls back if the hidden volume is below it.
+# rebuild_space_mb = 4096
 
 # Shell prompt indicator while the hidden environment is active. Empty shows
 # nothing; any text is visible on screen and in screenshots.

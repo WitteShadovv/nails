@@ -59,6 +59,7 @@ impl Config {
                 },
             ],
             minimum_space_mb: 500,
+            rebuild_space_mb: 4096,
             // Use Auto mode by default (test actual default behavior)
             overlay_mode: OverlayMode::Auto,
             overlay_exclusions: vec![],

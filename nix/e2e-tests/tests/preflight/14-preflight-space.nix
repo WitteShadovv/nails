@@ -53,12 +53,15 @@ in
     write_space_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    with subtest("activation is refused when free space drops below threshold"):
+    with subtest("activation is a hard failure below the floor (no warn band)"):
+        # Leave ~400 MB free: below the 500 MB floor but above the old 50%
+        # half-threshold. The removed warn band would have let this proceed;
+        # the single hard floor must now refuse it outright.
         machine.succeed(
                 "python3 - <<'PY'\n"
                 "import subprocess\n"
                 "avail = int(\"\".join(ch for ch in subprocess.check_output(['df', '--output=avail', '-BM', '/mnt/data'], text=True).splitlines()[-1] if ch.isdigit()))\n"
-                "fill = avail - 150\n"
+                "fill = avail - 400\n"
                 "assert fill > 0, fill\n"
                 "subprocess.check_call(['fallocate', '-l', str(fill) + 'M', '/mnt/data/filler.bin'])\n"
                 "subprocess.check_call(['sync'])\n"

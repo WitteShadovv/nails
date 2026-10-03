@@ -148,9 +148,22 @@ pub struct Config {
     #[serde(default)]
     pub overlays: Vec<OverlayConfig>,
 
-    /// Minimum disk space required for activation (in MB)
+    /// Base free-space floor for activation, in MB.
+    ///
+    /// The space pre-flight check fails below this value with no warn band;
+    /// `activate --no-preflight` skips the check. This floor covers an
+    /// overlay-only activation that writes no NixOS store delta.
     #[serde(default = "super::defaults::default_minimum_space_mb")]
     pub minimum_space_mb: u64,
+
+    /// Free-space floor applied when a hidden NixOS build is expected, in MB.
+    ///
+    /// A full rebuild (no cached hidden toplevel, or the fingerprint changed)
+    /// writes the store delta into the overlaid `/nix` upper, often several GB.
+    /// After the overlays are mounted and before the build runs, free space is
+    /// re-checked against this floor and activation is rolled back if short.
+    #[serde(default = "super::defaults::default_rebuild_space_mb")]
+    pub rebuild_space_mb: u64,
 
     /// Overlay mode: determines how overlay targets are selected
     ///
@@ -352,6 +365,7 @@ pub const CONFIG_KEYS: &[&str] = &[
     "allow_leaky_exclusions",
     "overlays",
     "minimum_space_mb",
+    "rebuild_space_mb",
     "clear_history",
     "show_opsec_reminders",
     "prompt_label",

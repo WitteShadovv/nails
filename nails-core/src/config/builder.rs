@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use super::colors::ColorSchemeConfig;
 use super::defaults::{
-    default_clear_history, default_minimum_space_mb, default_show_opsec_reminders,
-    derive_hidden_volume_root,
+    default_clear_history, default_minimum_space_mb, default_rebuild_space_mb,
+    default_show_opsec_reminders, derive_hidden_volume_root,
 };
 use super::overlay::{OverlayConfig, OverlayMode};
 use super::types::Config;
@@ -33,6 +33,7 @@ pub struct ConfigBuilder {
     state_file_path: Option<PathBuf>,
     overlays: Option<Vec<OverlayConfig>>,
     minimum_space_mb: Option<u64>,
+    rebuild_space_mb: Option<u64>,
     overlay_mode: Option<OverlayMode>,
     overlay_exclusions: Option<Vec<PathBuf>>,
     overlay_exclusions_remove: Option<Vec<PathBuf>>,
@@ -79,6 +80,14 @@ impl ConfigBuilder {
     /// Default: 500 MB
     pub fn minimum_space_mb(mut self, mb: u64) -> Self {
         self.minimum_space_mb = Some(mb);
+        self
+    }
+
+    /// Set the free-space floor used when a NixOS rebuild is expected
+    ///
+    /// Default: 4096 MB (4 GiB)
+    pub fn rebuild_space_mb(mut self, mb: u64) -> Self {
+        self.rebuild_space_mb = Some(mb);
         self
     }
 
@@ -171,6 +180,10 @@ impl ConfigBuilder {
             .minimum_space_mb
             .unwrap_or_else(default_minimum_space_mb);
 
+        let rebuild_space_mb = self
+            .rebuild_space_mb
+            .unwrap_or_else(default_rebuild_space_mb);
+
         let overlay_mode = self.overlay_mode.unwrap_or_default();
 
         let overlay_exclusions = self.overlay_exclusions.unwrap_or_default();
@@ -197,6 +210,7 @@ impl ConfigBuilder {
             state_file_path,
             overlays,
             minimum_space_mb,
+            rebuild_space_mb,
             overlay_mode,
             overlay_exclusions,
             overlay_exclusions_remove,

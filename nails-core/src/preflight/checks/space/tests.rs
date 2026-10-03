@@ -16,13 +16,13 @@ fn test_space_check_struct_with_fields() {
 
 #[test]
 fn test_space_check_default_values() {
-    // Default trait provides 1024 MB minimum and default path
+    // Default trait provides the base 500 MB floor and default path
     let check = SpaceCheck::default();
     assert_eq!(
         check.hidden_volume_root,
         PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
     );
-    assert_eq!(check.minimum_space_mb, 1024);
+    assert_eq!(check.minimum_space_mb, 500);
 }
 
 #[test]
@@ -42,11 +42,10 @@ fn test_space_check_trait_metadata() {
 
 #[test]
 fn test_space_check_pass_plenty_of_space() {
-    // Given 2GB available with 1GB minimum, returns Pass with 2x multiplier
+    // Given 2GB available with the 500 MB floor, returns Pass
     let fs = MockFilesystem::new();
-    let check = SpaceCheck::default(); // 1024 MB minimum
+    let check = SpaceCheck::default(); // 500 MB floor
 
-    // Set up 2GB available (2048 MB)
     fs.mock_set_free_space(
         Path::new(DEFAULT_HIDDEN_VOLUME_ROOT),
         2 * 1024 * 1024 * 1024,
@@ -55,112 +54,73 @@ fn test_space_check_pass_plenty_of_space() {
     let result = check.run(&fs).unwrap();
     assert!(result.is_pass());
     assert!(result.message().contains("2.0 GB available"));
-    assert!(result.message().contains("2.0x minimum required"));
+    assert!(result.message().contains("minimum required"));
 }
 
 #[test]
 fn test_space_check_pass_exactly_at_minimum() {
-    // Exactly at minimum (1024 MB) -> Pass
+    // Exactly at the floor (500 MB) -> Pass
     let fs = MockFilesystem::new();
-    let check = SpaceCheck::default(); // 1024 MB minimum
+    let check = SpaceCheck::default(); // 500 MB floor
 
-    // Set up exactly 1GB available (1024 MB)
-    fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 1024 * 1024 * 1024);
+    fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 500 * 1024 * 1024);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_pass());
-    assert!(result.message().contains("1.0 GB available"));
+    assert!(result.message().contains("500 MB available"));
     assert!(result.message().contains("1.0x minimum required"));
 }
 
 #[test]
-fn test_space_check_warn_low_space() {
-    // Given 800MB available with 1GB minimum, returns Warn
+fn test_space_check_pass_just_above_floor() {
+    // 600 MB free with a 500 MB floor -> Pass (overlay-only sized activation)
     let fs = MockFilesystem::new();
-    let check = SpaceCheck::default(); // 1024 MB minimum
+    let check = SpaceCheck::default(); // 500 MB floor
 
-    // Set up 800MB available (between 512-1024 MB = warn range)
-    fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 800 * 1024 * 1024);
+    fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 600 * 1024 * 1024);
 
     let result = check.run(&fs).unwrap();
-    assert!(result.is_warn());
-    assert!(result.message().contains("800 MB available"));
-    assert!(result.message().contains("below 1.0 GB recommended"));
+    assert!(result.is_pass());
+    assert!(result.message().contains("600 MB available"));
+}
+
+#[test]
+fn test_space_check_fail_below_floor() {
+    // 400 MB free with a 500 MB floor -> hard Fail (no warn band)
+    let fs = MockFilesystem::new();
+    let check = SpaceCheck::default(); // 500 MB floor
+
+    fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 400 * 1024 * 1024);
+
+    let result = check.run(&fs).unwrap();
+    assert!(result.is_fail());
+    assert!(result.message().contains("Only 400 MB available"));
     assert!(
         result
             .message()
-            .contains("Activation may succeed but monitor space")
+            .contains("Free up at least 500 MB before activation")
     );
 }
 
 #[test]
-fn test_space_check_warn_at_50_percent_boundary() {
-    // At 50% boundary (512 MB with 1024 minimum) -> Warn
+fn test_space_check_fail_just_below_floor() {
+    // Just below the floor (499 MB with a 500 MB floor) -> Fail, no warn tier
     let fs = MockFilesystem::new();
-    let check = SpaceCheck::default(); // 1024 MB minimum
+    let check = SpaceCheck::default(); // 500 MB floor
 
-    // Set up exactly 512MB available (50% of 1024 MB)
-    fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 512 * 1024 * 1024);
-
-    let result = check.run(&fs).unwrap();
-    assert!(result.is_warn());
-    assert!(result.message().contains("512 MB available"));
-}
-
-#[test]
-fn test_space_check_fail_below_50_percent() {
-    // Given 300MB available with 1GB minimum, returns Fail
-    let fs = MockFilesystem::new();
-    let check = SpaceCheck::default(); // 1024 MB minimum
-
-    // Set up 300MB available (< 512 MB = fail)
-    fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 300 * 1024 * 1024);
+    fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 499 * 1024 * 1024);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
-    assert!(result.message().contains("Only 300 MB available"));
-    assert!(
-        result
-            .message()
-            .contains("Free up at least 1.0 GB before activation")
-    );
-}
-
-#[test]
-fn test_space_check_fail_just_below_50_percent_boundary() {
-    // Just below 50% (511 MB with 1024 minimum) -> Fail
-    let fs = MockFilesystem::new();
-    let check = SpaceCheck::default(); // 1024 MB minimum
-
-    // Set up 511MB available (just below 512 MB threshold)
-    fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 511 * 1024 * 1024);
-
-    let result = check.run(&fs).unwrap();
-    assert!(result.is_fail());
-    assert!(result.message().contains("Only 511 MB available"));
-}
-
-#[test]
-fn test_space_check_fail_critically_low() {
-    // Critically low space (10% of minimum) -> Fail
-    let fs = MockFilesystem::new();
-    let check = SpaceCheck::default(); // 1024 MB minimum
-
-    // Set up 100MB available (10% of 1024 MB)
-    fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 100 * 1024 * 1024);
-
-    let result = check.run(&fs).unwrap();
-    assert!(result.is_fail());
-    assert!(result.message().contains("Only 100 MB available"));
+    assert!(result.message().contains("Only 499 MB available"));
 }
 
 #[test]
 fn test_space_check_fail_zero_space() {
     // Zero space -> Fail
     let fs = MockFilesystem::new();
-    let check = SpaceCheck::default(); // 1024 MB minimum
+    let check = SpaceCheck::default(); // 500 MB floor
 
-    // Set up 0 bytes available
     fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 0);
 
     let result = check.run(&fs).unwrap();
@@ -172,9 +132,8 @@ fn test_space_check_fail_zero_space() {
 fn test_space_check_custom_minimum() {
     // Custom minimum value works
     let fs = MockFilesystem::new();
-    let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 2048); // 2GB minimum
+    let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 2048); // 2GB floor
 
-    // Set up 3GB available
     fs.mock_set_free_space(
         Path::new(DEFAULT_HIDDEN_VOLUME_ROOT),
         3 * 1024 * 1024 * 1024,
@@ -186,16 +145,15 @@ fn test_space_check_custom_minimum() {
 }
 
 #[test]
-fn test_space_check_custom_minimum_warn_threshold() {
-    // Custom minimum affects warn threshold (50% rule)
+fn test_space_check_custom_minimum_fails_below() {
+    // Custom floor: 1.5 GB free with a 2 GB floor -> Fail
     let fs = MockFilesystem::new();
-    let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 2048); // 2GB minimum
+    let check = SpaceCheck::new(PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT), 2048); // 2GB floor
 
-    // Set up 1.5GB available (between 1GB and 2GB = warn range)
     fs.mock_set_free_space(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 1536 * 1024 * 1024);
 
     let result = check.run(&fs).unwrap();
-    assert!(result.is_warn());
+    assert!(result.is_fail());
     assert!(result.message().contains("1.5 GB available"));
 }
 

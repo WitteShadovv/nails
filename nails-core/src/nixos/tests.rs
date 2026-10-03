@@ -654,6 +654,21 @@ fn flake_preflight_reports_environment_filesystem_failures() {
 }
 
 #[test]
+fn enospc_is_classified_as_hidden_volume_full_with_reapply_guidance() {
+    // A rebuild that fills the hidden volume must not be bucketed with generic
+    // filesystem faults: it gets its own category and points at `nails reapply`.
+    let stderr = "error: writing to file: No space left on device";
+    assert_eq!(
+        classify_nixos_failure_category(stderr, ""),
+        "hidden-volume-full"
+    );
+    let message = format_classified_nixos_failure("NixOS switch", stderr, "");
+    assert!(message.contains("hidden-volume-full"), "{message}");
+    assert!(message.contains("hidden volume is full"), "{message}");
+    assert!(message.contains("nails reapply"), "{message}");
+}
+
+#[test]
 fn flake_preflight_reports_missing_inferred_attr_before_side_effects() {
     let inferred_hostname = nix::sys::utsname::uname()
         .unwrap()

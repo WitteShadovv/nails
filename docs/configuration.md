@@ -77,7 +77,8 @@ is the `name` key of each `[[overlays]]` table.
 | `overlays[].target` | path | required | Mount point. A tree the platform keeps read-only or never overlays (for example `/usr` on an FHS host) is refused. |
 | `overlays[].upper` | path | required | Writable upper layer, where everything the hidden session writes under `target` ends up. Must lie inside `hidden_volume_root`. |
 | `overlays[].work` | path | required | overlayfs work directory, on the same filesystem as `upper`. Must lie inside `hidden_volume_root`. |
-| `minimum_space_mb` | integer (MB) | `500` | Free space the hidden volume needs. The pre-flight check warns below this value and blocks activation below half of it; `activate --no-preflight` skips the check. |
+| `minimum_space_mb` | integer (MB) | `500` | Base free-space floor for the hidden volume. The pre-flight check fails below this value (no warn band); `activate --no-preflight` skips the check. Covers an overlay-only activation. |
+| `rebuild_space_mb` | integer (MB) | `4096` | Free-space floor applied when a hidden NixOS build is expected (no cached toplevel or the configuration changed). Re-checked after the overlays mount and before the build; activation rolls back if the hidden volume is below it. A post-switch re-check warns when the volume is left below this floor. |
 | `clear_history` | boolean | `true` | Clear shell history files during deactivation. `--no-clear-history` on `activate` or `deactivate` turns it off for that run; emergency teardown always clears them. |
 | `show_opsec_reminders` | boolean | `true` | Show reminders in `nails status` once the hidden environment has been active for 6, 12 and 24 hours. |
 | `prompt_label` | string | `""` | Text prepended to the shell prompt while the hidden environment is active. Empty shows nothing; any label is visible on screen and in screenshots. |
