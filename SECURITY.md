@@ -11,12 +11,7 @@ This policy applies to security issues in the NAILS repository and its officiall
 - NixOS integration that is implemented in this repository
 - official GitHub release bundles published from this repository
 
-This policy does **not** cover:
-
-- vulnerabilities in upstream projects such as NixOS, Nixpkgs, VeraCrypt, LUKS, or the Linux kernel
-- local deployment mistakes or unsupported operating environments
-- general hardening advice that does not describe a specific vulnerability in this repository
-- physical access, coercion, or other threats outside the software boundary
+What NAILS is and is not designed to defend against (the adversary, assumptions and out-of-scope threats) is defined in [docs/threat-model.md](docs/threat-model.md). A report shows a vulnerability when NAILS fails to uphold that model, for example a hidden-session trace that survives teardown on a decoy that meets its assumptions. Vulnerabilities in upstream projects such as NixOS, Nixpkgs, VeraCrypt, LUKS or the Linux kernel belong with those projects.
 
 If you are unsure whether something is in scope, report it anyway. We would rather review a borderline report than miss a real issue.
 

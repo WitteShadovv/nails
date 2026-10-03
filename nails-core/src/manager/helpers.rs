@@ -120,8 +120,9 @@ pub(crate) fn ensure_run_current_system_symlink<F: Filesystem>(
 /// This touches **only** DNS resolution: it preserves `resolv.conf` and `nsswitch.conf`
 /// and nothing else. It does not alter the machine-id, hostname, MAC addresses or
 /// NetworkManager profiles, so those network identifiers are shared between the decoy and the
-/// hidden session. Correlation through them is out of scope for the overlay; see the user
-/// security guide for the optional hidden network-identity configuration.
+/// hidden session. Correlation through them is out of scope for the overlay; see
+/// `docs/threat-model.md` and the operator guide for the optional hidden network-identity
+/// configuration.
 ///
 /// # Arguments
 ///

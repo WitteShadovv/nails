@@ -31,7 +31,7 @@ NAILS is built around two environments on the same machine:
 
 When activated, NAILS overlays parts of the decoy system with hidden state and configuration. When
 deactivation finishes and the backend is no longer mounted, the host returns to its normal decoy
-state within the documented threat model.
+state within the documented [threat model](docs/threat-model.md).
 
 NAILS does **not** provide encryption itself. It relies on an external storage backend such as
 VeraCrypt or LUKS/`cryptsetup` for hidden or encrypted storage.
@@ -64,7 +64,7 @@ NAILS is designed for a narrow threat model and operational style.
 | Hidden storage backend | Any mounted, writable Linux filesystem that can host an overlayfs upper (symlinks, trusted xattrs, `d_type`, whiteouts) — e.g. ext4, xfs, btrfs, f2fs. NFS, CIFS/SMB, 9p, most FUSE mounts, and FAT/exFAT/NTFS cannot. See [docs/backends.md](docs/backends.md) for what is tested and the hazards of each backend. |
 | Root access | Required for `activate`, `deactivate`, and `emergency` |
 | Rust 1.93+ | Only needed to build from source |
-| Amnesic decoy | Required. The decoy must keep no durable record of the hidden session: volatile journald, no active rsyslog/syslog-ng/auditd, no swap or hibernation. Activation fails closed otherwise (override with `--accept-persistent-decoy`). See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
+| Amnesic decoy | Required: the decoy must keep no durable record of the hidden session. Activation fails closed otherwise (override with `--accept-persistent-decoy`). See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
 | Impermanence-style setup | Strongly recommended for the strongest documented posture; see [docs/decoy-requirements.md](docs/decoy-requirements.md) |
 
 ### Platform support
@@ -351,57 +351,17 @@ signals an incompatible change to a field's meaning.
 
 ## Threat model and limitations
 
-NAILS is intended primarily for **post-seizure forensic analysis** scenarios: an adversary has the
-device and attempts to prove the existence of a hidden environment after the fact.
+NAILS targets **post-seizure forensic analysis** of a powered-off device. It
+reduces host-side artifacts; it does not protect against every class of attack.
+The hidden session shares the host's network identity and any remote state with
+the decoy, and by default the decoy account and home as well. The adversary, assumptions,
+out-of-scope list, residual channels and evaluation scope are in
+[docs/threat-model.md](docs/threat-model.md). Read it, and validate your exact
+procedure end to end, before relying on NAILS in a high-risk context.
 
-NAILS can help reduce host-side artifacts, but it does **not** protect against every class of attack.
-
-### Out of scope or not fully solved
-
-- live compromise of an already active system
-- cold-boot and memory-forensics attacks
-- hardware implants, firmware compromise, or physical keylogging
-- side-channel attacks such as timing, power, or EM analysis
-- operator mistakes such as failing to deactivate cleanly or leaving the hidden backend mounted
-
-If you are operating in a high-risk context, validate your exact procedure end to end before using
-NAILS in the field.
-
-### Shared decoy account and persona modes
-
-By default the hidden session runs **as the decoy user, in the decoy home**. The `/home` overlay
-merges that home read-write, so the decoy's accounts, browser profiles, SSH/GPG keys,
-password-manager state and shell history are all live inside the hidden session. This shared-account
-model is convenient but is a real exposure: work done in the hidden session touches the decoy's
-identity.
-
-`persona.mode` in `nails.toml` controls this:
-
-- `shared-home` (default) keeps the legacy shared-account behaviour. Activation prints a warning, and
-  `nails status` and `nails check` report the mode, because the decoy's secrets are live.
-- `fresh-home` bind-mounts a clean, empty home from the hidden volume over the operator's home, so
-  the decoy home contents are not visible and the hidden session starts from its own, separate home.
-
-A fully separate hidden account (`separate-user`) is planned but not yet available. See
-[`docs/configuration.md`](docs/configuration.md#persona-modes) and the
-[operator guide](docs/operator-guide.md) for details and trade-offs.
-
-### Remote state and sync clients
-
-Deactivation discards the overlay upper dirs; it does **not** roll back state a remote already holds.
-In `shared-home` mode the decoy's two-way sync and account clients (Syncthing, Nextcloud/Dropbox, IMAP
-Sent folders, browser sync, messaging apps) are live in the hidden session, so data the hidden session
-writes to a synced folder is pushed to the server or peer. After deactivation the decoy client resumes
-from its pre-activation local state, reconciles with the remote, and **pulls that data back onto the
-decoy disk**, where a later examiner can recover it. The overlay cannot prevent this; the leak lives on
-a remote you do not control.
-
-Mitigation: run sensitive work in **`fresh-home`** mode with the decoy's account-bound clients masked
-(`[persona] mask_inherited`) or disabled, so nothing hidden is handed to the decoy's remotes; or, in
-`shared-home`, disconnect every sync, cloud, mail and messaging client first. Do not generate "decoy
-activity" while such clients are connected. See
-[Remote state and sync clients](docs/operator-guide.md#remote-state-and-sync-clients) in the
-operator guide.
+For sensitive work, set `persona.mode = "fresh-home"` and disconnect the decoy's
+sync and account clients; the [operator guide](docs/operator-guide.md#threat-model-limitations)
+explains why and how.
 
 ## Reproducible release artifact
 

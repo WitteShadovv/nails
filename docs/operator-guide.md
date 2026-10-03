@@ -50,7 +50,12 @@ invoke it by its absolute path.
 
 NAILS layers a hidden environment over the decoy with OverlayFS: writes made in
 the session land on a writable *upper* on the hidden volume, and the decoy's own
-files underneath are never modified. Two cleanups bracket the session:
+files underneath are never modified. The overlay separates *writes*, not
+processes or identity: hidden services run on the same kernel and init as the
+decoy's, next to whatever the decoy keeps running, and share its network
+identity (see
+[What the hidden environment shares with the decoy](threat-model.md#what-the-hidden-environment-shares-with-the-decoy)).
+Two cleanups bracket the session:
 
 - **Pre-activation residue baseline.** Before it mounts any overlay, `nails
   activate` runs the read-only decoy residue scan and writes the result to
@@ -503,11 +508,9 @@ using the recorded PID or binary path, then `nails recover`.
 
 ## Threat-model limitations
 
-NAILS defends against post-seizure disk forensics of a powered-off decoy. It does
-**not** protect against a live-system compromise, memory forensics during or just
-after use, state-level adversaries, or physical surveillance. See
-[threat-model.md](threat-model.md) for the full model. The limits below are the
-ones operators most often miss.
+The adversary, assumptions and out-of-scope list are defined in
+[threat-model.md](threat-model.md). This section covers the operational side of
+the limits operators most often miss.
 
 ### Shared decoy account and persona modes
 

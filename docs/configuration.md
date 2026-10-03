@@ -272,7 +272,9 @@ this way — disable them on the decoy itself if they matter.
 Masking hides what *runs*; it does not roll back remote or account state. Shared
 accounts, tokens and sync history remain shared and are never undone. Correlation
 through shared network identifiers (machine-id, hostname, MAC, NetworkManager
-profiles) is out of scope for the overlay; see the user security guide for the
+profiles) is out of scope for the overlay; see the
+[threat model](threat-model.md#what-the-hidden-environment-shares-with-the-decoy)
+and the [operator guide](operator-guide.md#shared-network-identifiers) for the
 optional hidden network-identity snippet.
 
 ## Backend watcher
