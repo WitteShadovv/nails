@@ -79,6 +79,7 @@
   "state-guard-rollback": 68,
   "state-integrity": 282,
   "state-missing-file": 104,
+  "state-signal-during-activation": 200,
   "state-transitions-observability": 161,
   "status-verify": 103,
   "tcrypt-veracrypt-hidden": 700,

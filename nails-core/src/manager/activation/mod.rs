@@ -591,6 +591,12 @@ impl<F: Filesystem> NailsManager<F> {
         );
         let (fast_path_toplevel, new_fingerprint) = guard.build_nixos_profile(verbosity)?;
 
+        // Cancellation checkpoint before any mount (covers a SIGINT/SIGTERM during
+        // staging, the gate, or the build-metadata step above): no mounts are
+        // armed and the residue is empty, so the StateGuard restores the previous
+        // state (Inactive) and nothing was ever created. See `crate::cancel`.
+        crate::cancel::checkpoint()?;
+
         // Step 7: Mount persistent and ephemeral overlays.
         emit_progress(verbosity, "overlay_mount", 4, "[4/7] Mounting overlays...");
         let mount_timer = Stopwatch::start();
@@ -650,6 +656,11 @@ impl<F: Filesystem> NailsManager<F> {
         // then restores the decoy session — all before any restart has run. Fail
         // closed. With `nixos_switch_required = false` the failure is only a
         // warning and activation continues with the overlays and session kept.
+        // Last cancellation checkpoint: `activation_mounts` is armed, so a cancel
+        // drops it first (unmounting) then the StateGuard restores the previous
+        // state. None follows — a running `switch-to-configuration` is never cut.
+        crate::cancel::checkpoint()?;
+
         emit_progress(
             verbosity,
             "profile_switch",

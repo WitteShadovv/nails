@@ -45,6 +45,11 @@ pub enum ExitStatus {
     VerifyWarning,
     /// `verify` found critical artifacts.
     VerifyCritical,
+    /// The operation was cancelled by a signal (SIGINT/SIGTERM). The code is 130,
+    /// the conventional "terminated by Ctrl-C" value (128 + SIGINT), so a caller
+    /// can tell a deliberate cancellation apart from an ordinary failure. The
+    /// overlays were rolled back and the state returned to its previous value.
+    Cancelled,
 }
 
 impl ExitStatus {
@@ -63,6 +68,7 @@ impl ExitStatus {
             ExitStatus::SuccessWithWarnings => 9,
             ExitStatus::VerifyWarning => 10,
             ExitStatus::VerifyCritical => 11,
+            ExitStatus::Cancelled => 130,
         }
     }
 
@@ -90,5 +96,6 @@ mod tests {
         assert_eq!(ExitStatus::SuccessWithWarnings.code(), 9);
         assert_eq!(ExitStatus::VerifyWarning.code(), 10);
         assert_eq!(ExitStatus::VerifyCritical.code(), 11);
+        assert_eq!(ExitStatus::Cancelled.code(), 130);
     }
 }

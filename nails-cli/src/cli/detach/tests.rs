@@ -523,6 +523,10 @@ fn deactivation_detach_uses_explicit_systemd_run_override() {
 
     let logged_args = fs::read_to_string(log).expect("fake systemd-run log");
     assert_neutral_unit_argv(&logged_args);
+    assert!(
+        logged_args.contains("--property=OOMPolicy=continue"),
+        "the detached deactivation unit must survive a child OOM kill: {logged_args}"
+    );
     assert!(logged_args.contains("--working-directory=/"));
     assert!(logged_args.contains(&format!("--setenv=NAILS_TARGET_UID={}", me.uid)));
     assert!(logged_args.contains(&format!("--setenv=NAILS_TARGET_USER={}", me.name)));
@@ -704,6 +708,10 @@ fn session_detach_uses_neutral_unit_and_discards_output() {
 
     let logged_args = fs::read_to_string(log).expect("fake systemd-run log");
     assert_neutral_unit_argv(&logged_args);
+    assert!(
+        logged_args.contains("--property=OOMPolicy=continue"),
+        "the detached activation unit must survive a child OOM kill: {logged_args}"
+    );
     assert!(
         logged_args.contains("--property=StandardOutput=null"),
         "worker stdout must be discarded by default: {logged_args}"

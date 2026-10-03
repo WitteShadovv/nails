@@ -450,6 +450,9 @@ pub fn execute(
         Ok(_) => ExitStatus::Ok,
         Err(nails_core::NailsError::PreFlightCheckFailed(_)) => ExitStatus::PreflightRefused,
         Err(nails_core::NailsError::UnsupportedPlatform { .. }) => ExitStatus::Unsupported,
+        // A signal rolled the activation back cleanly; report the conventional
+        // cancellation code rather than a generic failure.
+        Err(nails_core::NailsError::Cancelled) => ExitStatus::Cancelled,
         Err(_) => ExitStatus::Failed,
     }
 }

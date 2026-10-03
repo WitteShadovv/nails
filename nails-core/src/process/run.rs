@@ -392,7 +392,38 @@ fn base_command(executable: &Path, command: &ProcessCommand) -> std::process::Co
     let mut child = std::process::Command::new(executable);
     child.args(&command.args);
     apply_environment(&mut child, command);
+    reset_child_oom_score(&mut child);
     child
+}
+
+/// Reset a child's `oom_score_adj` to the neutral `0` before it execs.
+///
+/// A mutating command lowers its own `oom_score_adj` to survive memory pressure,
+/// and that bias is inherited by every child. That is the wrong default for the
+/// children — the nix evaluator in particular should stay a normal OOM candidate
+/// so the kernel kills it rather than something critical — so each child resets
+/// itself to the neutral score. The write runs in the forked child just before
+/// `exec`; it is best-effort and any error is ignored, because failing to reset
+/// the score must never prevent the child from running.
+#[allow(unsafe_code)]
+fn reset_child_oom_score(child: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure only performs an async-signal-safe `write(2)` to a
+    // `/proc` file through libc and ignores the result. It allocates nothing and
+    // touches no shared state, so it is safe to run between fork and exec.
+    unsafe {
+        child.pre_exec(|| {
+            use nix::libc;
+            let bytes = b"0\n";
+            let path = c"/proc/self/oom_score_adj";
+            let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+            if fd >= 0 {
+                libc::write(fd, bytes.as_ptr().cast(), bytes.len());
+                libc::close(fd);
+            }
+            Ok(())
+        });
+    }
 }
 
 /// Clears the child's environment and rebuilds it from the allowlist.

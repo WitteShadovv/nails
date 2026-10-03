@@ -326,7 +326,13 @@ pub fn maybe_detach_for_session_kill(
         .arg("--same-dir") // Keep current working directory
         .arg("--collect") // Clean up unit after it finishes
         .arg("--quiet")
-        .arg(format!("--description={NEUTRAL_UNIT_DESCRIPTION}"));
+        .arg(format!("--description={NEUTRAL_UNIT_DESCRIPTION}"))
+        // Survive an OOM kill of a child (e.g. the nix evaluator): with the
+        // default DefaultOOMPolicy=stop, a cgroup OOM kill of any process in the
+        // unit would stop the whole transient service and abandon the activation
+        // mid-flight. `continue` keeps the unit — and the nails worker driving the
+        // rollback — alive so the kill is survivable.
+        .arg("--property=OOMPolicy=continue");
 
     // Set environment variables for the service
     cmd.arg(format!("--setenv={}=1", ENV_DETACHED));
@@ -410,6 +416,9 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
         .arg("--collect")
         .arg("--quiet")
         .arg(format!("--description={NEUTRAL_UNIT_DESCRIPTION}"))
+        // Survive an OOM kill of a child so a teardown unit is never abandoned
+        // half-done; see the activation path above for the rationale.
+        .arg("--property=OOMPolicy=continue")
         .arg("--working-directory=/")
         .arg(format!("--setenv={}=1", ENV_DETACHED))
         .arg("--setenv=XDG_SESSION_ID=")

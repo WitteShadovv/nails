@@ -306,6 +306,18 @@ pub enum NailsError {
     #[error("Unsupported host: {reason}")]
     UnsupportedPlatform { reason: String },
 
+    /// The operation was cancelled by a signal (SIGINT or SIGTERM).
+    ///
+    /// Raised by [`cancel::checkpoint`](crate::cancel::checkpoint) at an
+    /// activation step boundary when a cancel signal has arrived. Propagating it
+    /// with `?` unwinds through the activation rollback guards — the overlays are
+    /// torn down and the state is written back to its previous value — so a
+    /// cancelled activation leaves the system `Inactive` with no partial mounts.
+    /// The CLI maps it to exit code 130, the conventional "terminated by Ctrl-C"
+    /// code.
+    #[error("operation cancelled")]
+    Cancelled,
+
     /// I/O error (transparently converted from std::io::Error)
     ///
     /// This variant has #[from] attribute, enabling automatic conversion

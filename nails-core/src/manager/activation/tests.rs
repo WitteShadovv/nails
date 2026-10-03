@@ -711,3 +711,60 @@ fn rebuild_space_check_skips_when_no_rebuild_is_expected() {
             .is_ok()
     );
 }
+
+// ===========================================================================
+// Signal cancellation (T-101)
+//
+// A cancel signal (SIGINT/SIGTERM) sets a process-wide flag that the activation
+// path polls between steps via `cancel::checkpoint`. When it is armed before the
+// overlay step, activation must return `Cancelled`, the overlays must never be
+// mounted, and the state must roll back to `Inactive`.
+// ===========================================================================
+
+#[test]
+#[serial]
+fn cancel_before_overlay_step_returns_cancelled_with_no_mounts_and_inactive_state() {
+    use crate::cancel;
+
+    let (mut manager, fs, _tmp) = rollback_test_manager();
+
+    // Arm the cancel flag as a SIGINT/SIGTERM handler would, before activation
+    // reaches the overlay step.
+    cancel::testing::request();
+    let result = manager.activate(true);
+    cancel::testing::reset();
+
+    assert!(
+        matches!(result, Err(crate::NailsError::Cancelled)),
+        "a cancel requested before the overlay step must return Cancelled, got {result:?}"
+    );
+    assert!(
+        fs.get_mounted_paths().is_empty(),
+        "no overlay may be mounted when activation is cancelled before the overlay step, \
+         still mounted: {:?}",
+        fs.get_mounted_paths()
+    );
+    assert!(
+        matches!(
+            manager.current_state().expect("state"),
+            SystemState::Inactive
+        ),
+        "a cancelled activation must roll the state back to Inactive"
+    );
+}
+
+#[test]
+#[serial]
+fn no_cancel_lets_activation_complete() {
+    use crate::cancel;
+
+    // The flag must be clear by default so an ordinary activation is unaffected.
+    cancel::testing::reset();
+    let (mut manager, fs, _tmp) = rollback_test_manager();
+    manager.activate(true).expect("activation should succeed");
+    assert!(matches!(
+        manager.current_state().expect("state"),
+        SystemState::Active { .. }
+    ));
+    assert!(fs.is_mounted(Path::new("/home")).expect("/home mounted"));
+}

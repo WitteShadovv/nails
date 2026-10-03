@@ -44,6 +44,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 nix = { workspace = true, features = ["mount", "sched", "user", "signal", "process", "fs"] }
+signal-hook = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

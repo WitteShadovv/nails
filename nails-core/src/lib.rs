@@ -29,6 +29,8 @@
 // Error handling module
 pub mod error;
 
+pub mod cancel;
+
 // Artifact registry: the single source of what an activation can leave behind
 pub mod artifacts;
 

@@ -11,6 +11,41 @@ pub use detach::install_panic_hook;
 pub use logging::init_subscriber;
 pub use output::{ExitStatus, OutputSettings};
 
+/// Whether a command mutates the system and so must survive interrupting signals
+/// and OOM pressure.
+///
+/// The mutating commands take overlays up or down and run a chain of rollback
+/// guards that a signal's default action would skip; for them we install the
+/// cancellation handlers and bias the process away from the OOM killer. Read-only
+/// commands (`status`, `verify`, `check`, `config`, `notify-dispatch`) and `init`
+/// touch no live overlay, so they keep the default signal behaviour.
+fn command_is_mutating(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Activate(_)
+            | Commands::Deactivate(_)
+            | Commands::Reapply(_)
+            | Commands::Emergency(_)
+            | Commands::Init(_)
+            | Commands::ResetUpper(_)
+    )
+}
+
+/// Bias this process away from the OOM killer, best-effort.
+///
+/// Writes a negative `oom_score_adj` so that under memory pressure the kernel
+/// prefers to kill a child (such as the nix evaluator) over the nails process
+/// that is mid-activation; children are reset to a neutral score when they are
+/// spawned. Negative values need `CAP_SYS_RESOURCE`, which a mutating command run
+/// under `sudo` has, but a denial is not fatal — it only means the default
+/// scoring applies — so a failure is logged and ignored.
+fn lower_oom_score() {
+    const PROTECTED_OOM_SCORE_ADJ: &str = "-500";
+    if let Err(err) = std::fs::write("/proc/self/oom_score_adj", PROTECTED_OOM_SCORE_ADJ) {
+        tracing::debug!(error = %err, "could not lower oom_score_adj; default OOM scoring applies");
+    }
+}
+
 /// Execute the CLI command - extracted for testability.
 ///
 /// `settings` are the output settings `main` resolved once from the global
@@ -18,6 +53,15 @@ pub use output::{ExitStatus, OutputSettings};
 /// `main` turns into the process exit code.
 pub fn execute_command(cli: Cli, settings: &OutputSettings) -> ExitStatus {
     let config = cli.global.config.as_deref();
+
+    // Before dispatching a mutating command, install the signal handlers so an
+    // interrupt rolls back cleanly instead of killing the process mid-teardown,
+    // and bias the process away from the OOM killer. Both are process-wide and
+    // best-effort; read-only commands keep the default behaviour.
+    if command_is_mutating(&cli.command) {
+        nails_core::cancel::install_handlers();
+        lower_oom_score();
+    }
 
     match cli.command {
         Commands::Activate(args) => commands::activate::execute(settings, &args, config),
