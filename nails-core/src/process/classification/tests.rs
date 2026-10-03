@@ -10,6 +10,11 @@ fn make_test_process(name: &str, pid: u32, has_cwd: bool) -> ProcessInfo {
         has_cwd_in_target: has_cwd,
         has_open_fds_in_target: false,
         has_mmap_in_target: false,
+        has_writable_fd_in_target: false,
+        has_dir_fd_in_target: false,
+        has_shared_write_map_in_target: false,
+        has_root_in_target: false,
+        is_unverifiable_writer: false,
         service_name: None,
         is_interactive: false,
     }

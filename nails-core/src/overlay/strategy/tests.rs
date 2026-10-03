@@ -415,6 +415,13 @@ fn proc(name: &str, pid: u32, service: Option<&str>, interactive: bool) -> Proce
         has_cwd_in_target: false,
         has_open_fds_in_target: true,
         has_mmap_in_target: false,
+        // A writable fd makes these fixtures blocking writers (not read-only
+        // consumers), so classification routes them to Safe/Risky/NoRestart.
+        has_writable_fd_in_target: true,
+        has_dir_fd_in_target: false,
+        has_shared_write_map_in_target: false,
+        has_root_in_target: false,
+        is_unverifiable_writer: false,
         service_name: service.map(str::to_string),
         is_interactive: interactive,
     }

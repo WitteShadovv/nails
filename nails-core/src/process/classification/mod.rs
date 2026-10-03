@@ -31,6 +31,11 @@
 //!     has_cwd_in_target: true,
 //!     has_open_fds_in_target: false,
 //!     has_mmap_in_target: false,
+//!     has_writable_fd_in_target: false,
+//!     has_dir_fd_in_target: false,
+//!     has_shared_write_map_in_target: false,
+//!     has_root_in_target: false,
+//!     is_unverifiable_writer: false,
 //!     service_name: None,
 //!     is_interactive: false,
 //! };
@@ -77,16 +82,15 @@ pub enum RestartStrategy {
     /// Examples: `firefox`, `sway`, `Xorg`, `vim`
     NoRestart,
 
-    /// Process uses the target but does not block mounting and must not be killed.
+    /// Process references the target but cannot write to the decoy through that
+    /// reference, so it does not block the mount and must not be killed.
     ///
-    /// Used for processes that only have open file descriptors or memory-mapped
-    /// files from the target directory (no cwd). These processes are read-only
-    /// consumers that do not prevent overlayfs mount and would cause system
-    /// failure if killed.
-    ///
-    /// Currently only used for `/nix` on NixOS, where every process has mmaps
-    /// from `/nix/store` (loaded binaries) but cannot write to it due to the
-    /// kernel-enforced read-only bind mount.
+    /// Applies to any read-only consumer: a process that holds only non-writable
+    /// fds or private/read-only mappings of files in the target (no `cwd`, no
+    /// writable or directory fd, no shared-writable mapping). Killing such a
+    /// process serves no security purpose and may crash the system — on NixOS,
+    /// for instance, every process mmaps loaded binaries from the read-only
+    /// `/nix/store`.
     Skip,
 }
 
@@ -119,6 +123,11 @@ pub enum RestartStrategy {
 ///     has_cwd_in_target: false,
 ///     has_open_fds_in_target: true,
 ///     has_mmap_in_target: false,
+///     has_writable_fd_in_target: false,
+///     has_dir_fd_in_target: false,
+///     has_shared_write_map_in_target: false,
+///     has_root_in_target: false,
+///     is_unverifiable_writer: false,
 ///     service_name: Some("systemd-journald".to_string()),
 ///     is_interactive: false,
 /// };
@@ -127,6 +136,16 @@ pub enum RestartStrategy {
 /// assert!(matches!(strategy, RestartStrategy::Safe));
 /// ```
 pub fn classify_process(proc: &ProcessInfo, target: &Path) -> RestartStrategy {
+    // An overlay redirects new path lookups, but it cannot revoke the write
+    // access a process already holds. The relevant question is therefore whether
+    // the process can still *write* to the decoy lower tree. A process that holds
+    // only read-only references (an open fd that is not writable, a private or
+    // read-only mapping) cannot, so leaving it running is safe on any target and
+    // restarting it would only disrupt the user for no security gain.
+    if proc.is_read_only_consumer() {
+        return RestartStrategy::Skip;
+    }
+
     let target_str = target.to_string_lossy();
 
     match target_str.as_ref() {
