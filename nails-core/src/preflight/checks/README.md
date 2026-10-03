@@ -13,40 +13,32 @@ All checks implement the `PreFlightCheck<F: Filesystem>` trait defined in `../mo
 
 ## Available Checks
 
-### Security & State
+The set of checks changes often, and which ones run depends on the host and the
+requested operation (for example the NixOS config and build-target checks run
+only on a NixOS host with a selected hidden flake). Rather than keep a hand-written
+list in step with the code, read the rustdoc, which is generated from the check
+implementations themselves:
 
-- **`state.rs`** - `StateCheck`: Validates system state is appropriate for activation
-  - Ensures system is not already active or in emergency state
-  - Verifies transition validity according to state machine rules
+```bash
+cargo doc --no-deps --open -p nails-core
+```
 
-- **`swap.rs`** - `SwapCheck`: Ensures swap is disabled for memory security
-  - Prevents sensitive data (keys, credentials) from being written to persistent storage
-  - Critical for plausible deniability guarantee
+Then open the `nails_core::preflight::checks` module: every check type carries a
+doc comment explaining what it validates and why. `manager::preflight_runner`
+shows the exact registration order and the host conditions under which each check
+is added.
 
-### Storage & Resources
+Notable details worth calling out here:
 
-- **`hidden_volume.rs`** - `HiddenVolumeCheck`: Validates hidden volume is mounted and accessible
-  - Checks mount point exists and is writable
-  - Ensures hidden storage root directory is available
-
-- **`space/`** - `SpaceCheck`: Validates sufficient disk space for activation
-  - Uses graduated response system (Pass/Warn/Fail thresholds)
-  - Default minimum: 1024 MB (1 GB)
-  - Also defines `OverlayDirs` struct for overlay configuration
-
-- **`storage_readiness/`** - `StorageReadinessCheck`: Unified storage validation
-  - Validates required directory structure on hidden volume
-  - Auto-creates missing directories with proper permissions
-  - Validates overlay directory accessibility (lower/upper/work)
-  - Replaces separate structure and overlay checks
-
-### Configuration
-
-- **`nixos_config/`** - `NixOSConfigCheck`: Validates NixOS configuration overlay structure
-  - Ensures base NixOS config exists
-  - Validates hidden storage NixOS configuration structure
-  - Checks modified hardware-configuration.nix has correct imports
-  - Verifies symlink staging for hidden config
+- **`space/`** - `SpaceCheck` enforces a single hard floor (no warn band). The
+  default minimum is **500 MB**, matching the `default_minimum_space_mb` config
+  default; it is the base floor for an overlay-only activation, while a full NixOS
+  rebuild's much larger store delta is enforced separately during activation. The
+  module also defines the `OverlayDirs` struct used to describe overlay layouts.
+- **`storage_readiness/`** - `StorageReadinessCheck` is the unified storage
+  validator: it checks the required directory structure, auto-creates missing
+  directories with `0o700` permissions, and validates overlay lower/upper/work
+  accessibility, replacing the separate structure and overlay checks.
 
 ## Adding a New Check
 
@@ -162,7 +154,7 @@ Pre-flight checks return `CheckResult` with three variants:
   - Example: "Swap disabled: memory security maintained"
 
 - **`Warn(String)`**: Non-critical issue detected, can proceed with caution
-  - Example: "800 MB available (below 1.0 GB recommended). Monitor space."
+  - Example: "Backend mapping has discard enabled; consider disabling it."
 
 - **`Fail(String)`**: Critical issue blocks activation
   - Example: "Swap is enabled. Run: sudo swapoff -a"

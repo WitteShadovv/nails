@@ -4,7 +4,7 @@ NAILS is maintained through this repository. Use GitHub issues for actionable bu
 
 If your issue is about NAILS OS, the installable distribution, open it in the separate [nails-os](https://github.com/WitteShadovv/nails-os) repository instead.
 
-NAILS is currently alpha-stage software and support is best-effort. The latest published stable release, when present, is the primary supported public release line; otherwise use the latest relevant prerelease.
+NAILS is currently alpha-stage software and support is best-effort. Run the latest release and verify its artifacts before reporting; see [RELEASING.md](RELEASING.md) for how releases are produced.
 
 ## Where to Get Help
 
@@ -21,7 +21,7 @@ Please:
 
 1. Search existing issues for duplicates.
 2. Confirm that the behavior is in scope for this repository.
-3. Check the latest published release or prerelease bundle, or note the exact commit if you are testing unreleased code.
+3. Check the latest release bundle, or note the exact commit if you are testing unreleased code.
 4. Gather what the bug report form asks for:
    - `nails --version`
    - your distribution and its release
@@ -39,7 +39,7 @@ Use [GitHub private vulnerability reporting](https://github.com/WitteShadovv/nai
 
 - Reports are triaged based on reproducibility, user impact, and the information provided.
 - We may ask for clarification before triage is complete, but never for real paths, hostnames, or unredacted output in a public issue.
-- The latest published stable release, when present, is the primary target for fixes and documentation updates; otherwise use the latest relevant prerelease.
+- The latest release is the target for fixes and documentation updates.
 - We do not provide private consulting or troubleshooting for custom deployments, forks, unsupported environments, or third-party integrations.
 
 Do **not** use the security contact for general troubleshooting or feature requests.

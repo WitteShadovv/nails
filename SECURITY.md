@@ -17,15 +17,14 @@ If you are unsure whether something is in scope, report it anyway. We would rath
 
 ## Supported Versions
 
-NAILS is currently released as **alpha** software. Security fixes are applied to the latest supported release line first.
+NAILS is currently released as **alpha** software. Only the most recent `0.2.x` release carries security fixes; there are no backports to earlier lines.
 
 | Version | Status | Security support |
 | --- | --- | --- |
-| Latest published stable release, when present | Current deliberate stable release line | Security fixes are applied here first |
-| Latest published prerelease in the current alpha series | Current prerelease validation line | Security fixes may land here before the next stable release |
-| Earlier releases and prereleases in the current alpha series | Superseded | Not supported |
+| `0.2.x` | Current release line | Supported |
+| `0.1.x` and earlier alpha builds | Superseded | Not supported |
 
-Because the project is pre-1.0, we recommend upgrading to the latest published stable release when available, or the latest relevant prerelease if you are tracking prerelease builds, instead of relying on backported fixes.
+Run the latest release and verify its artifacts before use; how releases are produced and numbered is described in [RELEASING.md](RELEASING.md).
 
 ## Reporting a Vulnerability
 
@@ -127,7 +126,7 @@ When we publish a security fix, we communicate it through the repository's publi
 - GitHub Releases
 - `CHANGELOG.md`
 
-Publication format and timing depend on severity, remediation, and disclosure coordination. During the current alpha phase, some fixes may appear first in GitHub release or prerelease notes before a formal advisory is published.
+Publication format and timing depend on severity, remediation, and disclosure coordination. During the current alpha phase, some fixes may appear first in GitHub release notes before a formal advisory is published.
 
 ## Maintainer Handling Process
 

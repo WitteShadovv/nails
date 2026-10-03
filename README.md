@@ -119,8 +119,7 @@ NAILS is installed by copying a verified static binary onto the mounted hidden r
 
 ### Install the verified release binary
 
-Download the latest published bundle from the canonical [GitHub Releases page](https://github.com/WitteShadovv/nails/releases).
-Each release is built from an annotated version tag; `-rc.N` versions are marked as prereleases. Use the newest release line appropriate for your testing or deployment. Mount the hidden storage first, then place the published `nails` executable directly on that hidden root. Do not leave the binary on the decoy filesystem:
+Download the latest bundle from the canonical [GitHub Releases page](https://github.com/WitteShadovv/nails/releases) and verify its artifacts (see [RELEASING.md](RELEASING.md) for how releases are produced). Mount the hidden storage first, then place the published `nails` executable directly on that hidden root. Do not leave the binary on the decoy filesystem:
 
 ```bash
 # Open and mount hidden storage first
@@ -423,7 +422,7 @@ They are related projects, but they are not interchangeable products and do not 
 
 ### User and operator references
 
-- [GitHub Releases](https://github.com/WitteShadovv/nails/releases) *(published stable releases and prereleases)*
+- [GitHub Releases](https://github.com/WitteShadovv/nails/releases)
 - [Change history](CHANGELOG.md)
 - [Roadmap](ROADMAP.md)
 - [Storage backends](docs/backends.md)
@@ -443,7 +442,7 @@ They are related projects, but they are not interchangeable products and do not 
 
 NAILS is actively maintained and currently released as **alpha** software.
 
-- Releases are drafted by the release workflow from annotated version tags and published by the maintainer ([RELEASING.md](RELEASING.md)); `-rc.N` versions are prereleases.
+- How releases are produced, numbered and verified is documented in [RELEASING.md](RELEASING.md).
 - Interfaces and operator workflows are still subject to change between alpha releases.
 - Use it only after testing your exact hardware, storage backend, activation path, and recovery procedure.
 - Security claims are bounded by the documented threat model and by the checks you perform on your own setup.
