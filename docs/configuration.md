@@ -104,6 +104,10 @@ is the `name` key of each `[[overlays]]` table.
 | `color_scheme.hidden.foreground` | string (colour) | `"#e0e0e0"` | Terminal foreground while the hidden environment is active, in the same format as `background`. |
 | `persona.mask_inherited` | list of entry names, or `["*"]` | `[]` | Inherited decoy autostart entries and user units to hide from the hidden session. Each value is a name as `nails check` lists it: the `.desktop` stem for an autostart entry, or the full unit name for a user unit. `["*"]` masks every maskable inherited entry. Masks are written after the overlays mount and before the session restarts, so they take effect for the hidden session only and vanish on deactivation. Lingering and autologin are reported but not masked. See [Inherited decoy state](#inherited-decoy-state). |
 | `persona.mode` | `"shared-home"` or `"fresh-home"` | `"shared-home"` | How the hidden session relates to the decoy account. `shared-home` runs it in the decoy home (merged read-write through the `/home` overlay), so the decoy's accounts, keys and app profiles are live; activation warns while it is in effect. `fresh-home` bind-mounts a clean, empty home from the hidden volume over the operator's home, so the decoy home contents are not visible. See [Persona modes](#persona-modes). |
+| `backend_watch.auto_emergency` | boolean | `false` | Opt into automatic emergency teardown when the hidden backend fails. When `false` (the default) the watcher is alert-only, so a transient I/O stall can never kill the session; when `true`, teardown runs on its own only after the failure outlasts `backend_watch.debounce_secs`. See [Backend watcher](#backend-watcher). |
+| `backend_watch.debounce_secs` | integer (seconds) | `15` | How long a failure must persist before an opted-in automatic emergency teardown fires. Ignored unless `backend_watch.auto_emergency` is `true`. |
+| `backend_watch.enabled` | boolean | `true` | Start the in-session backend watcher at activation. The watcher polls the hidden backend and alerts you when it fails. `false` runs no long-lived component. See [Backend watcher](#backend-watcher). |
+| `backend_watch.poll_interval_secs` | integer (seconds) | `5` | Seconds between the watcher's probes of the hidden backend. |
 <!-- END config-keys -->
 
 The Key and Default columns are generated from the code, and
@@ -267,3 +271,31 @@ accounts, tokens and sync history remain shared and are never undone. Correlatio
 through shared network identifiers (machine-id, hostname, MAC, NetworkManager
 profiles) is out of scope for the overlay; see the user security guide for the
 optional hidden network-identity snippet.
+
+## Backend watcher
+
+The binary and the configuration live on the hidden volume, so if that volume
+fails or is pulled mid-session the panic button may no longer be runnable and the
+configuration that records where the overlays are can no longer be read — exactly
+when they are needed most. Activation guards against this in two ways.
+
+First, it mirrors the running binary, the effective configuration and a manifest
+of the mounted overlay targets into a private (`0700`) directory on the decoy's
+RAM-backed `/run`, under a neutral name that reveals nothing about the tool. If
+the hidden volume is gone, run emergency from that copy by full path (activation
+prints the exact command); `emergency` and `recover` also read the mirrored config
+and manifest when the real config file is unreadable, and tell you which source
+they used. The copy is removed on deactivation and emergency.
+
+Second, when `backend_watch.enabled` is `true` (the default), it starts a small
+watcher from that copy as a transient systemd unit with a neutral name. The
+watcher probes the hidden backend every `backend_watch.poll_interval_secs` seconds
+and raises a desktop alert the moment a probe fails, so an unresponsive volume is
+explained instead of showing up only as unrelated application errors.
+
+The watcher is **alert-only by default**: a transient I/O stall must never be able
+to tear a live session down on its own. Automatic emergency teardown is strictly
+opt-in — set `backend_watch.auto_emergency = true` — and even then it fires only
+after the failure has persisted for `backend_watch.debounce_secs`, so a brief
+hiccup that recovers is reported but never acted on. Both the copy directory and
+the watcher unit use neutral, non-product names.

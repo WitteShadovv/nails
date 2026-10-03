@@ -340,6 +340,26 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
+    /// Stop the in-session backend watcher and remove the RAM-backed runtime copy.
+    ///
+    /// Best-effort on every teardown path (deactivate, emergency and recover): a
+    /// watcher that was never started makes the stop a no-op, and a copy that was
+    /// never written makes the removal a no-op, so neither can turn a teardown into
+    /// a failure. The filesystem removal routes through the manager's filesystem
+    /// (mockable); only stopping the systemd unit is a real host call, so only that
+    /// is gated by the test-runtime skip.
+    fn teardown_backend_runtime_copy(&self) {
+        if let Err(e) = crate::runtime_copy::remove_runtime_copy(self.filesystem()) {
+            tracing::warn!(
+                error = %e,
+                "Best-effort removal of the RAM-backed runtime copy failed; continuing teardown"
+            );
+        }
+        if !crate::runtime_safety::should_skip_host_interaction() {
+            crate::runtime_copy::stop_watch_unit();
+        }
+    }
+
     fn run_deactivation(&mut self, kind: ManagerDeactivationKind) -> Result<()> {
         // The emergency panic button must work from every state, not only a
         // clean Active one: the state is Activating during the whole switch, it
@@ -521,6 +541,12 @@ impl<F: Filesystem> NailsManager<F> {
             // base journal. Restarting forces it to reopen on the decoy's /var.
             restart_service_and_socket("systemd-journald");
         }
+
+        // Stop the in-session backend watcher and remove the RAM-backed runtime
+        // copy on every teardown path. Runs before the orchestrator result is
+        // unwrapped so the watcher never outlives the overlays even when the
+        // teardown reported a problem.
+        self.teardown_backend_runtime_copy();
 
         let _report = result?;
 

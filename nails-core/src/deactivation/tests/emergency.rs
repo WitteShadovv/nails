@@ -488,3 +488,76 @@ fn test_emergency_mode_fails_on_inactive_state() {
         _ => panic!("Expected InvalidState error"),
     }
 }
+
+#[test]
+#[serial]
+fn test_emergency_deactivate_removes_the_runtime_copy() {
+    let manager = setup_manager_in_state(SystemState::Activating {
+        started_at: chrono::Utc::now(),
+    });
+
+    let hidden_root = manager.lock().unwrap().config().hidden_volume_root.clone();
+    {
+        let guard = manager.lock().unwrap();
+        let fs = guard.filesystem();
+        mount_nails_overlay(fs, &hidden_root, Path::new("/home"));
+
+        // A runtime copy left from the live session, as activation would have
+        // written it. The removal routes through the manager's (mock) filesystem,
+        // so a teardown must clear it.
+        fs.mock_set_directory_creatable(crate::runtime_copy::RUNTIME_COPY_DIR, true);
+        crate::runtime_copy::write_runtime_copy(
+            fs,
+            guard.config(),
+            Path::new("/bin/control"),
+            &[PathBuf::from("/home")],
+        )
+        .unwrap();
+        assert!(
+            fs.path_exists(&crate::runtime_copy::runtime_copy_dir())
+                .unwrap()
+        );
+    }
+
+    manager.lock().unwrap().emergency_deactivate().unwrap();
+
+    let guard = manager.lock().unwrap();
+    assert_eq!(guard.current_state().unwrap(), SystemState::Inactive);
+    assert!(
+        !guard
+            .filesystem()
+            .path_exists(&crate::runtime_copy::runtime_copy_dir())
+            .unwrap(),
+        "emergency teardown must remove the RAM-backed runtime copy"
+    );
+}
+
+#[test]
+#[serial]
+fn test_normal_deactivate_removes_the_runtime_copy() {
+    let (manager, _temp, _env) = active_manager_with_overlays(&["/home"]);
+
+    {
+        let guard = manager.lock().unwrap();
+        let fs = guard.filesystem();
+        fs.mock_set_directory_creatable(crate::runtime_copy::RUNTIME_COPY_DIR, true);
+        crate::runtime_copy::write_runtime_copy(
+            fs,
+            guard.config(),
+            Path::new("/bin/control"),
+            &[PathBuf::from("/home")],
+        )
+        .unwrap();
+    }
+
+    manager.lock().unwrap().deactivate().unwrap();
+
+    let guard = manager.lock().unwrap();
+    assert!(
+        !guard
+            .filesystem()
+            .path_exists(&crate::runtime_copy::runtime_copy_dir())
+            .unwrap(),
+        "deactivate must remove the RAM-backed runtime copy"
+    );
+}

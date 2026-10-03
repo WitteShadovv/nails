@@ -251,6 +251,34 @@ impl MockFilesystem {
         Ok(())
     }
 
+    pub(super) fn copy_file_impl(&self, src: &Path, dst: &Path) -> Result<()> {
+        if self
+            .write_should_fail
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .contains(dst)
+        {
+            return Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("Mock copy_file failure for {}", dst.display()),
+            )));
+        }
+
+        let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
+        paths.entry(dst.to_path_buf()).or_default().exists = true;
+        drop(paths);
+
+        self.op_log
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push(MockOp::CopyTree {
+                src: src.to_path_buf(),
+                dst: dst.to_path_buf(),
+            });
+
+        Ok(())
+    }
+
     pub(super) fn get_directory_size_impl(&self, path: &Path) -> Result<u64> {
         let sizes = self
             .directory_sizes

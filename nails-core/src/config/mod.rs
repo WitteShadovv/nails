@@ -21,6 +21,7 @@
 //! ```
 
 // Sub-modules for color configuration
+pub mod backend_watch;
 pub mod colors;
 pub mod ephemeral;
 pub mod overlay;
@@ -46,6 +47,7 @@ mod testing;
 pub use testing::TestWorld;
 
 // Re-exports for public API - color types
+pub use backend_watch::BackendWatchConfig;
 pub use colors::{ColorProfile, ColorSchemeConfig, DecoyProfile};
 pub use ephemeral::EphemeralOverlayDir;
 pub use overlay::{OverlayConfig, OverlayMode};

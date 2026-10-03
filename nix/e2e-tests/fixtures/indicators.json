@@ -57,6 +57,15 @@
       "description": "Per-activation runtime directory on the decoy root; removed on deactivation."
     },
     {
+      "id": "runtime-copy-dir",
+      "kind": "absolute-path",
+      "scope": "runtime",
+      "severity": "warn",
+      "value": "/run/overlay-runtime",
+      "image_token": "overlay-runtime",
+      "description": "RAM-backed copy of the binary, config and mount manifest on the decoy /run; removed on deactivation and emergency."
+    },
+    {
       "id": "pivot-staging",
       "kind": "absolute-path",
       "scope": "runtime",

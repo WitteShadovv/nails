@@ -179,6 +179,14 @@ pub const ARTIFACTS: &[Artifact] = &[
         description: "Per-activation runtime directory on the decoy root; removed on deactivation.",
     },
     Artifact {
+        id: "runtime-copy-dir",
+        kind: ArtifactKind::AbsolutePath,
+        scope: ArtifactScope::Runtime,
+        severity: ArtifactSeverity::Warn,
+        value: crate::runtime_copy::RUNTIME_COPY_DIR,
+        description: "RAM-backed copy of the binary, config and mount manifest on the decoy /run; removed on deactivation and emergency.",
+    },
+    Artifact {
         id: "pivot-staging",
         kind: ArtifactKind::AbsolutePath,
         scope: ArtifactScope::Runtime,

@@ -211,6 +211,9 @@ pub enum Commands {
     /// Dispatch pending desktop notifications (called by XDG autostart on login)
     #[command(name = "notify-dispatch", hide = true)]
     NotifyDispatch,
+    /// In-session backend watcher (started at activation as a transient unit)
+    #[command(hide = true)]
+    Watch,
 }
 
 /// `nails activate` arguments

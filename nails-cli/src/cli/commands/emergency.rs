@@ -29,8 +29,13 @@ pub fn execute(
     let json = settings.is_json();
     let verbosity = settings.verbosity;
 
-    // A broken or missing config must never block an emergency teardown.
-    let config = super::load_config_or_defaults(config_override).into_config();
+    // A broken or missing config must never block an emergency teardown. When the
+    // hidden volume that holds the config has failed, fall back to the RAM-backed
+    // copy under /run and tell the operator which source was used.
+    let (config, config_source) = super::load_config_for_teardown(config_override);
+    if !json {
+        tracing::info!("Emergency teardown using the {}", config_source.describe());
+    }
 
     let state_path = config.state_file_path.clone();
     // Retained for the state lock, since `config` and the clone above are moved

@@ -269,6 +269,16 @@ impl Filesystem for RealFilesystem {
         dir_ops::copy_tree(src, dst)
     }
 
+    fn copy_file(&self, src: &Path, dst: &Path) -> Result<()> {
+        std::fs::copy(src, dst).map_err(|e| {
+            crate::NailsError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("failed to copy {} to {}: {e}", src.display(), dst.display()),
+            ))
+        })?;
+        Ok(())
+    }
+
     fn get_directory_size(&self, path: &Path) -> Result<u64> {
         dir_ops::get_directory_size(path)
     }

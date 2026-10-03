@@ -508,13 +508,43 @@ fn notify_send_available() -> bool {
 /// reaches their bus rather than root's.
 #[cfg(not(test))]
 fn send_notification(notification: &Notification) -> Result<()> {
+    send_notification_as(notification, "NAILS")
+}
+
+/// Neutral application name for immediate watcher alerts.
+///
+/// The login-time queue identifies itself as the product, but an alert the
+/// in-session watcher raises when the backend fails must reveal nothing on screen
+/// to a shoulder-surfer, so it is attributed to a generic source instead.
+#[cfg(not(test))]
+const NEUTRAL_APP_NAME: &str = "System";
+
+/// Send a desktop notification immediately, bypassing the login-time file queue.
+///
+/// The queue lives on the hidden root, so it is useless for reporting a failure of
+/// that very root: this sends straight to the operator's session bus. Attributed
+/// to a neutral application name so the alert does not name the tool on screen.
+#[cfg(not(test))]
+pub fn send_immediate(notification: &Notification) -> Result<()> {
+    send_notification_as(notification, NEUTRAL_APP_NAME)
+}
+
+/// Test build: immediate alerts never reach a real session bus.
+#[cfg(test)]
+pub fn send_immediate(_notification: &Notification) -> Result<()> {
+    Ok(())
+}
+
+/// Invoke `notify-send` with an explicit application name.
+#[cfg(not(test))]
+fn send_notification_as(notification: &Notification, app_name: &str) -> Result<()> {
     use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
 
     let mut command = ProcessCommand::caller_path("notify-send")
         .arg("--urgency")
         .arg(&notification.urgency)
         .arg("--app-name")
-        .arg("NAILS");
+        .arg(app_name);
 
     for (key, value) in notification_runtime_environment() {
         command = command.set_env(key, value);

@@ -310,6 +310,19 @@ fn render_template(root: &Path, title: &str) -> String {
 # [persona]
 # mode = "shared-home"
 
+# In-session watcher over the hidden backend.
+#   The hidden volume can fail mid-session (an automount is torn down when its
+#   device is pulled, the device drops off the bus, or the filesystem goes
+#   read-only). The watcher polls the backend every few seconds and alerts you the
+#   moment it fails. It is ALERT-ONLY by default: a transient stall never tears the
+#   session down on its own.
+# [backend_watch]
+# enabled = true           # start the watcher at activation
+# auto_emergency = false   # opt-in: tear the session down automatically on a
+#                          # failure that outlasts the debounce window
+# poll_interval_secs = 5   # seconds between probes
+# debounce_secs = 15       # seconds a failure must persist before auto_emergency
+
 # Terminal colors while the hidden environment is active.
 # [color_scheme]
 # enabled = true

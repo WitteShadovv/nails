@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use super::backend_watch::BackendWatchConfig;
 use super::colors::ColorSchemeConfig;
 use super::overlay::{OverlayConfig, OverlayMode};
 use super::persona::PersonaConfig;
@@ -274,6 +275,15 @@ pub struct Config {
     #[serde(default)]
     pub persona: PersonaConfig,
 
+    /// In-session watcher over the hidden root.
+    ///
+    /// Controls the long-running component started at activation that alerts the
+    /// operator (and, opt-in, tears the session down) when the hidden backend
+    /// fails mid-session. Alert-only by default. See
+    /// [`BackendWatchConfig`](super::backend_watch::BackendWatchConfig).
+    #[serde(default)]
+    pub backend_watch: BackendWatchConfig,
+
     /// Neutral active-state indicator prepended to the shell prompt while the
     /// hidden environment is active.
     ///
@@ -375,4 +385,5 @@ pub const CONFIG_KEYS: &[&str] = &[
     "accept_persistent_decoy",
     "color_scheme",
     "persona",
+    "backend_watch",
 ];

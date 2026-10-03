@@ -221,6 +221,7 @@ impl ConfigBuilder {
             loaded_config_path: None,
             color_scheme,
             persona: super::persona::PersonaConfig::default(),
+            backend_watch: super::backend_watch::BackendWatchConfig::default(),
             prompt_label: String::new(),
             nixos_flake: None,
             nixos_switch_required: true,

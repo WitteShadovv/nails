@@ -719,6 +719,9 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Step 10: Finalize - transition to Active.
         step.emit("finalize", "Finalizing activation...");
+        // Keep a copy of the overlay targets for the RAM-backed runtime copy
+        // below, since the list is moved into the Active state here.
+        let overlay_targets_for_copy = mounted_overlays.clone();
         let current = guard.current_state()?;
         let active_state = current.complete_activation(mounted_overlays, decoy_writers)?;
         guard.update_state(active_state)?;
@@ -729,6 +732,13 @@ impl<F: Filesystem> NailsManager<F> {
         activation_mounts.disarm();
         guard.commit();
         session_restart_guard.disarm();
+
+        // Mirror the binary, config and a mount manifest into a RAM-backed copy on
+        // the decoy /run, and start the in-session backend watcher, now that the
+        // activation has committed. Best-effort: the copy and watcher are a safety
+        // net for a backend that fails mid-session, not part of the overlay stack,
+        // so a failure here must never undo a successful activation.
+        self.install_backend_runtime_copy(&overlay_targets_for_copy);
 
         let final_state = self.current_state().ok();
 
@@ -809,6 +819,59 @@ impl<F: Filesystem> NailsManager<F> {
         let mut cached = self.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file.mark_debian_family();
+        }
+    }
+
+    /// Write the RAM-backed runtime copy and, when enabled, start the in-session
+    /// backend watcher.
+    ///
+    /// The copy mirrors the running executable, the effective configuration and a
+    /// manifest of the mounted overlay targets into a neutral `0700` directory on
+    /// the decoy `/run` (see [`crate::runtime_copy`]), so `emergency`/`recover`
+    /// stay runnable and informed even once the hidden volume is gone. The watcher
+    /// ([`crate::watcher`]) is then started from that copy as a transient systemd
+    /// unit. Everything here is best-effort: a failure leaves the session running
+    /// without the safety net and is logged, never fatal.
+    fn install_backend_runtime_copy(&self, overlay_targets: &[std::path::PathBuf]) {
+        if crate::runtime_safety::should_skip_host_interaction() {
+            return;
+        }
+
+        let exe = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Could not resolve the running executable; skipping the RAM-backed runtime copy"
+                );
+                return;
+            }
+        };
+
+        if let Err(e) = crate::runtime_copy::write_runtime_copy(
+            self.filesystem(),
+            self.config(),
+            &exe,
+            overlay_targets,
+        ) {
+            tracing::warn!(
+                error = %e,
+                "Failed to write the RAM-backed runtime copy; emergency teardown will still work \
+                 from the live mount table"
+            );
+            return;
+        }
+
+        // Tell the operator the panic button that survives a failed hidden volume:
+        // the mirrored binary runs from tmpfs, so it stays usable once the real
+        // binary on the hidden root is gone.
+        tracing::info!(
+            "If the hidden volume fails, run: sudo {} emergency",
+            crate::runtime_copy::binary_copy_path().display()
+        );
+
+        if self.config().backend_watch.enabled {
+            crate::runtime_copy::start_watch_unit();
         }
     }
 

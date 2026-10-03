@@ -200,6 +200,10 @@ impl Filesystem for MockFilesystem {
         self.modified_time_impl(path)
     }
 
+    fn copy_file(&self, src: &Path, dst: &Path) -> Result<()> {
+        self.copy_file_impl(src, dst)
+    }
+
     fn copy_tree(&self, src: &Path, dst: &Path) -> Result<()> {
         self.copy_tree_impl(src, dst)
     }

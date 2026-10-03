@@ -463,6 +463,15 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Recursively copy a directory tree preserving all attributes.
     fn copy_tree(&self, src: &Path, dst: &Path) -> Result<()>;
 
+    /// Copy a single regular file's bytes from `src` to `dst`, replacing `dst`.
+    ///
+    /// Unlike [`write_file_content`](Self::write_file_content) this copies raw
+    /// bytes, so it is the right call for a binary (the running executable copied
+    /// into the runtime directory). The caller sets the mode afterwards with
+    /// [`set_permissions`](Self::set_permissions); the copy itself makes no
+    /// promise about the destination mode.
+    fn copy_file(&self, src: &Path, dst: &Path) -> Result<()>;
+
     /// Get the total size of a directory's contents in bytes.
     fn get_directory_size(&self, path: &Path) -> Result<u64>;
 

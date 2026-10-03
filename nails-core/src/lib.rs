@@ -97,6 +97,10 @@ pub mod output;
 // Desktop notification signal files (post-activation user feedback)
 pub mod notification;
 
+pub mod runtime_copy;
+
+pub mod watcher;
+
 // Shared string constants (environment-variable names).
 pub mod constants;
 

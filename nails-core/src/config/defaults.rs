@@ -199,6 +199,7 @@ impl Default for Config {
             loaded_config_path: None,
             color_scheme: ColorSchemeConfig::default(),
             persona: PersonaConfig::default(),
+            backend_watch: super::backend_watch::BackendWatchConfig::default(),
             prompt_label: String::new(),
             nixos_flake: None,
             nixos_switch_required: true,

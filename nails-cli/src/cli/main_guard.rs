@@ -49,6 +49,7 @@ fn subcommand_name(command: &Commands) -> &'static str {
         Commands::ResetUpper(_) => "reset-upper",
         Commands::Config(_) => "config",
         Commands::NotifyDispatch => "notify-dispatch",
+        Commands::Watch => "watch",
     }
 }
 

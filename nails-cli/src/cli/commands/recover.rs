@@ -40,7 +40,12 @@ pub fn execute(
     let verbosity = settings.verbosity;
 
     // A broken or missing config must never block recovery of a stuck system.
-    let config = super::load_config_or_defaults(config_override).into_config();
+    // When the hidden volume is gone the config comes from the RAM-backed copy
+    // under /run; report which source was used.
+    let (config, config_source) = super::load_config_for_teardown(config_override);
+    if !json {
+        tracing::info!("Recovery using the {}", config_source.describe());
+    }
 
     let state_path = config.state_file_path.clone();
     let lock_state_path = state_path.clone();

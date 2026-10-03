@@ -25,6 +25,7 @@ pub mod recover;
 pub mod reset_upper;
 pub mod status;
 pub mod verify;
+pub mod watch;
 
 /// Resolve and load the configuration strictly.
 ///
@@ -86,6 +87,65 @@ pub(crate) fn load_config_or_report(
 /// defaults, whose hidden volume root is derived from the binary location;
 /// the teardown itself then only unmounts what the live mount table shows
 /// NAILS created.
+/// Where a teardown's configuration was ultimately loaded from.
+///
+/// Reported to the operator so a teardown that had to fall back off the failed
+/// hidden volume says so, rather than silently acting on the wrong data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfigSource {
+    /// The real configuration file (on the hidden volume or binary-relative).
+    File,
+    /// The RAM-backed copy under `/run`, used because the file was unreadable.
+    RuntimeCopy,
+    /// Built-in defaults, used because neither the file nor a copy was available.
+    Defaults,
+}
+
+impl ConfigSource {
+    /// A short phrase naming the source, for human-facing output.
+    pub(crate) fn describe(self) -> &'static str {
+        match self {
+            ConfigSource::File => "configuration file",
+            ConfigSource::RuntimeCopy => "RAM-backed runtime copy",
+            ConfigSource::Defaults => "built-in defaults",
+        }
+    }
+}
+
+/// Load the configuration for a teardown (emergency or recover) that must never
+/// be blocked by a failed hidden volume.
+///
+/// The real config file lives on the hidden volume, so when that volume is the
+/// thing that failed the file is unreadable. This tries, in order: the config
+/// file, the mirrored copy in the RAM-backed runtime directory under `/run`
+/// (written at activation precisely for this case), and finally the built-in
+/// defaults. The source is returned so the caller can tell the operator which one
+/// was used; in every case the teardown only acts on what the live mount table
+/// shows NAILS created.
+pub(crate) fn load_config_for_teardown(
+    config_override: Option<&Path>,
+) -> (nails_core::Config, ConfigSource) {
+    if let Ok(loaded) = resolve_config(config_override) {
+        return (loaded.into_config(), ConfigSource::File);
+    }
+
+    match nails_core::runtime_copy::read_config_copy(&nails_core::RealFilesystem) {
+        Ok(Some(config)) => {
+            tracing::warn!(
+                "configuration file unreadable; using the RAM-backed runtime copy under /run"
+            );
+            return (config, ConfigSource::RuntimeCopy);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read the runtime config copy; using defaults");
+        }
+    }
+
+    let loaded = load_config_or_defaults(config_override);
+    (loaded.into_config(), ConfigSource::Defaults)
+}
+
 pub(crate) fn load_config_or_defaults(config_override: Option<&Path>) -> LoadedConfig {
     resolve_config(config_override).unwrap_or_else(|error| {
         let path: PathBuf = nails_core::config::discover_config_path(config_override);
