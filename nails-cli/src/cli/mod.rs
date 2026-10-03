@@ -26,7 +26,6 @@ fn command_is_mutating(command: &Commands) -> bool {
             | Commands::Deactivate(_)
             | Commands::Reapply(_)
             | Commands::Emergency(_)
-            | Commands::Init(_)
             | Commands::ResetUpper(_)
     )
 }
