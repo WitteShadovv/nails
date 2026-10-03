@@ -42,24 +42,8 @@ const COMMON_TOOLS: &[RequiredTool] = &[
         package: "coreutils",
     },
     RequiredTool {
-        tool: "du",
-        package: "coreutils",
-    },
-    RequiredTool {
         tool: "sync",
         package: "coreutils",
-    },
-    RequiredTool {
-        tool: "find",
-        package: "findutils",
-    },
-    RequiredTool {
-        tool: "getfattr",
-        package: "attr",
-    },
-    RequiredTool {
-        tool: "setfattr",
-        package: "attr",
     },
     RequiredTool {
         tool: "swapoff",
@@ -254,6 +238,23 @@ mod tests {
         let check = HostToolsCheck::new();
         let result = check.run(&MockFilesystem::new()).unwrap();
         assert!(result.is_pass(), "{result:?}");
+    }
+
+    #[test]
+    fn opaque_and_native_walks_drop_the_attr_du_and_find_requirements() {
+        // Opaque handling is in-process and directory sizing/walking is native,
+        // so nails no longer spawns getfattr/setfattr/du/find. Requiring them
+        // here would fail pre-flight on a host without the `attr` package, which
+        // Debian and Ubuntu do not install by default.
+        let tools = required_tools(PlatformKind::Fhs);
+        for absent in ["getfattr", "setfattr", "du", "find"] {
+            assert!(
+                !tools.iter().any(|t| t.tool == absent),
+                "{absent} is no longer spawned and must not be required"
+            );
+        }
+        // The resolver-routed `cp` fallback stays, so it is still required.
+        assert!(tools.iter().any(|t| t.tool == "cp"));
     }
 
     #[test]
