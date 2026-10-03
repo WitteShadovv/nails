@@ -190,6 +190,7 @@ fn test_status_command_active_verified() {
         state: SystemState::Active {
             activated_at,
             overlays: overlays.clone(),
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         nixos_generation: Some("generation-123".to_string()),
@@ -230,6 +231,7 @@ fn test_status_command_active_mismatch() {
         state: SystemState::Active {
             activated_at,
             overlays: overlays.clone(),
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         ..StateFile::default()
@@ -347,6 +349,7 @@ fn test_status_command_active_all_overlays_mounted() {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: overlays.clone(),
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         ..StateFile::default()
@@ -372,6 +375,7 @@ fn test_status_command_active_recording_no_overlays_is_degraded() {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         overlay_status: std::collections::HashMap::new(),
         ..StateFile::default()
@@ -408,6 +412,7 @@ fn test_status_command_active_multiple_mismatches() {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: overlays.clone(),
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         ..StateFile::default()
@@ -467,6 +472,7 @@ fn test_uptime_calculation_with_recent_activation() {
         state: SystemState::Active {
             activated_at,
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         ..StateFile::default()
     };
@@ -489,6 +495,7 @@ fn test_uptime_calculation_with_long_activation() {
         state: SystemState::Active {
             activated_at,
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         ..StateFile::default()
     };
@@ -559,6 +566,50 @@ fn posture_maps_each_effective_state() {
         Posture::from_effective(&EffectiveState::Unknown, false),
         Posture::Unknown
     );
+}
+
+/// A writer that opened `/var` before the overlay and keeps writing to the decoy.
+fn tail_on_var() -> crate::DecoyWriter {
+    crate::DecoyWriter {
+        pid: 812,
+        name: "tail".to_string(),
+        service: None,
+        targets: vec![PathBuf::from("/var")],
+    }
+}
+
+#[test]
+fn decoy_writers_empty_outside_active_state() {
+    let report = StatusReport::default();
+    assert!(report.decoy_writers().is_empty());
+}
+
+#[test]
+fn status_command_reports_decoy_writers_recorded_at_activation() {
+    // status runs as its own process, so the writers must come from the state
+    // file written at activation, not from a fresh /proc scan.
+    let fs = MockFilesystem::new();
+    fs.mock_set_mounted(Path::new("/var"), true);
+
+    let overlays = vec![PathBuf::from("/var")];
+    let mut overlay_status = std::collections::HashMap::new();
+    overlay_status.insert(PathBuf::from("/var"), create_overlay_info("/var"));
+    let state_file = StateFile {
+        state: SystemState::Active {
+            activated_at: Utc::now(),
+            overlays,
+            decoy_writers: vec![tail_on_var()],
+        },
+        overlay_status,
+        ..StateFile::default()
+    };
+    let temp_file = create_temp_state_file(&state_file);
+
+    let cmd = StatusCommand::new(fs, Config::default(), temp_file.path().to_path_buf());
+    let report = cmd.run().unwrap();
+
+    assert_eq!(report.overlay_verification, VerificationStatus::Verified);
+    assert_eq!(report.decoy_writers(), &[tail_on_var()]);
 }
 
 #[test]
@@ -654,6 +705,7 @@ fn test_status_degraded_when_active_overlay_missing() {
 
     let state_file = StateFile {
         state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/var")],
         },
@@ -728,6 +780,7 @@ fn test_status_plain_ext4_home_is_not_a_verified_overlay() {
 
     let state_file = StateFile {
         state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
         },
@@ -995,6 +1048,7 @@ fn test_status_command_includes_formatted_uptime() {
         state: SystemState::Active {
             activated_at,
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         ..StateFile::default()
     };
@@ -1017,6 +1071,7 @@ fn test_status_command_includes_opsec_reminders_when_enabled() {
         state: SystemState::Active {
             activated_at,
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         ..StateFile::default()
     };
@@ -1050,6 +1105,7 @@ fn test_status_command_suppresses_opsec_reminders_when_disabled() {
         state: SystemState::Active {
             activated_at,
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         ..StateFile::default()
     };
@@ -1071,6 +1127,7 @@ fn test_status_command_no_reminders_for_short_uptime() {
         state: SystemState::Active {
             activated_at,
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         ..StateFile::default()
     };
@@ -1115,6 +1172,7 @@ fn test_uptime_calculation_handles_future_timestamp() {
         state: SystemState::Active {
             activated_at: future_time,
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         ..StateFile::default()
     };
@@ -1145,6 +1203,7 @@ fn test_verification_flags_overlay_absent_from_kernel() {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: overlays.clone(),
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         boot_id: crate::state::read_boot_id(),
@@ -1229,6 +1288,7 @@ fn test_status_command_populates_overlay_details_only_for_active_state_with_trac
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         },
         overlay_status: overlay_status.clone(),
         ..StateFile::default()
@@ -1269,6 +1329,7 @@ fn test_status_reports_upperdir_and_ownership_per_overlay() {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays,
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         boot_id: crate::state::read_boot_id(),
@@ -1339,6 +1400,7 @@ fn test_status_logs_verification_result() {
         state: SystemState::Active {
             activated_at,
             overlays,
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         ..StateFile::default()
@@ -1378,6 +1440,7 @@ fn test_overlay_mount_statuses_populated_for_active_state() {
         state: SystemState::Active {
             activated_at,
             overlays: overlays.clone(),
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         boot_id: crate::state::read_boot_id(),

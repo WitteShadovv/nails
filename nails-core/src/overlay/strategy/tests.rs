@@ -458,6 +458,7 @@ fn run_process_phase_skip_policy_lists_risky_as_survivors() {
 
     assert!(stopped.is_empty());
     assert_eq!(survivors.len(), 1);
+    assert_eq!(survivors[0].pid, 500);
     assert_eq!(survivors[0].name, "NetworkManager");
     assert_eq!(survivors[0].service.as_deref(), Some("NetworkManager"));
     // Skipping must not touch the process at all.
@@ -528,4 +529,103 @@ fn run_process_phase_counts_unrestartable_processes_as_survivors() {
     assert_eq!(survivors.len(), 1);
     assert_eq!(survivors[0].name, "firefox");
     assert!(executor.kill_calls().is_empty());
+}
+
+// The pre-mount sweep: refuse before any target is mounted or any process is
+// signalled when a user's terminal program would have to be force-terminated.
+
+fn on(target: &str, proc: ProcessInfo) -> (std::path::PathBuf, ProcessInfo) {
+    (std::path::PathBuf::from(target), proc)
+}
+
+fn noninteractive_keep_session() -> OverlayStrategyOptions {
+    OverlayStrategyOptions {
+        risky_services: Some(RiskyServicePolicy::Skip),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn sweep_refuses_a_tty_tail_on_var_naming_process_and_target() {
+    let found = vec![on("/var", proc("tail", 812, None, true))];
+
+    let err = check_interactive_terminations(&found, &noninteractive_keep_session())
+        .expect_err("a terminal-attached tail on /var must block activation");
+    let message = err.to_string();
+    assert!(message.contains("before mounting"), "{message}");
+    assert!(message.contains("tail (PID 812) on /var"), "{message}");
+    assert!(message.contains("--terminate-interactive"), "{message}");
+}
+
+#[test]
+fn sweep_lists_one_process_once_with_every_target() {
+    let found = vec![
+        on("/etc", proc("less", 77, None, true)),
+        on("/var", proc("less", 77, None, true)),
+        on("/var", proc("tail", 812, None, true)),
+    ];
+
+    let message = check_interactive_terminations(&found, &noninteractive_keep_session())
+        .unwrap_err()
+        .to_string();
+    assert!(message.contains("less (PID 77) on /etc, /var"), "{message}");
+    assert!(message.contains("tail (PID 812) on /var"), "{message}");
+}
+
+#[test]
+fn sweep_allows_processes_that_would_not_be_terminated() {
+    let found = vec![
+        // A shell in /home classifies NoRestart: it is left running (and later
+        // reported as a writer), never killed.
+        on("/home", proc("bash", 100, None, true)),
+        // A service is stopped through systemd, not by signal.
+        on("/var", proc("journal-tty", 200, Some("journal-tty"), true)),
+        // Not attached to a terminal.
+        on("/var", proc("logger", 300, None, false)),
+    ];
+
+    assert!(check_interactive_terminations(&found, &noninteractive_keep_session()).is_ok());
+}
+
+#[test]
+fn sweep_counts_risky_processes_only_under_an_explicit_restart() {
+    // A shell whose cwd is in /srv classifies Risky on that generic target.
+    let mut shell = proc("bash", 400, None, true);
+    shell.has_cwd_in_target = true;
+    let found = vec![on("/srv", shell)];
+
+    let restart = OverlayStrategyOptions {
+        risky_services: Some(RiskyServicePolicy::Restart),
+        ..Default::default()
+    };
+    assert!(check_interactive_terminations(&found, &restart).is_err());
+
+    // Skipped risky processes stay running as reported writers.
+    assert!(check_interactive_terminations(&found, &noninteractive_keep_session()).is_ok());
+
+    // Left to a prompt, the per-target guard decides after the answer.
+    let prompt = OverlayStrategyOptions {
+        risky_services: None,
+        ..Default::default()
+    };
+    assert!(check_interactive_terminations(&found, &prompt).is_ok());
+}
+
+#[test]
+fn sweep_allows_terminating_when_opted_in() {
+    let found = vec![on("/var", proc("tail", 812, None, true))];
+    let options = OverlayStrategyOptions {
+        terminate_interactive: true,
+        ..noninteractive_keep_session()
+    };
+    assert!(check_interactive_terminations(&found, &options).is_ok());
+}
+
+#[test]
+fn sweep_is_skipped_without_process_detection() {
+    let options = OverlayStrategyOptions {
+        skip_process_detection: true,
+        ..noninteractive_keep_session()
+    };
+    assert!(refuse_interactive_terminations(&[std::path::PathBuf::from("/var")], &options).is_ok());
 }

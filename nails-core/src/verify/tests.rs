@@ -1140,6 +1140,7 @@ fn test_verify_state_active_is_critical() {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         ..StateFile::default()
     };
@@ -1296,6 +1297,7 @@ fn active_verifier_with_mountinfo(mountinfo: &str) -> Verifier<MockFilesystem> {
     fs.mock_add_file("/proc/self/mountinfo", mountinfo);
     let state = StateFile {
         state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: Utc::now(),
             overlays: vec![],
         },

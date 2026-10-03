@@ -1,6 +1,6 @@
 //! Auto mode overlay mounting (dynamic target enumeration)
 
-use super::{MountFailureMode, build_overlay_targets, create_overlay_config};
+use super::{MountFailureMode, OverlayMountOutcome, build_overlay_targets, create_overlay_config};
 use crate::{Filesystem, NailsError, NailsManager, OverlayConfig, Result, Verbosity};
 use std::path::PathBuf;
 
@@ -18,15 +18,16 @@ impl<F: Filesystem> NailsManager<F> {
         tracker: &mut super::MountTracker<F>,
         strategy_options: &crate::overlay::OverlayStrategyOptions,
         verbosity: Verbosity,
-        direct_mounts: &mut usize,
-        pivot_mounts: &mut usize,
-        leaking_targets: &mut Vec<PathBuf>,
+        outcome: &mut OverlayMountOutcome,
     ) -> Result<()> {
         // Auto mode: enumerate root + apply exclusions, create overlays dynamically.
         let overlay_targets = build_overlay_targets(&self.filesystem, &self.config)?;
         // Checked again on the exact list about to be mounted: a top-level directory
         // created since the pre-flight checks is a new target.
         crate::preflight::ensure_targets_clear(&self.filesystem, &self.config, &overlay_targets)?;
+        // Refuse before anything is stopped or mounted if a user's terminal
+        // program would have to be force-terminated on any target.
+        crate::overlay::refuse_interactive_terminations(&overlay_targets, strategy_options)?;
 
         // Resolve each target's overlay config on the hidden volume. A build failure
         // is best-effort: record it and carry on, exactly as the merged loop treats
@@ -56,9 +57,7 @@ impl<F: Filesystem> NailsManager<F> {
             MountFailureMode::BestEffort,
             strategy_options,
             verbosity,
-            direct_mounts,
-            pivot_mounts,
-            leaking_targets,
+            outcome,
         )
     }
 }

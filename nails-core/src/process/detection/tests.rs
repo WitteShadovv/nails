@@ -364,3 +364,48 @@ fn check_interactive_is_false_for_non_terminal_fds() {
 
     assert!(!check_interactive(proc_path));
 }
+
+/// A fake `/proc/<pid>` for a `tail -f` a user started on a terminal: stdin is a
+/// pty, fd 3 is the followed log under `target`, and the cgroup is a login
+/// session scope rather than a service.
+fn fake_tty_tail(target: &Path) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let fd_dir = dir.path().join("fd");
+    fs::create_dir(&fd_dir).unwrap();
+    symlink("/dev/pts/7", fd_dir.join("0")).unwrap();
+    symlink(target.join("log/app.log"), fd_dir.join("3")).unwrap();
+    fs::write(dir.path().join("comm"), "tail\n").unwrap();
+    fs::write(dir.path().join("cmdline"), b"tail\0-f\0app.log\0").unwrap();
+    fs::write(
+        dir.path().join("cgroup"),
+        "0::/user.slice/user-0.slice/session-1.scope\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn inspect_process_describes_a_terminal_program_using_the_target() {
+    let target = Path::new("/var");
+    let proc_dir = fake_tty_tail(target);
+
+    let info = inspect_process(proc_dir.path(), 812, target).expect("tail uses /var");
+
+    assert_eq!(info.pid, 812);
+    assert_eq!(info.name, "tail");
+    assert_eq!(info.cmdline, "tail -f app.log");
+    assert!(info.has_open_fds_in_target);
+    assert!(info.is_interactive);
+    assert_eq!(info.service_name, None, "a session scope is not a service");
+}
+
+#[test]
+fn inspect_process_ignores_a_process_not_using_the_target() {
+    let proc_dir = fake_tty_tail(Path::new("/var"));
+    assert!(inspect_process(proc_dir.path(), 812, Path::new("/srv")).is_none());
+}
+
+#[test]
+fn detect_interactive_processes_using_no_targets_finds_nothing() {
+    assert!(detect_interactive_processes_using(&[]).unwrap().is_empty());
+}

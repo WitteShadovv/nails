@@ -24,6 +24,7 @@ fn test_emergency_cleanup_preserves_explicit_config_path() {
 
     let state_file = StateFile {
         state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: chrono::Utc::now(),
             overlays: vec![PathBuf::from("/home")],
         },

@@ -78,6 +78,7 @@ fn test_deactivate_failure_at_unmount_ends_degraded() {
         .force_state(SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         })
         .unwrap();
     {
@@ -201,6 +202,7 @@ fn test_deactivate_successful_unmounts_all_overlays() {
         .force_state(SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         })
         .unwrap();
     {
@@ -299,6 +301,7 @@ fn test_deactivate_requests_reboot_only_after_successful_teardown() {
         .force_state(SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         })
         .unwrap();
     {
@@ -390,6 +393,7 @@ fn test_deactivate_does_not_request_reboot_after_failed_teardown() {
         .force_state(SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         })
         .unwrap();
     {
@@ -486,6 +490,7 @@ fn manager_ready_for_reboot_step() -> (
         .lock()
         .unwrap()
         .force_state(SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
         })
@@ -702,6 +707,7 @@ fn test_deactivate_partial_failure_ends_degraded_without_remount() {
         .force_state(SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
+            decoy_writers: Vec::new(),
         })
         .unwrap();
     {
@@ -817,6 +823,7 @@ fn setup_active_with_etc_overlay() -> (
         .force_state(SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/etc")],
+            decoy_writers: Vec::new(),
         })
         .unwrap();
 
@@ -896,6 +903,7 @@ fn setup_active_with_home_overlay() -> (
         .force_state(SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         })
         .unwrap();
 

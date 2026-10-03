@@ -27,7 +27,7 @@ fn test_complete_activation_from_activating_returns_active() {
         started_at: chrono::Utc::now(),
     };
     let overlays = vec![PathBuf::from("/mnt/overlay1")];
-    let result = state.complete_activation(overlays.clone());
+    let result = state.complete_activation(overlays.clone(), vec![]);
     assert!(result.is_ok());
     match result.unwrap() {
         SystemState::Active {
@@ -47,6 +47,7 @@ fn test_begin_deactivation_from_active_returns_deactivating() {
     let state = SystemState::Active {
         activated_at: chrono::Utc::now(),
         overlays: vec![],
+        decoy_writers: Vec::new(),
     };
     let result = state.begin_deactivation();
     assert!(result.is_ok());
@@ -76,6 +77,7 @@ fn test_trigger_emergency_from_any_state_targets_inactive() {
         SystemState::Active {
             activated_at: chrono::Utc::now(),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         SystemState::Deactivating {
             started_at: chrono::Utc::now(),
@@ -120,6 +122,7 @@ fn test_begin_activation_from_active_returns_err() {
     let state = SystemState::Active {
         activated_at: chrono::Utc::now(),
         overlays: vec![],
+        decoy_writers: Vec::new(),
     };
     let result = state.begin_activation();
     assert!(result.is_err());
@@ -134,7 +137,7 @@ fn test_begin_activation_from_active_returns_err() {
 #[test]
 fn test_complete_activation_from_inactive_returns_err() {
     let state = SystemState::Inactive;
-    let result = state.complete_activation(vec![]);
+    let result = state.complete_activation(vec![], vec![]);
     assert!(result.is_err());
     assert!(
         result
@@ -185,6 +188,7 @@ fn test_error_messages_are_descriptive() {
     let state = SystemState::Active {
         activated_at: chrono::Utc::now(),
         overlays: vec![],
+        decoy_writers: Vec::new(),
     };
     let result = state.begin_activation();
     assert!(result.is_err());
@@ -202,6 +206,7 @@ fn test_is_active_returns_true_for_active_state() {
     let state = SystemState::Active {
         activated_at: chrono::Utc::now(),
         overlays: vec![],
+        decoy_writers: Vec::new(),
     };
     assert!(state.is_active());
 }
@@ -243,6 +248,7 @@ fn test_is_inactive_returns_false_for_non_inactive_states() {
         SystemState::Active {
             activated_at: chrono::Utc::now(),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         SystemState::Deactivating {
             started_at: chrono::Utc::now(),
@@ -264,6 +270,7 @@ fn test_can_deactivate_returns_true_for_active_state() {
     let state = SystemState::Active {
         activated_at: chrono::Utc::now(),
         overlays: vec![],
+        decoy_writers: Vec::new(),
     };
     assert!(state.can_deactivate());
 }
@@ -300,6 +307,7 @@ fn test_predicates_used_in_transition_validation() {
     let active = SystemState::Active {
         activated_at: chrono::Utc::now(),
         overlays: vec![],
+        decoy_writers: Vec::new(),
     };
     assert!(active.is_active());
     assert!(active.can_deactivate());
@@ -315,6 +323,7 @@ fn test_serialization_roundtrip() {
     let state = SystemState::Active {
         activated_at: chrono::Utc::now(),
         overlays: vec![PathBuf::from("/mnt/test")],
+        decoy_writers: Vec::new(),
     };
 
     let json = serde_json::to_string(&state).expect("Serialization should succeed");
@@ -336,7 +345,7 @@ fn test_all_invalid_transitions_from_activating() {
     assert!(state.complete_deactivation().is_err());
 
     // Should succeed
-    assert!(state.complete_activation(vec![]).is_ok());
+    assert!(state.complete_activation(vec![], vec![]).is_ok());
     assert!(state.trigger_emergency().is_ok());
 }
 
@@ -348,7 +357,7 @@ fn test_all_invalid_transitions_from_deactivating() {
 
     // Should fail
     assert!(state.begin_activation().is_err());
-    assert!(state.complete_activation(vec![]).is_err());
+    assert!(state.complete_activation(vec![], vec![]).is_err());
     assert!(state.begin_deactivation().is_err());
 
     // Should succeed
@@ -366,7 +375,7 @@ fn test_all_invalid_transitions_from_degraded() {
 
     // The normal lifecycle transitions are all refused from Degraded.
     assert!(state.begin_activation().is_err());
-    assert!(state.complete_activation(vec![]).is_err());
+    assert!(state.complete_activation(vec![], vec![]).is_err());
     assert!(state.begin_deactivation().is_err());
     assert!(state.complete_deactivation().is_err());
 
@@ -385,7 +394,7 @@ fn test_complete_state_transition_flow() {
 
     let overlays = vec![PathBuf::from("/test")];
     let state = state
-        .complete_activation(overlays.clone())
+        .complete_activation(overlays.clone(), vec![])
         .expect("Should complete activation");
     match &state {
         SystemState::Active { overlays: o, .. } => assert_eq!(o, &overlays),
@@ -406,6 +415,7 @@ fn test_emergency_from_active_state() {
     let state = SystemState::Active {
         activated_at: chrono::Utc::now(),
         overlays: vec![PathBuf::from("/test1"), PathBuf::from("/test2")],
+        decoy_writers: Vec::new(),
     };
 
     let after = state
@@ -430,6 +440,7 @@ fn test_enum_derives_debug_clone_partialeq() {
     let state3 = SystemState::Active {
         activated_at: chrono::Utc::now(),
         overlays: vec![],
+        decoy_writers: Vec::new(),
     };
     let state4 = state3.clone();
     assert_eq!(state3, state4);
@@ -444,8 +455,9 @@ fn test_complete_activation_from_active_returns_err() {
     let state = SystemState::Active {
         activated_at: chrono::Utc::now(),
         overlays: vec![],
+        decoy_writers: Vec::new(),
     };
-    let result = state.complete_activation(vec![]);
+    let result = state.complete_activation(vec![], vec![]);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("already active"));
 }
@@ -455,7 +467,7 @@ fn test_complete_activation_from_deactivating_returns_err() {
     let state = SystemState::Deactivating {
         started_at: chrono::Utc::now(),
     };
-    let result = state.complete_activation(vec![]);
+    let result = state.complete_activation(vec![], vec![]);
     assert!(result.is_err());
     assert!(
         result
@@ -472,7 +484,7 @@ fn test_complete_activation_from_degraded_returns_err() {
         reason: "unmount failed".into(),
         remaining_mounts: vec![],
     };
-    let result = state.complete_activation(vec![]);
+    let result = state.complete_activation(vec![], vec![]);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("degraded"));
 }
@@ -490,6 +502,7 @@ fn test_complete_deactivation_from_active_returns_err() {
     let state = SystemState::Active {
         activated_at: chrono::Utc::now(),
         overlays: vec![],
+        decoy_writers: Vec::new(),
     };
     let result = state.complete_deactivation();
     assert!(result.is_err());

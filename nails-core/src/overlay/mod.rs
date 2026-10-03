@@ -85,7 +85,7 @@ pub use pivot::{
 };
 
 // Universal mounting strategy
-pub use strategy::mount_overlay_with_strategy;
+pub use strategy::{mount_overlay_with_strategy, refuse_interactive_terminations};
 
 // Constants
 pub use pivot::{DEFAULT_MAX_SNAPSHOT_BYTES, PIVOT_STAGING_BASE};

@@ -141,6 +141,7 @@ fn active_state() -> SystemState {
     SystemState::Active {
         activated_at: fixed_instant(),
         overlays: vec![PathBuf::from(CONTRACT_TARGET)],
+        decoy_writers: Vec::new(),
     }
 }
 

@@ -199,6 +199,7 @@ impl<F: Filesystem> StatusCommand<F> {
             SystemState::Active {
                 activated_at,
                 overlays,
+                ..
             } => (overlays.clone(), Some(*activated_at)),
             SystemState::Activating { .. }
             | SystemState::Deactivating { .. }

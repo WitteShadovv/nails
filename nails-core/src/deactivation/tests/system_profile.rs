@@ -20,6 +20,7 @@ fn test_deactivate_returns_error_when_no_system_profile_exists() {
     };
 
     let active_state = SystemState::Active {
+        decoy_writers: Vec::new(),
         activated_at: chrono::Utc::now(),
         overlays: vec![],
     };
@@ -154,6 +155,7 @@ fn test_deactivate_uses_overlay_metadata_when_active_overlay_list_is_incomplete(
 
     StateFile {
         state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: chrono::Utc::now(),
             overlays: vec![PathBuf::from("/home")],
         },

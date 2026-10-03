@@ -49,6 +49,7 @@ fn test_current_state_uses_cache_on_subsequent_calls() {
         state: SystemState::Active {
             activated_at: chrono::Utc::now(),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         ..StateFile::default()
     };
@@ -154,6 +155,7 @@ fn test_update_state_invalid_transition_returns_error() {
     let result = manager.update_state(SystemState::Active {
         activated_at: Utc::now(),
         overlays: vec![],
+        decoy_writers: Vec::new(),
     });
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), NailsError::InvalidState(_)));
@@ -258,6 +260,7 @@ fn test_verify_overlay_status_active_with_mounted_overlays_ok() {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         ..StateFile::default()
@@ -302,6 +305,7 @@ fn test_verify_overlay_status_active_with_missing_overlay_error() {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         ..StateFile::default()
@@ -446,6 +450,7 @@ fn test_reset_upper_refuses_when_active() {
     let (_dir, _hidden_root, _fs, manager) = reset_upper_setup(SystemState::Active {
         activated_at: Utc::now(),
         overlays: vec![PathBuf::from("/home")],
+        decoy_writers: Vec::new(),
     });
 
     let err = manager
@@ -539,6 +544,7 @@ fn test_reconcile_state_resets_stale_active_keeping_build_metadata() {
         let _boot = test_boot_id::arm(Some("boot-previous"));
         let state = StateFile {
             state: SystemState::Active {
+                decoy_writers: Vec::new(),
                 activated_at: Utc::now(),
                 overlays: vec![PathBuf::from("/home")],
             },
@@ -587,6 +593,7 @@ fn test_reconcile_state_reports_degraded_without_resetting() {
     // mounted -> degraded, which must never be auto-reset.
     let state = StateFile {
         state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
         },

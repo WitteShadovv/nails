@@ -17,6 +17,7 @@
         "state",
         "state_source",
         "posture",
+        "decoy_writers",
         "overlays",
         "remaining_mounts",
         "overlay_verification",
@@ -58,6 +59,24 @@
         "remaining_mounts": {
           "type": "array",
           "items": { "type": "string", "pattern": "^/" }
+        },
+        "decoy_writers": {
+          "description": "Processes that kept writing to the decoy after activation, recorded at activation time. Empty unless the hidden environment is active.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pid", "name", "targets"],
+            "properties": {
+              "pid": { "type": "integer", "minimum": 0 },
+              "name": { "type": "string", "minLength": 1 },
+              "service": { "type": "string", "minLength": 1 },
+              "targets": {
+                "type": "array",
+                "items": { "type": "string", "pattern": "^/" }
+              }
+            }
+          }
         },
         "persona_mode": {
           "type": "string",

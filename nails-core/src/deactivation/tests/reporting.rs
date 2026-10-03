@@ -165,6 +165,7 @@ fn test_deactivation_report_is_not_successful_with_active_state() {
         remaining_mounts: Vec::new(),
         duration: Duration::from_millis(100),
         final_state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: chrono::Utc::now(),
             overlays: vec![],
         },

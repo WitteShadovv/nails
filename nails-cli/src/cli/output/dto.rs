@@ -6,7 +6,7 @@
 //! stable even if the internal types are refactored.
 
 use nails_core::status::VerificationStatus;
-use nails_core::{LoadOutcome, SystemState};
+use nails_core::{DecoyWriter, LoadOutcome, SystemState};
 use serde::Serialize;
 
 /// The stable `snake_case` name for a system state, used wherever a state needs
@@ -128,6 +128,46 @@ impl From<&VerificationStatus> for VerificationJson {
     }
 }
 
+/// A process still writing to the decoy, as reported by `activate` and
+/// `status`.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct DecoyWriterJson {
+    /// Process ID recorded at activation.
+    pub pid: u32,
+    /// Process name.
+    pub name: String,
+    /// Systemd service backing the process, when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    /// Overlay targets it still writes to through the decoy.
+    pub targets: Vec<String>,
+}
+
+impl From<&DecoyWriter> for DecoyWriterJson {
+    fn from(writer: &DecoyWriter) -> Self {
+        DecoyWriterJson {
+            pid: writer.pid,
+            name: writer.name.clone(),
+            service: writer.service.clone(),
+            targets: writer
+                .targets
+                .iter()
+                .map(|target| target.display().to_string())
+                .collect(),
+        }
+    }
+}
+
+/// The writers recorded in `state`, for machine output (empty unless Active).
+pub fn decoy_writers_json(state: &SystemState) -> Vec<DecoyWriterJson> {
+    match state {
+        SystemState::Active { decoy_writers, .. } => {
+            decoy_writers.iter().map(DecoyWriterJson::from).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,10 +175,52 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn decoy_writers_render_with_paths_as_strings() {
+        let state = SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/var")],
+            decoy_writers: vec![
+                DecoyWriter {
+                    pid: 812,
+                    name: "tail".to_string(),
+                    service: None,
+                    targets: vec![PathBuf::from("/var")],
+                },
+                DecoyWriter {
+                    pid: 600,
+                    name: "NetworkManager".to_string(),
+                    service: Some("NetworkManager".to_string()),
+                    targets: vec![PathBuf::from("/etc"), PathBuf::from("/var")],
+                },
+            ],
+        };
+
+        let value = serde_json::to_value(decoy_writers_json(&state)).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!([
+                {"pid": 812, "name": "tail", "targets": ["/var"]},
+                {
+                    "pid": 600,
+                    "name": "NetworkManager",
+                    "service": "NetworkManager",
+                    "targets": ["/etc", "/var"]
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn decoy_writers_are_empty_outside_the_active_state() {
+        assert!(decoy_writers_json(&SystemState::Inactive).is_empty());
+    }
+
+    #[test]
     fn active_state_renders_as_a_kind_object_not_a_debug_string() {
         let state = SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         };
         let json = StateJson::from_report(&state, &LoadOutcome::Loaded);
         let value = serde_json::to_value(&json).unwrap();
@@ -170,7 +252,8 @@ mod tests {
         assert_eq!(
             system_state_kind(&SystemState::Active {
                 activated_at: Utc::now(),
-                overlays: vec![]
+                overlays: vec![],
+                decoy_writers: Vec::new(),
             }),
             "active"
         );

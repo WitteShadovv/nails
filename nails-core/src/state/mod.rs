@@ -28,7 +28,7 @@
 //!
 //! // Complete activation
 //! let active = activating
-//!     .complete_activation(vec![])
+//!     .complete_activation(vec![], vec![])
 //!     .expect("Should transition to Active");
 //! assert!(active.is_active());
 //! ```
@@ -226,6 +226,15 @@ pub enum SystemState {
         activated_at: DateTime<Utc>,
         /// List of mounted overlay paths
         overlays: Vec<PathBuf>,
+        /// Writers that still referenced the decoy lower tree once the overlays
+        /// were up (empty when activation left none behind).
+        ///
+        /// Captured at activation time: these processes were deliberately not
+        /// restarted, so they keep writing to the decoy for as long as they run.
+        /// Recording them here lets `status`, which runs as a separate process,
+        /// report the leak without re-scanning `/proc`.
+        #[serde(default)]
+        decoy_writers: Vec<DecoyWriter>,
     },
 
     /// Deactivation in progress
@@ -321,5 +330,80 @@ impl SubmountAttachment {
         match self {
             SubmountAttachment::Bind { path } | SubmountAttachment::Overlay { path } => path,
         }
+    }
+}
+
+/// A process that still referenced the decoy lower tree after activation.
+///
+/// A process that opened an overlay target before the mount keeps resolving the
+/// original inodes, so whatever it writes lands on the decoy rather than the
+/// hidden volume. Activation restarts the writers it can; the ones it cannot (or
+/// was told to leave running) are recorded with their identity so the activation
+/// outcome, the login notification and `status` can name them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecoyWriter {
+    /// Process ID at activation time.
+    pub pid: u32,
+    /// Process name (from `/proc/{pid}/comm`).
+    pub name: String,
+    /// Systemd service backing the process, without the `.service` suffix.
+    #[serde(default)]
+    pub service: Option<String>,
+    /// Overlay targets the process still references through the decoy.
+    pub targets: Vec<PathBuf>,
+}
+
+impl DecoyWriter {
+    /// Who the writer is: `tail (PID 812)` or
+    /// `NetworkManager (NetworkManager.service, PID 600)`.
+    pub fn label(&self) -> String {
+        match &self.service {
+            Some(service) => format!("{} ({}.service, PID {})", self.name, service, self.pid),
+            None => format!("{} (PID {})", self.name, self.pid),
+        }
+    }
+}
+
+impl std::fmt::Display for DecoyWriter {
+    /// The label followed by the targets it still writes to:
+    /// `tail (PID 812) on /var`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let targets = self
+            .targets
+            .iter()
+            .map(|target| target.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(f, "{} on {}", self.label(), targets)
+    }
+}
+
+/// The headline for a set of decoy writers: `1 writer still on the decoy` or
+/// `3 writers still on the decoy`.
+///
+/// Shared by the activation outcome, the login notification and `status` so all
+/// three name the leak the same way.
+pub fn decoy_writers_headline(count: usize) -> String {
+    let noun = if count == 1 { "writer" } else { "writers" };
+    format!("{count} {noun} still on the decoy")
+}
+
+/// A one-line summary naming at most `limit` writers, then how many more there
+/// are: `tail (PID 812) on /var, bash (PID 77) on /srv and 2 more`.
+///
+/// Used where space is short (the desktop notification); full listings print
+/// every writer.
+pub fn summarize_decoy_writers(writers: &[DecoyWriter], limit: usize) -> String {
+    let shown = writers
+        .iter()
+        .take(limit)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let hidden = writers.len().saturating_sub(limit);
+    if hidden == 0 {
+        shown
+    } else {
+        format!("{shown} and {hidden} more")
     }
 }

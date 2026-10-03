@@ -157,6 +157,7 @@ fn setup_active_manager() -> ManagerFixture {
     // Set state to ACTIVE
     manager
         .force_state(SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: chrono::Utc::now(),
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
         })
@@ -217,6 +218,7 @@ fn write_state_with_overlay(
 
     StateFile {
         state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: chrono::Utc::now(),
             overlays: vec![target.to_path_buf()],
         },
@@ -290,6 +292,7 @@ fn active_manager_no_profile() -> (
     let mut manager = NailsManager::new(fs, config, state_path);
     manager
         .force_state(SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: chrono::Utc::now(),
             overlays: vec![],
         })
@@ -336,6 +339,7 @@ fn active_manager_with_failing_profile_lookup() -> (
     // the manager is built so its first state read picks it up.
     StateFile {
         state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: chrono::Utc::now(),
             overlays: vec![],
         },
@@ -388,6 +392,7 @@ fn active_manager_with_overlays(
 
     StateFile {
         state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: base,
             overlays,
         },

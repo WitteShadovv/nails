@@ -341,6 +341,7 @@ fn execute_status_no_color_verbose_active_shows_overlay_details_and_logs() {
         state: SystemState::Active {
             activated_at,
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         },
         nixos_generation: Some("nails-gen-77".to_string()),
         overlay_status,

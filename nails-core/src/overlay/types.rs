@@ -138,9 +138,13 @@ pub enum MountMethod {
 /// resolving and writing to the decoy lower tree regardless of the mount method,
 /// so the set is the security-relevant signal. Keeping the identity (not just a
 /// count) lets the outcome, the notification and `nails status` name exactly what
-/// is still leaking.
+/// is still leaking; activation folds these per-target lists into
+/// [`DecoyWriter`](crate::DecoyWriter) records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurvivingWriter {
+    /// Process ID, so two writers with the same name stay distinct and the
+    /// operator can find the exact process.
+    pub pid: u32,
     /// Process name (from `/proc/{pid}/comm`).
     pub name: String,
     /// Systemd service backing the process, if any.

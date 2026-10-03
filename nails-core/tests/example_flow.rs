@@ -21,6 +21,7 @@ fn force_active(manager: &mut NailsManager<MockFilesystem>) {
         .force_state(SystemState::Active {
             activated_at: chrono::Utc::now(),
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
+            decoy_writers: Vec::new(),
         })
         .unwrap();
 }
@@ -52,6 +53,7 @@ fn test_basic_activation_flow() {
         .update_state(SystemState::Active {
             activated_at: chrono::Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         })
         .unwrap();
     assert!(matches!(
@@ -142,6 +144,7 @@ fn test_state_machine_round_trip() {
         .update_state(SystemState::Active {
             activated_at: chrono::Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         })
         .unwrap();
 
@@ -237,6 +240,7 @@ fn test_status_from_various_states() {
         .force_state(SystemState::Active {
             activated_at: chrono::Utc::now(),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         })
         .unwrap();
     assert!(manager.current_state().unwrap().is_active());

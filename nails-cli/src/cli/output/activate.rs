@@ -4,7 +4,7 @@ use nails_core::output::{Mark, Tone};
 use serde::Serialize;
 
 use super::OutputSettings;
-use crate::cli::output::dto::StateJson;
+use crate::cli::output::dto::{DecoyWriterJson, StateJson, decoy_writers_json};
 use crate::cli::output::envelope::SCHEMA_VERSION;
 
 /// A streamed progress line for `activate --json`.
@@ -28,6 +28,9 @@ struct ActivateResultEvent {
     status: &'static str,
     duration: f64,
     state: StateJson,
+    /// Processes that kept writing to the decoy after the overlays came up.
+    /// Empty when activation left none behind (or did not complete).
+    decoy_writers: Vec<DecoyWriterJson>,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     failed_checks: Option<Vec<FailedCheckJson>>,
@@ -71,6 +74,42 @@ fn manager_state_json<F: nails_core::Filesystem>(
     }
 }
 
+/// The writers activation recorded as still on the decoy (empty unless the
+/// state is Active).
+fn manager_decoy_writers<F: nails_core::Filesystem>(
+    manager: &nails_core::NailsManager<F>,
+) -> Vec<nails_core::DecoyWriter> {
+    match manager.current_state() {
+        Ok(nails_core::SystemState::Active { decoy_writers, .. }) => decoy_writers,
+        _ => Vec::new(),
+    }
+}
+
+/// The lines naming the writers left on the decoy, or none when there are none:
+/// a `NOT OPTIMAL` headline, then one bulleted line per writer.
+fn decoy_writer_lines(
+    writers: &[nails_core::DecoyWriter],
+    style: nails_core::output::Style,
+) -> Vec<String> {
+    if writers.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![style.paint_bold(
+        format_args!(
+            "{} NOT OPTIMAL: {}:",
+            style.glyph(Mark::Warn),
+            nails_core::decoy_writers_headline(writers.len())
+        ),
+        Tone::Yellow,
+    )];
+    lines.extend(
+        writers
+            .iter()
+            .map(|writer| format!("  {} {}", style.glyph(Mark::Bullet), writer)),
+    );
+    lines
+}
+
 /// Emit a progress event on stdout, ahead of the final result line.
 pub fn print_activate_progress(phase: &'static str) {
     let event = ActivateProgressEvent {
@@ -109,6 +148,10 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
     use nails_core::{ActivationOutcome, NailsError};
 
     let state = manager_state_json(manager);
+    let decoy_writers = match manager.current_state() {
+        Ok(state) => decoy_writers_json(&state),
+        Err(_) => Vec::new(),
+    };
 
     // Convert shell setup result to JSON structure
     let shell_instructions_json = shell_setup.map(|setup| ShellInstructionsJson {
@@ -127,6 +170,7 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
             status: "already_active",
             duration,
             state,
+            decoy_writers,
             message: "System is already active; nothing to do".to_string(),
             failed_checks: None,
             // No activation ran, so no shell integration was applied.
@@ -140,6 +184,7 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
             status: "success",
             duration,
             state,
+            decoy_writers,
             message: format!("Activation complete in {:.1}s", duration),
             failed_checks: None,
             shell_instructions: shell_instructions_json,
@@ -153,6 +198,7 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
                 status: "error",
                 duration,
                 state,
+                decoy_writers,
                 message: "Pre-flight checks failed".to_string(),
                 failed_checks: Some(
                     failures
@@ -180,6 +226,7 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
                 status: "error",
                 duration,
                 state,
+                decoy_writers,
                 message: format!("Activation failed: {}", e),
                 failed_checks: None,
                 shell_instructions: None,
@@ -191,7 +238,8 @@ fn build_activate_json_output<F: nails_core::Filesystem>(
 /// Print activation result in human-readable format
 ///
 /// Results go to stdout and failures to stderr, each painted with that
-/// stream's style; under `--quiet` only the result line is printed.
+/// stream's style; under `--quiet` only the result line and any writers left on
+/// the decoy (a security finding, never suppressed) are printed.
 pub fn print_activate_human<F: nails_core::Filesystem>(
     result: &Result<nails_core::ActivationOutcome, nails_core::NailsError>,
     duration: f64,
@@ -220,12 +268,18 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
             );
         }
         Ok(ActivationOutcome::Activated) => {
+            let out = settings.stdout_style();
             // The success summary (stdout) is built as a string so it can be
             // snapshotted at each verbosity without capturing the process stdout.
             print!(
                 "{}",
                 render_activate_success(duration, shell_setup, settings)
             );
+            // Writers left on the decoy are a security warning, so report them
+            // even in quiet mode, after the completion summary.
+            for line in decoy_writer_lines(&manager_decoy_writers(manager), out) {
+                println!("{line}");
+            }
         }
         Err(NailsError::PreFlightCheckFailed(failures)) => {
             eprintln!(
@@ -373,7 +427,7 @@ fn render_activate_success(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nails_core::{NailsError, ShellSetupResult, TestWorld};
+    use nails_core::{MockFilesystem, NailsError, NailsManager, ShellSetupResult, TestWorld};
     use std::path::PathBuf;
 
     fn quiet_settings() -> OutputSettings {
@@ -427,6 +481,91 @@ mod tests {
             warning: Some("Could not detect shell config".to_string()),
             rc_modified: false,
         }
+    }
+
+    /// A manager whose state is Active with one writer left on the decoy. The
+    /// temporary directory doubles as the hidden volume so the state can be saved.
+    fn make_active_manager_with_writer() -> (tempfile::TempDir, NailsManager<MockFilesystem>) {
+        let (mut manager, dir) = TestWorld::new().manager();
+        manager
+            .force_state(nails_core::SystemState::Active {
+                activated_at: chrono::Utc::now(),
+                overlays: vec![PathBuf::from("/var")],
+                decoy_writers: vec![tail_writer()],
+            })
+            .unwrap();
+        (dir, manager)
+    }
+
+    fn tail_writer() -> nails_core::DecoyWriter {
+        nails_core::DecoyWriter {
+            pid: 812,
+            name: "tail".to_string(),
+            service: None,
+            targets: vec![PathBuf::from("/var")],
+        }
+    }
+
+    // ── decoy writers ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_json_success_lists_writers_left_on_the_decoy() {
+        let (_dir, manager) = make_active_manager_with_writer();
+        let output = build_activate_json_output(
+            &Ok(nails_core::ActivationOutcome::Activated),
+            1.0,
+            &manager,
+            None,
+        );
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["state"]["kind"], "active");
+        assert_eq!(
+            json["decoy_writers"],
+            serde_json::json!([{"pid": 812, "name": "tail", "targets": ["/var"]}])
+        );
+    }
+
+    #[test]
+    fn test_json_result_always_carries_decoy_writers() {
+        let (manager, _tempdir) = TestWorld::new().manager();
+        let output = build_activate_json_output(
+            &Ok(nails_core::ActivationOutcome::Activated),
+            1.0,
+            &manager,
+            None,
+        );
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["decoy_writers"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn test_decoy_writer_lines_name_each_writer() {
+        let style = nails_core::output::Style {
+            color: false,
+            ascii: true,
+        };
+        let lines = decoy_writer_lines(&[tail_writer()], style);
+        assert_eq!(
+            lines,
+            vec![
+                "[WARN] NOT OPTIMAL: 1 writer still on the decoy:".to_string(),
+                "  - tail (PID 812) on /var".to_string(),
+            ]
+        );
+        assert!(decoy_writer_lines(&[], style).is_empty());
+    }
+
+    #[test]
+    fn test_human_success_with_writers_quiet() {
+        let (_dir, manager) = make_active_manager_with_writer();
+        assert_eq!(manager_decoy_writers(&manager), vec![tail_writer()]);
+        print_activate_human(
+            &Ok(nails_core::ActivationOutcome::Activated),
+            1.0,
+            &manager,
+            None,
+            &quiet_settings(),
+        );
     }
 
     // ── print_activate_json ────────────────────────────────────────────────────

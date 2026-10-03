@@ -2,6 +2,106 @@
 
 use super::*;
 
+// ========== DecoyWriter Tests ==========
+
+fn writer(pid: u32, name: &str, service: Option<&str>, targets: &[&str]) -> DecoyWriter {
+    DecoyWriter {
+        pid,
+        name: name.to_string(),
+        service: service.map(str::to_string),
+        targets: targets.iter().map(PathBuf::from).collect(),
+    }
+}
+
+#[test]
+fn test_complete_activation_records_decoy_writers() {
+    let activating = SystemState::Inactive.begin_activation().unwrap();
+    let writers = vec![writer(812, "tail", None, &["/var"])];
+
+    let active = activating
+        .complete_activation(vec![PathBuf::from("/var")], writers.clone())
+        .unwrap();
+
+    match active {
+        SystemState::Active { decoy_writers, .. } => assert_eq!(decoy_writers, writers),
+        other => panic!("expected Active, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_decoy_writers_survive_a_state_round_trip() {
+    let state = SystemState::Active {
+        activated_at: Utc::now(),
+        overlays: vec![PathBuf::from("/etc"), PathBuf::from("/var")],
+        decoy_writers: vec![writer(
+            600,
+            "NetworkManager",
+            Some("NetworkManager"),
+            &["/etc", "/var"],
+        )],
+    };
+
+    let json = serde_json::to_string(&state).unwrap();
+    let back: SystemState = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, state);
+}
+
+#[test]
+fn test_decoy_writers_default_to_empty_when_absent() {
+    // An Active record with no writers field reads as "no writers left".
+    let json = r#"{"Active":{"activated_at":"2026-01-01T00:00:00Z","overlays":["/home"]}}"#;
+    let state: SystemState = serde_json::from_str(json).unwrap();
+    match state {
+        SystemState::Active { decoy_writers, .. } => assert!(decoy_writers.is_empty()),
+        other => panic!("expected Active, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_decoy_writer_label_and_display() {
+    let tail = writer(812, "tail", None, &["/var"]);
+    assert_eq!(tail.label(), "tail (PID 812)");
+    assert_eq!(tail.to_string(), "tail (PID 812) on /var");
+
+    let nm = writer(
+        600,
+        "NetworkManager",
+        Some("NetworkManager"),
+        &["/etc", "/var"],
+    );
+    assert_eq!(
+        nm.label(),
+        "NetworkManager (NetworkManager.service, PID 600)"
+    );
+    assert_eq!(
+        nm.to_string(),
+        "NetworkManager (NetworkManager.service, PID 600) on /etc, /var"
+    );
+}
+
+#[test]
+fn test_decoy_writers_headline_pluralises() {
+    assert_eq!(decoy_writers_headline(1), "1 writer still on the decoy");
+    assert_eq!(decoy_writers_headline(3), "3 writers still on the decoy");
+}
+
+#[test]
+fn test_summarize_decoy_writers_caps_the_list() {
+    let writers = vec![
+        writer(1, "a", None, &["/var"]),
+        writer(2, "b", None, &["/var"]),
+        writer(3, "c", None, &["/var"]),
+    ];
+    assert_eq!(
+        summarize_decoy_writers(&writers, 3),
+        "a (PID 1) on /var, b (PID 2) on /var, c (PID 3) on /var"
+    );
+    assert_eq!(
+        summarize_decoy_writers(&writers, 1),
+        "a (PID 1) on /var and 2 more"
+    );
+}
+
 // ========== OverlayInfo Tests ==========
 
 #[test]
@@ -84,6 +184,7 @@ fn test_state_file_serialization() {
                 .unwrap()
                 .with_timezone(&Utc),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         },
         nixos_generation: Some("abc123def456".to_string()),
         overlay_status,
@@ -356,6 +457,7 @@ fn test_save_load_round_trip_with_active_state() {
                 .unwrap()
                 .with_timezone(&Utc),
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
+            decoy_writers: Vec::new(),
         },
         nixos_generation: Some("abc123def456".to_string()),
         overlay_status,
@@ -417,6 +519,7 @@ fn test_save_load_multiple_overlays() {
                 PathBuf::from("/etc"),
                 PathBuf::from("/var"),
             ],
+            decoy_writers: Vec::new(),
         },
         nixos_generation: Some("test123".to_string()),
         overlay_status,
@@ -695,6 +798,7 @@ fn test_persist_race_condition_handling() {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         nixos_generation: None,
         overlay_status: std::collections::HashMap::new(),
@@ -932,6 +1036,7 @@ fn test_state_guard_deactivation_failure_scenario() {
         create_test_manager_with_state(SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         });
 
     let previous_state = manager.current_state().unwrap();
@@ -975,6 +1080,7 @@ fn test_state_guard_rollback_after_multiple_state_changes() {
             .force_state(SystemState::Active {
                 activated_at: Utc::now(),
                 overlays: vec![],
+                decoy_writers: Vec::new(),
             })
             .unwrap();
         guard
@@ -1136,6 +1242,7 @@ fn test_integration_deactivate_panic_triggers_stateguard_rollback() {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         ..StateFile::default()
@@ -1675,6 +1782,7 @@ fn test_version_migration_preserves_data() {
                 .unwrap()
                 .with_timezone(&Utc),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         },
         nixos_generation: Some("gen-xyz".to_string()),
         config_fingerprint: Some("abcdef0123456789".to_string()),
@@ -1835,6 +1943,7 @@ fn test_emergency_transition_targets_inactive_and_degraded_recovers() {
     let after = SystemState::Active {
         activated_at: Utc::now(),
         overlays: vec![],
+        decoy_writers: Vec::new(),
     }
     .trigger_emergency()
     .unwrap();

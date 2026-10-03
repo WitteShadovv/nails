@@ -49,6 +49,51 @@ fn state_label(report: &nails_core::status::StatusReport) -> &'static str {
     }
 }
 
+/// The security-posture lines: the kernel-truth posture and its remediation,
+/// followed — when writers were left on the decoy at activation — by
+/// `NOT OPTIMAL: N writers still on the decoy` and one line per writer, so the
+/// operator sees exactly what is leaking even while the posture stays ACTIVE.
+pub(super) fn posture_lines(
+    report: &nails_core::status::StatusReport,
+    style: Style,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Security Posture:   {}",
+        report.posture.render(style)
+    )];
+    if let Some(remediation) = report.posture.remediation() {
+        lines.push(format!("  {}", style.marked(Mark::Arrow, remediation)));
+    }
+
+    let writers = report.decoy_writers();
+    if !writers.is_empty() {
+        lines.push(format!(
+            "  {}",
+            style.marked(
+                Mark::Warn,
+                format_args!(
+                    "NOT OPTIMAL: {}",
+                    nails_core::decoy_writers_headline(writers.len())
+                ),
+            )
+        ));
+        lines.extend(
+            writers
+                .iter()
+                .map(|writer| format!("    {}", style.marked(Mark::Bullet, writer))),
+        );
+        lines.push(format!(
+            "    {}",
+            style.paint(
+                "Recorded at activation: what these write lands on the decoy disk. \
+                 Close or restart them to stop it.",
+                nails_core::output::Tone::Dim,
+            )
+        ));
+    }
+    lines
+}
+
 /// Print the status report header: box drawing, or an ASCII rule.
 pub fn print_status_header(style: Style) {
     if style.ascii {
@@ -80,9 +125,8 @@ pub fn print_status_human(
     print_status_header(style);
 
     println!("State:              {}", state_label(report));
-    println!("Security Posture:   {}", report.posture.render(style));
-    if let Some(remediation) = report.posture.remediation() {
-        println!("  {}", style.marked(Mark::Arrow, remediation));
+    for line in posture_lines(report, style) {
+        println!("{line}");
     }
     if !report.remaining_mounts.is_empty() {
         println!("Live NAILS mounts:");

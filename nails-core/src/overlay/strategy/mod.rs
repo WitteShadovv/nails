@@ -15,6 +15,9 @@ use super::pivot::{pivot_overlay_mount, snapshot_pivot_overlay_mount};
 use super::types::{MountMethod, MountResult, OverlayStrategyOptions};
 
 mod process_phase;
+#[cfg(test)]
+use process_phase::check_interactive_terminations;
+pub use process_phase::refuse_interactive_terminations;
 use process_phase::run_process_phase;
 
 #[cfg(test)]

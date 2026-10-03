@@ -6,6 +6,7 @@ expression: redact_status(value)
   "command": "status",
   "data": {
     "activated_at": "2023-11-14T22:13:20+00:00",
+    "decoy_writers": [],
     "hidden_root_available_bytes": "[bytes]",
     "hidden_root_total_bytes": "[bytes]",
     "hidden_root_used_bytes": "[bytes]",

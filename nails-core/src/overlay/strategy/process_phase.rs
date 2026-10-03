@@ -6,13 +6,14 @@
 //! sequencing can be unit-tested through a scripted command executor.
 
 use crate::overlay::{OverlayStrategyOptions, SurvivingWriter};
-use crate::process::{ProcessInfo, RiskyServicePolicy};
+use crate::process::{ProcessInfo, RestartStrategy, RiskyServicePolicy};
 use crate::{NailsError, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Record a process as a surviving writer (keeps its identity, not just a count).
 fn survivor(proc: &ProcessInfo) -> SurvivingWriter {
     SurvivingWriter {
+        pid: proc.pid,
         name: proc.name.clone(),
         service: proc.service_name.clone(),
     }
@@ -26,6 +27,103 @@ fn survivor(proc: &ProcessInfo) -> SurvivingWriter {
 /// when any such process would be terminated without an explicit opt-in.
 fn is_protected_interactive(proc: &ProcessInfo) -> bool {
     proc.service_name.is_none() && proc.is_interactive
+}
+
+/// Whether Phase 2 would force-terminate an interactive user program: `proc` is
+/// protected (see [`is_protected_interactive`]) and its classification on the
+/// target means it gets stopped — a safe process while safe restarts are on, or
+/// a risky one when risky services are being restarted.
+///
+/// The single predicate behind both the pre-mount sweep and the per-target
+/// guard, so the two can never disagree about which processes are refused.
+fn would_force_terminate(
+    proc: &ProcessInfo,
+    strategy: RestartStrategy,
+    options: &OverlayStrategyOptions,
+    restart_risky: bool,
+) -> bool {
+    if !is_protected_interactive(proc) {
+        return false;
+    }
+    match strategy {
+        RestartStrategy::Safe => options.auto_restart_safe,
+        RestartStrategy::Risky => restart_risky,
+        RestartStrategy::NoRestart | RestartStrategy::Skip => false,
+    }
+}
+
+/// The refusal returned when activation would have to force-terminate
+/// interactive programs. `listed` names each process and where it was found.
+fn interactive_refusal(scope: &str, listed: &str) -> NailsError {
+    NailsError::InvalidState(format!(
+        "Refusing to force-terminate interactive process(es) {scope}: {listed}. \
+         Close them, or re-run with --terminate-interactive to end them anyway."
+    ))
+}
+
+/// Refuse up front when mounting `targets` would force-terminate an interactive
+/// user program on any of them.
+///
+/// Runs before the first mount, service stop or signal, so a `tail -f` on
+/// `/var` blocks activation with nothing changed rather than after earlier
+/// targets were already mounted and their services restarted. Risky services
+/// count only under an explicit `restart` policy: when the policy is left to a
+/// prompt, the per-target guard in [`run_process_phase`] still applies once the
+/// operator has answered.
+pub fn refuse_interactive_terminations(
+    targets: &[PathBuf],
+    options: &OverlayStrategyOptions,
+) -> Result<()> {
+    if options.terminate_interactive || options.skip_process_detection {
+        return Ok(());
+    }
+    let found = crate::process::detect_interactive_processes_using(targets)?;
+    check_interactive_terminations(&found, options)
+}
+
+/// The decision behind [`refuse_interactive_terminations`], taking the detected
+/// `(target, process)` pairs so it can be tested without a live `/proc`.
+pub(super) fn check_interactive_terminations(
+    found: &[(PathBuf, ProcessInfo)],
+    options: &OverlayStrategyOptions,
+) -> Result<()> {
+    use crate::process::classify_process;
+
+    if options.terminate_interactive {
+        return Ok(());
+    }
+    let restart_risky = options.risky_services == Some(RiskyServicePolicy::Restart);
+
+    // One entry per process, listing every target it would be terminated for.
+    let mut offenders: Vec<(&ProcessInfo, Vec<String>)> = Vec::new();
+    for (target, proc) in found {
+        if !would_force_terminate(proc, classify_process(proc, target), options, restart_risky) {
+            continue;
+        }
+        let shown = target.display().to_string();
+        match offenders.iter_mut().find(|(seen, _)| seen.pid == proc.pid) {
+            Some((_, targets)) => targets.push(shown),
+            None => offenders.push((proc, vec![shown])),
+        }
+    }
+
+    if offenders.is_empty() {
+        return Ok(());
+    }
+
+    let listed = offenders
+        .iter()
+        .map(|(proc, targets)| {
+            format!("{} (PID {}) on {}", proc.name, proc.pid, targets.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    tracing::error!(
+        processes = %listed,
+        "  ✗ Refusing to force-terminate interactive process(es) before mounting: {}",
+        listed
+    );
+    Err(interactive_refusal("before mounting", &listed))
 }
 
 /// Classify the blocking processes and act on them: restart the safe ones,
@@ -45,8 +143,8 @@ pub(super) fn run_process_phase(
     options: &OverlayStrategyOptions,
     executor: &dyn crate::process::restart::CommandExecutor,
 ) -> Result<(Vec<String>, Vec<SurvivingWriter>)> {
+    use crate::process::classify_process;
     use crate::process::restart::restart_processes_with_executor;
-    use crate::process::{RestartStrategy, classify_process};
     use crate::prompts::prompt_risky_process_restart;
 
     let mut stopped_services: Vec<String> = Vec::new();
@@ -112,21 +210,13 @@ pub(super) fn run_process_phase(
     // work silently, so abort before mounting and before any signal is sent,
     // listing the offenders, unless the operator opted in.
     if !options.terminate_interactive {
-        let mut protected: Vec<&ProcessInfo> = Vec::new();
-        if options.auto_restart_safe {
-            protected.extend(
-                to_restart_safe
-                    .iter()
-                    .filter(|p| is_protected_interactive(p)),
-            );
-        }
-        if restart_risky {
-            protected.extend(
-                to_restart_risky
-                    .iter()
-                    .filter(|p| is_protected_interactive(p)),
-            );
-        }
+        let protected: Vec<&ProcessInfo> = to_restart_safe
+            .iter()
+            .map(|p| (p, RestartStrategy::Safe))
+            .chain(to_restart_risky.iter().map(|p| (p, RestartStrategy::Risky)))
+            .filter(|(p, strategy)| would_force_terminate(p, *strategy, options, restart_risky))
+            .map(|(p, _)| p)
+            .collect();
 
         if !protected.is_empty() {
             let listed = protected
@@ -141,12 +231,10 @@ pub(super) fn run_process_phase(
                 target.display(),
                 listed
             );
-            return Err(NailsError::InvalidState(format!(
-                "Refusing to force-terminate interactive process(es) using {}: {}. \
-                 Close them, or re-run with --terminate-interactive to end them anyway.",
-                target.display(),
-                listed
-            )));
+            return Err(interactive_refusal(
+                &format!("using {}", target.display()),
+                &listed,
+            ));
         }
     }
 

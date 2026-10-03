@@ -88,13 +88,54 @@ pub fn detect_processes_using(target: &Path) -> Result<Vec<ProcessInfo>> {
     }
 
     let mut blocking = Vec::new();
+    for (pid, proc_path) in scan_processes()? {
+        if let Some(info) = inspect_process(&proc_path, pid, target) {
+            blocking.push(info);
+        }
+    }
 
-    // Build set of PIDs to exclude: current process and all ancestors.
-    // This prevents nails from killing its own process tree (e.g., the sudo
-    // that invoked nails, or the NixOS test-driver control channel in VM tests).
+    Ok(blocking)
+}
+
+/// Detect the terminal-attached processes using any of `targets`, in one pass
+/// over `/proc`.
+///
+/// Returns one `(target, process)` pair per target a process uses. Activation
+/// runs this before mounting anything so it can refuse up front when it would
+/// otherwise have to force-terminate a program a user is working in. Checking
+/// for a terminal first keeps the pass cheap: only the few interactive processes
+/// have their fds, cwd and mappings compared against the targets.
+pub fn detect_interactive_processes_using(
+    targets: &[PathBuf],
+) -> Result<Vec<(PathBuf, ProcessInfo)>> {
+    if targets.is_empty() || crate::runtime_safety::should_skip_host_interaction() {
+        return Ok(Vec::new());
+    }
+
+    let mut found = Vec::new();
+    for (pid, proc_path) in scan_processes()? {
+        if !check_interactive(&proc_path) {
+            continue;
+        }
+        for target in targets {
+            if let Some(info) = inspect_process(&proc_path, pid, target) {
+                found.push((target.clone(), info));
+            }
+        }
+    }
+
+    Ok(found)
+}
+
+/// List the `/proc/<pid>` entries to inspect, leaving out this process and its
+/// ancestors.
+///
+/// Excluding the own process tree prevents nails from killing itself (e.g. the
+/// sudo that invoked nails, or the NixOS test-driver control channel in VM
+/// tests).
+fn scan_processes() -> Result<Vec<(u32, PathBuf)>> {
     let exclude_pids = collect_ancestor_pids();
 
-    // Iterate over /proc entries
     let proc_dir = Path::new("/proc");
     if !proc_dir.exists() {
         return Err(NailsError::ConfigError(
@@ -104,6 +145,7 @@ pub fn detect_processes_using(target: &Path) -> Result<Vec<ProcessInfo>> {
         ));
     }
 
+    let mut processes = Vec::new();
     for entry in fs::read_dir(proc_dir)? {
         let entry = entry?;
         let file_name = entry.file_name();
@@ -119,43 +161,38 @@ pub fn detect_processes_using(target: &Path) -> Result<Vec<ProcessInfo>> {
             Err(_) => continue, // Skip invalid PIDs
         };
 
-        // Skip our own process tree to avoid killing ourselves
         if exclude_pids.contains(&pid) {
             continue;
         }
 
-        let proc_path = proc_dir.join(&file_name);
-
-        // Check if process is using target directory
-        let (has_cwd, cwd) = check_cwd_in_target(&proc_path, target);
-        let has_open_fds = check_fds_in_target(&proc_path, target);
-        let has_mmap = check_maps_in_target(&proc_path, target);
-
-        if has_cwd || has_open_fds || has_mmap {
-            // Process is using target - collect full info
-            let name = read_comm(&proc_path).unwrap_or_else(|_| "unknown".to_string());
-
-            let cmdline = read_cmdline(&proc_path).unwrap_or_else(|_| String::new());
-            let service_name = extract_service_name(&proc_path).ok().flatten();
-            let is_interactive = check_interactive(&proc_path);
-
-            let info = ProcessInfo {
-                pid,
-                name,
-                cmdline,
-                cwd,
-                has_cwd_in_target: has_cwd,
-                has_open_fds_in_target: has_open_fds,
-                has_mmap_in_target: has_mmap,
-                service_name,
-                is_interactive,
-            };
-
-            blocking.push(info);
-        }
+        processes.push((pid, proc_dir.join(&file_name)));
     }
 
-    Ok(blocking)
+    Ok(processes)
+}
+
+/// Collect a process's details when it uses `target` (cwd, an open fd or a
+/// memory mapping inside it); `None` when it does not.
+fn inspect_process(proc_path: &Path, pid: u32, target: &Path) -> Option<ProcessInfo> {
+    let (has_cwd, cwd) = check_cwd_in_target(proc_path, target);
+    let has_open_fds = check_fds_in_target(proc_path, target);
+    let has_mmap = check_maps_in_target(proc_path, target);
+
+    if !(has_cwd || has_open_fds || has_mmap) {
+        return None;
+    }
+
+    Some(ProcessInfo {
+        pid,
+        name: read_comm(proc_path).unwrap_or_else(|_| "unknown".to_string()),
+        cmdline: read_cmdline(proc_path).unwrap_or_else(|_| String::new()),
+        cwd,
+        has_cwd_in_target: has_cwd,
+        has_open_fds_in_target: has_open_fds,
+        has_mmap_in_target: has_mmap,
+        service_name: extract_service_name(proc_path).ok().flatten(),
+        is_interactive: check_interactive(proc_path),
+    })
 }
 
 /// Collect the current process PID and all ancestor PIDs up to PID 1.

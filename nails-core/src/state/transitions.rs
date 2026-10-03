@@ -10,7 +10,7 @@
 //! Degraded → Inactive (recover / completed emergency teardown)
 //! ```
 
-use super::SystemState;
+use super::{DecoyWriter, SystemState};
 use crate::{NailsError, Result};
 use chrono::Utc;
 use std::path::PathBuf;
@@ -56,6 +56,8 @@ impl SystemState {
     ///
     /// # Arguments
     /// - `overlays` - List of overlay mount paths that were successfully mounted
+    /// - `decoy_writers` - Writers still referencing the decoy after the mounts,
+    ///   recorded so `status` can report them later
     ///
     /// # Valid From States
     /// - `Activating`
@@ -63,11 +65,17 @@ impl SystemState {
     /// # Returns
     /// - `Ok(SystemState::Active)` - Transition successful
     /// - `Err(NailsError::InvalidState)` - Invalid transition
-    pub fn complete_activation(&self, overlays: Vec<PathBuf>) -> Result<SystemState> {
+    pub fn complete_activation(
+        &self,
+        overlays: Vec<PathBuf>,
+        decoy_writers: Vec<DecoyWriter>,
+    ) -> Result<SystemState> {
         match self {
             SystemState::Activating { .. } => Ok(SystemState::Active {
+    decoy_writers: Vec::new(),
                 activated_at: Utc::now(),
                 overlays,
+                decoy_writers,
             }),
             SystemState::Inactive => Err(NailsError::InvalidState(
                 "Cannot complete activation: not in activating state (call begin_activation first)"
@@ -153,6 +161,7 @@ impl SystemState {
     /// let state = SystemState::Active {
     ///     activated_at: chrono::Utc::now(),
     ///     overlays: vec![],
+    ///     decoy_writers: vec![],
     /// };
     /// let degraded = state.enter_degraded("unmount of /home failed".into(), vec![]);
     /// assert!(degraded.is_degraded());
@@ -197,6 +206,7 @@ impl SystemState {
     /// let state = SystemState::Active {
     ///     activated_at: chrono::Utc::now(),
     ///     overlays: vec![],
+    ///     decoy_writers: vec![],
     /// };
     /// let after = state.trigger_emergency().expect("Emergency always succeeds");
     /// assert!(after.is_inactive());

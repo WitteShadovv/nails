@@ -42,6 +42,7 @@ fn subsequent_activation_fixture() -> Fixture<NailsManager<MockFilesystem>> {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
+            decoy_writers: Vec::new(),
         },
         ..StateFile::default()
     };
@@ -86,6 +87,7 @@ fn status_command_fixture() -> Fixture<StatusCommand<MockFilesystem>> {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         ..StateFile::default()
@@ -171,6 +173,7 @@ fn emergency_fixture() -> Fixture<(NailsManager<MockFilesystem>, DeactivationOrc
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
+            decoy_writers: Vec::new(),
         },
         overlay_status,
         ..StateFile::default()
@@ -351,7 +354,7 @@ fn benchmark_state_transitions(c: &mut Criterion) {
         b.iter(|| {
             let state = SystemState::Inactive;
             let activating = state.begin_activation().unwrap();
-            let active = activating.complete_activation(vec![]).unwrap();
+            let active = activating.complete_activation(vec![], vec![]).unwrap();
             let deactivating = active.begin_deactivation().unwrap();
             let inactive = deactivating.complete_deactivation().unwrap();
             black_box(inactive);

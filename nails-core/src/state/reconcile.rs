@@ -261,6 +261,7 @@ mod tests {
 
     fn active(overlays: &[&str]) -> SystemState {
         SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: Utc::now(),
             overlays: overlays.iter().map(PathBuf::from).collect(),
         }

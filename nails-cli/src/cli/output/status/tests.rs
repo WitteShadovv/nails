@@ -39,6 +39,7 @@ fn active_report() -> StatusReport {
         state: SystemState::Active {
             activated_at: now - chrono::Duration::hours(2),
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
+            decoy_writers: Vec::new(),
         },
         posture: Posture::Active,
         overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
@@ -88,6 +89,7 @@ fn active_report_with_overlay_details() -> StatusReport {
         state: SystemState::Active {
             activated_at: now,
             overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         },
         posture: Posture::Active,
         overlays: vec![PathBuf::from("/home")],
@@ -116,6 +118,7 @@ fn active_report_with_reminders() -> StatusReport {
         state: SystemState::Active {
             activated_at: now - chrono::Duration::hours(26),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         posture: Posture::Degraded,
         remaining_mounts: vec![PathBuf::from("/home")],
@@ -198,6 +201,91 @@ fn test_print_status_json_with_reminders() {
 #[test]
 fn test_print_status_json_degraded() {
     print_status_json(&degraded_report());
+}
+
+/// An active, verified report whose activation left writers on the decoy.
+fn active_report_with_decoy_writers() -> StatusReport {
+    let mut report = active_report();
+    report.overlay_verification = VerificationStatus::Verified;
+    report.state = SystemState::Active {
+        activated_at: chrono::Utc::now(),
+        overlays: vec![PathBuf::from("/etc"), PathBuf::from("/var")],
+        decoy_writers: vec![
+            nails_core::DecoyWriter {
+                pid: 812,
+                name: "tail".to_string(),
+                service: None,
+                targets: vec![PathBuf::from("/var")],
+            },
+            nails_core::DecoyWriter {
+                pid: 600,
+                name: "NetworkManager".to_string(),
+                service: Some("NetworkManager".to_string()),
+                targets: vec![PathBuf::from("/etc"), PathBuf::from("/var")],
+            },
+        ],
+    };
+    report
+}
+
+#[test]
+fn test_status_json_lists_decoy_writers_and_warns() {
+    let data = super::json::build_status_data(&active_report_with_decoy_writers());
+    let value = serde_json::to_value(&data).unwrap();
+    assert_eq!(value["security_posture"], "warning");
+    assert_eq!(value["decoy_writers"][0]["name"], "tail");
+    assert_eq!(value["decoy_writers"][0]["pid"], 812);
+    assert_eq!(value["decoy_writers"][1]["service"], "NetworkManager");
+    assert_eq!(
+        value["decoy_writers"][1]["targets"],
+        serde_json::json!(["/etc", "/var"])
+    );
+}
+
+#[test]
+fn test_status_json_has_empty_decoy_writers_when_none_remain() {
+    let data = super::json::build_status_data(&inactive_report());
+    let value = serde_json::to_value(&data).unwrap();
+    assert_eq!(value["decoy_writers"], serde_json::json!([]));
+}
+
+#[test]
+fn test_posture_lines_report_writers_still_on_the_decoy() {
+    let lines = super::human::posture_lines(&active_report_with_decoy_writers(), ASCII);
+    assert_eq!(
+        lines[0],
+        "Security Posture:   [WARN] NOT OPTIMAL: 2 writers still on the decoy"
+    );
+    assert_eq!(lines[1], "  - tail (PID 812) on /var");
+    assert_eq!(
+        lines[2],
+        "  - NetworkManager (NetworkManager.service, PID 600) on /etc, /var"
+    );
+    assert!(lines[3].contains("Recorded at activation"), "{lines:?}");
+}
+
+#[test]
+fn test_posture_lines_without_writers_show_the_plain_posture() {
+    let mut report = active_report();
+    report.overlay_verification = VerificationStatus::Verified;
+    let lines = super::human::posture_lines(&report, COLOR);
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("SECURE"), "{lines:?}");
+    assert!(!lines[0].contains("NOT OPTIMAL"), "{lines:?}");
+}
+
+#[test]
+fn test_print_status_human_with_decoy_writers() {
+    let log_dir = tempfile::tempdir().unwrap();
+    print_status_human(
+        &active_report_with_decoy_writers(),
+        false,
+        std::path::Path::new("/nonexistent/nails.toml"),
+        std::path::Path::new("/mnt/hidden/state.json"),
+        std::path::Path::new("/mnt/hidden"),
+        log_dir.path(),
+        COLOR,
+    );
 }
 
 #[test]

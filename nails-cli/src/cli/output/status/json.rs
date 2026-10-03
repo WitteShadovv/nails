@@ -8,7 +8,7 @@
 
 use serde::Serialize;
 
-use crate::cli::output::dto::{StateJson, VerificationJson};
+use crate::cli::output::dto::{DecoyWriterJson, StateJson, VerificationJson, decoy_writers_json};
 use crate::cli::output::envelope::Envelope;
 
 /// The `data` payload for `status --json`.
@@ -23,6 +23,9 @@ pub struct StatusData {
     /// Remediation step for a dangerous or unknown posture.
     #[serde(skip_serializing_if = "Option::is_none")]
     remediation: Option<&'static str>,
+    /// Processes that kept writing to the decoy after activation (recorded at
+    /// activation; empty unless the hidden environment is active).
+    decoy_writers: Vec<DecoyWriterJson>,
     /// When the system was activated (ISO 8601).
     #[serde(skip_serializing_if = "Option::is_none")]
     activated_at: Option<String>,
@@ -98,6 +101,7 @@ pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusDat
         state_source: state_source_label(&report.load_outcome),
         posture: report.posture.as_str(),
         remediation: report.posture.remediation(),
+        decoy_writers: decoy_writers_json(&report.state),
         activated_at: report.activated_at.map(|dt| dt.to_rfc3339()),
         uptime_seconds: report.uptime.map(|d| d.num_seconds()),
         uptime_formatted: if report.formatted_uptime.is_empty() {
@@ -157,6 +161,7 @@ pub fn build_status_data_unknown(reason: String) -> StatusData {
         state_source: "unreadable",
         posture: Posture::Unknown.as_str(),
         remediation: Posture::Unknown.remediation(),
+        decoy_writers: Vec::new(),
         activated_at: None,
         uptime_seconds: None,
         uptime_formatted: None,

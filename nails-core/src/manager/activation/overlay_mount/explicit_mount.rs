@@ -1,6 +1,6 @@
 //! Explicit mode overlay mounting (pre-configured overlays)
 
-use super::MountFailureMode;
+use super::{MountFailureMode, OverlayMountOutcome};
 use crate::{Filesystem, NailsError, NailsManager, Result, Verbosity};
 use std::path::PathBuf;
 
@@ -16,9 +16,7 @@ impl<F: Filesystem> NailsManager<F> {
         tracker: &mut super::MountTracker<F>,
         strategy_options: &crate::overlay::OverlayStrategyOptions,
         verbosity: Verbosity,
-        direct_mounts: &mut usize,
-        pivot_mounts: &mut usize,
-        leaking_targets: &mut Vec<PathBuf>,
+        outcome: &mut OverlayMountOutcome,
     ) -> Result<()> {
         // Security check: fail if no overlays configured (would leave system
         // unprotected).
@@ -56,6 +54,9 @@ impl<F: Filesystem> NailsManager<F> {
             .map(|overlay| overlay.target.clone())
             .collect();
         crate::preflight::ensure_targets_clear(&self.filesystem, &self.config, &targets)?;
+        // Refuse before anything is stopped or mounted if a user's terminal
+        // program would have to be force-terminated on any target.
+        crate::overlay::refuse_interactive_terminations(&targets, strategy_options)?;
 
         let overlays = self.config.overlays.clone();
         self.mount_overlay_targets(
@@ -65,9 +66,7 @@ impl<F: Filesystem> NailsManager<F> {
             MountFailureMode::FailFast,
             strategy_options,
             verbosity,
-            direct_mounts,
-            pivot_mounts,
-            leaking_targets,
+            outcome,
         )
     }
 }

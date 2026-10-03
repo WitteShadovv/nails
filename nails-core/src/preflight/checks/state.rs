@@ -148,6 +148,7 @@ mod tests {
         let check = StateCheck::new(SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         });
 
         let result = check.run(&fs).unwrap();
@@ -224,6 +225,7 @@ mod tests {
         let check_active = StateCheck::new(SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         });
         assert!(check_active.run(&fs).unwrap().is_fail());
 
@@ -268,6 +270,7 @@ mod tests {
         registry_fail.add_check(Box::new(StateCheck::new(SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         })));
         let result_fail = registry_fail.run_all(&fs);
         assert!(result_fail.is_err());

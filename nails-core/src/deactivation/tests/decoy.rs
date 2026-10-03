@@ -145,6 +145,7 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
     let state_file = StateFile {
         version: env!("CARGO_PKG_VERSION").to_string(),
         state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: chrono::Utc::now(),
             overlays: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
         },

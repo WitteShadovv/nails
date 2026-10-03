@@ -24,7 +24,8 @@ use super::{
 #[allow(unused_imports)]
 use super::{MountTracker, NailsManager};
 use crate::notification::{Notification, write_notification};
-use crate::{Filesystem, NailsError, Result, Verbosity};
+use crate::overlay::SurvivingWriter;
+use crate::{DecoyWriter, Filesystem, NailsError, Result, Verbosity};
 use std::path::Path;
 
 mod gate;
@@ -84,27 +85,86 @@ fn determine_session_restart_phase(
 /// verification, not by how the target happened to be mounted.
 const INTEGRITY_VERIFIED_TARGETS: &[&str] = &["/boot"];
 
-/// Derive the activation security label from which overlay targets still have
-/// surviving writers referencing the decoy lower tree.
+/// How many writers the desktop notification names before summarising the rest.
+const NOTIFICATION_WRITER_LIMIT: usize = 3;
+
+/// Fold the writers that survived Phase 2 on `target` into the activation-wide
+/// list, one entry per process.
+///
+/// A process holding several targets (NetworkManager on `/etc` and `/var`) is
+/// one writer leaking to two places, so it is merged by PID rather than counted
+/// twice. Survivors on an integrity-verified target are left out: that exemption
+/// is what defines a leak for the security posture, and applying it once here
+/// keeps the activation label, the notification, the outcome and `status` in
+/// agreement. They are still named in the per-target warning logged at mount.
+fn record_surviving_writers(
+    writers: &mut Vec<DecoyWriter>,
+    target: &Path,
+    survivors: &[SurvivingWriter],
+) {
+    if INTEGRITY_VERIFIED_TARGETS
+        .iter()
+        .any(|verified| target == Path::new(verified))
+    {
+        return;
+    }
+
+    for survivor in survivors {
+        match writers.iter_mut().find(|w| w.pid == survivor.pid) {
+            Some(writer) => {
+                if !writer.targets.iter().any(|t| t == target) {
+                    writer.targets.push(target.to_path_buf());
+                }
+            }
+            None => writers.push(DecoyWriter {
+                pid: survivor.pid,
+                name: survivor.name.clone(),
+                service: survivor.service.clone(),
+                targets: vec![target.to_path_buf()],
+            }),
+        }
+    }
+}
+
+/// Derive the activation security label from the writers still referencing the
+/// decoy lower tree.
 ///
 /// The label reflects leakage, not the mount method. A process that opened a
 /// target before the mount keeps resolving the original inode and keeps writing to
 /// the decoy under both a direct and a pivot mount, so the method alone carries no
-/// security meaning. A target counts against the posture only when it is leaking
-/// and is not integrity-verified.
-fn derive_security_label(
-    leaking: &[std::path::PathBuf],
-    integrity_verified: &[&str],
-) -> &'static str {
-    let has_unverified_leak = leaking
-        .iter()
-        .any(|t| !integrity_verified.iter().any(|w| t == Path::new(w)));
-
-    if has_unverified_leak {
-        "DEGRADED"
-    } else {
+/// security meaning. Integrity-verified targets never contribute writers (see
+/// [`record_surviving_writers`]), so any writer at all degrades the posture.
+fn derive_security_label(decoy_writers: &[DecoyWriter]) -> &'static str {
+    if decoy_writers.is_empty() {
         "OPTIMAL"
+    } else {
+        "DEGRADED"
     }
+}
+
+/// The body of the post-mount notification: the label and mount counts, then
+/// the writers still on the decoy so the operator knows what to close or restart.
+fn overlay_status_body(
+    security_status: &str,
+    direct_mounts: usize,
+    pivot_mounts: usize,
+    decoy_writers: &[DecoyWriter],
+) -> String {
+    let mut body = format!(
+        "Security: {} — {} overlay(s) mounted ({} direct, {} pivot)",
+        security_status,
+        direct_mounts + pivot_mounts,
+        direct_mounts,
+        pivot_mounts
+    );
+    if !decoy_writers.is_empty() {
+        body.push_str(&format!(
+            ". {}: {}",
+            crate::decoy_writers_headline(decoy_writers.len()),
+            crate::summarize_decoy_writers(decoy_writers, NOTIFICATION_WRITER_LIMIT)
+        ));
+    }
+    body
 }
 
 fn prepare_notification_autostart_before_session_restart<F: Filesystem>(manager: &NailsManager<F>) {
@@ -433,8 +493,12 @@ impl<F: Filesystem> NailsManager<F> {
         // Step 7: Mount persistent and ephemeral overlays.
         emit_progress(verbosity, "overlay_mount", 4, "[4/7] Mounting overlays...");
         let mount_timer = Stopwatch::start();
-        let (direct_mounts, pivot_mounts, leaking_targets, mounts) =
-            guard.mount_overlays(&options, verbosity)?;
+        let overlay_mount::OverlayMountOutcome {
+            direct_mounts,
+            pivot_mounts,
+            decoy_writers,
+            mounts,
+        } = guard.mount_overlays(&options, verbosity)?;
 
         // Persistent overlay paths are what the Active state records.
         let mounted_overlays: Vec<std::path::PathBuf> = mounts
@@ -454,21 +518,13 @@ impl<F: Filesystem> NailsManager<F> {
 
         // The posture depends on surviving writers that still leak to the decoy,
         // not on whether any overlay used the pivot method.
-        let security_status = derive_security_label(&leaking_targets, INTEGRITY_VERIFIED_TARGETS);
-        if verbosity >= Verbosity::Normal {
-            tracing::info!(
-                step = "mount_overlays",
-                duration_ms = mount_timer.elapsed().as_millis() as u64,
-                direct_mounts = direct_mounts,
-                pivot_mounts = pivot_mounts,
-                "✓ All overlays mounted ({}) – {} direct, {} pivot – Security: {}",
-                mount_timer,
-                direct_mounts,
-                pivot_mounts,
-                security_status
-            );
-        }
-        guard.emit_overlay_status_notification(security_status, direct_mounts, pivot_mounts);
+        guard.report_mount_posture(
+            direct_mounts,
+            pivot_mounts,
+            &decoy_writers,
+            &mount_timer,
+            verbosity,
+        );
 
         // Step 7.5: Validate the hidden flake now that `/nix` and `/root` are
         // overlaid. Running `nix flake metadata`/eval here — rather than before
@@ -530,7 +586,7 @@ impl<F: Filesystem> NailsManager<F> {
         // Step 10: Finalize - transition to Active.
         emit_progress(verbosity, "finalize", 7, "[7/7] Finalizing activation...");
         let current = guard.current_state()?;
-        let active_state = current.complete_activation(mounted_overlays)?;
+        let active_state = current.complete_activation(mounted_overlays, decoy_writers)?;
         guard.update_state(active_state)?;
 
         // Step 11: Success - disarm the overlay rollback so the mounts stay, commit
@@ -565,22 +621,63 @@ impl<F: Filesystem> NailsManager<F> {
         Ok(ActivationOutcome::Activated)
     }
 
+    /// Log the security label and any writers left on the decoy once the
+    /// overlays are up, and write the matching login notification.
+    fn report_mount_posture(
+        &self,
+        direct_mounts: usize,
+        pivot_mounts: usize,
+        decoy_writers: &[DecoyWriter],
+        mount_timer: &crate::Stopwatch,
+        verbosity: Verbosity,
+    ) {
+        let security_status = derive_security_label(decoy_writers);
+        if !decoy_writers.is_empty() {
+            let listed = decoy_writers
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ");
+            tracing::warn!(
+                event = "decoy_writers",
+                count = decoy_writers.len(),
+                "⚠️  NOT OPTIMAL: {}: {}",
+                crate::decoy_writers_headline(decoy_writers.len()),
+                listed
+            );
+        }
+        if verbosity >= Verbosity::Normal {
+            tracing::info!(
+                step = "mount_overlays",
+                duration_ms = mount_timer.elapsed().as_millis() as u64,
+                direct_mounts = direct_mounts,
+                pivot_mounts = pivot_mounts,
+                "✓ All overlays mounted ({}) – {} direct, {} pivot – Security: {}",
+                mount_timer,
+                direct_mounts,
+                pivot_mounts,
+                security_status
+            );
+        }
+        self.emit_overlay_status_notification(
+            security_status,
+            direct_mounts,
+            pivot_mounts,
+            decoy_writers,
+        );
+    }
+
     /// Write the best-effort overlay-status notification after mounting.
     fn emit_overlay_status_notification(
         &self,
         security_status: &str,
         direct_mounts: usize,
         pivot_mounts: usize,
+        decoy_writers: &[DecoyWriter],
     ) {
         let notif = Notification {
             title: "NAILS Overlay Active".to_string(),
-            body: format!(
-                "Security: {} — {} overlay(s) mounted ({} direct, {} pivot)",
-                security_status,
-                direct_mounts + pivot_mounts,
-                direct_mounts,
-                pivot_mounts
-            ),
+            body: overlay_status_body(security_status, direct_mounts, pivot_mounts, decoy_writers),
             urgency: "normal".to_string(),
             icon: Some(
                 if security_status == "OPTIMAL" {

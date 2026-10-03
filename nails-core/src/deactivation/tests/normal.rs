@@ -153,6 +153,7 @@ fn test_successful_deactivation_unmounts_all_tracked_overlays_in_lifo_order() {
 
     StateFile {
         state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: chrono::Utc::now(),
             overlays: overlays.to_vec(),
         },
@@ -211,6 +212,7 @@ fn test_deactivation_clears_failed_overlays_tracker_state() {
 
     let state_file = StateFile {
         state: SystemState::Active {
+            decoy_writers: Vec::new(),
             activated_at: chrono::Utc::now(),
             overlays: vec![PathBuf::from("/home")],
         },

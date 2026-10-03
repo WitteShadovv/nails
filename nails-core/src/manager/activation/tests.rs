@@ -2,8 +2,10 @@ use super::gate::ActivationGateTestGuard;
 use super::maybe_block_after_activating_state_transition;
 use super::{
     INTEGRITY_VERIFIED_TARGETS, SessionRestartPhase, derive_security_label,
-    determine_session_restart_phase,
+    determine_session_restart_phase, overlay_status_body, record_surviving_writers,
 };
+use crate::DecoyWriter;
+use crate::overlay::SurvivingWriter;
 use crate::test_support::EnvGuard;
 use crate::{Config, Filesystem, MockFilesystem, NailsManager, OverlayConfig, SystemState};
 use serial_test::serial;
@@ -245,33 +247,44 @@ fn session_restart_phase_is_none_without_restart_plan() {
 }
 
 // Invariant: the security label is a function of surviving writers, never of the
-// mount method. `derive_security_label` takes only the leaking targets — it has no
-// Direct-vs-Pivot parameter — so the method cannot influence the posture. The
-// cases below pin that down: a direct mount that leaks is DEGRADED while a pivot
-// mount that does not leak is OPTIMAL. A surviving writer keeps writing to the
-// decoy lower tree under either method, so the mount method carries no security
-// meaning on its own.
+// mount method. `derive_security_label` takes only the writers left on the decoy —
+// it has no Direct-vs-Pivot parameter — so the method cannot influence the
+// posture. The cases below pin that down: a direct mount that leaks is DEGRADED
+// while a pivot mount that does not leak is OPTIMAL. A surviving writer keeps
+// writing to the decoy lower tree under either method, so the mount method
+// carries no security meaning on its own.
+
+fn survivor(pid: u32, name: &str, service: Option<&str>) -> SurvivingWriter {
+    SurvivingWriter {
+        pid,
+        name: name.to_string(),
+        service: service.map(str::to_string),
+    }
+}
+
+/// Fold per-target survivors the way `mount_overlays` does, one target at a time.
+fn collect(per_target: &[(&str, Vec<SurvivingWriter>)]) -> Vec<DecoyWriter> {
+    let mut writers = Vec::new();
+    for (target, survivors) in per_target {
+        record_surviving_writers(&mut writers, Path::new(target), survivors);
+    }
+    writers
+}
 
 #[test]
 fn security_label_degraded_when_a_direct_mount_leaves_surviving_writers() {
-    // A direct mount contributes a target to `leaking` only when writers survived
-    // Phase 2; such a leak must read DEGRADED despite the mount being "direct".
-    let leaking = vec![PathBuf::from("/home")];
-    assert_eq!(
-        derive_security_label(&leaking, INTEGRITY_VERIFIED_TARGETS),
-        "DEGRADED"
-    );
+    // A direct mount contributes writers only when they survived Phase 2; such a
+    // leak must read DEGRADED despite the mount being "direct".
+    let writers = collect(&[("/home", vec![survivor(700, "firefox", None)])]);
+    assert_eq!(derive_security_label(&writers), "DEGRADED");
 }
 
 #[test]
 fn security_label_optimal_when_a_pivot_mount_has_no_surviving_writers() {
-    // A pivot mount with zero survivors never enters `leaking`, so the posture is
+    // A pivot mount with zero survivors records no writer, so the posture is
     // OPTIMAL even though the pivot fallback was used.
-    let leaking: Vec<PathBuf> = Vec::new();
-    assert_eq!(
-        derive_security_label(&leaking, INTEGRITY_VERIFIED_TARGETS),
-        "OPTIMAL"
-    );
+    let writers = collect(&[("/home", Vec::new())]);
+    assert_eq!(derive_security_label(&writers), "OPTIMAL");
 }
 
 #[test]
@@ -279,21 +292,96 @@ fn security_label_optimal_when_only_integrity_verified_target_leaks() {
     // A surviving writer on an integrity-verified target (/boot) is tolerated
     // because that lower tree is verified at boot, not because of the mount method.
     assert!(INTEGRITY_VERIFIED_TARGETS.contains(&"/boot"));
-    let leaking = vec![PathBuf::from("/boot")];
-    assert_eq!(
-        derive_security_label(&leaking, INTEGRITY_VERIFIED_TARGETS),
-        "OPTIMAL"
-    );
+    let writers = collect(&[("/boot", vec![survivor(90, "fwupd", Some("fwupd"))])]);
+    assert!(writers.is_empty(), "a /boot survivor is not a decoy leak");
+    assert_eq!(derive_security_label(&writers), "OPTIMAL");
 }
 
 #[test]
 fn security_label_degraded_when_unverified_target_leaks_alongside_verified() {
     // One unverified leak is enough to degrade the posture, even mixed with a
     // whitelisted one.
-    let leaking = vec![PathBuf::from("/boot"), PathBuf::from("/etc")];
+    let writers = collect(&[
+        ("/boot", vec![survivor(90, "fwupd", Some("fwupd"))]),
+        ("/etc", vec![survivor(500, "dbus-daemon", Some("dbus"))]),
+    ]);
+    assert_eq!(derive_security_label(&writers), "DEGRADED");
+}
+
+#[test]
+fn surviving_writers_keep_their_identity_across_targets() {
+    // The outcome must name who is still writing, and one process holding two
+    // targets is one writer leaking to both, not two writers.
+    let writers = collect(&[
+        (
+            "/etc",
+            vec![survivor(600, "NetworkManager", Some("NetworkManager"))],
+        ),
+        (
+            "/var",
+            vec![
+                survivor(600, "NetworkManager", Some("NetworkManager")),
+                survivor(812, "tail", None),
+            ],
+        ),
+    ]);
+
     assert_eq!(
-        derive_security_label(&leaking, INTEGRITY_VERIFIED_TARGETS),
-        "DEGRADED"
+        writers,
+        vec![
+            DecoyWriter {
+                pid: 600,
+                name: "NetworkManager".to_string(),
+                service: Some("NetworkManager".to_string()),
+                targets: vec![PathBuf::from("/etc"), PathBuf::from("/var")],
+            },
+            DecoyWriter {
+                pid: 812,
+                name: "tail".to_string(),
+                service: None,
+                targets: vec![PathBuf::from("/var")],
+            },
+        ]
+    );
+}
+
+#[test]
+fn surviving_writers_with_the_same_name_stay_distinct() {
+    let writers = collect(&[(
+        "/var",
+        vec![survivor(10, "tail", None), survivor(11, "tail", None)],
+    )]);
+    assert_eq!(writers.len(), 2);
+}
+
+#[test]
+fn overlay_status_notification_names_the_writers_left_on_the_decoy() {
+    let writers = collect(&[("/var", vec![survivor(812, "tail", None)])]);
+    let body = overlay_status_body("DEGRADED", 2, 0, &writers);
+    assert!(body.starts_with("Security: DEGRADED"), "{body}");
+    assert!(body.contains("1 writer still on the decoy"), "{body}");
+    assert!(body.contains("tail (PID 812) on /var"), "{body}");
+}
+
+#[test]
+fn overlay_status_notification_summarises_many_writers() {
+    let survivors = (1..=5)
+        .map(|pid| survivor(pid, &format!("w{pid}"), None))
+        .collect();
+    let writers = collect(&[("/var", survivors)]);
+    let body = overlay_status_body("DEGRADED", 1, 0, &writers);
+    assert!(body.contains("5 writers still on the decoy"), "{body}");
+    assert!(body.contains("w3 (PID 3)"), "{body}");
+    assert!(!body.contains("w4 (PID 4)"), "{body}");
+    assert!(body.ends_with("and 2 more"), "{body}");
+}
+
+#[test]
+fn overlay_status_notification_without_writers_has_no_leak_clause() {
+    let body = overlay_status_body("OPTIMAL", 3, 1, &[]);
+    assert_eq!(
+        body,
+        "Security: OPTIMAL — 4 overlay(s) mounted (3 direct, 1 pivot)"
     );
 }
 

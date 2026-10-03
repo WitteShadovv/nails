@@ -21,8 +21,8 @@ use super::{
 use crate::manager::activation::guards::NixDaemonGuard;
 use crate::platform::{ConfigLayer, NixRuntime};
 use crate::{
-    FailedOverlayInfo, Filesystem, NailsError, NailsManager, OverlayConfig, OverlayInfo, Result,
-    Verbosity,
+    DecoyWriter, FailedOverlayInfo, Filesystem, NailsError, NailsManager, OverlayConfig,
+    OverlayInfo, Result, Verbosity,
 };
 use chrono::Utc;
 use std::path::{Path, PathBuf};
@@ -41,14 +41,26 @@ pub(super) enum MountFailureMode {
     FailFast,
 }
 
+/// What [`NailsManager::mount_overlays`] hands back to the activation flow.
+#[derive(Debug, Default)]
+pub(in crate::manager::activation) struct OverlayMountOutcome {
+    /// Overlays mounted directly over their target.
+    pub(in crate::manager::activation) direct_mounts: usize,
+    /// Overlays mounted through the pivot fallback.
+    pub(in crate::manager::activation) pivot_mounts: usize,
+    /// Writers still referencing the decoy after Phase 2, one entry per process
+    /// with every target it leaks to. This is the basis for the security label
+    /// and is independent of which mount method was used.
+    pub(in crate::manager::activation) decoy_writers: Vec<DecoyWriter>,
+    /// Every tracked mount, in mount order.
+    pub(in crate::manager::activation) mounts: Vec<MountInfo>,
+}
+
 impl<F: Filesystem> NailsManager<F> {
     /// Mount persistent and ephemeral overlays.
     ///
-    /// Returns `(direct_mounts, pivot_mounts, leaking_targets, mounts)` where
-    /// `leaking_targets` are the targets still referenced by surviving writers
-    /// after Phase 2 (the basis for the security label), independent of which
-    /// mount method was used, and `mounts` is the full tracked list in mount
-    /// order.
+    /// Returns the mount counts, the writers left on the decoy and the full
+    /// tracked mount list (see [`OverlayMountOutcome`]).
     ///
     /// The in-scope [`MountTracker`] rolls back automatically if a mount fails
     /// mid-phase. On success the mounts are *moved out* of the tracker (via
@@ -60,7 +72,7 @@ impl<F: Filesystem> NailsManager<F> {
         &self,
         options: &crate::ActivateOptions,
         verbosity: Verbosity,
-    ) -> Result<(usize, usize, Vec<PathBuf>, Vec<MountInfo>)> {
+    ) -> Result<OverlayMountOutcome> {
         if verbosity >= Verbosity::Normal {
             tracing::info!("Mounting overlays...");
         }
@@ -84,32 +96,20 @@ impl<F: Filesystem> NailsManager<F> {
                 .unwrap_or(cfg!(test)), // Allow tests to override
         };
 
-        // Track mount methods for logging
-        let mut direct_mounts = 0;
-        let mut pivot_mounts = 0;
-        let mut leaking_targets: Vec<PathBuf> = Vec::new();
+        let mut outcome = OverlayMountOutcome::default();
 
         // Step 8a: Mount persistent overlays using universal algorithm
         // Use dynamic target list based on overlay_mode
         match self.config.overlay_mode {
             crate::OverlayMode::Auto => {
-                self.mount_auto_overlays(
-                    &mut tracker,
-                    &strategy_options,
-                    verbosity,
-                    &mut direct_mounts,
-                    &mut pivot_mounts,
-                    &mut leaking_targets,
-                )?;
+                self.mount_auto_overlays(&mut tracker, &strategy_options, verbosity, &mut outcome)?;
             }
             crate::OverlayMode::Explicit => {
                 self.mount_explicit_overlays(
                     &mut tracker,
                     &strategy_options,
                     verbosity,
-                    &mut direct_mounts,
-                    &mut pivot_mounts,
-                    &mut leaking_targets,
+                    &mut outcome,
                 )?;
             }
         }
@@ -130,9 +130,9 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Move the mounts out of the tracker (emptying it, so its drop is inert)
         // and hand them to the caller, which owns rollback from here on.
-        let mounts = tracker.take_mounts();
+        outcome.mounts = tracker.take_mounts();
 
-        Ok((direct_mounts, pivot_mounts, leaking_targets, mounts))
+        Ok(outcome)
     }
 
     /// Mount a resolved list of overlays, gating the `/nix` runtime on the host.
@@ -157,9 +157,7 @@ impl<F: Filesystem> NailsManager<F> {
         failure_mode: MountFailureMode,
         strategy_options: &crate::overlay::OverlayStrategyOptions,
         verbosity: Verbosity,
-        direct_mounts: &mut usize,
-        pivot_mounts: &mut usize,
-        leaking_targets: &mut Vec<PathBuf>,
+        outcome: &mut OverlayMountOutcome,
     ) -> Result<()> {
         // Resolve the /nix lifecycle from the platform before Phase-1 detection.
         let nix_in_targets = overlays.iter().any(|o| o.target == Path::new("/nix"));
@@ -201,23 +199,21 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         let mut var_was_overlaid = false;
-        let outcome = self.mount_overlay_targets_body(
+        let body_result = self.mount_overlay_targets_body(
             tracker,
             overlays,
             initial_failures,
             failure_mode,
             strategy_options,
             verbosity,
-            direct_mounts,
-            pivot_mounts,
-            leaking_targets,
+            outcome,
             &mut nix_guard,
             nix_runtime,
             command_dirs,
             &mut var_was_overlaid,
         );
 
-        if let Err(error) = outcome {
+        if let Err(error) = body_result {
             // Roll back every mounted overlay BEFORE restarting any service, so
             // nix-daemon and journald never come back up writing to an overlay that
             // is about to be torn down. nix-daemon is restarted by `nix_guard` on
@@ -255,9 +251,7 @@ impl<F: Filesystem> NailsManager<F> {
         failure_mode: MountFailureMode,
         strategy_options: &crate::overlay::OverlayStrategyOptions,
         verbosity: Verbosity,
-        direct_mounts: &mut usize,
-        pivot_mounts: &mut usize,
-        leaking_targets: &mut Vec<PathBuf>,
+        outcome: &mut OverlayMountOutcome,
         nix_guard: &mut NixDaemonGuard,
         nix_runtime: NixRuntime,
         command_dirs: &'static [&'static str],
@@ -361,9 +355,7 @@ impl<F: Filesystem> NailsManager<F> {
                         overlay,
                         &mount_result,
                         verbosity,
-                        direct_mounts,
-                        pivot_mounts,
-                        leaking_targets,
+                        outcome,
                         &mut nix_overlay_succeeded,
                     )?;
                     if overlay.target == Path::new("/var") {
@@ -454,16 +446,13 @@ impl<F: Filesystem> NailsManager<F> {
     }
 
     /// Handle successful overlay mount with service restart and state tracking
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn handle_mount_success(
         &self,
         tracker: &mut MountTracker<F>,
         overlay: &crate::OverlayConfig,
         mount_result: &crate::overlay::MountResult,
         verbosity: Verbosity,
-        direct_mounts: &mut usize,
-        pivot_mounts: &mut usize,
-        leaking_targets: &mut Vec<PathBuf>,
+        outcome: &mut OverlayMountOutcome,
         nix_overlay_succeeded: &mut bool,
     ) -> Result<()> {
         use crate::overlay::MountMethod;
@@ -473,19 +462,19 @@ impl<F: Filesystem> NailsManager<F> {
         // the decoy under both a direct and a pivot mount.
         match mount_result.method {
             MountMethod::Direct => {
-                *direct_mounts += 1;
+                outcome.direct_mounts += 1;
                 if verbosity >= Verbosity::Verbose {
                     tracing::info!("  ✓ {} mounted (direct)", overlay.target.display());
                 }
             }
             MountMethod::Pivot => {
-                *pivot_mounts += 1;
+                outcome.pivot_mounts += 1;
                 if verbosity >= Verbosity::Verbose {
                     tracing::info!("  ✓ {} mounted (pivot fallback)", overlay.target.display());
                 }
             }
             MountMethod::SnapshotPivot => {
-                *pivot_mounts += 1;
+                outcome.pivot_mounts += 1;
                 if verbosity >= Verbosity::Verbose {
                     tracing::info!("  ✓ {} mounted (snapshot pivot)", overlay.target.display());
                 }
@@ -494,17 +483,28 @@ impl<F: Filesystem> NailsManager<F> {
 
         // The security-relevant signal: a target still referenced by surviving
         // writers leaks hidden-session activity into the decoy lower tree, and it
-        // does so under either mount method.
+        // does so under either mount method. Keep who they are, not just that
+        // the target leaks, so the outcome, notification and status can name them.
         if !mount_result.survivors.is_empty() {
-            leaking_targets.push(overlay.target.clone());
-            if verbosity >= Verbosity::Verbose {
-                tracing::warn!(
-                    writers = mount_result.surviving_writers(),
-                    "  ⚠️  {} has {} surviving writer(s) leaking to the decoy",
-                    overlay.target.display(),
-                    mount_result.surviving_writers()
-                );
-            }
+            let names = mount_result
+                .survivors
+                .iter()
+                .map(|w| format!("{} (PID {})", w.name, w.pid))
+                .collect::<Vec<_>>()
+                .join(", ");
+            tracing::warn!(
+                target_path = %overlay.target.display(),
+                writers = mount_result.surviving_writers(),
+                "  ⚠️  {} still has {} writer(s) on the decoy: {}",
+                overlay.target.display(),
+                mount_result.surviving_writers(),
+                names
+            );
+            super::record_surviving_writers(
+                &mut outcome.decoy_writers,
+                &overlay.target,
+                &mount_result.survivors,
+            );
         }
 
         // Post-mount: restart stopped services so they write to overlay

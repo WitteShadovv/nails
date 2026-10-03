@@ -340,4 +340,16 @@ impl StatusReport {
     pub fn posture(&self) -> Posture {
         self.posture
     }
+
+    /// Writers that still referenced the decoy when the hidden environment was
+    /// activated (empty unless the state is Active).
+    ///
+    /// This is the activation-time set: the processes activation deliberately did
+    /// not restart, which keep writing to the decoy for as long as they run.
+    pub fn decoy_writers(&self) -> &[crate::DecoyWriter] {
+        match &self.state {
+            SystemState::Active { decoy_writers, .. } => decoy_writers,
+            _ => &[],
+        }
+    }
 }

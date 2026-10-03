@@ -88,6 +88,7 @@ fn test_activate_from_non_inactive_returns_error() {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![],
+            decoy_writers: Vec::new(),
         },
         ..StateFile::default()
     };
@@ -671,6 +672,7 @@ fn test_activate_already_active_is_verified_no_op() {
         state: SystemState::Active {
             activated_at: Utc::now(),
             overlays: vec![std::path::PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
         },
         ..StateFile::default()
     };
@@ -748,6 +750,7 @@ fn test_activate_already_active_exit_ok_on_every_flag_path() {
 
         let initial_state = StateFile {
             state: SystemState::Active {
+                decoy_writers: Vec::new(),
                 activated_at: Utc::now(),
                 overlays: vec![std::path::PathBuf::from("/home")],
             },
