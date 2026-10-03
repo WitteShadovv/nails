@@ -125,10 +125,12 @@ pub enum Program {
     /// A binary looked up on the caller's `PATH`, or on the command's
     /// [search path](ProcessCommand::search_path) when one is set.
     ///
-    /// Only the Nix toolchain (`nix`, `nixos-rebuild`) still resolves this
-    /// way: the VM tests substitute stub builds by prepending a directory to
-    /// `PATH`, so moving it to [`Program::Tool`] needs a different stub
-    /// mechanism first.
+    /// Used where resolving from the caller's `PATH` is correct rather than a
+    /// hijack risk: the Nix toolchain (`nix`, `nixos-rebuild`), whose VM tests
+    /// substitute stub builds by prepending a directory to `PATH`, and
+    /// `notify-send`, which runs in the operator's own login session (so their
+    /// `PATH` is theirs to choose, and tests stub it the same way). Moving either
+    /// to [`Program::Tool`] needs a different stub mechanism first.
     CallerPath(&'static str),
     /// An exact executable, such as a system generation's
     /// `switch-to-configuration` script.
@@ -150,6 +152,7 @@ pub struct ProcessCommand {
     program: Program,
     args: Vec<OsString>,
     allowed_env: Vec<OsString>,
+    session_env: Vec<(OsString, OsString)>,
     search_path: Option<OsString>,
     allowed_in_test_runtime: bool,
     timeout: Option<Duration>,
@@ -162,6 +165,7 @@ impl ProcessCommand {
             program,
             args: Vec::new(),
             allowed_env: Vec::new(),
+            session_env: Vec::new(),
             search_path: None,
             allowed_in_test_runtime: false,
             timeout: None,
@@ -210,6 +214,23 @@ impl ProcessCommand {
     /// `nixos-rebuild`. It cannot override the fixed `PATH`.
     pub fn allow_env(mut self, key: impl AsRef<OsStr>) -> Self {
         self.allowed_env.push(key.as_ref().to_os_string());
+        self
+    }
+
+    /// Sets `key` to an explicit `value` in the child's environment.
+    ///
+    /// Unlike [`allow_env`](Self::allow_env), which passes a variable through
+    /// from the caller only when it holds it, this writes a value the call site
+    /// computed. It exists for the one case where a root command must reach a
+    /// *different* account's session: `notify-send`, which needs
+    /// `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS` and the display variables
+    /// pointed at the operator's session rather than root's. The value is applied
+    /// on top of the cleared, allowlisted environment (see the
+    /// [module docs](self#environment)) and cannot override the fixed `PATH`,
+    /// which is always set last.
+    pub fn set_env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
+        self.session_env
+            .push((key.as_ref().to_os_string(), value.as_ref().to_os_string()));
         self
     }
 
@@ -387,8 +408,13 @@ fn apply_environment(child: &mut std::process::Command, command: &ProcessCommand
             child.env(key, value);
         }
     }
-    // Set last so an `allow_env("PATH")` cannot redirect the child onto a
-    // caller-chosen search path.
+    // Explicit, call-site-computed values (e.g. the operator's session bus for
+    // `notify-send`) override anything the allowlist let through.
+    for (key, value) in &command.session_env {
+        child.env(key, value);
+    }
+    // Set last so neither an `allow_env("PATH")` nor a `set_env("PATH", …)` can
+    // redirect the child onto a caller-chosen search path.
     child.env("PATH", SYSTEM_TOOL_DIRS.join(":"));
 }
 

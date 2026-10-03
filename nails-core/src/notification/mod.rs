@@ -440,17 +440,18 @@ pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
             return Ok(0);
         }
 
-        // Check if notify-send is available (also checks NAILS_DISABLE_NOTIFICATIONS)
-        let notify_send = which_notify_send();
-        if notify_send.is_none() {
-            tracing::warn!("notify-send not found in PATH; skipping desktop notifications");
+        // `notify-send` is resolved from the fixed system tool directories, never
+        // the caller's PATH; if none of them holds it there is nothing to do.
+        if !notify_send_available() {
+            tracing::warn!(
+                "notify-send not found in the system tool directories; skipping desktop notifications"
+            );
             return Ok(0);
         }
-        let notify_send = notify_send.unwrap();
 
         let mut dispatched = 0;
         for (path, notification) in &pending {
-            match send_notification(&notify_send, notification) {
+            match send_notification(notification) {
                 Ok(()) => {
                     let _ = clear_notification(path);
                     dispatched += 1;
@@ -478,53 +479,54 @@ fn is_notifications_disabled() -> bool {
     std::env::var(crate::constants::ENV_DISABLE_NOTIFICATIONS).is_ok()
 }
 
-/// Find `notify-send` in PATH.
+/// Whether an executable `notify-send` exists on the caller's `PATH`.
 ///
-/// Returns `None` if `NAILS_DISABLE_NOTIFICATIONS` is set (used in tests to prevent
-/// real notifications from being sent).
+/// Mirrors the resolution [`ProcessCommand::caller_path`](crate::process::ProcessCommand::caller_path)
+/// performs — absolute `PATH` entries, an executable file — so a probe here
+/// agrees with where the dispatch below will actually look. Notification dispatch
+/// runs from the operator's own login session (an XDG autostart entry), so
+/// resolving `notify-send` from their `PATH` is correct and is not a root spawn.
 #[cfg(not(test))]
-fn which_notify_send() -> Option<PathBuf> {
-    // Allow tests to disable notification dispatch
-    if is_notifications_disabled() {
-        return None;
-    }
-
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).find_map(|dir| {
-            let candidate = dir.join("notify-send");
-            if candidate.is_file() {
-                Some(candidate)
-            } else {
-                None
-            }
-        })
-    })
+fn notify_send_available() -> bool {
+    use crate::platform::host_commands::is_executable_file;
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
+        .any(|dir| is_executable_file(&dir.join("notify-send")))
 }
 
 /// Invoke `notify-send` with the given notification payload.
+///
+/// Runs through the shared [`ProcessRunner`](crate::process::ProcessRunner): the
+/// child starts from a cleared environment, `notify-send` resolves from the
+/// operator's `PATH` (dispatch runs in their login session), and their session
+/// variables (`XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, the display
+/// variables) are set explicitly with
+/// [`set_env`](crate::process::ProcessCommand::set_env) so the notification
+/// reaches their bus rather than root's.
 #[cfg(not(test))]
-fn send_notification(notify_send: &Path, notification: &Notification) -> Result<()> {
-    let mut cmd = std::process::Command::new(notify_send);
-    cmd.arg("--urgency").arg(&notification.urgency);
-    cmd.arg("--app-name").arg("NAILS");
+fn send_notification(notification: &Notification) -> Result<()> {
+    use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
+
+    let mut command = ProcessCommand::caller_path("notify-send")
+        .arg("--urgency")
+        .arg(&notification.urgency)
+        .arg("--app-name")
+        .arg("NAILS");
 
     for (key, value) in notification_runtime_environment() {
-        cmd.env(key, value);
+        command = command.set_env(key, value);
     }
 
     if let Some(ref icon) = notification.icon {
-        cmd.arg("--icon").arg(icon);
+        command = command.arg("--icon").arg(icon);
     }
 
-    cmd.arg(&notification.title);
-    cmd.arg(&notification.body);
+    command = command.arg(&notification.title).arg(&notification.body);
 
-    let output = cmd.output().map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to run notify-send: {}", e),
-        ))
-    })?;
+    let output = RealProcessRunner.run(&command)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

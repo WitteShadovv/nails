@@ -354,6 +354,45 @@ fn real_runner_passes_allowed_variables_through() {
 }
 
 #[test]
+#[serial]
+fn real_runner_sets_explicit_session_variables_on_the_child() {
+    // The caller does not hold DBUS_SESSION_BUS_ADDRESS; set_env supplies the
+    // operator's session bus explicitly, as the notify-send path does.
+    let _env = EnvGuard::lock();
+
+    let (ok, stdout, _) = RealProcessRunner
+        .run_text(
+            &ProcessCommand::tool("sh")
+                .args(["-c", "printf '%s' \"${DBUS_SESSION_BUS_ADDRESS-unset}\""])
+                .set_env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
+                .allow_in_test_runtime(),
+        )
+        .unwrap();
+
+    assert!(ok);
+    assert_eq!(stdout, "unix:path=/run/user/1000/bus");
+}
+
+#[test]
+#[serial]
+fn real_runner_set_env_cannot_override_the_fixed_path() {
+    // set_env must not be able to redirect the child onto a caller-chosen PATH.
+    let _env = EnvGuard::lock();
+
+    let (ok, stdout, _) = RealProcessRunner
+        .run_text(
+            &ProcessCommand::tool("sh")
+                .args(["-c", "printf '%s' \"$PATH\""])
+                .set_env("PATH", "/tmp/evil")
+                .allow_in_test_runtime(),
+        )
+        .unwrap();
+
+    assert!(ok);
+    assert_eq!(stdout, SYSTEM_TOOL_DIRS.join(":"));
+}
+
+#[test]
 fn real_runner_reports_spawn_failures_with_the_executable_path() {
     let temp_dir = tempfile::tempdir().unwrap();
     let missing = temp_dir.path().join("missing");
