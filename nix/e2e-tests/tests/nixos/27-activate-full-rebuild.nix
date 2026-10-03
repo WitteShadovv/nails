@@ -1,24 +1,31 @@
-# Test 27: Activate — real hidden NixOS rebuild, then fast-path re-activation
+# Test 27: Activate — real, offline hidden NixOS rebuild, then fast-path re-activation
 #
 # Exercises the real build + switch path with no `nixos-rebuild`/`nix` stub on
 # PATH: `nails activate` builds the hidden system toplevel explicitly
 # (`nix build …#…system.build.toplevel`), caches its `nixos-system-*` store path
 # in the state file, and switches to it before the session restart. After a
 # deactivate-with-reboot, a second activation with the unchanged config must reuse
-# the cached toplevel on the fast path (no rebuild) and re-apply the hidden marker.
+# the cached toplevel on the fast path — proven here by breaking the flake source
+# so that any rebuild would fail, and asserting the re-activation still succeeds.
 #
-# NOTE (evaluate under nix): this test performs a genuine offline toplevel build
-# inside the VM, so it depends on the hidden flake's closure being available in the
-# guest store (it imports the decoy's own configuration, so its closure is already
-# present, plus a trivial marker derivation). The deeper offline-substituter and
-# fixture wiring is owned by T-091; this test must be run with
-# `nix build .#checks.x86_64-linux.activate-full-rebuild` and may need T-091's
-# fixture tuning to build fully offline on constrained runners.
+# The hidden configuration is the committed fixtures/hidden-config fixture (a
+# single /etc marker plus a oneshot service, importing the decoy's own
+# configuration.nix so its closure is already present). The build runs fully
+# offline: no substituters are configured and nixpkgs is seeded into the guest
+# store, so nothing can be fetched. The decoy runs the impermanent profile, so its
+# only persisted non-store state is /var/lib/nixos, which is diffed against a
+# pre-activation baseline after the final deactivate to bound the forensic drift.
+#
+# NOTE (evaluate under nix): this performs a genuine offline toplevel build inside
+# an impermanent (tmpfs-root, on-disk store image) VM. Closure completeness, the
+# tmpfs-root override and the offline build can only be confirmed with
+# `nix build .#checks.x86_64-linux.activate-full-rebuild` on a Nix host.
 
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
+  fixtureDir = ./../../fixtures/hidden-config;
   nixpkgsPath = pkgs.path;
 in
 {
@@ -32,18 +39,19 @@ in
   ];
 
   nodes.machine =
-    { pkgs, ... }:
+    { ... }:
     {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [
-        self.packages.x86_64-linux.nails
-        pkgs.python3
-      ];
+      imports = [ ./../../lib/impermanent-decoy.nix ];
+      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
       nix.settings.experimental-features = [
         "nix-command"
         "flakes"
       ];
+      # Force the hidden build fully offline: nothing may be substituted, so the
+      # toplevel must build from the seeded store alone.
+      nix.settings.substituters = [ ];
       # Seed nixpkgs into the guest store so the hidden toplevel builds offline.
+      # With the on-disk store image this lands in that image.
       virtualisation.additionalPaths = [ pkgs.path ];
     };
 
@@ -58,6 +66,18 @@ in
 
     HIDDEN_MARKER = "/etc/nails-hidden-marker"
     ONESHOT_MARKER = "/run/nails-hidden-oneshot"
+
+    # Basenames /var/lib/nixos is known to churn when switch-to-configuration runs
+    # against the (non-overlaid) decoy /var: the declarative user/group state and
+    # the id maps. This drift is the subject of T-092; here it is the allowlist of
+    # changes a hidden session may leave on the persisted decoy state.
+    NIXOS_STATE_DRIFT_ALLOWLIST = {
+        "declarative-users",
+        "declarative-groups",
+        "uid-map",
+        "gid-map",
+        "auto-subuid-map",
+    }
 
     def run_capture(label, command):
         stem = f"/tmp/{label}-{uuid.uuid4().hex}"
@@ -84,6 +104,36 @@ in
         machine.succeed(f"mountpoint -q {path}")
         assert machine.succeed(f"findmnt -n -o FSTYPE {path}").strip() == "overlay"
 
+    def snapshot_nixos_state():
+        # Map each file under /var/lib/nixos to its content hash, so the diff is by
+        # contents and not by mtime (what T-092 needs the baseline to be).
+        names = machine.succeed(
+            "find /var/lib/nixos -type f -printf '%P\\n' 2>/dev/null | sort || true"
+        ).split()
+        state = {}
+        for name in names:
+            name = name.strip()
+            if not name:
+                continue
+            digest = machine.succeed(
+                "sha256sum " + shlex.quote("/var/lib/nixos/" + name) + " | cut -d' ' -f1"
+            ).strip()
+            state[name] = digest
+        return state
+
+    def unexpected_nixos_drift(before, after):
+        changed = set()
+        for name in set(before) | set(after):
+            if before.get(name) != after.get(name):
+                changed.add(name)
+        # A change is tolerated only when every path component's basename is in the
+        # allowlist of known switch-to-configuration churn.
+        return sorted(
+            name
+            for name in changed
+            if name.split("/")[-1] not in NIXOS_STATE_DRIFT_ALLOWLIST
+        )
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
@@ -94,42 +144,28 @@ in
 
     headless_config = "/tmp/nails-headless.toml"
     flake_ref = "/mnt/data/nixos#nails-e2e"
+    toplevel_attr = "/mnt/data/nixos#nixosConfigurations.nails-e2e.config.system.build.toplevel"
     write_headless_config(headless_config)
 
-    with subtest("prepare a real hidden flake with a marker and a oneshot service"):
+    baseline_nixos_state = None
+    with subtest("prepare the committed hidden-config fixture as a real offline flake"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("mkdir -p /mnt/data/nixos")
-        machine.succeed("""cat > /mnt/data/nixos/flake.nix <<'EOF'
-    {
-      description = "NAILS real-rebuild E2E";
-      inputs.nixpkgs.url = "path:${nixpkgsPath}";
-      outputs = { self, nixpkgs }: {
-        nixosConfigurations.nails-e2e = nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          modules = [
-            /etc/nixos/configuration.nix
-            ({ ... }: {
-              documentation.nixos.enable = false;
-              environment.etc."nails-hidden-marker".text = "hidden-rebuild-active";
-              systemd.services.nails-hidden-canary = {
-                wantedBy = [ "multi-user.target" ];
-                serviceConfig = {
-                  Type = "oneshot";
-                  RemainAfterExit = true;
-                  ExecStart = "/bin/sh -c 'echo hidden-oneshot-ran > /run/nails-hidden-oneshot'";
-                };
-              };
-            })
-          ];
-        };
-      };
-    }
-    EOF""")
+        # Copy the fixture off the read-only store and point it at the seeded
+        # nixpkgs so it locks and builds offline.
+        machine.succeed("cp -rT ${fixtureDir} /mnt/data/nixos")
+        machine.succeed("chmod -R u+w /mnt/data/nixos")
+        machine.succeed(
+            "sed -i "
+            + shlex.quote("s|@nixpkgs@|path:${nixpkgsPath}|")
+            + " /mnt/data/nixos/flake.nix"
+        )
         machine.succeed("nix flake lock --offline /mnt/data/nixos")
         assert_state("Inactive", headless_config)
+        baseline_nixos_state = snapshot_nixos_state()
 
     first_toplevel = None
-    with subtest("first activation builds the hidden toplevel and switches to it"):
+    with subtest("first activation builds the hidden toplevel offline and switches to it"):
         rc, out = run_capture(
             "activate1",
             f"nails --config {headless_config} activate --session keep -y --flake {flake_ref}",
@@ -155,33 +191,41 @@ in
         assert_state("Inactive", headless_config)
         machine.fail(f"test -e {HIDDEN_MARKER}")
 
-    with subtest("re-activation reuses the cached toplevel on the fast path"):
+    with subtest("re-activation takes the fast path even when the flake can no longer build"):
         machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
+        # Break the hidden flake source. The fingerprint covers the hidden
+        # etc/nixos and config/nixos trees (absent here) plus the flake-ref string,
+        # not this flake's source, so it is unchanged and the fast path still fires.
+        machine.succeed(
+            "echo 'this is not valid nix' > /mnt/data/nixos/flake.nix"
+        )
+        # Positive control: a rebuild of the broken flake genuinely fails, so a
+        # successful re-activation can only be the no-rebuild fast path.
+        machine.fail(f"nix build --offline --impure --no-link {shlex.quote(toplevel_attr)}")
+
         rc, out = run_capture(
             "activate2",
             f"nails --config {headless_config} activate --session keep -y --flake {flake_ref}",
         )
-        assert rc == 0, f"re-activation failed: {out}"
+        assert rc == 0, f"fast-path re-activation failed: {out}"
 
         payload = assert_state("Active", headless_config)
         second_toplevel = payload.get("hidden_toplevel")
         assert second_toplevel == first_toplevel, (
             f"fast path must reuse the cached toplevel {first_toplevel!r}, got {second_toplevel!r}"
         )
-        # The hidden marker and oneshot are applied again by the cached toplevel.
+        # The cached toplevel re-applies the hidden marker.
         machine.succeed(f"grep -Fx 'hidden-rebuild-active' {HIDDEN_MARKER}")
-        # The fast path switches without rebuilding: the nails log records it.
-        log = machine.succeed(
-            "bash -lc 'cat /mnt/data/logs/*.log 2>/dev/null || true'"
-        ).lower()
-        assert "fast path" in log or "fast path" in out.lower(), (
-            "the second activation should take the fast path (no rebuild); "
-            f"activate output: {out!r}"
-        )
 
-    with subtest("final deactivate leaves no hidden overlays"):
+    with subtest("final deactivate leaves no hidden overlays and bounded nixos drift"):
         canonical_deactivate(headless_config, unit_name="nails-deactivate-full-rebuild-2")
         assert_state("Inactive", headless_config)
         machine.fail(f"test -e {HIDDEN_MARKER}")
+
+        drift = unexpected_nixos_drift(baseline_nixos_state, snapshot_nixos_state())
+        assert drift == [], (
+            "the hidden session left unexpected drift on the persisted decoy "
+            f"/var/lib/nixos (not in the known switch-to-configuration allowlist): {drift}"
+        )
   '';
 }

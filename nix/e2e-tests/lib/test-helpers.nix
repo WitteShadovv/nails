@@ -82,6 +82,27 @@
         )
   '';
 
+  # Python function to write an auto-mode config. Auto mode derives the overlay
+  # set from the live base OS itself — every writable base tree, including /var
+  # and /nix — rather than listing overlays explicitly, which is the product
+  # default. Tests that must exercise the real default (not the hand-listed
+  # explicit set) use this instead of write_headless_config.
+  writeAutoConfigFn = ''
+    def write_auto_config(path):
+        import os
+        import shlex
+
+        parent_dir = os.path.dirname(path) or "."
+        machine.succeed("mkdir -p " + shlex.quote(parent_dir))
+        machine.succeed(
+            """cat > %s <<'EOF'
+    hidden_volume_root = "/mnt/data"
+    overlay_mode = "auto"
+    risky_services = "skip"
+    EOF""" % path
+        )
+  '';
+
   # Launch a command from a transient systemd unit so the test harness shell
   # returns immediately before the unit tears down shell processes or reboots.
   runDetachedCommandFn = ''

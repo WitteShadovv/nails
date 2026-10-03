@@ -169,6 +169,7 @@ let
     "preflight-nixos-build-target"
     "session-kill-graphical"
     "notify-autostart-lifecycle"
+    "activate-auto-lifecycle"
   ];
 
   groupMembers = {
