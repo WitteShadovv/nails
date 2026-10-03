@@ -107,7 +107,7 @@ it. To keep activation fast and the volume small:
   caches on RAM-backed `extended_overlays` tmpfs layers;
 - run `nix-collect-garbage -d` and clear caches **inside** the hidden session;
 - while deactivated, roll a target back to its decoy lower with
-  `sudo nails reset-upper <TARGET>` (it confirms first, prunes no whiteouts
+  `sudo /mnt/data/nails reset-upper <TARGET>` (it confirms first, prunes no whiteouts
   automatically, and warns that resetting `/nix` drops the hidden Nix store).
 
 See [docs/USER-SECURITY-GUIDE.md](docs/USER-SECURITY-GUIDE.md) for the full
@@ -181,9 +181,11 @@ install -m0755 ./result/bin/nails /mnt/data/nails
 2. **Bootstrap the hidden layout** on the mounted backend.
 
    ```bash
-   nails init /mnt/data
+   sudo /mnt/data/nails init /mnt/data
    ```
 
+   Run `init` by its full path on the hidden volume and with `sudo`: the mount point
+   is root-owned after `sudo mount`, and `nails` is never placed on the decoy `PATH`.
    `init` checks the target before writing anything and refuses a directory that is not a
    mounted volume of its own, so the layout never lands on the decoy disk;
    `--allow-unmounted` overrides this for a directory-style backend. On NixOS it seeds the
@@ -195,7 +197,7 @@ install -m0755 ./result/bin/nails /mnt/data/nails
 
    ```bash
    $EDITOR /mnt/data/config/nails.toml
-   nails config validate
+   /mnt/data/nails config validate
    ```
 
    The file is strict TOML: every key is optional (an empty file uses the defaults) and unknown
@@ -220,19 +222,21 @@ install -m0755 ./result/bin/nails /mnt/data/nails
 5. **Activate the hidden environment**.
 
    ```bash
-   sudo nails activate
+   sudo /mnt/data/nails activate
    ```
 
-   Use this safer path if you have not verified that the backend survives session termination:
+   Use this safer path if you have not verified that the backend survives session
+   termination — it keeps the current graphical session running and mounts only
+   what can be overlaid live:
 
    ```bash
-   sudo nails activate --no-kill-session --interactive
+   sudo /mnt/data/nails activate --session keep
    ```
 
 6. **Return to decoy state when finished**.
 
    ```bash
-   sudo nails deactivate
+   sudo /mnt/data/nails deactivate
    ```
 
 7. **Verify from the hidden side, before handing the machine over.**
@@ -242,14 +246,14 @@ install -m0755 ./result/bin/nails /mnt/data/nails
    `deactivate`:
 
    ```bash
-   sudo nails verify --deep
+   sudo /mnt/data/nails verify --deep
    ```
 
    To inspect the decoy itself for leftovers, mount its image or partition
    read-only and scan it offline, again from the hidden side:
 
    ```bash
-   sudo nails verify --offline --root /mnt/decoy
+   sudo /mnt/data/nails verify --offline --root /mnt/decoy
    ```
 
    A clean result reports what it checked and lists what it did not; it is
@@ -257,19 +261,93 @@ install -m0755 ./result/bin/nails /mnt/data/nails
 
 ## Command overview
 
+The binary lives on the hidden volume and is never placed on the decoy `PATH`, so
+every invocation uses its full path (the examples use `/mnt/data/nails`). `sudo`'s
+`secure_path` excludes the hidden root, so a bare `sudo nails`-style call (no path)
+would not resolve.
+
 | Command | Purpose |
 |---|---|
-| `nails init <PATH>` | Bootstrap a hidden-volume layout on an existing mounted root |
-| `sudo nails activate` | Activate the hidden environment |
-| `sudo nails deactivate` | Return to decoy state and reboot |
-| `sudo nails emergency` | Remove overlays without waiting for a reboot |
-| `nails status` | Show current state, security posture, and hidden-volume disk usage |
-| `nails verify` | Scan for known/common host artifacts (from the hidden side, live or `--offline`) |
-| `sudo nails reset-upper <TARGET>` | Delete a target's persistent overlay upper (while deactivated) |
-| `nails notify-dispatch` | Dispatch pending desktop notifications on login |
-| `nails config path\|show\|validate` | Locate, inspect or check the configuration file |
+| `sudo /mnt/data/nails init <PATH>` | Bootstrap a hidden-volume layout on an existing mounted root |
+| `sudo /mnt/data/nails activate` | Activate the hidden environment |
+| `sudo /mnt/data/nails deactivate` | Return to decoy state and reboot |
+| `sudo /mnt/data/nails emergency` | Tear everything down now, without waiting for a reboot |
+| `sudo /mnt/data/nails recover` | Reconcile a stuck state and finish an interrupted teardown |
+| `/mnt/data/nails status` | Show current state, security posture, and hidden-volume disk usage |
+| `sudo /mnt/data/nails verify` | Scan for known/common host artifacts (from the hidden side, live or `--offline`) |
+| `/mnt/data/nails check` | Report readiness to activate without changing anything (alias: `doctor`) |
+| `sudo /mnt/data/nails reapply` | Rebuild and switch the hidden configuration layer while active (NixOS) |
+| `sudo /mnt/data/nails reset-upper <TARGET>` | Delete a target's persistent overlay upper (while deactivated) |
+| `/mnt/data/nails config path\|show\|validate` | Locate, inspect or check the configuration file |
 
-For full flag-level usage, run `nails --help` or `nails <command> --help`.
+For full flag-level usage, run `/mnt/data/nails --help` or
+`/mnt/data/nails <command> --help`.
+
+## CLI reference
+
+### Global flags
+
+Accepted before or after the subcommand (`nails -q status` and `nails status -q`
+are the same).
+
+| Flag | Effect |
+|---|---|
+| `-c`, `--config <PATH>` | Read this TOML file instead of the binary-relative default |
+| `-v`, `--verbose` | More diagnostics on stderr (`-v` debug, `-vv` trace); conflicts with `--quiet` |
+| `-q`, `--quiet` | Print only errors and the final result |
+| `--color <auto\|always\|never>` | When to emit ANSI colour (default `auto`) |
+| `--ascii` | Use ASCII markers instead of Unicode symbols and box drawing |
+| `--json` | Print a machine-readable JSON envelope on stdout |
+| `--no-log-file` | Do not write the log file on the hidden volume (stderr still logs) |
+
+### `activate` flags
+
+| Flag | Effect |
+|---|---|
+| `-y`, `--yes` | Proceed without the confirmation prompt (otherwise it prompts on a terminal and refuses without one) |
+| `--session <kill\|keep>` | Terminate the graphical session before mounting (`kill`, the default) or keep it running (`keep`) |
+| `--pivot <refuse\|allow\|ask>` | How to handle a volume that needs a pivot mount (default `refuse`) |
+| `--overlay-only` | Mount overlays only; skip the platform configuration layer |
+| `--risky-services <restart\|skip>` | Restart risky services still referencing a target, or leave them as reported survivors (overrides `risky_services`) |
+| `--terminate-interactive` | Force-terminate interactive programs holding a target instead of aborting |
+| `--accept-persistent-decoy` | Activate despite a persistent decoy posture (overrides `accept_persistent_decoy`) |
+| `--nixos-flake <REF>` | NixOS: flake reference `<path>#<host>` to pass to `nixos-rebuild --flake` |
+| `--dry-run` | Preview the steps without changing anything |
+| `--no-preflight` | Skip pre-flight checks (dangerous; expert use only) |
+
+`deactivate` takes `-y`/`--yes` and `--no-clear-history`. `emergency` takes
+`--countdown <SECS>` (an abortable wait; teardown is immediate by default) and
+`--poweroff`/`--reboot` to clear RAM once teardown finishes. `verify` takes
+`--deep`, and `--offline --root <MOUNT>` to scan a mounted decoy image.
+
+### Exit codes
+
+Every command returns one of these; they are a stable contract a script can
+branch on.
+
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | The operation failed |
+| `2` | Command-line usage error |
+| `3` | The configuration file or environment was unusable |
+| `4` | A pre-flight check refused the operation |
+| `5` | The operation needs privileges it did not have |
+| `6` | The on-disk state could not be trusted |
+| `7` | The system is degraded or a reboot is required to finish |
+| `8` | The host is not one NAILS can operate on |
+| `9` | Completed, but with a warning the caller should act on |
+| `10` | `verify` found warnings |
+| `11` | `verify` found critical artifacts |
+| `130` | Cancelled by a signal (SIGINT/SIGTERM); overlays rolled back |
+
+### JSON output
+
+With `--json`, every command writes one line: a stable envelope with
+`schema_version` (currently `1`), the `command` name, an `ok` boolean, and either
+a typed `data` object (success) or a typed `error` object with a snake_case
+`code`, a `message` and an optional `hint` (failure). Bump the schema version
+signals an incompatible change to a field's meaning.
 
 ## Threat model and limitations
 
@@ -340,6 +418,39 @@ nix build -L .#nails-release -o result --option accept-flake-config false
 
 See [`docs/release-artifact-reproducibility.md`](docs/release-artifact-reproducibility.md) for the
 scope of the reproducibility claim and artifact verification details.
+
+## Upgrading
+
+This release changes operator-facing interfaces. There is no backwards-compatibility
+shim: convert your setup before running the new binary.
+
+- **Configuration format.** Configuration is now strict TOML. Convert `nails.yaml`
+  to `config/nails.toml` next to the binary on the hidden volume (see
+  [docs/configuration.md](docs/configuration.md) for every key and its default).
+  Unknown keys, wrong types and TOML syntax errors are rejected with a one-line
+  message rather than silently falling back to a default.
+- **Invocation.** Always run the binary by its full path on the hidden volume
+  (`sudo /mnt/data/nails …`). No copy, symlink or `PATH` entry on the decoy is
+  supported.
+- **Flags.** The output flags are now global and accepted in any position; the old
+  per-command output flags (`--plain`, `--no-color`, `--no-logs`,
+  `--verbose-details`) are removed in favour of `--color`, `--ascii`, `--quiet`,
+  `--verbose` and `--no-log-file`. Session handling moved to
+  `activate --session <kill|keep>`. See [CLI reference](#cli-reference).
+- **Exit codes and JSON.** The process now returns the documented
+  [exit codes](#exit-codes), and `--json` emits the versioned envelope
+  (`schema_version = 1`) described under [JSON output](#json-output).
+- **State schema.** The on-disk `state.json` carries a `version` field and records
+  the `boot_id` it was written under, so a state file left by a previous boot is
+  recognised as stale. There is no separate "emergency" state: an interrupted or
+  partial teardown is recorded as `Degraded`, which `nails recover` reconciles. A
+  state file written by an incompatible version is treated as a safe default
+  (inactive) rather than trusted.
+
+> [!NOTE]
+> The release changelog mirrors these upgrade notes under its own "Upgrading"
+> heading; keep [CHANGELOG.md](CHANGELOG.md) and this section in step when cutting
+> a release.
 
 ## Related projects
 

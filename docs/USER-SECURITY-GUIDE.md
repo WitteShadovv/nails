@@ -232,11 +232,11 @@ NAILS provides two deactivation modes with different security and convenience tr
 
 | Scenario | Recommended Mode | Command |
 |----------|------------------|---------|
-| Normal session end, time available | Standard | `sudo nails deactivate` |
-| Imminent physical threat | Emergency | `sudo nails emergency` |
-| System instability | Standard (if possible) | `sudo nails deactivate` |
-| Time-critical situation | Emergency | `sudo nails emergency` |
-| Cannot reboot immediately | Emergency | `sudo nails emergency` |
+| Normal session end, time available | Standard | `sudo /mnt/data/nails deactivate` |
+| Imminent physical threat | Emergency | `sudo /mnt/data/nails emergency` |
+| System instability | Standard (if possible) | `sudo /mnt/data/nails deactivate` |
+| Time-critical situation | Emergency | `sudo /mnt/data/nails emergency` |
+| Cannot reboot immediately | Emergency | `sudo /mnt/data/nails emergency` |
 
 Emergency detaches the overlays first (each `umount2` with `MNT_DETACH` under an
 overall deadline), so a stalled backend cannot delay the one step that matters;
@@ -299,6 +299,53 @@ Disadvantages:
   are unsure cleanup was complete
 - Higher risk of incomplete cleanup if interrupted
 
+### Panic Switch
+
+Emergency teardown runs immediately by default, so a single keystroke that starts
+it is the fastest panic button. The hazard is privilege escalation: the binary
+lives on the hidden volume and is runnable by your account, so **never give it a
+passwordless `sudo` rule** (`… NOPASSWD: /mnt/data/nails …`). Anyone who could
+replace that binary — or any local user the blanket rule also covers — would then
+run their own code as root. Drive the panic switch through a root-owned unit and a
+polkit rule scoped to that one unit instead.
+
+Define both only in the hidden NixOS generation, so the decoy carries no unit, no
+rule and nothing else that names the tool; they exist only while the hidden
+environment is active. In the hidden `configuration.nix`:
+
+```nix
+# Root-owned one-shot teardown. Immediate emergency, then power off to clear RAM.
+systemd.services.panic = {
+  description = "Session teardown";
+  serviceConfig = {
+    Type = "oneshot";
+    ExecStart = "/mnt/data/nails emergency --poweroff";
+  };
+};
+
+# Let the operator start that one unit without a password — a scoped rule, not a
+# blanket sudoers entry. It names the exact unit, so it grants nothing else.
+security.polkit.extraConfig = ''
+  polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "panic.service" &&
+        subject.user == "operator") {
+      return polkit.Result.YES;
+    }
+  });
+'';
+```
+
+Bind a key to `systemctl start panic.service` — a desktop custom shortcut, a
+window-manager binding, or a hardware button wired through a `udev`/`systemd`
+trigger. Because the unit and the rule live only in the hidden generation, the key
+does nothing, and leaves nothing, on the decoy.
+
+One caveat the polkit scope does not remove: `ExecStart` runs `/mnt/data/nails` as
+root, so keep that binary root-owned and not writable by any other account
+(`install -m0755` under `sudo`, as in the README, already does this). A writable
+binary started as root is the same escalation the `NOPASSWD` warning is about.
+
 ---
 
 ## Verifying Successful Deactivation
@@ -311,13 +358,13 @@ mounted, before `deactivate`:
 
 ```bash
 # Basic verification
-sudo nails verify
+sudo /mnt/data/nails verify
 
 # Deep verification (more thorough, slower)
-sudo nails verify --deep
+sudo /mnt/data/nails verify --deep
 
 # JSON output for scripting
-sudo nails verify --deep --json
+sudo /mnt/data/nails verify --deep --json
 ```
 
 To inspect the decoy itself for leftovers, mount its image or partition
@@ -325,7 +372,7 @@ read-only and scan it offline (again from the hidden side, which has the
 binary):
 
 ```bash
-sudo nails verify --offline --root /mnt/decoy
+sudo /mnt/data/nails verify --offline --root /mnt/decoy
 ```
 
 In offline mode every path is read from under `--root`, and the live-only
@@ -793,7 +840,7 @@ While operating in the hidden environment:
 [ ] Avoid installing packages to decoy Nix store
 [ ] Monitor for unusual system behavior
 [ ] Have emergency deactivation command ready:
-    sudo nails emergency
+    sudo /mnt/data/nails emergency
 [ ] Know your physical emergency procedure (power button hold)
 ```
 
@@ -836,7 +883,7 @@ decoy lower, reset it **while deactivated**:
 
 ```bash
 # The system must be Inactive and the target unmounted.
-sudo nails reset-upper /home
+sudo /mnt/data/nails reset-upper /home
 ```
 
 `reset-upper` lists what it will delete and asks for confirmation (`-y` skips
@@ -875,7 +922,7 @@ After deactivation completes:
 ```
 [ ] System has rebooted (for standard deactivation) OR
     emergency cleanup confirmed complete
-[ ] Run: nails verify --deep
+[ ] Run: /mnt/data/nails verify --deep
 [ ] Manually check: cat ~/.bash_history
 [ ] Manually check: findmnt | grep overlay
 [ ] If using emergency/no-reboot cleanup and the backend is still mounted:
@@ -900,7 +947,7 @@ After deactivation completes:
 
 ```bash
 # Force emergency cleanup
-sudo nails emergency
+sudo /mnt/data/nails emergency
 
 # If NAILS binary is unresponsive
 sudo kill -9 $(pgrep -f nails)
@@ -928,7 +975,7 @@ sudo systemctl restart nix-daemon
 sudo systemctl restart display-manager
 
 # Verify state
-nails status
+/mnt/data/nails status
 ```
 
 **Symptom: NAILS reports "already deactivating"**
@@ -944,7 +991,7 @@ cat /mnt/data/state.json
 sudo /mnt/data/nails recover
 
 # Re-run status
-nails status  # Should show INACTIVE
+/mnt/data/nails status  # Should show INACTIVE
 ```
 
 ### Recovering from Incomplete Deactivation
@@ -985,7 +1032,7 @@ sudo rm -rf /tmp/* /var/tmp/*
 sudo systemctl reboot
 
 # After reboot, verify
-nails verify --deep
+/mnt/data/nails verify --deep
 cat ~/.bash_history  # Should be empty
 findmnt /mnt/data  # Should fail or print nothing
 ```
