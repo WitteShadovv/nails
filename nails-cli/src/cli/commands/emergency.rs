@@ -1,4 +1,12 @@
 //! Emergency command handler
+//!
+//! Emergency is a fast, best-effort teardown, not a switch back to the decoy
+//! configuration. It ends the hidden graphical session and the services the
+//! hidden configuration added, then releases the NAILS overlays so the encrypted
+//! backend can be closed. It does not run `switch-to-configuration` and does not
+//! claim an immediate, complete return to the decoy: the display manager is
+//! restarted so the decoy greeter reappears, and the operator still closes the
+//! backend (and reboots when unsure) as the recovery guidance explains.
 
 use std::path::Path;
 
@@ -75,7 +83,9 @@ pub fn execute(
                         .stdout_style()
                         .marked(Mark::Pass, "Emergency deactivation complete")
                 );
-                println!("  System returned to decoy configuration");
+                println!(
+                    "  Hidden session ended and overlays released; the decoy greeter will reappear"
+                );
                 eprintln!();
                 for line in emergency_recovery_guidance(settings) {
                     eprintln!("{line}");

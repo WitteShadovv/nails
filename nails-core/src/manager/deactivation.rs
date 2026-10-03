@@ -185,6 +185,25 @@ fn requires_decoy_restore<F: Filesystem>(manager: &NailsManager<F>) -> Result<bo
         .is_some())
 }
 
+/// Send `signal` (e.g. `TERM`, `KILL`) to `pid`, best-effort.
+///
+/// Routes through the shared process runner so the host-tool resolution and the
+/// test-runtime guard apply exactly as they do for every other external command.
+fn signal_pid(pid: u32, signal: &str) {
+    use crate::process::run::{ProcessRunner, RealProcessRunner, signal_command};
+    let _ = RealProcessRunner.run(&signal_command(pid, signal));
+}
+
+/// Restart the display manager after an emergency teardown so the decoy greeter
+/// reappears. Best-effort; `None` (a non-graphical or non-emergency teardown)
+/// does nothing.
+fn restart_display_manager_after_emergency(display_manager: Option<String>) {
+    if let Some(display_manager) = display_manager {
+        tracing::info!(service = %display_manager, "Restarting display manager onto the decoy greeter");
+        start_service_and_socket(&display_manager);
+    }
+}
+
 fn build_cleanup_config<F: Filesystem>(
     manager: &NailsManager<F>,
     kind: ManagerDeactivationKind,
@@ -360,6 +379,124 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
+    /// The live NAILS overlay mount points, for the emergency overlay-rooted
+    /// process scan. Best-effort: a discovery error yields an empty list rather
+    /// than blocking the teardown.
+    fn emergency_overlay_targets(&self) -> Vec<PathBuf> {
+        let hidden_root = self.config().hidden_volume_root.clone();
+        match self.filesystem().discover_nails_mounts(Some(&hidden_root)) {
+            Ok(discovered) => discovered.owned_mount_points(),
+            Err(e) => {
+                tracing::warn!(error = %e, "Could not enumerate NAILS mounts for emergency process cleanup");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Emergency only: run the pre-teardown session/service cleanup and return the
+    /// display manager to restart afterwards. A no-op returning `None` for the
+    /// normal and recovery kinds, which keep the thorough teardown order.
+    fn prepare_emergency_session_teardown(&self, kind: ManagerDeactivationKind) -> Option<String> {
+        if kind != ManagerDeactivationKind::Emergency {
+            return None;
+        }
+        let overlay_targets = self.emergency_overlay_targets();
+        self.terminate_hidden_session_before_teardown(&overlay_targets)
+    }
+
+    /// Emergency only: end the hidden graphical session and the services the
+    /// hidden configuration added, before the overlays come down.
+    ///
+    /// Order matters. The logind session (and its user) are terminated first so
+    /// every GUI app and user unit the operator left in that slice — including
+    /// those rooted in the overlays — is gone before unmount. The service units
+    /// the hidden switch recorded are then stopped, and finally any remaining
+    /// process still able to write through an overlay target is signalled. All of
+    /// it is best-effort. Returns the display manager to restart once the overlays
+    /// are gone (`Some` only when a graphical session was torn down).
+    fn terminate_hidden_session_before_teardown(
+        &self,
+        overlay_targets: &[PathBuf],
+    ) -> Option<String> {
+        use crate::manager::helpers::ServiceController;
+
+        let (hidden_session, added_units) = {
+            let cached = self.cached_state.borrow();
+            match cached.as_ref() {
+                Some(state_file) => (
+                    state_file.hidden_session.clone(),
+                    state_file.hidden_added_units.clone(),
+                ),
+                None => (None, Vec::new()),
+            }
+        };
+
+        let restart_dm = hidden_session.map(|session| {
+            tracing::info!(
+                uid = session.target_uid,
+                "Terminating the hidden graphical session before overlay teardown"
+            );
+            ServiceController::terminate_logind_session(
+                session.target_uid,
+                session.session_id.as_deref(),
+            );
+            session
+                .display_manager
+                .unwrap_or_else(|| "display-manager.service".to_string())
+        });
+
+        for unit in &added_units {
+            tracing::info!(unit, "Stopping a unit the hidden configuration added");
+            let _ = ServiceController::stop_unit(unit);
+        }
+
+        self.kill_overlay_rooted_processes(overlay_targets);
+
+        restart_dm
+    }
+
+    /// Signal any process that can still write to the decoy through an overlay
+    /// target (a cwd/root inside it, a writable or directory fd, a shared-writable
+    /// mapping). Reuses the capability-aware process classifier; read-only
+    /// consumers are left alone. Best-effort and a no-op in test/test-like
+    /// runtimes, where the `/proc` snapshot is empty.
+    fn kill_overlay_rooted_processes(&self, targets: &[PathBuf]) {
+        if targets.is_empty() || crate::runtime_safety::should_skip_host_interaction() {
+            return;
+        }
+
+        let snapshot = match crate::process::detection::ProcSnapshot::capture() {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                tracing::warn!(error = %e, "Could not snapshot /proc for overlay-rooted process cleanup");
+                return;
+            }
+        };
+
+        let mut pids = std::collections::BTreeSet::new();
+        for target in targets {
+            for info in snapshot.processes_using(target) {
+                if info.is_write_blocking() {
+                    pids.insert(info.pid);
+                }
+            }
+        }
+
+        if pids.is_empty() {
+            return;
+        }
+
+        for &pid in &pids {
+            signal_pid(pid, "TERM");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        for &pid in &pids {
+            if std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                signal_pid(pid, "KILL");
+            }
+        }
+    }
+
     fn run_deactivation(&mut self, kind: ManagerDeactivationKind) -> Result<()> {
         // The emergency panic button must work from every state, not only a
         // clean Active one: the state is Activating during the whole switch, it
@@ -487,6 +624,16 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
+        // Emergency only: before the overlays come down, end the hidden graphical
+        // session and the services the hidden configuration added. Killing the
+        // logind session and the hidden units first means GUI apps and hidden
+        // services rooted in the overlays are gone before unmount, so the overlays
+        // are no longer pinned and the backend can later be closed. Returns the
+        // display manager to restart once the overlays are gone (`Some` only when a
+        // graphical session was torn down), deferred until after unmount so the
+        // greeter comes from the decoy system.
+        let emergency_restart_dm = self.prepare_emergency_session_teardown(kind);
+
         let cleanup_config = build_cleanup_config(self, kind);
 
         #[cfg(not(test))]
@@ -541,6 +688,12 @@ impl<F: Filesystem> NailsManager<F> {
             // base journal. Restarting forces it to reopen on the decoy's /var.
             restart_service_and_socket("systemd-journald");
         }
+
+        // Emergency only: now that the overlays are gone, restart the display
+        // manager so the login greeter comes up from the decoy system rather than
+        // the torn-down hidden session. Deferred to here so it never races the
+        // overlay teardown.
+        restart_display_manager_after_emergency(emergency_restart_dm);
 
         // Stop the in-session backend watcher and remove the RAM-backed runtime
         // copy on every teardown path. Runs before the orchestrator result is

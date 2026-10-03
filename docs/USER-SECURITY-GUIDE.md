@@ -273,12 +273,18 @@ Advantages:
 - Faster execution than the standard reboot path
 - No reboot required
 - Kills shell processes before they can flush history
-- Immediate return to decoy appearance
+- Ends the hidden graphical session and the services the hidden configuration
+  added, then releases the overlays and restarts the display manager so the decoy
+  greeter reappears
 
 Disadvantages:
+- A partial teardown, not a switch back to the decoy configuration: hidden
+  settings applied by `switch-to-configuration` (for example the hostname) are not
+  reverted until a reboot
 - More cleanup happens in-process instead of being delegated to a reboot
 - Relies on in-process cleanup rather than reboot guarantees
-- Hidden volume may still need to be manually unmounted and closed
+- The hidden volume should still be closed afterwards (see below); reboot if you
+  are unsure cleanup was complete
 - Higher risk of incomplete cleanup if interrupted
 
 ---

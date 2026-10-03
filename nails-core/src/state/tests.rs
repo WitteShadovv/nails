@@ -199,6 +199,8 @@ fn test_state_file_serialization() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        hidden_added_units: Vec::new(),
+        hidden_session: None,
     };
 
     // Serialize to JSON
@@ -414,6 +416,8 @@ fn test_save_load_round_trip_with_inactive_state() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        hidden_added_units: Vec::new(),
+        hidden_session: None,
     };
 
     // Save through the real durable path so the file carries a valid digest.
@@ -472,6 +476,8 @@ fn test_save_load_round_trip_with_active_state() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        hidden_added_units: Vec::new(),
+        hidden_session: None,
     };
 
     // Save through the real durable path so the file carries a valid digest.
@@ -485,6 +491,58 @@ fn test_save_load_round_trip_with_active_state() {
     assert_eq!(loaded.hidden_toplevel(), original.hidden_toplevel());
     assert_eq!(loaded.overlay_status, original.overlay_status);
     assert_eq!(loaded.version, env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
+fn test_hidden_session_and_added_units_survive_a_round_trip() {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let state_dir = temp_dir.path();
+    let state_path = state_dir.join("state.json");
+
+    let original = StateFile {
+        state: SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
+        },
+        hidden_added_units: vec![
+            "hidden-app.service".to_string(),
+            "hidden-config.service".to_string(),
+        ],
+        hidden_session: Some(crate::state::HiddenSession {
+            target_uid: 1000,
+            session_id: Some("c7".to_string()),
+            display_manager: Some("display-manager.service".to_string()),
+        }),
+        ..StateFile::default()
+    };
+
+    original
+        .save_with_root(&state_path, state_dir.to_str().unwrap())
+        .expect("Should save");
+
+    let loaded = StateFile::load(&state_path).expect("Should load");
+    assert_eq!(loaded.hidden_added_units, original.hidden_added_units);
+    assert_eq!(loaded.hidden_session, original.hidden_session);
+}
+
+#[test]
+fn test_state_file_without_hidden_fields_loads_with_defaults() {
+    // A state file written before these fields existed must still load: serde
+    // fills the absent fields with their defaults rather than failing.
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let state_dir = temp_dir.path();
+    let state_path = state_dir.join("state.json");
+
+    // Save a default (Inactive) file, then confirm the fields default cleanly on
+    // load — the serde(default) attributes are what keep an older file readable.
+    StateFile::default()
+        .save_with_root(&state_path, state_dir.to_str().unwrap())
+        .expect("Should save");
+
+    let loaded = StateFile::load(&state_path).expect("Should load");
+    assert!(loaded.hidden_added_units.is_empty());
+    assert!(loaded.hidden_session.is_none());
 }
 
 #[test]
@@ -532,6 +590,8 @@ fn test_save_load_multiple_overlays() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        hidden_added_units: Vec::new(),
+        hidden_session: None,
     };
 
     // Save through the real durable path so the file carries a valid digest.
@@ -725,6 +785,8 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        hidden_added_units: Vec::new(),
+        hidden_session: None,
     };
 
     // Use save_with_root to test actual atomic write logic
@@ -810,6 +872,8 @@ fn test_persist_race_condition_handling() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        hidden_added_units: Vec::new(),
+        hidden_session: None,
     };
 
     // save_with_root should handle the existing file (overwrite it)
@@ -855,6 +919,8 @@ fn create_test_manager_with_state(
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        hidden_added_units: Vec::new(),
+        hidden_session: None,
     };
     // Save through the durable path so the file carries a valid integrity digest.
     state_file
@@ -1408,6 +1474,8 @@ fn test_state_file_permissions_are_0600() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        hidden_added_units: Vec::new(),
+        hidden_session: None,
     };
     state
         .save_with_root(&state_path, mock_hidden_vol_root)
@@ -1447,6 +1515,8 @@ fn test_checksum_round_trip_save_load() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        hidden_added_units: Vec::new(),
+        hidden_session: None,
     };
 
     state

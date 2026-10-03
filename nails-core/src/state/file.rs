@@ -125,6 +125,27 @@ impl PlatformState {
 ///
 /// Writing state to the decoy system would leak evidence of hidden
 /// environment usage, defeating NAILS' plausible deniability.
+/// The graphical session a hidden environment ran under.
+///
+/// Captured at activation from the session-kill restart plan and consulted by
+/// emergency teardown to end the hidden session and restart its display manager,
+/// so the decoy greeter reappears once the overlays are gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HiddenSession {
+    /// The operator uid whose logind session the hidden environment took over.
+    pub target_uid: u32,
+
+    /// The logind session id, when activation resolved one. `None` falls back to
+    /// terminating the user, which ends every session the user owns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+
+    /// The display-manager unit to restart after teardown so the decoy greeter
+    /// comes back. `None` when no display manager was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_manager: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateFile {
     /// Schema version for the on-disk format (uses semver from Cargo.toml).
@@ -200,6 +221,28 @@ pub struct StateFile {
     #[serde(default)]
     pub submount_attachments: Vec<SubmountAttachment>,
 
+    /// Service units the hidden configuration brought up during activation.
+    ///
+    /// Recorded as the set difference between the active service units seen just
+    /// before and just after the hidden NixOS switch, so it holds only the units
+    /// the hidden generation added, not the decoy's own. Emergency teardown stops
+    /// exactly this set before unmounting, which ends the hidden services without
+    /// the cost (and decoy footprint) of a full switch back to the decoy
+    /// configuration. Empty when no switch ran or no unit was added. Cleared on
+    /// deactivation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_added_units: Vec<String>,
+
+    /// The graphical session the hidden environment ran under, when activation
+    /// terminated one to take over the display.
+    ///
+    /// Recorded from the session-kill restart plan so emergency teardown can end
+    /// the same logind session and restart the right display manager afterwards,
+    /// bringing the decoy greeter back. `None` for a TTY/headless activation that
+    /// never touched a graphical session. Cleared on deactivation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden_session: Option<HiddenSession>,
+
     /// Timestamp of last state modification
     pub last_modified: DateTime<Utc>,
 
@@ -245,6 +288,8 @@ impl Default for StateFile {
             nix_store_init_namespace_bound: false,
             read_only_guards: Vec::new(),
             submount_attachments: Vec::new(),
+            hidden_added_units: Vec::new(),
+            hidden_session: None,
             last_modified: Utc::now(),
             boot_id: None,
             owner_pid: 0,

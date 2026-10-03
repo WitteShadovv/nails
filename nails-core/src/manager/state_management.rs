@@ -387,6 +387,8 @@ impl<F: Filesystem> NailsManager<F> {
             state_file.nix_store_init_namespace_bound = false;
             state_file.read_only_guards.clear();
             state_file.submount_attachments.clear();
+            state_file.hidden_added_units.clear();
+            state_file.hidden_session = None;
         }
         Ok(())
     }

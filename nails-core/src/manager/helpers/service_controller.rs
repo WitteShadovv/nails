@@ -63,6 +63,31 @@ fn run_systemctl(args: &[&str]) -> std::result::Result<std::process::Output, std
     )
 }
 
+/// Run `loginctl` with the given arguments through the shared runner.
+///
+/// Resolved through the trust-checked host-tool resolver at call time, the same
+/// way `journalctl` is: logind control runs during teardown, after `/var` is
+/// overlaid, but `loginctl` lives outside `/var`. Bounded by a short deadline so
+/// a hung terminate cannot freeze the teardown.
+fn run_loginctl(args: &[&str]) -> std::result::Result<std::process::Output, std::io::Error> {
+    let path = super::command_cache::nixos_tool_path("loginctl");
+    run_command(
+        &ProcessCommand::exact(path)
+            .args(args)
+            .deadline(std::time::Duration::from_secs(15)),
+    )
+}
+
+/// Parse the unit names from `systemctl list-units … --no-legend --plain`
+/// output: the first whitespace-separated column of each non-empty line.
+fn parse_active_units(stdout: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_string)
+        .collect()
+}
+
 /// Run `journalctl` with the given arguments through the shared runner.
 ///
 /// Resolved through the trust-checked host-tool resolver at call time: the
@@ -477,6 +502,85 @@ impl ServiceController {
         run_journalctl(&["--flush"]).map(|_| ())
     }
 
+    /// List the names of the currently active service units.
+    ///
+    /// Runs `systemctl list-units --type=service --state=active --no-legend
+    /// --plain` and returns the first column (the unit name) of each line.
+    /// Activation snapshots this before and after the hidden switch so emergency
+    /// teardown knows exactly which units the hidden generation brought up.
+    /// Returns an empty list in test/test-like contexts, where host interaction
+    /// is skipped.
+    pub fn list_active_units() -> Vec<String> {
+        if Self::should_skip() {
+            return Vec::new();
+        }
+
+        match run_systemctl(&[
+            "list-units",
+            "--type=service",
+            "--state=active",
+            "--no-legend",
+            "--plain",
+            "--no-pager",
+        ]) {
+            Ok(output) if output.status.success() => parse_active_units(&output.stdout),
+            Ok(_) | Err(_) => Vec::new(),
+        }
+    }
+
+    /// Stop a single unit, socket before service.
+    ///
+    /// The paired `<unit>.socket` is stopped first so socket activation does not
+    /// bring the service straight back; a unit with no socket simply has that
+    /// best-effort step do nothing. Returns whether the service stop succeeded.
+    /// Used by emergency teardown to end the services the hidden configuration
+    /// added without a full decoy switch.
+    pub fn stop_unit(unit: &str) -> bool {
+        if Self::should_skip() {
+            #[cfg(test)]
+            {
+                recorder::record(format!("stop:{unit}.socket"));
+                recorder::record(format!("stop:{unit}"));
+            }
+            return true;
+        }
+
+        let socket_name = format!("{unit}.socket");
+        let _ = run_systemctl(&["stop", socket_name.as_str()]);
+        match run_systemctl(&["stop", unit]) {
+            Ok(output) => output.status.success(),
+            Err(err) => {
+                tracing::warn!(unit, %err, "failed to stop hidden-session unit");
+                false
+            }
+        }
+    }
+
+    /// Terminate a logind session and its owning user.
+    ///
+    /// Ends the hidden graphical session before the overlays come down: the
+    /// specific session (when its id is known) and then the whole user, so every
+    /// process the operator left behind in that slice — GUI apps rooted in the
+    /// overlays among them — is gone before unmount. Best-effort; a host without
+    /// logind simply has nothing to terminate.
+    pub fn terminate_logind_session(uid: u32, session_id: Option<&str>) {
+        if Self::should_skip() {
+            #[cfg(test)]
+            {
+                if let Some(id) = session_id {
+                    recorder::record(format!("terminate-session:{id}"));
+                }
+                recorder::record(format!("terminate-user:{uid}"));
+            }
+            return;
+        }
+
+        if let Some(id) = session_id {
+            let _ = run_loginctl(&["terminate-session", id]);
+        }
+        let _ = run_loginctl(&["terminate-user", &uid.to_string()]);
+    }
+
     /// Best-effort restart of services that were stopped during overlay mounting
     /// when the mount ultimately fails. Starts both socket and service for each,
     /// logging — never propagating — a failure so teardown always completes.
@@ -519,10 +623,29 @@ pub(crate) fn restart_service_and_socket(service: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::wait_for_unix_socket_ready;
+    use super::{parse_active_units, wait_for_unix_socket_ready};
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
     use std::time::Duration;
+
+    #[test]
+    fn parse_active_units_takes_the_first_column() {
+        let stdout = b"hidden-app.service    loaded active running A hidden GUI app\n\
+                       display-manager.service loaded active running Display Manager\n";
+        assert_eq!(
+            parse_active_units(stdout),
+            vec![
+                "hidden-app.service".to_string(),
+                "display-manager.service".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_active_units_ignores_blank_lines() {
+        assert!(parse_active_units(b"").is_empty());
+        assert!(parse_active_units(b"\n   \n").is_empty());
+    }
 
     /// Probe whether this environment permits binding Unix-domain sockets.
     ///

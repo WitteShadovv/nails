@@ -59,7 +59,7 @@ in
         machine.send_chars("systemctl reset-failed nails-emergency-test.service\n", delay=0)
         machine.wait_until_tty_matches("1", r"TTY1_READY#", timeout=30)
         machine.send_chars("systemctl start --no-block nails-emergency-test.service\n", delay=0)
-        wait_for_console_log(r"System returned to decoy configuration", timeout=60, start_index=console_start)
+        wait_for_console_log(r"overlays released", timeout=60, start_index=console_start)
         deadline = time.time() + 30
         duration = None
         while duration is None:

@@ -160,9 +160,9 @@ pub use persona::{InheritedSource, PersonaEntry, PersonaInventory, collect_inher
 
 // State management exports
 pub use state::{
-    DecoyWriter, EMERGENCY_LOCK_TIMEOUT, FailedOverlayInfo, LoadOutcome, LoadResult, OverlayInfo,
-    PlatformState, StateFile, StateLock, SubmountAttachment, SystemState, decoy_writers_headline,
-    summarize_decoy_writers,
+    DecoyWriter, EMERGENCY_LOCK_TIMEOUT, FailedOverlayInfo, HiddenSession, LoadOutcome, LoadResult,
+    OverlayInfo, PlatformState, StateFile, StateLock, SubmountAttachment, SystemState,
+    decoy_writers_headline, summarize_decoy_writers,
 };
 
 // Pre-flight validation exports

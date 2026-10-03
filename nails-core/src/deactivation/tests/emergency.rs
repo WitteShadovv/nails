@@ -561,3 +561,108 @@ fn test_normal_deactivate_removes_the_runtime_copy() {
         "deactivate must remove the RAM-backed runtime copy"
     );
 }
+
+#[test]
+#[serial]
+fn test_emergency_stops_recorded_units_and_terminates_session_before_dm_restart() {
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
+
+    let fs = MockFilesystem::new();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().to_path_buf();
+    let state_path = hidden_root.join("state.json");
+    let config = Config {
+        hidden_volume_root: hidden_root.clone(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    // State as activation would have recorded it: Active with one overlay, two
+    // units the hidden switch added, and the graphical session it took over.
+    let upper_dir = hidden_root.join("home");
+    let work_dir = hidden_root.join(".work/home");
+    let mut overlay_status = std::collections::HashMap::new();
+    overlay_status.insert(
+        PathBuf::from("/home"),
+        crate::OverlayInfo {
+            mount_method: Default::default(),
+            mount_path: PathBuf::from("/home"),
+            lower_dir: PathBuf::from("/"),
+            upper_dir: upper_dir.clone(),
+            work_dir: work_dir.clone(),
+            mounted_at: chrono::Utc::now(),
+        },
+    );
+    StateFile {
+        state: SystemState::Active {
+            decoy_writers: Vec::new(),
+            activated_at: chrono::Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+        },
+        overlay_status,
+        hidden_added_units: vec![
+            "hidden-app.service".to_string(),
+            "hidden-config.service".to_string(),
+        ],
+        hidden_session: Some(crate::state::HiddenSession {
+            target_uid: 1000,
+            session_id: Some("c7".to_string()),
+            display_manager: Some("display-manager.service".to_string()),
+        }),
+        ..StateFile::default()
+    }
+    .save_with_custom_root(&state_path, &hidden_root)
+    .unwrap();
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    {
+        let guard = manager.lock().unwrap();
+        mount_nails_overlay(guard.filesystem(), &hidden_root, Path::new("/home"));
+    }
+
+    // Start from a clean recorder so only this teardown's actions are observed.
+    let _ = crate::manager::helpers::drain_recorded_service_actions();
+
+    manager.lock().unwrap().emergency_deactivate().unwrap();
+
+    let actions = crate::manager::helpers::drain_recorded_service_actions();
+
+    // Exactly the recorded unit difference is stopped: the service-level stop
+    // entries (ignoring the paired `.socket` steps) are precisely the two units
+    // the hidden switch added, and nothing else.
+    let service_stops: Vec<&str> = actions
+        .iter()
+        .filter_map(|a| a.strip_prefix("stop:"))
+        .filter(|unit| !unit.ends_with(".socket"))
+        .collect();
+    assert_eq!(
+        service_stops,
+        vec!["hidden-app.service", "hidden-config.service"],
+        "emergency must stop exactly the recorded hidden units: {actions:?}"
+    );
+
+    // The session and its user are terminated, and that happens before the
+    // display manager is restarted (which only runs after the overlays are gone).
+    let term_user_idx = actions
+        .iter()
+        .position(|a| a == "terminate-user:1000")
+        .expect("the hidden session's user must be terminated");
+    assert!(
+        actions.iter().any(|a| a == "terminate-session:c7"),
+        "the recorded session id must be terminated: {actions:?}"
+    );
+    let dm_restart_idx = actions
+        .iter()
+        .position(|a| a == "start:display-manager.service")
+        .expect("the display manager must be restarted after teardown");
+    assert!(
+        term_user_idx < dm_restart_idx,
+        "session termination must precede the post-unmount display-manager restart: {actions:?}"
+    );
+
+    let guard = manager.lock().unwrap();
+    assert_eq!(guard.current_state().unwrap(), SystemState::Inactive);
+    assert!(!guard.filesystem().is_mounted(Path::new("/home")).unwrap());
+}

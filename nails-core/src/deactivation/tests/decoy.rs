@@ -151,6 +151,8 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
         },
         platform: Some(crate::state::PlatformState::nixos(Some("6".to_string()))),
         config_fingerprint: Some("deadbeefcafebabe".to_string()),
+        hidden_added_units: Vec::new(),
+        hidden_session: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: chrono::Utc::now(),

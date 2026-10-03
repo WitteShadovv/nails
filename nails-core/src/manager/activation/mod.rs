@@ -580,6 +580,9 @@ impl<F: Filesystem> NailsManager<F> {
         let mut guard =
             StateGuard::new(&mut *self, previous_state.clone()).with_residue(residue.clone());
         guard.update_state(activating_state)?;
+        // Record the graphical session we took over (if any) so emergency teardown
+        // can end the same logind session and bring its display manager back.
+        guard.record_hidden_session(&restart_plan);
         maybe_block_after_activating_state_transition()?;
 
         // Step 6: Compute the hidden configuration metadata (no rebuild yet). The
@@ -663,8 +666,14 @@ impl<F: Filesystem> NailsManager<F> {
         if layer_runs {
             step.emit("profile_switch", "Applying hidden configuration...");
         }
+        // Snapshot the active service units around the hidden switch so the set it
+        // adds is known to emergency teardown. Off NixOS (no switch) both snapshots
+        // are empty and nothing is recorded.
+        let units_before_switch = crate::manager::helpers::ServiceController::list_active_units();
         let hidden_config =
             guard.run_post_overlay_nixos_switch(&fast_path_toplevel, &new_fingerprint, verbosity);
+        let units_after_switch = crate::manager::helpers::ServiceController::list_active_units();
+        guard.record_hidden_added_units(&units_before_switch, &units_after_switch);
         if let HiddenConfigOutcome::Failed { reason } = &hidden_config
             && guard.config().nixos_switch_required
         {
@@ -808,6 +817,45 @@ impl<F: Filesystem> NailsManager<F> {
         let mut cached = self.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file.set_switch_warning(warning.map(ToString::to_string));
+        }
+    }
+
+    /// Record the hidden graphical session in the cached state from the
+    /// session-kill restart plan, so emergency teardown can end the same logind
+    /// session and restart its display manager. A no-op when activation did not
+    /// take over a graphical session (no target uid in the plan).
+    pub(crate) fn record_hidden_session(&self, plan: &crate::process::SessionRestartPlan) {
+        let Some(target_uid) = plan.target_uid else {
+            return;
+        };
+        let mut cached = self.cached_state.borrow_mut();
+        if let Some(ref mut state_file) = *cached {
+            state_file.hidden_session = Some(crate::state::HiddenSession {
+                target_uid,
+                session_id: None,
+                display_manager: plan.display_manager.clone(),
+            });
+        }
+    }
+
+    /// Record the service units the hidden switch added (the difference between
+    /// the active-unit snapshots taken around it) in the cached state, so
+    /// emergency teardown stops exactly those units instead of switching the
+    /// whole decoy configuration back. A no-op when nothing was added.
+    pub(crate) fn record_hidden_added_units(&self, before: &[String], after: &[String]) {
+        let before_set: std::collections::HashSet<&str> =
+            before.iter().map(String::as_str).collect();
+        let added: Vec<String> = after
+            .iter()
+            .filter(|unit| !before_set.contains(unit.as_str()))
+            .cloned()
+            .collect();
+        if added.is_empty() {
+            return;
+        }
+        let mut cached = self.cached_state.borrow_mut();
+        if let Some(ref mut state_file) = *cached {
+            state_file.hidden_added_units = added;
         }
     }
 
