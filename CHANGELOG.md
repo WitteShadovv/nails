@@ -105,6 +105,11 @@ of this changelog for that version becomes the release notes word for word, and
   read-only or given their own nested overlay, so they stay visible while writes stay off the decoy
   disk; `/snap`, `/.snapshots`, `/sysroot`, `/ostree` and `/efi` are excluded from overlay on FHS
   hosts.
+- Activation refuses a persistent decoy journal (override with `--allow-persistent-journal`) and
+  re-homes `systemd-journald` onto the `/var` overlay with a verified rollback, so hidden-session
+  logs do not leak to the decoy journal.
+- `nails verify` flags leftover NAILS overlays and staging binds left mounted at non-standard
+  targets, drawn from the live mount table.
 
 ### Changed
 
@@ -233,6 +238,11 @@ of this changelog for that version becomes the release notes word for word, and
 - The `/nix` overlay lifecycle is gated on the host (full restoration only on NixOS; a non-NixOS host
   with `/nix` overlaid only cycles `nix-daemon`), and the auto and explicit overlay mount paths are
   unified into one loop.
+- `nails verify` reports an honest headline naming the checks it ran and the areas it did not,
+  scans every user home and all overlay upperdirs, matches NAILS processes by binary identity, adds
+  platform package-drift scanning, and supports an offline image mode (`--offline --root`).
+- The hidden-volume state file, state lock and notification writes are resolved with `openat2`
+  under the hidden root, so a planted symlink or `..` cannot redirect them onto the decoy.
 
 ### Removed
 
@@ -319,6 +329,10 @@ of this changelog for that version becomes the release notes word for word, and
   stale file or refusing an inconsistent one instead of mounting nothing.
 - Session cleanup no longer stops a user systemd unit system-wide: only units under `system.slice`
   are mapped to the system manager, and non-systemd or ostree hosts are refused at detection.
+- Activation no longer requires the `attr` package (`getfattr`/`setfattr`) or `du`/`find` to be
+  installed, so preflight passes on hosts without them.
+- Hidden-session Nix store writes no longer land on the decoy partition, the systemd closure
+  byte-copy is removed, and `nix-daemon`/`systemd-journald` are restarted on every teardown path.
 
 ### Security
 
@@ -356,6 +370,8 @@ of this changelog for that version becomes the release notes word for word, and
 - Overlay upper and work directories are created through an `openat2`-contained resolver beneath
   the hidden root, so a symlink or `..` planted on the hidden volume cannot redirect them onto the
   decoy filesystem; on a kernel without `openat2` activation fails closed.
+- The self-hosted E2E runner tarball is verified against a pinned SHA-256 during Hetzner
+  provisioning, so a tampered or truncated download aborts before it runs as root.
 
 ## [0.2.0] - 2026-05-08
 
