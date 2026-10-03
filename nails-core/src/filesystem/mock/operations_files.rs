@@ -177,7 +177,15 @@ impl MockFilesystem {
             )));
         }
 
-        self.remove_file_impl(path)
+        self.remove_file_impl(path)?;
+        self.op_log
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push(MockOp::SecureDelete {
+                path: path.to_path_buf(),
+                recursive: false,
+            });
+        Ok(())
     }
 
     pub(super) fn secure_delete_dir_all_impl(&self, path: &Path) -> Result<()> {
@@ -196,7 +204,15 @@ impl MockFilesystem {
             )));
         }
 
-        self.remove_dir_all_impl(path)
+        self.remove_dir_all_impl(path)?;
+        self.op_log
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push(MockOp::SecureDelete {
+                path: path.to_path_buf(),
+                recursive: true,
+            });
+        Ok(())
     }
 
     pub(super) fn modified_time_impl(&self, path: &Path) -> Result<std::time::SystemTime> {

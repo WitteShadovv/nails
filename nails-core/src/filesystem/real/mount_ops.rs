@@ -167,13 +167,11 @@ pub(super) fn get_mount_info(target: &Path) -> Option<MountInfo> {
     for entry in read_mountinfo().ok()? {
         if entry.mount_point == canonical && entry.fstype == "overlay" {
             let opts = parse_overlay_opts(&entry.super_opts);
-            if let (Some(lower), Some(upper), Some(work)) = (
-                opts.lowerdir.into_iter().next(),
-                opts.upperdir,
-                opts.workdir,
-            ) {
+            if let (false, Some(upper), Some(work)) =
+                (opts.lowerdir.is_empty(), opts.upperdir, opts.workdir)
+            {
                 return Some(MountInfo {
-                    lower,
+                    lowers: opts.lowerdir,
                     upper,
                     work,
                     target: canonical,

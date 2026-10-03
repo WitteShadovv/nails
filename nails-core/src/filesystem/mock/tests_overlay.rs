@@ -27,7 +27,7 @@ fn test_mount_overlay_success_tracks_mount_info() {
     assert!(mount_info.is_some());
 
     let info = mount_info.unwrap();
-    assert_eq!(info.lower, Path::new("/"));
+    assert_eq!(info.lowers, vec![Path::new("/").to_path_buf()]);
     assert_eq!(info.upper, Path::new("/mnt/hidden/upper"));
     assert_eq!(info.work, Path::new("/mnt/hidden/work"));
     assert_eq!(info.target, Path::new("/home"));
@@ -187,9 +187,9 @@ fn test_mount_overlay_target_contains_merged_view() {
 
     let mount_info = fs.mock_get_mount_info(Path::new("/home")).unwrap();
     assert_eq!(
-        mount_info.lower,
-        Path::new("/"),
-        "Lower directory should be tracked"
+        mount_info.lowers,
+        vec![Path::new("/").to_path_buf()],
+        "Lower directories should be tracked"
     );
     assert_eq!(
         mount_info.upper,

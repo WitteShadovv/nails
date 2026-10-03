@@ -36,10 +36,28 @@ impl Default for PathInfo {
 /// Operation log entries for MockFilesystem (test assertions)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MockOp {
-    MountOverlay { target: PathBuf },
-    MountTmpfs { target: PathBuf, size: String },
-    WriteFile { path: PathBuf },
-    CopyTree { src: PathBuf, dst: PathBuf },
+    MountOverlay {
+        target: PathBuf,
+    },
+    MountTmpfs {
+        target: PathBuf,
+        size: String,
+    },
+    WriteFile {
+        path: PathBuf,
+    },
+    CopyTree {
+        src: PathBuf,
+        dst: PathBuf,
+    },
+    /// A secure deletion (overwrite-then-remove), recorded as its own operation
+    /// rather than an ordinary `remove_file` so tests can assert that a path was
+    /// scrubbed and not merely unlinked. `recursive` distinguishes
+    /// `secure_delete_dir_all` from `secure_delete`.
+    SecureDelete {
+        path: PathBuf,
+        recursive: bool,
+    },
 }
 
 /// Mock filesystem for testing (no root privileges required)

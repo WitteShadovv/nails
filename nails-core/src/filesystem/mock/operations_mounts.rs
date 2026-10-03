@@ -34,7 +34,7 @@ impl MockFilesystem {
         verify_mount_preconditions(self, lower[0], upper, work, target)?;
 
         let mount_info = MountInfo {
-            lower: lower[0].to_path_buf(),
+            lowers: lower.iter().map(|p| p.to_path_buf()).collect(),
             upper: upper.to_path_buf(),
             work: work.to_path_buf(),
             target: target.to_path_buf(),
@@ -187,9 +187,15 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .iter()
         {
+            let lowerdir = info
+                .lowers
+                .iter()
+                .map(|lower| escape_overlay_path(lower))
+                .collect::<Result<Vec<_>>>()?
+                .join(":");
             let super_opts = format!(
                 "rw,lowerdir={},upperdir={},workdir={}",
-                escape_overlay_path(&info.lower)?,
+                lowerdir,
                 escape_overlay_path(&info.upper)?,
                 escape_overlay_path(&info.work)?,
             );

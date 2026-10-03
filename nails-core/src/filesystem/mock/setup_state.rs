@@ -74,7 +74,7 @@ impl MockFilesystem {
             overlays.insert(
                 path.to_path_buf(),
                 MountInfo {
-                    lower: path.to_path_buf(),
+                    lowers: vec![path.to_path_buf()],
                     upper: PathBuf::from(format!("/mock-upper{}", path.display())),
                     work: PathBuf::from(format!("/mock-work{}", path.display())),
                     target: path.to_path_buf(),
@@ -109,7 +109,7 @@ impl MockFilesystem {
             .insert(
                 target.to_path_buf(),
                 MountInfo {
-                    lower: target.to_path_buf(),
+                    lowers: vec![target.to_path_buf()],
                     upper: upper.to_path_buf(),
                     work: work.to_path_buf(),
                     target: target.to_path_buf(),
@@ -150,6 +150,18 @@ impl MockFilesystem {
         let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         let entry = paths.entry(PathBuf::from(path)).or_default();
         entry.exists = exists;
+    }
+
+    /// Record the numeric `(uid, gid)` owner of a path.
+    ///
+    /// Lets a test stand up a pre-existing, user-owned file so that a later
+    /// `write_user_file` into it keeps that owner (an existing file is never
+    /// re-chowned), matching the real filesystem.
+    pub fn mock_set_owner(&self, path: &Path, uid: u32, gid: u32) {
+        self.owners
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf(), (uid, gid));
     }
 
     /// Set a path's kind (file, directory, symlink or missing).
@@ -538,11 +550,24 @@ impl MockFilesystem {
     /// assert!(content.contains("nails"));
     /// ```
     pub fn mock_set_file_content(&self, path: &str, content: &str) {
+        let path_buf = PathBuf::from(path);
+
+        // Seeding content implies the file exists: without this, `path_exists`,
+        // `file_size` and the pattern scanners would disagree with
+        // `read_file_content`, which is exactly the kind of mock/real divergence
+        // the contract suite exists to catch.
+        {
+            let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
+            let entry = paths.entry(path_buf.clone()).or_default();
+            entry.exists = true;
+            entry.is_directory = false;
+        }
+
         let mut contents = self
             .file_contents
             .lock()
             .expect("MockFilesystem mutex poisoned");
-        contents.insert(PathBuf::from(path), content.to_string());
+        contents.insert(path_buf, content.to_string());
     }
 
     /// Set mock file size for file_size() tests

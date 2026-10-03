@@ -103,6 +103,13 @@ impl MockFilesystem {
             )));
         }
 
+        // The real write stages a temp file in the parent directory and renames
+        // it into place, so it fails with NotFound when the parent is missing.
+        // Mirror that: a parent that is explicitly tracked as absent makes the
+        // write fail, matching the real filesystem and letting the contract suite
+        // assert the behaviour against both implementations.
+        self.require_existing_parent(path)?;
+
         let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         let entry = paths.entry(path.to_path_buf()).or_default();
         entry.exists = true;
@@ -128,6 +135,34 @@ impl MockFilesystem {
             });
 
         Ok(())
+    }
+
+    /// Fail when `path`'s parent directory is known to be missing, matching the
+    /// real filesystem's temp-file-then-rename write (which fails `NotFound` when
+    /// the parent does not exist).
+    ///
+    /// A parent that was never tracked is treated leniently as present, because
+    /// the mock does not require every ancestor to be set up before a write; the
+    /// check only fires when a parent is explicitly recorded as non-existent
+    /// (for example a directory that was created and then removed) or as a
+    /// non-directory. That is enough for the contract suite to exercise a
+    /// parentless write against both implementations without forcing every
+    /// existing test to pre-create its parents.
+    fn require_existing_parent(&self, path: &Path) -> Result<()> {
+        let Some(parent) = path.parent() else {
+            return Ok(());
+        };
+        if parent.as_os_str().is_empty() || parent == Path::new("/") {
+            return Ok(());
+        }
+        let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
+        match paths.get(parent) {
+            Some(info) if !info.exists => Err(NailsError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Parent directory does not exist: {}", parent.display()),
+            ))),
+            _ => Ok(()),
+        }
     }
 
     pub(super) fn write_user_file_impl(

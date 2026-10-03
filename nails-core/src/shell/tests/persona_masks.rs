@@ -23,6 +23,9 @@ fn seed_user_autostart(fs: &MockFilesystem, stem: &str) {
     let entry = dir.join(format!("{stem}.desktop"));
     fs.mock_set_directory_contents(&dir, vec![entry.clone()]);
     fs.mock_set_file_content(entry.to_str().unwrap(), "[Desktop Entry]\n");
+    // The autostart entry already exists and belongs to the operator, so a mask
+    // override written into it keeps that ownership rather than being re-created.
+    fs.mock_set_owner(&entry, 1000, 1000);
 }
 
 fn seed_user_unit(fs: &MockFilesystem, unit: &str) {
