@@ -22,6 +22,12 @@
     hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
     risky_services = "skip"
+    # These VMs have no hidden NixOS closure to build offline (and `nix build`
+    # needs the nix-command feature the decoy leaves disabled), so a full
+    # `activate` cannot complete the hidden switch. The session, overlay and
+    # notification tests that use this config exercise everything around that
+    # switch, so keep its failure non-fatal instead of rolling activation back.
+    nixos_switch_required = false
 
     [[overlays]]
     name = "etc"
