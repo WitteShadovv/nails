@@ -72,6 +72,19 @@ fn assert_contract<F: Filesystem + 'static, P: Platform<F>>(platform: &P, fs: &F
         kind == PlatformKind::Unsupported,
     );
 
+    // Every backend names a non-empty display-manager fallback list with no empty
+    // entries, so the session layer always has something to probe after the
+    // generic `display-manager.service` alias.
+    let display_managers = platform.display_manager_units();
+    assert!(
+        !display_managers.is_empty(),
+        "a backend must list at least one display-manager unit",
+    );
+    assert!(
+        display_managers.iter().all(|unit| !unit.is_empty()),
+        "display-manager unit names must be non-empty",
+    );
+
     // Only NixOS carries a declarative config layer; FHS and refused hosts have
     // none, so "overlay-only" is "no layer" rather than a parallel code path.
     assert_eq!(

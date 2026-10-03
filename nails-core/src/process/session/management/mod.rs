@@ -178,9 +178,9 @@ fn kill_graphical_session_with_executor<E: SessionCommandExecutor>(
 
     // Step 1: Stop display manager
     if let Some(ref dm) = ctx.display_manager {
-        tracing::info!("DEBUG: About to stop display manager: {}", dm);
+        tracing::debug!("About to stop display manager: {}", dm);
         let (success, _stdout, stderr) = executor.execute_systemctl(&["stop", dm])?;
-        tracing::info!("DEBUG: Display manager stop completed, success={}", success);
+        tracing::debug!("Display manager stop completed, success={}", success);
         if !success {
             return Err(NailsError::OverlayError(format!(
                 "Failed to stop display manager {}: {}",
@@ -195,17 +195,17 @@ fn kill_graphical_session_with_executor<E: SessionCommandExecutor>(
         result.logind_used = true;
 
         if let Some(ref session_id) = ctx.session_id {
-            tracing::info!("DEBUG: About to terminate session: {}", session_id);
+            tracing::debug!("About to terminate session: {}", session_id);
             let (success, _stdout, _stderr) =
                 executor.execute_loginctl(&["terminate-session", session_id])?;
-            tracing::info!("DEBUG: Session termination completed, success={}", success);
+            tracing::debug!("Session termination completed, success={}", success);
             result.session_terminated = success;
         }
 
-        tracing::info!("DEBUG: About to terminate user: {}", target_uid);
+        tracing::debug!("About to terminate user: {}", target_uid);
         let (success, _stdout, _stderr) =
             executor.execute_loginctl(&["terminate-user", &target_uid.to_string()])?;
-        tracing::info!("DEBUG: User termination completed, success={}", success);
+        tracing::debug!("User termination completed, success={}", success);
         result.user_terminated = success;
 
         // Wait for user manager to stop (max 5 seconds)

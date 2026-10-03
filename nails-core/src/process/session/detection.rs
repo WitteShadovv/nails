@@ -151,9 +151,23 @@ fn resolve_target_identity() -> (Option<u32>, Option<String>) {
     }
 }
 
-/// Detect which display manager is currently active
+/// Detect which display manager is currently active.
+///
+/// The generic `display-manager.service` alias is probed first; when it is not
+/// active the per-host fallback list ([`host_display_manager_units`]) is tried in
+/// order. The list is platform data so Debian/Ubuntu's `gdm3` is probed there.
 pub(super) fn detect_display_manager<E: SessionCommandExecutor>(
     executor: &E,
+) -> Result<Option<String>> {
+    detect_display_manager_in(executor, host_display_manager_units())
+}
+
+/// Probe the generic alias, then each unit in `fallback_units`, returning the
+/// first active display manager. Split out from [`detect_display_manager`] so the
+/// fallback list can be driven directly in tests.
+fn detect_display_manager_in<E: SessionCommandExecutor>(
+    executor: &E,
+    fallback_units: &[&str],
 ) -> Result<Option<String>> {
     if let Ok((true, stdout, _)) = executor.execute_systemctl(&["is-active", "display-manager"])
         && stdout.trim() == "active"
@@ -161,16 +175,36 @@ pub(super) fn detect_display_manager<E: SessionCommandExecutor>(
         return Ok(Some("display-manager".to_string()));
     }
 
-    let dms = ["gdm", "sddm", "lightdm", "greetd", "ly"];
-    for dm in dms {
+    for dm in fallback_units {
         if let Ok((true, stdout, _)) = executor.execute_systemctl(&["is-active", dm])
             && stdout.trim() == "active"
         {
-            return Ok(Some(dm.to_string()));
+            return Ok(Some((*dm).to_string()));
         }
     }
 
     Ok(None)
+}
+
+/// The display-manager fallback list for the running host, resolved from the
+/// platform backend so distro-specific names (Debian's `gdm3`) are honoured.
+#[cfg(not(test))]
+fn host_display_manager_units() -> &'static [&'static str] {
+    use crate::filesystem::RealFilesystem;
+
+    match crate::platform::detect(&RealFilesystem) {
+        Ok(profile) => {
+            crate::platform::platform_for::<RealFilesystem>(&profile).display_manager_units()
+        }
+        Err(_) => crate::platform::DEFAULT_DISPLAY_MANAGER_UNITS,
+    }
+}
+
+/// Tests drive the fallback list explicitly through [`detect_display_manager_in`];
+/// the default-list path here keeps the existing fallback behaviour hermetic.
+#[cfg(test)]
+fn host_display_manager_units() -> &'static [&'static str] {
+    crate::platform::DEFAULT_DISPLAY_MANAGER_UNITS
 }
 
 #[cfg(test)]
@@ -238,6 +272,39 @@ mod tests {
                 vec!["is-active".to_string(), "display-manager".to_string()],
                 vec!["is-active".to_string(), "gdm".to_string()],
                 vec!["is-active".to_string(), "sddm".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn detect_display_manager_consumes_platform_fallback_list() {
+        use crate::filesystem::MockFilesystem;
+        use crate::platform::{FhsPlatform, Platform};
+
+        // The fallback list is platform data: the Debian/Ubuntu backend names
+        // `gdm3` and probes it before the upstream `gdm` unit.
+        let units = Platform::<MockFilesystem>::display_manager_units(&FhsPlatform);
+        assert_eq!(units.first().copied(), Some("gdm3"));
+
+        // Alias inactive, then `gdm3` active: the probe must use the platform's
+        // first fallback unit verbatim, not a hard-coded `gdm`.
+        let exec = RecordingScriptedSessionCommandExecutor::new(
+            vec![
+                Ok((false, "inactive".to_string(), String::new())),
+                Ok((true, "active".to_string(), String::new())),
+            ],
+            vec![],
+            true,
+        );
+
+        let dm = detect_display_manager_in(&exec, units).unwrap();
+
+        assert_eq!(dm, Some("gdm3".to_string()));
+        assert_eq!(
+            exec.systemctl_calls(),
+            vec![
+                vec!["is-active".to_string(), "display-manager".to_string()],
+                vec!["is-active".to_string(), "gdm3".to_string()],
             ]
         );
     }

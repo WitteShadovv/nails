@@ -305,24 +305,44 @@ fn read_cmdline(proc_path: &Path) -> Result<String> {
     Ok(cmdline)
 }
 
-/// Extract systemd service name from `/proc/{pid}/cgroup`
+/// Extract the systemd *system* unit a process belongs to from
+/// `/proc/{pid}/cgroup`, if any.
+///
+/// Only a unit rooted under `/system.slice/` is returned; see
+/// [`system_unit_from_cgroup_line`] for why a user unit must not be.
 fn extract_service_name(proc_path: &Path) -> Result<Option<String>> {
     let cgroup_path = proc_path.join("cgroup");
     let Ok(content) = fs::read_to_string(cgroup_path) else {
         return Ok(None);
     };
 
-    // Parse cgroup format: "0::/system.slice/journald.service"
-    for line in content.lines() {
-        if let Some(service) = line.rsplit('/').next()
-            && service.ends_with(".service")
-        {
-            let name = service.trim_end_matches(".service").to_string();
-            return Ok(Some(name));
-        }
-    }
+    Ok(content
+        .lines()
+        .find_map(system_unit_from_cgroup_line)
+        .map(str::to_string))
+}
 
-    Ok(None)
+/// The systemd *system* unit a single cgroup line maps to, if any.
+///
+/// The cgroup path is the field after the last `:` (cgroup v2 writes `0::/…`,
+/// v1 writes `N:controller:/…`). A unit is returned only when that path is
+/// rooted under a `system.slice` segment and its leaf is a `.service`.
+///
+/// A user unit — anything under `user.slice` / `user@<uid>.service`, e.g.
+/// `pipewire.service` beneath `user@1000.service` — deliberately yields `None`.
+/// The result feeds `systemctl stop <unit>` against the *system* manager, so
+/// mapping a user unit here would stop it system-wide for every user; returning
+/// `None` instead routes that process to signal-based termination, which is the
+/// correct handling for a per-user process.
+pub(crate) fn system_unit_from_cgroup_line(line: &str) -> Option<&str> {
+    let path = line.rsplit(':').next().unwrap_or(line);
+    let unit = path.rsplit('/').next()?.strip_suffix(".service")?;
+    if unit.is_empty() {
+        return None;
+    }
+    path.split('/')
+        .any(|segment| segment == "system.slice")
+        .then_some(unit)
 }
 
 #[cfg(test)]

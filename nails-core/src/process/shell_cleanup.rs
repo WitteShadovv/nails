@@ -38,14 +38,12 @@ fn read_service_name(pid: u32) -> Option<String> {
     let cgroup_path = Path::new("/proc").join(pid.to_string()).join("cgroup");
     let content = fs::read_to_string(cgroup_path).ok()?;
 
-    for line in content.lines() {
-        let service = line.rsplit('/').next()?;
-        if service.ends_with(".service") {
-            return Some(service.trim_end_matches(".service").to_string());
-        }
-    }
-
-    None
+    // Same system.slice guard as process detection: a user unit must never be
+    // treated as a system service here either.
+    content
+        .lines()
+        .find_map(crate::process::detection::system_unit_from_cgroup_line)
+        .map(str::to_string)
 }
 
 /// Report of shell kill operation

@@ -71,6 +71,61 @@ fn test_extract_service_name_no_service() {
 }
 
 #[test]
+fn test_extract_service_name_ignores_user_units() {
+    // A user unit (pipewire under user@1000.service) must never be mapped to a
+    // system unit: `systemctl stop pipewire` on the system manager would stop it
+    // system-wide. It falls through to signal-based termination instead.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let cgroup_path = temp_dir.path().join("cgroup");
+    fs::write(
+        &cgroup_path,
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service\n",
+    )
+    .unwrap();
+
+    let service_name = extract_service_name(temp_dir.path()).unwrap();
+    assert_eq!(service_name, None);
+}
+
+#[test]
+fn test_extract_service_name_accepts_system_sub_slice() {
+    // A unit nested in a sub-slice of system.slice is still a system unit.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let cgroup_path = temp_dir.path().join("cgroup");
+    fs::write(
+        &cgroup_path,
+        "0::/system.slice/system-getty.slice/getty@tty1.service\n",
+    )
+    .unwrap();
+
+    let service_name = extract_service_name(temp_dir.path()).unwrap();
+    assert_eq!(service_name, Some("getty@tty1".to_string()));
+}
+
+#[test]
+fn system_unit_from_cgroup_line_maps_only_system_slice() {
+    assert_eq!(
+        system_unit_from_cgroup_line("0::/system.slice/systemd-journald.service"),
+        Some("systemd-journald")
+    );
+    // cgroup v1 form: path is the field after the last colon.
+    assert_eq!(
+        system_unit_from_cgroup_line("1:name=systemd:/system.slice/cron.service"),
+        Some("cron")
+    );
+    assert_eq!(
+        system_unit_from_cgroup_line(
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"
+        ),
+        None
+    );
+    assert_eq!(
+        system_unit_from_cgroup_line("0::/user.slice/user-1000.slice"),
+        None
+    );
+}
+
+#[test]
 fn test_read_comm() {
     let temp_dir = tempfile::tempdir().unwrap();
     let comm_path = temp_dir.path().join("comm");

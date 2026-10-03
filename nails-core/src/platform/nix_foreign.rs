@@ -12,11 +12,12 @@
 //! platform's command directories ([`host_command_dirs`]) rather than the NixOS
 //! system-profile path, so the restart does not ENOENT on a Debian/Ubuntu host.
 //!
-//! This is the seam [`ServiceManager`] (T-086) will later own; until then it uses
-//! the shared [`HostCommands`] resolver and process runner directly.
+//! This daemon cycle is a [`ServiceManager`] concern; it is kept here as a direct
+//! `systemctl` sequence over the shared [`HostCommands`] resolver and process
+//! runner because it predates that seam and rewiring it is deferred.
 //!
 //! [`host_command_dirs`]: super::Platform::host_command_dirs
-//! [`ServiceManager`]: super::Platform
+//! [`ServiceManager`]: super::ServiceManager
 
 use std::path::Path;
 

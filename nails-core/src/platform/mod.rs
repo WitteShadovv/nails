@@ -43,6 +43,7 @@ pub mod host_commands;
 pub(crate) mod nix_foreign;
 mod nixos;
 pub mod ro_guard;
+pub mod service_manager;
 mod unsupported;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -58,6 +59,7 @@ pub use fhs::FhsPlatform;
 pub use host_commands::HostCommands;
 pub use nixos::NixOsPlatform;
 pub use ro_guard::{MountHooks, OverlayPolicy, guard_read_only_trees};
+pub use service_manager::{ServiceManager, SessionManager, SystemdControl};
 pub use unsupported::UnsupportedPlatform;
 
 /// The single literal for the NixOS system-profile binary directory, and the
@@ -68,6 +70,12 @@ pub(crate) use nixos::{NIXOS_COMMAND_DIRS, NIXOS_SYSTEM_PROFILE_BIN};
 
 #[cfg(any(test, feature = "test-support"))]
 pub use fake::FakePlatform;
+
+/// The display-manager service units probed by default, in order, after the
+/// generic `display-manager.service` alias. A backend overrides
+/// [`Platform::display_manager_units`] to adjust this (Debian adds `gdm3`).
+pub(crate) const DEFAULT_DISPLAY_MANAGER_UNITS: &[&str] =
+    &["gdm", "sddm", "lightdm", "greetd", "ly"];
 
 /// Which family of host NAILS resolved, and therefore which backend runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,6 +233,18 @@ pub trait Platform<F: Filesystem>: std::fmt::Debug + Send + Sync {
 
     /// Directories searched, in order, for host tools on this platform.
     fn host_command_dirs(&self) -> &'static [&'static str];
+
+    /// Display-manager service units probed, in order, when the generic
+    /// `display-manager.service` alias is not active.
+    ///
+    /// The alias is always tried first by the session layer; this list is the
+    /// fallback for hosts that do not ship it. Keeping it platform data lets a
+    /// backend name the units its distribution actually uses — Debian/Ubuntu
+    /// ships GDM as `gdm3`, not `gdm` — instead of a single hard-coded array in
+    /// the session code. The default covers the common systemd display managers.
+    fn display_manager_units(&self) -> &'static [&'static str] {
+        DEFAULT_DISPLAY_MANAGER_UNITS
+    }
 
     /// The declarative hidden-config layer for this host, if it has one.
     ///

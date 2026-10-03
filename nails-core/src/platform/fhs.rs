@@ -31,6 +31,12 @@ impl<F: Filesystem> Platform<F> for FhsPlatform {
         FHS_COMMAND_DIRS
     }
 
+    fn display_manager_units(&self) -> &'static [&'static str] {
+        // Debian/Ubuntu package GDM as `gdm3`; probe it before the upstream
+        // `gdm` name so the session layer finds the real unit on those hosts.
+        &["gdm3", "gdm", "sddm", "lightdm", "greetd", "ly"]
+    }
+
     // restore_base_system: the default no-op is correct — an FHS host has no
     // generation to switch back to.
 }
