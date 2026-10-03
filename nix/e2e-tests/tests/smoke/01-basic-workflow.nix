@@ -88,7 +88,7 @@ in
     # state file (the binary-derived default would look beside the store binary).
     active_status = read_status_json(config_path=headless_config)
     assert active_status["state"]["kind"] == "active", f"Expected Active status, got: {active_status}"
-    active_paths = {overlay["path"] for overlay in active_status["overlays"]}
+    active_paths = {overlay["mount_point"] for overlay in active_status["overlays"]}
     assert "/home" in active_paths and "/etc" in active_paths, \
         f"Expected core overlays in status output, got: {active_status}"
     print("✓ NAILS status reports Active after activation")

@@ -34,14 +34,15 @@ in
     ${securityHelpers.capturedCommandFns}
     ${stateHelpers.installDeactivationGateFn}
 
-    expected_overlays = ["/etc", "/home", "/root", "/srv", "/tmp"]
+    # The headless config also overlays the base-OS trees (/usr, /bin, /lib64).
+    expected_overlays = ["/etc", "/home", "/root", "/srv", "/tmp", "/usr", "/bin", "/lib64"]
 
     def assert_expected_overlays(paths):
         for path in paths:
             assert_overlay_mounted(path)
 
     def assert_status_overlays(paths, payload):
-        actual = {overlay["path"] for overlay in payload["overlays"]}
+        actual = {overlay["mount_point"] for overlay in payload["overlays"]}
         expected = set(paths)
         assert actual == expected, f"Expected status overlays {expected}, got: {payload}"
 

@@ -50,9 +50,9 @@ in
         for path in expected_paths:
             assert_overlay_mounted(path)
         status = read_status_json(config_path=config_path)
-        assert {overlay["path"] for overlay in status["overlays"]} == expected_paths, status
+        assert {overlay["mount_point"] for overlay in status["overlays"]} == expected_paths, status
         for entry in status["overlays"]:
-            assert entry["path"] in expected_paths, entry
+            assert entry["mount_point"] in expected_paths, entry
             assert entry["status"] == "mounted", entry
         state_json = read_hidden_state_json()
         tracked_paths = set(state_json["overlay_status"].keys())

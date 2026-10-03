@@ -40,7 +40,7 @@ in
         for path in configured_targets:
             assert_overlay_mounted(path)
         status = assert_status_state("active", config_path="/tmp/explicit-overlays.toml")
-        assert {overlay["path"] for overlay in status["overlays"]} == set(configured_targets), status
+        assert {overlay["mount_point"] for overlay in status["overlays"]} == set(configured_targets), status
 
     with subtest("writes land on hidden storage for explicitly configured persistent overlays"):
         machine.succeed("touch /var/lib/extended-proof")

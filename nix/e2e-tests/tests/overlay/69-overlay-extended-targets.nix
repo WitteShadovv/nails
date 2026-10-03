@@ -44,7 +44,7 @@ in
         for path in ["/var", "/tmp", "/srv", "/opt"]:
             assert_overlay_mounted(path)
         status = read_status_json(config_path=config_path)
-        active_paths = {overlay["path"] for overlay in status["overlays"]}
+        active_paths = {overlay["mount_point"] for overlay in status["overlays"]}
         assert {"/var", "/tmp", "/srv", "/opt"}.issubset(active_paths), status
 
     with subtest("phase 2: each extended target has an independent upperdir"):

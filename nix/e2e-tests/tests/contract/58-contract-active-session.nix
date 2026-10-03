@@ -85,7 +85,7 @@ in
         assert_json_schema_valid(status_schema, active["stdout_path"], "active status JSON")
         active_payload = json.loads(active["stdout"])["data"]
         assert active_payload["state"]["kind"] == "active", active_payload
-        active_paths = {overlay["path"] for overlay in active_payload["overlays"]}
+        active_paths = {overlay["mount_point"] for overlay in active_payload["overlays"]}
         assert "/etc" in active_paths and "/home" in active_paths, active_payload
 
     with subtest("active verify JSON matches the schema"):
