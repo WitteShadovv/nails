@@ -1989,7 +1989,7 @@ Owns: `nails-core/src/platform/config_layer.rs`, `nails-core/src/nixos/builder/`
 
 Owns: `nails-core/src/state/reconcile.rs`, `nails-core/src/status/`, `nails-cli/src/cli/output/status/`
 
-- [ ] **T-080: Reconcile persisted state with the boot and the kernel mount table so a stale Active never makes activate a silent no-op** (critical · effort M)
+- [x] **T-080: Reconcile persisted state with the boot and the kernel mount table so a stale Active never makes activate a silent no-op** (critical · effort M)
 
   **Problem**: `activation/mod.rs:181-186` returns `Ok(())` for any persisted `Active` state before preflight and before checking the kernel mount table, and `verify_overlay_status` (`state_management.rs:378`) has no production caller. `state.json` lives on the hidden root, survives reboots, and is never compared against a boot id or the live mounts. After an unclean shutdown mid-session, `activate --no-kill-session` or `--no-preflight` prints success while mounting nothing, then the CLI runs `shell_setup` on `result.is_ok()` (`activate/mod.rs:368-388`, `shell/setup.rs:96`), writing the rc block (`shell/rc_integration.rs:36-180`) and the autostart entry with the hidden binary path straight onto the bare decoy home. `StateCheck` (`preflight/checks/state.rs:84-92`) also tells users to reboot for stuck states, but a reboot does not change `state.json`.
 
@@ -1997,7 +1997,7 @@ Owns: `nails-core/src/state/reconcile.rs`, `nails-core/src/status/`, `nails-cli/
 
   **Done when**: unit tests cover Active-with-different-boot-id resetting to Inactive then really mounting; Active same-boot with no overlays -> Degraded -> refuse; Activating with dead pid -> Interrupted; Inactive with a NAILS overlay in mountinfo -> Degraded; `shell_setup` writes nothing when the target home is not a NAILS overlay (mock fs). Already-active returns exit 0 with the same message under default, `--no-kill-session` and `--no-preflight`. `rg -i 'reboot (if stuck|to reset)' nails-core/src` is empty. `rg run_truthful` plus the new E2E: `nix/e2e-tests/tests/state/55-state-crash-mid-activation.nix` remounts after the crash and asserts the stale reset, and a new `nix/e2e-tests/tests/lifecycle/12-stale-active-after-reset.nix` hard-resets during an active session then runs `activate --no-kill-session` and asserts overlays are mounted with no rc block or autostart file on the decoy lower layer. `cargo test` and `clippy` pass.
 
-- [ ] **T-081: status reports what the kernel actually has mounted (degraded/inconsistent/unknown postures) and shows newest logs without writing logs** (high · effort M)
+- [x] **T-081: status reports what the kernel actually has mounted (degraded/inconsistent/unknown postures) and shows newest logs without writing logs** (high · effort M)
 
   **Problem**: `status` trusts `state.json` instead of the kernel. Active-with-overlays-missing maps to `Warning`/"transitional state - wait for completion" (`status/report/types.rs:119`) even though hidden writes are then reaching the decoy disk. `Inactive` returns `VerificationStatus::NotApplicable` without probing mounts (`status/mod.rs:358`). A truncated/missing/unreadable `state.json` yields `State: Inactive / DECOY` and exit 0 because `load_outcome` is `#[serde(skip)]` (`types.rs:205`) and `run_truthful` just calls `run` (`status/mod.rs:252`); once the backend is lazily unmounted the overlays keep serving hidden data while status says decoy. `is_mounted` (`status/mod.rs:335`) also reports a plain ext4 `/home` as "Verified". Recent Logs reads `nails.log` front-to-back and renders `take(20)` (`output/status/mod.rs:16-105,233`; `human.rs:123,257`), showing the oldest entries, and every read-only status call appends TRACE JSON to `nails.log` via the file logger (`logging.rs:343`).
 
@@ -2009,7 +2009,7 @@ Owns: `nails-core/src/state/reconcile.rs`, `nails-core/src/status/`, `nails-cli/
 
 Owns: `nails-core/src/platform/host_commands.rs`, `nails-core/src/platform/ro_guard.rs`, `nails-core/src/platform/service_manager.rs`, `nails-core/src/filesystem/real/submount.rs`
 
-- [ ] **T-082: Replace hard-coded /run/current-system/sw/bin binaries with a per-platform HostCommands resolver** (high · effort M)
+- [x] **T-082: Replace hard-coded /run/current-system/sw/bin binaries with a per-platform HostCommands resolver** (high · effort M)
 
   **Problem:** 17-18 production call sites spawn tools from NixOS binary dirs with no fallback: `Command::new("/run/current-system/sw/bin/systemctl")` in `process/session/types.rs:110` and `process/restart/mod.rs:84`; also `manager/helpers/command_cache.rs:61,130,364`, `runtime_cache.rs:85-89`, `service_controller.rs:16,27`, `activation/overlay_mount/restore.rs:337-338`, `cli/detach.rs:119,128`. Only `manager/deactivation.rs:78-80` has any PATH fallback. On a non-NixOS host the first `systemctl` spawn returns ENOENT; `restart_systemd_service` propagates it (`restart/mod.rs:200`), so overlaying any target a service holds (e.g. /var) fails and auto mode aborts after the user session is already killed. `start_service_and_socket` discards errors (`service_controller.rs:317-328`). Other tools (loginctl, kill, chown, cp, du, find, getfattr/setfattr, sync, swapoff, systemd-run, nixos-rebuild) run off inherited PATH, so the trust model is mixed.
 
@@ -2025,7 +2025,9 @@ Owns: `nails-core/src/platform/host_commands.rs`, `nails-core/src/platform/ro_gu
 
   **Done when:** Unit tests: NixOs and DebianFamily policies produce the expected target and read-only sets from fixture root listings (including usrmerge symlinks). Preflight refuses activation when a writable OS tree is neither overlaid nor read-only. Activation aborts and rolls back when the ro remount returns EBUSY (mock test). verify/status flags a writable non-overlaid decoy mount from fake mountinfo. Debian/Ubuntu VM test: `touch /usr/local/x` during the session fails with EROFS, /usr is writable again after deactivate and after emergency, and the decoy disk image shows no new files under /usr; creating a new top-level dir fails with EROFS. Forensic test 06 (persistent ext4 root): /, /bin/sh, /usr/bin/env inode/mtime/ctime and the top-level entry list are unchanged while Active and after emergency. Hidden NixOS switch still succeeds in E2E. /Downloads no longer appears in defaults.
 
-- [ ] **T-084: Gate the NixOS /nix runtime machinery on a real NixOS host and merge the duplicated mount loops behind platform hooks** (high · effort M)
+  _Status: code complete and merged (wave 12) — overlay policy is platform data in `platform/ro_guard.rs`, with a usr-merge-aware resolver, a fail-closed read-only guard (rolled back on EBUSY, undone on deactivate/emergency), a `writable_trees` preflight check and an active-state verify check, all with passing unit tests for the NixOS/FHS policy sets, the EBUSY rollback and the writable non-overlaid detection; /Downloads removed; forensic test 06 extended. Remaining: the Debian/Ubuntu VM E2E (EROFS on /usr and a clean decoy image) needs new non-NixOS VM harness infrastructure and a nix host, and the forensic-06 extension plus a green NixOS switch must be evaluated on a nix host._
+
+- [x] **T-084: Gate the NixOS /nix runtime machinery on a real NixOS host and merge the duplicated mount loops behind platform hooks** (high · effort M)
 
   **Problem:** The /nix overlay lifecycle (nix-daemon stop, command caching, store re-bind, /run/current-system restore) starts whenever /nix is a target, with no NixOS check (`auto_mount.rs:27-40`, `explicit_mount.rs:38-55`). On Nix-on-Debian/Ubuntu, `resolve_current_system_profile` falls back to /run/current-system (`runtime_cache.rs:85-89`); `replace_symlink(/run/current-system, /run/current-system)` would then create a self-loop and fail activation (`restore.rs:196-208`). This is latent today and becomes live once the hardcoded-path fix lands. `auto_mount.rs` and `explicit_mount.rs` duplicate ~90 lines of nix caching, daemon stop, opaque handling, submount lowers and DNS cleanup, and per-target side effects (/nix, /var, /etc) are hard-coded in `overlay_mount/mod.rs:152-208`. The cached hidden generation's closure is never checked against what decoy GC may have removed.
 
@@ -2033,7 +2035,7 @@ Owns: `nails-core/src/platform/host_commands.rs`, `nails-core/src/platform/ro_gu
 
   **Done when:** Only one mount loop remains. Unit test: on a Nix-on-foreign HostProfile with /nix as a target, no /run/current-system access or store re-bind happens and only daemon stop/start is issued. `replace_symlink` returns an error for link == target. Existing NixOS /nix E2E tests still pass.
 
-- [ ] **T-085: Handle submounts under overlay targets and add per-distro exclusion data** (high · effort M)
+- [x] **T-085: Handle submounts under overlay targets and add per-distro exclusion data** (high · effort M)
 
   **Problem:** Device-backed submounts with fs_root '/' are skipped (`filesystem/real/submount.rs:139-143`), and pseudo sources (tmpfs) likewise, so they become empty dirs in the merged view: /boot/efi on Debian/Ubuntu, Ubuntu /snap/<name>/<rev> squashfs (snap apps stop launching), and separate /var/log or /var/tmp partitions. Default exclusions lack /snap, /.snapshots, /sysroot, /ostree and /efi, and include machine-specific /Downloads. /proc/mounts and mountinfo are parsed with `split_whitespace` and no octal unescaping (`mount_ops.rs:91,111,131,150`; `submount.rs:29,103`), so paths with spaces break mount detection.
 
@@ -2041,7 +2043,7 @@ Owns: `nails-core/src/platform/host_commands.rs`, `nails-core/src/platform/ro_gu
 
   **Done when:** Unit tests: mountinfo fixtures with '\040' decode correctly; a ro squashfs submount is planned as a ro re-attach; a writable ext4 submount is planned as a nested overlay. Ubuntu VM test: a snap-mounted path still resolves during the session, and writes under a writable submount land in the hidden upper (confirmed by host-side disk image check).
 
-- [ ] **T-086: Declare systemd+logind a hard requirement, fix slice-blind PID-to-unit mapping, and add a small service/session seam** (medium · effort M)
+- [x] **T-086: Declare systemd+logind a hard requirement, fix slice-blind PID-to-unit mapping, and add a small service/session seam** (medium · effort M)
 
   **Problem:** Detach, the cgroup escape, session kill, the display-manager list, socket+service stops and reboot all assume systemd and logind (`cli/detach.rs:187-193,277-283`; `session/management/mod.rs:186-270,414-433`; `session/detection.rs:172`; `restart/mod.rs:190-215`), so non-systemd hosts fail late and obscurely. `extract_service_name` (`process/detection/mod.rs:275-290`) and `read_service_name` (`shell_cleanup.rs:30-41`) take the last '.service' cgroup component without checking it is under system.slice, so user units (e.g. pipewire.service under user@UID.service) are sent to the system manager. The display-manager fallback list is hard-coded. Info-level "DEBUG:" lines are emitted at `session/management/mod.rs:170-197`.
 

@@ -33,7 +33,7 @@ of this changelog for that version becomes the release notes word for word, and
 - A stable CLI machine interface: one typed JSON envelope on stdout (`schema_version`, `command`,
   `ok`, and `data` or `error`), state and verification as tagged snake_case objects, a documented
   exit-code table returned from `main` (verify warnings and critical exit 10 and 11, preflight
-  refusals 4), and an opt-in `status --exit-status`.
+  refusals 4).
 - The `risky_services` config key and the `--risky-services`/`--terminate-interactive` activate
   flags; non-interactive activation no longer silently skips risky-service restarts or
   force-terminates interactive user processes, and surviving decoy writers are tracked by identity.
@@ -98,6 +98,13 @@ of this changelog for that version becomes the release notes word for word, and
 - A platform `ConfigLayer` seam: the NixOS-only declarative half of activation (staging, fingerprint,
   `/etc` import, build, switch and decoy restore) is skipped on hosts without a config layer
   (FHS/Debian), so overlay-only is the absence of a layer rather than a parallel code path.
+- The overlay policy is now platform data and keeps the decoy read-only during a hidden session (the
+  decoy root and `/usr` on FHS hosts; `/bin` and `/usr` overlaid on NixOS), enforced by a preflight
+  check, a fail-closed read-only guard undone on teardown, and a status/verify check.
+- Submounts hidden under overlay targets (snap squashfs, separate partitions, tmpfs) are re-attached
+  read-only or given their own nested overlay, so they stay visible while writes stay off the decoy
+  disk; `/snap`, `/.snapshots`, `/sysroot`, `/ostree` and `/efi` are excluded from overlay on FHS
+  hosts.
 
 ### Changed
 
@@ -216,6 +223,16 @@ of this changelog for that version becomes the release notes word for word, and
 - Internal planning identifiers are removed from source, tests and docs.
 - The snapshot tmpfs for an overlay-incompatible target (such as a vfat `/boot`) is sized from the
   target's measured content plus headroom instead of a fixed 1 GiB.
+- `nails status` reports a kernel-truth posture (decoy/active/degraded/inconsistent/unknown) with
+  posture-driven, fail-closed exit codes, replacing the state-file-trusting security posture and the
+  `--exit-status` flag; JSON adds the state source, per-overlay ownership and upperdir, and any
+  remaining live NAILS mounts.
+- Host tools now resolve through a per-platform, root-trust-checked resolver instead of hardcoded
+  NixOS paths, and a new host-tools preflight check fails early naming any missing tool and its
+  package.
+- The `/nix` overlay lifecycle is gated on the host (full restoration only on NixOS; a non-NixOS host
+  with `/nix` overlaid only cycles `nix-daemon`), and the auto and explicit overlay mount paths are
+  unified into one loop.
 
 ### Removed
 
@@ -297,6 +314,11 @@ of this changelog for that version becomes the release notes word for word, and
   attached volume, and `verify` no longer flags logs stored on the hidden volume as residue.
 - File logging resolves its configuration through the single `--config` entry point and no longer
   silently falls back to binary-derived defaults when the configuration fails to load.
+- A stale `Active` state left by an unclean shutdown no longer makes `nails activate` a silent no-op;
+  activation reconciles the persisted state against the kernel boot id and mount table, resetting a
+  stale file or refusing an inconsistent one instead of mounting nothing.
+- Session cleanup no longer stops a user systemd unit system-wide: only units under `system.slice`
+  are mapped to the system manager, and non-systemd or ostree hosts are refused at detection.
 
 ### Security
 
