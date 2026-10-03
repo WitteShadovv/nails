@@ -146,6 +146,42 @@ impl<F: Filesystem> PreFlightCheck<F> for OverlayCompatibilityCheck {
             }
         }
 
+        // Check 3: Submounts nested under overlay targets. A parent overlay hides
+        // any filesystem mounted beneath it, so each hidden submount is listed with
+        // the plan activation will apply: a read-only re-attach over the overlay
+        // (snap squashfs, an ESP, tmpfs) or its own nested overlay with the upper on
+        // the hidden volume (a writable, decoy-backed partition). Read-only report;
+        // no mounts happen here.
+        for target in &self.persistent_overlay_targets {
+            for submount in fs.find_submounts(target)? {
+                match submount {
+                    crate::filesystem::Submount::Reattach {
+                        mount_point,
+                        fstype,
+                        read_only,
+                    } => warnings.push(format!(
+                        "{} ({}) under {} will be re-attached {} over the overlay",
+                        mount_point.display(),
+                        fstype,
+                        target.display(),
+                        if read_only { "read-only" } else { "writable" },
+                    )),
+                    crate::filesystem::Submount::NestedOverlay {
+                        mount_point,
+                        fstype,
+                    } => warnings.push(format!(
+                        "{} ({}) under {} will get its own nested overlay (writes land on the hidden volume)",
+                        mount_point.display(),
+                        fstype,
+                        target.display(),
+                    )),
+                    // Extra-lower binds are folded into the overlay's lower stack
+                    // and stay visible without a re-attach, so they are not listed.
+                    crate::filesystem::Submount::ExtraLower { .. } => {}
+                }
+            }
+        }
+
         if warnings.is_empty() {
             Ok(CheckResult::Pass(
                 "All overlay targets are compatible, no opaque dirs found".into(),
@@ -210,6 +246,66 @@ mod tests {
         assert!(result.message().contains("/boot"));
         assert!(result.message().contains("vfat"));
         assert!(result.message().contains("snapshot pivot"));
+    }
+
+    #[test]
+    fn test_lists_reattach_and_nested_submounts() {
+        use crate::filesystem::Submount;
+        let fs = MockFilesystem::new();
+        fs.mock_set_filesystem_type(Path::new("/snap"), "ext4");
+        fs.mock_set_filesystem_type(Path::new("/var"), "ext4");
+        fs.mock_set_submounts(
+            Path::new("/snap"),
+            vec![Submount::Reattach {
+                mount_point: PathBuf::from("/snap/firefox/1234"),
+                fstype: "squashfs".to_string(),
+                read_only: true,
+            }],
+        );
+        fs.mock_set_submounts(
+            Path::new("/var"),
+            vec![Submount::NestedOverlay {
+                mount_point: PathBuf::from("/var/log"),
+                fstype: "ext4".to_string(),
+            }],
+        );
+
+        let check = OverlayCompatibilityCheck::new(
+            vec![PathBuf::from("/snap"), PathBuf::from("/var")],
+            PathBuf::from("/mnt/hidden"),
+        );
+        let result = check.run(&fs).unwrap();
+
+        assert!(result.is_warn(), "Expected Warn, got: {:?}", result);
+        let message = result.message();
+        assert!(message.contains("/snap/firefox/1234"));
+        assert!(message.contains("re-attached read-only"));
+        assert!(message.contains("/var/log"));
+        assert!(message.contains("nested overlay"));
+    }
+
+    #[test]
+    fn test_extra_lower_submounts_are_not_listed() {
+        use crate::filesystem::Submount;
+        let fs = MockFilesystem::new();
+        fs.mock_set_filesystem_type(Path::new("/etc"), "ext4");
+        fs.mock_set_submounts(
+            Path::new("/etc"),
+            vec![Submount::ExtraLower {
+                mount_point: PathBuf::from("/etc/nixos"),
+                source: PathBuf::from("/persist/etc/nixos"),
+            }],
+        );
+
+        let check = OverlayCompatibilityCheck::new(
+            vec![PathBuf::from("/etc")],
+            PathBuf::from("/mnt/hidden"),
+        );
+        let result = check.run(&fs).unwrap();
+        assert!(
+            result.is_pass(),
+            "extra-lower binds must not warn: {result:?}"
+        );
     }
 
     #[test]

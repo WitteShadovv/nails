@@ -158,6 +158,16 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Unmount a bind mount from target (idempotent).
     fn unmount_bind(&self, target: &Path) -> Result<()>;
 
+    /// Re-attach a staged submount over its parent overlay.
+    ///
+    /// Recursively binds `source` — the staging capture of the submount's live
+    /// content, taken before the parent overlay hid it — onto `mount_point`, which
+    /// now sits over that overlay, so the submount's path resolves again (a snap
+    /// squashfs, an ESP, a tmpfs). When `read_only` the fresh bind is immediately
+    /// remounted read-only, so it cannot be written through the re-attach. A single
+    /// bind is left at `mount_point`, undone with [`unmount_bind`](Self::unmount_bind).
+    fn reattach_submount(&self, source: &Path, mount_point: &Path, read_only: bool) -> Result<()>;
+
     /// Bind-remount `target` on itself read-only.
     ///
     /// Performs `mount(target, target, MS_BIND)` followed by

@@ -145,6 +145,10 @@ struct OverlayContext {
     /// so the host regains write access (the decoy root and `/usr` on an FHS host;
     /// empty on NixOS).
     read_only_guards: Vec<PathBuf>,
+    /// Mounts activation created to keep host submounts visible under overlaid
+    /// targets, to undo (in reverse) before the parent overlays come down. Empty
+    /// when no target had a hidden submount.
+    submount_attachments: Vec<crate::state::SubmountAttachment>,
 }
 
 fn requires_decoy_restore<F: Filesystem>(manager: &NailsManager<F>) -> Result<bool> {
@@ -204,11 +208,17 @@ fn inspect_overlay_context<F: Filesystem>(manager: &NailsManager<F>) -> Result<O
         .map(|state_file| state_file.read_only_guards.clone())
         .unwrap_or_default();
 
+    let submount_attachments = cached
+        .as_ref()
+        .map(|state_file| state_file.submount_attachments.clone())
+        .unwrap_or_default();
+
     Ok(OverlayContext {
         nix_was_overlaid: overlay_paths.iter().any(|p| p == Path::new("/nix")),
         var_was_overlaid: overlay_paths.iter().any(|p| p == Path::new("/var")),
         nix_store_init_namespace_bound,
         read_only_guards,
+        submount_attachments,
     })
 }
 
@@ -250,6 +260,11 @@ fn overlay_context_from_mounts<F: Filesystem>(manager: &NailsManager<F>) -> Resu
         // left for manual recovery rather than guessed at.
         nix_store_init_namespace_bound: false,
         read_only_guards,
+        // The recorded attachment list cannot be trusted on a corrupt state. Nested
+        // overlays are still discovered and torn down as persistent overlays below;
+        // the staging/re-attach binds are left for the forced parent-overlay detach
+        // rather than guessed at.
+        submount_attachments: Vec::new(),
     })
 }
 
@@ -282,6 +297,26 @@ fn verify_history_truncation<F: Filesystem>(manager: &NailsManager<F>) {
 }
 
 impl<F: Filesystem> NailsManager<F> {
+    /// Tear down what sits on top of the parent overlays, before those come down:
+    /// the read-only guards on the decoy OS trees and the submount attachments.
+    fn teardown_overlay_dependents(&self, overlay_context: &OverlayContext) {
+        if !overlay_context.read_only_guards.is_empty() {
+            tracing::info!(
+                guards = ?overlay_context.read_only_guards,
+                "Removing read-only guards from decoy OS trees"
+            );
+            self.teardown_read_only_guards(&overlay_context.read_only_guards);
+        }
+
+        if !overlay_context.submount_attachments.is_empty() {
+            tracing::info!(
+                count = overlay_context.submount_attachments.len(),
+                "Removing submount attachments"
+            );
+            self.teardown_submount_attachments(&overlay_context.submount_attachments);
+        }
+    }
+
     fn run_deactivation(&mut self, kind: ManagerDeactivationKind) -> Result<()> {
         // Emergency on an untrusted state: a corrupt or unreadable state file
         // must not silently collapse to Inactive and refuse the teardown. When
@@ -328,16 +363,10 @@ impl<F: Filesystem> NailsManager<F> {
             inspect_overlay_context(self)?
         };
 
-        // Return write access to the decoy OS trees before the overlays stacked on
-        // them come down, so a host that was kept read-only for the session is
-        // writable again regardless of what the rest of teardown does.
-        if !overlay_context.read_only_guards.is_empty() {
-            tracing::info!(
-                guards = ?overlay_context.read_only_guards,
-                "Removing read-only guards from decoy OS trees"
-            );
-            self.teardown_read_only_guards(&overlay_context.read_only_guards);
-        }
+        // Return write access to the decoy OS trees and undo the submount
+        // attachments before the overlays they sit on come down (the orchestrator
+        // unmounts the parent overlays below).
+        self.teardown_overlay_dependents(&overlay_context);
 
         if overlay_context.nix_was_overlaid {
             tracing::info!("Stopping nix-daemon before /nix overlay unmount...");

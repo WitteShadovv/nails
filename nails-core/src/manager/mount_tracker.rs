@@ -32,6 +32,20 @@ pub enum MountType {
     /// Used for /var, /tmp, /srv, /opt - changes destroyed on unmount
     /// Provides forensic safety even if system is seized while running
     Ephemeral,
+
+    /// Plain bind mount created while attaching a hidden submount: the staging
+    /// bind under the hidden root, or the read-only re-attach of a submount over
+    /// its parent overlay. Rolled back with an idempotent bind unmount rather than
+    /// the managed-overlay unmount, since it is not an overlay NAILS owns in the
+    /// mount table.
+    Bind,
+
+    /// A nested overlay mounted over a parent overlay to keep a writable,
+    /// decoy-backed submount's writes on the hidden volume. Its upper/work live
+    /// under the hidden root. Rolled back with the overlay unmount, but kept out of
+    /// the Active state's top-level overlay list so teardown of the whole submount
+    /// group (nested overlay, then its staging lower) stays in one ordered place.
+    NestedOverlay,
 }
 
 /// Information about a tracked mount
@@ -69,6 +83,24 @@ impl MountInfo {
             mount_type: MountType::Ephemeral,
             target,
             tmpfs_paths,
+        }
+    }
+
+    /// Create a new bind mount info for a submount staging or re-attach bind.
+    pub fn bind(target: PathBuf) -> Self {
+        Self {
+            mount_type: MountType::Bind,
+            target,
+            tmpfs_paths: Vec::new(),
+        }
+    }
+
+    /// Create a new nested-overlay mount info for a writable submount.
+    pub fn nested_overlay(target: PathBuf) -> Self {
+        Self {
+            mount_type: MountType::NestedOverlay,
+            target,
+            tmpfs_paths: Vec::new(),
         }
     }
 }

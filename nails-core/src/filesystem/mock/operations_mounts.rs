@@ -389,6 +389,46 @@ impl MockFilesystem {
         Ok(())
     }
 
+    pub(super) fn reattach_submount_impl(
+        &self,
+        source: &Path,
+        mount_point: &Path,
+        read_only: bool,
+    ) -> Result<()> {
+        if self
+            .mount_should_fail
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .contains_key(mount_point)
+        {
+            return Err(NailsError::OverlayError(format!(
+                "Mock submount re-attach failure for testing: {}",
+                mount_point.display()
+            )));
+        }
+
+        // Model the single bind left at the mount point over the overlay.
+        self.bind_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(mount_point.to_path_buf(), source.to_path_buf());
+        self.mounted
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(mount_point.to_path_buf());
+        self.nails_owned_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(mount_point.to_path_buf());
+        if read_only {
+            self.read_only_guards
+                .lock()
+                .expect("MockFilesystem mutex poisoned")
+                .insert(mount_point.to_path_buf());
+        }
+        Ok(())
+    }
+
     pub(super) fn remount_read_only_impl(&self, target: &Path) -> Result<()> {
         // A configured mount failure for this target drives the fail-closed path:
         // EBUSY surfaces as MountBusy so the guard rolls back, other errnos map to

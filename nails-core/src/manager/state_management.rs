@@ -386,6 +386,7 @@ impl<F: Filesystem> NailsManager<F> {
             state_file.failed_overlays.clear();
             state_file.nix_store_init_namespace_bound = false;
             state_file.read_only_guards.clear();
+            state_file.submount_attachments.clear();
         }
         Ok(())
     }

@@ -268,6 +268,10 @@ impl Filesystem for RealFilesystem {
     fn find_submounts(&self, target: &Path) -> Result<Vec<Submount>> {
         dir_ops::find_submounts(target)
     }
+
+    fn reattach_submount(&self, source: &Path, mount_point: &Path, read_only: bool) -> Result<()> {
+        mount_ops::reattach_submount(source, mount_point, read_only)
+    }
 }
 
 #[cfg(test)]

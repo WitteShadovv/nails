@@ -149,7 +149,7 @@ pub use persona::{InheritedSource, PersonaEntry, PersonaInventory, collect_inher
 // State management exports
 pub use state::{
     EMERGENCY_LOCK_TIMEOUT, FailedOverlayInfo, LoadOutcome, LoadResult, OverlayInfo, StateFile,
-    StateLock, SystemState,
+    StateLock, SubmountAttachment, SystemState,
 };
 
 // Pre-flight validation exports

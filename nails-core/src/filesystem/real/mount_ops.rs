@@ -336,6 +336,62 @@ pub(super) fn bind_mount(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Re-attach a staged submount over its parent overlay.
+///
+/// `source` is the staging capture (a recursive bind of the submount's live
+/// content, taken before the parent overlay shadowed it). It is recursively bound
+/// onto `mount_point` — now sitting over the overlay — so the path resolves again,
+/// and remounted read-only when asked so a snap squashfs or an ESP cannot be
+/// written through the re-attach. The recursive flag carries across any mounts the
+/// submount nested inside itself.
+pub(super) fn reattach_submount(source: &Path, mount_point: &Path, read_only: bool) -> Result<()> {
+    let map_err = |e: nix::errno::Errno, stage: &str| -> NailsError {
+        if e == nix::errno::Errno::EACCES || e == nix::errno::Errno::EPERM {
+            NailsError::PermissionDenied("Submount re-attach requires root privileges".to_string())
+        } else if e == nix::errno::Errno::EBUSY {
+            NailsError::MountBusy {
+                path: mount_point.to_path_buf(),
+                suggestion: "Submount re-attach target has active references".to_string(),
+            }
+        } else {
+            NailsError::OverlayError(format!(
+                "Failed to {stage} submount {} -> {}: {e}",
+                source.display(),
+                mount_point.display(),
+            ))
+        }
+    };
+
+    nix::mount::mount(
+        Some(source),
+        mount_point,
+        None::<&str>,
+        nix::mount::MsFlags::MS_BIND | nix::mount::MsFlags::MS_REC,
+        None::<&str>,
+    )
+    .map_err(|e| map_err(e, "bind"))?;
+
+    if read_only {
+        nix::mount::mount(
+            Some(mount_point),
+            mount_point,
+            None::<&str>,
+            nix::mount::MsFlags::MS_BIND
+                | nix::mount::MsFlags::MS_REMOUNT
+                | nix::mount::MsFlags::MS_RDONLY,
+            None::<&str>,
+        )
+        .map_err(|e| {
+            // The bind landed but the read-only remount did not; drop the bind so
+            // the submount is not left writable through the re-attach.
+            let _ = nix::mount::umount(mount_point);
+            map_err(e, "remount read-only")
+        })?;
+    }
+
+    Ok(())
+}
+
 /// Bind-remount a path on itself read-only.
 ///
 /// A plain `MS_REMOUNT|MS_RDONLY` on a mount the kernel considers writable can be

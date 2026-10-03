@@ -11,6 +11,7 @@ mod auto_mount;
 mod explicit_mount;
 mod persona;
 mod restore;
+mod submount_attach;
 
 #[allow(unused_imports)]
 use super::{
@@ -263,6 +264,11 @@ impl<F: Filesystem> NailsManager<F> {
         var_was_overlaid: &mut bool,
     ) -> Result<()> {
         let mut nix_overlay_succeeded = false;
+        // Mounts created to keep host submounts visible under overlaid targets,
+        // accumulated across the loop and persisted once the overlays are all in
+        // place. Rollback of a mid-loop failure is driven by the tracker, which
+        // each stage/re-attach also pushes onto.
+        let mut submount_attachments: Vec<crate::state::SubmountAttachment> = Vec::new();
 
         for overlay in overlays {
             // Clear stale opaque markers on NAILS-managed dirs (currently
@@ -335,6 +341,12 @@ impl<F: Filesystem> NailsManager<F> {
                 // Continue anyway — this is best-effort.
             }
 
+            // Capture any host submount nested under this target *before* the
+            // overlay hides it; the captures are re-attached once the overlay is
+            // mounted. A no-op when nothing is nested under the target.
+            let staged_submounts =
+                self.stage_submounts(&overlay.target, tracker, &mut submount_attachments);
+
             match crate::overlay::mount_overlay_with_strategy(
                 &self.filesystem,
                 &lower_refs,
@@ -359,6 +371,14 @@ impl<F: Filesystem> NailsManager<F> {
                         // later abort can restart it against the base /var.
                         *var_was_overlaid = true;
                     }
+                    // Re-attach the staged submounts over the now-mounted overlay
+                    // (read-only binds for squashfs/ESP/tmpfs, nested overlays for
+                    // writable decoy-backed partitions).
+                    self.reattach_staged_submounts(
+                        &staged_submounts,
+                        tracker,
+                        &mut submount_attachments,
+                    );
                 }
                 Err(e) => match failure_mode {
                     MountFailureMode::BestEffort => {
@@ -407,6 +427,10 @@ impl<F: Filesystem> NailsManager<F> {
                 mount_failures.len()
             )));
         }
+
+        // Persist the submount attachments now that every overlay is mounted, so
+        // deactivation and emergency teardown undo exactly these mounts in reverse.
+        self.record_submount_attachments(&submount_attachments)?;
 
         // Post-overlay: restore the /nix runtime when /nix was overlaid.
         if nix_overlay_succeeded {
@@ -627,6 +651,41 @@ impl<F: Filesystem> NailsManager<F> {
                 );
             } else {
                 tracing::info!(tree = %tree.display(), "Removed read-only guard from decoy OS tree");
+            }
+        }
+    }
+
+    /// Undo the submount attachments activation recorded, in reverse order.
+    ///
+    /// Reverse order is what keeps teardown valid: a nested overlay comes off
+    /// before the staging bind backing its lower layer, and every re-attach comes
+    /// off before the parent overlay it was stacked on (the parent overlays are
+    /// unmounted later, by the orchestrator). Best-effort and idempotent — a bind
+    /// unmount is a no-op for a mount that is not present, and an overlay unmount
+    /// escalates to a forced detach — so a partial or repeated teardown is safe.
+    pub(crate) fn teardown_submount_attachments(
+        &self,
+        attachments: &[crate::state::SubmountAttachment],
+    ) {
+        use crate::state::SubmountAttachment;
+        for attachment in attachments.iter().rev() {
+            let outcome = match attachment {
+                SubmountAttachment::Bind { path } => self.filesystem.unmount_bind(path),
+                SubmountAttachment::Overlay { path } => self
+                    .filesystem
+                    .unmount(path, false)
+                    .or_else(|_| self.filesystem.unmount(path, true)),
+            };
+            match outcome {
+                Ok(()) => tracing::info!(
+                    path = %attachment.path().display(),
+                    "Removed submount attachment"
+                ),
+                Err(error) => tracing::warn!(
+                    path = %attachment.path().display(),
+                    error = %error,
+                    "Best-effort removal of a submount attachment failed; continuing teardown"
+                ),
             }
         }
     }

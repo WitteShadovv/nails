@@ -7,7 +7,7 @@
 use super::is_on_hidden_volume;
 #[cfg(test)]
 use super::is_on_hidden_volume_internal;
-use super::{FailedOverlayInfo, SystemState};
+use super::{FailedOverlayInfo, SubmountAttachment, SystemState};
 use crate::{NailsError, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -135,6 +135,18 @@ pub struct StateFile {
     #[serde(default)]
     pub read_only_guards: Vec<PathBuf>,
 
+    /// Mounts created to keep submounts visible under overlaid targets, in
+    /// creation order.
+    ///
+    /// When a parent overlay would hide a filesystem the host mounted beneath it
+    /// (a snap squashfs, a separate `/var/log` partition, a tmpfs), activation
+    /// stages and re-attaches or nests it. Each resulting mount is recorded here
+    /// so deactivation and emergency teardown undo exactly those mounts, in
+    /// reverse, before the parent overlays come down. Empty when no target had a
+    /// hidden submount. Cleared on deactivation.
+    #[serde(default)]
+    pub submount_attachments: Vec<SubmountAttachment>,
+
     /// Timestamp of last state modification
     pub last_modified: DateTime<Utc>,
 
@@ -179,6 +191,7 @@ impl Default for StateFile {
             failed_overlays: Vec::new(),
             nix_store_init_namespace_bound: false,
             read_only_guards: Vec::new(),
+            submount_attachments: Vec::new(),
             last_modified: Utc::now(),
             boot_id: None,
             owner_pid: 0,

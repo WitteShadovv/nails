@@ -203,4 +203,8 @@ impl Filesystem for MockFilesystem {
     fn find_submounts(&self, target: &Path) -> Result<Vec<crate::filesystem::Submount>> {
         self.find_submounts_impl(target)
     }
+
+    fn reattach_submount(&self, source: &Path, mount_point: &Path, read_only: bool) -> Result<()> {
+        self.reattach_submount_impl(source, mount_point, read_only)
+    }
 }

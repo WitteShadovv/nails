@@ -40,6 +40,8 @@ pub(crate) fn rollback_mounts<F: Filesystem>(filesystem: &F, mounts: &[MountInfo
         let mount_type_str = match mount_info.mount_type {
             MountType::Persistent => "persistent",
             MountType::Ephemeral => "ephemeral",
+            MountType::Bind => "bind",
+            MountType::NestedOverlay => "nested-overlay",
         };
 
         tracing::info!(
@@ -49,7 +51,22 @@ pub(crate) fn rollback_mounts<F: Filesystem>(filesystem: &F, mounts: &[MountInfo
             "Unmounting overlay"
         );
 
-        if unmount_graceful_then_force(filesystem, path) {
+        // A submount bind is not a managed overlay, so its idempotent bind unmount
+        // is used instead of the overlay graceful-then-force path (which would
+        // refuse it as an unmanaged target).
+        let unmounted = if mount_info.mount_type == MountType::Bind {
+            match filesystem.unmount_bind(path) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "Submount bind unmount failed");
+                    false
+                }
+            }
+        } else {
+            unmount_graceful_then_force(filesystem, path)
+        };
+
+        if unmounted {
             #[cfg(test)]
             test_events::record(test_events::ActivationEvent::Unmounted(path.clone()));
         } else {

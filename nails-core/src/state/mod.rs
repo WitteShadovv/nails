@@ -294,3 +294,32 @@ pub struct FailedOverlayInfo {
     /// Timestamp when the mount attempt failed
     pub failed_at: DateTime<Utc>,
 }
+
+/// A mount activation created to keep a submount visible under an overlaid
+/// target, recorded so teardown can undo exactly what it made, in the right
+/// order.
+///
+/// A submount hidden beneath a parent overlay is first staged (a recursive bind
+/// to a path under the hidden root), then either re-attached over the overlay
+/// (another bind) or given its own nested overlay. Each resulting mount is
+/// recorded here in creation order; deactivation and rollback undo the list in
+/// reverse, so a nested overlay always comes off before the staging bind that
+/// backs its lower layer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SubmountAttachment {
+    /// A bind mount (a staging bind under the hidden root, or a read-only
+    /// re-attach over the overlay). Undone with an idempotent bind unmount.
+    Bind { path: PathBuf },
+    /// A nested overlay mounted over the parent overlay, with its upper/work under
+    /// the hidden root. Undone with an overlay unmount.
+    Overlay { path: PathBuf },
+}
+
+impl SubmountAttachment {
+    /// The mount point this attachment lives at.
+    pub fn path(&self) -> &std::path::Path {
+        match self {
+            SubmountAttachment::Bind { path } | SubmountAttachment::Overlay { path } => path,
+        }
+    }
+}

@@ -95,6 +95,7 @@ fn test_state_file_serialization() {
         owner_pid: 0,
         nix_store_init_namespace_bound: false,
         read_only_guards: Vec::new(),
+        submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -309,6 +310,7 @@ fn test_save_load_round_trip_with_inactive_state() {
         owner_pid: 0,
         nix_store_init_namespace_bound: false,
         read_only_guards: Vec::new(),
+        submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -365,6 +367,7 @@ fn test_save_load_round_trip_with_active_state() {
         owner_pid: 0,
         nix_store_init_namespace_bound: false,
         read_only_guards: Vec::new(),
+        submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -423,6 +426,7 @@ fn test_save_load_multiple_overlays() {
         owner_pid: 0,
         nix_store_init_namespace_bound: false,
         read_only_guards: Vec::new(),
+        submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -486,6 +490,7 @@ fn test_nix_store_init_namespace_bound_round_trips() {
     let state = StateFile {
         nix_store_init_namespace_bound: true,
         read_only_guards: Vec::new(),
+        submount_attachments: Vec::new(),
         ..StateFile::default()
     };
 
@@ -615,6 +620,7 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
         owner_pid: 0,
         nix_store_init_namespace_bound: false,
         read_only_guards: Vec::new(),
+        submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -698,6 +704,7 @@ fn test_persist_race_condition_handling() {
         owner_pid: 0,
         nix_store_init_namespace_bound: false,
         read_only_guards: Vec::new(),
+        submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -742,6 +749,7 @@ fn create_test_manager_with_state(
         owner_pid: 0,
         nix_store_init_namespace_bound: false,
         read_only_guards: Vec::new(),
+        submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -1291,6 +1299,7 @@ fn test_state_file_permissions_are_0600() {
         owner_pid: 0,
         nix_store_init_namespace_bound: false,
         read_only_guards: Vec::new(),
+        submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
     };
@@ -1329,6 +1338,7 @@ fn test_checksum_round_trip_save_load() {
         owner_pid: 0,
         nix_store_init_namespace_bound: false,
         read_only_guards: Vec::new(),
+        submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
     };
