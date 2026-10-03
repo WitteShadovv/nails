@@ -7,35 +7,14 @@ use crate::constants::{
 use nix::unistd::{User, getuid};
 use std::env;
 
-#[cfg(not(test))]
-use super::types::RealSessionCommandExecutor;
 use super::types::{SessionCommandExecutor, SessionContext, SessionKind};
 
-/// Detect the current session context
+/// Detect the current session context, running its probes through `executor`.
 ///
-/// # Safety
-/// This function executes real system commands (loginctl, systemctl).
-/// In test builds, use `detect_session_context_with_executor` with a mock executor.
-#[cfg(not(test))]
-pub fn detect_session_context() -> Result<SessionContext> {
-    detect_session_context_with_executor(&RealSessionCommandExecutor)
-}
-
-/// Detect the current session context (test-only stub that panics)
-#[cfg(test)]
-pub fn detect_session_context() -> Result<SessionContext> {
-    panic!(
-        "detect_session_context() cannot be called in tests - use detect_session_context_with_executor() with a mock"
-    )
-}
-
-/// Detect the current session context (with injectable executor for testing)
-///
-/// This function is public for testing purposes. Production code should use
-/// `detect_session_context()` which uses the real executor.
-pub fn detect_session_context_with_executor<E: SessionCommandExecutor>(
-    executor: &E,
-) -> Result<SessionContext> {
+/// Production passes [`RealSessionCommandExecutor`](super::types::RealSessionCommandExecutor),
+/// which shells out to `loginctl`/`systemctl`; tests pass a scripted executor, so
+/// the same code path is exercised in both without a build-time fork.
+pub fn detect_session_context<E: SessionCommandExecutor>(executor: &E) -> Result<SessionContext> {
     let logind_available = match env::var(ENV_LOGIND_AVAILABLE) {
         Ok(val) => val != "0",
         Err(_) => executor.loginctl_available(),
@@ -159,7 +138,7 @@ fn resolve_target_identity() -> (Option<u32>, Option<String>) {
 pub(super) fn detect_display_manager<E: SessionCommandExecutor>(
     executor: &E,
 ) -> Result<Option<String>> {
-    detect_display_manager_in(executor, host_display_manager_units())
+    detect_display_manager_in(executor, executor.display_manager_units())
 }
 
 /// Probe the generic alias, then each unit in `fallback_units`, returning the
@@ -184,27 +163,6 @@ fn detect_display_manager_in<E: SessionCommandExecutor>(
     }
 
     Ok(None)
-}
-
-/// The display-manager fallback list for the running host, resolved from the
-/// platform backend so distro-specific names (Debian's `gdm3`) are honoured.
-#[cfg(not(test))]
-fn host_display_manager_units() -> &'static [&'static str] {
-    use crate::filesystem::RealFilesystem;
-
-    match crate::platform::detect(&RealFilesystem) {
-        Ok(profile) => {
-            crate::platform::platform_for::<RealFilesystem>(&profile).display_manager_units()
-        }
-        Err(_) => crate::platform::DEFAULT_DISPLAY_MANAGER_UNITS,
-    }
-}
-
-/// Tests drive the fallback list explicitly through [`detect_display_manager_in`];
-/// the default-list path here keeps the existing fallback behaviour hermetic.
-#[cfg(test)]
-fn host_display_manager_units() -> &'static [&'static str] {
-    crate::platform::DEFAULT_DISPLAY_MANAGER_UNITS
 }
 
 #[cfg(test)]
@@ -318,7 +276,7 @@ mod tests {
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
-        let ctx = detect_session_context_with_executor(&exec).unwrap();
+        let ctx = detect_session_context(&exec).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::Ssh);
         assert_eq!(ctx.display_manager, None);
@@ -337,7 +295,7 @@ mod tests {
 
         let exec = MockSessionCommandExecutor::new(false, true, true);
 
-        let ctx = detect_session_context_with_executor(&exec).unwrap();
+        let ctx = detect_session_context(&exec).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.session_id, Some("c2".to_string()));
@@ -355,7 +313,7 @@ mod tests {
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
-        let ctx = detect_session_context_with_executor(&exec).unwrap();
+        let ctx = detect_session_context(&exec).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::Tty);
         assert_eq!(ctx.display_manager, None);
@@ -377,7 +335,7 @@ mod tests {
             true,
         );
 
-        let ctx = detect_session_context_with_executor(&exec).unwrap();
+        let ctx = detect_session_context(&exec).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.display_manager, Some("display-manager".to_string()));
@@ -394,7 +352,7 @@ mod tests {
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
-        let ctx = detect_session_context_with_executor(&exec).unwrap();
+        let ctx = detect_session_context(&exec).unwrap();
 
         assert!(!ctx.logind_available);
     }
@@ -407,7 +365,7 @@ mod tests {
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
-        let ctx = detect_session_context_with_executor(&exec).unwrap();
+        let ctx = detect_session_context(&exec).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::Tty);
         assert!(ctx.logind_available);
@@ -423,7 +381,7 @@ mod tests {
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
-        let ctx = detect_session_context_with_executor(&exec).unwrap();
+        let ctx = detect_session_context(&exec).unwrap();
 
         assert_eq!(ctx.session_id, Some("c7".to_string()));
         assert_eq!(ctx.display_manager, Some("gdm".to_string()));
@@ -440,7 +398,7 @@ mod tests {
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
-        let ctx = detect_session_context_with_executor(&exec).unwrap();
+        let ctx = detect_session_context(&exec).unwrap();
 
         // Invalid UID means we fall back to GraphicalRoot, not GraphicalUser
         assert_eq!(ctx.kind, SessionKind::GraphicalRoot);
@@ -463,7 +421,7 @@ mod tests {
             true,
         );
 
-        let ctx = detect_session_context_with_executor(&exec).unwrap();
+        let ctx = detect_session_context(&exec).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.session_id, Some("c2".to_string()));
@@ -481,7 +439,7 @@ mod tests {
             .set("NAILS_DISPLAY_MANAGER", "sddm");
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
-        let ctx = detect_session_context_with_executor(&exec).unwrap();
+        let ctx = detect_session_context(&exec).unwrap();
 
         // Without a valid target UID, must NOT be GraphicalUser
         assert_eq!(ctx.kind, SessionKind::GraphicalRoot);
@@ -504,7 +462,7 @@ mod tests {
             true,
         );
 
-        let ctx = detect_session_context_with_executor(&exec).unwrap();
+        let ctx = detect_session_context(&exec).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.display_manager, Some("display-manager".to_string()));

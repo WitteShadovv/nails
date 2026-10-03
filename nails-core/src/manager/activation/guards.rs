@@ -6,7 +6,7 @@
 use super::start_service_and_socket;
 use crate::process::SessionRestartPlan;
 #[cfg(not(test))]
-use crate::process::{restart_display_manager, restart_user_manager};
+use crate::process::{RealSessionCommandExecutor, restart_display_manager, restart_user_manager};
 
 /// RAII guard: if we kill the session but exit early with an error,
 /// attempt to restart the user manager and display manager.
@@ -45,7 +45,7 @@ impl SessionRestartGuard {
     /// so the decoy session comes back after a failed activation.
     fn restart_session(&mut self) {
         if let Some(uid) = self.plan.target_uid
-            && let Err(e) = restart_user_manager(uid)
+            && let Err(e) = restart_user_manager(uid, &RealSessionCommandExecutor)
         {
             tracing::error!(
                 error = %e,
@@ -55,7 +55,7 @@ impl SessionRestartGuard {
         }
 
         if let Some(dm_name) = self.plan.display_manager.take() {
-            if let Err(e) = restart_display_manager(&dm_name) {
+            if let Err(e) = restart_display_manager(&dm_name, &RealSessionCommandExecutor) {
                 tracing::error!(
                     error = %e,
                     dm = %dm_name,

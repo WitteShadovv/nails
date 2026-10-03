@@ -134,7 +134,7 @@ pub fn execute(
 /// The check runs non-interactively and without privileges, so a session it
 /// cannot classify is reported as `unknown` rather than surfaced as an error.
 fn session_summary() -> SessionSummary {
-    match nails_core::detect_session_context() {
+    match nails_core::detect_session_context(&nails_core::RealSessionCommandExecutor) {
         Ok(ctx) => {
             let kind = match ctx.kind {
                 SessionKind::Tty => "tty",

@@ -100,6 +100,16 @@ pub trait SessionCommandExecutor {
 
     /// Check whether loginctl is available
     fn loginctl_available(&self) -> bool;
+
+    /// The per-host display-manager fallback list probed when the generic
+    /// `display-manager.service` alias is not active.
+    ///
+    /// The default is the platform-independent list; the real executor overrides
+    /// it with the running host's platform data (so Debian/Ubuntu's `gdm3` is
+    /// probed), while test executors keep the hermetic default.
+    fn display_manager_units(&self) -> &'static [&'static str] {
+        crate::platform::DEFAULT_DISPLAY_MANAGER_UNITS
+    }
 }
 
 /// Real command executor using system commands
@@ -138,6 +148,19 @@ impl SessionCommandExecutor for RealSessionCommandExecutor {
                     .deadline(LOGINCTL_BUDGET),
             )
             .is_ok()
+    }
+
+    /// Resolve the fallback list from the running host's platform backend so
+    /// distro-specific display managers (Debian's `gdm3`) are honoured.
+    fn display_manager_units(&self) -> &'static [&'static str] {
+        use crate::filesystem::RealFilesystem;
+
+        match crate::platform::detect(&RealFilesystem) {
+            Ok(profile) => {
+                crate::platform::platform_for::<RealFilesystem>(&profile).display_manager_units()
+            }
+            Err(_) => crate::platform::DEFAULT_DISPLAY_MANAGER_UNITS,
+        }
     }
 }
 

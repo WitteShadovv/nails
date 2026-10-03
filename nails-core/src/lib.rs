@@ -195,10 +195,12 @@ pub use overlay::{
 pub use process::{
     // Session Detection and Shutdown Support
     ProcessInfo,
+    RealSessionCommandExecutor,
     RestartMethod,
     RestartStrategy,
     RestartedProcess,
     RiskyServicePolicy,
+    SessionCommandExecutor,
     SessionContext,
     SessionKillResult,
     SessionKind,

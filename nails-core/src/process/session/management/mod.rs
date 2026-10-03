@@ -5,8 +5,6 @@ use std::fs;
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(not(test))]
-use super::types::RealSessionCommandExecutor;
 use super::types::{
     SessionCommandExecutor, SessionContext, SessionKillResult, SessionKind, SessionRestartPlan,
 };
@@ -108,25 +106,13 @@ pub(crate) fn prompt_session_kill_confirmation_with_io<R: std::io::BufRead, W: s
     }
 }
 
-/// Kill the graphical session (logind-first)
+/// Kill the graphical session (logind-first), running its commands through
+/// `executor`.
 ///
-/// # Safety
-/// This function executes real system commands (systemctl, loginctl, kill).
-/// In test builds, use `kill_graphical_session_with_executor` with a mock executor.
-#[cfg(not(test))]
-pub fn kill_graphical_session(ctx: &SessionContext) -> Result<SessionKillResult> {
-    kill_graphical_session_with_executor(ctx, &RealSessionCommandExecutor)
-}
-
-/// Kill the graphical session (test-only stub that panics)
-#[cfg(test)]
-pub fn kill_graphical_session(_ctx: &SessionContext) -> Result<SessionKillResult> {
-    panic!(
-        "kill_graphical_session() cannot be called in tests - use kill_graphical_session_with_executor() with a mock"
-    )
-}
-
-fn kill_graphical_session_with_executor<E: SessionCommandExecutor>(
+/// Production passes [`RealSessionCommandExecutor`](super::types::RealSessionCommandExecutor),
+/// which shells out to `systemctl`/`loginctl`/`kill`; tests pass a scripted or
+/// recording executor, so the same termination path is exercised in both.
+pub fn kill_graphical_session<E: SessionCommandExecutor>(
     ctx: &SessionContext,
     executor: &E,
 ) -> Result<SessionKillResult> {
@@ -354,25 +340,9 @@ fn process_exists(pid: u32) -> bool {
     std::path::Path::new(&format!("/proc/{}", pid)).exists()
 }
 
-/// Restart the display manager (best-effort)
-///
-/// # Safety
-/// This function executes real systemctl commands.
-/// In test builds, use `restart_display_manager_with_executor` with a mock executor.
-#[cfg(not(test))]
-pub fn restart_display_manager(service: &str) -> Result<()> {
-    restart_display_manager_with_executor(service, &RealSessionCommandExecutor)
-}
-
-/// Restart the display manager (test-only stub that panics)
-#[cfg(test)]
-pub fn restart_display_manager(_service: &str) -> Result<()> {
-    panic!(
-        "restart_display_manager() cannot be called in tests - use restart_display_manager_with_executor() with a mock"
-    )
-}
-
-fn restart_display_manager_with_executor<E: SessionCommandExecutor>(
+/// Restart the display manager (best-effort), running its commands through
+/// `executor`.
+pub fn restart_display_manager<E: SessionCommandExecutor>(
     service: &str,
     executor: &E,
 ) -> Result<()> {
@@ -404,28 +374,9 @@ fn restart_display_manager_with_executor<E: SessionCommandExecutor>(
     }
 }
 
-/// Restart the user manager (best-effort)
-///
-/// # Safety
-/// This function executes real systemctl commands.
-/// In test builds, use `restart_user_manager_with_executor` with a mock executor.
-#[cfg(not(test))]
-pub fn restart_user_manager(uid: u32) -> Result<()> {
-    restart_user_manager_with_executor(uid, &RealSessionCommandExecutor)
-}
-
-/// Restart the user manager (test-only stub that panics)
-#[cfg(test)]
-pub fn restart_user_manager(_uid: u32) -> Result<()> {
-    panic!(
-        "restart_user_manager() cannot be called in tests - use restart_user_manager_with_executor() with a mock"
-    )
-}
-
-fn restart_user_manager_with_executor<E: SessionCommandExecutor>(
-    uid: u32,
-    executor: &E,
-) -> Result<()> {
+/// Restart the user manager (best-effort), running its commands through
+/// `executor`.
+pub fn restart_user_manager<E: SessionCommandExecutor>(uid: u32, executor: &E) -> Result<()> {
     let runtime_service = format!("user-runtime-dir@{}.service", uid);
     let user_service = format!("user@{}.service", uid);
 

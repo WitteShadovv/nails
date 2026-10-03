@@ -12,7 +12,7 @@ mod management;
 pub mod types;
 
 // Re-export all public API items to maintain backward compatibility
-pub use detection::{detect_session_context, detect_session_context_with_executor};
+pub use detection::detect_session_context;
 pub use management::{
     kill_graphical_session, prompt_session_kill_confirmation, restart_display_manager,
     restart_user_manager,

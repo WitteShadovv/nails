@@ -166,7 +166,7 @@ fn kill_graphical_session_rejects_non_graphical_session() {
     };
     let exec = MockSessionCommandExecutor::new(true, true, true);
 
-    let err = kill_graphical_session_with_executor(&ctx, &exec).unwrap_err();
+    let err = kill_graphical_session(&ctx, &exec).unwrap_err();
     assert!(
         err.to_string()
             .contains("Not running in a graphical user session")
@@ -253,7 +253,7 @@ fn restart_display_manager_returns_error_when_start_fails() {
         true,
     );
 
-    let err = restart_display_manager_with_executor("display-manager", &exec).unwrap_err();
+    let err = restart_display_manager("display-manager", &exec).unwrap_err();
     assert!(
         err.to_string()
             .contains("Failed to start display manager display-manager: boom")
@@ -272,7 +272,7 @@ fn restart_display_manager_retries_until_service_becomes_active() {
         true,
     );
 
-    assert!(restart_display_manager_with_executor("display-manager", &exec).is_ok());
+    assert!(restart_display_manager("display-manager", &exec).is_ok());
     assert_eq!(
         exec.systemctl_calls(),
         vec![
@@ -296,7 +296,7 @@ fn restart_display_manager_propagates_is_active_error_after_start() {
         true,
     );
 
-    let err = restart_display_manager_with_executor("display-manager", &exec).unwrap_err();
+    let err = restart_display_manager("display-manager", &exec).unwrap_err();
     assert!(err.to_string().contains("systemctl failed"));
 }
 
@@ -311,7 +311,7 @@ fn restart_user_manager_returns_error_when_user_service_fails() {
         true,
     );
 
-    let err = restart_user_manager_with_executor(1000, &exec).unwrap_err();
+    let err = restart_user_manager(1000, &exec).unwrap_err();
     assert!(
         err.to_string()
             .contains("Failed to start user manager user@1000.service: boom")
@@ -331,7 +331,7 @@ fn restart_user_manager_succeeds_even_if_runtime_dir_start_fails() {
         true,
     );
 
-    assert!(restart_user_manager_with_executor(1000, &exec).is_ok());
+    assert!(restart_user_manager(1000, &exec).is_ok());
 }
 
 #[test]
@@ -345,7 +345,7 @@ fn restart_user_manager_starts_runtime_service_before_user_service() {
         true,
     );
 
-    assert!(restart_user_manager_with_executor(1000, &exec).is_ok());
+    assert!(restart_user_manager(1000, &exec).is_ok());
     assert_eq!(
         exec.systemctl_calls(),
         vec![
@@ -361,7 +361,7 @@ fn restart_user_manager_starts_runtime_service_before_user_service() {
 #[test]
 fn restart_display_manager_uses_systemctl() {
     let exec = MockSessionCommandExecutor::new(true, true, true);
-    let res = restart_display_manager_with_executor("display-manager", &exec);
+    let res = restart_display_manager("display-manager", &exec);
     assert!(res.is_ok());
 }
 
@@ -371,7 +371,7 @@ fn restart_display_manager_uses_systemctl() {
 fn test_graphical_user_requires_valid_uid() {
     // This test verifies the invariant at the detection layer.
     // A GraphicalUser context with target_uid=None should be rejected
-    // by kill_graphical_session_with_executor (after the root check).
+    // by kill_graphical_session (after the root check).
     // Since tests don't run as root, we verify the root-check error first,
     // then test the target_uid guard directly via the internal check.
     let ctx = SessionContext {
@@ -384,7 +384,7 @@ fn test_graphical_user_requires_valid_uid() {
     };
     let exec = MockSessionCommandExecutor::new(true, true, true);
 
-    let err = kill_graphical_session_with_executor(&ctx, &exec).unwrap_err();
+    let err = kill_graphical_session(&ctx, &exec).unwrap_err();
     // In non-root test environment, the root check fires first.
     // The important thing is that the function rejects this context.
     assert!(

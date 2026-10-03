@@ -8,7 +8,9 @@ use nails_core::constants::{
     ENV_SKIP_DETACH, ENV_TARGET_UID, ENV_TARGET_USER,
 };
 use nails_core::process::{ProcessCommand, ProcessRunner, RealProcessRunner, SYSTEM_TOOL_DIRS};
-use nails_core::{NailsError, SessionContext, SessionKind, detect_session_context};
+use nails_core::{
+    NailsError, RealSessionCommandExecutor, SessionContext, SessionKind, detect_session_context,
+};
 
 /// The NixOS setuid-wrapper directory, prepended to the detached worker's search
 /// path ahead of [`SYSTEM_TOOL_DIRS`]. Not part of [`SYSTEM_TOOL_DIRS`] because
@@ -292,7 +294,7 @@ pub fn maybe_detach_for_session_kill(
             if ctx.kind != SessionKind::GraphicalUser {
                 return Ok(());
             }
-        } else if let Ok(ctx) = detect_session_context() {
+        } else if let Ok(ctx) = detect_session_context(&RealSessionCommandExecutor) {
             if ctx.kind != SessionKind::GraphicalUser {
                 return Ok(());
             }

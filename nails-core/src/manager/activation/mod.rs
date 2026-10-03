@@ -25,6 +25,7 @@ use super::{
 use super::{MountTracker, NailsManager};
 use crate::notification::{Notification, write_notification};
 use crate::overlay::SurvivingWriter;
+use crate::process::RealSessionCommandExecutor as RealSessionCommands;
 use crate::{DecoyWriter, Filesystem, NailsError, Result, Verbosity};
 use std::path::Path;
 
@@ -314,11 +315,14 @@ fn restart_session_after_success(plan: &crate::process::SessionRestartPlan) -> R
     if plan.display_manager.is_none()
         && let Some(uid) = plan.target_uid
     {
-        crate::process::restart_user_manager(uid)?;
+        crate::process::restart_user_manager(uid, &crate::process::RealSessionCommandExecutor)?;
     }
 
     if let Some(dm_name) = plan.display_manager.as_deref() {
-        crate::process::restart_display_manager(dm_name)?;
+        crate::process::restart_display_manager(
+            dm_name,
+            &crate::process::RealSessionCommandExecutor,
+        )?;
     }
 
     Ok(())
@@ -556,10 +560,9 @@ impl<F: Filesystem> NailsManager<F> {
                 );
             }
         }
-        let restart_plan = Self::handle_session_kill(verbosity, &options)?;
-        // Test seam: the session-detection stub panics, so a non-default plan
-        // cannot be produced the normal way; this lets a rollback test inject one
-        // to drive (and fail) the after-overlay restart path.
+        let restart_plan = Self::handle_session_kill(verbosity, &options, &RealSessionCommands)?;
+        // Test seam: lets a rollback test inject a non-default plan to drive the
+        // after-overlay restart path (unkillable unprivileged otherwise).
         #[cfg(test)]
         let restart_plan = guards::test_hooks::override_plan(restart_plan);
         let restart_phase = determine_session_restart_phase(&restart_plan);

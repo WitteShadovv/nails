@@ -200,7 +200,7 @@ pub fn execute(
     let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let mut session_ctx = None;
     if options.kill_session
-        && let Ok(ctx) = nails_core::detect_session_context()
+        && let Ok(ctx) = nails_core::detect_session_context(&nails_core::RealSessionCommandExecutor)
         && ctx.kind == nails_core::SessionKind::GraphicalUser
     {
         session_ctx = Some(ctx);
