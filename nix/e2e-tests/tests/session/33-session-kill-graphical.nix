@@ -48,23 +48,6 @@ in
             ).strip()
         )
 
-    def install_nixos_rebuild_wrapper(log_path, marker_path):
-        machine.succeed(
-            f"""mkdir -p /tmp/nails-wrapper/bin
-    rm -f {log_path}
-    cat > /tmp/nails-wrapper/bin/nixos-rebuild <<'EOF'
-    #!/bin/sh
-    printf '%s\\n' "$*" >> {log_path}
-    if [ "$1" = test ]; then
-      mkdir -p "$(dirname {marker_path})"
-      printf '%s\\n' 'graphical-rebuild-active' > {marker_path}
-    fi
-    exit 0
-    EOF
-    chmod 755 /tmp/nails-wrapper/bin/nixos-rebuild"""
-        )
-        return "PATH=/tmp/nails-wrapper/bin:$PATH"
-
     def hidden_log_line_number(pattern):
         # T-066: the detached worker's stdout/stderr no longer reach the journal;
         # the hidden-root file log is its only sink. Read the activation-ordering
@@ -108,17 +91,13 @@ in
         display_manager_before = read_systemd_active_enter_monotonic("display-manager.service")
         user_manager_before = read_systemd_active_enter_monotonic("user@1000.service")
         display_started_before = count_started_messages("display-manager.service")
-        wrapper_env = install_nixos_rebuild_wrapper(
-            "/tmp/nixos-rebuild-graphical.log",
-            "/etc/nails-graphical-marker",
-        )
         before_shell = run_command_capture("session-graphical-shell-before", shell_command)
         assert before_shell["rc"] == 0, before_shell
         assert osc_sequence not in before_shell["stdout"], before_shell
 
     with subtest("activate from graphical context via transient systemd unit"):
         machine.succeed(
-            f"{wrapper_env} env DISPLAY=:0 XDG_SESSION_TYPE=x11 SUDO_UID=1000 SUDO_USER=testuser "
+            "env DISPLAY=:0 XDG_SESSION_TYPE=x11 SUDO_UID=1000 SUDO_USER=testuser "
             + "SHELL=/run/current-system/sw/bin/bash "
             + f"nails --config {headless_config} activate -y"
         )
@@ -164,11 +143,22 @@ in
         assert_overlay_mounted("/home")
         assert_overlay_mounted("/etc")
         assert_status_state("active", config_path=headless_config)
-        # The wrapper records every nixos-rebuild invocation, so a full
-        # activation must leave a non-empty log naming the switch it performed.
-        rebuild_log = machine.succeed("cat /tmp/nixos-rebuild-graphical.log")
-        assert rebuild_log.strip(), "nixos-rebuild-graphical.log is empty: no rebuild ran"
-        assert any(token in rebuild_log for token in ["test", "switch", "boot"]), rebuild_log
+        # The detached worker runs with a fixed root-owned PATH, so a stub on the
+        # caller's PATH never reaches it; the hidden log is the evidence instead.
+        # A full activation must have driven the NixOS build+switch through the
+        # config layer. Its outcome (success, fast path, or a preserved failure in
+        # this offline VM) proves the step ran rather than being skipped.
+        switch_outcomes = [
+            hidden_log_line_number(marker)
+            for marker in (
+                "NixOS build+switch complete",
+                "NixOS switch complete via fast path",
+                "NixOS build+switch failed",
+            )
+        ]
+        assert any(line is not None for line in switch_outcomes), (
+            "expected the hidden log to record the NixOS build+switch outcome"
+        )
         active_shell = run_command_capture("session-graphical-shell-active", shell_command)
         assert active_shell["rc"] == 0, active_shell
         assert osc_sequence in active_shell["stdout"], repr(active_shell["stdout"])
