@@ -15,6 +15,14 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
+- SIGINT/SIGTERM during an in-progress activation now cancel it and roll the system back to
+  Inactive (exit code 130), SIGHUP no longer aborts a running operation, and mutating commands
+  survive out-of-memory pressure (`OOMPolicy=continue` on the transient units plus a lowered OOM
+  score, with child processes left as the preferred victim).
+- A per-PR Debian/Ubuntu container smoke tier (`scripts/distro-smoke/`) that drives the overlay-only
+  backend through the full lifecycle in privileged systemd containers, asserting `/usr` writes fail
+  with EROFS while active and that decoy paths are byte-identical afterward, wired as a non-required
+  CI matrix job.
 - `nails reapply` applies a fixed hidden NixOS configuration in place while active; a failed hidden
   switch is now reported as "activated with warnings" (JSON `success_with_warnings`, exit code 9)
   and `nails status` shows the hidden configuration as not applied.

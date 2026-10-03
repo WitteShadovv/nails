@@ -2305,7 +2305,9 @@ Owns: `nails-core/tests/filesystem_contract.rs`, `nails-core/src/filesystem/mock
 
 Owns: `nails-core/src/cancel.rs`, `nails-cli/src/cli/mod.rs`, `nails-cli/src/cli/detach.rs`
 
-- [ ] **T-101: Handle SIGINT/SIGTERM/SIGHUP so an interrupted activation rolls back, and keep nails alive under OOM** (high · effort M)
+- [x] **T-101: Handle SIGINT/SIGTERM/SIGHUP so an interrupted activation rolls back, and keep nails alive under OOM** (high · effort M)
+
+  _Status: Done. `nails-core/src/cancel.rs` sets a process-wide flag from SIGINT/SIGTERM (SIGHUP caught and ignored), `cancel::checkpoint()` boundaries in activation roll back to Inactive with exit code 130, OOM survival via `oom_score_adj` and `OOMPolicy=continue` on both `systemd-run` units. Unit and detach tests pass. Deferred (not in Done-when): mid-build child group-kill (cancellation is cooperative at step boundaries), the EPIPE-safe `/dev/null` console redirect on SIGHUP, and explicit signal masking in teardown. The new E2E spec `nix/e2e-tests/tests/state/58-state-signal-during-activation.nix` and the live `systemctl show OOMPolicy=continue` assertion still need a NixOS VM runner._
 
   **Problem:** `signal-hook = "0.4"` is declared (`nails-core/Cargo.toml:25`) but unused, and nothing handles SIGINT/SIGTERM/SIGHUP. Cleanup relies entirely on `Drop` — `StateGuard` (`state/guard.rs:227`), `MountTracker` (`mount_tracker.rs:282`), `SessionRestartGuard` and `NixDaemonGuard` (`activation/guards.rs:30,83`) — which does not run when a signal's default action kills the process. TTY and SSH activations run in the foreground (`cli/detach.rs` detaches only graphical sessions, ~141-175; deactivation detaches only under `NAILS_FORCE_DETACH`, ~257-290). The `Activating` state is persisted at `activation/mod.rs:250-256`, before overlays are mounted. So Ctrl-C during a slow `nixos-rebuild`, an SSH hangup, `systemctl stop` of the transient unit, a shutdown, or an OOM kill can leave overlays partly mounted, nix-daemon stopped, the session not restarted, and `Activating`/`Deactivating` persisted. The `systemd-run` calls set no `OOMPolicy` (`cli/detach.rs:186-249`); under `DefaultOOMPolicy=stop` an OOM kill of the nix evaluator child stops the whole unit. Swap must be off (`preflight/checks/swap.rs:65`).
 
@@ -2325,7 +2327,7 @@ Owns: `nails-core/src/cancel.rs`, `nails-cli/src/cli/mod.rs`, `nails-cli/src/cli
 
 Owns: `nails-core/src/manager/activation/tests.rs`, `nails-core/src/manager/tests.rs`, `nails-core/src/preflight/`
 
-- [ ] **T-102: Assert on error kinds and behaviour instead of message wording and log text** (medium · effort M)
+- [x] **T-102: Assert on error kinds and behaviour instead of message wording and log text** (medium · effort M)
 
   **Problem:** nails-core unit tests pin behaviour to human-readable strings instead of error structure. There are roughly 544 `.contains(...)` assertions against error/stdout/stderr text versus only 9 `matches!(.., NailsError::..)` checks, and 23 `#[traced_test]` tests assert on log wording. `nails-core/src/manager/tests.rs:3550` checks for the literal `"DANGER: Skipping pre-flight checks"`, and `:3595` asserts `logs_contain("(") && (logs_contain("s)") || logs_contain("ms)"))`, which matches almost any log line. The module-level `logs_contain` helper (`manager/tests.rs:15-22`) is shadowed by the `traced_test` macro's own helper everywhere it appears to be used, so it is dead. Error variants carry free-form strings — in nails-core `NixOSError` is constructed ~70×, `InvalidState` ~100×, `OverlayError` ~95× — and `NixOSError` is reused for unrelated conditions (e.g. the reboot refusal at `nails-core/src/manager/deactivation.rs:148-152`). Every wording change breaks tests, while the weak substring checks still pass through real regressions.
 
@@ -2337,7 +2339,7 @@ Owns: `nails-core/src/manager/activation/tests.rs`, `nails-core/src/manager/test
 
 Owns: `scripts/distro-smoke/`, `docs/ci.md`
 
-- [ ] **T-103: Cheap per-PR container smoke tier for Debian/Ubuntu (privileged systemd containers)** (medium · effort M)
+- [x] **T-103: Cheap per-PR container smoke tier for Debian/Ubuntu (privileged systemd containers)** (medium · effort M)
 
   **Problem:** The test infrastructure is NixOS-VM-only — every spec in `nix/e2e-tests/default.nix:42` is wrapped in `pkgs.testers.runNixOSTest`. Nothing exercises NAILS on an FHS distro, so the planned Debian/Ubuntu platform backend would ship with no per-PR regression coverage.
 
