@@ -145,30 +145,6 @@ mod tests {
     }
 }
 
-/// Application configuration
-///
-/// Loaded from `nails.toml` (see [`Config::load`]). Every key is optional and
-/// unknown keys are rejected, so a misspelt key fails loudly instead of being
-/// silently replaced by a default. Use `ConfigBuilder` for programmatic
-/// construction.
-///
-/// # Example
-///
-/// ```rust
-/// use nails_core::config::Config;
-/// use std::path::PathBuf;
-///
-/// // Use default for tests
-/// let config = Config::default();
-///
-/// // Or create custom config
-/// let config = Config {
-///     hidden_volume_root: PathBuf::from("/mnt/data"),
-///     state_file_path: PathBuf::from("/mnt/data").join("state.json"),
-///     overlays: vec![],
-///     ..Config::default()
-/// };
-/// ```
 /// What NAILS does about system sleep (suspend/hibernate) while a hidden
 /// session is active.
 ///
@@ -222,6 +198,30 @@ pub struct SleepPolicyConfig {
     pub mode: SleepPolicyMode,
 }
 
+/// Application configuration
+///
+/// Loaded from `nails.toml` (see [`Config::load`]). Every key is optional and
+/// unknown keys are rejected, so a misspelt key fails loudly instead of being
+/// silently replaced by a default. Use `ConfigBuilder` for programmatic
+/// construction.
+///
+/// # Example
+///
+/// ```rust
+/// use nails_core::config::Config;
+/// use std::path::PathBuf;
+///
+/// // Use default for tests
+/// let config = Config::default();
+///
+/// // Or create custom config
+/// let config = Config {
+///     hidden_volume_root: PathBuf::from("/mnt/data"),
+///     state_file_path: PathBuf::from("/mnt/data").join("state.json"),
+///     overlays: vec![],
+///     ..Config::default()
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
