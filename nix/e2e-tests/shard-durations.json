@@ -1,7 +1,9 @@
 {
+  "activate-auto-lifecycle": 180,
   "activate-dry-run": 176,
   "activate-flake-override": 408,
   "activate-full-rebuild": 186,
+  "activate-refuse-interactive-writer": 90,
   "backend-nfs-unsuitable": 300,
   "basic-workflow": 207,
   "bind-mounted-root": 250,
@@ -18,6 +20,7 @@
   "emergency-from-deactivating": 126,
   "emergency-while-inactive": 86,
   "forensic-clean": 105,
+  "impermanent-decoy": 300,
   "inherited-autostart": 180,
   "init-bootstrap": 66,
   "init-idempotency": 88,
@@ -50,6 +53,7 @@
   "preflight-state-check": 150,
   "preflight-storage-readiness": 112,
   "preflight-swap": 155,
+  "preflight-swap-reenable": 120,
   "preflight-symlink-support": 63,
   "preflight-upper-fs-capability": 63,
   "reactivation": 170,
@@ -79,6 +83,9 @@
   "status-verify": 103,
   "tcrypt-veracrypt-hidden": 700,
   "uefi-esp-nvram-invariant": 300,
+  "var-lib-nixos-drift": 600,
   "verify": 120,
-  "verify-base-config-clean": 64
+  "verify-base-config-clean": 64,
+  "verify-json-schema": 90,
+  "verify-seeded-artifacts": 120
 }
