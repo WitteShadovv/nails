@@ -141,7 +141,10 @@ in
         write_post_mount_config(graphical_config)
         graphical.fail("mountpoint -q /home")
         # Mask the display manager so the after-overlay restart cannot succeed.
-        graphical.succeed("systemctl mask display-manager.service")
+        # NixOS symlinks the unit into /etc/systemd/system, so a plain `mask`
+        # refuses ("already exists and is a symlink"); mask at runtime (/run),
+        # which overrides /etc and still blocks the restart as intended.
+        graphical.succeed("systemctl mask --runtime display-manager.service")
 
     with subtest("post-mount failure unmounts overlays and restores the decoy"):
         # Killing the graphical session makes the CLI detach into a transient

@@ -12,6 +12,7 @@ in
 
   testScript = _: ''
     import json
+    import re
 
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.runDetachedCommandFn}
@@ -40,7 +41,12 @@ in
         assert_status_state("Active", config_path=headless_config)
         assert_overlay_mounted("/home")
         state_doc = json.loads(machine.succeed(f"cat {state_path}"))
-        assert state_doc.get("checksum"), f"Expected recreated checksum-bearing state file, got: {state_doc}"
+        # The durable state file v2 carries its integrity digest as
+        # `integrity_sha256` (a 64-hex SHA-256), not the old `checksum` key.
+        digest = state_doc.get("integrity_sha256") or ""
+        assert re.fullmatch(r"[0-9a-f]{64}", digest), (
+            f"Expected recreated integrity-digest-bearing state file, got: {state_doc}"
+        )
 
     with subtest("deactivation still succeeds after missing-file bootstrap"):
         canonical_deactivate(headless_config, unit_name="nails-deactivate-state-missing-file")

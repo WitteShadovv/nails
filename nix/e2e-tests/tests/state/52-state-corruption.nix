@@ -66,9 +66,12 @@ in
         )
         assert_status_state("Unknown", payload=corrupt_payload)
         assert corrupt_payload.get("posture") == "unknown", corrupt_payload
-        error_text = corrupt_payload.get("error", "")
-        assert "corrupt" in error_text.lower(), (
-            f"Expected corruption error, got: {corrupt_payload}"
+        # status reports corruption through the typed payload, not an `error` key:
+        # state_source is "corrupt" and the Unknown state carries the reason.
+        assert corrupt_payload.get("state_source") == "corrupt", corrupt_payload
+        reason = corrupt_payload.get("state", {}).get("reason", "")
+        assert "corrupt" in reason.lower(), (
+            f"Expected a corruption reason, got: {corrupt_payload}"
         )
 
     with subtest("next activation refuses the corrupt state and leaves mounts unchanged"):
