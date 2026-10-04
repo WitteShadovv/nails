@@ -41,7 +41,11 @@ in
             f"nails --config {config_path} activate --overlay-only --session keep -y",
         )
         assert_command_failed(blocked)
-        assert_result_contains(blocked, ["swap", "Swap is enabled"], stream="stderr")
+        assert_result_contains(
+            blocked,
+            ["swap can leak memory to persistent storage", "/swapfile"],
+            stream="stderr",
+        )
         assert_status_state("inactive", config_path=config_path)
 
     with subtest("no-preflight bypasses the swap guard and emits a danger warning"):
