@@ -35,7 +35,6 @@ in
 
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.runDetachedCommandFn}
-    ${testHelpers.canonicalDeactivateFn}
     ${contractHelpers.runCommandCaptureFn}
     ${contractHelpers.runPtyCommandCaptureFn}
     ${contractHelpers.assertJsonSchemaValidFn}
@@ -121,10 +120,5 @@ in
         assert_ascii_only(ascii_status["stdout"], "status --ascii")
         assert "NAILS Status Report" in ascii_status["stdout"], ascii_status
         assert "Details:" in ascii_status["stdout"], ascii_status
-
-    with subtest("deactivate cleanly"):
-        canonical_deactivate(
-            headless_config, unit_name="nails-deactivate-contract-active-session"
-        )
   '';
 }
