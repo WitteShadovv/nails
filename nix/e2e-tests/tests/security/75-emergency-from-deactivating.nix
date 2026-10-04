@@ -94,7 +94,12 @@ in
         machine.succeed(f"rm -f {gate_path}")
         machine.wait_until_fails("pgrep -x nails", timeout=60)
 
-        status = read_status_json(config_path=headless_config)
+        # With no live owner the frozen Deactivating state is inconsistent with the
+        # kernel, so status reports the posture fail-closed: exit 7 (degraded,
+        # reboot or tear down) with the payload still written.
+        rc, status = read_status_json_with_rc(config_path=headless_config)
+        assert rc == 7, f"expected status to fail closed (exit 7), got rc={rc}: {status}"
+        assert status["posture"] == "inconsistent", status
         assert_status_state("deactivating", payload=status)
         assert_expected_overlays(expected_overlays)
 
