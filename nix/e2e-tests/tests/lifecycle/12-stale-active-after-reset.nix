@@ -39,6 +39,12 @@ in
     assert_overlay_mounted("/home")
     machine.succeed("su - testuser -c 'echo STALE_RESET_DATA > ~/stale-reset.txt'")
     machine.succeed("test -f /mnt/data/home/testuser/stale-reset.txt")
+    # Flush the overlay write all the way to the hidden ext4 backend before the
+    # hard crash. NAILS fsyncs state.json itself, so it survives regardless, but
+    # an ordinary user write only reaches the page cache; without this sync the
+    # immediate power-off would drop it before ext4 commits, and the later
+    # re-exposure assertion would fail on lost data rather than on reconciliation.
+    machine.succeed("sync")
 
     print("\n=== Phase 2: Hard reset mid-session ===")
     # state.json lives on the hidden root and survives the crash, so after the
