@@ -340,3 +340,33 @@ fn overlay_kill_candidate_is_gated_on_the_overlay_device() {
     // the overlays are never left pinned by an unkilled writer.
     assert!(candidate_is_overlay_rooted(false, false, false));
 }
+
+#[test]
+fn a_decoy_mount_point_left_after_its_overlay_is_not_a_leftover() {
+    use super::still_nails_owned;
+    use crate::filesystem::NailsMounts;
+    use std::path::{Path, PathBuf};
+
+    let boot = Path::new("/boot");
+    // After the /boot overlay is detached the decoy's own VFAT /boot is still a
+    // mount point, but it is not an overlay and not a NAILS mount: not live.
+    let none_owned = NailsMounts::default();
+    assert!(!still_nails_owned(true, false, Some(&none_owned), boot));
+
+    // The overlay itself still mounted is a leftover.
+    assert!(still_nails_owned(true, true, Some(&none_owned), boot));
+
+    // A NAILS-created mount (here a pivot staging bind) is a leftover.
+    let pivot = Path::new("/run/nails-pivot/boot");
+    let owned = NailsMounts {
+        pivot_binds: vec![PathBuf::from(pivot)],
+        ..NailsMounts::default()
+    };
+    assert!(still_nails_owned(true, false, Some(&owned), pivot));
+
+    // Discovery unavailable: fail closed.
+    assert!(still_nails_owned(true, false, None, boot));
+
+    // Nothing mounted at all: not live.
+    assert!(!still_nails_owned(false, true, None, boot));
+}
