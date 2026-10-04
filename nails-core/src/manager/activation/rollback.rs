@@ -25,6 +25,25 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+/// What the activation-scope overlay rollback did when activation failed.
+///
+/// The CLI reads this after a failed activation so it reports the rollback
+/// truthfully: it must never claim "rollback completed" for a failure raised
+/// before any overlay was mounted (option validation, lock acquisition, the
+/// session kill), nor when the rollback itself could not unmount everything.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RollbackOutcome {
+    /// No rollback ran: either activation succeeded, or it failed before any
+    /// overlay or read-only guard was in place.
+    #[default]
+    NotNeeded,
+    /// The overlays and guards were rolled back cleanly.
+    Completed,
+    /// The rollback ran but could not undo everything; each string names a
+    /// mount or guard it left behind.
+    Failed(Vec<String>),
+}
+
 /// Unmount a set of tracked overlays in reverse (LIFO) order, best-effort.
 ///
 /// Each overlay is unmounted gracefully first and forcibly only if that fails.
@@ -160,22 +179,29 @@ pub(super) struct ActivationMounts<F: Filesystem> {
     mounts: Vec<MountInfo>,
     read_only_guards: Vec<PathBuf>,
     residue: Rc<RefCell<Vec<PathBuf>>>,
+    /// Records, on drop, whether a rollback ran and whether it succeeded, so the
+    /// CLI can report it truthfully. Left at `NotNeeded` on the disarmed (success)
+    /// path and whenever there was nothing to roll back.
+    outcome: Rc<RefCell<RollbackOutcome>>,
     disarmed: bool,
 }
 
 impl<F: Filesystem> ActivationMounts<F> {
-    /// Arm the guard with the filesystem clone, the overlays to roll back, and
-    /// the shared handle that receives any mounts rollback could not remove.
+    /// Arm the guard with the filesystem clone, the overlays to roll back, the
+    /// shared handle that receives any mounts rollback could not remove, and the
+    /// shared handle that records the rollback outcome.
     pub(super) fn arm(
         filesystem: F,
         mounts: Vec<MountInfo>,
         residue: Rc<RefCell<Vec<PathBuf>>>,
+        outcome: Rc<RefCell<RollbackOutcome>>,
     ) -> Self {
         Self {
             filesystem,
             mounts,
             read_only_guards: Vec::new(),
             residue,
+            outcome,
             disarmed: false,
         }
     }
@@ -212,6 +238,9 @@ impl<F: Filesystem> Drop for ActivationMounts<F> {
         }
 
         if self.mounts.is_empty() {
+            // Only read-only guards were undone above; that still counts as a
+            // rollback having run.
+            *self.outcome.borrow_mut() = RollbackOutcome::Completed;
             return;
         }
 
@@ -221,10 +250,15 @@ impl<F: Filesystem> Drop for ActivationMounts<F> {
         );
 
         let remaining = rollback_mounts(&self.filesystem, &self.mounts);
-        if !remaining.is_empty() {
+        if remaining.is_empty() {
+            *self.outcome.borrow_mut() = RollbackOutcome::Completed;
+        } else {
             tracing::error!(
                 remaining = ?remaining,
                 "Overlay rollback left mounts behind; system will be marked Degraded"
+            );
+            *self.outcome.borrow_mut() = RollbackOutcome::Failed(
+                remaining.iter().map(|p| p.display().to_string()).collect(),
             );
             self.residue.borrow_mut().extend(remaining);
         }
@@ -358,15 +392,39 @@ mod tests {
         let fs = MockFilesystem::new();
         let mounts = mount_pair(&fs);
         let residue = Rc::new(RefCell::new(Vec::new()));
+        let outcome = Rc::new(RefCell::new(RollbackOutcome::default()));
 
         {
-            let mut guard = ActivationMounts::arm(fs.clone(), mounts, residue.clone());
+            let mut guard =
+                ActivationMounts::arm(fs.clone(), mounts, residue.clone(), outcome.clone());
             guard.disarm();
         }
 
         assert!(fs.is_mounted(Path::new("/home")).unwrap());
         assert!(fs.is_mounted(Path::new("/etc")).unwrap());
         assert!(residue.borrow().is_empty());
+        // A disarmed (successful) activation never ran a rollback.
+        assert_eq!(*outcome.borrow(), RollbackOutcome::NotNeeded);
+    }
+
+    #[test]
+    fn activation_mounts_drop_reports_completed_on_clean_rollback() {
+        let fs = MockFilesystem::new();
+        let mounts = mount_pair(&fs);
+        let residue = Rc::new(RefCell::new(Vec::new()));
+        let outcome = Rc::new(RefCell::new(RollbackOutcome::default()));
+
+        drop(ActivationMounts::arm(
+            fs.clone(),
+            mounts,
+            residue.clone(),
+            outcome.clone(),
+        ));
+
+        assert!(!fs.is_mounted(Path::new("/home")).unwrap());
+        assert!(!fs.is_mounted(Path::new("/etc")).unwrap());
+        assert!(residue.borrow().is_empty());
+        assert_eq!(*outcome.borrow(), RollbackOutcome::Completed);
     }
 
     #[test]
@@ -375,10 +433,21 @@ mod tests {
         let mounts = mount_pair(&fs);
         fs.mock_set_unmount_should_fail("/etc", true);
         let residue = Rc::new(RefCell::new(Vec::new()));
+        let outcome = Rc::new(RefCell::new(RollbackOutcome::default()));
 
-        drop(ActivationMounts::arm(fs.clone(), mounts, residue.clone()));
+        drop(ActivationMounts::arm(
+            fs.clone(),
+            mounts,
+            residue.clone(),
+            outcome.clone(),
+        ));
 
         assert!(!fs.is_mounted(Path::new("/home")).unwrap());
         assert_eq!(*residue.borrow(), vec![PathBuf::from("/etc")]);
+        // A rollback that left a mount behind is reported as failed, naming it.
+        assert_eq!(
+            *outcome.borrow(),
+            RollbackOutcome::Failed(vec!["/etc".to_string()])
+        );
     }
 }

@@ -485,6 +485,15 @@ impl<F: Filesystem> NailsManager<F> {
 
         let total_timer = Stopwatch::start();
 
+        // Clear any outcome recorded by a previous activation; the activation-scope
+        // rollback guard sets this handle again only if a rollback actually runs,
+        // and the StateGuard copies it into the manager as it unwinds. A local
+        // `Rc` (not stored on the manager) keeps `NailsManager` `Send`.
+        self.reset_rollback_outcome();
+        let rollback_outcome = std::rc::Rc::new(std::cell::RefCell::new(
+            rollback::RollbackOutcome::NotNeeded,
+        ));
+
         // Validate options first.
         options.validate()?;
 
@@ -590,8 +599,9 @@ impl<F: Filesystem> NailsManager<F> {
         // mounts) rather than Inactive, so the state never claims the system is
         // clean while NAILS overlays are still live.
         let residue = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let mut guard =
-            StateGuard::new(&mut *self, previous_state.clone()).with_residue(residue.clone());
+        let mut guard = StateGuard::new(&mut *self, previous_state.clone())
+            .with_residue(residue.clone())
+            .with_rollback_outcome(rollback_outcome.clone());
         guard.update_state(activating_state)?;
         // Record the graphical session we took over (if any) so emergency teardown
         // can end the same logind session and bring its display manager back.
@@ -635,8 +645,12 @@ impl<F: Filesystem> NailsManager<F> {
         // SessionRestartGuard restarts the session onto the decoy. It owns a clone
         // of the filesystem, so its drop never borrows the manager that the
         // StateGuard holds by `&mut`.
-        let mut activation_mounts =
-            rollback::ActivationMounts::arm(guard.filesystem().clone(), mounts, residue.clone());
+        let mut activation_mounts = rollback::ActivationMounts::arm(
+            guard.filesystem().clone(),
+            mounts,
+            residue.clone(),
+            rollback_outcome.clone(),
+        );
 
         // The posture depends on surviving writers that still leak to the decoy,
         // not on whether any overlay used the pivot method.

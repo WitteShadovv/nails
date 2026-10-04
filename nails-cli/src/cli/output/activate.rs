@@ -373,10 +373,33 @@ pub fn print_activate_human<F: nails_core::Filesystem>(
                     Tone::Red
                 )
             );
-            eprintln!(
-                "  {}",
-                err.paint("Automatic rollback completed.", Tone::Dim)
-            );
+            // Report the rollback only as it actually happened: nothing for a
+            // failure raised before any overlay was mounted (option validation,
+            // lock acquisition, the session kill), a plain confirmation when the
+            // overlays came down cleanly, and the mounts it could not undo when
+            // the rollback itself failed.
+            match manager.last_rollback() {
+                nails_core::RollbackOutcome::NotNeeded => {}
+                nails_core::RollbackOutcome::Completed => {
+                    eprintln!(
+                        "  {}",
+                        err.paint("Automatic rollback completed.", Tone::Dim)
+                    );
+                }
+                nails_core::RollbackOutcome::Failed(errors) => {
+                    eprintln!(
+                        "  {}",
+                        err.paint_bold("Automatic rollback FAILED:", Tone::Red)
+                    );
+                    for item in errors {
+                        eprintln!(
+                            "    {} {}",
+                            err.glyph(Mark::Bullet),
+                            err.paint(format_args!("still mounted: {item}"), Tone::Red)
+                        );
+                    }
+                }
+            }
             // Surface the error's single concrete next step when it has one, so
             // the failure names not just what went wrong but what to do about it.
             if let Some(hint) = diagnostic.hint {

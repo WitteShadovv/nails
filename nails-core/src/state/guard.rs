@@ -90,6 +90,13 @@ pub struct StateGuard<'a, F: Filesystem> {
     /// mounts) instead of the previous state, so `Inactive` is never written
     /// while NAILS overlays are still live. Deactivation leaves this `None`.
     residue: Option<Rc<RefCell<Vec<PathBuf>>>>,
+
+    /// Shared handle, set only by activation, into which the activation-scope
+    /// overlay rollback records whether a rollback ran and whether it succeeded.
+    /// The guard copies it into the manager as it unwinds, so the CLI can report
+    /// the rollback truthfully after a failed activation. Deactivation leaves it
+    /// `None`.
+    rollback_outcome: Option<Rc<RefCell<crate::RollbackOutcome>>>,
 }
 
 impl<'a, F: Filesystem> StateGuard<'a, F> {
@@ -130,6 +137,7 @@ impl<'a, F: Filesystem> StateGuard<'a, F> {
             previous_state,
             committed: false,
             residue: None,
+            rollback_outcome: None,
         }
     }
 
@@ -142,6 +150,18 @@ impl<'a, F: Filesystem> StateGuard<'a, F> {
     /// restoring the previous state unchanged.
     pub fn with_residue(mut self, residue: Rc<RefCell<Vec<PathBuf>>>) -> Self {
         self.residue = Some(residue);
+        self
+    }
+
+    /// Attach the shared rollback-outcome handle (activation only).
+    ///
+    /// The activation-scope overlay rollback writes into this handle whether a
+    /// rollback ran and whether it succeeded; the guard copies it into the
+    /// manager as it drops, so the CLI can report the rollback accurately. The
+    /// activation-scope guard is declared after this one, so it drops first and
+    /// the handle is already up to date when the copy runs.
+    pub fn with_rollback_outcome(mut self, outcome: Rc<RefCell<crate::RollbackOutcome>>) -> Self {
+        self.rollback_outcome = Some(outcome);
         self
     }
 
@@ -283,6 +303,16 @@ impl<F: Filesystem> Drop for StateGuard<'_, F> {
     /// `force_state` must also keep any interior borrow (the cached-state
     /// `RefCell`) scoped so it is released before this returns.
     fn drop(&mut self) {
+        // Copy what the activation-scope rollback recorded into the manager before
+        // anything else, so the CLI can read it after the activation returns —
+        // whether the activation committed (no rollback: NotNeeded) or is being
+        // rolled back here. The activation-scope guard drops before this one, so
+        // the handle is already final.
+        if let Some(outcome) = self.rollback_outcome.as_ref() {
+            let recorded = outcome.borrow().clone();
+            self.manager.set_rollback_outcome(recorded);
+        }
+
         if self.committed {
             return;
         }

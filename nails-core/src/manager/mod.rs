@@ -45,6 +45,8 @@ use crate::{Config, Filesystem, NailsError, Result};
 use std::cell::RefCell;
 use std::path::PathBuf;
 
+pub use activation::rollback::RollbackOutcome;
+
 // Module declarations
 pub mod activation;
 pub mod deactivation;
@@ -139,6 +141,16 @@ pub struct NailsManager<F: Filesystem> {
 
     /// Verbosity level for progress output
     verbosity: crate::verbosity::Verbosity,
+
+    /// Outcome of the most recent activation-scope overlay rollback.
+    ///
+    /// Written by the [`StateGuard`](crate::StateGuard) as it unwinds a failed
+    /// activation (it copies in what the activation-scope rollback guard recorded
+    /// in its own scope) and read by the CLI afterwards, so a failed `activate`
+    /// reports the rollback truthfully instead of always claiming it completed.
+    /// `RefCell` (not `Rc`) keeps `NailsManager` `Send`; reset at the start of
+    /// each activation.
+    last_rollback: RefCell<activation::rollback::RollbackOutcome>,
 }
 
 // Manual Debug implementation because NixOSBuilder contains trait objects
@@ -200,6 +212,7 @@ impl<F: Filesystem> NailsManager<F> {
             host_profile: None,
             host_effects: HostEffects::Real,
             verbosity: crate::verbosity::Verbosity::default(),
+            last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
         }
     }
 
@@ -250,6 +263,7 @@ impl<F: Filesystem> NailsManager<F> {
             host_profile: None,
             host_effects: HostEffects::Real,
             verbosity: crate::verbosity::Verbosity::default(),
+            last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
         }
     }
 
@@ -491,6 +505,29 @@ impl<F: Filesystem> NailsManager<F> {
     /// Reference to the configuration
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// The outcome of the most recent activation-scope overlay rollback.
+    ///
+    /// The CLI reads this after a failed `activate` so it reports the rollback
+    /// truthfully: [`RollbackOutcome::NotNeeded`](activation::rollback::RollbackOutcome::NotNeeded)
+    /// for a failure raised before any overlay was mounted (so no "rollback
+    /// completed" line is printed), `Completed` when the overlays came down
+    /// cleanly, and `Failed` (naming what it could not undo) otherwise.
+    pub fn last_rollback(&self) -> activation::rollback::RollbackOutcome {
+        self.last_rollback.borrow().clone()
+    }
+
+    /// Record the rollback outcome. Called by the [`StateGuard`](crate::StateGuard)
+    /// as it unwinds a failed activation, copying in what the activation-scope
+    /// rollback guard observed in its own scope.
+    pub(crate) fn set_rollback_outcome(&self, outcome: activation::rollback::RollbackOutcome) {
+        *self.last_rollback.borrow_mut() = outcome;
+    }
+
+    /// Reset the recorded rollback outcome at the start of an activation.
+    pub(crate) fn reset_rollback_outcome(&self) {
+        *self.last_rollback.borrow_mut() = activation::rollback::RollbackOutcome::NotNeeded;
     }
 
     /// Get current verbosity level for internal orchestration flows.

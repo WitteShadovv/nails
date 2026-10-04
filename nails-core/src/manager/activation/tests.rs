@@ -554,6 +554,29 @@ fn failure_at_active_state_write_unmounts_overlays_and_restores_inactive() {
         ),
         "state must roll back to Inactive when every overlay came down"
     );
+    // A clean rollback is reported as Completed so the CLI prints the plain
+    // "Automatic rollback completed." line.
+    assert_eq!(manager.last_rollback(), crate::RollbackOutcome::Completed);
+}
+
+#[test]
+#[serial]
+fn failure_before_any_mount_records_no_rollback() {
+    let (mut manager, _fs, _tmp) = rollback_test_manager();
+
+    // Mutually-exclusive options fail at `options.validate()`, before any overlay
+    // or guard exists.
+    let options = crate::ActivateOptions {
+        no_pivot: true,
+        accept_pivot_risks: true,
+        ..Default::default()
+    };
+    let result = manager.activate_with_options(options, true);
+
+    assert!(result.is_err(), "invalid options must fail");
+    // No overlay was mounted, so no rollback ran: the CLI must print no rollback
+    // line at all.
+    assert_eq!(manager.last_rollback(), crate::RollbackOutcome::NotNeeded);
 }
 
 #[test]
@@ -582,6 +605,15 @@ fn failure_during_rollback_unmount_marks_state_degraded() {
             "degraded state must list the still-live mount, got {remaining_mounts:?}"
         ),
         other => panic!("expected Degraded with remaining mounts, got {other:?}"),
+    }
+    // The rollback could not undo everything, so it is reported as Failed, naming
+    // the mount left behind; the CLI prints the "rollback FAILED" bullets.
+    match manager.last_rollback() {
+        crate::RollbackOutcome::Failed(items) => assert!(
+            items.iter().any(|i| i.contains("/etc")),
+            "failed rollback must name the still-live mount, got {items:?}"
+        ),
+        other => panic!("expected Failed rollback outcome, got {other:?}"),
     }
 }
 
