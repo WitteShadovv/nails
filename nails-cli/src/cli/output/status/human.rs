@@ -62,10 +62,36 @@ pub(super) fn posture_lines(
 ) -> Vec<String> {
     let mut lines = vec![format!(
         "Security Posture:   {}",
-        report.posture.render(style)
+        report
+            .posture
+            .render_with_mark(style, report.posture_mark())
     )];
     if let Some(remediation) = report.posture.remediation() {
         lines.push(format!("  {}", style.marked(Mark::Arrow, remediation)));
+    }
+
+    // A persistent decoy keeps a durable log of the hidden session on the decoy
+    // disk, so an otherwise-clean ACTIVE posture is not fully secure. Surface it
+    // with a warning line (the posture mark is downgraded above) rather than
+    // reading as secure. Only relevant while the hidden environment is active:
+    // on a decoy or already-dangerous posture there is no clean pass to qualify.
+    if report.decoy_persistent && report.posture == nails_core::status::Posture::Active {
+        lines.push(format!(
+            "  {}",
+            style.marked(
+                Mark::Warn,
+                "PERSISTENT DECOY: the decoy keeps a durable log/audit store; \
+                 hidden-session metadata lands on the decoy disk",
+            )
+        ));
+        lines.push(format!(
+            "  {}",
+            style.marked(
+                Mark::Arrow,
+                "Set journald Storage=volatile and stop rsyslog/syslog-ng/auditd, \
+                 or re-run with --accept-persistent-decoy to accept the risk",
+            )
+        ));
     }
 
     let writers = report.decoy_writers();

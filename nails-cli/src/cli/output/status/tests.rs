@@ -842,3 +842,39 @@ fn test_logs_hidden_for_decoy_posture_unless_details() {
         ASCII,
     );
 }
+
+#[test]
+fn test_status_json_reports_persistent_decoy_flag() {
+    // A volatile decoy reports the flag false and stays fully secure.
+    let data = super::json::build_status_data(&active_report());
+    let value = serde_json::to_value(&data).unwrap();
+    assert_eq!(value["posture"], "active");
+    assert_eq!(value["decoy_persistent"], false);
+
+    // A persistent decoy surfaces the flag so an Active posture never reads as
+    // fully secure downstream.
+    let mut report = active_report();
+    report.decoy_persistent = true;
+    let data = super::json::build_status_data(&report);
+    let value = serde_json::to_value(&data).unwrap();
+    assert_eq!(value["posture"], "active");
+    assert_eq!(value["decoy_persistent"], true);
+}
+
+#[test]
+fn test_posture_lines_warn_on_persistent_decoy() {
+    let mut report = active_report();
+    report.overlay_verification = VerificationStatus::Verified;
+    report.decoy_persistent = true;
+    let lines = super::human::posture_lines(&report, ASCII);
+    assert!(
+        lines.iter().any(|l| l.contains("PERSISTENT DECOY")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("--accept-persistent-decoy")),
+        "{lines:?}"
+    );
+}

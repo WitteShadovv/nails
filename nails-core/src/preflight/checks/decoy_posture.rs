@@ -112,6 +112,19 @@ impl DecoyPersistenceCheck {
         out
     }
 
+    /// Read-only probe: whether the decoy keeps a persistent log or audit store
+    /// that a hidden session's metadata would land on (a persistent journald
+    /// journal, or an active `rsyslog`/`syslog-ng`/`auditd`). Shared with
+    /// `status` so the reported posture tracks the same detection as this
+    /// pre-flight check without duplicating the journald parsing.
+    ///
+    /// Independent of the operator override: the decoy is physically persistent
+    /// whether or not the operator accepted the risk, so an accepted run still
+    /// reports an honest posture. Performs no writes.
+    pub fn decoy_is_persistent<F: Filesystem>(fs: &F) -> bool {
+        !Self::blockers(fs).is_empty()
+    }
+
     /// The `/` mount entry's filesystem type and mount options, if the mount
     /// table can be read.
     fn root_mount<F: Filesystem>(fs: &F) -> Option<(String, String)> {
@@ -591,5 +604,42 @@ mod tests {
             before,
             "decoy-persistence check must not write: {after:?}"
         );
+    }
+
+    #[test]
+    fn decoy_is_persistent_tracks_blockers_and_writes_nothing() {
+        // Volatile journal, no syslog/auditd: the decoy keeps no durable trace.
+        let volatile = MockFilesystem::new();
+        volatile.mock_add_file(
+            "/etc/systemd/journald.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        volatile.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+        let before = volatile.mock_ops().len();
+        assert!(!DecoyPersistenceCheck::decoy_is_persistent(&volatile));
+        assert_eq!(
+            volatile.mock_ops().len(),
+            before,
+            "persistence probe must not write"
+        );
+
+        // A persistent journal makes the decoy persistent regardless of override.
+        let persistent = MockFilesystem::new();
+        persistent.mock_add_file(
+            "/etc/systemd/journald.conf",
+            "[Journal]\nStorage=persistent\n",
+        );
+        persistent.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+        assert!(DecoyPersistenceCheck::decoy_is_persistent(&persistent));
+
+        // Active auditd alone is enough to count as a persistent decoy.
+        let auditd = MockFilesystem::new();
+        auditd.mock_add_file(
+            "/etc/systemd/journald.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        auditd.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+        set_unit_active(&auditd, "auditd.service");
+        assert!(DecoyPersistenceCheck::decoy_is_persistent(&auditd));
     }
 }

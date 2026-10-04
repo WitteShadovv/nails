@@ -23,6 +23,10 @@ pub struct StatusData {
     state_source: &'static str,
     /// Kernel-truth posture (decoy, active, degraded, inconsistent, unknown).
     posture: &'static str,
+    /// Whether the decoy keeps a persistent log/audit store (persistent journald
+    /// journal, or active rsyslog/syslog-ng/auditd) that a hidden session's
+    /// metadata lands on. When true, an Active posture is not fully secure.
+    decoy_persistent: bool,
     /// Remediation step for a dangerous or unknown posture.
     #[serde(skip_serializing_if = "Option::is_none")]
     remediation: Option<&'static str>,
@@ -112,6 +116,7 @@ pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusDat
         state: StateJson::from_report(&report.state, &report.load_outcome),
         state_source: state_source_label(&report.load_outcome),
         posture: report.posture.as_str(),
+        decoy_persistent: report.decoy_persistent,
         remediation: report.posture.remediation(),
         decoy_writers: decoy_writers_json(&report.state),
         activated_at: report.activated_at.map(|dt| dt.to_rfc3339()),
@@ -174,6 +179,7 @@ pub fn build_status_data_unknown(reason: String) -> StatusData {
         },
         state_source: "unreadable",
         posture: Posture::Unknown.as_str(),
+        decoy_persistent: false,
         remediation: Posture::Unknown.remediation(),
         decoy_writers: Vec::new(),
         activated_at: None,

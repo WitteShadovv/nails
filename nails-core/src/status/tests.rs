@@ -467,6 +467,7 @@ fn test_status_report_serialization() {
         hidden_root_mounted: false,
         load_outcome: crate::LoadOutcome::Missing,
         persona_mode: crate::config::PersonaMode::FreshHome,
+        decoy_persistent: false,
     };
 
     let json = serde_json::to_string(&report).unwrap();
@@ -681,6 +682,42 @@ fn posture_marks_distinguish_safe_from_dangerous() {
     assert_eq!(Posture::Degraded.mark(), Mark::Fail);
     assert_eq!(Posture::Inconsistent.mark(), Mark::Fail);
     assert_eq!(Posture::Unknown.mark(), Mark::Warn);
+}
+
+#[test]
+fn persistent_decoy_downgrades_active_posture_and_blocks_fully_secure() {
+    use crate::output::Mark;
+
+    // An Active posture on a persistent decoy is never fully clean: the headline
+    // mark is downgraded to a warning and the system is not reported as secure.
+    let persistent = StatusReport {
+        posture: Posture::Active,
+        decoy_persistent: true,
+        ..StatusReport::default()
+    };
+    assert_eq!(persistent.posture_mark(), Mark::Warn);
+    assert!(!persistent.is_fully_secure());
+
+    // An Active posture on a volatile decoy keeps its clean pass mark.
+    let volatile = StatusReport {
+        posture: Posture::Active,
+        decoy_persistent: false,
+        ..StatusReport::default()
+    };
+    assert_eq!(volatile.posture_mark(), Mark::Pass);
+    assert!(volatile.is_fully_secure());
+
+    // Dangerous and neutral postures keep their own marks regardless of the
+    // decoy's persistence, and are never "fully secure".
+    for posture in [Posture::Decoy, Posture::Degraded, Posture::Unknown] {
+        let report = StatusReport {
+            posture,
+            decoy_persistent: true,
+            ..StatusReport::default()
+        };
+        assert_eq!(report.posture_mark(), posture.mark());
+        assert!(!report.is_fully_secure());
+    }
 }
 
 #[test]

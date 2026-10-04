@@ -307,6 +307,15 @@ impl<F: Filesystem> StatusCommand<F> {
             .is_mounted(&self.config.hidden_volume_root)
             .unwrap_or(false);
 
+        // Read-only probe of the decoy's logging posture, reusing the pre-flight
+        // check's detection so the reported posture tracks the same logic. A
+        // persistent decoy (persistent journald journal, active
+        // rsyslog/syslog-ng/auditd) keeps a durable record of the hidden session
+        // on the decoy disk, so an Active posture here must never read as fully
+        // secure. This never writes; see `DecoyPersistenceCheck::decoy_is_persistent`.
+        let decoy_persistent =
+            crate::preflight::checks::DecoyPersistenceCheck::decoy_is_persistent(&self.filesystem);
+
         // Build report
         let report = StatusReport {
             state: state_file.state,
@@ -328,6 +337,7 @@ impl<F: Filesystem> StatusCommand<F> {
             hidden_root_mounted,
             load_outcome,
             persona_mode: self.config.persona.mode,
+            decoy_persistent,
         };
 
         Ok(report)
@@ -446,6 +456,7 @@ impl Default for StatusReport {
             hidden_root_mounted: false,
             load_outcome: LoadOutcome::Missing,
             persona_mode: crate::config::PersonaMode::SharedHome,
+            decoy_persistent: false,
         }
     }
 }

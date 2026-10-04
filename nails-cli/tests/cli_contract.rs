@@ -313,6 +313,12 @@ fn redact_status(mut value: Value) -> Value {
                 data[key] = Value::String("[bytes]".to_string());
             }
         }
+        // The decoy-persistence flag is probed from the live host journald/syslog
+        // posture, so it varies by environment; fix it for a stable snapshot. The
+        // schema (checked on the un-redacted value) still enforces its boolean type.
+        if data.contains_key("decoy_persistent") {
+            data["decoy_persistent"] = Value::String("[decoy_persistent]".to_string());
+        }
         if data.contains_key("uptime_seconds") {
             data["uptime_seconds"] = Value::String("[uptime_s]".to_string());
         }

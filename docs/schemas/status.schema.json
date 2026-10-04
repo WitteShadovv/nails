@@ -17,6 +17,7 @@
         "state",
         "state_source",
         "posture",
+        "decoy_persistent",
         "decoy_writers",
         "overlays",
         "remaining_mounts",
@@ -55,6 +56,10 @@
         "posture": {
           "type": "string",
           "enum": ["decoy", "active", "transitioning", "degraded", "inconsistent", "unknown"]
+        },
+        "decoy_persistent": {
+          "description": "Whether the decoy keeps a persistent log/audit store (a persistent journald journal, or active rsyslog/syslog-ng/auditd) that a hidden session's metadata lands on. When true, an active posture is not fully secure.",
+          "type": "boolean"
         },
         "remediation": { "type": "string", "minLength": 1 },
         "remaining_mounts": {

@@ -5,6 +5,7 @@ expression: redact_status(value)
 {
   "command": "status",
   "data": {
+    "decoy_persistent": "[decoy_persistent]",
     "decoy_writers": [],
     "hidden_root_available_bytes": "[bytes]",
     "hidden_root_mounted": false,

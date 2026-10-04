@@ -235,12 +235,25 @@ impl Posture {
     /// Render the posture in `style`: the level label in brackets for ASCII
     /// output, otherwise the (possibly coloured) shared mark.
     pub fn render(&self, style: crate::output::Style) -> String {
+        self.render_with_mark(style, self.mark())
+    }
+
+    /// Render the posture in `style` but with an explicit `mark`, keeping the
+    /// level label and description. Used when a caller must downgrade the
+    /// headline mark without changing the posture — for example a persistent
+    /// decoy makes an otherwise-Active system not fully secure, so the ACTIVE
+    /// line is shown with a warning mark.
+    pub fn render_with_mark(
+        &self,
+        style: crate::output::Style,
+        mark: crate::output::Mark,
+    ) -> String {
         if style.ascii {
             self.to_plain()
         } else {
             format!(
                 "{} {}: {}",
-                style.mark(self.mark()),
+                style.mark(mark),
                 self.level(),
                 self.description()
             )
@@ -367,6 +380,17 @@ pub struct StatusReport {
     /// shared or hidden.
     #[serde(default)]
     pub persona_mode: PersonaMode,
+
+    /// Whether the decoy disk keeps a persistent log or audit store (a
+    /// persistent journald journal, or an active `rsyslog`/`syslog-ng`/`auditd`)
+    /// that a hidden session's metadata would land on. Detected read-only by
+    /// [`DecoyPersistenceCheck`](crate::preflight::checks::DecoyPersistenceCheck).
+    ///
+    /// When true, an otherwise-Active posture is never shown as fully clean:
+    /// [`posture_mark`](Self::posture_mark) downgrades it to a warning so a
+    /// persistent decoy never reads as secure.
+    #[serde(default)]
+    pub decoy_persistent: bool,
 }
 
 fn default_load_outcome() -> LoadOutcome {
@@ -392,5 +416,27 @@ impl StatusReport {
             SystemState::Active { decoy_writers, .. } => decoy_writers,
             _ => &[],
         }
+    }
+
+    /// The mark the security posture should display.
+    ///
+    /// Normally the posture's own mark, but an Active posture on a persistent
+    /// decoy is downgraded to [`Mark::Warn`](crate::output::Mark::Warn): the
+    /// hidden session is live, yet the decoy keeps a durable log of it, so the
+    /// headline must never read as a fully clean pass. Dangerous and unknown
+    /// postures keep their own (already non-pass) marks.
+    pub fn posture_mark(&self) -> crate::output::Mark {
+        use crate::output::Mark;
+        if self.decoy_persistent && self.posture == Posture::Active {
+            Mark::Warn
+        } else {
+            self.posture.mark()
+        }
+    }
+
+    /// Whether the system is in a fully clean, secure posture: Active with no
+    /// persistent decoy store. A persistent decoy is never fully secure.
+    pub fn is_fully_secure(&self) -> bool {
+        self.posture == Posture::Active && !self.decoy_persistent
     }
 }
