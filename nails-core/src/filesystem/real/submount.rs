@@ -264,10 +264,26 @@ pub(crate) fn classify_submounts(mountinfo: &str, target: &Path) -> Vec<Submount
                 mount_point,
                 source: source_path,
             });
+        } else if entry.fstype == "overlay" && !entry.read_only() {
+            // A writable overlayfs mount (NixOS's own /nix/store overlay over a
+            // read-only store image, a container root, …). Its source is the
+            // pseudo name "overlay", but its writes land in its own upperdir,
+            // which is a real filesystem — usually the decoy disk. Re-attaching
+            // it writable would route hidden-session writes there, so give it a
+            // nested overlay with its upper on the hidden volume instead.
+            tracing::debug!(
+                mount_point = %mount_point.display(),
+                "Nesting a writable overlay submount so its writes land hidden"
+            );
+            results.push(Submount::NestedOverlay {
+                mount_point,
+                fstype: entry.fstype.clone(),
+            });
         } else {
-            // Pseudo/virtual filesystem (tmpfs, sysfs, proc, none, …). Re-attach it
-            // over the overlay so the path keeps resolving; its writes (if any) go
-            // to RAM, never the decoy disk, so a writable one is re-attached as-is.
+            // Pseudo/virtual filesystem (tmpfs, sysfs, proc, none, …), or a
+            // read-only overlay. Re-attach it over the overlay so the path keeps
+            // resolving; a pseudo filesystem's writes (if any) go to RAM, never
+            // the decoy disk, so a writable one is re-attached as-is.
             tracing::debug!(
                 mount_point = %mount_point.display(),
                 mount_source = %mount_source,
@@ -282,10 +298,40 @@ pub(crate) fn classify_submounts(mountinfo: &str, target: &Path) -> Vec<Submount
         }
     }
 
+    let mut results = collapse_stacked_submounts(results);
     // Sort for consistent ordering (shallowest first, so a parent re-attaches
     // before anything nested inside it).
     results.sort_by(|a, b| a.mount_point().cmp(b.mount_point()));
     results
+}
+
+/// Collapse mounts stacked on the same mount point into one plan.
+///
+/// mountinfo lists every mount in a stack (NixOS mounts its writable
+/// `/nix/store` overlay and then a read-only self-bind on top of it). A single
+/// recursive bind of the mount point already captures the whole stack, and two
+/// plans would collide on the same staging and upper/work directories. When any
+/// layer is writable-and-disk-backed (a nested overlay), that wins, so a later
+/// writable remount of the stack still lands on the hidden volume; otherwise the
+/// topmost (last listed) layer decides.
+fn collapse_stacked_submounts(plans: Vec<Submount>) -> Vec<Submount> {
+    let mut collapsed: Vec<Submount> = Vec::with_capacity(plans.len());
+    for plan in plans {
+        match collapsed
+            .iter()
+            .position(|existing| existing.mount_point() == plan.mount_point())
+        {
+            None => collapsed.push(plan),
+            Some(index) => {
+                let keep_existing = matches!(collapsed[index], Submount::NestedOverlay { .. })
+                    && !matches!(plan, Submount::NestedOverlay { .. });
+                if !keep_existing {
+                    collapsed[index] = plan;
+                }
+            }
+        }
+    }
+    collapsed
 }
 
 /// Parse `/proc/self/mountinfo` content to find submount source paths under
@@ -353,6 +399,77 @@ impl StripSuffixPath for Path {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writable_overlay_submount_is_nested_not_reattached_writable() {
+        // NixOS test/impermanent layouts mount /nix/store as its own overlay over
+        // a read-only store image, then a read-only self-bind on top. The overlay
+        // writes into its own upperdir on the decoy disk, so re-attaching it
+        // writable would leak hidden-session store writes; it must be nested, and
+        // the stack must yield a single plan.
+        let mountinfo = "\
+47 1 253:0 / /nix rw,relatime - ext4 /dev/vda rw
+85 47 0:34 / /nix/store rw,relatime - overlay overlay rw,lowerdir=/sysroot/nix/.ro-store,upperdir=/sysroot/nix/.rw-store/upper,workdir=/sysroot/nix/.rw-store/work
+41 85 0:34 / /nix/store ro,nosuid,nodev,relatime - overlay overlay rw,lowerdir=/sysroot/nix/.ro-store,upperdir=/sysroot/nix/.rw-store/upper,workdir=/sysroot/nix/.rw-store/work";
+        let plan = classify_submounts(mountinfo, Path::new("/nix"));
+        assert_eq!(
+            plan,
+            vec![Submount::NestedOverlay {
+                mount_point: PathBuf::from("/nix/store"),
+                fstype: "overlay".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn read_only_overlay_submount_is_reattached_read_only() {
+        let mountinfo = "\
+47 1 253:0 / /opt rw,relatime - ext4 /dev/vda rw
+86 47 0:35 / /opt/app ro,relatime - overlay overlay ro,lowerdir=/a:/b";
+        let plan = classify_submounts(mountinfo, Path::new("/opt"));
+        assert_eq!(
+            plan,
+            vec![Submount::Reattach {
+                mount_point: PathBuf::from("/opt/app"),
+                fstype: "overlay".to_string(),
+                read_only: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn writable_tmpfs_submount_is_still_reattached_writable() {
+        // RAM-backed: writes never reach the decoy disk, so it stays a re-attach.
+        let mountinfo = "\
+47 1 253:0 / /var rw,relatime - ext4 /dev/vda rw
+90 47 0:40 / /var/cache/tmp rw,relatime - tmpfs tmpfs rw";
+        let plan = classify_submounts(mountinfo, Path::new("/var"));
+        assert_eq!(
+            plan,
+            vec![Submount::Reattach {
+                mount_point: PathBuf::from("/var/cache/tmp"),
+                fstype: "tmpfs".to_string(),
+                read_only: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn stacked_pseudo_mounts_collapse_to_the_topmost() {
+        let mountinfo = "\
+47 1 253:0 / /run2 rw,relatime - ext4 /dev/vda rw
+90 47 0:40 / /run2/x rw,relatime - tmpfs tmpfs rw
+91 90 0:41 / /run2/x ro,relatime - tmpfs tmpfs ro";
+        let plan = classify_submounts(mountinfo, Path::new("/run2"));
+        assert_eq!(
+            plan,
+            vec![Submount::Reattach {
+                mount_point: PathBuf::from("/run2/x"),
+                fstype: "tmpfs".to_string(),
+                read_only: true,
+            }]
+        );
+    }
 
     #[test]
     fn squashfs_snap_submount_is_reattached_read_only() {
