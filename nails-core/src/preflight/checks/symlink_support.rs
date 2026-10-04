@@ -65,6 +65,10 @@ impl<F: Filesystem> PreFlightCheck<F> for SymlinkSupportCheck {
         "Validates hidden volume filesystem supports symbolic links"
     }
 
+    fn requires_hidden_volume(&self) -> bool {
+        true
+    }
+
     fn run(&self, fs: &F) -> Result<CheckResult> {
         if !fs.supports_symlinks(&self.hidden_volume_root)? {
             return Ok(CheckResult::fail(format!(

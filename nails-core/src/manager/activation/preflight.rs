@@ -141,7 +141,9 @@ impl<F: Filesystem> NailsManager<F> {
         let suspicious_check =
             SuspiciousNailsReferenceCheck::new(self.config.hidden_volume_root.clone());
         match suspicious_check.run(&self.filesystem)? {
-            crate::CheckResult::Pass(_) | crate::CheckResult::Warn(_) => {}
+            crate::CheckResult::Pass(_)
+            | crate::CheckResult::Warn(_)
+            | crate::CheckResult::Skipped(_) => {}
             crate::CheckResult::Fail {
                 message,
                 remediation,
@@ -273,7 +275,9 @@ impl<F: Filesystem> NailsManager<F> {
     fn enforce_overlay_target_floor(&self) -> Result<()> {
         let check = OverlayTargetsCheck::new(self.config.clone());
         match check.run(&self.filesystem)? {
-            crate::CheckResult::Pass(_) | crate::CheckResult::Warn(_) => Ok(()),
+            crate::CheckResult::Pass(_)
+            | crate::CheckResult::Warn(_)
+            | crate::CheckResult::Skipped(_) => Ok(()),
             crate::CheckResult::Fail {
                 message,
                 remediation,

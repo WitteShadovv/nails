@@ -41,6 +41,10 @@
 use crate::{Filesystem, NailsError, Result};
 use std::fmt;
 
+/// The reason reported for every check short-circuited because the hidden volume
+/// is not mounted.
+pub const SKIPPED_NO_HIDDEN_VOLUME: &str = "requires mounted hidden volume";
+
 // ============================================================================
 // CheckResult Enum
 // ============================================================================
@@ -75,6 +79,16 @@ pub enum CheckResult {
         /// The one action that fixes it, if there is a specific one.
         remediation: Option<String>,
     },
+    /// Check was not run because a prerequisite failed.
+    ///
+    /// When the hidden volume is not mounted, the checks that inspect it (storage
+    /// readiness, overlay compatibility, the NixOS config layer, free space)
+    /// would all fail with cascaded, misleading errors. Instead they are reported
+    /// as `Skipped` with the reason, so the operator sees one real root failure
+    /// and a list of what it short-circuited. A skip is neither a pass nor a
+    /// failure: it never blocks activation on its own, never contributes a
+    /// remediation step, and never counts toward the exit code.
+    Skipped(String),
 }
 
 impl CheckResult {
@@ -96,9 +110,19 @@ impl CheckResult {
         }
     }
 
+    /// Construct a skip with the reason the check could not run.
+    pub fn skipped(reason: impl Into<String>) -> Self {
+        CheckResult::Skipped(reason.into())
+    }
+
     /// Returns true if the check result is a Pass
     pub fn is_pass(&self) -> bool {
         matches!(self, CheckResult::Pass(_))
+    }
+
+    /// Returns true if the check was skipped because a prerequisite failed
+    pub fn is_skipped(&self) -> bool {
+        matches!(self, CheckResult::Skipped(_))
     }
 
     /// Returns true if the check result is a Warning
@@ -117,6 +141,7 @@ impl CheckResult {
             CheckResult::Pass(msg) => msg,
             CheckResult::Warn(msg) => msg,
             CheckResult::Fail { message, .. } => message,
+            CheckResult::Skipped(reason) => reason,
         }
     }
 
@@ -139,6 +164,7 @@ impl fmt::Display for CheckResult {
             CheckResult::Pass(_) => Mark::Pass,
             CheckResult::Warn(_) => Mark::Warn,
             CheckResult::Fail { .. } => Mark::Fail,
+            CheckResult::Skipped(_) => Mark::Neutral,
         };
         f.write_str(&crate::output::style(Stream::Stderr).marked(mark, self.message()))
     }
@@ -209,6 +235,27 @@ pub trait PreFlightCheck<F: Filesystem>: Send + Sync {
     /// * `Ok(CheckResult::fail(_))` - Check failed (blocks activation)
     /// * `Err(_)` - Check encountered an error during execution
     fn run(&self, fs: &F) -> Result<CheckResult>;
+
+    /// Whether this is the hidden-volume gate check.
+    ///
+    /// The registry runs this check first; when it fails, every check that
+    /// [`requires_hidden_volume`](Self::requires_hidden_volume) is reported as
+    /// [`CheckResult::Skipped`] rather than run, so a missing hidden volume shows
+    /// one root failure instead of a cascade of dependent errors.
+    fn is_hidden_volume_gate(&self) -> bool {
+        false
+    }
+
+    /// Whether this check can only produce a meaningful result once the hidden
+    /// volume is mounted.
+    ///
+    /// Checks that inspect the hidden volume (storage readiness, overlay
+    /// compatibility, the NixOS config layer, free space) override this to
+    /// `true`, so the registry short-circuits them to [`CheckResult::Skipped`]
+    /// when the hidden-volume gate fails.
+    fn requires_hidden_volume(&self) -> bool {
+        false
+    }
 }
 
 // ============================================================================
@@ -297,12 +344,25 @@ impl<F: Filesystem> PreFlightRegistry<F> {
     pub fn run_all(&self, fs: &F) -> Result<Vec<(String, CheckResult)>> {
         let mut results: Vec<(String, CheckResult)> = Vec::new();
         let mut failed_checks: crate::error::PreFlightFailures = Vec::new();
+        let mut hidden_volume_failed = false;
 
         for check in &self.checks {
             let name = check.name().to_string();
+
+            // Short-circuit the hidden-volume-dependent checks once the gate has
+            // failed: running them would only cascade misleading errors, and a
+            // skip never fails or contributes a remediation step.
+            if hidden_volume_failed && check.requires_hidden_volume() {
+                results.push((name, CheckResult::skipped(SKIPPED_NO_HIDDEN_VOLUME)));
+                continue;
+            }
+
             match check.run(fs) {
                 Ok(result) => {
                     if result.is_fail() {
+                        if check.is_hidden_volume_gate() {
+                            hidden_volume_failed = true;
+                        }
                         failed_checks.push((
                             name.clone(),
                             result.message().to_string(),
@@ -314,6 +374,9 @@ impl<F: Filesystem> PreFlightRegistry<F> {
                 Err(e) => {
                     // Convert execution error to Fail result
                     let fail_msg = format!("Check execution error: {}", e);
+                    if check.is_hidden_volume_gate() {
+                        hidden_volume_failed = true;
+                    }
                     failed_checks.push((name.clone(), fail_msg.clone(), None));
                     results.push((name, CheckResult::fail(fail_msg)));
                 }
@@ -344,18 +407,34 @@ impl<F: Filesystem> PreFlightRegistry<F> {
     pub fn run_all_detailed(&self, fs: &F) -> (Vec<(String, CheckResult)>, bool) {
         let mut results: Vec<(String, CheckResult)> = Vec::new();
         let mut all_passed = true;
+        let mut hidden_volume_failed = false;
 
         for check in &self.checks {
             let name = check.name().to_string();
+
+            // Once the hidden-volume gate has failed, report its dependents as
+            // skipped instead of running them: a skip is not a failure, so it
+            // does not flip `all_passed` and keeps the cascade out of the report.
+            if hidden_volume_failed && check.requires_hidden_volume() {
+                results.push((name, CheckResult::skipped(SKIPPED_NO_HIDDEN_VOLUME)));
+                continue;
+            }
+
             match check.run(fs) {
                 Ok(result) => {
                     if result.is_fail() {
                         all_passed = false;
+                        if check.is_hidden_volume_gate() {
+                            hidden_volume_failed = true;
+                        }
                     }
                     results.push((name, result));
                 }
                 Err(e) => {
                     all_passed = false;
+                    if check.is_hidden_volume_gate() {
+                        hidden_volume_failed = true;
+                    }
                     results.push((
                         name,
                         CheckResult::fail(format!("Check execution error: {}", e)),
@@ -390,7 +469,116 @@ pub use checks::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filesystem::MockFilesystem;
     use serial_test::serial;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Stands in for the hidden-volume gate in the short-circuit tests.
+    struct FailingGate;
+    impl<F: Filesystem> PreFlightCheck<F> for FailingGate {
+        fn name(&self) -> &'static str {
+            "hidden-volume"
+        }
+        fn description(&self) -> &'static str {
+            "gate"
+        }
+        fn is_hidden_volume_gate(&self) -> bool {
+            true
+        }
+        fn run(&self, _fs: &F) -> Result<CheckResult> {
+            Ok(CheckResult::fail_with(
+                "not mounted",
+                "mount the hidden storage",
+            ))
+        }
+    }
+
+    /// A hidden-volume-dependent check that records whether it was ever run and
+    /// would write if it were.
+    struct Dependent(Arc<AtomicBool>);
+    impl<F: Filesystem> PreFlightCheck<F> for Dependent {
+        fn name(&self) -> &'static str {
+            "storage"
+        }
+        fn description(&self) -> &'static str {
+            "dependent"
+        }
+        fn requires_hidden_volume(&self) -> bool {
+            true
+        }
+        fn run(&self, fs: &F) -> Result<CheckResult> {
+            self.0.store(true, Ordering::SeqCst);
+            // A real dependent writes here; proving run() is never reached proves
+            // staging/cleanup writes nothing on the short-circuited path.
+            let _ = fs.create_directory(std::path::Path::new("/mnt/hidden/should-not-happen"));
+            Ok(CheckResult::Pass("ran".into()))
+        }
+    }
+
+    /// An independent check that still runs after the gate fails.
+    struct Independent;
+    impl<F: Filesystem> PreFlightCheck<F> for Independent {
+        fn name(&self) -> &'static str {
+            "swap"
+        }
+        fn description(&self) -> &'static str {
+            "independent"
+        }
+        fn run(&self, _fs: &F) -> Result<CheckResult> {
+            Ok(CheckResult::Pass("ok".into()))
+        }
+    }
+
+    #[test]
+    fn hidden_volume_failure_skips_dependents_without_running_them() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let fs = MockFilesystem::new();
+        let mut registry: PreFlightRegistry<MockFilesystem> = PreFlightRegistry::new();
+        registry.add_check(Box::new(FailingGate));
+        registry.add_check(Box::new(Dependent(ran.clone())));
+        registry.add_check(Box::new(Independent));
+
+        let (results, all_passed) = registry.run_all_detailed(&fs);
+
+        assert!(!all_passed, "the gate failed");
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "a skipped dependent must never run (so it writes nothing)"
+        );
+        assert!(
+            fs.mock_ops().is_empty(),
+            "no filesystem writes on the short-circuit path: {:?}",
+            fs.mock_ops()
+        );
+
+        let storage = results.iter().find(|(n, _)| n == "storage").unwrap();
+        assert!(storage.1.is_skipped(), "{:?}", storage.1);
+        assert_eq!(storage.1.message(), SKIPPED_NO_HIDDEN_VOLUME);
+
+        // An independent check still runs after the gate fails.
+        let swap = results.iter().find(|(n, _)| n == "swap").unwrap();
+        assert!(swap.1.is_pass(), "{:?}", swap.1);
+    }
+
+    #[test]
+    fn skipped_dependents_do_not_contribute_remediation() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let fs = MockFilesystem::new();
+        let mut registry: PreFlightRegistry<MockFilesystem> = PreFlightRegistry::new();
+        registry.add_check(Box::new(FailingGate));
+        registry.add_check(Box::new(Dependent(ran.clone())));
+
+        let err = registry.run_all(&fs).expect_err("the gate failed");
+        let NailsError::PreFlightCheckFailed(failures) = err else {
+            panic!("expected PreFlightCheckFailed, got {err:?}");
+        };
+        // Only the gate is a failure; the skipped dependent contributes nothing.
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0, "hidden-volume");
+        let steps = crate::reporter::remediation_steps(&failures);
+        assert_eq!(steps, vec!["mount the hidden storage".to_string()]);
+    }
 
     #[test]
     fn test_check_result_is_pass() {

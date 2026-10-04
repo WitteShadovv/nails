@@ -129,6 +129,10 @@ impl<F: Filesystem> PreFlightCheck<F> for SpaceCheck {
         "Validates sufficient disk space is available for activation"
     }
 
+    fn requires_hidden_volume(&self) -> bool {
+        true
+    }
+
     fn run(&self, fs: &F) -> Result<CheckResult> {
         // Get available space in bytes
         let available_bytes = fs.disk_usage(&self.hidden_volume_root)?.available;

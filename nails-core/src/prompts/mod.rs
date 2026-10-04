@@ -334,7 +334,7 @@ pub fn display_abort_message_with_io<W: Write>(
         style.marked(
             Mark::Fail,
             format_args!(
-                "Activation aborted: User declined pivot mount for {}",
+                "Activation aborted: {} needs a pivot mount and the configured pivot policy refuses it",
                 target.display()
             )
         )

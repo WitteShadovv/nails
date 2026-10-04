@@ -86,6 +86,10 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
         "Validates NixOS configuration overlay structure"
     }
 
+    fn requires_hidden_volume(&self) -> bool {
+        true
+    }
+
     fn run(&self, fs: &F) -> Result<CheckResult> {
         // Check 1: Base hardware-configuration.nix exists
         let base_config = PathBuf::from("/etc/nixos/hardware-configuration.nix");

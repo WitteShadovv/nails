@@ -64,6 +64,15 @@ pub struct SwapPosture {
     pub severity: SwapSeverity,
     /// Human-readable description of each non-passing finding.
     pub findings: Vec<String>,
+    /// The `/proc/swaps` filenames of the disk-backed devices that failed
+    /// (plain partitions, file swap, disk-backed zram, fixed-key dm-crypt), in
+    /// the order the kernel lists them. RAM-only zram and ephemeral encrypted
+    /// swap are excluded, so the remediation can name exactly the devices the
+    /// operator must `swapoff` instead of a blanket `swapoff -a`.
+    pub disk_swap_devices: Vec<String>,
+    /// Whether a hibernation channel (a configured resume device or a `resume=`
+    /// kernel argument) can write memory to disk.
+    pub hibernation_active: bool,
 }
 
 /// Classify every active swap device plus the hibernation channel.
@@ -74,6 +83,7 @@ pub struct SwapPosture {
 pub fn classify_swap<F: Filesystem>(fs: &F) -> SwapPosture {
     let mut severity = SwapSeverity::Pass;
     let mut findings = Vec::new();
+    let mut disk_swap_devices = Vec::new();
 
     let swaps = fs
         .read_file_content(Path::new(PROC_SWAPS))
@@ -94,14 +104,62 @@ pub fn classify_swap<F: Filesystem>(fs: &F) -> SwapPosture {
             severity = severity.max(device_severity);
             findings.push(detail);
         }
+        // Only the disk-backed failures are offered to `swapoff`: an ephemeral
+        // encrypted device merely warns and a RAM-only zram passes, so naming
+        // them would send the operator to disable swap that is already safe.
+        if device_severity == SwapSeverity::Fail {
+            disk_swap_devices.push(filename.to_string());
+        }
     }
 
-    for detail in hibernation_findings(fs) {
+    let hibernation = hibernation_findings(fs);
+    let hibernation_active = !hibernation.is_empty();
+    for detail in hibernation {
         severity = severity.max(SwapSeverity::Fail);
         findings.push(detail);
     }
 
-    SwapPosture { severity, findings }
+    SwapPosture {
+        severity,
+        findings,
+        disk_swap_devices,
+        hibernation_active,
+    }
+}
+
+/// Build the remediation for a failing swap posture, naming the exact devices to
+/// disable so the operator does not have to run a blanket `swapoff -a`.
+fn fail_remediation(posture: &SwapPosture) -> String {
+    let swapoff = if posture.disk_swap_devices.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "sudo swapoff {}",
+            posture.disk_swap_devices.join(" ")
+        ))
+    };
+
+    match (swapoff, posture.hibernation_active) {
+        (Some(cmd), true) => format!(
+            "Disable the active disk swap ({cmd}) and hibernation (remove resume= and clear \
+             /sys/power/resume); keep only RAM-only zram."
+        ),
+        (Some(cmd), false) => {
+            format!("Disable the active disk swap: {cmd}. Keep only RAM-only zram.")
+        }
+        (None, true) => {
+            "Disable hibernation (remove resume= from the kernel command line and clear \
+             /sys/power/resume)."
+                .to_string()
+        }
+        // No specific disk device was identified (e.g. an unparsable row); fall
+        // back to the blanket form.
+        (None, false) => {
+            "Disable disk and file swap (sudo swapoff -a) and hibernation (remove resume=); \
+             keep only RAM-only zram."
+                .to_string()
+        }
+    }
 }
 
 /// Classify a single `/proc/swaps` entry by its filename and type column.
@@ -267,14 +325,16 @@ impl<F: Filesystem> PreFlightCheck<F> for SwapCheck {
                 "swap posture warning: {}",
                 posture.findings.join("; ")
             ))),
-            SwapSeverity::Fail => Ok(CheckResult::fail_with(
-                format!(
-                    "swap can leak memory to persistent storage: {}",
-                    posture.findings.join("; ")
-                ),
-                "Disable disk and file swap (sudo swapoff -a) and hibernation (remove resume=); \
-                 keep only RAM-only zram.",
-            )),
+            SwapSeverity::Fail => {
+                let remediation = fail_remediation(&posture);
+                Ok(CheckResult::fail_with(
+                    format!(
+                        "swap can leak memory to persistent storage: {}",
+                        posture.findings.join("; ")
+                    ),
+                    remediation,
+                ))
+            }
         }
     }
 }
@@ -481,6 +541,75 @@ mod tests {
         // zram passes, cryptswap warns, sda2 fails => overall Fail.
         let result = SwapCheck::new().run(&fs).unwrap();
         assert!(result.is_fail(), "{result:?}");
+    }
+
+    #[test]
+    fn fail_remediation_names_the_active_disk_device() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/sda2 partition 8388604 0 -2"]),
+        );
+        let result = SwapCheck::new().run(&fs).unwrap();
+        let remediation = result.remediation().expect("fail has remediation");
+        assert!(
+            remediation.contains("sudo swapoff /dev/sda2"),
+            "remediation should name the device: {remediation}"
+        );
+        assert!(
+            !remediation.contains("swapoff -a"),
+            "a named device must not fall back to the blanket form: {remediation}"
+        );
+    }
+
+    #[test]
+    fn fail_remediation_names_every_active_disk_device() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&[
+                "/dev/sda2 partition 8388604 0 -2",
+                "/swapfile file 2097148 0 -3",
+            ]),
+        );
+        let result = SwapCheck::new().run(&fs).unwrap();
+        let remediation = result.remediation().expect("fail has remediation");
+        assert!(remediation.contains("/dev/sda2"), "{remediation}");
+        assert!(remediation.contains("/swapfile"), "{remediation}");
+    }
+
+    #[test]
+    fn ram_only_zram_is_not_named_in_remediation() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&[
+                "/dev/zram0 partition 8388604 0 100",
+                "/dev/sda2 partition 8388604 0 -2",
+            ]),
+        );
+        fs.mock_add_file("/sys/block/zram0/backing_dev", "none\n");
+        let result = SwapCheck::new().run(&fs).unwrap();
+        let remediation = result.remediation().expect("fail has remediation");
+        assert!(remediation.contains("/dev/sda2"), "{remediation}");
+        assert!(
+            !remediation.contains("zram0"),
+            "RAM-only zram must not be sent to swapoff: {remediation}"
+        );
+    }
+
+    #[test]
+    fn hibernation_only_failure_does_not_suggest_swapoff() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(PROC_SWAPS, &proc_swaps(&[]));
+        fs.mock_add_file(SYS_POWER_RESUME, "259:2\n");
+        let result = SwapCheck::new().run(&fs).unwrap();
+        let remediation = result.remediation().expect("fail has remediation");
+        assert!(remediation.contains("hibernation"), "{remediation}");
+        assert!(
+            !remediation.contains("swapoff"),
+            "no disk swap is active, so swapoff should not be suggested: {remediation}"
+        );
     }
 
     #[test]

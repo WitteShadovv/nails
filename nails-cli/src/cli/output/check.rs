@@ -24,7 +24,7 @@ pub const COMMAND: &str = "check";
 pub struct CheckRow {
     /// The check's stable kebab-case identifier.
     pub name: String,
-    /// `"pass"`, `"warn"` or `"fail"`.
+    /// `"pass"`, `"warn"`, `"fail"` or `"skipped"`.
     pub status: &'static str,
     /// The check's human-readable message.
     pub message: String,
@@ -37,6 +37,7 @@ impl CheckRow {
             CheckResult::Pass(msg) => ("pass", msg.clone()),
             CheckResult::Warn(msg) => ("warn", msg.clone()),
             CheckResult::Fail { message, .. } => ("fail", message.clone()),
+            CheckResult::Skipped(reason) => ("skipped", reason.clone()),
         };
         Self {
             name,
@@ -49,6 +50,7 @@ impl CheckRow {
         match self.status {
             "pass" => Mark::Pass,
             "warn" => Mark::Warn,
+            "skipped" => Mark::Neutral,
             _ => Mark::Fail,
         }
     }
@@ -63,6 +65,9 @@ pub struct CheckSummary {
     pub warnings: usize,
     /// Checks that failed.
     pub failed: usize,
+    /// Checks skipped because a prerequisite (the hidden volume) was absent.
+    #[serde(default)]
+    pub skipped: usize,
 }
 
 /// The effective configuration the checks ran against.
@@ -193,11 +198,13 @@ impl CheckReport {
             passed: 0,
             warnings: 0,
             failed: 0,
+            skipped: 0,
         };
         for row in &checks {
             match row.status {
                 "pass" => summary.passed += 1,
                 "warn" => summary.warnings += 1,
+                "skipped" => summary.skipped += 1,
                 _ => summary.failed += 1,
             }
         }
@@ -328,12 +335,18 @@ pub fn print_check_human(report: &CheckReport, style: Style) {
             "Not ready: resolve the failing checks above".to_string(),
         )
     };
+    let skipped_suffix = if report.summary.skipped > 0 {
+        format!(", {} skipped", report.summary.skipped)
+    } else {
+        String::new()
+    };
     println!(
-        "{}  ({} passed, {} warnings, {} failed)",
+        "{}  ({} passed, {} warnings, {} failed{})",
         style.marked(mark, verdict),
         report.summary.passed,
         report.summary.warnings,
-        report.summary.failed
+        report.summary.failed,
+        skipped_suffix
     );
 }
 

@@ -425,6 +425,11 @@ impl<F: Filesystem> NailsManager<F> {
                     tracing::error!(check = %name, result = "fail", msg = %message, "Preflight check failed");
                     failed_checks.push((name.clone(), message.clone(), remediation.clone()));
                 }
+                crate::preflight::CheckResult::Skipped(reason) => {
+                    // Not a failure: a prerequisite (the hidden volume) was absent,
+                    // so this check never ran and contributes no remediation.
+                    tracing::info!(check = %name, result = "skipped", msg = %reason, "Preflight check skipped");
+                }
             }
         }
 

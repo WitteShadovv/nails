@@ -325,7 +325,9 @@ pub fn execute(
                 mgr.config().hidden_volume_root.clone(),
             );
             match suspicious_check.run(mgr.filesystem()) {
-                Ok(nails_core::CheckResult::Pass(_)) | Ok(nails_core::CheckResult::Warn(_)) => {}
+                Ok(nails_core::CheckResult::Pass(_))
+                | Ok(nails_core::CheckResult::Warn(_))
+                | Ok(nails_core::CheckResult::Skipped(_)) => {}
                 Ok(nails_core::CheckResult::Fail {
                     message,
                     remediation,

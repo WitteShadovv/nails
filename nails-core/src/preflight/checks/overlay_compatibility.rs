@@ -14,7 +14,7 @@
 use super::super::{CheckResult, PreFlightCheck};
 use crate::overlay::{DEFAULT_MAX_SNAPSHOT_BYTES, OVERLAY_INCOMPATIBLE_FSTYPES};
 use crate::{Filesystem, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Pre-flight check for overlay compatibility issues
 ///
@@ -56,6 +56,27 @@ impl OverlayCompatibilityCheck {
     }
 }
 
+/// Remediation for a failed size probe on `target`.
+///
+/// `du` fails with `Permission denied` when run unprivileged against a tree it
+/// cannot traverse (e.g. `/boot`), so an unprivileged run is told to re-run as
+/// root rather than being left with a raw command error; either way the target
+/// can instead be excluded from overlaying.
+fn size_probe_remediation(target: &Path) -> String {
+    if nix::unistd::geteuid().is_root() {
+        format!(
+            "Ensure {} is readable, or add it to overlay_exclusions in nails.toml.",
+            target.display()
+        )
+    } else {
+        format!(
+            "Run as root for this check (measuring {} needs full read access), \
+             or add it to overlay_exclusions in nails.toml.",
+            target.display()
+        )
+    }
+}
+
 /// Format bytes as a human-readable string (e.g., "156 MB", "2.3 GB")
 fn format_bytes(bytes: u64) -> String {
     const GB: u64 = 1_073_741_824;
@@ -79,6 +100,10 @@ impl<F: Filesystem> PreFlightCheck<F> for OverlayCompatibilityCheck {
         "Validates overlay compatibility and upper-layer health"
     }
 
+    fn requires_hidden_volume(&self) -> bool {
+        true
+    }
+
     fn run(&self, fs: &F) -> Result<CheckResult> {
         let mut warnings = Vec::new();
 
@@ -95,7 +120,23 @@ impl<F: Filesystem> PreFlightCheck<F> for OverlayCompatibilityCheck {
             }
 
             let fstype_str = fstype.as_deref().unwrap_or("unknown");
-            let size = fs.get_directory_size(target)?;
+            let size = match fs.get_directory_size(target) {
+                Ok(size) => size,
+                // A raw `du: Permission denied` here is useless to the operator.
+                // Turn it into an actionable failure that names the target and
+                // says how to clear it.
+                Err(e) => {
+                    return Ok(CheckResult::fail_with(
+                        format!(
+                            "cannot measure {} ({}) to decide whether it fits a RAM snapshot: {}",
+                            target.display(),
+                            fstype_str,
+                            e
+                        ),
+                        size_probe_remediation(target),
+                    ));
+                }
+            };
 
             if size > self.max_snapshot_bytes {
                 return Ok(CheckResult::fail(format!(
@@ -393,6 +434,22 @@ mod tests {
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_pass(), "Expected Pass, got: {:?}", result);
+    }
+
+    #[test]
+    fn size_probe_remediation_is_actionable() {
+        let remediation = size_probe_remediation(Path::new("/boot"));
+        // Always names the target and the way to exclude it, regardless of euid.
+        assert!(remediation.contains("/boot"), "{remediation}");
+        assert!(remediation.contains("overlay_exclusions"), "{remediation}");
+        // Unprivileged (the usual CI case): the operator is pointed at root so a
+        // raw `du: Permission denied` never surfaces unexplained.
+        if !nix::unistd::geteuid().is_root() {
+            assert!(
+                remediation.contains("Run as root for this check"),
+                "{remediation}"
+            );
+        }
     }
 
     #[test]

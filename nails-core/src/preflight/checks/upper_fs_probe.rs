@@ -117,6 +117,10 @@ impl<F: Filesystem> PreFlightCheck<F> for UpperFsCapabilityCheck {
         "Validates the hidden root can host an overlayfs upper layer (xattrs, d_type, whiteouts)"
     }
 
+    fn requires_hidden_volume(&self) -> bool {
+        true
+    }
+
     fn run(&self, fs: &F) -> Result<CheckResult> {
         // The probe writes to and mounts over the real hidden root, so there is
         // nothing to probe under a test binary. Skip it there, like every other

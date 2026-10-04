@@ -309,6 +309,10 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
         "Validates hidden storage directories exist and are accessible"
     }
 
+    fn requires_hidden_volume(&self) -> bool {
+        true
+    }
+
     fn run(&self, fs: &F) -> Result<CheckResult> {
         let mut issues = Vec::new();
         // Directories activation would auto-create. In read-only mode they are

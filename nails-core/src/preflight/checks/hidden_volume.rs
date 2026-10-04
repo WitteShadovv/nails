@@ -97,6 +97,10 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
         "Validates hidden volume is mounted and writable"
     }
 
+    fn is_hidden_volume_gate(&self) -> bool {
+        true
+    }
+
     fn run(&self, fs: &F) -> Result<CheckResult> {
         // Step 1: Check path exists
         if !fs.path_exists(&self.hidden_volume_root)? {
