@@ -7,6 +7,7 @@
 { self, pkgs, ... }:
 let
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
+  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "preflight-upper-fs-capability";
@@ -34,6 +35,7 @@ in
     hidden_volume_root = "/mnt/fat-hidden"
     overlay_mode = "explicit"
 
+    ${baseOs.tomlFor "/mnt/fat-hidden"}
     [[overlays]]
     name = "home"
     lower = "/home"

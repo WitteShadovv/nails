@@ -14,6 +14,7 @@ _:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   assertions = import ./../../lib/assertions.nix;
+  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "persona-fresh-home";
@@ -33,6 +34,7 @@ in
     [persona]
     mode = "fresh-home"
 
+    ${baseOs.toml}
     [[overlays]]
     name = "home"
     lower = "/home"

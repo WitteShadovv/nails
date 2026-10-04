@@ -16,6 +16,7 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
+  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "persona-stale-writer";
@@ -47,6 +48,7 @@ in
     overlay_mode = "explicit"
     risky_services = "keep"
 
+    ${baseOs.toml}
     [[overlays]]
     name = "home"
     lower = "/home"

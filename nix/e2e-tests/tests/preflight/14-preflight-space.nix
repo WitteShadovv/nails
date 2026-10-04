@@ -6,6 +6,7 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
+  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "preflight-space";
@@ -32,6 +33,7 @@ in
     overlay_mode = "explicit"
     risky_services = "skip"
 
+    ${baseOs.toml}
     [[overlays]]
     name = "home"
     lower = "/home"

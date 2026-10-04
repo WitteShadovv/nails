@@ -19,6 +19,7 @@
 { self, pkgs }:
 let
   inherit (pkgs) system;
+  baseOs = import ./base-os-overlays.nix;
 
   # Shared Syncthing options for both nodes: no discovery, no relays, no usage
   # reporting. The nodes reach each other by static addresses the test sets when
@@ -97,7 +98,9 @@ rec {
       ];
     };
 
-  # Writes a nails.toml with a single /home overlay and the given persona mode.
+  # Writes a nails.toml with a /home overlay and the given persona mode. The
+  # base-OS trees are overlaid too, which the writable-trees pre-flight check
+  # requires; /home stays the only tree the persona tests look at.
   # `mode` is "shared-home" or "fresh-home"; `mask` is a TOML array literal for
   # persona.mask_inherited (for example '["syncthing.service"]'), or null to omit.
   writePersonaConfigFn = ''
@@ -112,6 +115,7 @@ rec {
     [persona]
     mode = "%s"
     %s
+    ${baseOs.toml}
     [[overlays]]
     name = "home"
     lower = "/home"

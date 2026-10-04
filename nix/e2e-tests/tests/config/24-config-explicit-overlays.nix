@@ -6,6 +6,7 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
+  baseOs = import ./../../lib/base-os-overlays.nix;
   explicitFixture = ./../../fixtures/configs/explicit-overlays.toml;
 in
 {
@@ -20,7 +21,8 @@ in
     ${assertions.assertNoOverlaysFn}
     ${assertions.assertHiddenVolumeHasFn}
 
-    configured_targets = ["/etc", "/home", "/root", "/var", "/tmp", "/srv", "/opt"]
+    # The fixture also overlays the base-OS trees the writable-trees check needs.
+    configured_targets = ["/etc", "/home", "/root", "/var", "/tmp", "/srv", "/opt"] + ${baseOs.pythonTargets}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")

@@ -7,6 +7,7 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   overlayHelpers = import ./../../lib/overlay-helpers.nix;
+  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "overlay-mount-tracker-integrity";
@@ -23,7 +24,9 @@ in
     machine.wait_for_unit("multi-user.target")
 
     config_path = "/tmp/nails-tracker-integrity.toml"
-    expected_paths = {"/home", "/etc", "/srv"}
+    # The ordered config also overlays the base-OS trees; the tracker must
+    # account for every one of them.
+    expected_paths = {"/home", "/etc", "/srv"} | set(${baseOs.pythonTargets})
     write_ordered_overlay_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     machine.succeed("mkdir -p /mnt/data/srv /mnt/data/.work/srv")
@@ -53,7 +56,7 @@ in
 
     with subtest("phase 3: deactivation returns tracker state to empty"):
         machine.succeed(f"nails --config {config_path} emergency")
-        assert_no_overlays(["/home", "/etc", "/srv"])
+        assert_no_overlays(sorted(expected_paths))
         status = read_status_json(config_path=config_path)
         assert status["state"]["kind"] == "inactive", status
         assert status["overlays"] == [], status

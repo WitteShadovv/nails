@@ -22,6 +22,7 @@ let
   assertions = import ./../../lib/assertions.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   sessionHelpers = import ./../../lib/session-helpers.nix;
+  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "persona-user-timer";
@@ -72,6 +73,7 @@ in
     [persona]
     mask_inherited = ["decoy-canary.timer"]
 
+    ${baseOs.toml}
     [[overlays]]
     name = "etc"
     lower = "/etc"

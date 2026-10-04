@@ -6,6 +6,7 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   stateHelpers = import ./../../lib/state-helpers.nix;
+  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "state-guard-rollback";
@@ -45,6 +46,7 @@ in
     overlay_mode = "explicit"
     risky_services = "skip"
 
+    ${baseOs.toml}
     [[overlays]]
     name = "home"
     lower = "/home"
@@ -108,6 +110,7 @@ in
     overlay_mode = "explicit"
     risky_services = "skip"
 
+    ${baseOs.toml}
     [[overlays]]
     name = "home"
     lower = "/home"

@@ -60,6 +60,20 @@ or `nodes` keeps `{ self, ... }:` or `{ self, pkgs, ... }:`.
 - `runVerifyFn` → `run_verify(args="", config_path=None)`
 - `canonicalDeactivateFn` → `canonical_deactivate(config_path, unit_name="nails-deactivate", shutdown_timeout=300, diagnostics_timeout=90)`
 
+### `lib/base-os-overlays.nix`
+
+The writable-trees pre-flight check refuses activation while a base-OS tree
+(`/usr`, `/bin`, `/lib64` on the NixOS test VMs) is neither overlaid nor kept
+read-only, so every hand-written explicit config must overlay them as well as
+the subset the test is about.
+
+- `toml` → the base-OS `[[overlays]]` stanzas for `/mnt/data`; interpolate it on
+  its own line inside the config text
+- `tomlFor root` → the same stanzas for another hidden root (also a Python
+  f-string placeholder such as `"{hidden_root}"`)
+- `targets` / `pythonTargets` → the base-OS targets, as a Nix list or a Python
+  list literal for exact mount-set assertions
+
 ### `lib/assertions.nix`
 
 - `assert_status_state(expected, payload=None, config_path=None)`

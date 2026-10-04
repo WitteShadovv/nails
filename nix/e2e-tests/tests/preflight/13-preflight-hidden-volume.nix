@@ -6,6 +6,7 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
+  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "preflight-hidden-volume";
@@ -36,6 +37,7 @@ in
     hidden_volume_root = "{hidden_root}"
     overlay_mode = "explicit"
 
+    ${baseOs.tomlFor "{hidden_root}"}
     [[overlays]]
     name = "home"
     lower = "/home"

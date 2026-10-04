@@ -1,5 +1,8 @@
 # Explicit persistent overlays for additional targets (/var, /tmp, /srv, /opt).
 # The lower directories must exist before activation.
+# The base-OS trees (/usr, /bin, /lib64 on the NixOS test VMs) are overlaid too:
+# the writable-trees pre-flight check refuses to activate while one of them
+# would stay writable on the decoy.
 hidden_volume_root = "/mnt/data"
 overlay_mode = "explicit"
 risky_services = "skip"
@@ -52,3 +55,24 @@ lower = "/opt"
 upper = "/mnt/data/opt"
 work = "/mnt/data/.work/opt"
 target = "/opt"
+
+[[overlays]]
+name = "usr"
+lower = "/usr"
+upper = "/mnt/data/usr"
+work = "/mnt/data/.work/usr"
+target = "/usr"
+
+[[overlays]]
+name = "bin"
+lower = "/bin"
+upper = "/mnt/data/bin"
+work = "/mnt/data/.work/bin"
+target = "/bin"
+
+[[overlays]]
+name = "lib64"
+lower = "/lib64"
+upper = "/mnt/data/lib64"
+work = "/mnt/data/.work/lib64"
+target = "/lib64"

@@ -1,5 +1,8 @@
 # Shared test helper functions for E2E tests
 # Provides common Python functions as string snippets that can be interpolated into testScripts
+let
+  baseOs = import ./base-os-overlays.nix;
+in
 {
   # Python function to write the standard headless config file.
   # Usage in testScript: ${testHelpers.writeHeadlessConfigFn}
@@ -64,26 +67,7 @@
     work = "/mnt/data/.work/tmp"
     target = "/tmp"
 
-    [[overlays]]
-    name = "usr"
-    lower = "/usr"
-    upper = "/mnt/data/usr"
-    work = "/mnt/data/.work/usr"
-    target = "/usr"
-
-    [[overlays]]
-    name = "bin"
-    lower = "/bin"
-    upper = "/mnt/data/bin"
-    work = "/mnt/data/.work/bin"
-    target = "/bin"
-
-    [[overlays]]
-    name = "lib64"
-    lower = "/lib64"
-    upper = "/mnt/data/lib64"
-    work = "/mnt/data/.work/lib64"
-    target = "/lib64"
+    ${baseOs.toml}
     EOF""" % path
         )
   '';
@@ -354,6 +338,8 @@
     upper = "/mnt/data/opt"
     work = "/mnt/data/.work/opt"
     target = "/opt"
+
+    ${baseOs.toml}
     EOF""" % path
         )
   '';

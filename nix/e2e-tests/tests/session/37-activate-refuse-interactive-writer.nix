@@ -5,6 +5,7 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
+  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "activate-refuse-interactive-writer";
@@ -36,8 +37,9 @@ in
 
 
     def write_var_overlay_config(path):
-        # A minimal explicit config whose only overlay is /var, so the decoy
-        # writer below lands on an overlay target. risky_services is set so a
+        # A minimal explicit config that overlays /var (plus the base-OS trees
+        # the writable-trees check requires), so the decoy writer below lands
+        # on an overlay target. risky_services is set so a
         # non-interactive keep-session run has an explicit policy and fails only
         # on the interactive-writer refusal, not on a missing risky-service
         # choice.
@@ -47,6 +49,7 @@ in
     overlay_mode = "explicit"
     risky_services = "skip"
 
+    ${baseOs.toml}
     [[overlays]]
     name = "var"
     lower = "/var"

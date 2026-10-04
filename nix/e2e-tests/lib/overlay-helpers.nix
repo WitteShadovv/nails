@@ -1,3 +1,10 @@
+# Each config keeps the subset under test and also overlays the base-OS trees
+# (see base-os-overlays.nix), which the writable-trees pre-flight check
+# requires before it lets the session activate. The base-OS stanzas come first,
+# so the subset under test is mounted last and unmounted first.
+let
+  baseOs = import ./base-os-overlays.nix;
+in
 {
   writeBootOnlyConfigFn = ''
     def write_boot_only_config(path):
@@ -7,6 +14,7 @@
     overlay_mode = "explicit"
     risky_services = "skip"
 
+    ${baseOs.toml}
     [[overlays]]
     name = "boot"
     lower = "/boot"
@@ -25,6 +33,7 @@
     overlay_mode = "explicit"
     risky_services = "skip"
 
+    ${baseOs.toml}
     [[overlays]]
     name = "home"
     lower = "/home"
@@ -57,6 +66,7 @@
     overlay_mode = "explicit"
     risky_services = "skip"
 
+    ${baseOs.toml}
     [[overlays]]
     name = "srv"
     lower = "/srv"

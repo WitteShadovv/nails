@@ -4,6 +4,7 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
+  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "preflight-overlay-compat";
@@ -32,6 +33,7 @@ in
     hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
 
+    ${baseOs.toml}
     [[overlays]]
     name = "vfat-target"
     lower = "/mnt/vfat-target"

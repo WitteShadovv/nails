@@ -6,6 +6,7 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
+  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "preflight-nixos-build-target";
@@ -28,6 +29,7 @@ in
     nixos_flake = "relative/flake#test-host"
     overlay_mode = "explicit"
 
+    ${baseOs.toml}
     [[overlays]]
     name = "home"
     lower = "/home"
@@ -71,6 +73,7 @@ in
             'hidden_volume_root = "/mnt/data"',
             'nixos_flake = "/tmp/flake-target#test-host"',
             'overlay_mode = "explicit"',
+            """${baseOs.toml}""",
             "[[overlays]]",
             'name = "home"',
             'lower = "/home"',

@@ -1,3 +1,6 @@
+let
+  baseOs = import ./base-os-overlays.nix;
+in
 {
   runCommandCaptureFn = ''
     def run_command_capture(label, command):
@@ -89,6 +92,9 @@
     overlay_mode = "explicit"
     risky_services = "skip"
 
+    # The base-OS trees are overlaid as well, which the writable-trees
+    # pre-flight check requires before activation.
+    ${baseOs.toml}
     [[overlays]]
     name = "nix"
     lower = "/nix"
