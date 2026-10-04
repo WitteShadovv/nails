@@ -50,6 +50,11 @@
     def assert_command_succeeded(result):
         assert result["rc"] == 0, f"Expected command success, got: {result}"
 
+    def assert_exit_code(result, expected):
+        assert result["rc"] == expected, (
+            f"Expected exit code {expected}, got: {result}"
+        )
+
     def assert_result_contains(result, needles, stream="stderr"):
         haystack = result[stream]
         for needle in needles:

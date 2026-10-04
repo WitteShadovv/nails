@@ -56,7 +56,11 @@ in
             "preflight-hidden-unmounted",
             "nails --config /tmp/preflight-unmounted.toml activate --dry-run --overlay-only --session keep --ascii",
         )
-        assert_command_succeeded(result)
+        # --dry-run is a thin alias for `check`, which exits 4 when any pre-flight
+        # check fails. The hidden-volume check is designed to fail here, so the
+        # command refuses while still reporting the failure in the readiness
+        # report on stdout.
+        assert_exit_code(result, 4)
         assert_result_contains(result, ["hidden-volume", "is not mounted"], stream="stdout")
 
     with subtest("an unmounted hidden root is never written to"):
@@ -84,7 +88,7 @@ in
             "preflight-hidden-store",
             "nails --config /tmp/preflight-store.toml activate --dry-run --overlay-only --session keep --ascii",
         )
-        assert_command_succeeded(result)
+        assert_exit_code(result, 4)
         assert_result_contains(result, ["hidden-volume", "${builtins.storeDir}", "not writable"], stream="stdout")
 
     with subtest("read-only hidden volume is rejected"):
@@ -95,7 +99,7 @@ in
             "preflight-hidden-readonly",
             "nails --config /tmp/preflight-readonly.toml activate --dry-run --overlay-only --session keep --ascii",
         )
-        assert_command_succeeded(result)
+        assert_exit_code(result, 4)
         assert_result_contains(result, ["hidden-volume", "/mnt/data", "not writable"], stream="stdout")
         machine.succeed("mount -o remount,rw /mnt/data")
 
@@ -106,7 +110,7 @@ in
             "preflight-hidden-immutable",
             "nails --config /tmp/preflight-readonly.toml activate --dry-run --overlay-only --session keep --ascii",
         )
-        assert_command_succeeded(result)
+        assert_exit_code(result, 4)
         assert_result_contains(result, ["hidden-volume", "/mnt/data", "not writable"], stream="stdout")
         machine.succeed("chattr -i /mnt/data")
 
