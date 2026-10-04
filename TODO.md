@@ -2898,7 +2898,7 @@ Owns: `Cargo.lock`, `docs/threat-model.md`, `docs/operator-guide.md`, `docs/cli.
 
 Owns: `CONTRIBUTING.md`, `NOTICE`, `REUSE.toml`, `nails-core/src/`
 
-- [ ] **T-125: Consistent naming and metadata: publish=false, homepage, copyright notice, SPDX headers, one tagline and NAILS OS spelling** (low · effort S)
+- [x] **T-125: Consistent naming and metadata: publish=false, homepage, copyright notice, SPDX headers, one tagline and NAILS OS spelling** (low · effort S)
 
   **Problem:** The project identity is inconsistent and the licensing metadata is incomplete.
   - `authors = ["NAILS Project"]` (Cargo.toml:9) is not a real holder, and the clap `#[command(author = ...)]` at nails-cli/src/cli/args.rs:12 is never shown because no help template uses `{author}`.

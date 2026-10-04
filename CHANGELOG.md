@@ -197,6 +197,12 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Changed
 
+- The project uses one platform-neutral tagline ("Overlay environment manager") across the README,
+  flake, crate metadata, help text and docs, dropping the NixOS acronym expansion; crate `authors`
+  and `homepage` now name the real holder and https://nails.run, both crates set `publish = false`,
+  and licensing metadata is added (SPDX headers on all sources, `REUSE.toml`, `NOTICE`,
+  `LICENSES/GPL-3.0-or-later.txt`, a README copyright line) with DCO sign-off guidance in
+  `CONTRIBUTING.md`.
 - `docs/threat-model.md` is the single threat-model source (assumptions, state shared with the
   decoy, residual channels, evaluation scope); README, SECURITY.md and the operator guide link to
   it.
