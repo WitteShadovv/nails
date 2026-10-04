@@ -43,7 +43,7 @@ pub struct EphemeralMountInfo {
 /// pivot is not a workaround for that. It is the fallback used when a direct
 /// mount is rejected for another reason: mount the overlay on a staging path and
 /// bind-mount it over the target.
-/// 1. Mount overlay to staging location (e.g., `/mnt/nails-pivot/var`)
+/// 1. Mount overlay to staging location (e.g., `/run/nails-pivot/var`)
 /// 2. Bind mount staging to target (e.g., `/var`)
 ///
 /// This creates a "split view":
@@ -57,7 +57,7 @@ pub struct EphemeralMountInfo {
 /// # Fields
 ///
 /// * `target` - Final mount point (e.g., "/var")
-/// * `staging` - Intermediate staging location (e.g., "/mnt/nails-pivot/var")
+/// * `staging` - Intermediate staging location (e.g., "/run/nails-pivot/var")
 /// * `upper` - Upper layer path
 /// * `work` - Work directory path
 /// * `lower` - Read-only base layer
@@ -103,14 +103,14 @@ mod tests {
     fn test_pivot_mount_info_creation() {
         let info = PivotMountInfo {
             target: PathBuf::from("/var"),
-            staging: PathBuf::from("/mnt/nails-pivot/var"),
+            staging: PathBuf::from("/run/nails-pivot/var"),
             upper: PathBuf::from("/mnt/hidden/var-upper"),
             work: PathBuf::from("/mnt/hidden/var-work"),
             lower: PathBuf::from("/var"),
             is_ephemeral: false,
         };
         assert_eq!(info.target, PathBuf::from("/var"));
-        assert_eq!(info.staging, PathBuf::from("/mnt/nails-pivot/var"));
+        assert_eq!(info.staging, PathBuf::from("/run/nails-pivot/var"));
         assert!(!info.is_ephemeral);
     }
 
@@ -130,7 +130,7 @@ mod tests {
     fn test_pivot_mount_info_ephemeral_flag() {
         let ephemeral = PivotMountInfo {
             target: PathBuf::from("/var"),
-            staging: PathBuf::from("/mnt/nails-pivot/var"),
+            staging: PathBuf::from("/run/nails-pivot/var"),
             upper: PathBuf::from("/run/nails/var-upper"),
             work: PathBuf::from("/run/nails/var-work"),
             lower: PathBuf::from("/var"),
@@ -140,7 +140,7 @@ mod tests {
 
         let persistent = PivotMountInfo {
             target: PathBuf::from("/home"),
-            staging: PathBuf::from("/mnt/nails-pivot/home"),
+            staging: PathBuf::from("/run/nails-pivot/home"),
             upper: PathBuf::from("/mnt/hidden/home-upper"),
             work: PathBuf::from("/mnt/hidden/home-work"),
             lower: PathBuf::from("/home"),

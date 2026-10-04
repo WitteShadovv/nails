@@ -1,7 +1,7 @@
 # Fault test (h): emergency on a session that pivoted a VFAT /boot.
 #
 # When /boot is VFAT (no overlay support), activation stages a snapshot pivot
-# under /mnt/nails-pivot and overlays that instead. Emergency must detach that
+# under /run/nails-pivot and overlays that instead. Emergency must detach that
 # pivot like any other overlay and leave no NAILS mount live under /boot or the
 # staging base, and it must remove the staging directories it created, so nothing
 # points back at the hidden session.
@@ -44,7 +44,7 @@ in
             f"nails --config {config_path} activate --overlay-only --session keep --pivot allow -y"
         )
         machine.succeed("findmnt -n -o FSTYPE /boot | grep -qx overlay")
-        machine.succeed("mountpoint -q /mnt/nails-pivot/boot")
+        machine.succeed("mountpoint -q /run/nails-pivot/boot")
         machine.succeed("printf %s hidden-boot > /boot/hidden-boot.txt")
         machine.succeed("test -f /mnt/data/boot/hidden-boot.txt")
 
@@ -53,12 +53,12 @@ in
         # No NAILS overlay is left at /boot and nothing stays mounted under the
         # pivot staging base.
         assert_no_overlays(["/boot"])
-        machine.fail("findmnt -n /mnt/nails-pivot/boot")
-        machine.fail("findmnt -n /mnt/nails-pivot/boot-snapshot")
+        machine.fail("findmnt -n /run/nails-pivot/boot")
+        machine.fail("findmnt -n /run/nails-pivot/boot-snapshot")
         # The staging directories NAILS created are gone, so nothing points back
         # at the hidden session.
-        machine.fail("test -e /mnt/nails-pivot/boot")
-        machine.fail("test -e /mnt/nails-pivot/boot-snapshot")
+        machine.fail("test -e /run/nails-pivot/boot")
+        machine.fail("test -e /run/nails-pivot/boot-snapshot")
 
     with subtest("the backend then closes cleanly with the strict helper"):
         machine.succeed("""${hiddenVolume.unmountHiddenVolumeStrict}""")

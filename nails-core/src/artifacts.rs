@@ -195,7 +195,15 @@ pub const ARTIFACTS: &[Artifact] = &[
         scope: ArtifactScope::Runtime,
         severity: ArtifactSeverity::Warn,
         value: crate::overlay::PIVOT_STAGING_BASE,
-        description: "Overlay pivot staging base; removed on deactivation.",
+        description: "Overlay pivot staging base on the /run tmpfs; removed on deactivation.",
+    },
+    Artifact {
+        id: "pivot-staging-legacy",
+        kind: ArtifactKind::AbsolutePath,
+        scope: ArtifactScope::Decoy,
+        severity: ArtifactSeverity::Critical,
+        value: "/mnt/nails-pivot",
+        description: "Decoy-root pivot staging base used by earlier builds; must be absent from the decoy disk. A leftover here is a persistent trace a prior version failed to remove.",
     },
     Artifact {
         id: "nixos-staged-link",

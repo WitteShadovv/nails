@@ -330,9 +330,10 @@ fn test_artifact_file_detection() {
     let fs = MockFilesystem::new();
     let verifier = Verifier::new(fs.clone());
 
-    // Set up leftover runtime artifacts from the shared registry.
+    // Set up leftover runtime artifacts from the shared registry (both on the
+    // /run tmpfs, so both carry the Warn severity).
     fs.mock_set_path_exists("/run/nails", true);
-    fs.mock_set_path_exists("/mnt/nails-pivot", true);
+    fs.mock_set_path_exists("/run/nails-pivot", true);
 
     let result = verifier.run(false).unwrap();
     assert_eq!(result.status, VerifyStatus::Warning);
@@ -1525,7 +1526,7 @@ fn test_mount_scan_flags_leftover_overlay_at_non_standard_target() {
         "rw,lowerdir=/home,upperdir=/mnt/hidden/home/upper,workdir=/mnt/hidden/home/work\n",
         "11 1 0:51 / /var rw - overlay overlay ",
         "rw,lowerdir=/var,upperdir=/run/nails/var/upper,workdir=/run/nails/var/work\n",
-        "12 1 0:52 / /mnt/nails-pivot/etc rw - overlay overlay ",
+        "12 1 0:52 / /run/nails-pivot/etc rw - overlay overlay ",
         "rw,lowerdir=/etc,upperdir=/mnt/hidden/etc/upper,workdir=/mnt/hidden/etc/work\n",
     );
     fs.mock_set_file_content("/proc/self/mountinfo", mountinfo);
@@ -1552,7 +1553,7 @@ fn test_mount_scan_flags_leftover_overlay_at_non_standard_target() {
     assert!(
         scaffolding
             .iter()
-            .any(|f| f.message.contains("/mnt/nails-pivot/etc"))
+            .any(|f| f.message.contains("/run/nails-pivot/etc"))
     );
     assert!(
         !scaffolding.iter().any(|f| f.message.contains("/home")),

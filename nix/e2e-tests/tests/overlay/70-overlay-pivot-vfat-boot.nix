@@ -44,10 +44,10 @@ in
             f"nails --config {config_path} activate --overlay-only --session keep --pivot allow -y"
         )
         machine.succeed("findmnt -n -o FSTYPE /boot | grep -qx overlay")
-        machine.succeed("findmnt -n -o FSTYPE /mnt/nails-pivot/boot | grep -qx overlay")
-        machine.succeed("findmnt -n -o FSTYPE /mnt/nails-pivot/boot-snapshot | grep -qx tmpfs")
-        machine.succeed("mountpoint -q /mnt/nails-pivot/boot")
-        machine.succeed("test -f /mnt/nails-pivot/boot-snapshot/decoy-boot.txt")
+        machine.succeed("findmnt -n -o FSTYPE /run/nails-pivot/boot | grep -qx overlay")
+        machine.succeed("findmnt -n -o FSTYPE /run/nails-pivot/boot-snapshot | grep -qx tmpfs")
+        machine.succeed("mountpoint -q /run/nails-pivot/boot")
+        machine.succeed("test -f /run/nails-pivot/boot-snapshot/decoy-boot.txt")
         machine.succeed("printf %s hidden-boot > /boot/hidden-boot.txt")
         machine.succeed("test -f /mnt/data/boot/hidden-boot.txt")
 

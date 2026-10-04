@@ -13,8 +13,8 @@ fn setup_pivot_fs(fs: &MockFilesystem, lower: &str, upper: &str, work: &str) {
     fs.mock_set_path_exists(lower, true);
     fs.mock_set_path_exists(upper, true);
     fs.mock_set_path_exists(work, true);
-    // create_directory("/mnt/nails-pivot/{name}") needs grandparent /mnt to exist+be writable
-    fs.mock_set_path_exists("/mnt", true);
+    // create_directory("/run/nails-pivot/{name}") needs grandparent /run to exist+be writable
+    fs.mock_set_path_exists("/run", true);
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn test_pivot_overlay_mount_success() {
     let info = result.unwrap();
     assert_eq!(info.target, PathBuf::from("/var"));
     assert!(info.staging.starts_with(PIVOT_STAGING_BASE));
-    assert_eq!(info.staging, PathBuf::from("/mnt/nails-pivot/var"));
+    assert_eq!(info.staging, PathBuf::from("/run/nails-pivot/var"));
     assert_eq!(info.upper, PathBuf::from("/mnt/hidden/var-upper"));
     assert_eq!(info.work, PathBuf::from("/mnt/hidden/var-work"));
     assert_eq!(info.lower, PathBuf::from("/var"));
@@ -65,7 +65,7 @@ fn test_pivot_overlay_mount_bind_fails_rolls_back_overlay() {
     );
 
     assert!(result.is_err(), "should fail when bind mount fails");
-    let staging = PathBuf::from("/mnt/nails-pivot/home");
+    let staging = PathBuf::from("/run/nails-pivot/home");
     assert!(
         !fs.is_mounted(&staging).unwrap_or(false),
         "staging overlay should be unmounted after rollback"
@@ -111,7 +111,6 @@ fn test_pivot_overlay_mount_roundtrip_with_unmount() {
 fn test_unmount_pivot_overlay_ephemeral() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists("/run", true);
-    fs.mock_set_path_exists("/mnt", true);
 
     let config = crate::config::EphemeralOverlayDir {
         path: PathBuf::from("/run"),
@@ -138,7 +137,7 @@ fn test_unmount_pivot_overlay_snapshot_lower() {
     fs.mock_set_path_exists("/boot", true);
     fs.mock_set_path_exists("/mnt/hidden/boot-upper", true);
     fs.mock_set_path_exists("/mnt/hidden/boot-work", true);
-    fs.mock_set_path_exists("/mnt", true);
+    fs.mock_set_path_exists("/run", true);
 
     let info = snapshot_pivot_overlay_mount(
         &fs,
@@ -166,7 +165,6 @@ fn test_pivot_ephemeral_mount_success() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists("/tmp", true);
     fs.mock_set_path_exists("/run", true);
-    fs.mock_set_path_exists("/mnt", true);
 
     let config = crate::config::EphemeralOverlayDir {
         path: PathBuf::from("/tmp"),
@@ -220,7 +218,7 @@ fn test_snapshot_pivot_success() {
     fs.mock_set_path_exists("/boot", true);
     fs.mock_set_path_exists("/mnt/hidden/boot-upper", true);
     fs.mock_set_path_exists("/mnt/hidden/boot-work", true);
-    fs.mock_set_path_exists("/mnt", true);
+    fs.mock_set_path_exists("/run", true);
 
     let result = snapshot_pivot_overlay_mount(
         &fs,
@@ -307,7 +305,7 @@ fn snapshot_pivot_sizes_tmpfs_from_measured_content_not_a_fixed_gigabyte() {
     fs.mock_set_path_exists("/boot", true);
     fs.mock_set_path_exists("/mnt/hidden/boot-upper", true);
     fs.mock_set_path_exists("/mnt/hidden/boot-work", true);
-    fs.mock_set_path_exists("/mnt", true);
+    fs.mock_set_path_exists("/run", true);
     let measured = 120 * 1024 * 1024; // 120 MiB ESP
     fs.mock_set_directory_size(Path::new("/boot"), measured);
 
@@ -341,7 +339,7 @@ fn snapshot_pivot_sizes_tmpfs_from_measured_content_not_a_fixed_gigabyte() {
 fn pivot_mount_info_round_trips_through_clone() {
     let info = PivotMountInfo {
         target: PathBuf::from("/var"),
-        staging: PathBuf::from("/mnt/nails-pivot/var"),
+        staging: PathBuf::from("/run/nails-pivot/var"),
         upper: PathBuf::from("/mnt/hidden/var-upper"),
         work: PathBuf::from("/mnt/hidden/var-work"),
         lower: PathBuf::from("/var"),
@@ -350,21 +348,20 @@ fn pivot_mount_info_round_trips_through_clone() {
 
     assert_eq!(info, info.clone());
     assert!(info.is_ephemeral);
-    assert_eq!(info.staging, PathBuf::from("/mnt/nails-pivot/var"));
+    assert_eq!(info.staging, PathBuf::from("/run/nails-pivot/var"));
 }
 
 #[test]
 fn pivot_ephemeral_mount_rolls_back_tmpfs_when_overlay_fails() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists("/run", true);
-    fs.mock_set_path_exists("/mnt", true);
     let config = crate::config::EphemeralOverlayDir {
         path: PathBuf::from("/run"),
         tmpfs_upper_size: "1G".to_string(),
         tmpfs_work_size: "512M".to_string(),
     };
     // The staging overlay fails after the tmpfs is up, forcing the cleanup path.
-    fs.mock_set_mount_should_fail("/mnt/nails-pivot/run", true);
+    fs.mock_set_mount_should_fail("/run/nails-pivot/run", true);
 
     let result = pivot_ephemeral_mount(&fs, &config, Path::new("/run"));
     assert!(result.is_err(), "overlay failure should propagate");
@@ -380,7 +377,7 @@ fn unmount_pivot_overlay_is_idempotent_without_mounts() {
     let fs = MockFilesystem::new();
     let info = PivotMountInfo {
         target: PathBuf::from("/var"),
-        staging: PathBuf::from("/mnt/nails-pivot/var"),
+        staging: PathBuf::from("/run/nails-pivot/var"),
         upper: PathBuf::from("/mnt/hidden/var-upper"),
         work: PathBuf::from("/mnt/hidden/var-work"),
         lower: PathBuf::from("/var"),

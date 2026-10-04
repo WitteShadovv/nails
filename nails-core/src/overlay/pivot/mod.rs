@@ -15,8 +15,19 @@ use super::mount_info::PivotMountInfo;
 #[cfg(test)]
 mod tests;
 
-/// Default staging directory for pivot mounts
-pub const PIVOT_STAGING_BASE: &str = "/mnt/nails-pivot";
+/// Staging directory base for pivot mounts.
+///
+/// This lives on `/run` (a tmpfs that is always overlay-excluded and can never
+/// be un-excluded, see `config::dynamic`), not on the decoy root. An earlier
+/// design staged under `/mnt/nails-pivot`; because `/mnt` is overlay-excluded it
+/// sat on the persistent decoy filesystem, so every activation created staging
+/// and snapshot directories there that survived teardown and a reboot — a
+/// standing forensic trace on the decoy disk. Staging on the `/run` tmpfs keeps
+/// the same overlay-exclusion property while making the scaffolding volatile:
+/// it is gone on power-off and never reaches the decoy disk image. The old decoy
+/// path stays in the artifact registry so `verify` still flags a leftover from a
+/// prior build.
+pub const PIVOT_STAGING_BASE: &str = "/run/nails-pivot";
 
 /// Upper bound on a snapshot tmpfs, so an overlay-incompatible target can never
 /// request an unbounded amount of RAM. Shared with the overlay-compatibility
@@ -53,7 +64,7 @@ fn cleanup_empty_directory<F: Filesystem>(fs: &F, path: &Path) {
 /// for a mount that cannot otherwise happen. It is the fallback used when a direct
 /// mount is rejected for another reason: the overlay is mounted on a staging path
 /// and bind-mounted over the target in two steps:
-/// 1. Mount overlay to staging location (`/mnt/nails-pivot/var`)
+/// 1. Mount overlay to staging location (`/run/nails-pivot/var`)
 /// 2. Bind mount staging to target (`/var`)
 ///
 /// # Process Impact (Split View)
@@ -97,7 +108,7 @@ fn cleanup_empty_directory<F: Filesystem>(fs: &F, path: &Path) {
 /// fs.mock_set_path_exists("/var", true);
 /// fs.mock_set_path_exists("/mnt/hidden/var-upper", true);
 /// fs.mock_set_path_exists("/mnt/hidden/var-work", true);
-/// fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
+/// fs.mock_set_directory_creatable("/run/nails-pivot/var", true);
 ///
 /// let info = pivot_overlay_mount(
 ///     &fs,
@@ -108,7 +119,7 @@ fn cleanup_empty_directory<F: Filesystem>(fs: &F, path: &Path) {
 /// ).unwrap();
 ///
 /// assert_eq!(info.target, Path::new("/var"));
-/// assert!(info.staging.starts_with("/mnt/nails-pivot"));
+/// assert!(info.staging.starts_with("/run/nails-pivot"));
 /// ```
 pub fn pivot_overlay_mount<F: Filesystem>(
     fs: &F,
@@ -191,7 +202,7 @@ pub fn pivot_overlay_mount<F: Filesystem>(
 /// fs.mock_set_path_exists("/var", true);
 /// fs.mock_set_directory_creatable("/run/nails/var-upper", true);
 /// fs.mock_set_directory_creatable("/run/nails/var-work", true);
-/// fs.mock_set_directory_creatable("/mnt/nails-pivot/var", true);
+/// fs.mock_set_directory_creatable("/run/nails-pivot/var", true);
 ///
 /// let info = pivot_ephemeral_mount(&fs, &config, Path::new("/var")).unwrap();
 /// assert!(info.is_ephemeral);

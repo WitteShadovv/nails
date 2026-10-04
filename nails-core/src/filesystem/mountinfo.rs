@@ -246,7 +246,7 @@ pub struct NailsMounts {
     pub persistent_overlays: Vec<PathBuf>,
     /// Overlays whose upper/work live under the runtime dir (`/run/nails`).
     pub ephemeral_overlays: Vec<PathBuf>,
-    /// Mounts under the pivot staging base (`/mnt/nails-pivot`).
+    /// Mounts under the pivot staging base (`/run/nails-pivot`).
     pub pivot_binds: Vec<PathBuf>,
     /// The `/nix/store` restore bind, if present.
     pub nix_store_bind: Option<PathBuf>,
@@ -482,7 +482,7 @@ this is not a mountinfo line
             ),
             var = overlay_line(11, "/var", "/run/nails/var/upper", "/run/nails/var/work"),
             nix = overlay_line(12, "/nix", "/mnt/hidden/nix/upper", "/mnt/hidden/nix/work"),
-            pivot = "13 1 0:60 / /mnt/nails-pivot/etc rw - overlay overlay rw,lowerdir=/etc,upperdir=/mnt/hidden/etc/upper,workdir=/mnt/hidden/etc/work",
+            pivot = "13 1 0:60 / /run/nails-pivot/etc rw - overlay overlay rw,lowerdir=/etc,upperdir=/mnt/hidden/etc/upper,workdir=/mnt/hidden/etc/work",
             nixstore = "14 1 8:1 /store /nix/store ro - ext4 /dev/sda1 ro",
             foreign = "15 1 8:2 / /home/other rw - ext4 /dev/sdc1 rw",
         );
@@ -494,7 +494,7 @@ this is not a mountinfo line
         assert!(m.ephemeral_overlays.contains(&PathBuf::from("/var")));
         assert!(
             m.pivot_binds
-                .contains(&PathBuf::from("/mnt/nails-pivot/etc"))
+                .contains(&PathBuf::from("/run/nails-pivot/etc"))
         );
         assert_eq!(m.nix_store_bind, Some(PathBuf::from("/nix/store")));
         assert!(m.nix_overlay_present);
@@ -502,7 +502,7 @@ this is not a mountinfo line
         assert!(m.is_owned(Path::new("/home")));
         assert!(m.is_owned(Path::new("/var")));
         assert!(m.is_owned(Path::new("/nix")));
-        assert!(m.is_owned(Path::new("/mnt/nails-pivot/etc")));
+        assert!(m.is_owned(Path::new("/run/nails-pivot/etc")));
         // /nix/store bind is owned because /nix is overlaid.
         assert!(m.is_owned(Path::new("/nix/store")));
         // A foreign ext4 mount is never owned.

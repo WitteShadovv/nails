@@ -523,7 +523,7 @@ fn discover_nails_mounts_reports_overlays_and_binds_owned_but_not_foreign() {
 
     // Pivot staging bind and the /nix/store restore bind.
     fs.mock_set_path_exists("/nix/store", true);
-    fs.bind_mount(Path::new("/nix/store"), Path::new("/mnt/nails-pivot/etc"))
+    fs.bind_mount(Path::new("/nix/store"), Path::new("/run/nails-pivot/etc"))
         .unwrap();
     fs.mock_set_path_exists("/nix-real/store", true);
     fs.bind_mount(Path::new("/nix-real/store"), Path::new("/nix/store"))
@@ -536,7 +536,7 @@ fn discover_nails_mounts_reports_overlays_and_binds_owned_but_not_foreign() {
 
     assert!(mounts.is_owned(Path::new("/home")));
     assert!(mounts.is_owned(Path::new("/nix")));
-    assert!(mounts.is_owned(Path::new("/mnt/nails-pivot/etc")));
+    assert!(mounts.is_owned(Path::new("/run/nails-pivot/etc")));
     // /nix/store is ours because /nix is overlaid.
     assert!(mounts.nix_overlay_present);
     assert!(mounts.is_owned(Path::new("/nix/store")));

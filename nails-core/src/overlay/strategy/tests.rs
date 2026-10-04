@@ -30,8 +30,8 @@ fn setup_vfat_boot(fs: &crate::filesystem::MockFilesystem) {
     fs.mock_set_path_exists("/boot", true);
     fs.mock_set_path_exists("/mnt/hidden/boot/.upper", true);
     fs.mock_set_path_exists("/mnt/hidden/boot/.work", true);
-    fs.mock_set_directory_creatable("/mnt/nails-pivot/boot-snapshot", true);
-    fs.mock_set_directory_creatable("/mnt/nails-pivot/boot", true);
+    fs.mock_set_directory_creatable("/run/nails-pivot/boot-snapshot", true);
+    fs.mock_set_directory_creatable("/run/nails-pivot/boot", true);
 }
 
 #[test]
@@ -76,8 +76,8 @@ fn test_exfat_target_uses_snapshot_pivot() {
     fs.mock_set_path_exists("/boot", true);
     fs.mock_set_path_exists("/mnt/hidden/boot/.upper", true);
     fs.mock_set_path_exists("/mnt/hidden/boot/.work", true);
-    fs.mock_set_directory_creatable("/mnt/nails-pivot/boot-snapshot", true);
-    fs.mock_set_directory_creatable("/mnt/nails-pivot/boot", true);
+    fs.mock_set_directory_creatable("/run/nails-pivot/boot-snapshot", true);
+    fs.mock_set_directory_creatable("/run/nails-pivot/boot", true);
 
     let options = OverlayStrategyOptions {
         allow_pivot: false,
@@ -169,8 +169,8 @@ fn test_ntfs_target_uses_snapshot_pivot() {
     fs.mock_set_path_exists("/mnt/windows", true);
     fs.mock_set_path_exists("/mnt/hidden/windows/.upper", true);
     fs.mock_set_path_exists("/mnt/hidden/windows/.work", true);
-    fs.mock_set_directory_creatable("/mnt/nails-pivot/windows-snapshot", true);
-    fs.mock_set_directory_creatable("/mnt/nails-pivot/windows", true);
+    fs.mock_set_directory_creatable("/run/nails-pivot/windows-snapshot", true);
+    fs.mock_set_directory_creatable("/run/nails-pivot/windows", true);
 
     let options = OverlayStrategyOptions {
         allow_pivot: false,
@@ -333,7 +333,7 @@ fn test_busy_direct_mount_with_auto_accept_enters_pivot_fallback() {
     // EINVAL marks /data as a busy target, so the direct mount fails and, with the
     // pivot auto-accepted, Phase 4 runs the pivot.
     fs.mock_set_mount_fail_errno("/data", Errno::EINVAL);
-    fs.mock_set_directory_creatable("/mnt/nails-pivot/data", true);
+    fs.mock_set_directory_creatable("/run/nails-pivot/data", true);
 
     let options = OverlayStrategyOptions {
         skip_process_detection: false,
@@ -357,7 +357,7 @@ fn test_busy_direct_mount_with_auto_accept_enters_pivot_fallback() {
     // target is still in the mount-fail set), so the operation surfaces that
     // bind failure rather than the --no-pivot InvalidState of the no-pivot case.
     assert!(
-        fs.path_exists(Path::new("/mnt/nails-pivot/data")).unwrap(),
+        fs.path_exists(Path::new("/run/nails-pivot/data")).unwrap(),
         "pivot staging directory should be created when Phase 4 runs"
     );
     assert!(result.is_err());

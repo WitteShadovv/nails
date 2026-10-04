@@ -167,7 +167,7 @@ in
 
     with subtest("no overlay or hidden-volume mount remains"):
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp", "/var", "/opt", "/boot"])
-        machine.fail("mount | grep -E '(/mnt/data|/mnt/nails-pivot|hidden-volume)'")
+        machine.fail("mount | grep -E '(/mnt/data|/run/nails-pivot|hidden-volume)'")
 
     with subtest("the powered-off decoy image gained no non-volatile entries"):
         post_image = disk_forensics.snapshot(machine, "post", restart=False)

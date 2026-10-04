@@ -50,7 +50,10 @@ in
     with subtest("seed one instance of each single-path artifact class"):
         # Runtime (Warn): the per-activation runtime directory.
         machine.succeed("mkdir -p /run/nails")
-        # Runtime (Warn): the pivot staging base.
+        # Runtime (Warn): the pivot staging base on the /run tmpfs.
+        machine.succeed("mkdir -p /run/nails-pivot")
+        # Decoy (Critical): the pivot staging base used by earlier builds, which
+        # must never appear on the persistent decoy root.
         machine.succeed("mkdir -p /mnt/nails-pivot")
         # Decoy (Critical): the staged NixOS module link on the decoy.
         machine.succeed("mkdir -p /etc/nixos/nails")
@@ -65,6 +68,7 @@ in
         found = messages(payload)
         for expected in [
             "/run/nails",
+            "/run/nails-pivot",
             "/mnt/nails-pivot",
             "/etc/nixos/nails/configuration.nix",
             "/mnt/data/state.json",
@@ -96,7 +100,7 @@ in
             f"verify pipeline produced a critical process finding: {critical_process}"
 
     with subtest("a clean host verifies with exit 0"):
-        machine.succeed("rm -rf /run/nails /mnt/nails-pivot /etc/nixos/nails")
+        machine.succeed("rm -rf /run/nails /run/nails-pivot /mnt/nails-pivot /etc/nixos/nails")
         machine.succeed("rm -f /mnt/data/state.json")
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
         machine.succeed("rm -rf /mnt/data")

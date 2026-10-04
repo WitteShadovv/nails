@@ -70,9 +70,18 @@
       "kind": "absolute-path",
       "scope": "runtime",
       "severity": "warn",
+      "value": "/run/nails-pivot",
+      "image_token": "nails-pivot",
+      "description": "Overlay pivot staging base on the /run tmpfs; removed on deactivation."
+    },
+    {
+      "id": "pivot-staging-legacy",
+      "kind": "absolute-path",
+      "scope": "decoy",
+      "severity": "critical",
       "value": "/mnt/nails-pivot",
       "image_token": "nails-pivot",
-      "description": "Overlay pivot staging base; removed on deactivation."
+      "description": "Decoy-root pivot staging base used by earlier builds; must be absent from the decoy disk. A leftover here is a persistent trace a prior version failed to remove."
     },
     {
       "id": "nixos-staged-link",
