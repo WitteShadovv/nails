@@ -30,7 +30,6 @@ in
     };
 
   testScript = _: ''
-    from nails_e2e import install_nixos_rebuild_wrapper
 
     ${testHelpers.readStatusJsonFn}
     ${testHelpers.waitForStatusStateFn}
@@ -146,20 +145,23 @@ in
         timer_unit_hash_before = hash_path(user_timer_unit)
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
         display_manager_before = read_systemd_active_enter_monotonic("display-manager.service")
-        wrapper_env = install_nixos_rebuild_wrapper(
-            machine, "/tmp/nixos-rebuild-mask.log"
-        )
 
     with subtest("activate and mask the inherited decoy entries"):
+        # --overlay-only: the detached worker runs with a fixed root PATH, so a
+        # stub nixos-rebuild on the caller's PATH is never seen and a full
+        # activate would run the real rebuild, which the offline VM cannot
+        # complete (the switch then fails and the overlays roll back). The
+        # persona masks are written before the session restart either way.
         machine.succeed(
-            f"{wrapper_env} env DISPLAY=:0 XDG_SESSION_TYPE=x11 SUDO_UID=1000 SUDO_USER=testuser "
+            "env DISPLAY=:0 XDG_SESSION_TYPE=x11 SUDO_UID=1000 SUDO_USER=testuser "
             + "SHELL=/run/current-system/sw/bin/bash "
-            + f"nails --config {config_path} activate -y"
+            + f"nails --config {config_path} activate --overlay-only -y"
         )
         wait_for_activation_transient_unit()
         wait_for_unit_restarted("display-manager.service", display_manager_before)
         machine.wait_until_succeeds(
-            "/bin/sh -lc 'mountpoint -q /home && [ \"$(findmnt -n -o FSTYPE /home)\" = overlay ]'"
+            "/bin/sh -lc 'mountpoint -q /home && [ \"$(findmnt -n -o FSTYPE /home)\" = overlay ]'",
+            timeout=180,
         )
         wait_for_status_state("active", config_path=config_path)
         assert_overlay_mounted("/home")
