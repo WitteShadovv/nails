@@ -15,6 +15,7 @@
   "config-unknown-key": 70,
   "contract-active-session": 300,
   "emergency": 174,
+  "emergency-backend-lock": 200,
   "emergency-countdown-ux": 67,
   "emergency-from-activating": 66,
   "emergency-from-deactivating": 126,
