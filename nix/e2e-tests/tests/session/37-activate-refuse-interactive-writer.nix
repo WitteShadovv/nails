@@ -61,14 +61,19 @@ in
 
 
     def start_interactive_var_writer(log_path):
-        # Give `tail -f` a controlling terminal: `script` runs it under a fresh
-        # pty, so /proc/<pid>/fd/{0,1,2} point at /dev/pts/N and activation sees
-        # an interactive, non-service process holding /var. setsid detaches it
-        # from the backdoor shell so it survives this command.
+        # An interactive writer on /var: `script` runs it under a fresh pty, so
+        # /proc/<pid>/fd/{0,1,2} point at /dev/pts/N, and it holds the log open
+        # for writing on fd 3 (a read-only `tail -f` is a read-only consumer,
+        # which activation rightly leaves alone, so it would not exercise the
+        # refusal). systemd-run --scope moves it out of the test driver's service
+        # cgroup into a transient scope, so it is a non-service process; setsid
+        # detaches it from the driver shell so it survives this command.
         machine.succeed(f"touch {shlex.quote(log_path)}")
+        quoted_log = shlex.quote(log_path)
+        writer = f"exec 3>>{quoted_log}; exec tail -f {quoted_log}"
         command = (
-            "setsid script -qfc "
-            + shlex.quote(f"tail -f {shlex.quote(log_path)}")
+            "systemd-run --scope --quiet setsid script -qfc "
+            + shlex.quote("sh -c " + shlex.quote(writer))
             + " /dev/null </dev/null >/dev/null 2>&1 & disown; sleep 1; true"
         )
         machine.succeed("bash -lc " + shlex.quote(command))
@@ -77,6 +82,10 @@ in
         assert fd0.startswith("/dev/pts/"), f"writer stdin is not a pty: {fd0!r}"
         fds = machine.succeed(f"ls -l /proc/{pid}/fd")
         assert "nails-decoy-writer.log" in fds, fds
+        flags_line = machine.succeed(f"grep '^flags:' /proc/{pid}/fdinfo/3").split()[1]
+        assert int(flags_line, 8) & 0o3, f"writer fd 3 is not open for writing: {flags_line}"
+        cgroup = machine.succeed(f"cat /proc/{pid}/cgroup")
+        assert ".service" not in cgroup, f"writer is still in a service cgroup: {cgroup!r}"
         return pid
 
 
