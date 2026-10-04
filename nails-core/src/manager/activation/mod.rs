@@ -316,8 +316,23 @@ fn prepare_notification_autostart_before_session_restart<F: Filesystem>(manager:
     }
 }
 
-#[cfg(not(test))]
-fn restart_session_after_success(plan: &crate::process::SessionRestartPlan) -> Result<()> {
+/// The executor the activation flow restarts the killed session through. The
+/// [`SessionRestartGuard`] owns it so the error-path drop and the success-path
+/// call run the same code against the same runner. Production always restarts
+/// through the real `systemctl` runner; tests inject a recording runner.
+#[cfg_attr(test, allow(unreachable_code))]
+fn session_restart_executor() -> Box<dyn crate::process::SessionCommandExecutor> {
+    #[cfg(test)]
+    {
+        return guards::test_hooks::session_executor();
+    }
+    Box::new(RealSessionCommands)
+}
+
+fn restart_session_after_success(
+    plan: &crate::process::SessionRestartPlan,
+    executor: &dyn crate::process::SessionCommandExecutor,
+) -> Result<()> {
     // Starting the display manager is the authoritative restart path for a
     // killed graphical session. On real systems it will recreate the user
     // manager as part of the login/session lifecycle, so explicitly starting
@@ -325,26 +340,13 @@ fn restart_session_after_success(plan: &crate::process::SessionRestartPlan) -> R
     if plan.display_manager.is_none()
         && let Some(uid) = plan.target_uid
     {
-        crate::process::restart_user_manager(uid, &crate::process::RealSessionCommandExecutor)?;
+        crate::process::restart_user_manager(uid, executor)?;
     }
 
     if let Some(dm_name) = plan.display_manager.as_deref() {
-        crate::process::restart_display_manager(
-            dm_name,
-            &crate::process::RealSessionCommandExecutor,
-        )?;
+        crate::process::restart_display_manager(dm_name, executor)?;
     }
 
-    Ok(())
-}
-
-#[cfg(test)]
-fn restart_session_after_success(_plan: &crate::process::SessionRestartPlan) -> Result<()> {
-    if guards::test_hooks::should_fail_restart() {
-        return Err(NailsError::OverlayError(
-            "injected session restart failure (test seam)".to_string(),
-        ));
-    }
     Ok(())
 }
 
@@ -578,7 +580,8 @@ impl<F: Filesystem> NailsManager<F> {
         let restart_phase = determine_session_restart_phase(&restart_plan);
 
         // Auto-restart the session if we exit early with an error after killing it.
-        let mut session_restart_guard = SessionRestartGuard::new(restart_plan.clone());
+        let mut session_restart_guard =
+            SessionRestartGuard::new(restart_plan.clone(), session_restart_executor());
 
         // Step 5: Take the rollback guard; every subsequent step runs through it.
         let activating_state = previous_state.begin_activation()?;
@@ -706,12 +709,13 @@ impl<F: Filesystem> NailsManager<F> {
         step.emit("session_restart", "Restarting session/display manager...");
         if restart_phase == SessionRestartPhase::AfterOverlayMounts {
             prepare_notification_autostart_before_session_restart(&guard);
-            restart_session_after_success(&restart_plan).map_err(|e| {
-                NailsError::OverlayError(format!(
-                    "Activation failed after NixOS switch because session restart failed: {}",
-                    e
-                ))
-            })?;
+            restart_session_after_success(&restart_plan, session_restart_guard.executor())
+                .map_err(|e| {
+                    NailsError::OverlayError(format!(
+                        "Activation failed after NixOS switch because session restart failed: {}",
+                        e
+                    ))
+                })?;
         }
 
         // Step 9.5: Keep the decoy's base-OS trees read-only for the session. This

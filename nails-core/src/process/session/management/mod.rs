@@ -348,10 +348,7 @@ fn process_exists(pid: u32) -> bool {
 
 /// Restart the display manager (best-effort), running its commands through
 /// `executor`.
-pub fn restart_display_manager<E: SessionCommandExecutor>(
-    service: &str,
-    executor: &E,
-) -> Result<()> {
+pub fn restart_display_manager(service: &str, executor: &dyn SessionCommandExecutor) -> Result<()> {
     tracing::info!(service = %service, "Restarting display manager");
     let (success, _stdout, stderr) = executor.execute_systemctl(&["start", service])?;
 
@@ -382,7 +379,7 @@ pub fn restart_display_manager<E: SessionCommandExecutor>(
 
 /// Restart the user manager (best-effort), running its commands through
 /// `executor`.
-pub fn restart_user_manager<E: SessionCommandExecutor>(uid: u32, executor: &E) -> Result<()> {
+pub fn restart_user_manager(uid: u32, executor: &dyn SessionCommandExecutor) -> Result<()> {
     let runtime_service = format!("user-runtime-dir@{}.service", uid);
     let user_service = format!("user@{}.service", uid);
 

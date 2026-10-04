@@ -247,8 +247,6 @@ pub(super) mod test_events {
     pub(crate) enum ActivationEvent {
         /// An overlay target was unmounted during rollback.
         Unmounted(PathBuf),
-        /// The error-path session restart ran (`SessionRestartGuard::drop`).
-        SessionRestart,
     }
 
     thread_local! {

@@ -588,14 +588,16 @@ fn failure_during_rollback_unmount_marks_state_degraded() {
 #[test]
 #[serial]
 fn failed_session_restart_unmounts_before_restart_and_restores_inactive() {
-    use super::guards::test_hooks::SessionRestartTestGuard;
+    use super::guards::test_hooks::{SessionRestartTestGuard, recorded_systemctl};
     use super::rollback::test_events::{ActivationEvent, EventRecorder};
     use crate::process::SessionRestartPlan;
 
     let (mut manager, fs, _tmp) = rollback_test_manager();
 
     // Inject a non-default restart plan (so the after-overlay restart step runs)
-    // and force that restart to fail — the post-mount failure under test.
+    // and a recording executor whose every command fails — the post-mount
+    // failure under test. The same executor backs both the success-path restart
+    // and the guard's error-path restart.
     let _restart = SessionRestartTestGuard::arm(
         SessionRestartPlan {
             display_manager: Some("display-manager.service".to_string()),
@@ -621,24 +623,211 @@ fn failed_session_restart_unmounts_before_restart_and_restores_inactive() {
         SystemState::Inactive
     ));
 
-    // Ordering: every overlay unmount is recorded before the error-path session
-    // restart, so the display manager comes back onto the decoy.
+    // The overlays were torn down before the state was restored to Inactive:
+    // rollback recorded at least one unmount, and nothing but unmounts.
     let events = EventRecorder::events();
-    assert_eq!(
-        events.last(),
-        Some(&ActivationEvent::SessionRestart),
-        "session restart must be the last recorded step, got {events:?}"
-    );
-    let restart_idx = events
-        .iter()
-        .position(|e| *e == ActivationEvent::SessionRestart)
-        .expect("session restart recorded");
-    assert!(restart_idx > 0, "at least one unmount before the restart");
     assert!(
-        events[..restart_idx]
+        !events.is_empty()
+            && events
+                .iter()
+                .all(|e| matches!(e, ActivationEvent::Unmounted(_))),
+        "rollback must unmount every overlay, got {events:?}"
+    );
+
+    // The production restart code actually ran: the success-path call issued the
+    // display-manager start, and the guard's best-effort drop then tried to bring
+    // the user and display managers back onto the decoy.
+    let systemctl = recorded_systemctl();
+    assert_eq!(
+        systemctl.first().map(Vec::as_slice),
+        Some(["start".to_string(), "display-manager.service".to_string()].as_slice()),
+        "the after-overlay restart must start the display manager first, got {systemctl:?}"
+    );
+    assert!(
+        systemctl
             .iter()
-            .all(|e| matches!(e, ActivationEvent::Unmounted(_))),
-        "all steps before the restart must be unmounts, got {events:?}"
+            .any(|call| call.as_slice() == ["start", "user@1000.service"]),
+        "the error-path restart must try to bring the user manager back, got {systemctl:?}"
+    );
+    assert!(
+        systemctl
+            .iter()
+            .filter(|call| call.as_slice() == ["start", "display-manager.service"])
+            .count()
+            >= 2,
+        "the display manager restart must be attempted on both paths, got {systemctl:?}"
+    );
+}
+
+#[test]
+fn restart_session_after_success_starts_the_display_manager() {
+    use crate::process::SessionRestartPlan;
+    use crate::process::session::tests_common::RecordingScriptedSessionCommandExecutor;
+
+    // start + is-active both succeed, so the restart returns without polling.
+    let exec = RecordingScriptedSessionCommandExecutor::new(
+        vec![
+            Ok((true, String::new(), String::new())),
+            Ok((true, "active".to_string(), String::new())),
+        ],
+        Vec::new(),
+        false,
+    );
+    let plan = SessionRestartPlan {
+        display_manager: Some("display-manager.service".to_string()),
+        target_uid: Some(1000),
+    };
+
+    super::restart_session_after_success(&plan, &exec).expect("restart succeeds");
+
+    // A plan with a display manager restarts through it alone; the login stack
+    // brings the user manager back, so user@UID is not started explicitly.
+    assert_eq!(
+        exec.systemctl_calls(),
+        vec![
+            vec!["start".to_string(), "display-manager.service".to_string()],
+            vec![
+                "is-active".to_string(),
+                "display-manager.service".to_string()
+            ],
+        ]
+    );
+}
+
+#[test]
+fn restart_session_after_success_starts_the_user_manager_without_a_display_manager() {
+    use crate::process::SessionRestartPlan;
+    use crate::process::session::tests_common::RecordingScriptedSessionCommandExecutor;
+
+    let exec = RecordingScriptedSessionCommandExecutor::new(
+        vec![
+            Ok((true, String::new(), String::new())),
+            Ok((true, String::new(), String::new())),
+        ],
+        Vec::new(),
+        false,
+    );
+    let plan = SessionRestartPlan {
+        display_manager: None,
+        target_uid: Some(1000),
+    };
+
+    super::restart_session_after_success(&plan, &exec).expect("restart succeeds");
+
+    assert_eq!(
+        exec.systemctl_calls(),
+        vec![
+            vec![
+                "start".to_string(),
+                "user-runtime-dir@1000.service".to_string()
+            ],
+            vec!["start".to_string(), "user@1000.service".to_string()],
+        ]
+    );
+}
+
+#[test]
+fn restart_session_after_success_propagates_a_failed_start() {
+    use crate::process::SessionRestartPlan;
+    use crate::process::session::tests_common::RecordingScriptedSessionCommandExecutor;
+
+    let exec = RecordingScriptedSessionCommandExecutor::new(
+        vec![Ok((false, String::new(), "boom".to_string()))],
+        Vec::new(),
+        false,
+    );
+    let plan = SessionRestartPlan {
+        display_manager: Some("display-manager.service".to_string()),
+        target_uid: None,
+    };
+
+    assert!(
+        super::restart_session_after_success(&plan, &exec).is_err(),
+        "a failed display-manager start must surface as an error"
+    );
+}
+
+#[test]
+#[serial]
+fn session_restart_guard_restarts_the_session_on_drop() {
+    use super::guards::SessionRestartGuard;
+    use super::guards::test_hooks::{
+        SessionRestartTestGuard, recorded_systemctl, session_executor,
+    };
+    use crate::process::SessionRestartPlan;
+
+    let plan = SessionRestartPlan {
+        display_manager: Some("display-manager.service".to_string()),
+        target_uid: Some(1000),
+    };
+    // Arming installs the recording executor and lets its commands succeed.
+    let _arm = SessionRestartTestGuard::arm(plan.clone(), false);
+
+    drop(SessionRestartGuard::new(plan, session_executor()));
+
+    // The error-path drop brings the user manager back first, then the display
+    // manager (polling it until active).
+    assert_eq!(
+        recorded_systemctl(),
+        vec![
+            vec![
+                "start".to_string(),
+                "user-runtime-dir@1000.service".to_string()
+            ],
+            vec!["start".to_string(), "user@1000.service".to_string()],
+            vec!["start".to_string(), "display-manager.service".to_string()],
+            vec![
+                "is-active".to_string(),
+                "display-manager.service".to_string()
+            ],
+        ]
+    );
+}
+
+#[test]
+#[serial]
+fn session_restart_guard_issues_nothing_when_disarmed() {
+    use super::guards::SessionRestartGuard;
+    use super::guards::test_hooks::{
+        SessionRestartTestGuard, recorded_systemctl, session_executor,
+    };
+    use crate::process::SessionRestartPlan;
+
+    let plan = SessionRestartPlan {
+        display_manager: Some("display-manager.service".to_string()),
+        target_uid: Some(1000),
+    };
+    let _arm = SessionRestartTestGuard::arm(plan.clone(), false);
+
+    let mut guard = SessionRestartGuard::new(plan, session_executor());
+    guard.disarm();
+    drop(guard);
+
+    assert!(
+        recorded_systemctl().is_empty(),
+        "a disarmed guard must not restart the session"
+    );
+}
+
+#[test]
+#[serial]
+fn session_restart_guard_issues_nothing_for_an_empty_plan() {
+    use super::guards::SessionRestartGuard;
+    use super::guards::test_hooks::{
+        SessionRestartTestGuard, recorded_systemctl, session_executor,
+    };
+    use crate::process::SessionRestartPlan;
+
+    let _arm = SessionRestartTestGuard::arm(SessionRestartPlan::default(), false);
+
+    drop(SessionRestartGuard::new(
+        SessionRestartPlan::default(),
+        session_executor(),
+    ));
+
+    assert!(
+        recorded_systemctl().is_empty(),
+        "an empty plan has no session to restart"
     );
 }
 
