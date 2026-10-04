@@ -59,7 +59,7 @@ Compare the fingerprint gpg prints with the one below before encrypting, and do 
 ### OPSEC for reporters
 
 - A pseudonymous or throwaway GitHub account or email address is fine. We do not need your real name.
-- Real paths, hostnames, usernames, volume labels, and unredacted `nails status` or `nails verify` output are not needed. Replace them with placeholders such as `/mnt/hidden` or `host1`, or describe the layout in words.
+- Real paths, hostnames, usernames, volume labels, and unredacted `nails status` or `nails verify` output are not needed. Replace them with placeholders such as `/mnt/usb` or `host1`, or describe the layout in words.
 - Strip metadata from attachments such as screenshots and log files.
 - Say if you do not want to be credited. We then leave your name and account out of the published advisory.
 

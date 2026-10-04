@@ -339,6 +339,53 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_overlay_only_switch_is_not_requested_and_writes_no_rebuild_notification() {
+        let mut env = EnvGuard::lock();
+        env.remove("NAILS_SYSTEM_PROFILE_PATH");
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path();
+
+        // No NixOS builder is attached: this is the overlay-only / non-NixOS
+        // (FHS) case, where there is no declarative layer to build or switch.
+        let (manager, _tempdir) = TestWorld::new()
+            .with_filesystem(MockFilesystem::new())
+            .with_hidden_root(hidden_root)
+            .inactive()
+            .manager();
+
+        // The switch itself reports that no rebuild was requested, without
+        // running any build or switch command.
+        let outcome = manager
+            .switch_nixos_profile(&None, &None, Verbosity::Quiet)
+            .unwrap();
+        assert!(
+            matches!(outcome, HiddenConfigOutcome::NotRequested),
+            "overlay-only activation must not request a NixOS switch: {outcome:?}"
+        );
+
+        // The full post-overlay step carries the same outcome through and, on
+        // NotRequested, writes no "NixOS Rebuild Complete" notification: the
+        // rebuild step is honestly absent rather than faked.
+        let post = manager.run_post_overlay_nixos_switch(&None, &None, Verbosity::Quiet);
+        assert!(
+            matches!(post, HiddenConfigOutcome::NotRequested),
+            "the post-overlay step must stay NotRequested overlay-only: {post:?}"
+        );
+
+        let notifications = hidden_root.join("notifications");
+        let has_notification = notifications
+            .read_dir()
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(false);
+        assert!(
+            !has_notification,
+            "overlay-only activation must write no rebuild notification"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn test_switch_fast_path_rebuilds_when_cached_toplevel_missing() {
         let mut env = EnvGuard::lock();
         env.remove("NAILS_SYSTEM_PROFILE_PATH");

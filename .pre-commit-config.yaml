@@ -72,6 +72,16 @@ repos:
         files: '.*\.sh$'
         args: [-e, SC1091, -e, SC2034]
 
+      # Link-check the Markdown docs and reject retired names. Runs whenever a
+      # Markdown file or the checker itself changes; it scans the whole doc set,
+      # so the changed file names are not passed through.
+      - id: docs-check
+        name: docs link check and retired-name guard
+        entry: scripts/docs-check.sh
+        language: system
+        files: '(\.md$|^scripts/docs-check\.sh$)'
+        pass_filenames: false
+
       - id: nails-config-validation
         name: validate NAILS configuration files
         entry: bash

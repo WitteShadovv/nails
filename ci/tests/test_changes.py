@@ -13,8 +13,8 @@ from unittest import mock
 
 from ci import changes
 
-NOTHING = {"rust": False, "deps": False, "nix": False, "workflows": False}
-EVERYTHING = {"rust": True, "deps": True, "nix": True, "workflows": True}
+NOTHING = {"rust": False, "deps": False, "nix": False, "workflows": False, "docs": False}
+EVERYTHING = {"rust": True, "deps": True, "nix": True, "workflows": True, "docs": True}
 
 
 def only(*names: str) -> dict[str, bool]:
@@ -22,9 +22,9 @@ def only(*names: str) -> dict[str, bool]:
 
 
 class SelectTest(unittest.TestCase):
-    def test_documentation_runs_nothing(self) -> None:
+    def test_documentation_runs_the_docs_check(self) -> None:
         paths = ["README.md", "CHANGELOG.md", "TODO.md", "docs/ci.md", "LICENSE"]
-        self.assertEqual(changes.select(paths), NOTHING)
+        self.assertEqual(changes.select(paths), only("docs"))
 
     def test_no_change_runs_nothing(self) -> None:
         self.assertEqual(changes.select([]), NOTHING)
@@ -81,9 +81,9 @@ class SelectTest(unittest.TestCase):
                 self.assertTrue(changes.select([path])["workflows"])
         self.assertEqual(changes.select(["ci/e2e/plan.py"]), only("workflows"))
 
-    def test_lookalike_paths_do_not_match(self) -> None:
+    def test_lookalike_paths_match_only_docs(self) -> None:
         paths = ["docs/Cargo.toml.md", "docs/nails-core/notes.md", "docs/flake.nix.md"]
-        self.assertEqual(changes.select(paths), NOTHING)
+        self.assertEqual(changes.select(paths), only("docs"))
 
     def test_ci_workflow_or_this_filter_runs_everything(self) -> None:
         for path in (".github/workflows/ci.yml", "ci/changes.py"):
@@ -92,7 +92,7 @@ class SelectTest(unittest.TestCase):
 
     def test_filters_combine_over_several_paths(self) -> None:
         paths = ["docs/ci.md", "nails-cli/src/main.rs", "flake.nix"]
-        self.assertEqual(changes.select(paths), only("rust", "nix"))
+        self.assertEqual(changes.select(paths), only("rust", "nix", "docs"))
 
 
 def git(repo: Path, *args: str) -> str:
@@ -176,21 +176,21 @@ class MainTest(unittest.TestCase):
     def test_without_base_every_filter_is_true(self) -> None:
         self.assertEqual(
             self.run_main(),
-            ["rust=true", "deps=true", "nix=true", "workflows=true"],
+            ["rust=true", "deps=true", "nix=true", "workflows=true", "docs=true"],
         )
 
     def test_unknown_base_runs_everything(self) -> None:
         with mock.patch.object(changes, "changed_paths", return_value=None):
             self.assertEqual(
                 self.run_main("--base", "HEAD^1"),
-                ["rust=true", "deps=true", "nix=true", "workflows=true"],
+                ["rust=true", "deps=true", "nix=true", "workflows=true", "docs=true"],
             )
 
     def test_prints_github_output_lines(self) -> None:
         with mock.patch.object(changes, "changed_paths", return_value=["deny.toml"]):
             self.assertEqual(
                 self.run_main("--base", "HEAD^1"),
-                ["rust=false", "deps=true", "nix=false", "workflows=false"],
+                ["rust=false", "deps=true", "nix=false", "workflows=false", "docs=false"],
             )
 
 

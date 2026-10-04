@@ -175,7 +175,7 @@ Return early with clear error messages. Include:
 Provide fix guidance in failure messages.
 
 Bad: "Storage not ready"
-Good: "Storage not ready: Missing /etc/ directory. Create with: sudo mkdir -p /mnt/hidden-volume/etc"
+Good: "Storage not ready: Missing /etc/ directory. Create with: sudo mkdir -p /mnt/data/etc"
 
 ### 4. Idempotent Checks
 Checks should be safe to run multiple times without side effects (except auto-creation features).

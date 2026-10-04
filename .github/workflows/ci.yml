@@ -52,6 +52,7 @@ jobs:
       deps: ${{ steps.filter.outputs.deps }}
       nix: ${{ steps.filter.outputs.nix }}
       workflows: ${{ steps.filter.outputs.workflows }}
+      docs: ${{ steps.filter.outputs.docs }}
 
     steps:
       - name: Checkout code
@@ -382,10 +383,34 @@ jobs:
       - name: Run the flake checks
         run: nix flake check -L --option accept-flake-config false
 
+  # The cheap documentation gate: link-check the Markdown and reject retired
+  # names. No build, so it stays in the fast lane and runs on docs-only changes.
+  docs-check:
+    name: docs-check
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install lychee
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: lychee
+          fallback: none
+
+      - name: Check the documentation
+        run: ./scripts/docs-check.sh
+
   # The one required status. A job the path filter skipped counts as passed.
   gate:
     name: gate
-    needs: [changes, lint, rust, deps, privileged-mounts, nix-build, lint-misc]
+    needs: [changes, lint, rust, deps, privileged-mounts, nix-build, lint-misc, docs-check]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

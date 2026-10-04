@@ -20,7 +20,8 @@ first-class platform; Debian 12+ and Ubuntu 24.04+ run in a reduced overlay-only
 
 > [!WARNING]
 > NAILS is **alpha** security software. It is intended for technically experienced users who can
-> test their exact setup, storage backend, and operating procedure before relying on it.
+> test their exact setup, storage backend, and operating procedure before relying on it. Read the
+> [operator guide](docs/operator-guide.md) and the [threat model](docs/threat-model.md) first.
 
 ## What NAILS does
 
@@ -42,12 +43,12 @@ At a high level:
 
 1. You mount a hidden, writable Linux filesystem that can host an overlayfs upper layer (symbolic links, trusted xattrs, a valid readdir `d_type`, and whiteouts).
 2. `nails activate` overlays selected paths such as `/etc`, `/home`, `/var`, and optionally `/boot`.
-3. Hidden NixOS configuration and hidden state become active without permanently rewriting the decoy.
+3. On NixOS, `activate` then builds the hidden declarative configuration and switches to it; on Debian/Ubuntu and other FHS hosts there is no declarative layer, so only the overlays are mounted and no rebuild runs. Either way the decoy is never permanently rewritten.
 4. `nails deactivate` or `nails emergency` removes overlays and returns the system to decoy state.
 
 Key design points:
 
-- **NixOS-specific workflow** using declarative rebuilds and profile switching
+- **Auto mode by default**: NAILS derives the overlay set from the live base OS and, on NixOS, pairs it with a declarative switch; `--overlay-only` and non-NixOS hosts take the overlay-only path with no rebuild step
 - **Storage-agnostic backend model** as long as the backend is already mounted and writable
 - **Overlay-based isolation** so writes go to hidden storage rather than the decoy base system
 - **Verification support** through `nails verify` for known/common post-deactivation artifacts
@@ -159,6 +160,9 @@ install -m0755 ./result/bin/nails /mnt/data/nails
 > a build directory or `/nix/store`, set `hidden_volume_root` explicitly or use `--config`.
 
 ## Quick start
+
+This is the shortest runnable path. The [operator guide](docs/operator-guide.md) walks the same
+steps in full, organised around where each one runs, with a recovery runbook and the honest limits.
 
 1. **Mount your hidden storage**.
 
@@ -383,9 +387,9 @@ scope of the reproducibility claim and artifact verification details.
 This release changes operator-facing interfaces. There is no backwards-compatibility
 shim: convert your setup before running the new binary.
 
-- **Configuration format.** Configuration is now strict TOML. Convert `nails.yaml`
-  to `config/nails.toml` next to the binary on the hidden volume (see
-  [docs/configuration.md](docs/configuration.md) for every key and its default).
+- **Configuration format.** Configuration is now strict TOML. Convert any earlier
+  YAML configuration to `config/nails.toml` next to the binary on the hidden volume
+  (see [docs/configuration.md](docs/configuration.md) for every key and its default).
   Unknown keys, wrong types and TOML syntax errors are rejected with a one-line
   message rather than silently falling back to a default.
 - **Invocation.** Always run the binary by its full path on the hidden volume
@@ -422,13 +426,20 @@ They are related projects, but they are not interchangeable products and do not 
 
 ### User and operator references
 
-- [GitHub Releases](https://github.com/WitteShadovv/nails/releases)
-- [Change history](CHANGELOG.md)
-- [Roadmap](ROADMAP.md)
-- [Storage backends](docs/backends.md)
+- [Project site](https://nails.run)
+- [Operator guide](docs/operator-guide.md) — the full workflow, recovery runbook and honest limits
+- [Threat model](docs/threat-model.md) — adversary, assumptions, residual channels and evaluation scope
+- [Decoy requirements](docs/decoy-requirements.md) — what the decoy system must and must not keep
+- [Storage backends](docs/backends.md) — which backends are tested and the hazards of each
+- [Configuration reference](docs/configuration.md) — every `nails.toml` key with its default and effect
+- [CLI reference](docs/cli.md) — commands, flags, exit codes and the JSON envelope
+- [Architecture overview](docs/architecture.md) — how the crates and runtime layers fit together
 - [Distribution channels](docs/distribution.md)
 - [Verify a release](docs/verify-release.md)
 - [Release artifact reproducibility](docs/release-artifact-reproducibility.md)
+- [GitHub Releases](https://github.com/WitteShadovv/nails/releases)
+- [Change history](CHANGELOG.md)
+- [Roadmap](ROADMAP.md)
 
 ### Contributing and governance
 

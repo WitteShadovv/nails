@@ -39,6 +39,8 @@ FILTERS: dict[str, re.Pattern[str]] = {
     "nix": re.compile(r"^(flake\.(nix|lock)$|nix/|\.github/actions/setup-nix/)|\.nix$"),
     # The CI tooling: workflows, composite actions, the ci package, scripts.
     "workflows": re.compile(r"^(\.github/|ci/|scripts/|pyproject\.toml$)|\.sh$"),
+    # The Markdown docs and the checker that lints them.
+    "docs": re.compile(r"\.md$|^scripts/docs-check\.sh$"),
 }
 
 # A change to one of these can alter any job, so it runs them all.

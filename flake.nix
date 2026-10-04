@@ -301,6 +301,7 @@
           shellcheck
           actionlint
           zizmor
+          lychee # scripts/docs-check.sh link-checks the Markdown docs
           just
           python3 # ci/*.py checks; tomllib needs Python 3.11 or newer
           ruff

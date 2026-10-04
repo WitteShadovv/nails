@@ -66,6 +66,19 @@ in
     script = "find . -type f -name '*.sh' -print0 | xargs -0 shellcheck -e SC1091 -e SC2034";
   };
 
+  # Link-check the Markdown docs and reject retired names. A link can point at
+  # any file in the tree, so the whole source is the input rather than a minimal
+  # fileset; the check is offline and takes seconds. The script walks the files
+  # with `find` here because the build sandbox has no `.git`.
+  docs-check = lint "docs-check" {
+    files = root;
+    tools = [
+      pkgs.lychee
+      pkgs.bash
+    ];
+    script = "bash scripts/docs-check.sh";
+  };
+
   # With shellcheck on PATH, actionlint also lints every `run:` script.
   # actionlint only resolves local actions and reusable workflows inside a
   # repository, which it recognises by a .git directory.

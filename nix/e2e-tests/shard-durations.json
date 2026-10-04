@@ -68,6 +68,7 @@
   "preflight-swap-reenable": 120,
   "preflight-symlink-support": 63,
   "preflight-upper-fs-capability": 63,
+  "quickstart-zero-config": 180,
   "reactivation": 170,
   "rebuild-failure-rollback": 81,
   "session-detection": 213,
