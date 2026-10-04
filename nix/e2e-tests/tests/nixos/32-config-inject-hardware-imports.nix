@@ -10,7 +10,7 @@ in
   meta.tags = [ "nixos" ];
 
   nodes.machine =
-    { pkgs, ... }:
+    { pkgs, lib, ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [
@@ -21,6 +21,18 @@ in
         "nix-command"
         "flakes"
       ];
+      # The decoy's hardware-configuration.nix has NO imports attribute, so the
+      # test exercises wrapper injection over a bare file. NixOS rewrites this
+      # 0644 file into /etc on every boot, and canonical_deactivate reboots, so it
+      # must be the node config (not a one-shot runtime edit) or the reboot would
+      # clobber what NAILS restored and the final restore check would see the base
+      # fixture's "imports = [ ]" stub instead.
+      environment.etc."nixos/hardware-configuration.nix".text = lib.mkForce ''
+        { config, lib, pkgs, ... }:
+        {
+          boot.loader.grub.enable = false;
+        }
+      '';
     };
 
   testScript = _: ''
@@ -59,28 +71,14 @@ in
         )
         return "PATH=/var/lib/nails-tests/nails-wrapper/bin:$PATH"
 
-    # Replace the decoy hardware-configuration.nix (a store-managed symlink) with
-    # a plain file that has NO imports attribute at all.
-    def install_decoy_without_imports():
-        machine.succeed(
-            """rm -f /etc/nixos/hardware-configuration.nix
-    cat > /etc/nixos/hardware-configuration.nix <<'EOF'
-    { config, lib, pkgs, ... }:
-    {
-      boot.loader.grub.enable = false;
-    }
-    EOF"""
-        )
-
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
     headless_config = "/var/lib/nails-tests/nails-headless.toml"
     write_headless_config(headless_config)
     wrapper_env = install_nixos_rebuild_wrapper("/var/lib/nails-tests/nixos-rebuild-hardware-imports.log")
-    install_decoy_without_imports()
 
-    # Sanity: the decoy really has no imports list.
+    # Sanity: the decoy (defined in the node config) really has no imports list.
     decoy = machine.succeed("cat /etc/nixos/hardware-configuration.nix")
     assert "imports" not in decoy, f"decoy fixture should have no imports attribute, got: {decoy!r}"
 
