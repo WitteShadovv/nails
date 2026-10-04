@@ -71,7 +71,55 @@ fn collect_protected_shell_pids() -> Vec<u32> {
     #[cfg(not(feature = "test-hooks"))]
     let handoff: Option<std::ffi::OsString> = None;
 
-    merge_protected_pids(current_process_ancestry(), handoff.as_deref())
+    let mut protected = merge_protected_pids(current_process_ancestry(), handoff.as_deref());
+
+    // Spare every shell that shares this teardown's own session or process group,
+    // not only its direct ancestry. When `nails emergency` is run in a pipeline —
+    // which the NixOS test driver always does to capture output
+    // (`nails emergency | ( base64 -w 0; echo )`) — the pipe-reading subshell is a
+    // sibling, so it is not in the ancestry, yet killing it severs the console
+    // reading the teardown's own result. It shares the session (and process group,
+    // for a pipeline launched from one shell), so sparing those spares it. A
+    // shipped emergency runs detached in its own session, so this spares only the
+    // teardown's own invocation, never the operator's decoy shells.
+    for pid in own_session_or_group_shell_pids() {
+        if !protected.contains(&pid) {
+            protected.push(pid);
+        }
+    }
+
+    protected
+}
+
+/// Every live process sharing this teardown's session or process group.
+///
+/// Scanned once from `/proc` just before the pre-unmount shell kill and merged
+/// into the protected set so [`kill_shells_for_teardown`] spares the teardown's
+/// own invocation — in particular the sibling that reads its piped output — the
+/// same way [`is_own_invocation_process`] spares it from the overlay-rooted kill.
+#[cfg(not(test))]
+fn own_session_or_group_shell_pids() -> Vec<u32> {
+    let (self_sid, self_pgid) = self_session_and_pgid();
+    if self_sid == 0 && self_pgid == 0 {
+        return Vec::new();
+    }
+
+    let Ok(proc_dir) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+
+    let mut pids = Vec::new();
+    for entry in proc_dir.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if let Some((sid, pgid)) = read_session_and_pgid(pid)
+            && is_own_invocation_process(pid, sid, pgid, &[], self_sid, self_pgid)
+        {
+            pids.push(pid);
+        }
+    }
+    pids
 }
 
 fn current_process_ancestry() -> Vec<u32> {
@@ -832,9 +880,11 @@ impl<F: Filesystem> NailsManager<F> {
             );
             let protected = collect_protected_shell_pids();
             // Teardown kills root's decoy shell too, so its in-memory history is
-            // never flushed; only this process's own ancestry stays protected, and
-            // the deactivation detach means the invoking shell is torn down with
-            // the rest rather than permanently spared.
+            // never flushed; only the teardown's own invocation stays protected —
+            // its ancestry plus any sibling sharing its session or process group,
+            // such as the pipe reader capturing this command's output — and the
+            // deactivation detach means the invoking shell is torn down with the
+            // rest rather than permanently spared.
             let report = kill_shells_for_teardown(&protected);
             tracing::info!(
                 killed = report.killed.len(),
