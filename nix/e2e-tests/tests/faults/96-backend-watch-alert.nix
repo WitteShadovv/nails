@@ -110,7 +110,11 @@ in
         assert "nails" not in watch_unit
 
     with subtest("the backing device is yanked out from under the overlays"):
-        machine.succeed("dmsetup remove --force data")
+        # Swap the dm target for an error target in place so the hidden filesystem
+        # returns EIO. "dmsetup remove" cannot remove the node while /mnt/data and
+        # its overlays still hold it open, so wipe_table is used: it loads the error
+        # target and resumes the device without removing it, and so succeeds.
+        machine.succeed("dmsetup wipe_table --force data")
 
     with subtest("the watcher alerts the operator about the failed backend"):
         # The poll interval is 2s; give the watcher a generous window to notice.

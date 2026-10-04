@@ -50,8 +50,13 @@ in
     with subtest("the backing device is yanked out from under the overlays"):
         # Replacing the dm target with an error target makes the hidden filesystem
         # return EIO for every access, simulating a removed backing disk while the
-        # overlays above it stay mounted.
-        machine.succeed("dmsetup remove --force data")
+        # overlays above it stay mounted. wipe_table performs exactly that swap in
+        # place: "dmsetup remove" cannot be used here because the backing node is
+        # still held open by the live /mnt/data mount and its overlays, so even
+        # "remove --force" leaves the error target loaded but exits non-zero on the
+        # failed remove ioctl. wipe_table loads the error target and resumes the
+        # device without removing the node, so the fault injection itself succeeds.
+        machine.succeed("dmsetup wipe_table --force data")
 
     with subtest("emergency detaches every overlay within the time bound"):
         # timeout caps the whole teardown so a wedge on the dead device is a
