@@ -29,6 +29,7 @@ in
     ${testHelpers.canonicalDeactivateFn}
 
     import json
+    import uuid
 
     def read_status_json_local(config_path):
         return json.loads(machine.succeed(f"nails --config {config_path} status --json"))["data"]
@@ -52,15 +53,29 @@ in
     # and `/root` were overlaid, the canary would land on the decoy's persistent
     # store and cache and survive deactivation. T-067 defers that validation to
     # the overlaid phase, so the canary must never reach the lower layer.
-    HIDDEN_FLAKE_CANARY = "NAILS_HIDDEN_FLAKE_CANARY_f067"
+    #
+    # Generated per run so the literal never appears in this test script itself:
+    # the guest Nix store includes the host store, which holds the driver's own
+    # test-script, so a fixed literal would make the forensic grep match the test
+    # instead of a real leak. A fresh value also cannot match a leftover from an
+    # earlier run.
+    HIDDEN_FLAKE_CANARY = "NAILS_HIDDEN_FLAKE_" + uuid.uuid4().hex
+
+    # Marker to scope the store scan to paths created after it. Touched before the
+    # hidden flake exists, so the huge, older host store (including this test
+    # script) is never scanned: the grep is both correct and fast (a full
+    # grep -r over the whole Nix store otherwise eats most of the test budget).
+    STORE_SCAN_MARKER = "/tmp/nails-store-scan-marker"
 
     def find_canary_in_decoy(store_dir, canary):
-        # Returns the matching locations on the lower (decoy) layer. Greps the
-        # Nix store (which holds any leaked `-source` copy and thus covers the
-        # DB-registered path content) and root's fetcher cache.
+        # Returns the matching locations on the lower (decoy) layer. Greps only the
+        # store paths created since STORE_SCAN_MARKER (any leaked `-source` copy,
+        # which also covers the DB-registered path content) plus root's fetcher
+        # cache.
         hits = machine.succeed(
             "/bin/sh -lc '"
-            f"grep -rl {canary} {store_dir} 2>/dev/null; "
+            f"find {store_dir} -maxdepth 1 -newer {STORE_SCAN_MARKER} -print0 2>/dev/null "
+            f"| xargs -0 -r grep -rl {canary} 2>/dev/null; "
             f"grep -rl {canary} /root/.cache/nix 2>/dev/null; "
             "true'"
         ).strip()
@@ -100,19 +115,29 @@ in
     flake_ref = "/mnt/data/nixos#nails-e2e"
     write_headless_config(headless_config)
 
+    # Scope the later store scans to paths created from here on, before the hidden
+    # flake (carrying the canary) exists anywhere.
+    machine.succeed(f"touch {STORE_SCAN_MARKER}")
+
     with subtest("prepare hidden flake override"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("mkdir -p /mnt/data/nixos")
-        machine.succeed("""cat > /mnt/data/nixos/flake.nix <<'EOF'
+        # Write the per-run canary as the first comment line (Nix ignores it), then
+        # the flake body, so the canary lives in the flake source without the fixed
+        # literal ever appearing in this test script.
+        machine.succeed(
+            f"printf '# %s forensic canary; see test script.\\n' {HIDDEN_FLAKE_CANARY} "
+            "> /mnt/data/nixos/flake.nix"
+        )
+        machine.succeed("""cat >> /mnt/data/nixos/flake.nix <<'EOF'
     {
-      # NAILS_HIDDEN_FLAKE_CANARY_f067 — forensic canary; see test script.
       description = "NAILS flake override E2E";
       # No nixpkgs input: this test stubs nixos-rebuild (below), so the hidden
       # system is never actually built. A `path:` nixpkgs input would copy the
-      # entire nixpkgs tree into the decoy store during `nix flake lock` and the
-      # deferred `nix flake metadata`/eval — several minutes of I/O on the
-      # space-limited test disk — without exercising anything this test asserts.
-      # nails' flake validation only needs the flake to resolve and the selected
+      # entire nixpkgs tree into the decoy store during the deferred
+      # `nix flake metadata`/eval — several minutes of I/O on the space-limited
+      # test disk — without exercising anything this test asserts. nails' flake
+      # validation only needs the flake to resolve and the selected
       # `nixosConfigurations` attribute to exist, and the canary leak check only
       # needs the flake source (carrying the canary) copied into the store; this
       # minimal flake still drives both. The real build+switch path lives in
@@ -122,7 +147,13 @@ in
       };
     }
     EOF""")
-        machine.succeed("nix flake lock --offline /mnt/data/nixos")
+        # A trivial lock for the input-less flake, on the hidden volume (never the
+        # decoy store). It lets nails' deferred, overlaid `nix flake metadata`
+        # resolve with --no-update-lock-file; running `nix flake lock` on the decoy
+        # here would itself copy the canary-bearing source into the decoy store.
+        machine.succeed("""cat > /mnt/data/nixos/flake.lock <<'EOF'
+    {"nodes":{"root":{}},"root":"root","version":7}
+    EOF""")
         wrapper_env = install_nixos_rebuild_wrapper(
             "/tmp/nixos-rebuild-flake.log",
             "/etc/nails-flake-marker",
