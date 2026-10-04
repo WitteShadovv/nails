@@ -122,6 +122,27 @@ impl<F: Filesystem> PreFlightCheck<F> for UpperFsCapabilityCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
+        // The probe creates and mounts a scratch directory *on the hidden root*,
+        // so it must never run against a root that is not a positively attached
+        // volume: a probe on an unmounted mount point would drop a `.probe-*`
+        // directory onto the decoy disk, the exact forensic leak the attach gate
+        // exists to prevent. The registry already short-circuits this check once
+        // the `hidden-volume` gate fails, but that gate judges "mounted" from the
+        // mount table while the attach gate judges it from the device id, and the
+        // two disagree for a bind mount that stays on `/`'s device. Consult the
+        // single write-path gate here too so the probe writes nothing unless the
+        // root is genuinely attached. The hidden-volume check owns the operator
+        // message, so an unattached root is a silent skip, not a second failure.
+        match crate::hidden_root::HiddenRoot::verify_attached(fs, &self.hidden_volume_root, false)?
+        {
+            crate::hidden_root::AttachState::Attached => {}
+            crate::hidden_root::AttachState::Unattached(reason) => {
+                return Ok(CheckResult::skipped(format!(
+                    "upper-fs capability not probed; the hidden root is not attached: {reason}"
+                )));
+            }
+        }
+
         // The probe writes to and mounts over the real hidden root, so there is
         // nothing to probe under a test binary. Skip it there, like every other
         // host-touching check, so mock-driven preflight tests stay hermetic; a
@@ -389,12 +410,40 @@ mod tests {
     fn runs_hermetically_under_test_runtime() {
         // The host probe is skipped under the test binary, so the check passes
         // against the mock without touching any real filesystem. This also keeps
-        // the registry wiring compiled and exercised.
+        // the registry wiring compiled and exercised. The mock presents an
+        // attached hidden root (its own device) so the attach gate passes and the
+        // check reaches the test-runtime skip rather than the not-attached skip.
+        let root = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
         let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(root.to_str().unwrap(), true);
+        fs.mock_set_device_id(std::path::Path::new("/"), 1);
+        fs.mock_set_device_id(&root, 42);
         let check = UpperFsCapabilityCheck::default();
         let result = check.run(&fs).unwrap();
         assert!(result.is_pass());
         assert!(result.message().contains("skipped"));
+    }
+
+    #[test]
+    fn skips_without_writing_when_hidden_root_is_not_attached() {
+        // A hidden root that exists but shares `/`'s device is an unmounted mount
+        // point on the decoy disk. The probe must not create its `.probe-*`
+        // scratch directory there, so the attach gate turns the check into a skip
+        // (the hidden-volume check owns the operator-facing failure) before any
+        // host interaction is attempted.
+        let root = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(root.to_str().unwrap(), true);
+        fs.mock_set_device_id(std::path::Path::new("/"), 1);
+        fs.mock_set_device_id(&root, 1);
+        let check = UpperFsCapabilityCheck::default();
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_skipped(), "expected a skip, got {result:?}");
+        assert!(
+            result.message().contains("not attached"),
+            "skip should explain the root is not attached: {}",
+            result.message()
+        );
     }
 
     #[test]
