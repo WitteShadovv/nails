@@ -321,3 +321,22 @@ fn own_invocation_process_ignores_zero_sentinels() {
     // But a genuine ancestry hit still spares even with zeroed sessions.
     assert!(is_own_invocation_process(4242, 0, 0, &[4242], 0, 0));
 }
+
+#[test]
+fn overlay_kill_candidate_is_gated_on_the_overlay_device() {
+    use super::candidate_is_overlay_rooted;
+
+    // A path-matched candidate whose references are on the overlay device is
+    // genuinely inside the overlay and is killed.
+    assert!(candidate_is_overlay_rooted(false, true, true));
+    // A path-matched candidate whose references are on the decoy device (the
+    // overlay device set is known, but it does not resolve onto it) is a decoy
+    // process that only collided on the path string: it is spared.
+    assert!(!candidate_is_overlay_rooted(false, false, true));
+    // An unverifiable writer (foreign mount namespace / chroot) cannot be device
+    // checked, so it is kept fail-safe even without a device match.
+    assert!(candidate_is_overlay_rooted(true, false, true));
+    // When no overlay device could be read at all, fall back to the path match so
+    // the overlays are never left pinned by an unkilled writer.
+    assert!(candidate_is_overlay_rooted(false, false, false));
+}

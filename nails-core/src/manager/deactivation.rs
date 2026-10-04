@@ -200,6 +200,74 @@ fn self_session_and_pgid() -> (u32, u32) {
     (sid, pgid)
 }
 
+/// Decide whether a path-matched emergency-kill candidate is genuinely rooted in
+/// an overlay and so should be signalled.
+///
+/// The process classifier matched it to an overlay target by path prefix only.
+/// That is kept when:
+/// - no overlay device could be read (`!overlay_device_set_known`): fall back to
+///   the path match rather than spare everything and leave the overlays pinned;
+/// - the process is an unverifiable writer (a foreign mount namespace or chroot
+///   whose device cannot be trusted): fail-safe, keep killing it;
+/// - a reference of the process actually resolves onto an overlay device.
+///
+/// Otherwise the path matched the decoy directory the overlay is mounted over, not
+/// the overlay itself, so the process is spared.
+fn candidate_is_overlay_rooted(
+    is_unverifiable_writer: bool,
+    references_overlay_device: bool,
+    overlay_device_set_known: bool,
+) -> bool {
+    if !overlay_device_set_known || is_unverifiable_writer {
+        return true;
+    }
+    references_overlay_device
+}
+
+/// The set of device ids behind the given overlay mount points. Each overlay
+/// mount carries its own anonymous `st_dev`, distinct from the decoy filesystem it
+/// is stacked on, so this set identifies "inside the overlay".
+fn overlay_mount_devices(targets: &[PathBuf]) -> std::collections::HashSet<u64> {
+    use std::os::unix::fs::MetadataExt;
+    targets
+        .iter()
+        .filter_map(|target| std::fs::metadata(target).ok().map(|meta| meta.dev()))
+        .collect()
+}
+
+/// Whether any of a process's path references (cwd, root, or an open fd) resolves
+/// onto one of `overlay_devices`.
+///
+/// The `/proc/<pid>/{cwd,root,fd/*}` magic links resolve to the real dentry, so a
+/// `metadata` (stat, which follows the link) reports the device of the actual
+/// object — the overlay's own device when the reference is inside the overlay, the
+/// decoy device when it only shares the path string. A vanished process or an
+/// unreadable link simply contributes no match.
+fn process_references_overlay_device(
+    pid: u32,
+    overlay_devices: &std::collections::HashSet<u64>,
+) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let base = format!("/proc/{pid}");
+    for link in ["cwd", "root"] {
+        if let Ok(meta) = std::fs::metadata(format!("{base}/{link}"))
+            && overlay_devices.contains(&meta.dev())
+        {
+            return true;
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(format!("{base}/fd")) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = std::fs::metadata(entry.path())
+                && overlay_devices.contains(&meta.dev())
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Controls deactivation behavior.
 ///
 /// - `Normal`: Full cleanup with verification, rollback on cleanup errors.
@@ -599,6 +667,17 @@ impl<F: Filesystem> NailsManager<F> {
     /// mapping). Reuses the capability-aware process classifier; read-only
     /// consumers are left alone. Best-effort and a no-op in test/test-like
     /// runtimes, where the `/proc` snapshot is empty.
+    ///
+    /// The classifier matches targets by path prefix, which cannot by itself tell
+    /// a reference *inside the overlay* from one on the decoy directory the overlay
+    /// is mounted over: a decoy process whose cwd is `/tmp` (set before activation)
+    /// still reads back as `/tmp` and would be signalled, even though it is on the
+    /// decoy device and neither pins the overlay nor can write into its upper. So a
+    /// path-matched candidate is kept only when a reference of its really resolves
+    /// onto one of the overlay mounts' own devices (each overlay mount has its own
+    /// anonymous `st_dev`); an unverifiable writer (foreign mount namespace or
+    /// chroot, where the device cannot be trusted) is kept fail-safe, as is every
+    /// candidate when no overlay device could be read at all.
     fn kill_overlay_rooted_processes(&self, targets: &[PathBuf]) {
         if targets.is_empty() || crate::runtime_safety::should_skip_host_interaction() {
             return;
@@ -611,6 +690,11 @@ impl<F: Filesystem> NailsManager<F> {
                 return;
             }
         };
+
+        // The device id behind each overlay mount point. A reference that resolves
+        // onto one of these is genuinely inside the overlay; one on the decoy
+        // device only collided on the path string.
+        let overlay_devices = overlay_mount_devices(targets);
 
         // Never signal a process that belongs to this teardown's own invocation:
         // its ancestry, session or process group. A piped emergency
@@ -633,6 +717,19 @@ impl<F: Filesystem> NailsManager<F> {
                     tracing::debug!(
                         pid = info.pid,
                         "Sparing a process in the teardown's own session/group from the overlay kill"
+                    );
+                    continue;
+                }
+                let on_overlay_device = !overlay_devices.is_empty()
+                    && process_references_overlay_device(info.pid, &overlay_devices);
+                if !candidate_is_overlay_rooted(
+                    info.is_unverifiable_writer,
+                    on_overlay_device,
+                    !overlay_devices.is_empty(),
+                ) {
+                    tracing::debug!(
+                        pid = info.pid,
+                        "Sparing a decoy-side process (path matched an overlay target but its references are on the decoy device)"
                     );
                     continue;
                 }
