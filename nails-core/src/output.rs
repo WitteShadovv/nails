@@ -222,6 +222,42 @@ impl Style {
     }
 }
 
+/// Rewrite a string so it is pure ASCII, for an `--ascii` surface that may
+/// replay text produced elsewhere (for example a log message that embedded a
+/// Unicode mark glyph).
+///
+/// Every mark glyph is swapped for its ASCII form ([`Mark::ascii`]); any other
+/// non-ASCII scalar (a stray emoji, a combining variation selector such as the
+/// `U+FE0F` after `⚠️`) is dropped so the result is guaranteed ASCII. Text that
+/// is already ASCII is returned unchanged in spirit, character for character.
+///
+/// # Examples
+///
+/// ```
+/// use nails_core::output;
+///
+/// assert_eq!(output::ascii_fallback("✓ Activation complete"), "[PASS] Activation complete");
+/// assert!(output::ascii_fallback("⚠️  2 writers").is_ascii());
+/// ```
+pub fn ascii_fallback(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    'chars: for ch in text.chars() {
+        if ch.is_ascii() {
+            out.push(ch);
+            continue;
+        }
+        for mark in Mark::ALL {
+            if mark.unicode().starts_with(ch) {
+                out.push_str(mark.ascii());
+                continue 'chars;
+            }
+        }
+        // Any other non-ASCII scalar (including the U+FE0F variation selector
+        // that trails an emoji mark) is dropped so the output stays ASCII.
+    }
+    out
+}
+
 /// Format an error line for stderr.
 ///
 /// # Examples
@@ -328,6 +364,26 @@ mod tests {
         let line = ASCII_STYLE.marked(Mark::Warn, "careful");
         assert_eq!(line, "[WARN] careful");
         assert_eq!(ASCII_STYLE.paint("plain", Tone::Red), "plain");
+    }
+
+    #[test]
+    fn ascii_fallback_folds_mark_glyphs_and_drops_other_non_ascii() {
+        // A leading Pass glyph becomes its bracket form.
+        assert_eq!(
+            ascii_fallback("✓ Activation complete in 1.7s"),
+            "[PASS] Activation complete in 1.7s"
+        );
+        // The warn emoji (⚠ + U+FE0F variation selector) folds to [WARN] with the
+        // selector dropped, and the whole result is ASCII.
+        let warn = ascii_fallback("⚠️  2 writers still on the decoy");
+        assert_eq!(warn, "[WARN]  2 writers still on the decoy");
+        assert!(warn.is_ascii());
+        // An arrow marker folds to its ASCII form.
+        assert_eq!(ascii_fallback("  → base64 risky"), "  -> base64 risky");
+        // Plain ASCII is returned unchanged.
+        assert_eq!(ascii_fallback("plain log line"), "plain log line");
+        // A stray non-mark glyph is dropped, keeping the output ASCII.
+        assert!(ascii_fallback("snapshot 日本語 done").is_ascii());
     }
 
     #[test]

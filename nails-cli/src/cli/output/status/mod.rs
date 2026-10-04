@@ -75,11 +75,20 @@ fn read_recent_logs(
                     continue;
                 }
 
-                let message = entry
+                let raw_message = entry
                     .get("fields")
                     .and_then(|f| f.get("message"))
                     .and_then(|m| m.as_str())
                     .unwrap_or_else(|| entry.get("message").and_then(|m| m.as_str()).unwrap_or(""));
+                // A log message may embed a Unicode mark glyph (for example the
+                // "✓ Activation complete" line). The `--ascii` surface must stay
+                // pure ASCII even when replaying such a message, so fold it down
+                // to ASCII in ascii mode; the Unicode terminal keeps the glyph.
+                let message: std::borrow::Cow<'_, str> = if style.ascii {
+                    std::borrow::Cow::Owned(nails_core::output::ascii_fallback(raw_message))
+                } else {
+                    std::borrow::Cow::Borrowed(raw_message)
+                };
 
                 let time = log_time.format("%H:%M:%S").to_string();
                 let level_painted = match level {
