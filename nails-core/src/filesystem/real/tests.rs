@@ -1307,6 +1307,53 @@ fn create_hidden_dir_all_refuses_a_planted_symlink_in_the_path() {
     assert!(!outside.path().join("upper").exists());
 }
 
+#[test]
+fn write_hidden_file_atomic_writes_beneath_root_at_requested_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let fs_impl = RealFilesystem;
+    fs_impl
+        .create_hidden_dir_all(temp.path(), Path::new("reports"))
+        .unwrap();
+
+    fs_impl
+        .write_hidden_file_atomic(temp.path(), Path::new("reports/r.json"), "{}", 0o600)
+        .unwrap();
+
+    let path = temp.path().join("reports/r.json");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "report must be operator-only, got {mode:#o}");
+}
+
+#[test]
+fn write_hidden_file_atomic_does_not_follow_a_planted_symlink_at_the_target() {
+    let temp = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let victim = outside.path().join("victim");
+    std::fs::write(&victim, "original").unwrap();
+
+    // A link under the root whose name is the write target but which points off
+    // the volume. `write_file_content` on the joined absolute path would follow
+    // it and clobber `victim`. The contained write stages a temp file and renames
+    // it over the name, which replaces the link itself (rename never follows the
+    // final component) rather than writing through it.
+    let target = temp.path().join("report.json");
+    std::os::unix::fs::symlink(&victim, &target).unwrap();
+
+    let fs_impl = RealFilesystem;
+    fs_impl
+        .write_hidden_file_atomic(temp.path(), Path::new("report.json"), "payload", 0o600)
+        .unwrap();
+
+    // The off-volume target is untouched; the entry is now a real file on the
+    // volume carrying the payload, not a symlink.
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "original");
+    assert!(!target.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "payload");
+}
+
 // ========================================================================
 // Tests for in-place overwrite (same inode)
 // ========================================================================

@@ -284,6 +284,30 @@ pub trait Filesystem: Send + Sync + Clone {
         self.create_directory(&hidden_root.join(relative))
     }
 
+    /// Atomically write `content` to `relative`, resolved strictly beneath
+    /// `hidden_root`, with the given permission `mode`.
+    ///
+    /// This is the symlink- and traversal-safe way to write a file *on the hidden
+    /// volume*. Unlike [`write_file_content`](Self::write_file_content), which
+    /// takes an absolute path and follows a symlink planted at the final
+    /// component, a symlink or `..` planted under `hidden_root` cannot redirect
+    /// the write outside it. The default implementation joins the paths and
+    /// defers to [`write_file_content`](Self::write_file_content) for the
+    /// in-memory test double; the real filesystem overrides it with an `openat2`
+    /// resolution (see [`crate::filesystem::SafeRoot`]) that fails closed on a
+    /// kernel without `openat2`. The default drops `mode`, which the mock does not
+    /// track.
+    fn write_hidden_file_atomic(
+        &self,
+        hidden_root: &Path,
+        relative: &Path,
+        content: &str,
+        mode: u32,
+    ) -> Result<()> {
+        let _ = mode;
+        self.write_file_content(&hidden_root.join(relative), content)
+    }
+
     /// Set Unix permissions on a path.
     fn set_permissions(&self, path: &Path, mode: u32) -> Result<()>;
 

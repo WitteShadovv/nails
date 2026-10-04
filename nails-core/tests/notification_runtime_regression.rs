@@ -136,12 +136,12 @@ fn subprocess_notification_runtime_entrypoint() {
             assert!(err.to_string().contains("Failed to read notifications dir"));
         }
         "clear-missing" => {
+            // The notifications directory does not exist, so the contained unlink
+            // cannot open the parent beneath the hidden root and fails closed.
             let err =
-                notification::clear_notification(&hidden_root.join("missing.json")).unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("Failed to remove notification file")
-            );
+                notification::clear_notification(&hidden_root, &hidden_root.join("missing.json"))
+                    .unwrap_err();
+            assert!(err.to_string().contains("escapes hidden root"));
         }
         "clear-all-dir-blocked" => {
             std::fs::write(hidden_root.join("notifications"), "not a directory").unwrap();

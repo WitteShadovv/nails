@@ -378,18 +378,26 @@ pub fn read_pending(hidden_volume_root: &Path) -> Result<Vec<(PathBuf, Notificat
 }
 
 /// Delete a notification signal file after successful dispatch.
-pub fn clear_notification(path: &Path) -> Result<()> {
-    std::fs::remove_file(path).map_err(|e| {
+///
+/// `path` is a `<hidden-root>/notifications/<name>` entry returned by
+/// [`read_pending`]. The removal is anchored under the hidden root through
+/// `SafeRoot`, so a symlink planted at the `notifications` component cannot
+/// redirect the unlink off the volume; it stays symmetrical with the contained
+/// read path.
+pub fn clear_notification(hidden_volume_root: &Path, path: &Path) -> Result<()> {
+    let name = path.file_name().ok_or_else(|| {
         crate::NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!(
-                "Failed to remove notification file {}: {}",
-                path.display(),
-                e
-            ),
+            std::io::ErrorKind::InvalidInput,
+            format!("notification path has no file name: {}", path.display()),
         ))
     })?;
-    Ok(())
+    let safe_root = SafeRoot::open(hidden_volume_root).map_err(|e| {
+        crate::NailsError::IoError(std::io::Error::other(format!(
+            "Failed to open hidden root {} for notifications: {e}",
+            hidden_volume_root.display()
+        )))
+    })?;
+    safe_root.remove_file(&Path::new("notifications").join(name))
 }
 
 /// Delete all pending notification signal files.
@@ -398,6 +406,17 @@ pub fn clear_all(hidden_volume_root: &Path) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
+    // The directory listing only yields entry names and never opens them, so it
+    // stays a plain `read_dir`; each removal is anchored under the hidden root
+    // through SafeRoot so a planted symlink at the `notifications` component
+    // cannot redirect the unlink.
+    let safe_root = SafeRoot::open(hidden_volume_root).map_err(|e| {
+        crate::NailsError::IoError(std::io::Error::other(format!(
+            "Failed to open hidden root {} for notifications: {e}",
+            hidden_volume_root.display()
+        )))
+    })?;
+    let rel_dir = Path::new("notifications");
     for entry in std::fs::read_dir(&dir)
         .map_err(|e| {
             crate::NailsError::IoError(std::io::Error::new(
@@ -407,9 +426,12 @@ pub fn clear_all(hidden_volume_root: &Path) -> Result<()> {
         })?
         .flatten()
     {
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "json") {
-            let _ = std::fs::remove_file(&path);
+        let name = entry.file_name();
+        if Path::new(&name)
+            .extension()
+            .is_some_and(|ext| ext == "json")
+        {
+            let _ = safe_root.remove_file(&rel_dir.join(&name));
         }
     }
     Ok(())
@@ -472,7 +494,7 @@ pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
         for (path, notification) in &pending {
             match send_notification(notification) {
                 Ok(()) => {
-                    let _ = clear_notification(path);
+                    let _ = clear_notification(hidden_volume_root, path);
                     dispatched += 1;
                 }
                 Err(e) => {

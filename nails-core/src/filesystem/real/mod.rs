@@ -147,6 +147,23 @@ impl Filesystem for RealFilesystem {
         crate::filesystem::SafeRoot::open(hidden_root)?.create_dir_all(relative)
     }
 
+    fn write_hidden_file_atomic(
+        &self,
+        hidden_root: &Path,
+        relative: &Path,
+        content: &str,
+        mode: u32,
+    ) -> Result<()> {
+        // Resolve the target beneath the hidden-root fd with openat2 and write
+        // through the atomic temp-then-rename path, so a symlink planted at the
+        // final component cannot redirect the write off the hidden volume.
+        crate::filesystem::SafeRoot::open(hidden_root)?.write_atomic(
+            relative,
+            content.as_bytes(),
+            mode,
+        )
+    }
+
     fn set_permissions(&self, path: &Path, mode: u32) -> Result<()> {
         file_ops::set_permissions(path, mode)
     }

@@ -126,19 +126,28 @@ way.
   would fire on hundreds of valid call sites. The hidden-root *write* sites now
   route through `SafeRoot`: overlay upper/work creation
   (`Filesystem::create_hidden_dir_all`), the state-file write
-  (`state/file.rs::save_internal`, resolved relative to the hidden root) and the
-  notification directory and signal files (`notification/mod.rs`, via
+  (`state/file.rs::save_internal`, resolved relative to the hidden root), the
+  activation residue report (`verify/residue_report.rs`, via
+  `Filesystem::write_hidden_file_atomic`) and the notification directory and
+  signal files (`notification/mod.rs`, via
   `SafeRoot::create_dir_all`/`create_new` with `fchmod`/`fchown` on the returned
   descriptors). `SafeRoot` gained `create_new` (exclusive create returning the
-  handle) and `open_dir` (a directory fd for `fchmod`/`fchown`) for these. The
-  remaining call sites to route as they are next touched are the opaque-xattr
-  handling (`overlay/opaque.rs`, deferred to T-040: it is name-scoped to the one
-  managed `/etc/nixos` upper and already uses `l*xattr`, which does not follow the
-  final-component symlink) and the pivot/snapshot scaffolding under T-069. The
-  notification *read* path (`read_pending`/`clear_*`) runs as the unprivileged
-  operator over files they already own and creates nothing, so it stays on
-  `std::fs` until `SafeRoot` grows a contained directory listing. The grep gate
-  for the old leak-prone patterns rides with the T-074 artifact registry.
+  handle) and `open_dir` (a directory fd for `fchmod`/`fchown`) for these, and
+  `Filesystem` gained `write_hidden_file_atomic` (the contained counterpart of
+  `write_file_content`). The notification *read* and *clear* paths
+  (`read_pending`/`clear_notification`/`clear_all`) now open and unlink each
+  signal file through `SafeRoot` (`read_to_string`/`remove_file`): the directory
+  listing stays a plain `read_dir` because it only yields entry names, but every
+  open and removal is anchored beneath the hidden-root fd, so a symlink planted
+  at a `*.json` entry is rejected on read and the unlink removes the link itself
+  rather than following it off the volume. The remaining call site to route as it
+  is next touched is the opaque-xattr handling (`overlay/opaque.rs`, deferred to
+  T-040: it is name-scoped to the one managed `/etc/nixos` upper and already uses
+  `l*xattr`, which does not follow the final-component symlink). The pivot and
+  snapshot scaffolding no longer lives on the hidden volume at all — T-069 moved
+  it to the `/run` tmpfs — so there is no hidden-root path there to contain. The
+  grep gate for the old leak-prone patterns rides with the T-074 artifact
+  registry.
 - The modern mount syscalls (`fsmount`/`move_mount`, `open_tree`) are recorded as
   the intended direction but remain unproven here. They must be validated on a
   privileged host / VM before any switch away from `mount(2)` and fork/`setns`.

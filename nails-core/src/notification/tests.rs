@@ -179,7 +179,7 @@ fn test_clear_notification_removes_file() {
     let pending = read_pending(dir.path()).unwrap();
     assert_eq!(pending.len(), 1);
 
-    clear_notification(&pending[0].0).unwrap();
+    clear_notification(dir.path(), &pending[0].0).unwrap();
 
     let pending_after = read_pending(dir.path()).unwrap();
     assert!(pending_after.is_empty());
@@ -437,21 +437,21 @@ fn test_clear_notification_on_nonexistent_file() {
     let fake_path = dir.path().join("nonexistent.json");
 
     // Should not panic
-    let result = clear_notification(&fake_path);
+    let result = clear_notification(dir.path(), &fake_path);
     // clear_notification returns Result<()>, errors are ignored in actual usage
     assert!(result.is_ok() || result.is_err());
 }
 
 #[test]
-fn test_clear_notification_returns_error_for_missing_file() {
+fn test_clear_notification_missing_file_is_idempotent() {
     let dir = TempDir::new().unwrap();
-    let fake_path = dir.path().join("missing.json");
+    // The notifications directory exists but the named file does not: the
+    // contained unlink treats a missing entry as success, so a double-dispatch
+    // (clear after another cleared the same file) is harmless.
+    std::fs::create_dir_all(notifications_dir(dir.path())).unwrap();
+    let fake_path = notifications_dir(dir.path()).join("missing.json");
 
-    let err = clear_notification(&fake_path).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("Failed to remove notification file")
-    );
+    clear_notification(dir.path(), &fake_path).unwrap();
 }
 
 #[test]
@@ -710,5 +710,34 @@ fn test_read_pending_rejects_symlinked_entry() {
     assert!(
         pending.iter().all(|(_, n)| n.body != "leaked"),
         "read_pending must not follow a symlink off the hidden volume"
+    );
+}
+
+#[test]
+fn test_clear_does_not_follow_a_symlink_off_the_volume() {
+    // A symlink planted at a `*.json` entry and pointing off the hidden volume
+    // must not have its target removed: the contained unlink (unlinkat, which
+    // never follows the final component) removes the link itself, leaving the
+    // outside file intact. Mirrors the read-side symlink rejection.
+    let dir = TempDir::new().unwrap();
+    let notif_dir = notifications_dir(dir.path());
+    std::fs::create_dir_all(&notif_dir).unwrap();
+
+    let outside = TempDir::new().unwrap();
+    let victim = outside.path().join("victim.json");
+    std::fs::write(&victim, "keep me").unwrap();
+
+    let link = notif_dir.join("00000000T000000000_evil.json");
+    std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+    clear_all(dir.path()).unwrap();
+
+    assert!(
+        victim.exists(),
+        "clear_all must not follow the symlink and delete its off-volume target"
+    );
+    assert!(
+        link.symlink_metadata().is_err(),
+        "the planted symlink entry itself should be removed"
     );
 }

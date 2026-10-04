@@ -72,9 +72,8 @@ pub fn write_activation_residue_report<F: Filesystem>(
 ) -> Result<ResidueReportSummary> {
     fs.create_hidden_dir_all(hidden_root, Path::new(RESIDUE_REPORT_DIR))?;
 
-    let path = hidden_root
-        .join(RESIDUE_REPORT_DIR)
-        .join(report_filename(generated_at));
+    let relative = Path::new(RESIDUE_REPORT_DIR).join(report_filename(generated_at));
+    let path = hidden_root.join(&relative);
 
     let report = ResidueReport {
         schema_version: RESIDUE_REPORT_SCHEMA_VERSION,
@@ -85,7 +84,11 @@ pub fn write_activation_residue_report<F: Filesystem>(
     // surface any error as I/O rather than inventing a bespoke variant.
     let json = serde_json::to_string_pretty(&report).map_err(std::io::Error::other)?;
 
-    fs.write_file_content(&path, &json)?;
+    // Write the report through the symlink- and traversal-safe hidden-file API at
+    // operator-only mode, so a symlink planted at the report name under the hidden
+    // root cannot redirect the write off the volume. The absolute `path` is kept
+    // only to report the location back to the operator.
+    fs.write_hidden_file_atomic(hidden_root, &relative, &json, 0o600)?;
 
     Ok(ResidueReportSummary {
         path,
