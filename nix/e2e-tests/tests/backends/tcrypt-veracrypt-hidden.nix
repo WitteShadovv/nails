@@ -105,8 +105,11 @@ in
             + "--non-interactive --quick"
         )
         machine.succeed(
+            # Size the hidden volume well above the 500 MB activation space floor
+            # (the secondary disk is 2 GB, so its outer volume has room): a 64 MB
+            # hidden volume left only ~50 MB free and the space pre-flight refused.
             "veracrypt --text --create /dev/disk/by-id/virtio-data "
-            + "--volume-type=hidden --size=64M "
+            + "--volume-type=hidden --size=1200M "
             + "--encryption=AES --hash=sha-512 --filesystem=none "
             + f"--password={hidden_pass} "
             + "--pim=0 --keyfiles= --random-source=/dev/urandom "
