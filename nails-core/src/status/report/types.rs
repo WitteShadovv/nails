@@ -371,6 +371,20 @@ pub struct StatusReport {
     #[serde(default)]
     pub hidden_root_mounted: bool,
 
+    /// Whether a RAM-backed runtime copy is still present under `/run`
+    /// ([`RUNTIME_COPY_DIR`](crate::runtime_copy::RUNTIME_COPY_DIR)).
+    ///
+    /// The runtime copy is written at activation and removed by a clean
+    /// deactivation, so its presence while the state is Inactive is positive
+    /// evidence of an abnormal teardown: a prior hidden session was activated and
+    /// never torn down cleanly. Combined with a still-mounted hidden root in the
+    /// Decoy posture, it is the signature of an emergency teardown that left the
+    /// encrypted backend open, which the CLI reports as Critical. A routine
+    /// pre-activation system (hidden root unlocked and mounted but never
+    /// activated) has no runtime copy, so it is `false` there.
+    #[serde(default)]
+    pub hidden_runtime_residue: bool,
+
     /// How the state file was loaded (P1-03: unified load outcome)
     #[serde(skip, default = "default_load_outcome")]
     pub load_outcome: LoadOutcome,

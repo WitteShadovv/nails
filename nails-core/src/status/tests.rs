@@ -465,6 +465,7 @@ fn test_status_report_serialization() {
         hidden_root_used: Some(1024 * 1024 * 1024),
         hidden_root_available: Some(3 * 1024 * 1024 * 1024),
         hidden_root_mounted: false,
+        hidden_runtime_residue: false,
         load_outcome: crate::LoadOutcome::Missing,
         persona_mode: crate::config::PersonaMode::FreshHome,
         decoy_persistent: false,

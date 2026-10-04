@@ -25,6 +25,24 @@ fn status_exit_code(posture: Posture) -> ExitStatus {
     }
 }
 
+/// Whether the still-mounted hidden root must be reported as Critical.
+///
+/// A hidden root still mounted while the state is Inactive is, on its own, the
+/// *normal* pre-activation state: the operator unlocks and mounts the hidden
+/// volume before `status`/`activate` can read the config and state on it. So the
+/// mount alone is not an alarm.
+///
+/// It becomes Critical only with positive evidence that a prior hidden session
+/// was not torn down cleanly — the signature of an emergency teardown that left
+/// the encrypted backend open with its key in RAM. The runtime copy under `/run`
+/// is written at activation and removed by a clean deactivation, so a leftover
+/// runtime copy ([`StatusReport::hidden_runtime_residue`]) is exactly that
+/// evidence. Without it, a mounted hidden root in the Decoy posture is routine
+/// and exits 0.
+fn hidden_root_critical(report: &nails_core::StatusReport) -> bool {
+    report.hidden_root_mounted && report.posture == Posture::Decoy && report.hidden_runtime_residue
+}
+
 /// Execute the status command.
 ///
 /// Shows current system status and uptime. Status always reports an exit status
@@ -135,12 +153,7 @@ pub fn execute(
         );
     }
 
-    // A hidden root still mounted in the Decoy posture — overlays gone, state
-    // inactive — is the signature of an emergency teardown that did not close the
-    // backend: the hidden filesystem is still readable and its key is still in
-    // RAM. Report it loudly as Critical and fail closed, regardless of the
-    // otherwise-safe posture.
-    let hidden_root_critical = report.hidden_root_mounted && report.posture == Posture::Decoy;
+    let hidden_root_critical = hidden_root_critical(&report);
     if hidden_root_critical && !json {
         println!();
         println!(

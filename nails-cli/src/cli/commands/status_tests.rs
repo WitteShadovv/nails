@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::{execute, status_exit_code};
+use super::{execute, hidden_root_critical, status_exit_code};
 use crate::cli::args::StatusArgs;
 use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
 use nails_core::status::Posture;
@@ -25,6 +25,57 @@ fn status_exit_code_is_driven_by_the_posture() {
         ExitStatus::DegradedReboot
     );
     assert_eq!(status_exit_code(Posture::Unknown), ExitStatus::InvalidState);
+}
+
+#[test]
+fn routine_inactive_mounted_hidden_root_is_not_critical() {
+    // The normal pre-activation state: the operator has unlocked and mounted the
+    // hidden volume so `status` can read config/state, but no session was ever
+    // activated, so there is no runtime copy under /run. This must NOT be flagged
+    // Critical, and `status` must exit 0 (ExitStatus::Ok).
+    let report = nails_core::StatusReport {
+        state: nails_core::SystemState::Inactive,
+        posture: Posture::Decoy,
+        hidden_root_mounted: true,
+        hidden_runtime_residue: false,
+        ..Default::default()
+    };
+    assert!(
+        !hidden_root_critical(&report),
+        "a routine inactive+mounted hidden root with no runtime residue is normal"
+    );
+    assert_eq!(status_exit_code(report.posture), ExitStatus::Ok);
+}
+
+#[test]
+fn inactive_mounted_hidden_root_with_runtime_residue_is_critical() {
+    // A leftover runtime copy under /run proves a prior session was activated and
+    // never torn down cleanly: a still-mounted hidden root here is the signature
+    // of an emergency teardown that left the backend open. Flag it Critical.
+    let report = nails_core::StatusReport {
+        state: nails_core::SystemState::Inactive,
+        posture: Posture::Decoy,
+        hidden_root_mounted: true,
+        hidden_runtime_residue: true,
+        ..Default::default()
+    };
+    assert!(
+        hidden_root_critical(&report),
+        "a mounted hidden root plus leftover runtime copy is an abnormal teardown"
+    );
+}
+
+#[test]
+fn unmounted_hidden_root_is_never_critical() {
+    // No hidden root mounted means nothing to close, regardless of residue.
+    let report = nails_core::StatusReport {
+        state: nails_core::SystemState::Inactive,
+        posture: Posture::Decoy,
+        hidden_root_mounted: false,
+        hidden_runtime_residue: true,
+        ..Default::default()
+    };
+    assert!(!hidden_root_critical(&report));
 }
 
 const SUBPROCESS_TEST_NAME: &str = "cli::commands::status::tests::subprocess_status_entrypoint";

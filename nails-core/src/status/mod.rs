@@ -307,6 +307,17 @@ impl<F: Filesystem> StatusCommand<F> {
             .is_mounted(&self.config.hidden_volume_root)
             .unwrap_or(false);
 
+        // Whether the RAM-backed runtime copy is still present under `/run`. It is
+        // written at activation and removed by a clean deactivation, so finding it
+        // while the state is Inactive is positive evidence that a prior hidden
+        // session was never torn down cleanly. The CLI uses this to tell a routine
+        // pre-activation system (hidden root mounted, no runtime copy) from an
+        // abnormal teardown (hidden root mounted and a leftover runtime copy).
+        let hidden_runtime_residue = self
+            .filesystem
+            .path_exists(&crate::runtime_copy::runtime_copy_dir())
+            .unwrap_or(false);
+
         // Read-only probe of the decoy's logging posture, reusing the pre-flight
         // check's detection so the reported posture tracks the same logic. A
         // persistent decoy (persistent journald journal, active
@@ -335,6 +346,7 @@ impl<F: Filesystem> StatusCommand<F> {
             hidden_root_used,
             hidden_root_available,
             hidden_root_mounted,
+            hidden_runtime_residue,
             load_outcome,
             persona_mode: self.config.persona.mode,
             decoy_persistent,
@@ -454,6 +466,7 @@ impl Default for StatusReport {
             hidden_root_used: None,
             hidden_root_available: None,
             hidden_root_mounted: false,
+            hidden_runtime_residue: false,
             load_outcome: LoadOutcome::Missing,
             persona_mode: crate::config::PersonaMode::SharedHome,
             decoy_persistent: false,
