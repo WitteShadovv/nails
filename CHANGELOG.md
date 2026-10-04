@@ -197,6 +197,10 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Changed
 
+- Process-restart classification now reads host process-name tables from the platform layer, and
+  activation walks `/proc` once per mount phase instead of once per overlay target.
+- Emergency and recovery teardown signal a still-running activation owner before unmounting, and the
+  activation summary and its login notification now show the RAM-backed emergency command.
 - The project uses one platform-neutral tagline ("Overlay environment manager") across the README,
   flake, crate metadata, help text and docs, dropping the NixOS acronym expansion; crate `authors`
   and `homepage` now name the real holder and https://nails.run, both crates set `publish = false`,
@@ -493,6 +497,11 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Security
 
+- Pivot overlay staging and the vfat `/boot` snapshot are staged on the `/run` tmpfs instead of the
+  persistent decoy root, so no NAILS scaffolding reaches the decoy disk image.
+- The activation residue report and the login notification read and clear paths write, read and
+  unlink through the symlink-safe openat2 hidden-root helper, so a symlink planted at one of those
+  paths is refused instead of followed off the hidden volume.
 - Teardown relinquishes the journal before unmounting /var, then rotates and scrubs the volatile
   runtime journal under `/run/log/journal`; emergency and recovery report the scrub and warn that
   only a reboot is a complete remedy.
