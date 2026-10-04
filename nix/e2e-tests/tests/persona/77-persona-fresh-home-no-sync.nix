@@ -86,8 +86,11 @@ in
     with subtest("the decoy sync client is not carried into the hidden session"):
         # Fresh-home's recommended posture: the account-bound client does not run
         # in the hidden session. Masking it models a user-level client that a
-        # fresh home would not autostart.
-        client.succeed("systemctl mask --now syncthing.service")
+        # fresh home would not autostart. Mask at runtime (/run) rather than /etc:
+        # NixOS already symlinks the unit into /etc/systemd/system, so a plain
+        # `systemctl mask` refuses ("already exists and is a symlink"); a runtime
+        # mask lands in /run, which takes precedence, and is undone the same way.
+        client.succeed("systemctl mask --runtime --now syncthing.service")
         client.wait_until_fails("systemctl is-active syncthing.service")
 
     with subtest("activate the hidden session in fresh-home mode"):
@@ -121,7 +124,7 @@ in
             config_path, unit_name="nails-deactivate-persona-fresh-home"
         )
         client.fail("mount | grep 'overlay on /home'")
-        client.succeed("systemctl unmask syncthing.service")
+        client.succeed("systemctl unmask --runtime syncthing.service")
         client.succeed("systemctl start syncthing.service")
         st_wait_ready(client, CLIENT_CFG)
         st_rescan(client, CLIENT_CFG, FOLDER)
