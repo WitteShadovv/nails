@@ -275,3 +275,49 @@ fn owner_pid_signal_skips_sentinel_and_self() {
         None
     );
 }
+
+#[test]
+fn own_invocation_process_spares_ancestry_session_and_group() {
+    use super::is_own_invocation_process;
+
+    let ancestry = [100u32, 200, 300];
+    let self_sid = 100;
+    let self_pgid = 100;
+
+    // A pid anywhere in our ancestry is spared, whatever its session/group.
+    assert!(is_own_invocation_process(
+        200, 7, 8, &ancestry, self_sid, self_pgid
+    ));
+
+    // A pipe reader shares our session (and, in the pipeline shell, our group)
+    // even though it is not an ancestor — it must be spared too.
+    assert!(is_own_invocation_process(
+        4242, self_sid, self_pgid, &ancestry, self_sid, self_pgid
+    ));
+    // Sharing only the session is enough.
+    assert!(is_own_invocation_process(
+        4242, self_sid, 999, &ancestry, self_sid, self_pgid
+    ));
+    // Sharing only the process group is enough.
+    assert!(is_own_invocation_process(
+        4242, 999, self_pgid, &ancestry, self_sid, self_pgid
+    ));
+
+    // An unrelated write-blocking process (different ancestry, session and group)
+    // is not spared.
+    assert!(!is_own_invocation_process(
+        4242, 999, 888, &ancestry, self_sid, self_pgid
+    ));
+}
+
+#[test]
+fn own_invocation_process_ignores_zero_sentinels() {
+    use super::is_own_invocation_process;
+
+    // An unreadable self or candidate session/group collapses to 0; a 0 must
+    // never match-by-accident and spare an unrelated process.
+    assert!(!is_own_invocation_process(4242, 0, 0, &[], 0, 0));
+    assert!(!is_own_invocation_process(4242, 0, 0, &[], 100, 100));
+    // But a genuine ancestry hit still spares even with zeroed sessions.
+    assert!(is_own_invocation_process(4242, 0, 0, &[4242], 0, 0));
+}

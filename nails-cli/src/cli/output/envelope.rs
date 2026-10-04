@@ -76,8 +76,12 @@ impl<T: Serialize> Envelope<T> {
     }
 
     /// Serialize to one compact line and print it on stdout.
+    ///
+    /// Tolerant of a broken pipe: a reader that has already exited must not turn
+    /// the final envelope into a fatal abort (see
+    /// [`super::println_tolerating_broken_pipe`]).
     pub fn print(&self) {
-        println!("{}", self.to_line());
+        super::println_tolerating_broken_pipe(&self.to_line());
     }
 
     /// The compact single-line JSON for this envelope.

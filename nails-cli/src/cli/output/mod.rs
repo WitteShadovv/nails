@@ -8,6 +8,33 @@
 //! through one [`envelope::Envelope`] on stdout, and every handler returns an
 //! [`exit::ExitStatus`] so `main` owns the process exit code.
 
+use std::io::{self, Write};
+
+/// Write `line` and a trailing newline to `writer`, treating a broken pipe as
+/// success.
+///
+/// A command's final result may be piped to a reader that has already exited —
+/// `nails emergency | head`, or an emergency teardown that severs the session
+/// reading its own stdout. The last write then fails with `BrokenPipe`. Because
+/// the operation it reports has already completed, that is not a failure worth
+/// aborting over (the default `println!` panics, which the panic hook turns into
+/// a fatal-error line and a non-zero exit), so it is swallowed. Every other I/O
+/// error is returned unchanged.
+pub fn write_line_tolerating_broken_pipe<W: Write>(writer: &mut W, line: &str) -> io::Result<()> {
+    match writeln!(writer, "{line}") {
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    }
+}
+
+/// Print `line` on stdout, tolerating a broken pipe (see
+/// [`write_line_tolerating_broken_pipe`]). The pipe-safe replacement for
+/// `println!` on the result-writing paths.
+pub fn println_tolerating_broken_pipe(line: &str) {
+    let mut stdout = io::stdout().lock();
+    let _ = write_line_tolerating_broken_pipe(&mut stdout, line);
+}
+
 pub mod activate;
 pub mod check;
 pub mod deactivate;
@@ -27,3 +54,41 @@ pub use exit::ExitStatus;
 pub use settings::{Environment, OutputMode, OutputSettings};
 pub use status::{print_status_header, print_status_human, print_status_json};
 pub use verify::print_verify_result;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    /// A writer whose every write fails with a chosen `ErrorKind`.
+    struct FailingWriter(io::ErrorKind);
+
+    impl io::Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(self.0, "simulated"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::new(self.0, "simulated"))
+        }
+    }
+
+    #[test]
+    fn write_line_swallows_broken_pipe() {
+        let mut writer = FailingWriter(io::ErrorKind::BrokenPipe);
+        assert!(write_line_tolerating_broken_pipe(&mut writer, "done").is_ok());
+    }
+
+    #[test]
+    fn write_line_surfaces_other_errors() {
+        let mut writer = FailingWriter(io::ErrorKind::Other);
+        let err = write_line_tolerating_broken_pipe(&mut writer, "done").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Other);
+    }
+
+    #[test]
+    fn write_line_writes_the_line_and_a_newline() {
+        let mut buffer: Vec<u8> = Vec::new();
+        write_line_tolerating_broken_pipe(&mut buffer, "hello").unwrap();
+        assert_eq!(buffer, b"hello\n");
+    }
+}

@@ -125,24 +125,24 @@ fn print_recover_json(outcome: &nails_core::RecoverOutcome) {
 
 /// Render the human-readable success output for a completed recovery.
 fn render_recover_success(settings: &OutputSettings, outcome: &nails_core::RecoverOutcome) {
+    use crate::cli::output::println_tolerating_broken_pipe;
     let style = settings.stdout_style();
     if outcome.was_already_inactive {
-        println!(
-            "{}",
-            style.marked(Mark::Pass, "Nothing to recover: system is already inactive")
+        println_tolerating_broken_pipe(
+            &style.marked(Mark::Pass, "Nothing to recover: system is already inactive"),
         );
         return;
     }
 
-    println!(
-        "{}",
-        style.marked(
-            Mark::Pass,
-            "Recovery complete: remaining NAILS mounts torn down"
-        )
-    );
+    println_tolerating_broken_pipe(&style.marked(
+        Mark::Pass,
+        "Recovery complete: remaining NAILS mounts torn down",
+    ));
     if let Some(path) = &outcome.state_backed_up {
-        println!("  Corrupt state file backed up to {}", path.display());
+        println_tolerating_broken_pipe(&format!(
+            "  Corrupt state file backed up to {}",
+            path.display()
+        ));
     }
 }
 

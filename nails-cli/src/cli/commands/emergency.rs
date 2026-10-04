@@ -330,67 +330,79 @@ fn print_emergency_json(view: &EmergencyView) {
 }
 
 /// Render the human-readable success output for a completed emergency teardown.
+///
+/// The stdout lines are gathered into a buffer and flushed through the pipe-safe
+/// writer: an emergency can sever the session reading its own stdout, so the
+/// final result must never abort fatally on a broken pipe once the teardown has
+/// completed.
 fn render_emergency_success(settings: &OutputSettings, view: &EmergencyView) {
     let report = view.report;
     let style = settings.stdout_style();
-    println!(
-        "{}",
-        style.marked(Mark::Pass, "Emergency teardown complete")
-    );
+    let mut out: Vec<String> = Vec::new();
+    out.push(style.marked(Mark::Pass, "Emergency teardown complete"));
 
     if report.unmounted_overlays.is_empty() {
-        println!("  No NAILS overlays were mounted");
+        out.push("  No NAILS overlays were mounted".to_string());
     } else {
-        println!("  Detached {} overlay(s):", report.unmounted_overlays.len());
+        out.push(format!(
+            "  Detached {} overlay(s):",
+            report.unmounted_overlays.len()
+        ));
         for overlay in &report.unmounted_overlays {
-            println!("    - {overlay}");
+            out.push(format!("    - {overlay}"));
         }
     }
 
     if !report.force_detached_overlays.is_empty() {
-        println!(
+        out.push(format!(
             "  {} overlay(s) needed a forced detach (processes still held them);",
             report.force_detached_overlays.len()
+        ));
+        out.push(
+            "  the backend cannot be closed until those processes exit or you reboot:".to_string(),
         );
-        println!("  the backend cannot be closed until those processes exit or you reboot:");
         for overlay in &report.force_detached_overlays {
-            println!("    ! {overlay}");
+            out.push(format!("    ! {overlay}"));
         }
     }
 
     if report.page_cache_dropped {
-        println!("  Page cache dropped");
+        out.push("  Page cache dropped".to_string());
     }
 
     if report.runtime_journal_scrubbed {
-        println!("  Runtime journal scrubbed (/run/log/journal)");
+        out.push("  Runtime journal scrubbed (/run/log/journal)".to_string());
     }
 
     if !report.cleanup_report.errors.is_empty() {
-        println!(
+        out.push(format!(
             "  Cleanup reported {} error(s):",
             report.cleanup_report.errors.len()
-        );
+        ));
         for error in &report.cleanup_report.errors {
-            println!("    - {error}");
+            out.push(format!("    - {error}"));
         }
     }
 
     match report.history_truncation_verified {
-        Some(true) => println!("  History truncation verified"),
-        Some(false) => println!("  History truncation incomplete: some files remain"),
+        Some(true) => out.push("  History truncation verified".to_string()),
+        Some(false) => out.push("  History truncation incomplete: some files remain".to_string()),
         None => {}
     }
 
-    render_backend_lock_outcome(view);
+    push_backend_lock_outcome(&mut out, view);
 
     if let Some(note) = view.power_note {
-        println!("  Power action: {note}");
+        out.push(format!("  Power action: {note}"));
     } else if view.power_action.is_none() && !view.hidden_root_still_mounted {
-        println!("  The decoy greeter will reappear");
+        out.push("  The decoy greeter will reappear".to_string());
     }
 
-    render_hidden_root_status(settings, view);
+    push_hidden_root_status(&mut out, settings, view);
+
+    for line in &out {
+        crate::cli::output::println_tolerating_broken_pipe(line);
+    }
 
     eprintln!();
     for line in emergency_recovery_guidance(settings) {
@@ -398,57 +410,56 @@ fn render_emergency_success(settings: &OutputSettings, view: &EmergencyView) {
     }
 }
 
-/// Report the outcome of the opt-in backend close, loudly on any failure.
-fn render_backend_lock_outcome(view: &EmergencyView) {
+/// Append the outcome of the opt-in backend close, loudly on any failure.
+fn push_backend_lock_outcome(out: &mut Vec<String>, view: &EmergencyView) {
     let Some(outcome) = view.lock_outcome else {
         return;
     };
 
     if outcome.unmounted {
-        println!("  Hidden root lazy-unmounted");
+        out.push("  Hidden root lazy-unmounted".to_string());
     }
     if !outcome.dm_deferred.is_empty() {
-        println!(
+        out.push(format!(
             "  Backend marked for deferred removal: {}",
             outcome.dm_deferred.join(", ")
-        );
+        ));
     }
     if outcome.close_command_dispatched {
-        println!("  Backend close command dispatched");
+        out.push("  Backend close command dispatched".to_string());
     }
     for error in &outcome.errors {
-        println!("  ! Backend close error: {error}");
+        out.push(format!("  ! Backend close error: {error}"));
     }
 }
 
-/// Report whether the hidden root is still mounted, and how to close it.
+/// Append whether the hidden root is still mounted, and how to close it.
 ///
 /// A still-mounted hidden root after an emergency is a Critical condition: the
 /// hidden filesystem is browsable and the key is still in RAM. The exact manual
 /// close sequence is printed so the operator can finish the job.
-fn render_hidden_root_status(settings: &OutputSettings, view: &EmergencyView) {
+fn push_hidden_root_status(out: &mut Vec<String>, settings: &OutputSettings, view: &EmergencyView) {
     let style = settings.stdout_style();
     if view.hidden_root_still_mounted {
-        println!();
-        println!(
-            "{}",
-            style.marked(
-                Mark::Fail,
-                format!(
-                    "Critical: hidden root still mounted at {}",
-                    view.hidden_root.display()
-                )
-            )
+        out.push(String::new());
+        out.push(style.marked(
+            Mark::Fail,
+            format!(
+                "Critical: hidden root still mounted at {}",
+                view.hidden_root.display()
+            ),
+        ));
+        out.push(
+            "  The hidden filesystem is still readable and its key is still in RAM.".to_string(),
         );
-        println!("  The hidden filesystem is still readable and its key is still in RAM.");
         if !view.backend_commands.is_empty() {
-            println!("  Close the encrypted backend when it is safe to do so:");
+            out.push("  Close the encrypted backend when it is safe to do so:".to_string());
             for command in view.backend_commands {
-                println!("    {command}");
+                out.push(format!("    {command}"));
             }
         }
     } else if view.lock_outcome.is_some() {
-        println!("  Hidden root closed; the key is wiped as the last reference drops");
+        out.push("  Hidden root closed; the key is wiped as the last reference drops".to_string());
     }
 }
 

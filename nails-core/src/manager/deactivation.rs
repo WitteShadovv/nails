@@ -74,7 +74,6 @@ fn collect_protected_shell_pids() -> Vec<u32> {
     merge_protected_pids(current_process_ancestry(), handoff.as_deref())
 }
 
-#[cfg(not(test))]
 fn current_process_ancestry() -> Vec<u32> {
     let mut lineage = Vec::new();
     let mut next = Some(std::process::id());
@@ -91,7 +90,6 @@ fn current_process_ancestry() -> Vec<u32> {
     lineage
 }
 
-#[cfg(not(test))]
 fn read_parent_pid(pid: u32) -> Option<u32> {
     let status_path = Path::new("/proc").join(pid.to_string()).join("status");
     let content = std::fs::read_to_string(status_path).ok()?;
@@ -100,6 +98,58 @@ fn read_parent_pid(pid: u32) -> Option<u32> {
         let rest = line.strip_prefix("PPid:\t")?;
         rest.split_whitespace().next()?.parse::<u32>().ok()
     })
+}
+
+/// The session id and process-group id of `pid`, read from `/proc/<pid>/stat`.
+///
+/// `/proc/<pid>/stat` lists these right after the `comm` field, which may itself
+/// contain spaces or parentheses, so the scan starts past the final `)`. Returns
+/// `None` when the process has gone or the file cannot be parsed.
+fn read_session_and_pgid(pid: u32) -> Option<(u32, u32)> {
+    let stat_path = Path::new("/proc").join(pid.to_string()).join("stat");
+    let content = std::fs::read_to_string(stat_path).ok()?;
+    let after_comm = content.get(content.rfind(')')? + 1..)?;
+    // Fields after `comm`: state, ppid, pgrp, session, ...
+    let fields: Vec<&str> = after_comm.split_whitespace().collect();
+    let pgid = fields.get(2)?.parse::<u32>().ok()?;
+    let sid = fields.get(3)?.parse::<u32>().ok()?;
+    Some((sid, pgid))
+}
+
+/// Whether a process must be spared from the emergency overlay-rooted kill and
+/// the owner-signalling because it belongs to this teardown's own invocation.
+///
+/// A process is spared when it is in the teardown's ancestry, shares its session,
+/// or shares its process group. When `nails emergency` is run in a pipeline
+/// (`nails emergency | base64`) the pipe reader shares the session — and, in the
+/// non-interactive shell that launches the pipeline, the process group — while
+/// its cwd sits inside the full-root overlay, so without this guard it is flagged
+/// write-blocking and killed, and the final success line is then written into a
+/// closed pipe. PID reuse can likewise make a recorded activation owner collide
+/// with such a consumer, so the same guard protects the owner signal. The zero
+/// sentinels guard against an unreadable self or candidate id matching by
+/// accident.
+fn is_own_invocation_process(
+    candidate_pid: u32,
+    candidate_sid: u32,
+    candidate_pgid: u32,
+    ancestry: &[u32],
+    self_sid: u32,
+    self_pgid: u32,
+) -> bool {
+    ancestry.contains(&candidate_pid)
+        || (self_sid != 0 && candidate_sid == self_sid)
+        || (self_pgid != 0 && candidate_pgid == self_pgid)
+}
+
+/// This process's session id and process-group id, best-effort (`0` when a value
+/// cannot be determined, which the spare check treats as "no match").
+fn self_session_and_pgid() -> (u32, u32) {
+    let sid = nix::unistd::getsid(None)
+        .map(|pid| pid.as_raw() as u32)
+        .unwrap_or(0);
+    let pgid = nix::unistd::getpgrp().as_raw() as u32;
+    (sid, pgid)
 }
 
 /// Controls deactivation behavior.
@@ -514,12 +564,31 @@ impl<F: Filesystem> NailsManager<F> {
             }
         };
 
+        // Never signal a process that belongs to this teardown's own invocation:
+        // its ancestry, session or process group. A piped emergency
+        // (`nails emergency | base64`) has its pipe reader in the same session
+        // (and process group) with a cwd inside the full-root overlay, so without
+        // this guard it would be killed and the teardown's own final stdout write
+        // would hit a closed pipe.
+        let ancestry = current_process_ancestry();
+        let (self_sid, self_pgid) = self_session_and_pgid();
+        let self_pid = std::process::id();
+
         let mut pids = std::collections::BTreeSet::new();
         for target in targets {
             for info in snapshot.processes_using(target) {
-                if info.is_write_blocking() {
-                    pids.insert(info.pid);
+                if !info.is_write_blocking() || info.pid == self_pid {
+                    continue;
                 }
+                let (sid, pgid) = read_session_and_pgid(info.pid).unwrap_or((0, 0));
+                if is_own_invocation_process(info.pid, sid, pgid, &ancestry, self_sid, self_pgid) {
+                    tracing::debug!(
+                        pid = info.pid,
+                        "Sparing a process in the teardown's own session/group from the overlay kill"
+                    );
+                    continue;
+                }
+                pids.insert(info.pid);
             }
         }
 
@@ -558,6 +627,20 @@ impl<F: Filesystem> NailsManager<F> {
             return;
         };
         if !crate::manager::state_management::pid_is_alive(pid) {
+            return;
+        }
+        // PID reuse can make a stale recorded owner collide with a process in this
+        // teardown's own invocation — in a piped run, the shell or reader on the
+        // far end of the pipe. Signalling it would break the pipeline carrying our
+        // own output, so spare any pid in our ancestry, session or process group.
+        let ancestry = current_process_ancestry();
+        let (self_sid, self_pgid) = self_session_and_pgid();
+        let (owner_sid, owner_pgid) = read_session_and_pgid(pid).unwrap_or((0, 0));
+        if is_own_invocation_process(pid, owner_sid, owner_pgid, &ancestry, self_sid, self_pgid) {
+            tracing::info!(
+                pid,
+                "Recorded owner belongs to this invocation (likely a reused pid); not signalling it"
+            );
             return;
         }
 
