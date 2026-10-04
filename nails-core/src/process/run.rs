@@ -64,10 +64,11 @@
 use crate::{NailsError, Result};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -307,9 +308,10 @@ pub trait ProcessRunner {
     /// the child: it is for long steps that must finish or fail on their own —
     /// `nixos-rebuild build/test` and `switch-to-configuration` — where killing a
     /// half-finished switch would leave the system in an undefined state. While
-    /// the child runs, `on_progress` is called with the total elapsed time about
-    /// every `progress_interval`, so a caller can show the operator that a slow
-    /// step is still alive.
+    /// the child runs, `on_progress` is called about every `progress_interval`
+    /// with the total elapsed time and the most recent non-empty stderr line seen
+    /// so far (`None` until one arrives), so a caller can show the operator that a
+    /// slow step is still alive and what it is currently doing.
     ///
     /// The default implementation ignores progress and defers to
     /// [`run`](Self::run); the real runner overrides it, and a recording mock
@@ -318,7 +320,7 @@ pub trait ProcessRunner {
         &self,
         command: &ProcessCommand,
         progress_interval: Duration,
-        on_progress: &mut dyn FnMut(Duration),
+        on_progress: &mut dyn FnMut(Duration, Option<&str>),
     ) -> Result<Output> {
         let _ = (progress_interval, on_progress);
         self.run(command)
@@ -330,7 +332,7 @@ pub trait ProcessRunner {
         &self,
         command: &ProcessCommand,
         progress_interval: Duration,
-        on_progress: &mut dyn FnMut(Duration),
+        on_progress: &mut dyn FnMut(Duration, Option<&str>),
     ) -> Result<(bool, String, String)> {
         let output = self.run_streaming(command, progress_interval, on_progress)?;
         Ok((
@@ -368,7 +370,7 @@ impl ProcessRunner for RealProcessRunner {
         &self,
         command: &ProcessCommand,
         progress_interval: Duration,
-        on_progress: &mut dyn FnMut(Duration),
+        on_progress: &mut dyn FnMut(Duration, Option<&str>),
     ) -> Result<Output> {
         if !command.allowed_in_test_runtime && crate::runtime_safety::should_skip_host_interaction()
         {
@@ -542,14 +544,16 @@ fn run_with_deadline(
 ///
 /// Used only for `nixos-rebuild build/test` and `switch-to-configuration`, which
 /// must not be interrupted; `on_progress` is called with the total elapsed time
-/// roughly every `progress_interval` so the operator sees a slow step is alive.
-/// Output is drained on reader threads to avoid a pipe-buffer deadlock, as in the
-/// deadline path.
+/// and the most recent non-empty stderr line roughly every `progress_interval`
+/// so the operator sees a slow step is alive and what it is doing. Output is
+/// drained on reader threads to avoid a pipe-buffer deadlock, as in the deadline
+/// path; the stderr drain also records its last non-empty line so the callback
+/// can surface it without disturbing the full buffer kept for classification.
 fn run_streaming_to_completion(
     executable: &Path,
     command: &ProcessCommand,
     progress_interval: Duration,
-    on_progress: &mut dyn FnMut(Duration),
+    on_progress: &mut dyn FnMut(Duration, Option<&str>),
 ) -> Result<Output> {
     let mut child = base_command(executable, command)
         .stdin(Stdio::null())
@@ -559,7 +563,8 @@ fn run_streaming_to_completion(
         .map_err(|err| start_failed(executable, err))?;
 
     let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
+    let last_line: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let stderr = drain_tracking_last_line(child.stderr.take(), Arc::clone(&last_line));
 
     let start = Instant::now();
     let mut last_report = start;
@@ -577,7 +582,8 @@ fn run_streaming_to_completion(
         }
 
         if last_report.elapsed() >= progress_interval {
-            on_progress(start.elapsed());
+            let snapshot = last_line.lock().ok().and_then(|guard| guard.clone());
+            on_progress(start.elapsed(), snapshot.as_deref());
             last_report = Instant::now();
         }
 
@@ -608,6 +614,70 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<Vec<u8>> {
         let _ = pipe.read_to_end(&mut buffer);
         buffer
     })
+}
+
+/// Reads a child pipe to EOF on a background thread, collecting the full byte
+/// buffer and, as a side channel, publishing the most recent non-empty line into
+/// `last_line` so the progress callback can show what the step is currently
+/// doing. The full buffer is unchanged, so failure classification still sees
+/// every byte.
+fn drain_tracking_last_line<R: Read + Send + 'static>(
+    pipe: Option<R>,
+    last_line: Arc<Mutex<Option<String>>>,
+) -> JoinHandle<Vec<u8>> {
+    let pipe = pipe.expect("stderr was piped for the streaming path");
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(pipe);
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut line: Vec<u8> = Vec::new();
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    buffer.extend_from_slice(&line);
+                    let text = String::from_utf8_lossy(&line);
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty()
+                        && let Ok(mut guard) = last_line.lock()
+                    {
+                        *guard = Some(trimmed.to_owned());
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        buffer
+    })
+}
+
+/// The longest a build line is allowed to be when folded into a progress
+/// heartbeat, so a single pathological line cannot dominate the output.
+const PROGRESS_LINE_MAX: usize = 120;
+
+/// Formats one progress heartbeat for a long step: `still <activity>, <elapsed>`,
+/// with the most recent build line appended when one is available. The build
+/// line is trimmed to [`PROGRESS_LINE_MAX`] characters on a char boundary so a
+/// very long line cannot swamp the heartbeat.
+pub(crate) fn progress_line(activity: &str, elapsed: Duration, last_line: Option<&str>) -> String {
+    let base = format!("still {activity}, {}", format_elapsed(elapsed));
+    match last_line {
+        Some(line) if !line.trim().is_empty() => format!("{base} — {}", truncate_line(line.trim())),
+        _ => base,
+    }
+}
+
+/// Returns `line` unchanged, or its first [`PROGRESS_LINE_MAX`] characters with a
+/// trailing ellipsis, never splitting a multi-byte character.
+fn truncate_line(line: &str) -> String {
+    if line.chars().count() <= PROGRESS_LINE_MAX {
+        return line.to_owned();
+    }
+    let kept: String = line
+        .chars()
+        .take(PROGRESS_LINE_MAX.saturating_sub(1))
+        .collect();
+    format!("{kept}…")
 }
 
 /// Joins a [`drain`] thread, yielding what it read (empty if it panicked).

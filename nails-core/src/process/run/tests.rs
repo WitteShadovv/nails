@@ -527,9 +527,13 @@ fn run_streaming_reports_progress_and_returns_output() {
 
     let mut ticks: Vec<Duration> = Vec::new();
     let output = RealProcessRunner
-        .run_streaming(&command, Duration::from_millis(100), &mut |elapsed| {
-            ticks.push(elapsed);
-        })
+        .run_streaming(
+            &command,
+            Duration::from_millis(100),
+            &mut |elapsed, _last| {
+                ticks.push(elapsed);
+            },
+        )
         .unwrap();
 
     assert!(output.status.success());
@@ -550,12 +554,74 @@ fn run_streaming_never_fires_progress_for_a_quick_command() {
 
     let mut ticks = 0usize;
     let (ok, stdout, _) = RealProcessRunner
-        .run_streaming_text(&command, Duration::from_secs(30), &mut |_| ticks += 1)
+        .run_streaming_text(&command, Duration::from_secs(30), &mut |_, _| ticks += 1)
         .unwrap();
 
     assert!(ok);
     assert_eq!(stdout, "quick");
     assert_eq!(ticks, 0, "a sub-second command must not report progress");
+}
+
+#[test]
+fn run_streaming_surfaces_last_stderr_line_while_keeping_full_buffer() {
+    // Emits two stderr lines before finishing, with a pause so at least one
+    // heartbeat fires between them. The heartbeat must see the most recent line,
+    // and the returned buffer must still hold every line for classification.
+    let command = ProcessCommand::tool("sh")
+        .args([
+            "-c",
+            "printf 'building foo\\n' >&2; sleep 0.25; printf 'building bar\\n' >&2; sleep 0.25; printf done",
+        ])
+        .allow_in_test_runtime();
+
+    let mut last_seen: Vec<Option<String>> = Vec::new();
+    let output = RealProcessRunner
+        .run_streaming(
+            &command,
+            Duration::from_millis(100),
+            &mut |_elapsed, last| {
+                last_seen.push(last.map(str::to_owned));
+            },
+        )
+        .unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"done");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("building foo"), "{stderr:?}");
+    assert!(stderr.contains("building bar"), "{stderr:?}");
+    // The callback saw a concrete build line at least once, and the final line
+    // observed is the most recent one the command wrote.
+    let observed: Vec<&String> = last_seen.iter().flatten().collect();
+    assert!(
+        !observed.is_empty(),
+        "expected the heartbeat to surface a build line, got {last_seen:?}"
+    );
+    assert_eq!(observed.last().map(|s| s.as_str()), Some("building bar"));
+}
+
+#[test]
+fn progress_line_folds_in_the_last_build_line_and_truncates() {
+    let elapsed = Duration::from_secs(130);
+    assert_eq!(
+        progress_line("building", elapsed, None),
+        "still building, 2m10s"
+    );
+    assert_eq!(
+        progress_line("building", elapsed, Some("   ")),
+        "still building, 2m10s",
+        "a blank last line is dropped"
+    );
+    assert_eq!(
+        progress_line("building", elapsed, Some("linking foo")),
+        "still building, 2m10s — linking foo"
+    );
+
+    let long = "x".repeat(400);
+    let rendered = progress_line("building", elapsed, Some(&long));
+    assert!(rendered.ends_with('…'));
+    let shown = rendered.rsplit("— ").next().unwrap();
+    assert_eq!(shown.chars().count(), PROGRESS_LINE_MAX);
 }
 
 #[test]

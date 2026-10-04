@@ -190,10 +190,10 @@ fn run_long_step(command: &ProcessCommand, activity: &str) -> Result<(bool, Stri
     RealProcessRunner.run_streaming_text(
         command,
         crate::process::run::BUILD_PROGRESS_INTERVAL,
-        &mut |elapsed| {
+        &mut |elapsed, last_line| {
             tracing::info!(
-                "still {activity}, {}",
-                crate::process::run::format_elapsed(elapsed)
+                "{}",
+                crate::process::run::progress_line(activity, elapsed, last_line)
             );
         },
     )

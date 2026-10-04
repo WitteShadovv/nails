@@ -255,10 +255,14 @@ pub(super) fn switch_to_decoy_for_session<F: Filesystem>(filesystem: &F) -> Resu
         .run_streaming_text(
             &command,
             crate::process::run::BUILD_PROGRESS_INTERVAL,
-            &mut |elapsed| {
+            &mut |elapsed, last_line| {
                 tracing::info!(
-                    "still restoring the decoy configuration, {}",
-                    crate::process::run::format_elapsed(elapsed)
+                    "{}",
+                    crate::process::run::progress_line(
+                        "restoring the decoy configuration",
+                        elapsed,
+                        last_line
+                    )
                 );
             },
         )
