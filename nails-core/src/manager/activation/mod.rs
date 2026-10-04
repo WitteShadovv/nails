@@ -693,10 +693,13 @@ impl<F: Filesystem> NailsManager<F> {
         if layer_runs {
             step.emit("profile_switch", "Applying hidden configuration...");
         }
-        // Snapshot the active service units around the hidden switch so the set it
-        // adds is known to emergency teardown. Off NixOS (no switch) both snapshots
-        // are empty and nothing is recorded.
-        let units_before_switch = crate::manager::helpers::ServiceController::list_active_units();
+        // Snapshot the service units around the hidden switch so the set it adds
+        // is known to emergency teardown: every unit the host knew beforehand
+        // (active or not), then the active units afterwards. Only a unit that is
+        // active after the switch and was unknown before counts as hidden-added,
+        // so a base service that merely restarts in the window is not recorded.
+        // Off NixOS (no switch) both snapshots are empty and nothing is recorded.
+        let units_before_switch = crate::manager::helpers::ServiceController::list_known_units();
         let hidden_config =
             guard.run_post_overlay_nixos_switch(&fast_path_toplevel, &new_fingerprint, verbosity);
         let units_after_switch = crate::manager::helpers::ServiceController::list_active_units();
@@ -866,8 +869,9 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
-    /// Record the service units the hidden switch added (the difference between
-    /// the active-unit snapshots taken around it) in the cached state, so
+    /// Record the service units the hidden switch added (units active after it
+    /// that were not known at all before it — see
+    /// `ServiceController::list_known_units`) in the cached state, so
     /// emergency teardown stops exactly those units instead of switching the
     /// whole decoy configuration back. A no-op when nothing was added.
     pub(crate) fn record_hidden_added_units(&self, before: &[String], after: &[String]) {
@@ -876,6 +880,7 @@ impl<F: Filesystem> NailsManager<F> {
         let added: Vec<String> = after
             .iter()
             .filter(|unit| !before_set.contains(unit.as_str()))
+            .filter(|unit| !is_protected_base_unit(unit))
             .cloned()
             .collect();
         if added.is_empty() {
@@ -1238,6 +1243,41 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
     }
+}
+
+/// Whether `unit` is a core base-system unit that must never be recorded as
+/// "hidden-added" and therefore never stopped by an emergency teardown.
+///
+/// The hidden-added set already excludes every unit the host knew before the
+/// switch, so a base service that restarts mid-switch is not recorded. This list
+/// is defence in depth for the units whose loss breaks the live decoy itself:
+/// stopping udev, journald, logind, dbus, polkit, nix-daemon or a getty leaves
+/// device events unhandled, logging and logins failing, the system bus and
+/// polkit gone, the package store's daemon missing, or the console dead — so a
+/// teardown can wedge and the operator is left at a broken decoy. A hidden NixOS
+/// generation never legitimately *adds* these units (they exist in every base),
+/// so excluding them can only drop false positives, never a genuine hidden
+/// service.
+fn is_protected_base_unit(unit: &str) -> bool {
+    const PROTECTED: &[&str] = &[
+        "systemd-udevd.service",
+        "systemd-journald.service",
+        "systemd-journald-audit.socket",
+        "systemd-logind.service",
+        "systemd-user-sessions.service",
+        "dbus.service",
+        "dbus-broker.service",
+        "polkit.service",
+        "nix-daemon.service",
+        "console-getty.service",
+        "getty.target",
+    ];
+    PROTECTED.contains(&unit)
+        // getty/console template instances (getty@tty1.service,
+        // serial-getty@ttyS0.service, autovt@…): losing these kills the console.
+        || unit.starts_with("getty@")
+        || unit.starts_with("serial-getty@")
+        || unit.starts_with("autovt@")
 }
 
 /// Join mount points into a comma-separated list for a refusal message, or a

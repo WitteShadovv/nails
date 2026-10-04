@@ -523,6 +523,54 @@ impl ServiceController {
         run_journalctl(&["--rotate"]).map(|_| ())
     }
 
+    /// List every service unit the host already knows about, active or not.
+    ///
+    /// The union of `systemctl list-unit-files --type=service` (units with a unit
+    /// file on disk) and `systemctl list-units --type=service --all` (every loaded
+    /// unit, including inactive and transient ones). Activation takes this
+    /// snapshot *before* the hidden switch: a unit counts as hidden-added only if
+    /// it is active afterwards and was not known at all beforehand. Comparing
+    /// presence rather than active state means a base service that merely
+    /// restarts while the overlays settle — inactive for an instant, but loaded
+    /// and backed by a decoy unit file — is never mistaken for one the hidden
+    /// generation brought up. Returns an empty list where host interaction is
+    /// skipped.
+    pub fn list_known_units() -> Vec<String> {
+        if Self::should_skip() {
+            return Vec::new();
+        }
+
+        let mut known: Vec<String> = Vec::new();
+        for args in [
+            &[
+                "list-unit-files",
+                "--type=service",
+                "--no-legend",
+                "--plain",
+                "--no-pager",
+            ][..],
+            &[
+                "list-units",
+                "--type=service",
+                "--all",
+                "--no-legend",
+                "--plain",
+                "--no-pager",
+            ][..],
+        ] {
+            if let Ok(output) = run_systemctl(args)
+                && output.status.success()
+            {
+                for unit in parse_active_units(&output.stdout) {
+                    if !known.contains(&unit) {
+                        known.push(unit);
+                    }
+                }
+            }
+        }
+        known
+    }
+
     /// List the names of the currently active service units.
     ///
     /// Runs `systemctl list-units --type=service --state=active --no-legend

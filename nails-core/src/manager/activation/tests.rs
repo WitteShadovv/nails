@@ -5,7 +5,8 @@ use super::gate::ActivationGateTestGuard;
 use super::maybe_block_after_activating_state_transition;
 use super::{
     INTEGRITY_VERIFIED_TARGETS, SessionRestartPhase, StepProgress, derive_security_label,
-    determine_session_restart_phase, overlay_status_body, record_surviving_writers,
+    determine_session_restart_phase, is_protected_base_unit, overlay_status_body,
+    record_surviving_writers,
 };
 use crate::DecoyWriter;
 use crate::Verbosity;
@@ -1012,6 +1013,97 @@ fn step_progress_numbers_steps_contiguously_up_to_the_total() {
     }
     assert_eq!(step.current, 7);
     assert_eq!(step.total, 7);
+}
+
+#[test]
+fn protected_base_units_are_never_treated_as_hidden_added() {
+    // Core decoy services that merely cycle while the overlays settle must never
+    // be recorded as hidden-added, or emergency would stop them and break the
+    // live decoy.
+    for unit in [
+        "systemd-udevd.service",
+        "systemd-journald.service",
+        "systemd-logind.service",
+        "systemd-user-sessions.service",
+        "dbus.service",
+        "polkit.service",
+        "nix-daemon.service",
+        "getty@tty1.service",
+        "serial-getty@ttyS0.service",
+        "autovt@tty2.service",
+    ] {
+        assert!(is_protected_base_unit(unit), "{unit} must be protected");
+    }
+
+    // A genuine hidden-session service is still recorded for teardown.
+    for unit in ["myhidden-agent.service", "ssh-tunnel.service"] {
+        assert!(
+            !is_protected_base_unit(unit),
+            "{unit} must not be protected"
+        );
+    }
+}
+
+#[test]
+fn record_hidden_added_units_ignores_units_known_before_the_switch() {
+    // The "before" snapshot lists every unit the host knew, active or not. A base
+    // service that restarted during the switch (here an arbitrary decoy unit that
+    // is not on the protected list) was known before, so it is not recorded; only
+    // the unit the hidden generation introduced is.
+    let fs = MockFilesystem::new();
+    let config = Config::test_default();
+    let state_path = PathBuf::from("/mnt/data/state.json");
+    let manager = NailsManager::new(fs, config, state_path);
+    manager.seed_cached_state(crate::StateFile::default());
+
+    let known_before = vec![
+        "cups.service".to_string(),
+        "NetworkManager.service".to_string(),
+    ];
+    let active_after = vec![
+        "cups.service".to_string(),
+        "NetworkManager.service".to_string(),
+        "myhidden-agent.service".to_string(),
+    ];
+    manager.record_hidden_added_units(&known_before, &active_after);
+
+    let recorded = manager
+        .cached_state
+        .borrow()
+        .as_ref()
+        .expect("cached state seeded")
+        .hidden_added_units
+        .clone();
+    assert_eq!(recorded, vec!["myhidden-agent.service".to_string()]);
+}
+
+#[test]
+fn record_hidden_added_units_drops_protected_base_units() {
+    // A base service that was inactive in the "before" snapshot and active again
+    // in "after" (a mid-switch cycle) must not land in the hidden-added set; a
+    // real hidden service in the diff still does.
+    let fs = MockFilesystem::new();
+    let config = Config::test_default();
+    let state_path = PathBuf::from("/mnt/data/state.json");
+    let manager = NailsManager::new(fs, config, state_path);
+    manager.seed_cached_state(crate::StateFile::default());
+
+    let before = vec!["dbus.service".to_string()];
+    let after = vec![
+        "dbus.service".to_string(),
+        "systemd-udevd.service".to_string(),
+        "myhidden-agent.service".to_string(),
+    ];
+    manager.record_hidden_added_units(&before, &after);
+
+    let recorded = manager
+        .cached_state
+        .borrow()
+        .as_ref()
+        .expect("cached state seeded")
+        .hidden_added_units
+        .clone();
+    assert_eq!(recorded, vec!["myhidden-agent.service".to_string()]);
 }
 
 #[test]
