@@ -26,9 +26,6 @@ in
     ${assertions.assertNoOverlaysFn}
     ${securityHelpers.capturedCommandFns}
 
-    def assert_exit_code(result, expected):
-        assert result["rc"] == expected, f"expected exit {expected}, got {result!r}"
-
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.succeed("cp ${unknownKeyFixture} /tmp/unknown-key.toml")
