@@ -77,7 +77,7 @@ in
 
     with subtest("custom exclusions are honored while defaults still stay excluded"):
         machine.succeed("nails --config /tmp/exclusions.toml activate --overlay-only --session keep -y")
-        assert_status_state("active")
+        assert_status_state("active", config_path="/tmp/exclusions.toml")
         assert_overlay_mounted("/etc")
         assert_overlay_mounted("/home")
         assert_overlay_mounted("/srv")
@@ -85,7 +85,7 @@ in
 
     with subtest("deactivation returns the system to decoy mounts"):
         canonical_deactivate("/tmp/exclusions.toml", unit_name="nails-deactivate-config-exclusions")
-        assert_status_state("inactive")
+        assert_status_state("inactive", config_path="/tmp/exclusions.toml")
         assert_no_overlays(["/etc", "/home", "/srv", "/opt", "/run", "/mnt"])
   '';
 }

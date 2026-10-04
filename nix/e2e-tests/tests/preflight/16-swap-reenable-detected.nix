@@ -39,7 +39,7 @@ in
     with subtest("activation succeeds with no swap active"):
         machine.succeed("swapoff -a || true")
         machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
-        assert_status_state("active")
+        assert_status_state("active", config_path=config_path)
         assert_overlay_mounted("/home")
 
     with subtest("a swap device re-enabled after activation is reported by verify"):
@@ -61,7 +61,7 @@ in
 
     with subtest("teardown is clean once swap is removed"):
         canonical_deactivate(config_path, unit_name="nails-deactivate-swap-reenable")
-        assert_status_state("inactive")
+        assert_status_state("inactive", config_path=config_path)
         assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
   '';
 }

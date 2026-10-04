@@ -53,7 +53,7 @@ in
         )
         assert_command_failed(result)
         assert_result_contains(result, ["swap", "leak memory", "swapoff -a"], stream="stderr")
-        assert_status_state("inactive")
+        assert_status_state("inactive", config_path=config_path)
 
     with subtest("RAM-only zram swap is permitted"):
         # Tear down the file swap and bring up a RAM-only zram device, which the
@@ -68,19 +68,19 @@ in
         machine.succeed("test \"$(cat /sys/block/zram0/backing_dev)\" = none")
 
         machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
-        assert_status_state("active")
+        assert_status_state("active", config_path=config_path)
         assert_overlay_mounted("/home")
         canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-swap-zram")
-        assert_status_state("inactive")
+        assert_status_state("inactive", config_path=config_path)
         assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
         machine.succeed("swapoff /dev/zram0")
 
     with subtest("disabling swap restores a successful activation"):
         machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
-        assert_status_state("active")
+        assert_status_state("active", config_path=config_path)
         assert_overlay_mounted("/home")
         canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-swap")
-        assert_status_state("inactive")
+        assert_status_state("inactive", config_path=config_path)
         assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
   '';
 }

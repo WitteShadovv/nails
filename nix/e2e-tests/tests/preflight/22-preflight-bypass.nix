@@ -42,7 +42,7 @@ in
         )
         assert_command_failed(blocked)
         assert_result_contains(blocked, ["swap", "Swap is enabled"], stream="stderr")
-        assert_status_state("inactive")
+        assert_status_state("inactive", config_path=config_path)
 
     with subtest("no-preflight bypasses the swap guard and emits a danger warning"):
         bypassed = run_command_capture(
@@ -52,14 +52,14 @@ in
         assert_command_succeeded(bypassed)
         combined = bypassed["stdout"] + "\n" + bypassed["stderr"]
         assert_text_contains(combined, ["Skipping pre-flight checks", "DANGER"])
-        assert_status_state("active")
+        assert_status_state("active", config_path=config_path)
         assert_overlay_mounted("/home")
 
     with subtest("cleanup restores decoy state after bypassed activation"):
         canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-bypass")
         machine.succeed("sh -lc 'swapoff /swapfile || true'")
         machine.succeed("rm -f /swapfile")
-        assert_status_state("inactive")
+        assert_status_state("inactive", config_path=config_path)
         assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
   '';
 }
