@@ -2704,7 +2704,9 @@ Owns: `nails-cli/src/cli/commands/emergency.rs`, `nails-cli/src/cli/commands/sta
 
 Owns: `Cargo.lock`, `docs/threat-model.md`, `docs/operator-guide.md`, `docs/cli.md`, `docs/adr/0001-live-overlay-vs-boot-time-overlay.md`
 
-- [ ] **T-119: Rewrite USER-SECURITY-GUIDE against the code as an operator guide organised around where each step runs, with recovery runbook and honest limits** (critical · effort M)
+- [x] **T-119: Rewrite USER-SECURITY-GUIDE against the code as an operator guide organised around where each step runs, with recovery runbook and honest limits** (critical · effort M)
+
+  _Status: done in wave 23 (W23-C1). `docs/operator-guide.md` replaces the deleted USER-SECURITY-GUIDE (inbound links retargeted; decoy-side history hardening moved to decoy-requirements.md; fictional 5-layer defence corrected), with a findmnt-driven recovery runbook covering suspend, power loss, backend loss, ENOSPC, crash and OOM plus the VeraCrypt protection-mode warning. `nails activate` now writes a read-only pre-mount residue report under `<hidden-root>/reports/` (unit tests + smoke 01 assertion; the assertion still needs a run on a Nix host)._
 
   **Problem:** `docs/USER-SECURITY-GUIDE.md` is marked "required reading" (L5) but describes protections that do not exist, and following it literally leaves traces on the decoy. The "5-layer" history defense (L263-299) is mostly fictional: only deactivation truncation exists (`cleanup/history/mod.rs:262-364`). The deep-verify table (L196-207) lists checks `verifier.rs` does not run. The guide tells users to run a nonexistent `nails deactivate --force` (also in `verifier.rs:400,411`) and to `rm state.json` (L514-518). The standard-vs-emergency table (L135-146) says "via reboot" for steps the code runs explicitly in both modes (`deactivation.rs:470-505`). Incomplete-deactivation recovery (L482-534) unmounts the backend before the overlays, uses hard-coded unmount lists and runs `kill -9 $(pgrep -f nails)`. Decoy-shell commands (`cat <hidden>/state.json`, `cryptsetup close veracrypt-hidden`, `verify --deep`) and names like `/mnt/hidden` and `veracrypt-hidden` end up in history, sudo logs and mount-unit names. Nothing covers suspend, power loss, backend loss, ENOSPC, crash or OOM. Nothing warns that writing to a VeraCrypt outer volume outside protection mode destroys the hidden volume. In code, `emergency.rs:7` claims a decoy switch, and `preflight/checks/state.rs:86-92` says a reboot resets state, which is false because state.json survives reboot.
 
@@ -2738,7 +2740,9 @@ Owns: `Cargo.lock`, `docs/threat-model.md`, `docs/operator-guide.md`, `docs/cli.
   - Activation writes a residue report: a mock-fs unit test covers it, and an E2E test checks that the report exists and the decoy is unchanged.
   - `state.rs` tests are updated and `nix develop -c cargo test -p nails-core` passes.
 
-- [ ] **T-120: Help text, nails completions, man page, generated CLI docs, published JSON schemas and exit codes shipped in the release tarball** (low · effort M)
+- [x] **T-120: Help text, nails completions, man page, generated CLI docs, published JSON schemas and exit codes shipped in the release tarball** (low · effort M)
+
+  _Status: done in wave 23 (W23-C1). Root EXAMPLES section, `nails completions <shell>` (clap_complete), `nails.1` and `docs/cli.md` generated and staleness-checked by `nails-cli/tests/cli_reference.rs` (`REGENERATE_CLI_DOCS=1`), canonical schemas in `docs/schemas/` (status, verify, activate, deactivate, emergency; fixture copies removed, tests 58/59 repointed), and the release tarball stages the man page and operator docs. `nix build .#nails-release` still needs a run on a Nix host._
 
   **Problem:** Help text is minimal: `nails-cli/src/cli/args.rs:14` sets `long_about = None`, and there is no `after_help`, no examples and no `value_hint`. There is no clap_complete or clap_mangen, and the README defers to `nails --help`. Verify exit codes (0/1/2) are documented only in a doc comment (`nails-cli/src/cli/commands/verify.rs:21-24`). The status/verify JSON schemas exist only as E2E fixtures (`nix/e2e-tests/fixtures/schemas/*.json`, `$id https://nails.local/...`). Activate, deactivate and emergency JSON output has no schema and no `schema_version`. The release bundle stages only `nails`, `LICENSE` and `README.md` (`flake.nix:166-168`). Help text must not contain blocked default paths, because the security binary scan and the contract tests check for them. Completions or man pages installed on the decoy are persistent artifacts.
 
@@ -2761,7 +2765,9 @@ Owns: `Cargo.lock`, `docs/threat-model.md`, `docs/operator-guide.md`, `docs/cli.
   - The E2E contract tests load schemas from `docs/schemas/`.
   - `nix build .#nails-release` produces a tarball that contains `nails.1`, `docs/cli.md`, `docs/operator-guide.md` and `docs/threat-model.md`.
 
-- [ ] **T-121: Create docs/threat-model.md as the single threat-model source (assumptions, persona inheritance, remote state, residual channels, evaluation scope)** (high · effort M)
+- [x] **T-121: Create docs/threat-model.md as the single threat-model source (assumptions, persona inheritance, remote state, residual channels, evaluation scope)** (high · effort M)
+
+  _Status: done in wave 23 (W23-C1). `docs/threat-model.md` rewritten as the single source with all nine sections (the /var/lib/nixos drift stays marked under investigation until test 34 runs on a Nix host; the VeraCrypt nightly is stated as never run); README, SECURITY.md, the operator guide and configuration.md link to it._
 
   **Problem:** The threat model is spread across `README.md:189-205`, `docs/USER-SECURITY-GUIDE.md:61-74`, `SECURITY.md:5-21` and the website, and the copies disagree: only the guide adds an outer-encryption assumption.
   - Nothing tells users what the hidden environment shares with the decoy: the same user account and home, decoy services and user units that keep running, the same network identity, and remote or cloud state that is never rolled back. Guide L57 ("all hidden packages and services exist only inside the mounted hidden volume") and the emergency claims overstate the separation.
@@ -2789,7 +2795,9 @@ Owns: `Cargo.lock`, `docs/threat-model.md`, `docs/operator-guide.md`, `docs/cli.
   - No doc sentence claims hidden services are fully separate from decoy services.
   - The docs link check passes.
 
-- [ ] **T-122: Remove maintainer-process prose from user docs and give RELEASING, ROADMAP, SECURITY, CHANGELOG and the preflight README real content** (low · effort S)
+- [x] **T-122: Remove maintainer-process prose from user docs and give RELEASING, ROADMAP, SECURITY, CHANGELOG and the preflight README real content** (low · effort S)
+
+  _Status: done in wave 23 (W23-C1 plus integration). RELEASING.md already held the tag policy; README/SUPPORT/SECURITY reduced to one link, SECURITY names 0.2.x, ROADMAP is Now/Next/Later with #5/#6, the preflight README defers to rustdoc with the real 500 MB floor; integration added the CHANGELOG compare links, #54 under Unreleased and the 'Upgrade notes' subsection opening with 'upgrade only while inactive'. The TODO redirect wording was already gone._
 
   **Problem:** Release-policy prose ("exact stable tag", "prerelease") is repeated in `README.md:79,251-252`, the CHANGELOG preamble, `SECURITY.md:27-33` and `SUPPORT.md` (L7, L24, L43). The SECURITY.md version table names no versions.
   - `ROADMAP.md` is generic. It does not link open issues #5/#6 and says nothing about multi-distro support or aarch64.
@@ -2820,7 +2828,9 @@ Owns: `Cargo.lock`, `docs/threat-model.md`, `docs/operator-guide.md`, `docs/cli.
   - CHANGELOG has compare links and an Upgrade notes subsection under Unreleased.
   - The preflight README lists every registered check (or defers to rustdoc) and contains no 1024 MB claim.
 
-- [ ] **T-123: README overhaul: runnable quick start with absolute paths, prerequisites, support matrix, documentation index, quickstart E2E test, docs link check** (high · effort M)
+- [x] **T-123: README overhaul: runnable quick start with absolute paths, prerequisites, support matrix, documentation index, quickstart E2E test, docs link check** (high · effort M)
+
+  _Status: done in wave 23 (W23-C1). README rewritten (auto mode, documentation index, operator-guide pointers), `docs/architecture.md` added, `scripts/docs-check.sh` (lychee --offline + retired-name guard) wired into the devShell, a flake check, pre-commit and a path-filtered CI job, new smoke test `quickstart-zero-config`, plus unit tests that the README nails.toml parses strictly and overlay-only activation writes no rebuild notification. The flake check, the VM test and the CI lychee install still need a run on a Nix host / hosted runner._
 
   **Problem:** The README quick start cannot be run as written.
   - **Inconsistent paths:** install puts the binary at `/mnt/hidden/nails` (README.md:84-107), Quick start mounts `/mnt/hidden-volume` (L121), and the commands are bare `nails init`/`sudo nails activate`/`nails verify` (L127-172), which nudges users to put nails on PATH on the decoy.
@@ -2865,7 +2875,9 @@ Owns: `Cargo.lock`, `docs/threat-model.md`, `docs/operator-guide.md`, `docs/cli.
   - A unit test shows that overlay-only activation lists no rebuild step and writes no rebuild notification.
   - The support matrix matches the platform detection and refusal logic.
 
-- [ ] **T-124: ADR: live overlay vs boot-time overlay mechanisms** (low · effort S)
+- [x] **T-124: ADR: live overlay vs boot-time overlay mechanisms** (low · effort S)
+
+  _Status: done in wave 23 (W23-C1). Created as `docs/adr/0005-live-overlay-vs-boot-time-overlay.md` (0001 is the accepted core-library-boundary ADR), with the comparison table, decision, revisit triggers and consequences; linked from `docs/architecture.md` and the ADR index._
 
   **Problem:** NAILS has never been compared with the boot-time "live mode" mechanisms that implement the same full-root overlay primitive: Kicksecure/Whonix grub-live, Ubuntu overlayroot, `systemd.volatile=overlay` and dracut `rd.overlay`/dmsquash-live. The multi-distro port is going ahead without that comparison. These mechanisms use a tmpfs upper and need a reboot, and several leave an enabler on the decoy, so they are not drop-in replacements. None of these trade-offs is written down.
 

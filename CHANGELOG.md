@@ -13,10 +13,11 @@ of this changelog for that version becomes the release notes word for word, and
 
 ## [Unreleased]
 
-### Upgrading
+### Upgrade notes
 
-This release breaks compatibility with earlier state, config and CLI surfaces; there are no
-compatibility shims.
+Upgrade only while NAILS is inactive: run `nails deactivate` (or `nails recover` for a stuck
+state) with the old binary before replacing it. This release breaks compatibility with earlier
+state, config and CLI surfaces; there are no compatibility shims.
 
 - Configuration moves from `nails.yaml` (YAML) to strict `config/nails.toml` (TOML): convert each
   key by hand, unknown keys are now rejected, and `nails init` regenerates a documented template.
@@ -31,6 +32,18 @@ compatibility shims.
 
 ### Added
 
+- An operator guide (`docs/operator-guide.md`) organised by where each step runs, with a
+  `findmnt`-driven recovery runbook and honest limits, replacing `docs/USER-SECURITY-GUIDE.md`.
+- `nails activate` writes a read-only pre-mount decoy residue report under
+  `<hidden-root>/reports/` and prints a one-line summary; dry runs and already-active systems skip
+  it.
+- `nails completions <shell>`, a generated man page (`nails.1`) and Markdown CLI reference
+  (`docs/cli.md`), canonical JSON schemas under `docs/schemas/` for status, verify, activate,
+  deactivate and emergency output, and an EXAMPLES section in `--help`; the release tarball ships
+  the man page, CLI reference, operator guide and threat model.
+- `docs/architecture.md`, ADR 0005 comparing the live overlay with boot-time full-root overlay
+  mechanisms, and a Markdown link and retired-name check (`scripts/docs-check.sh`) wired into the
+  flake checks, pre-commit and CI.
 - `nails recover` reconciles a stuck state and finishes an interrupted, degraded or corrupt-state
   teardown from the live mount table (a corrupt state file is kept as `state.json.bad`), and
   `nails emergency` now runs from any state; on a clean inactive system both are a no-op success.
@@ -184,6 +197,14 @@ compatibility shims.
 
 ### Changed
 
+- `docs/threat-model.md` is the single threat-model source (assumptions, state shared with the
+  decoy, residual channels, evaluation scope); README, SECURITY.md and the operator guide link to
+  it.
+- The README is rewritten around a runnable quick start, a support matrix and a documentation
+  index; release and tag policy lives only in `RELEASING.md`, SECURITY.md names concrete supported
+  versions, and ROADMAP.md is organised as Now/Next/Later.
+- Overlay-only activation reports that no rebuild step was requested and writes no rebuild
+  notification.
 - Emergency teardown starts immediately, detaches the overlays first and runs cleanup afterwards;
   it drops only clean page cache after unmount (no global `sync`, no secure-delete of the encrypted
   upper) and no longer claims memory sanitization or a decoy switch. `--no-countdown` is removed.
@@ -401,6 +422,10 @@ compatibility shims.
 
 ### Fixed
 
+- Resolved the RUSTSEC advisories in the dependency graph and restored the Nix release build
+  ([#54](https://github.com/WitteShadovv/nails/pull/54)).
+- The preflight README defers to rustdoc for the registered checks and states the real 500 MB
+  free-space floor instead of 1024 MB.
 - Notification signal files are written atomically with a numeric collision suffix, so two
   notifications sharing a title within the same millisecond no longer overwrite each other.
 - The activation security label is derived from writer processes still referencing the decoy after
@@ -607,3 +632,7 @@ compatibility shims.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for public contribution guidance.
+
+[Unreleased]: https://github.com/WitteShadovv/nails/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/WitteShadovv/nails/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/WitteShadovv/nails/releases/tag/v0.1.0
