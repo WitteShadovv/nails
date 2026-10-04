@@ -37,6 +37,23 @@ test:
 doctest:
     cargo test --doc --workspace --all-features --locked
 
+# Prove the unit tests do not depend on execution order. `#[serial]` only
+# orders serial tests against each other, so a leak through the shared process
+# environment between an unmarked test and a serial one surfaces only under a
+# threaded, shuffled run; nextest isolates each test in its own process and
+# would hide it. Hence libtest, not nextest, and `--lib`, where the env-mutating
+# unit tests live. The `--shuffle-seed` flag is unstable, so the pinned stable
+# compiler is told to accept it with RUSTC_BOOTSTRAP rather than adding a
+# nightly toolchain.
+shuffle seeds="20":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for seed in $(seq 1 {{ seeds }}); do
+        echo "shuffle seed $seed"
+        RUSTC_BOOTSTRAP=1 cargo test --workspace --all-features --locked --lib \
+            -- -Z unstable-options --shuffle-seed "$seed"
+    done
+
 # Line coverage over nextest, measuring production code only; fails below the
 # floor in .config/coverage.toml.
 coverage:

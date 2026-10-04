@@ -193,6 +193,47 @@ jobs:
           path: target/coverage/
           retention-days: 30
 
+  # Order-independence gate for the Rust unit tests. The `rust` job runs the
+  # suite through nextest, which isolates each test in its own process and so
+  # cannot see a leak through the shared process environment; this job runs both
+  # crates' unit tests threaded over a sweep of shuffled seeds, where such a
+  # leak fails. The libtest shuffle flag is unstable, so RUSTC_BOOTSTRAP lets the
+  # pinned stable compiler accept it (see the `shuffle` justfile recipe); no
+  # nightly toolchain is added.
+  shuffle:
+    name: shuffle
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          shared-key: ci
+          save-if: false
+
+      - name: Install just
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: just@1.49.0
+          fallback: none
+
+      # The suite must leave an empty private TMPDIR, as in the `rust` job.
+      - name: Give the tests a private TMPDIR
+        run: echo "TMPDIR=$(mktemp -d "$RUNNER_TEMP/tests.XXXXXX")" >> "$GITHUB_ENV"
+
+      - name: Run the shuffled-seed sweep
+        run: just shuffle
+
   # Dependency policy over the shipped graph. Advisory results follow the
   # RustSec database rather than this repository, so they only gate a change
   # to the dependencies or their policy; scheduled.yml scans the full graph
@@ -413,7 +454,7 @@ jobs:
   # The one required status. A job the path filter skipped counts as passed.
   gate:
     name: gate
-    needs: [changes, lint, rust, deps, privileged-mounts, nix-build, lint-misc, docs-check]
+    needs: [changes, lint, rust, shuffle, deps, privileged-mounts, nix-build, lint-misc, docs-check]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
