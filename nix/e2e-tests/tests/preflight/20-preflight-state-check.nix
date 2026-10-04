@@ -60,7 +60,12 @@ in
         assert (
             "checksum" in combined or "corrupt" in combined
         ), f"Expected checksum/corruption refusal, got: {result}"
-        assert_status_state("unknown", config_path=config_path)
+        # The tampered file leaves the state unknown, which status reports in
+        # its JSON payload while failing closed with the invalid-state exit 6.
+        rc, status = read_status_json_with_rc(config_path=config_path)
+        assert rc == 6, f"Expected invalid-state exit 6, got rc={rc}: {status}"
+        assert_status_state("unknown", payload=status)
+        assert status.get("posture") == "unknown", status
         assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
   '';
 }

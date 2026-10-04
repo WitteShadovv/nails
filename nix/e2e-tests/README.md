@@ -56,7 +56,7 @@ or `nodes` keeps `{ self, ... }:` or `{ self, pkgs, ... }:`.
 - `writeHeadlessConfigFn` → `write_headless_config(path)` (writes a `nails.toml` with explicit overlays)
 - `writeExtendedConfigFn` → `write_extended_config(path)`
 - `runDetachedCommandFn` → `run_detached_command(unit_name, command)`
-- `readStatusJsonFn` → `read_status_json(config_path=None)`
+- `readStatusJsonFn` → `read_status_json(config_path=None)` (requires exit 0) and `read_status_json_with_rc(config_path=None)` → `(rc, data)` for fail-closed postures (exit 6 unknown, 7 degraded/inconsistent)
 - `runVerifyFn` → `run_verify(args="", config_path=None)`
 - `canonicalDeactivateFn` → `canonical_deactivate(config_path, unit_name="nails-deactivate", shutdown_timeout=300, diagnostics_timeout=90)`
 

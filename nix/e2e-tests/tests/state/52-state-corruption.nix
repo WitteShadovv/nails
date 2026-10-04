@@ -56,8 +56,16 @@ in
             % (state_path, json.dumps(corrupt_state, indent=2, sort_keys=True))
         )
 
-        corrupt_payload = read_status_json(config_path=headless_config)
+        # An unknown state fails closed: status still emits its JSON payload
+        # but exits with the invalid-state code (6) so scripts cannot mistake
+        # the corrupt file for a trustworthy posture.
+        rc, corrupt_payload = read_status_json_with_rc(config_path=headless_config)
+        assert rc == 6, (
+            f"Expected invalid-state exit 6 on a corrupt state, got rc={rc}: "
+            f"{corrupt_payload}"
+        )
         assert_status_state("Unknown", payload=corrupt_payload)
+        assert corrupt_payload.get("posture") == "unknown", corrupt_payload
         error_text = corrupt_payload.get("error", "")
         assert "corrupt" in error_text.lower(), (
             f"Expected corruption error, got: {corrupt_payload}"

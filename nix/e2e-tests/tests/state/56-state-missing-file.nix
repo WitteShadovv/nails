@@ -20,22 +20,6 @@ in
     ${assertions.assertStatusStateFn}
     ${assertions.assertOverlayMountedFn}
 
-    def read_status_json_allow_failure(config_path=None):
-        # Like read_status_json, but tolerates a non-zero exit so a dangerous
-        # posture (which fails closed) can still be inspected. Returns (rc, data).
-        import shlex
-
-        command = "nails"
-        if config_path is not None:
-            command += " --config " + shlex.quote(config_path)
-        command += " status --json"
-        rc, _ = machine.execute(
-            "bash -lc "
-            + shlex.quote(command + " > /tmp/nails-status.stdout 2>/tmp/nails-status.stderr")
-        )
-        payload = json.loads(machine.succeed("cat /tmp/nails-status.stdout"))
-        return rc, payload.get("data", payload)
-
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
@@ -75,7 +59,7 @@ in
         # data. Status must probe the kernel and refuse to call this a decoy.
         machine.succeed("umount -l /mnt/data")
 
-        rc, payload = read_status_json_allow_failure(config_path=headless_config)
+        rc, payload = read_status_json_with_rc(config_path=headless_config)
         posture = payload.get("posture")
         assert posture in ("inconsistent", "degraded"), (
             f"expected a dangerous posture, got {payload}"
