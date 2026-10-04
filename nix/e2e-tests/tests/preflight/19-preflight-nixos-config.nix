@@ -24,6 +24,7 @@ in
         write_text_file(path, """
     hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
+    risky_services = "skip"
 
     ${baseOs.toml}
     [[overlays]]
@@ -40,20 +41,33 @@ in
     write_nixos_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    with subtest("broken hidden hardware configuration import blocks activation"):
+    with subtest("broken hidden hardware configuration blocks activation"):
+        # Activation stages the hidden layout before the read-only checks: the
+        # hidden hardware-configuration.nix becomes a wrapper importing
+        # ./nails/configuration.nix and the original is preserved verbatim as
+        # hardware-configuration.base.nix (all on the hidden volume). A file that
+        # merely lacks the import is therefore valid; a genuinely broken one (a
+        # syntax error) must make the nixos-config parse gate refuse before any
+        # overlay is mounted.
         write_text_file(
             "/mnt/data/etc/nixos/hardware-configuration.nix",
-            "{ config, pkgs, ... }: { boot.loader.grub.enable = false; }\n",
+            "{ config, pkgs, ... }: { boot.loader.grub.enable = false;\n",
         )
         result = run_command_capture(
             "preflight-nixos-config-fail",
             f"nails --config {config_path} activate --session keep -y",
         )
         assert_command_failed(result)
+        assert "failed to parse" in result["stdout"] + result["stderr"], (
+            f"Expected the nixos-config parse gate to refuse, got: {result}"
+        )
         assert_status_state("inactive", config_path=config_path)
         assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
         machine.succeed("test -e /mnt/data/config/nixos/configuration.nix")
-        machine.fail("grep -F './nails/configuration.nix' /mnt/data/etc/nixos/hardware-configuration.nix")
+        # The wrapper design: the hidden file imports the NAILS module and the
+        # broken original was preserved verbatim, not patched in place.
+        machine.succeed("grep -F './nails/configuration.nix' /mnt/data/etc/nixos/hardware-configuration.nix")
+        machine.succeed("grep -F 'boot.loader.grub.enable' /mnt/data/etc/nixos/hardware-configuration.base.nix")
 
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';
