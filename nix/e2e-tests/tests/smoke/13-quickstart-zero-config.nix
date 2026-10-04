@@ -85,7 +85,7 @@ in
     with subtest("activate with no --config overlays the default set, run by full path under sudo"):
         machine.succeed(
             "su - testuser -c "
-            + f"'sudo {hidden_nails} activate --overlay-only --session keep -y'"
+            + f"'sudo {hidden_nails} activate --overlay-only --session keep --risky-services skip -y'"
         )
 
         home_mount = machine.succeed("mount | grep 'overlay on /home' || true")
