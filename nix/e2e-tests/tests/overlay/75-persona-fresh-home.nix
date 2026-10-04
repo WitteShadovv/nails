@@ -10,7 +10,7 @@
 # fresh-home mode) on the overlay-only path. It must be evaluated on a real
 # runner (the Nix VM driver) — it cannot be checked in the development sandbox.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   assertions = import ./../../lib/assertions.nix;
@@ -18,13 +18,6 @@ in
 {
   name = "persona-fresh-home";
   meta.tags = [ "overlay" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${assertions.assertOverlayMountedFn}

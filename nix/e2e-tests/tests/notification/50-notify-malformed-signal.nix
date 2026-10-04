@@ -1,6 +1,6 @@
 # Test 50: Notify Malformed Signal
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   notificationHelpers = import ./../../lib/notification-helpers.nix;
@@ -8,13 +8,6 @@ in
 {
   name = "notify-malformed-signal";
   meta.tags = [ "notification" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${notificationHelpers.writeNotificationConfigFn}

@@ -7,7 +7,7 @@
 # an autostart entry onto the bare decoy home: those belong only in the hidden
 # upper layer.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -16,15 +16,6 @@ in
 {
   name = "stale-active-after-reset";
   meta.tags = [ "lifecycle" ];
-
-  nodes = {
-    machine =
-      { ... }:
-      {
-        imports = [ ./../../lib/vm-config.nix ];
-        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-      };
-  };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

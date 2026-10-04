@@ -1,7 +1,7 @@
 # Test 11: Re-activation Workflow
 # Tests activate -> deactivate -> activate again with data persistence
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -10,15 +10,6 @@ in
 {
   name = "reactivation";
   meta.tags = [ "lifecycle" ];
-
-  nodes = {
-    machine =
-      { ... }:
-      {
-        imports = [ ./../../lib/vm-config.nix ];
-        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-      };
-  };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

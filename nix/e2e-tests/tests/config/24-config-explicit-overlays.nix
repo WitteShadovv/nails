@@ -1,7 +1,7 @@
 # Test 24: Config Explicit Overlays
 # Explicit persistent overlays for additional targets (/var, /tmp, /srv, /opt).
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -11,13 +11,6 @@ in
 {
   name = "config-explicit-overlays";
   meta.tags = [ "config" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${testHelpers.canonicalDeactivateFn}

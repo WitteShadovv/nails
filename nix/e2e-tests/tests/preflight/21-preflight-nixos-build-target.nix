@@ -1,6 +1,6 @@
 # Test 21: Preflight NixOS Build Target Validation
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -13,13 +13,6 @@ in
     "preflight"
     "smoke"
   ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${testHelpers.readStatusJsonFn}

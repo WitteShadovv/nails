@@ -7,7 +7,7 @@
 # staged or re-owned by the test, so a signal left to root, or chowned to a
 # group the account is not in, makes the dispatch fail here.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -18,13 +18,6 @@ in
 {
   name = "notify-dispatch-signal-flow";
   meta.tags = [ "notification" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     import json

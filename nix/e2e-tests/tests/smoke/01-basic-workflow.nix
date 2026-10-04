@@ -1,7 +1,7 @@
 # Test 01: Basic Workflow
 # Tests the happy path: activate -> user activities -> deactivate
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -13,15 +13,6 @@ in
     "lifecycle"
     "overlay"
   ];
-
-  nodes = {
-    machine =
-      { ... }:
-      {
-        imports = [ ./../../lib/vm-config.nix ];
-        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-      };
-  };
 
   testScript = _: ''
     def now():

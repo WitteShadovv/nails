@@ -1,6 +1,6 @@
 # Test 51: Notify No notify-send
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   notificationHelpers = import ./../../lib/notification-helpers.nix;
@@ -11,13 +11,6 @@ in
     "notification"
     "smoke"
   ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${notificationHelpers.writeNotificationConfigFn}

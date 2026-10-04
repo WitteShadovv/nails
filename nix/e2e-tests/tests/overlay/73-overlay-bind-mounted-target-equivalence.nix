@@ -2,7 +2,7 @@
 # Reproduces nails-os style ELOOP when the overlay target itself is a bind mount
 # and an inner bind mount would derive the target's backing directory as an extra lower.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   overlayHelpers = import ./../../lib/overlay-helpers.nix;
@@ -10,13 +10,6 @@ in
 {
   name = "overlay-bind-mounted-target-equivalence";
   meta.tags = [ "overlay" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${overlayHelpers.writeSrvOnlyConfigFn}

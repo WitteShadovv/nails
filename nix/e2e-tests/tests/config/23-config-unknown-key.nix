@@ -3,7 +3,7 @@
 # default: activate and `config validate` exit 3 with a did-you-mean hint,
 # while emergency still proceeds.
 
-{ self, ... }:
+_:
 let
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -18,13 +18,6 @@ in
     "config"
     "smoke"
   ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${preflightHelpers.runCommandCaptureFn}

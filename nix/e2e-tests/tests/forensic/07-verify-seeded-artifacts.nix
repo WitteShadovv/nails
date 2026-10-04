@@ -8,7 +8,7 @@
 # matches the binary by identity, not any command line that merely contains the
 # word "nails". Finally, a clean host with the seeds removed verifies with exit 0.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -19,15 +19,6 @@ in
     "forensic"
     "contract"
   ];
-
-  nodes = {
-    machine =
-      { ... }:
-      {
-        imports = [ ./../../lib/vm-config.nix ];
-        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-      };
-  };
 
   testScript = _: ''
     import shlex

@@ -1,7 +1,7 @@
 # Test 12: Status and Verify Command Coverage
 # Tests status/verify at each phase, JSON output, verbose mode, artifact detection
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -14,15 +14,6 @@ in
     "smoke"
     "contract"
   ];
-
-  nodes = {
-    machine =
-      { ... }:
-      {
-        imports = [ ./../../lib/vm-config.nix ];
-        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-      };
-  };
 
   testScript = _: ''
     import json

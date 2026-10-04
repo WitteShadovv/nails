@@ -1,6 +1,6 @@
 # Test 16: Preflight Storage Readiness
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -10,13 +10,6 @@ in
 {
   name = "preflight-storage-readiness";
   meta.tags = [ "preflight" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${preflightHelpers.writeTextFileFn}

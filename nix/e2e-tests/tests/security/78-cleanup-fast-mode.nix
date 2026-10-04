@@ -1,6 +1,6 @@
 # Test 78: Cleanup Fast Mode
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -11,13 +11,6 @@ in
 {
   name = "cleanup-fast-mode";
   meta.tags = [ "security" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

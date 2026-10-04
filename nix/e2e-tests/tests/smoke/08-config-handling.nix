@@ -1,7 +1,7 @@
 # Test 08: Config Handling Edge Cases
 # Tests --config flag, invalid configs, missing configs, and defaults
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -10,15 +10,6 @@ in
 {
   name = "config-handling";
   meta.tags = [ "smoke" ];
-
-  nodes = {
-    machine =
-      { ... }:
-      {
-        imports = [ ./../../lib/vm-config.nix ];
-        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-      };
-  };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

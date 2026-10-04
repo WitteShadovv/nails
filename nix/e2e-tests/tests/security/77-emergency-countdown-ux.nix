@@ -1,6 +1,6 @@
 # Test 77: Emergency Countdown UX
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -10,13 +10,6 @@ in
 {
   name = "emergency-countdown-ux";
   meta.tags = [ "security" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     def now():

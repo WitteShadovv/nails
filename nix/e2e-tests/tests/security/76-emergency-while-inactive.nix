@@ -1,6 +1,6 @@
 # Test 76: Emergency While Inactive
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -10,13 +10,6 @@ in
 {
   name = "emergency-while-inactive";
   meta.tags = [ "security" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

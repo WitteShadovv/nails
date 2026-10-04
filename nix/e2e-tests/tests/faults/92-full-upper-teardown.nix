@@ -5,7 +5,7 @@
 # deactivation and the emergency panic button have to complete and leave no
 # overlay behind even when there is nothing left to allocate.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -17,13 +17,6 @@ in
     "faults"
     "security"
   ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

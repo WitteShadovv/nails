@@ -2,7 +2,7 @@
 # Tests that unsafe config paths are refused and that the activity log is
 # never group- or world-accessible.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -13,15 +13,6 @@ in
 {
   name = "permissions-security";
   meta.tags = [ "security" ];
-
-  nodes = {
-    machine =
-      { ... }:
-      {
-        imports = [ ./../../lib/vm-config.nix ];
-        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-      };
-  };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

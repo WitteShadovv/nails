@@ -1,6 +1,6 @@
 # Test 26: Config Overlay Exclusions
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -10,13 +10,6 @@ in
 {
   name = "config-exclusions";
   meta.tags = [ "config" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${preflightHelpers.writeTextFileFn}

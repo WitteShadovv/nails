@@ -1,7 +1,7 @@
 # Test 71: Overlay Reverse-Order Unmount
 # Uses subtests, deterministic waits, hard assertions, and overlay tags only.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   assertions = import ./../../lib/assertions.nix;
@@ -10,13 +10,6 @@ in
 {
   name = "overlay-reverse-order-unmount";
   meta.tags = [ "overlay" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     import re

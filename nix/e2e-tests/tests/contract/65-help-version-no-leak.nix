@@ -10,7 +10,7 @@
 # confirms the workflow preamble, the EXIT STATUS table and the per-command
 # EXAMPLES sections actually render in a real install.
 
-{ self, ... }:
+_:
 let
   # Internal commands that are runnable but marked `hide = true`. None of these
   # tokens may appear in any help or version output a user can reach.
@@ -41,15 +41,6 @@ in
     "smoke"
     "contract"
   ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [
-        self.packages.x86_64-linux.nails
-      ];
-    };
 
   testScript = _: ''
     hidden_tokens = ${builtins.toJSON hiddenTokens}

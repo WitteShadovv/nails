@@ -1,6 +1,6 @@
 # Test 47: Init Refuse Overwrite
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
 in
@@ -10,13 +10,6 @@ in
     "init"
     "smoke"
   ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     machine.start()

@@ -1,6 +1,6 @@
 # Test 20: Preflight State Check Integrity
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -11,15 +11,9 @@ in
   name = "preflight-state-check";
   meta.tags = [ "preflight" ];
 
-  nodes.machine =
-    { pkgs, ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [
-        self.packages.x86_64-linux.nails
-        pkgs.python3
-      ];
-    };
+  baseNode = {
+    python3 = true;
+  };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

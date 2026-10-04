@@ -5,7 +5,7 @@
 # must not depend on being able to write to that filesystem: emergency has to
 # detach every overlay and converge to the decoy even when the upper is read-only.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -17,13 +17,6 @@ in
     "faults"
     "security"
   ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

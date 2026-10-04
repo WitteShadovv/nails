@@ -1,7 +1,7 @@
 # Test 09: State File Integrity
 # Tests state file existence, permissions, and the tracked state across cycles.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -13,15 +13,6 @@ in
     "security"
     "state"
   ];
-
-  nodes = {
-    machine =
-      { ... }:
-      {
-        imports = [ ./../../lib/vm-config.nix ];
-        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-      };
-  };
 
   testScript = _: ''
     import json

@@ -2,7 +2,7 @@
 # Activates /home, writes into the hidden upper, deactivates, resets the /home
 # upper, and asserts the decoy home shows through on the next activation.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -11,13 +11,6 @@ in
 {
   name = "overlay-reset-upper";
   meta.tags = [ "overlay" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

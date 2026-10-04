@@ -8,7 +8,7 @@
 # re-check that logs and notifies lives in the activation path and is exercised
 # by the NixOS-switch E2E suite under KVM.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -18,13 +18,6 @@ in
 {
   name = "preflight-swap-reenable";
   meta.tags = [ "preflight" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

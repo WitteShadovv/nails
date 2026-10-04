@@ -10,7 +10,7 @@
 #
 # Disk imaging: it must run on the Nix VM driver.
 
-{ self, pkgs, ... }:
+{ pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -23,15 +23,9 @@ in
 
   globalTimeout = 1500;
 
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [
-        self.packages.${pkgs.system}.nails
-        pkgs.python3
-      ];
-    };
+  baseNode = {
+    python3 = true;
+  };
 
   testScript = _: ''
     import shlex

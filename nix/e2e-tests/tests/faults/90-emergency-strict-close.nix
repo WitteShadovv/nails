@@ -7,7 +7,7 @@
 # cannot be closed, so its master key stays in RAM. The strict close helper turns
 # that leak into a hard failure that lists the holders instead of masking it.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -19,13 +19,6 @@ in
     "faults"
     "security"
   ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}

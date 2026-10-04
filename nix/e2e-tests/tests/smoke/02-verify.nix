@@ -6,7 +6,7 @@
 # so this test runs verify against the headless config and asserts the new
 # "Leftover overlay" finding.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -17,15 +17,6 @@ in
     "smoke"
     "contract"
   ];
-
-  nodes = {
-    machine =
-      { ... }:
-      {
-        imports = [ ./../../lib/vm-config.nix ];
-        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-      };
-  };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
