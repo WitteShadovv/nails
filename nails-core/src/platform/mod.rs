@@ -46,6 +46,7 @@ mod fhs;
 pub mod host_commands;
 pub(crate) mod nix_foreign;
 mod nixos;
+mod process_classes;
 pub mod ro_guard;
 mod scanners;
 pub mod service_manager;
@@ -63,6 +64,7 @@ pub use discover::{HostTarget, discover_host_target};
 pub use fhs::FhsPlatform;
 pub use host_commands::HostCommands;
 pub use nixos::NixOsPlatform;
+pub(crate) use process_classes::host_process_classes;
 pub use ro_guard::{MountHooks, OverlayPolicy, guard_read_only_trees};
 pub use scanners::{
     ArtifactScan, ArtifactScanner, DebianPackageDriftScanner, NixOsStateNoteScanner,

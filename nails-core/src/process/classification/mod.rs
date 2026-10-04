@@ -192,12 +192,12 @@ fn classify_generic_overlay_process(proc: &ProcessInfo, target_str: &str) -> Res
 
 /// Classify process using `/var`
 fn classify_var_process(proc: &ProcessInfo) -> RestartStrategy {
+    let classes = crate::platform::host_process_classes();
+    if classes.is_var_safe_service(&proc.name) {
+        // Stateless or designed to be cycled (journald, syslog, resolved).
+        return RestartStrategy::Safe;
+    }
     match proc.name.as_str() {
-        // Safe to restart - stateless or designed for it
-        "systemd-journal" | "systemd-journald" | "rsyslogd" | "systemd-resolved" => {
-            RestartStrategy::Safe
-        }
-
         // Risky - may cause brief disruption
         "NetworkManager" => RestartStrategy::Risky,
 
@@ -208,41 +208,41 @@ fn classify_var_process(proc: &ProcessInfo) -> RestartStrategy {
 
 /// Classify process using `/etc`
 fn classify_etc_process(proc: &ProcessInfo) -> RestartStrategy {
-    match proc.name.as_str() {
-        // Never restart PID 1
-        "systemd" if proc.pid == 1 => RestartStrategy::NoRestart,
-
-        // Risky - critical system services
-        "dbus-daemon" => RestartStrategy::Risky,
-
-        // Safe - designed for restarts
-        "NetworkManager" | "systemd-resolved" => RestartStrategy::Safe,
-
-        // Most processes using /etc are just reading config files - safe
-        _ => RestartStrategy::Safe,
+    // Never restart PID 1
+    if proc.name == "systemd" && proc.pid == 1 {
+        return RestartStrategy::NoRestart;
     }
+
+    let classes = crate::platform::host_process_classes();
+    if classes.is_etc_risky_service(&proc.name) {
+        // Critical buses whose restart briefly disrupts dependants.
+        return RestartStrategy::Risky;
+    }
+    // Designed for restarts, plus every other process that is merely reading
+    // config files out of /etc.
+    RestartStrategy::Safe
 }
 
 /// Classify process using `/home`
 fn classify_home_process(proc: &ProcessInfo) -> RestartStrategy {
-    match proc.name.as_str() {
-        // Display servers - cannot restart without killing session
-        "sway" | "Hyprland" | "gnome-shell" | "kwin_wayland" | "Xorg" => RestartStrategy::NoRestart,
+    let classes = crate::platform::host_process_classes();
 
-        // Web browsers - cannot restart without losing work
-        "firefox" | "librewolf" | "chromium" | "chrome" | "google-chrome" => {
-            RestartStrategy::NoRestart
-        }
-
-        // Text editors - cannot restart without losing work
-        "code" | "vim" | "emacs" | "nvim" | "neovim" => RestartStrategy::NoRestart,
-
-        // Audio servers - annoying but safe
-        "pulseaudio" | "pipewire" | "pipewire-pulse" => RestartStrategy::Risky,
-
-        // Everything else using /home is probably GUI apps
-        _ => RestartStrategy::NoRestart,
+    // Display servers, browsers and editors cannot restart without killing the
+    // session or losing the user's work.
+    if classes.is_display_server(&proc.name)
+        || classes.is_web_browser(&proc.name)
+        || classes.is_text_editor(&proc.name)
+    {
+        return RestartStrategy::NoRestart;
     }
+
+    // Audio servers are annoying to cycle but not data loss.
+    if classes.is_audio_server(&proc.name) {
+        return RestartStrategy::Risky;
+    }
+
+    // Everything else using /home is probably a GUI app.
+    RestartStrategy::NoRestart
 }
 
 /// Classify process using `/nix` or `/nix/store`
