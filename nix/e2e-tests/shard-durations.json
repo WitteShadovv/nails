@@ -21,6 +21,7 @@
   "emergency-from-deactivating": 126,
   "emergency-graphical": 300,
   "emergency-while-inactive": 86,
+  "faults-backend-watch-alert": 150,
   "faults-emergency-strict-close": 140,
   "faults-emergency-vfat-pivot": 160,
   "faults-full-upper-teardown": 170,
