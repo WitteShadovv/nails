@@ -23,6 +23,16 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
+
+  # VeraCrypt ships under an unfree licence, and the suite's shared nixpkgs
+  # (which runNixOSTest also hands every node read-only) refuses to evaluate it.
+  # Allow exactly this one package through a private nixpkgs instance instead of
+  # opening the whole suite to unfree software.
+  unfreePkgs = import pkgs.path {
+    inherit (pkgs.stdenv.hostPlatform) system;
+    config.allowUnfreePredicate = pkg: pkgs.lib.getName pkg == "veracrypt";
+  };
+  inherit (unfreePkgs) veracrypt;
 in
 {
   name = "tcrypt-veracrypt-hidden";
@@ -39,7 +49,7 @@ in
         imports = [ ./../../lib/forensic-vm-config.nix ];
         environment.systemPackages = [
           self.packages.x86_64-linux.nails
-          pkgs.veracrypt
+          veracrypt
           pkgs.dosfstools # mkfs.vfat for the outer decoy filesystem
         ];
       };
