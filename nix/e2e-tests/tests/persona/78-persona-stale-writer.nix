@@ -90,16 +90,19 @@ in
     config_path = "/tmp/nails-stale-writer.toml"
     write_home_overlay_config(config_path)
 
-    with subtest("prepare the hidden volume and a stale /home writer"):
-        machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        writer_pid = start_stale_writer()
-
     with subtest("capture the decoy baseline image (token absent)"):
+        # Image the decoy root while it is still pristine: before the hidden
+        # volume exists and before the stale writer has appended anything. The
+        # snapshot shuts the machine down (which would also close the LUKS
+        # backend) and brings it back up, so the volume setup and the writer
+        # both belong after this, exactly as the other forensic specs order it.
         baseline = disk_forensics.snapshot(machine, "baseline")
         assert disk_forensics.run_strings_scan(baseline, [WRITER_TOKEN]) == set(), (
             "writer token already present on the baseline image"
         )
-        # The writer was killed by the shutdown; restart one for the active phase.
+
+    with subtest("prepare the hidden volume and a stale /home writer"):
+        machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         writer_pid = start_stale_writer()
 
     with subtest("activation keeps the session and reports the surviving writer"):
