@@ -52,7 +52,7 @@ in
             f"nails --config {config_path} activate --overlay-only --session keep -y",
         )
         assert_command_failed(result)
-        assert_result_contains(result, ["swap", "leak memory", "swapoff -a"], stream="stderr")
+        assert_result_contains(result, ["swap", "leak memory", "swapoff /swapfile"], stream="stderr")
         assert_status_state("inactive", config_path=config_path)
 
     with subtest("RAM-only zram swap is permitted"):
