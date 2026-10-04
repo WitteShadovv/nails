@@ -65,8 +65,9 @@ in
 
     with subtest("emergency warns once and proceeds with defaults"):
         # No hidden volume is set up, so the binary-derived defaults find no
-        # active state: reaching the inactive-state refusal proves the config
-        # error did not stop the teardown path.
+        # active state and nothing mounted. Emergency is a best-effort
+        # teardown, so it still completes: reaching its success report proves
+        # the config error did not stop the teardown path.
         prefix = "/run/nails-tests/config-unknown-key-emergency"
         capture = run_captured_command(
             prefix,
@@ -74,11 +75,16 @@ in
             unit_name="nails-config-unknown-key-emergency",
         )
         result = read_command_result(prefix, unit_name=capture["unit_name"], timeout=30)
-        assert_exit_code(result, 1)
+        assert_exit_code(result, 0)
         assert_result_contains(
             result,
-            ["did you mean `nixos_flake`?", "continuing with defaults", "Must be ACTIVE"],
+            ["did you mean `nixos_flake`?", "continuing with defaults"],
             stream="stderr",
+        )
+        assert_result_contains(
+            result,
+            ["Emergency teardown complete", "No NAILS overlays were mounted"],
+            stream="stdout",
         )
         assert result["stderr"].count("continuing with defaults") == 1, result
   '';
