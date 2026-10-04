@@ -103,18 +103,23 @@ impl BackendWatch {
 ///
 /// Returns `false` (unhealthy) when the hidden root has become unreachable or
 /// unreadable, or when any overlay target the manifest recorded is no longer
-/// mounted — the two ways a lazily detached or failed backend shows up. A probe
-/// error is treated as unhealthy: the whole point is to react to a backend that
-/// can no longer answer.
+/// mounted — the ways a lazily detached or failed backend shows up. A probe error
+/// is treated as unhealthy: the whole point is to react to a backend that can no
+/// longer answer.
+///
+/// The health check reads the hidden root's *directory contents* rather than
+/// merely opening it. When the backing device fails in place — a yanked disk, a
+/// dm error target swapped under the mount — the mount point and its inode stay
+/// in the kernel's caches, so `path_exists` and even `File::open` still succeed
+/// while every real access returns `EIO` and the filesystem shuts down. A
+/// `readdir` touches the backing store, so it surfaces exactly that failure;
+/// anything other than a successful listing is unhealthy.
 pub fn probe_backend<F: Filesystem>(filesystem: &F, manifest: &RuntimeManifest) -> bool {
     match filesystem.path_exists(&manifest.hidden_root) {
         Ok(true) => {}
         _ => return false,
     }
-    if !filesystem
-        .is_readable(&manifest.hidden_root)
-        .unwrap_or(false)
-    {
+    if filesystem.list_directory(&manifest.hidden_root).is_err() {
         return false;
     }
     manifest
@@ -258,11 +263,20 @@ mod tests {
         }
     }
 
+    /// Make the hidden root list successfully, standing in for a backing store
+    /// that still answers a `readdir`.
+    fn root_lists(fs: &MockFilesystem) {
+        fs.mock_set_path_exists("/mnt/data", true);
+        fs.mock_set_directory_contents(
+            Path::new("/mnt/data"),
+            vec![PathBuf::from("/mnt/data/state.json")],
+        );
+    }
+
     #[test]
     fn probe_is_healthy_when_root_readable_and_targets_mounted() {
         let fs = MockFilesystem::new();
-        fs.mock_set_readable("/mnt/data", true);
-        fs.mock_set_path_exists("/mnt/data", true);
+        root_lists(&fs);
         mounted(&fs, "/home", true);
         mounted(&fs, "/etc", true);
 
@@ -272,8 +286,7 @@ mod tests {
     #[test]
     fn probe_fails_when_a_target_is_no_longer_mounted() {
         let fs = MockFilesystem::new();
-        fs.mock_set_readable("/mnt/data", true);
-        fs.mock_set_path_exists("/mnt/data", true);
+        root_lists(&fs);
         mounted(&fs, "/home", true);
         mounted(&fs, "/etc", false);
 
@@ -287,6 +300,24 @@ mod tests {
         mounted(&fs, "/home", true);
 
         assert!(!probe_backend(&fs, &manifest(&["/home"])));
+    }
+
+    #[test]
+    fn probe_fails_when_the_backend_errors_in_place() {
+        // A dm error target (or yanked disk) leaves the mount point and inode
+        // cached — path_exists still succeeds and the overlays stay mounted — but
+        // a real read of the hidden root returns an error. The probe must treat
+        // that as unhealthy so the watcher alerts. Here the mock has no directory
+        // contents configured for the root, so `list_directory` errors, standing
+        // in for the `EIO` a readdir hits once the backing store has failed.
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/mnt/data", true);
+        // Even an openable root is not enough: the device read is what fails.
+        fs.mock_set_readable("/mnt/data", true);
+        mounted(&fs, "/home", true);
+        mounted(&fs, "/etc", true);
+
+        assert!(!probe_backend(&fs, &manifest(&["/home", "/etc"])));
     }
 
     #[test]
