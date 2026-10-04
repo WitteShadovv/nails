@@ -246,7 +246,7 @@ in
         pre_activate = snapshot_nixos_state()
         rc, out = run_capture(
             "activate-standard",
-            f"nails --config {var_config} activate --session keep -y --flake {flake_ref}",
+            f"nails --config {var_config} activate --session keep -y --nixos-flake {flake_ref}",
         )
         assert rc == 0, f"standard activation failed: {out}"
 
@@ -286,7 +286,7 @@ in
         pre_activate = snapshot_nixos_state()
         rc, out = run_capture(
             "activate-emergency",
-            f"nails --config {var_config} activate --session keep -y --flake {flake_ref}",
+            f"nails --config {var_config} activate --session keep -y --nixos-flake {flake_ref}",
         )
         assert rc == 0, f"re-activation failed: {out}"
         payload = assert_state("Active", var_config)

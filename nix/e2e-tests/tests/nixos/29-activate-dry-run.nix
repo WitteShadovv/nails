@@ -98,9 +98,10 @@ in
     with subtest("check reports readiness without mutating anything"):
         check_rc, check_stdout, check_stderr = run_command_capture(
             "nails-check",
-            f"{wrapper_env} nails --config {headless_config} check --flake {flake_ref}",
+            f"{wrapper_env} nails --config {headless_config} check --nixos-flake {flake_ref}",
         )
-        assert "NAILS Readiness Check" in check_stdout, f"Unexpected check output: {check_stdout!r}"
+        assert "NAILS Readiness Check" in check_stdout, \
+            f"Unexpected check output: {check_stdout!r} (rc={check_rc}, stderr={check_stderr!r})"
         assert "Pre-flight checks:" in check_stdout, f"Expected the check list, got: {check_stdout!r}"
         assert "Overlay targets:" in check_stdout, f"Expected overlay targets, got: {check_stdout!r}"
         assert "NixOS profile:" in check_stdout, f"Expected a profile section, got: {check_stdout!r}"
@@ -112,7 +113,7 @@ in
     with subtest("activate --dry-run is a thin alias for check"):
         dry_rc, dry_stdout, _ = run_command_capture(
             "activate-dry-run",
-            f"{wrapper_env} nails --config {headless_config} activate --dry-run --session keep --flake {flake_ref}",
+            f"{wrapper_env} nails --config {headless_config} activate --dry-run --session keep --nixos-flake {flake_ref}",
         )
         assert dry_rc == check_rc, f"dry-run rc={dry_rc} must match check rc={check_rc}"
         assert dry_stdout == check_stdout, "dry-run and check must produce identical output"
@@ -140,7 +141,7 @@ in
 
         _, opaque_stdout, _ = run_command_capture(
             "activate-dry-run-opaque",
-            f"{wrapper_env} nails --config {headless_config} activate --dry-run --session keep --flake {flake_ref}",
+            f"{wrapper_env} nails --config {headless_config} activate --dry-run --session keep --nixos-flake {flake_ref}",
         )
         # The read-only overlay-compatibility check names the stale marker...
         assert "opaque marker" in opaque_stdout, \

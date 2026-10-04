@@ -144,13 +144,13 @@ in
 
     with subtest("explicit flake override dispatches to nixos-rebuild --flake"):
         machine.succeed(
-            f"{wrapper_env} nails --config {headless_config} activate --session keep -y --flake {flake_ref}"
+            f"{wrapper_env} nails --config {headless_config} activate --session keep -y --nixos-flake {flake_ref}"
         )
         rebuild_log = machine.succeed("cat /tmp/nixos-rebuild-flake.log")
         assert f"--flake {flake_ref}" in rebuild_log, \
             f"Expected explicit flake ref in nixos-rebuild invocation, got: {rebuild_log!r}"
         assert "-I nixos-config=/etc/nixos/configuration.nix" not in rebuild_log, \
-            f"Did not expect legacy nixos-config path when using --flake, got: {rebuild_log!r}"
+            f"Did not expect legacy nixos-config path when using --nixos-flake, got: {rebuild_log!r}"
 
     with subtest("flake-selected system becomes active"):
         assert_status_state_local("Active", headless_config)

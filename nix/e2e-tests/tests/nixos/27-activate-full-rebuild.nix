@@ -168,7 +168,7 @@ in
     with subtest("first activation builds the hidden toplevel offline and switches to it"):
         rc, out = run_capture(
             "activate1",
-            f"nails --config {headless_config} activate --session keep -y --flake {flake_ref}",
+            f"nails --config {headless_config} activate --session keep -y --nixos-flake {flake_ref}",
         )
         assert rc == 0, f"first activation failed: {out}"
 
@@ -205,7 +205,7 @@ in
 
         rc, out = run_capture(
             "activate2",
-            f"nails --config {headless_config} activate --session keep -y --flake {flake_ref}",
+            f"nails --config {headless_config} activate --session keep -y --nixos-flake {flake_ref}",
         )
         assert rc == 0, f"fast-path re-activation failed: {out}"
 
