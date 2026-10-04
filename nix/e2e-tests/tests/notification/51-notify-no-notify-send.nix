@@ -43,7 +43,7 @@ in
 
         data = dispatch_result(result["stdout"])
         assert data == {"dispatched": 0, "status": "ok"}, data
-        assert "notify-send not found in PATH; skipping desktop notifications" in result["stderr"], result["stderr"]
+        assert "notify-send not found in the system tool directories; skipping desktop notifications" in result["stderr"], result["stderr"]
         machine.succeed(f"test -f {signal_path}")
   '';
 }
