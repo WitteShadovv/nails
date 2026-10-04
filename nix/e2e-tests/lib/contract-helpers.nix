@@ -29,8 +29,12 @@
   '';
 
   runPtyCommandCaptureFn = ''
-    def run_pty_command_capture(name, command):
+    def run_pty_command_capture(name, command, term="xterm-256color"):
         import shlex
+
+        # The test driver's console exports TERM=dumb, which (rightly) turns
+        # colour auto-detection off. Give the pty the terminal type a real
+        # interactive session would carry so TTY behaviour is what is tested.
 
         prefix = f"/tmp/{name}"
         typescript = f"{prefix}.typescript"
@@ -40,6 +44,7 @@
             "bash -lc "
             + shlex.quote(
                 f"rm -f {typescript} {stderr_path}; "
+                + f"export TERM={shlex.quote(term)}; "
                 + "set +e; "
                 + f"script -qefc {shlex.quote(command)} {shlex.quote(typescript)} >/dev/null 2>{stderr_path}; "
                 + f"printf \"%s\" \"$?\" > {rc_path}"

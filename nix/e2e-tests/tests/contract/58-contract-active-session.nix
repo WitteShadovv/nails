@@ -64,6 +64,12 @@ in
             f"NO_COLOR=1 nails --no-log-file --config {shlex.quote(headless_config)} verify",
         )
         assert_no_ansi(tty_no_color["combined"], "verify on a TTY with NO_COLOR=1")
+        tty_dumb = run_pty_command_capture(
+            "contract-verify-tty-dumb",
+            f"nails --no-log-file --config {shlex.quote(headless_config)} verify",
+            term="dumb",
+        )
+        assert_no_ansi(tty_dumb["combined"], "verify on a TTY with TERM=dumb")
         piped = run_command_capture(
             "contract-verify-piped",
             f"nails --no-log-file --config {shlex.quote(headless_config)} verify",
