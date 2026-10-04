@@ -197,6 +197,31 @@ fn signal_pid(pid: u32, signal: &str) {
     let _ = RealProcessRunner.run(&signal_command(pid, signal));
 }
 
+/// Decide whether a recorded activation owner pid should be signalled before an
+/// emergency/recover teardown.
+///
+/// Owner-pid signalling is a try-lock, not a hard gate: it applies only to the
+/// state-independent teardowns (`Emergency`/`Recover`), never to a normal
+/// Active-only deactivate which owns the state itself, and never targets the
+/// unset sentinel (`0`) or our own process. The aliveness probe and the actual
+/// signal happen at the call site; this function holds only the pure decision so
+/// it can be unit-tested without touching `/proc` or sending a real signal.
+fn owner_pid_to_signal(
+    kind: ManagerDeactivationKind,
+    owner_pid: u32,
+    self_pid: u32,
+) -> Option<u32> {
+    let signals_owner = matches!(
+        kind,
+        ManagerDeactivationKind::Emergency | ManagerDeactivationKind::Recover
+    );
+    if signals_owner && owner_pid != 0 && owner_pid != self_pid {
+        Some(owner_pid)
+    } else {
+        None
+    }
+}
+
 /// Restart the display manager after an emergency teardown so the decoy greeter
 /// reappears. Best-effort; `None` (a non-graphical or non-emergency teardown)
 /// does nothing.
@@ -513,6 +538,48 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
+    /// Emergency/recover only: a still-running activation owner could keep writing
+    /// into the overlays while we tear them down, re-dirtying the decoy. Try-lock,
+    /// not a hard gate: SIGTERM a recorded owner pid that is alive and is not us,
+    /// wait up to ~3s for it to exit, then proceed unconditionally. Never fails
+    /// closed — a ptraced or uninterruptible owner must not block the panic
+    /// button. Best-effort and a no-op in test/test-like runtimes.
+    fn signal_owner_pid_before_teardown(&self, kind: ManagerDeactivationKind) {
+        if crate::runtime_safety::should_skip_host_interaction() {
+            return;
+        }
+        // Read the recorded owner fresh; a corrupt/unreadable state file simply
+        // means no owner to signal, and the teardown continues.
+        let owner_pid = match crate::StateFile::load(&self.state_file_path) {
+            Ok(state_file) => state_file.owner_pid,
+            Err(_) => return,
+        };
+        let Some(pid) = owner_pid_to_signal(kind, owner_pid, std::process::id()) else {
+            return;
+        };
+        if !crate::manager::state_management::pid_is_alive(pid) {
+            return;
+        }
+
+        tracing::info!(
+            pid,
+            "Signalling the recorded activation owner before teardown"
+        );
+        signal_pid(pid, "TERM");
+
+        for _ in 0..10 {
+            if !crate::manager::state_management::pid_is_alive(pid) {
+                tracing::info!(pid, "Activation owner exited before teardown");
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        tracing::warn!(
+            pid,
+            "Activation owner still alive after waiting; proceeding with teardown anyway"
+        );
+    }
+
     fn run_deactivation(&mut self, kind: ManagerDeactivationKind) -> Result<DeactivationReport> {
         // The emergency panic button must work from every state, not only a
         // clean Active one: the state is Activating during the whole switch, it
@@ -587,6 +654,11 @@ impl<F: Filesystem> NailsManager<F> {
                 });
             }
         }
+
+        // Emergency/recover: quiet a still-running activation owner before the
+        // first unmount so a stale writer cannot re-dirty the overlays mid-
+        // teardown. Try-lock only — it never blocks the panic button.
+        self.signal_owner_pid_before_teardown(kind);
 
         // A swap device that reappeared while the hidden session ran would have
         // paged memory to the decoy disk; surface it before teardown. Skipped in

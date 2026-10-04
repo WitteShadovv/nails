@@ -248,6 +248,13 @@ fn overlay_status_body(
             crate::summarize_decoy_writers(decoy_writers, NOTIFICATION_WRITER_LIMIT)
         ));
     }
+    // Record the RAM-backed panic button in the notification body so it survives
+    // even if the backend disappears and the on-screen summary has scrolled away.
+    // Uses the neutral control-copy path, never a product name.
+    body.push_str(&format!(
+        ". If the hidden volume fails, run: sudo {} emergency",
+        crate::runtime_copy::binary_copy_path().display()
+    ));
     body
 }
 

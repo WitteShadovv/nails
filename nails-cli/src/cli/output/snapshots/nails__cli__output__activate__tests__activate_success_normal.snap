@@ -9,3 +9,6 @@ Shell Integration:
 
 To apply to this terminal now, run:
   source /mnt/hidden/scripts/nails_prompt.bash
+
+If the hidden volume fails, tear everything down with:
+  sudo /run/overlay-runtime/control emergency

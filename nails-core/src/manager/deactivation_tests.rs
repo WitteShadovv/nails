@@ -237,3 +237,41 @@ fn verify_history_truncation_passes_when_files_are_small() {
 
     assert!(super::verify_history_truncation(&manager));
 }
+
+#[test]
+fn owner_pid_signalled_only_for_emergency_and_recover() {
+    use super::{ManagerDeactivationKind, owner_pid_to_signal};
+
+    // A live owner that is not us is signalled under the state-independent
+    // teardowns...
+    assert_eq!(
+        owner_pid_to_signal(ManagerDeactivationKind::Emergency, 4242, 1),
+        Some(4242)
+    );
+    assert_eq!(
+        owner_pid_to_signal(ManagerDeactivationKind::Recover, 4242, 1),
+        Some(4242)
+    );
+
+    // ...but never under a normal Active-only deactivate.
+    assert_eq!(
+        owner_pid_to_signal(ManagerDeactivationKind::Normal, 4242, 1),
+        None
+    );
+}
+
+#[test]
+fn owner_pid_signal_skips_sentinel_and_self() {
+    use super::{ManagerDeactivationKind, owner_pid_to_signal};
+
+    // The unset sentinel (0) is never a live owner.
+    assert_eq!(
+        owner_pid_to_signal(ManagerDeactivationKind::Emergency, 0, 1),
+        None
+    );
+    // Our own process must not be signalled.
+    assert_eq!(
+        owner_pid_to_signal(ManagerDeactivationKind::Emergency, 99, 99),
+        None
+    );
+}

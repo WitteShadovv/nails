@@ -378,16 +378,29 @@ fn overlay_status_notification_summarises_many_writers() {
     assert!(body.contains("5 writers still on the decoy"), "{body}");
     assert!(body.contains("w3 (PID 3)"), "{body}");
     assert!(!body.contains("w4 (PID 4)"), "{body}");
-    assert!(body.ends_with("and 2 more"), "{body}");
+    assert!(body.contains("and 2 more"), "{body}");
 }
 
 #[test]
 fn overlay_status_notification_without_writers_has_no_leak_clause() {
     let body = overlay_status_body("OPTIMAL", 3, 1, &[]);
-    assert_eq!(
-        body,
-        "Security: OPTIMAL — 4 overlay(s) mounted (3 direct, 1 pivot)"
+    assert!(
+        body.starts_with("Security: OPTIMAL — 4 overlay(s) mounted (3 direct, 1 pivot)"),
+        "{body}"
     );
+    assert!(!body.contains("writer"), "{body}");
+}
+
+#[test]
+fn overlay_status_notification_records_the_emergency_command() {
+    let body = overlay_status_body("OPTIMAL", 1, 0, &[]);
+    // The RAM-backed panic button, with the neutral control-copy path and no
+    // product name anywhere in the body.
+    assert!(
+        body.contains("sudo /run/overlay-runtime/control emergency"),
+        "{body}"
+    );
+    assert!(!body.to_lowercase().contains("nails"), "{body}");
 }
 
 // ===========================================================================

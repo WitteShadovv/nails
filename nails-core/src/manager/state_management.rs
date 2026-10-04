@@ -610,7 +610,7 @@ impl<F: Filesystem> NailsManager<F> {
 /// Deactivating) left behind within the current boot, to tell an in-flight
 /// operation from a crashed one once the exclusive state lock is held. A pid of
 /// `0` is the "unset" sentinel and is never alive.
-fn pid_is_alive(pid: u32) -> bool {
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
     pid != 0 && Path::new(&format!("/proc/{pid}")).exists()
 }
 

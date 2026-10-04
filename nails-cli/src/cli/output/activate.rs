@@ -486,6 +486,26 @@ fn render_activate_success(
             let _ = writeln!(buf, "{}", out.paint(manual_hint, Tone::Dim));
         }
     }
+
+    // The RAM-backed control copy survives the loss of the hidden volume, so the
+    // panic button is still reachable if the backend disappears mid-session.
+    // Surfaced here (and in the activation notification) so the operator has it
+    // recorded before anything goes wrong.
+    let emergency_cmd = format!(
+        "sudo {} emergency",
+        nails_core::runtime_copy::binary_copy_path().display()
+    );
+    let _ = writeln!(buf);
+    let _ = writeln!(
+        buf,
+        "{}",
+        out.paint(
+            "If the hidden volume fails, tear everything down with:",
+            Tone::Dim
+        )
+    );
+    let _ = writeln!(buf, "  {}", out.paint(emergency_cmd, Tone::Bold));
+
     buf
 }
 
@@ -874,6 +894,30 @@ mod tests {
                 render_activate_success(1.5, Some(&setup), &settings_at(verbosity))
             );
         }
+    }
+
+    #[test]
+    fn success_summary_shows_the_emergency_command_when_not_quiet() {
+        let setup = make_shell_setup_rc_modified();
+        let summary = render_activate_success(
+            1.5,
+            Some(&setup),
+            &settings_at(nails_core::Verbosity::Normal),
+        );
+        assert!(
+            summary.contains("sudo /run/overlay-runtime/control emergency"),
+            "{summary}"
+        );
+    }
+
+    #[test]
+    fn success_summary_omits_the_emergency_command_when_quiet() {
+        let setup = make_shell_setup_rc_modified();
+        let summary = render_activate_success(1.5, Some(&setup), &quiet_settings());
+        assert!(
+            !summary.contains("emergency"),
+            "quiet summary must stay terse: {summary}"
+        );
     }
 
     // ── print_activate_human ───────────────────────────────────────────────────
