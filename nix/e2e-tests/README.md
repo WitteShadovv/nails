@@ -8,8 +8,15 @@
 
 ## Canonical skeleton
 
+Most tests boot one machine that is nothing more than the standard decoy VM
+plus the nails binary. Such a test declares no `nodes` at all: `default.nix`
+injects the shared base node (`lib/base-node.nix`) as `machine`. A test that
+needs `python3` in the guest sets a top-level `baseNode = { python3 = true; };`
+instead of spelling out a full node. Only a test with bespoke hardware, a second
+machine, extra packages or a non-default VM profile declares `nodes` itself.
+
 ```nix
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -18,10 +25,9 @@ in {
   name = "example";
   meta.tags = [ "smoke" "security" ];
 
-  nodes.machine = { ... }: {
-    imports = [ ./../../lib/vm-config.nix ];
-    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-  };
+  # No `nodes`: the shared base node (vm-config + nails) is injected as `machine`.
+  # For a guest heredoc that needs Python, add instead:
+  #   baseNode = { python3 = true; };
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
@@ -38,6 +44,10 @@ in {
   '';
 }
 ```
+
+A test that imports `self` only for its node (the common case) takes no function
+argument at all (`_:`); one that still needs `self` or `pkgs` in its `let` block
+or `nodes` keeps `{ self, ... }:` or `{ self, pkgs, ... }:`.
 
 ## Shared helpers
 
@@ -131,6 +141,26 @@ python3 -m ci.e2e regen-weights e2e-durations-*/*.jsonl
 
 `regen` takes the median of each test's passing runs of at least 30 s (a shorter pass was served from the Nix store without booting a VM), clamps it to half the test's timeout and reports every clamp, keeps the weights of tests without samples, and drops tests that no longer exist. Raise a test's `globalTimeout` instead of accepting a clamp.
 
+### Per-test fixed cost
+
+Every test that boots pays a fixed cost before its first `with subtest(...)` can
+run: the VM boot plus `wait_for_unit("multi-user.target")`. That cost sets the
+floor on the whole suite, so it is worth tracking and keeping the per-test node
+minimal (hence the shared base node, which lets the driver reuse one build across
+the many single-machine tests).
+
+Measure it from the driver logs of a hosted run, not locally: the number depends
+on the runner. The driver prints a timestamp for each line, so the boot-to-first-
+subtest cost of a test is the gap between its `start()` / `wait_for_unit` lines
+and its first `subtest:` line. Read these from the GitHub-hosted-runner job logs
+(the smoke E2E on every PR, or a full nightly run), take the median across the
+single-machine tests, and record it here.
+
+Measured boot-to-first-subtest on GitHub-hosted runners: _to be filled from a
+hosted run_ (it cannot be measured in a sandbox without Nix or KVM). Revisit
+consolidating tests only if this fixed cost still dominates the suite after shard
+parallelism and Nix caching.
+
 ## Forensic invariants
 
 Do not violate:
@@ -169,10 +199,11 @@ allowlist of volatile paths instead (see `tests/forensic/06-snapshot-diff.nix`).
 1. Place it under the correct `tests/<category>/` subfolder.
 2. Preserve numeric filename form: `NN-name.nix`.
 3. Set `name` (it must differ from every group and tag name) and `meta.tags`, and add an estimated weight to `shard-durations.json` (refresh it from the next full run).
-4. Import shared helpers instead of duplicating Python.
-5. Use `with subtest(...)` for each logical phase.
-6. Assert against the booted guest with hard `assert ...` or `machine.fail(...)`; never a `print("Note: ...")` escape hatch (the `e2e-soft-assertions` lint rejects it).
-7. Verify with a direct `nix build` target before sending for review.
+4. Declare no `nodes` for the common single-machine case; the shared base node is injected. Add `baseNode = { python3 = true; };` only for a guest that needs Python, and a full `nodes` block only for bespoke hardware, a second machine or a non-default profile.
+5. Import shared helpers instead of duplicating Python.
+6. Use `with subtest(...)` for each logical phase.
+7. Assert against the booted guest with hard `assert ...` or `machine.fail(...)`; never a `print("Note: ...")` escape hatch (the `e2e-soft-assertions` lint rejects it).
+8. Verify with a direct `nix build` target before sending for review.
 
 ## Adding a fixture
 
