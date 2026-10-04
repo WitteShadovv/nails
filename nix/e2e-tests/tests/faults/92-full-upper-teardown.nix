@@ -43,6 +43,15 @@ in
         assert_overlay_mounted("/home")
 
     with subtest("fill the hidden filesystem that backs the overlay uppers"):
+        # overlayfs performs copy-up and all upper-dir writes with the *mounter's*
+        # credentials (root, since nails mounted the overlay), not the writing
+        # user's. Root can draw on ext4's 5% reserved-block pool, which an
+        # unprivileged `df --output=avail` reports as unavailable. If we fill only
+        # that unprivileged "available" figure, the whole reserved pool (~95 MB on
+        # this 2 GB disk) stays free and a root-credentialed overlay write never
+        # hits ENOSPC. Drop the reserved pool to zero first so "available" matches
+        # the space overlay writes can actually reach.
+        machine.succeed("tune2fs -m 0 /dev/mapper/data")
         # Leave only a sliver free so overlay writes hit ENOSPC, but the small,
         # in-place state-file rewrite the teardown performs can still land.
         avail = int(
