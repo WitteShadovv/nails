@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! `[backend_watch]` configuration: the in-session watcher over the hidden root.
 //!
 //! The hidden volume can fail mid-session — a udisks/VeraCrypt automount is

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Host-tool availability pre-flight check.
 //!
 //! nails shells out to a fixed set of host tools during activation and teardown

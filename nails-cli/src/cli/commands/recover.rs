@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Recover command handler
 //!
 //! `recover` reconciles the recorded state against the live kernel mount table

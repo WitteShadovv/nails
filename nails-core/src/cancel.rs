@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Cooperative cancellation and signal survival for mutating operations.
 //!
 //! A mutating command (activate, deactivate, reapply, emergency, reset-upper)

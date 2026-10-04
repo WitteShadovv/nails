@@ -1,5 +1,5 @@
 # cargo-deny configuration for NAILS
-# NixOS Anti-forensics Isolation & Layering System
+# Overlay environment manager
 #
 # This configuration enforces dependency policies for a security-critical,
 # GPL-3.0 licensed Rust application.

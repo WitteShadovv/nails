@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The NixOS backend: the project's first-class platform.
 //!
 //! It carries the behaviour that used to live inline in the manager and the

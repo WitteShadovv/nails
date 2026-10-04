@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Inherited decoy persona state pre-flight check.
 //!
 //! Warns, never fails: it lists how much of the decoy account's autostart

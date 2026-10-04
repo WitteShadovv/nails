@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Sleep guard: keep an active hidden session out of the hands of a suspend.
 //!
 //! When [`sleep_policy.mode`](crate::config::SleepPolicyConfig) is `block` or

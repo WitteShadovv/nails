@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Activation Options and Configuration
 //!
 //! Provides configuration structures for controlling activation behavior, including

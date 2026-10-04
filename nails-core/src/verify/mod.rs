@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Forensic validation system for NAILS
 //!
 //! The verify module provides forensic cleanliness validation by checking for:

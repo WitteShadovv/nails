@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Suspend/hibernate exposure detection
 //!
 //! Parses the effective systemd-logind lid-switch and idle settings and warns

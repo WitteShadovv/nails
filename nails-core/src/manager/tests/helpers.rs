@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The manager helpers: network config cleanup, overlay targets and system profiles.
 
 use super::*;

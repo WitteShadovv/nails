@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Symlink- and traversal-safe path resolution beneath the hidden volume root.
 //!
 //! Paths under the hidden root used to be built with plain [`Path::join`] and

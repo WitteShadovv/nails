@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Bind mount visibility for overlayfs via multiple lower layers
 //!
 //! overlayfs does **not** follow bind mounts in the lower layer. The kernel's

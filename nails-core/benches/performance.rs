@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Micro-benchmarks of nails-core code paths: config creation, state
 // serialization and persistence, manager construction, status queries, the
 // idempotent activation fast path and the emergency orchestration.

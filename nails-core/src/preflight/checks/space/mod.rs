@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Space pre-flight check
 //!
 //! Validates that sufficient disk space is available on the hidden volume.

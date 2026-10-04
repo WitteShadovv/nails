@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! NixOS toplevel build + switch logic (Step 9)
 //!
 //! Builds the hidden NixOS system toplevel explicitly and switches to it. Both

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Helper functions for the manager module
 //!
 //! Free functions used by NailsManager and its sub-modules for overlay target

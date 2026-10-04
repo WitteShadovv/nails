@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

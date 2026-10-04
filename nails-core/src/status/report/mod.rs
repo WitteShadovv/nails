@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! # Status Report Types and Utilities
 //!
 //! Report generation, OpSec reminders, and status formatting.

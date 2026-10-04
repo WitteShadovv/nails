@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Pre-flight validation system for NAILS
 //!
 //! This module provides a trait-based pre-flight check system with an extensible registry.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use super::merge_protected_pids;
 use super::reboot::{
     PostDeactivationReboot, REBOOT_BINARY_OVERRIDE_ENV, SYSTEMCTL_REBOOT_OVERRIDE_ENV,

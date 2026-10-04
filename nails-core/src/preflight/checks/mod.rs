@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Pre-flight check implementations
 //!
 //! This module contains all concrete pre-flight check implementations.

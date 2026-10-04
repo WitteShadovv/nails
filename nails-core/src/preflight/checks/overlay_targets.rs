@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Overlay target safety floor
 //!
 //! Two configurations pass every per-path rule and still break the hidden

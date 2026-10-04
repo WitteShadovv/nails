@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! RAII Mount Tracker for Automatic Rollback
 //!
 //! This module provides the MountTracker type, which implements the RAII

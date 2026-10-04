@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Shared string constants used across the crate.
 //!
 //! These are the environment-variable names the tool reads to coordinate

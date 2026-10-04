@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Swap and hibernation pre-flight classification.
 //!
 //! A single swap can defeat the forensic guarantees: memory (including

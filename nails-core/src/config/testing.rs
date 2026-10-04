@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Shared test fixtures for configuration and manager construction.
 //!
 //! This module is compiled for this crate's own tests and, through the

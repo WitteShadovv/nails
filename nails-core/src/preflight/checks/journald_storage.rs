@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! journald persistent-storage detection
 //!
 //! Parses the effective systemd-journald `Storage=` setting and decides whether

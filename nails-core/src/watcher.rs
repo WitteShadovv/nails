@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! In-session watcher over the hidden backend.
 //!
 //! After activation the hidden volume can fail silently: a udisks/VeraCrypt

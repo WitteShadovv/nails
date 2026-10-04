@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Integration tests for RealFilesystem implementation
 //!
 //! These tests verify RealFilesystem code paths are covered.

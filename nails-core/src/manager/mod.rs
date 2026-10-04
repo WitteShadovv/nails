@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! # NailsManager - Core Orchestrator for NAILS Operations
 //!
 //! Central orchestrator that coordinates all NAILS operations including state

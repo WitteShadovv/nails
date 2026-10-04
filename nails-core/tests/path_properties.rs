@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Property tests for configured-path containment and mount table parsing
 //!
 //! Two promises are checked over generated inputs rather than a handful of

@@ -383,6 +383,9 @@ jobs:
       - name: Run the flake checks
         run: nix flake check -L --option accept-flake-config false
 
+      - name: Check SPDX/REUSE licensing
+        run: nix develop --command reuse lint
+
   # The cheap documentation gate: link-check the Markdown and reject retired
   # names. No build, so it stays in the fast lane and runs on docs-only changes.
   docs-check:

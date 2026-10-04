@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Rendering for the read-only `check`/`doctor` command.
 //!
 //! One typed [`CheckReport`] carries the whole readiness picture: the pre-flight

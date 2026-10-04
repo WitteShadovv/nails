@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Substring patterns used to filter shell history and scan for leaks.
 //!
 //! These are plain literals. Hiding them from a `strings` scan of the binary

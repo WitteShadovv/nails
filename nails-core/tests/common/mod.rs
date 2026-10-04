@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Shared adversarial path generators for the containment property tests.
 //!
 //! Both the configured-path containment suite (`path_properties.rs`) and the

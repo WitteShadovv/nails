@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Early privilege gate for the commands that mutate the host.
 //!
 //! Activation, deactivation and the emergency teardown all drive privileged

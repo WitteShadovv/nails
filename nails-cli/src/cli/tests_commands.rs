@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Argument parsing tests for emergency, status, and verify commands
 //!
 //! Only parsing is tested here; the CLI integration tests cover execution and

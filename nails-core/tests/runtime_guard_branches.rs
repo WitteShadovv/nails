@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use nails_core::notification::{Notification, dispatch_all, write_notification};
 use nails_core::overlay::{OverlayStrategyOptions, mount_overlay_with_strategy};
 use nails_core::process::{ProcessInfo, detect_processes_using};

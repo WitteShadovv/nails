@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Overlay Mounting Logic
 //!
 //! Handles mounting persistent overlays with process detection and automatic

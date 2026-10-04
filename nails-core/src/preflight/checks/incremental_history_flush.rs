@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Incremental shell-history flush pre-flight check.
 //!
 //! Warns, never fails: it inspects the invoking operator's shell startup files

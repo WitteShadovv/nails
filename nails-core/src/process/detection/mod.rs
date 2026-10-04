@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Process Detection
 //!
 //! Detects processes using target directories by parsing the `/proc` filesystem.

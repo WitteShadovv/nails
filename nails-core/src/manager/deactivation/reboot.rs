@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Post-deactivation reboot dispatch and its decoy-restore fallback.
 //!
 //! A standard deactivation ends with a reboot into the decoy. When no reboot

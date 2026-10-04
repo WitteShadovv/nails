@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Configuration management for NAILS
 //!
 //! Configuration lives in a strict TOML file, `nails.toml`, discovered next to

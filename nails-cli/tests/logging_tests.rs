@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Tests for the public CLI logging and output-settings surface
 //!
 //! Subscriber behaviour (levels, ANSI, file layer) is exercised in subprocess

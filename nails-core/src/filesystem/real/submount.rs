@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Submount detection and classification for overlayfs targets.
 //!
 //! When NAILS overlays a target (`/var`, `/home`, `/snap`, …) any filesystem the

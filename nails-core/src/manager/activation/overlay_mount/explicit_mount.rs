@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Explicit mode overlay mounting (pre-configured overlays)
 
 use super::{MountFailureMode, OverlayMountOutcome};

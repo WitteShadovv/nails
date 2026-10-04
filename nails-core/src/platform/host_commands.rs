@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Resolving host tools from a per-platform search list.
 //!
 //! nails runs as root and shells out to a handful of host tools (`systemctl`,

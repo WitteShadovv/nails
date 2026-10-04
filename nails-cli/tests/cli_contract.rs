@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! CLI contract tests: help/version snapshots, the machine-readable (`--json`)
 //! envelope against the committed JSON Schemas, the colour/ASCII rendering
 //! matrix, the error envelope, and one case per documented exit code.

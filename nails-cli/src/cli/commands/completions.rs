@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Completions command handler
 //!
 //! Writes a shell completion script to stdout and nothing else. It never

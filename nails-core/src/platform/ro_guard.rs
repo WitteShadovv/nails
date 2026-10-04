@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The overlay policy as platform data, and the read-only guard that enforces
 //! the decoy-stays-read-only invariant while a hidden session is active.
 //!

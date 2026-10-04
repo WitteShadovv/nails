@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Process Detection and Classification Module
 //!
 //! Provides shared process detection and classification for activation and deactivation.

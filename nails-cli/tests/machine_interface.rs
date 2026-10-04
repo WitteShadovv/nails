@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Contract tests for the machine-readable (`--json`) interface.
 //!
 //! These validate real command output against the canonical JSON Schemas the E2E

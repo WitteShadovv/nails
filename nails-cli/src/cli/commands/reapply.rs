@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Reapply command handler
 //!
 //! Re-runs the hidden NixOS build + `switch-to-configuration test` against the

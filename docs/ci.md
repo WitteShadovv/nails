@@ -1,6 +1,6 @@
 # CI and Release Automation
 
-**Project:** NAILS (NixOS Anti-forensics Isolation & Layering System)
+**Project:** NAILS (overlay environment manager)
 
 This repository is public. The CI and release workflows are written for a public GitHub project while preserving the current supply-chain posture: deterministic Nix builds, SBOM generation, provenance, and release verification.
 

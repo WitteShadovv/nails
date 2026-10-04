@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Refuse activation when a base-OS tree would be left writable on the decoy.
 //!
 //! The decoy-stays-read-only invariant ([`crate::platform::ro_guard`]) says every

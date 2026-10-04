@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use super::super::MountInfo;
 use super::{MockFilesystem, MockOp};
 use std::path::{Path, PathBuf};

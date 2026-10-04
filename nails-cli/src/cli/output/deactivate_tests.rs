@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use super::{DEACTIVATE_RECOVERY_GUIDANCE, deactivate_error_body, print_deactivate_json};
 use nails_core::NailsError;
 use std::path::PathBuf;

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! NixOS build target validation pre-flight check
 //!
 //! Validates that the NixOS build target (flake reference or legacy config)

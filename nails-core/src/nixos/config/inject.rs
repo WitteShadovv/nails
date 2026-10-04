@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! NixOS hardware-configuration wrapper staging and parse checking.
 
 use super::{HARDWARE_BASE_CONFIG_FILE, HARDWARE_CONFIG_FILE, HARDWARE_WRAPPER};

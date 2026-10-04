@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The stable JSON envelope every command writes under `--json`.
 //!
 //! One shape carries every machine-readable result: a success carries typed

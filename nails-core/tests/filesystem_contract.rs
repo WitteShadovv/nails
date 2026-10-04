@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Filesystem trait contract suite.
 //!
 //! The same set of behavioural assertions is run against both filesystem

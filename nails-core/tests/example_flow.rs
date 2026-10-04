@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Integration tests for NailsManager flows using MockFilesystem
 //!
 //! Tests cover activation, deactivation, state transitions, preflight checks,

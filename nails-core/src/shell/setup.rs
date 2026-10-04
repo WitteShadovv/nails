@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Shell setup and cleanup operations for activation/deactivation
 
 use crate::{Filesystem, Result};

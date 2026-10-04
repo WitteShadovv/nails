@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use nails_core::{
     RealFilesystem, ensure_hidden_configuration_module, ensure_hidden_hardware_configuration,
     prepare_nixos_config_overlay, stage_hidden_config_symlink,

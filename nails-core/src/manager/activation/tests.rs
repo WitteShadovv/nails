@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use super::gate::ActivationGateTestGuard;
 use super::maybe_block_after_activating_state_transition;
 use super::{

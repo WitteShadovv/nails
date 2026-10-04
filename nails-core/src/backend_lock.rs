@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Closing the encrypted backend after an emergency teardown.
 //!
 //! Overlay teardown is the one step the emergency panic button always runs. It

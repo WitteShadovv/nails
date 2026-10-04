@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Timing utilities for measuring operation durations
 //!
 //! This module provides utilities for timing operations and formatting

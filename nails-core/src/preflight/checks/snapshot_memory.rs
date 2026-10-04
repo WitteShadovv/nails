@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Snapshot memory pre-flight check
 //!
 //! Overlay-incompatible targets (vfat/exfat/ntfs, in practice the ESP or

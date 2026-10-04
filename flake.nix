@@ -1,5 +1,5 @@
 {
-  description = "NixOS Anti-forensics Isolation & Layering System (NAILS)";
+  description = "Overlay environment manager (NAILS)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -299,6 +299,7 @@
           deadnix
           statix
           shellcheck
+          reuse # SPDX/REUSE licensing lint (`reuse lint`)
           actionlint
           zizmor
           lychee # scripts/docs-check.sh link-checks the Markdown docs

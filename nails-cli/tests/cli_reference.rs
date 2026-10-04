@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! CLI reference staleness guard.
 //!
 //! The shipped man page (`nails.1`) and Markdown CLI reference (`docs/cli.md`)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The host service- and session-control seam.
 //!
 //! nails drives a handful of systemd units (the display manager, `nix-daemon`)

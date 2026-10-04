@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Types for cleanup operations
 //!
 //! Provides the configuration, mode, and reporting types used by the cleanup system.

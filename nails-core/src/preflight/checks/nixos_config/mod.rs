@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! NixOS configuration pre-flight check
 //!
 //! Validates NixOS configuration overlay structure in hidden storage.

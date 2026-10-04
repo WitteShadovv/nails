@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Log file rotation and retention management
 //!
 //! Provides automatic log rotation based on file size limits and

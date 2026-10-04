@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The FHS backend: overlay-only hosts laid out on the Filesystem Hierarchy
 //! Standard.
 //!

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Platform-aware decoy-persistence pre-flight check.
 //!
 //! The forensic guarantees silently depend on an *amnesic* decoy: a system that

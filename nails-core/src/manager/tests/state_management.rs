@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! `current_state`, `update_state`, `verify_overlay_status` and reset-upper.
 
 use super::*;

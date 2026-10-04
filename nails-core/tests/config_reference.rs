@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Keeps docs/configuration.md in step with the configuration structs.
 //!
 //! The Key and Default columns of the key table, and the Path column of the

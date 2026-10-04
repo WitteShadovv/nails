@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Test utilities for cleanup module tests
 //!
 //! This module provides safe test environment setup to prevent tests from

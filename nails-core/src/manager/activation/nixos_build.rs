@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! NixOS Config Fingerprinting (Step 7)
 //!
 //! Computes a config fingerprint and checks the fast-path cache.  No actual

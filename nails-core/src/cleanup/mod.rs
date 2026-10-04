@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Cleanup management for NAILS deactivation
 //!
 //! This module provides the [`CleanupManager`] which coordinates cleanup operations

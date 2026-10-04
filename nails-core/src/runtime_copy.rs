@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! A RAM-backed copy of the tool, its config and a mount manifest under `/run`.
 //!
 //! The executable and the configuration both live on the hidden volume, so once

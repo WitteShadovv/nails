@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The declarative config layer: the NixOS-only half of activation.
 //!
 //! Activation has two halves. The overlay mounts are shared by every supported

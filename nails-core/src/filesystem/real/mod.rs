@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Real filesystem using system calls
 //!
 //! Uses actual syscalls for production use. Requires root privileges for mount/unmount operations.

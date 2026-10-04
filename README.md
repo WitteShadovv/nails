@@ -1,6 +1,6 @@
 <div align="center">
   <img src="docs/assets/logo.png" alt="NAILS logo" width="160" />
-  <h1>NAILS — NixOS Anti-forensics Isolation &amp; Layering System</h1>
+  <h1>NAILS — Overlay environment manager</h1>
 
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust 1.93+](https://img.shields.io/badge/rust-1.93+-orange.svg)](https://www.rust-lang.org/)
@@ -470,6 +470,8 @@ NAILS is actively maintained and currently released as **alpha** software.
 NAILS has been developed with AI-assisted tooling for drafting code, tests, and documentation. All security-relevant design decisions, code changes, and published documentation remain the responsibility of the maintainer and are intended to be reviewed and validated before release.
 
 ## License and disclaimer
+
+Copyright (C) 2025-2026 WitteShadovv.
 
 This project is licensed under the **GNU General Public License v3.0**. See [LICENSE](LICENSE).
 

@@ -6,9 +6,9 @@ resolver = "3"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.93"
-authors = ["NAILS Project"]
+authors = ["WitteShadovv"]
 license = "GPL-3.0-or-later"
-homepage = "https://github.com/WitteShadovv/nails"
+homepage = "https://nails.run"
 repository = "https://github.com/WitteShadovv/nails"
 
 [workspace.dependencies]

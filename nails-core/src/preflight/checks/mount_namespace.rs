@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Mount-namespace pre-flight check
 //!
 //! Validates that NAILS runs in PID 1's mount namespace with shared root

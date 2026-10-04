@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! # Platform seam
 //!
 //! A single place where host-specific decisions are made, so the rest of the

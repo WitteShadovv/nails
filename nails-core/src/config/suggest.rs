@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Readable messages for configuration parse errors
 //!
 //! serde reports an unknown key as "unknown field `x`, expected one of `a`,

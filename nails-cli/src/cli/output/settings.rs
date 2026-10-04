@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Output settings resolved once per run
 //!
 //! [`OutputSettings::resolve`] is the only place that decides verbosity, colour

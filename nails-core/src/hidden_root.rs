@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Hidden-root attach gate.
 //!
 //! NAILS must write nothing — not a log line, not a staged `configuration.nix`,

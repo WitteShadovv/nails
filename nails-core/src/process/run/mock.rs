@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Test support for [`ProcessRunner`]: a recording runner and helpers for
 //! tests that drive the real executors into the runtime guard.
 

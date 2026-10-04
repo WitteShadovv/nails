@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use crate::manager::activation::guards::NixDaemonGuard;
 use crate::{Filesystem, NailsError, NailsManager, Result};
 use nix::sys::wait::{WaitStatus, waitpid};

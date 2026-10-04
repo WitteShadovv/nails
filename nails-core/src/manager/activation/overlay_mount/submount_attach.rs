@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Keeping host submounts visible under overlaid targets.
 //!
 //! When a parent target is overlaid, any filesystem the host had mounted beneath

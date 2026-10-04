@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Ephemeral overlay operations with tmpfs-backed layers
 //!
 //! Provides functions to mount and unmount ephemeral overlays where the

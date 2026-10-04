@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Upper-filesystem capability pre-flight check
 //!
 //! Validates that the hidden root can host an overlayfs *upper* (and *work*)

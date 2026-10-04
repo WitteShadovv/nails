@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! One correct parser for `/proc/self/mountinfo`.
 //!
 //! Every mount-table reader in the crate goes through this module. The kernel

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Persona mode: how the hidden session relates to the decoy account.
 //!
 //! By default NAILS runs the hidden session as the decoy user, in the decoy

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Keeps the configuration snippets in README.md runnable.
 //!
 //! The README's Quick start shows a `nails.toml` example. If a key is renamed

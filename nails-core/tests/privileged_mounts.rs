@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Fast privileged integration tier for real overlay and teardown behaviour.
 //!
 //! These tests drive [`RealFilesystem`] against a real overlayfs kernel instead

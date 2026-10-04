@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use super::command_cache::{build_cached_command, nixos_tool_path};
 use std::path::{Path, PathBuf};
 

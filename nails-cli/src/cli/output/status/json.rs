@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! JSON output formatting for the status command.
 //!
 //! The report is rendered into typed DTOs and wrapped in the shared envelope, so

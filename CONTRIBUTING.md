@@ -141,6 +141,39 @@ Examples:
 - Use issues for bugs, feature requests, and contributor questions.
 - Use [SECURITY.md](SECURITY.md) for private vulnerability reports.
 
+## Developer Certificate of Origin (sign-off)
+
+Every commit must be signed off. The sign-off certifies that you wrote the
+patch, or otherwise have the right to submit it under the project's licence,
+per the [Developer Certificate of Origin](https://developercertificate.org/).
+
+Add the sign-off trailer by committing with `-s`:
+
+```bash
+git commit -s -m "fix(overlay): handle cleanup failure on deactivation"
+```
+
+This appends a line to the commit message:
+
+```
+Signed-off-by: Your Name <your.email@example.com>
+```
+
+Use the same name and email as your Git `user.name` and `user.email`. Pull
+requests whose commits are missing the sign-off will be asked to amend them
+(`git commit --amend -s` for the last commit, or an interactive rebase for
+several).
+
+New source files carry the two SPDX header lines
+
+```
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+```
+
+and the whole tree is kept REUSE-compliant; `reuse lint` runs in the
+development shell, as a pre-commit hook and in CI.
+
 ## Licensing
 
 By contributing, you agree that your contributions will be licensed under the repository's existing license terms.

@@ -1,6 +1,6 @@
 # Security Validation Guide
 
-**Project:** NAILS (NixOS Anti-forensics Isolation & Layering System)
+**Project:** NAILS (overlay environment manager)
 
 This guide documents the security validation mechanisms that are actually in use in this public repository: SBOM generation, dependency policy checks, deterministic release verification and GitHub artifact attestations.
 

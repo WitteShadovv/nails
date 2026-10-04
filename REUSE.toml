@@ -1,0 +1,12 @@
+version = 1
+
+# Every Rust source file carries its own SPDX header. This file supplies the
+# same copyright and licence information for everything else in the tree -
+# documentation, Nix expressions, shell and Python scripts, workflow and config
+# files, lockfiles, snapshots and assets - so `reuse lint` reports the whole
+# repository as covered. Precedence is "closest" (the default), so a file's own
+# SPDX header always wins over the catch-all below.
+[[annotations]]
+path = "**"
+SPDX-FileCopyrightText = "2025-2026 WitteShadovv"
+SPDX-License-Identifier = "GPL-3.0-or-later"

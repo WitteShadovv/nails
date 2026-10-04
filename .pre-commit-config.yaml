@@ -72,6 +72,15 @@ repos:
         files: '.*\.sh$'
         args: [-e, SC1091, -e, SC2034]
 
+      # SPDX/REUSE licensing compliance: every file must carry copyright and
+      # licence information (via a header or REUSE.toml). Scans the whole tree.
+      - id: reuse
+        name: reuse lint (SPDX/REUSE compliance)
+        entry: reuse lint
+        language: system
+        pass_filenames: false
+        always_run: true
+
       # Link-check the Markdown docs and reject retired names. Runs whenever a
       # Markdown file or the checker itself changes; it scans the whole doc set,
       # so the changed file names are not passed through.

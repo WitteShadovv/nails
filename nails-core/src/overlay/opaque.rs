@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Overlayfs opaque-marker handling for NAILS-managed paths.
 //!
 //! When a directory is deleted and recreated through an active overlayfs mount,

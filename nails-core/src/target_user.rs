@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Resolving the unprivileged account NAILS acts on behalf of.
 //!
 //! NAILS runs as root — invoked through `sudo`, `pkexec` or `doas`, or re-execed

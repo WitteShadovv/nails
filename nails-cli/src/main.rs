@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! # NAILS CLI Binary Entry Point
 //!
 //! Command-line interface binary for the nails overlay environment manager.

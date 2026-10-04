@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Hidden `watch` command: the in-session backend watcher.
 //!
 //! This is not an operator-facing command. It is launched at activation from the

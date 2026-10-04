@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Logging configuration and subscriber installation
 //!
 //! Provides validated configuration for structured JSON logging with

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Pivot mount strategy for active directories
 //!
 //! Provides functions to mount overlays onto actively-used directories

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use super::command_cache::{command_failed_error, runner_error_to_io, systemctl_command};
 use crate::process::run::{
     NIX_STORE_PING_BUDGET, ProcessCommand, ProcessRunner, RealProcessRunner, systemctl_budget,

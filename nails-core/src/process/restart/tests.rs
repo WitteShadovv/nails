@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use super::*;
 use crate::process::run::{UNKNOWN_UNIT, UNUSED_PID, assert_refused_in_test_runtime};
 use std::path::PathBuf;

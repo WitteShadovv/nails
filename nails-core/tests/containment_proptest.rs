@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Property tests for the containment-critical helpers that decide what counts
 //! as "on the hidden volume" and which directories survive the exclusion filter.
 //!

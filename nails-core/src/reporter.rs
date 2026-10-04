@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Actionable diagnostics rendering.
 //!
 //! This is the single place that turns a set of failures into the "what to do

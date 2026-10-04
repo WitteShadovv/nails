@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The refusal backend.
 //!
 //! Chosen for ostree / image-based hosts and for hosts whose PID 1 is not

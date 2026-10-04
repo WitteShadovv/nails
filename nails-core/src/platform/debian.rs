@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Debian-family support data for host detection.
 //!
 //! NAILS validates the overlay-only backend on Debian and Ubuntu first. The

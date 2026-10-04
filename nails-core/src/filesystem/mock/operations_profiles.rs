@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use super::super::{PatternScan, ProcessMatch};
 use super::{MockFilesystem, MockOp};
 use crate::target_user::TargetUser;

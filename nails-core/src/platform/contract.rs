@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! One contract every [`Platform`] backend must satisfy.
 //!
 //! Each backend runs the same assertions so a new backend cannot quietly skip an

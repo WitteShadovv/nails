@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Shell alias management for NAILS command
 //!
 //! This module provides alias script generation that adds a 'nails' command alias

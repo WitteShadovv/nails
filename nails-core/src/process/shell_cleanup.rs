@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Shell process cleanup for forensic safety
 //!
 //! Kills all user shell processes before overlay unmount to prevent

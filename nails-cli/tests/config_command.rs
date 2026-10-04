@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Binary-level tests for `nails config` and strict configuration loading
 //!
 //! Every command run here is read-only or exits during configuration loading,

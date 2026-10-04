@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Tests for `NailsManager`, one file per production module of `manager`.
 //!
 //! This file holds the shared fixtures and the tests of `manager/mod.rs`

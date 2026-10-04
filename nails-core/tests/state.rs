@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Integration tests for SystemState enum and state transitions
 //!
 //! These tests verify the public API of the state machine module,

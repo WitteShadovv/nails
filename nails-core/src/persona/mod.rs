@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Persona inventory: the decoy state the hidden session inherits.
 //!
 //! This is the runtime collector that lists the decoy autostart entries, enabled

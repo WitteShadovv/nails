@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Mount-table guard for shell integration writes.
 //!
 //! Before writing a shell rc block or an XDG autostart entry into a user's home

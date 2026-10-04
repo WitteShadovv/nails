@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Platform-specific, read-only scans for system-state drift that a generic
 //! artifact-path check cannot see.
 //!

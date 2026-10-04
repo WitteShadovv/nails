@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Logging infrastructure with hidden volume validation
 //!
 //! Provides structured JSON logging that only writes to the hidden volume,

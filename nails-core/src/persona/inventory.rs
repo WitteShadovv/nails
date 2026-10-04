@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Collector for the decoy persona state the hidden session inherits.
 //!
 //! When NAILS runs the hidden session in the decoy home (the default

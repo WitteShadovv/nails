@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Guards that keep the machine-interface invariants from regressing.
 //!
 //! These scan the crate source so the contract T-028 establishes - one process

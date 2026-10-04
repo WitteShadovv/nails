@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Canary pattern scanner for cleanup verification
 //!
 //! Scans files for forbidden patterns that should not remain after cleanup.

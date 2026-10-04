@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Shared rendering primitives for CLI output
 //!
 //! The CLI decides once at start-up whether each stream takes colour and

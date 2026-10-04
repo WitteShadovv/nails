@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! User Prompt Functions
 //!
 //! Provides interactive user prompts for activation decisions including:

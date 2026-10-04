@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Comprehensive history file location definitions
 //!
 //! This module provides a centralized registry of known shell and application

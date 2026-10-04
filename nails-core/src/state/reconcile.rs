@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Reconcile persisted state against the boot and the live kernel mount table.
 //!
 //! `state.json` lives on the hidden root and survives reboots and crashes, so it

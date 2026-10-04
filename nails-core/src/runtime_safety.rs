@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Runtime safeguards that keep test and E2E builds from touching the host.
 //!
 //! The decision is a compile-time constant in shipped builds. Only a build that

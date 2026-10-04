@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Phase 2 of the overlay mounting strategy: classify the processes using a
 //! target, apply the risky-service policy, and refuse to force-terminate
 //! interactive user programs.

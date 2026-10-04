@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! # State Guard
 //!
 //! RAII rollback guard for automatic state cleanup on error or panic.

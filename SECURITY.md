@@ -1,6 +1,6 @@
 # Security Policy
 
-NAILS (NixOS Anti-forensics Isolation & Layering System) is security-sensitive software. This policy explains what qualifies as a security issue, how to report one privately, and how the project handles coordinated disclosure.
+NAILS, an overlay environment manager, is security-sensitive software. This policy explains what qualifies as a security issue, how to report one privately, and how the project handles coordinated disclosure.
 
 ## Scope
 

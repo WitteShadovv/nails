@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Path validation and manipulation utilities for logging
 //!
 //! Provides secure path handling to prevent directory traversal attacks

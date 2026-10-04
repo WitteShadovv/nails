@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Unit tests for the storage-backend detection check, driven by
 //! `MockFilesystem` fixtures of `/proc/self/mountinfo` and `/sys`.
 

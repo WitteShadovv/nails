@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Notify-dispatch command handler
 //!
 //! Reads pending notification signal files from the hidden volume and

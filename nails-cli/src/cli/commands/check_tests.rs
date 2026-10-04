@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Unit tests for the `check` command's helpers.
 //!
 //! Exit codes, the JSON envelope and parity with `activate --dry-run` are

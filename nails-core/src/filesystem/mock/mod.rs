@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Mock filesystem for testing (no root privileges required)
 //!
 //! Uses in-memory state tracking to simulate filesystem operations.

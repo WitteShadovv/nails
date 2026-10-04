@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Binary-location pre-flight check.
 //!
 //! Validates that the running `nails` binary lives on the hidden volume rather

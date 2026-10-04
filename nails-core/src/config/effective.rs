@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The effective configuration and where each value came from
 //!
 //! `nails config show` prints every key with its source, so an operator can

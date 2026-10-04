@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Property tests for `SafeRoot` containment, sharing the adversarial path
 //! generators with the configured-path containment suite (`path_properties.rs`)
 //! via `tests/common`.

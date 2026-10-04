@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Desktop notification signal files for post-activation user feedback
 //!
 //! The activation process runs as root and may restart the display manager

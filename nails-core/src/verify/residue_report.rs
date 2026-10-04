@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Pre-activation decoy residue report.
 //!
 //! `nails activate` runs the read-only decoy residue scan *before* it mounts any

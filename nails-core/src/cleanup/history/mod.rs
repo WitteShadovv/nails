@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Shell history cleanup for bash, zsh, and fish shells
 //!
 //! This module provides [`HistoryCleaner`] which removes command history entries

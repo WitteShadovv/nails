@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Logging manager with hidden volume validation
 //!
 //! Provides the core LoggingManager that ensures all log output is

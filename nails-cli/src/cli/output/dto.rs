@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Serde data-transfer types shared by the machine-readable renderers.
 //!
 //! These are deliberately separate from the on-disk and in-memory types in

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Log files cleanup for NAILS-generated log files
 //!
 //! This module provides [`LogCleaner`] which removes nails-generated log files

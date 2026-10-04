@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! A configurable [`Platform`] for core tests.
 //!
 //! Lets a test pin a platform's kind, overlay policy and restore outcome without

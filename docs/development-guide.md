@@ -1,6 +1,6 @@
 # Development Guide
 
-**Project:** NAILS (NixOS Anti-forensics Isolation & Layering System)
+**Project:** NAILS (overlay environment manager)
 
 This guide covers the local workflows that are not obvious from `cargo` alone.
 The development shell (`nix develop`) provides the pinned toolchain and every

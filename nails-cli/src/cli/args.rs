@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! CLI argument definitions
 //!
 //! Output and logging options live in [`GlobalArgs`] and are accepted before or
@@ -63,7 +66,6 @@ EXIT STATUS:
 /// Overlay environment manager
 #[derive(Parser, Debug)]
 #[command(name = "nails")]
-#[command(author = "NAILS Project")]
 #[command(version)]
 #[command(about = "Overlay environment manager", long_about = ROOT_LONG_ABOUT)]
 #[command(after_long_help = EXIT_STATUS_HELP)]
