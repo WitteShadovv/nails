@@ -110,7 +110,7 @@ rec {
             """cat > %s <<'EOF'
     hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
-    risky_services = "keep"
+    risky_services = "skip"
 
     [persona]
     mode = "%s"
