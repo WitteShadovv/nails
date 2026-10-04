@@ -1,10 +1,9 @@
 # Test 28: Activate Flake Override
 
-{ self, pkgs, ... }:
+{ self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  nixpkgsPath = pkgs.path;
 in
 {
   name = "activate-flake-override";
@@ -108,18 +107,18 @@ in
     {
       # NAILS_HIDDEN_FLAKE_CANARY_f067 — forensic canary; see test script.
       description = "NAILS flake override E2E";
-      inputs.nixpkgs.url = "path:${nixpkgsPath}";
-      outputs = { self, nixpkgs }: {
-        nixosConfigurations.nails-e2e = nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          modules = [
-            /etc/nixos/configuration.nix
-            ({ ... }: {
-              documentation.nixos.enable = false;
-              environment.etc."nails-flake-marker".text = "flake-override-active";
-            })
-          ];
-        };
+      # No nixpkgs input: this test stubs nixos-rebuild (below), so the hidden
+      # system is never actually built. A `path:` nixpkgs input would copy the
+      # entire nixpkgs tree into the decoy store during `nix flake lock` and the
+      # deferred `nix flake metadata`/eval — several minutes of I/O on the
+      # space-limited test disk — without exercising anything this test asserts.
+      # nails' flake validation only needs the flake to resolve and the selected
+      # `nixosConfigurations` attribute to exist, and the canary leak check only
+      # needs the flake source (carrying the canary) copied into the store; this
+      # minimal flake still drives both. The real build+switch path lives in
+      # test 27 (activate-full-rebuild).
+      outputs = { self }: {
+        nixosConfigurations.nails-e2e = { };
       };
     }
     EOF""")
