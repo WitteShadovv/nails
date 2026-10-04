@@ -384,8 +384,10 @@ scope of the reproducibility claim and artifact verification details.
 
 ## Upgrading
 
-This release changes operator-facing interfaces. There is no backwards-compatibility
-shim: convert your setup before running the new binary.
+Upgrade only while NAILS is inactive: run `nails deactivate` (or `nails recover` for a
+stuck state) with the old binary before replacing it. This release changes
+operator-facing interfaces. There is no backwards-compatibility shim: convert your
+setup before running the new binary.
 
 - **Configuration format.** Configuration is now strict TOML. Convert any earlier
   YAML configuration to `config/nails.toml` next to the binary on the hidden volume
@@ -411,7 +413,7 @@ shim: convert your setup before running the new binary.
   (inactive) rather than trusted.
 
 > [!NOTE]
-> The release changelog mirrors these upgrade notes under its own "Upgrading"
+> The release changelog mirrors these upgrade notes under its own "Upgrade notes"
 > heading; keep [CHANGELOG.md](CHANGELOG.md) and this section in step when cutting
 > a release.
 
