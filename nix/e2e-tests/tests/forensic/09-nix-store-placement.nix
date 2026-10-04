@@ -159,7 +159,7 @@ let
 
       "$nails_bin" \
         --config "$config_path" \
-        activate --overlay-only --session keep -y
+        activate --overlay-only --session keep --accept-persistent-decoy -y
 
       has_nix_overlay
       echo MARKER:overlay-present

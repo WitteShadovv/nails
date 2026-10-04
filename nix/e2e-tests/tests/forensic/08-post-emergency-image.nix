@@ -60,7 +60,7 @@ in
     with subtest("activate and plant hidden canaries"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --session keep -y"
+            f"nails --config {headless_config} activate --overlay-only --session keep --accept-persistent-decoy -y"
         )
         machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
         machine.succeed(

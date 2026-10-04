@@ -119,7 +119,7 @@ in
     with subtest("run a full activate/populate/deactivate workflow"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --session keep -y"
+            f"nails --config {headless_config} activate --overlay-only --session keep --accept-persistent-decoy -y"
         )
         machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
         machine.succeed("su - testuser -c 'mkdir -p ~/work/project'")
