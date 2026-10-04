@@ -428,6 +428,22 @@ mod tests {
     }
 
     #[test]
+    fn classify_overlay_backed_upper_names_overlay() {
+        // A hidden root that is itself an overlayfs cannot be stacked as another
+        // overlay's upperdir: the probe's first step (the reserved trusted.overlay
+        // xattr) is already refused. The failure must name the overlay backend and
+        // still recommend a local Linux filesystem. This mirrors the
+        // `preflight-upper-fs-capability` e2e fixture, which drives the check with
+        // an overlay-backed hidden root.
+        let result = classify(MissingCapability::TrustedXattr, Some("overlay"));
+        assert!(result.is_fail());
+        let message = result.message();
+        assert!(message.contains("cannot host an overlayfs upper layer"));
+        assert!(message.contains("on a overlay filesystem"));
+        assert!(message.contains("ext4"));
+    }
+
+    #[test]
     fn classify_lists_unsupported_remote_and_fat_backends() {
         let result = classify(MissingCapability::TrustedXattr, Some("cifs"));
         let message = result.message();

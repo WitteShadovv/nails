@@ -8,8 +8,9 @@
 #
 # Two nodes: `server` exports a share, `client` mounts it at the hidden root and
 # attempts to activate. The activation must fail with the capability error.
-# Companion to tests/preflight/24, which proves the same probe against a FAT
-# upper on a single node.
+# Companion to tests/preflight/24, which proves the same probe on a single node
+# against an overlay-backed upper (a FAT upper lacks symlinks and is caught by
+# the earlier symlink-support gate, so it never reaches this check).
 
 { self, pkgs, ... }:
 let

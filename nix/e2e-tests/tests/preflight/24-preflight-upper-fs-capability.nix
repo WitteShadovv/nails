@@ -1,10 +1,17 @@
 # Test 24: Preflight Upper-Filesystem Capability
 #
-# A FAT upper cannot back an overlayfs upper layer (no trusted xattrs), so the
-# upper-fs-capability check must refuse activation before anything is mounted,
-# naming the backend, and must leave no probe scratch directory behind.
+# Some backends support symlinks (so they clear the early symlink-support gate)
+# yet still cannot back an overlayfs *upper* layer: NFS, CIFS/SMB, 9p, most FUSE
+# mounts, and — the case this test exercises — a filesystem that is itself an
+# overlay, which the kernel refuses to stack as another overlay's upperdir. The
+# upper-fs-capability check must probe this and refuse activation before anything
+# is mounted, naming the backend, and must leave no probe scratch directory
+# behind.
+#
+# FAT is deliberately NOT used here: FAT lacks symlink support, so it is caught
+# by the earlier symlink-support gate (see test 18) and never reaches this check.
 
-{ self, pkgs, ... }:
+{ self, ... }:
 let
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
   baseOs = import ./../../lib/base-os-overlays.nix;
@@ -21,7 +28,6 @@ in
       imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [
         self.packages.x86_64-linux.nails
-        pkgs.dosfstools
       ];
     };
 
@@ -30,28 +36,43 @@ in
     ${preflightHelpers.runCommandCaptureFn}
     ${preflightHelpers.commandAssertionsFn}
 
-    def write_fat_hidden_config(path):
+    def write_overlay_hidden_config(path):
         write_text_file(path, """
-    hidden_volume_root = "/mnt/fat-hidden"
+    hidden_volume_root = "/mnt/overlay-hidden"
     overlay_mode = "explicit"
 
-    ${baseOs.tomlFor "/mnt/fat-hidden"}
+    ${baseOs.tomlFor "/mnt/overlay-hidden"}
     [[overlays]]
     name = "home"
     lower = "/home"
-    upper = "/mnt/fat-hidden/home"
-    work = "/mnt/fat-hidden/.work/home"
+    upper = "/mnt/overlay-hidden/home"
+    work = "/mnt/overlay-hidden/.work/home"
     target = "/home"
     """.strip() + "\n")
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    with subtest("fat upper is refused with a backend-specific capability message"):
+    with subtest("an overlay-backed upper is refused with a capability message"):
+        # Build an overlayfs and use it as the hidden root. It supports symlinks
+        # (so the early symlink-support gate passes), has its own device (so the
+        # attach gate passes), and reaches the upper-fs-capability probe — which
+        # the kernel refuses to stack as another overlay's upperdir, so the check
+        # fails closed. The lower/upper/work live on a tmpfs, which can legally
+        # host the base overlay.
         machine.succeed(
-                "bash -lc 'truncate -s 96M /tmp/fat-hidden.img && mkfs.vfat /tmp/fat-hidden.img && mkdir -p /mnt/fat-hidden && mount -o loop /tmp/fat-hidden.img /mnt/fat-hidden'"
+                "bash -lc '"
+                "mkdir -p /mnt/overlay-base /mnt/overlay-hidden && "
+                "mount -t tmpfs tmpfs /mnt/overlay-base && "
+                "mkdir -p /mnt/overlay-base/lower /mnt/overlay-base/upper /mnt/overlay-base/work && "
+                "mount -t overlay overlay "
+                "-o lowerdir=/mnt/overlay-base/lower,upperdir=/mnt/overlay-base/upper,workdir=/mnt/overlay-base/work "
+                "/mnt/overlay-hidden"
+                "'"
             )
-        write_fat_hidden_config("/tmp/preflight-upper-fs-capability.toml")
+        # Confirm the hidden root really is an overlay before probing it.
+        machine.succeed("grep -q ' /mnt/overlay-hidden overlay ' /proc/mounts")
+        write_overlay_hidden_config("/tmp/preflight-upper-fs-capability.toml")
         result = run_command_capture(
             "preflight-upper-fs-capability",
             "nails --config /tmp/preflight-upper-fs-capability.toml activate --overlay-only --session keep -y",
@@ -59,18 +80,19 @@ in
         assert_command_failed(result)
         assert_result_contains(
             result,
-            ["cannot host an overlayfs upper layer", "vfat", "ext4"],
+            ["cannot host an overlayfs upper layer", "overlay", "ext4"],
             stream="stderr",
         )
 
     with subtest("refusal mounts no overlay and leaves no probe scratch dir"):
-        # Preflight runs before any mount, so no overlay backed by the hidden
-        # root may exist (neither an activation overlay nor a leftover probe
-        # mount). Matching on the upperdir avoids a false positive if the VM's
-        # own root happens to be an overlay.
-        machine.fail("grep -q 'upperdir=/mnt/fat-hidden' /proc/mounts")
+        # Preflight runs before any activation mount, so no overlay backed by the
+        # hidden root's own upper may exist: neither an activation overlay nor a
+        # leftover trial-probe mount. Matching on an upperdir under the hidden
+        # root avoids a false positive from the base overlay that backs it.
+        machine.fail("grep -q 'upperdir=/mnt/overlay-hidden' /proc/mounts")
         # The probe removes its .probe-<unique> scratch dir on every path.
-        machine.fail("bash -lc 'ls -d /mnt/fat-hidden/.probe-* 2>/dev/null'")
-        machine.succeed("umount /mnt/fat-hidden")
+        machine.fail("bash -lc 'ls -d /mnt/overlay-hidden/.probe-* 2>/dev/null'")
+        machine.succeed("umount /mnt/overlay-hidden")
+        machine.succeed("umount /mnt/overlay-base")
   '';
 }
