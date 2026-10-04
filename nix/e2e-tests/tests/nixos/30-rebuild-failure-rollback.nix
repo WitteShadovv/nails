@@ -93,11 +93,12 @@ in
 
     headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
-    # Keep the overlays and session on a failed switch instead of rolling back,
-    # so the warning outcome is observable.
-    machine.succeed(
-        f"printf '\\nnixos_switch_required = false\\n' >> {shlex.quote(headless_config)}"
-    )
+    # write_headless_config already sets `nixos_switch_required = false`, so a
+    # failed switch keeps the overlays and session (the observable warning
+    # outcome) instead of rolling back. Appending the key here again landed it
+    # under the trailing [[overlays]] table, which `deny_unknown_fields` rejected,
+    # so activation exited 3 (config error) before the switch ever ran.
+    machine.succeed(f"grep -qx 'nixos_switch_required = false' {shlex.quote(headless_config)}")
 
     with subtest("prepare a broken hidden configuration"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
