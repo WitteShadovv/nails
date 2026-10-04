@@ -53,8 +53,11 @@ in
         # Arm the Activating gate, launch an overlay-only activation detached in a
         # transient unit so we can signal it, and wait until it is parked just
         # after the Activating state transition (the cancellation checkpoint sits
-        # immediately after the gate).
-        machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
+        # immediately after the gate). setupHiddenVolume left the backend open and
+        # mounted, and neither the rollback nor `nails emergency` closes it (only a
+        # reboot does), so every round runs on that same open backend; opening it
+        # again would fail on the existing device-mapper node.
+        machine.succeed("mountpoint -q /mnt/data")
         env_prefix, gate_path, entered_path = install_activation_gate()
         run_detached_command(
             unit_name,
