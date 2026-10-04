@@ -194,6 +194,10 @@ state, config and CLI surfaces; there are no compatibility shims.
   `sleep-policy` pre-flight check that warns when logind would suspend an active session, and a
   session sleep guard that holds a logind inhibitor (`block`) or runs the bounded emergency
   teardown on `PrepareForSleep` (`teardown`).
+- A long NixOS build or switch now shows its most recent output line in the progress heartbeat, not
+  just the elapsed time.
+- `nails status` (human and `--json`) now reports when the decoy keeps a persistent log/audit store
+  and never presents an active-on-persistent-decoy system as fully secure.
 
 ### Changed
 
@@ -400,6 +404,9 @@ state, config and CLI surfaces; there are no compatibility shims.
   switch snippet (root-owned oneshot, scoped polkit rule, keybinding, with a NOPASSWD warning), and
   replace the hand-deletion of `state.json` and decoy-side verification guidance with `nails
   recover` and pre-reboot/offline verification.
+- Preflight now skips hidden-volume-dependent checks with a clear reason instead of cascading
+  failures, names the exact swap devices to disable, and activation reports an overlay rollback
+  truthfully (only when one actually ran) after a failed activation.
 
 ### Removed
 
