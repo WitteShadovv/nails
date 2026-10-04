@@ -72,7 +72,10 @@ An activation moves through these layers, all inside `nails-core`:
   more — before anything is mounted, and fails closed.
 - **Overlay mounting** (`overlay`) mounts the selected trees with the hidden
   backend as the upper layer. Path containment and the mount APIs are described
-  in [ADR 0004](adr/0004-detached-mount-apis.md).
+  in [ADR 0004](adr/0004-detached-mount-apis.md). Why NAILS takes this overlay
+  live from the running system, rather than at boot like `grub-live`,
+  `overlayroot` or `systemd.volatile=overlay`, is recorded in
+  [ADR 0005](adr/0005-live-overlay-vs-boot-time-overlay.md).
 - **Config switch** (`nixos`, via the `ConfigLayer`) builds and switches to the
   hidden NixOS configuration on NixOS; a no-op elsewhere.
 - **Deactivation and verification** (`deactivation`, `verify`) unmount in
