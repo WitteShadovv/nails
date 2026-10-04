@@ -1048,6 +1048,18 @@ impl<F: Filesystem> NailsManager<F> {
             self.switch_nixos_profile(fast_path_toplevel, new_fingerprint, verbosity);
         let hidden_root = self.config().hidden_volume_root.clone();
 
+        // `switch-to-configuration test` reconciles the running system's systemd
+        // units and, as a side effect, unmounts the overlays NAILS placed over the
+        // base-OS trees it manages (/etc, /usr, /bin, /lib64), leaving the bare
+        // decoy exposed there for the hidden session about to come back. Re-mount
+        // anything it cleared now, before the session restarts. A no-op when no
+        // switch ran (overlay-only / FHS) or when every overlay survived; what is
+        // re-mounted here the activation rollback already tracks by target, and
+        // teardown rediscovers from the live mount table.
+        if self.config_layer().is_some() {
+            self.remount_overlays_cleared_by_switch(verbosity);
+        }
+
         match switch_result {
             Ok(outcome @ HiddenConfigOutcome::NotRequested) => outcome,
             Ok(outcome) => {

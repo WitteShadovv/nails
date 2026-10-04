@@ -748,6 +748,125 @@ impl<F: Filesystem> NailsManager<F> {
         Ok(())
     }
 
+    /// Resolve the overlay set this activation mounts, for the active mode.
+    ///
+    /// Explicit mode uses the configured overlays verbatim; auto mode re-derives
+    /// them from the live base OS the same way
+    /// [`mount_auto_overlays`](Self::mount_auto_overlays) does. Shared so the
+    /// post-switch re-assertion re-mounts exactly the overlays the mount phase
+    /// created, in either mode. A target whose auto config cannot be rebuilt is
+    /// skipped, matching the best-effort mount loop.
+    fn resolve_mounted_overlay_set(&self) -> Result<Vec<OverlayConfig>> {
+        match self.config.overlay_mode {
+            crate::OverlayMode::Explicit => Ok(self.config.overlays.clone()),
+            crate::OverlayMode::Auto => {
+                let targets = build_overlay_targets(&self.filesystem, &self.config)?;
+                let mut overlays = Vec::new();
+                for target in &targets {
+                    if let Ok(config) = create_overlay_config(
+                        &self.filesystem,
+                        target,
+                        &self.config.hidden_volume_root,
+                    ) {
+                        overlays.push(config);
+                    }
+                }
+                Ok(overlays)
+            }
+        }
+    }
+
+    /// Re-mount overlays that the hidden NixOS `switch-to-configuration` tore down.
+    ///
+    /// `switch-to-configuration test` reconciles the running system's systemd
+    /// units against the new generation and, in doing so, unmounts the overlay
+    /// mounts NAILS placed over the base-OS trees it manages (`/etc`, `/usr`,
+    /// `/bin`, `/lib64`): afterwards those trees are the bare decoy again, so a
+    /// hidden-session write there would reach the decoy disk. The data trees
+    /// (`/home`, `/root`, `/srv`, `/tmp`) are left mounted. This runs right after
+    /// the switch and before the session restarts, so the restarted hidden session
+    /// comes up with every configured overlay back in place.
+    ///
+    /// An overlay still present (as an overlay, a pivot bind, or a persona home
+    /// bind) is left untouched, so only the trees the switch cleared are re-mounted
+    /// and nothing is ever double-stacked. Best-effort per overlay: a re-mount that
+    /// fails is logged loudly (the decoy tree is then exposed) but does not abort an
+    /// otherwise successful activation. Returns the targets it re-mounted.
+    pub(crate) fn remount_overlays_cleared_by_switch(&self, verbosity: Verbosity) -> Vec<PathBuf> {
+        let overlays = match self.resolve_mounted_overlay_set() {
+            Ok(overlays) => overlays,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Could not resolve the overlay set to re-assert after the NixOS switch"
+                );
+                return Vec::new();
+            }
+        };
+
+        let mut remounted = Vec::new();
+        for overlay in &overlays {
+            let target = overlay.target.as_path();
+
+            // Still mounted (overlay, pivot bind, or persona home bind): the switch
+            // left this tree alone, so there is nothing to re-mount.
+            match self.filesystem.is_mounted(target) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        target = %target.display(),
+                        error = %error,
+                        "Could not check whether an overlay survived the NixOS switch; leaving it alone"
+                    );
+                    continue;
+                }
+            }
+
+            // Recompute the extra lower layers for bind-mount visibility exactly as
+            // the mount loop does, so a re-mount over e.g. /etc keeps a bind-mounted
+            // /etc/nixos visible under the overlay.
+            let extra_lowers = match self.filesystem.find_submount_sources(target) {
+                Ok(sources) if !sources.is_empty() => {
+                    crate::overlay::bind_sync::compute_extra_lower_dirs(target, &sources)
+                }
+                _ => Vec::new(),
+            };
+            // Clear stale opaque markers on managed dirs before re-mounting, so a
+            // marker left in the upper cannot hide lower-layer contents.
+            crate::overlay::opaque::strip_managed_opaque(&overlay.upper, target);
+
+            let mut lower_refs: Vec<&Path> = vec![overlay.lower.as_path()];
+            for extra in &extra_lowers {
+                lower_refs.push(extra.as_path());
+            }
+
+            match self
+                .filesystem
+                .mount_overlay(&lower_refs, &overlay.upper, &overlay.work, target)
+            {
+                Ok(()) => {
+                    if verbosity >= Verbosity::Normal {
+                        tracing::warn!(
+                            target = %target.display(),
+                            "Re-mounted an overlay the hidden NixOS switch tore down; the decoy tree is protected again"
+                        );
+                    }
+                    remounted.push(target.to_path_buf());
+                }
+                Err(error) => {
+                    tracing::error!(
+                        target = %target.display(),
+                        error = %error,
+                        "Failed to re-mount an overlay the NixOS switch tore down; the decoy tree is exposed for this session"
+                    );
+                }
+            }
+        }
+
+        remounted
+    }
+
     /// Undo the read-only guards activation recorded, returning write access to the
     /// decoy OS trees. Best-effort and idempotent: `unmount_bind` is a no-op for a
     /// tree that is not currently guarded, so a partial or repeated teardown is
@@ -987,5 +1106,107 @@ mod progress_tests {
             overlay_progress_message(Path::new("/nix"), 5, 5),
             "mounting /nix (5/5)"
         );
+    }
+}
+
+#[cfg(test)]
+mod remount_after_switch_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::manager::NailsManager;
+    use crate::{MockFilesystem, OverlayConfig, Verbosity};
+    use std::path::PathBuf;
+
+    const HIDDEN_ROOT: &str = "/mnt/data";
+
+    fn overlay(name: &str, target: &str) -> OverlayConfig {
+        OverlayConfig {
+            name: name.to_string(),
+            lower: PathBuf::from(target),
+            upper: PathBuf::from(format!("{HIDDEN_ROOT}/{name}")),
+            work: PathBuf::from(format!("{HIDDEN_ROOT}/.work/{name}")),
+            target: PathBuf::from(target),
+        }
+    }
+
+    /// Build a manager whose explicit overlays can all be (re-)mounted on the mock:
+    /// every lower, upper and work path is present so `verify_mount_preconditions`
+    /// passes.
+    fn manager_with_overlays(
+        overlays: Vec<OverlayConfig>,
+    ) -> (MockFilesystem, NailsManager<MockFilesystem>) {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(HIDDEN_ROOT, true);
+        fs.mock_set_writable(HIDDEN_ROOT, true);
+        for overlay in &overlays {
+            for dir in [&overlay.lower, &overlay.upper, &overlay.work] {
+                fs.mock_set_path_exists(dir.to_str().unwrap(), true);
+                fs.mock_set_writable(dir.to_str().unwrap(), true);
+            }
+        }
+        let config = Config {
+            hidden_volume_root: PathBuf::from(HIDDEN_ROOT),
+            overlay_mode: crate::OverlayMode::Explicit,
+            overlays,
+            ..Config::test_default()
+        };
+        let state_path = PathBuf::from(HIDDEN_ROOT).join("state.json");
+        let manager = NailsManager::new(fs.clone(), config, state_path);
+        (fs, manager)
+    }
+
+    #[test]
+    fn remounts_only_the_overlays_the_switch_cleared() {
+        let (fs, manager) =
+            manager_with_overlays(vec![overlay("etc", "/etc"), overlay("home", "/home")]);
+
+        // The switch tore down /etc but left /home mounted (the pattern observed on
+        // a real NixOS host: base-OS trees are reconciled, data trees are not).
+        fs.mock_set_mounted(PathBuf::from("/home").as_path(), true);
+        fs.mock_set_mounted(PathBuf::from("/etc").as_path(), false);
+
+        let remounted = manager.remount_overlays_cleared_by_switch(Verbosity::Normal);
+
+        assert_eq!(
+            remounted,
+            vec![PathBuf::from("/etc")],
+            "only the torn-down base-OS overlay is re-mounted, not the surviving data tree"
+        );
+        // The re-mount re-established the /etc overlay and never touched /home.
+        assert!(
+            fs.is_mounted(PathBuf::from("/etc").as_path()).unwrap(),
+            "/etc overlay is mounted again after the re-assertion"
+        );
+        let remounted_targets: Vec<PathBuf> = fs
+            .mock_ops()
+            .into_iter()
+            .filter_map(|op| match op {
+                crate::filesystem::mock::MockOp::MountOverlay { target } => Some(target),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(remounted_targets, vec![PathBuf::from("/etc")]);
+    }
+
+    #[test]
+    fn does_nothing_when_every_overlay_survived_the_switch() {
+        let (fs, manager) =
+            manager_with_overlays(vec![overlay("etc", "/etc"), overlay("home", "/home")]);
+
+        fs.mock_set_mounted(PathBuf::from("/etc").as_path(), true);
+        fs.mock_set_mounted(PathBuf::from("/home").as_path(), true);
+
+        let remounted = manager.remount_overlays_cleared_by_switch(Verbosity::Normal);
+
+        assert!(
+            remounted.is_empty(),
+            "no overlay is re-mounted when the switch left them all in place"
+        );
+        let mounted_overlay_ops = fs
+            .mock_ops()
+            .into_iter()
+            .filter(|op| matches!(op, crate::filesystem::mock::MockOp::MountOverlay { .. }))
+            .count();
+        assert_eq!(mounted_overlay_ops, 0, "no overlay mount syscall is issued");
     }
 }

@@ -36,6 +36,7 @@ in
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.readStatusJsonFn}
+    ${testHelpers.waitForStatusStateFn}
     ${assertions.assertStatusStateFn}
     ${assertions.assertOverlayMountedFn}
     ${assertions.assertNoOverlaysFn}
@@ -85,6 +86,14 @@ in
         machine.wait_until_succeeds(
             "/bin/sh -lc 'mountpoint -q /home && [ \"$(findmnt -n -o FSTYPE /home)\" = overlay ]'"
         )
+        # Wait for the detached worker to finish before asserting the overlay set.
+        # A full activate runs the hidden `switch-to-configuration` after the
+        # mounts, which transiently unmounts the overlays over the base-OS trees it
+        # manages (/etc, /usr, /bin, /lib64); the worker re-mounts them before it
+        # restarts the session and reaches the Active state. Asserting only once
+        # activation has completed checks the steady-state overlay set the hidden
+        # session actually runs under, not the mid-switch window.
+        wait_for_status_state("active", config_path=headless_config)
         assert_overlay_mounted("/home")
         assert_overlay_mounted("/etc")
         # Record whether the hidden switch brought the marker service up; the
