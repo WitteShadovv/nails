@@ -116,6 +116,91 @@ fn should_kill_in_scope(scope: KillScope, shell_uid: u32, target_uid: Option<u32
     }
 }
 
+/// Whether a shell process is interactive by the shell's own rules, and so is
+/// one that keeps (and on exit flushes) a command history.
+///
+/// Follows bash's definition, which zsh, ksh and fish share in substance: a
+/// shell given `-c` or a script file as its first non-option argument is not
+/// interactive (it never reads or saves history); `-i` forces interactive;
+/// otherwise it is interactive exactly when its stdin and stderr are both
+/// terminals. `argv[0]` (including a login shell's leading `-`) is ignored.
+///
+/// The teardown kill exists to stop a shell flushing in-memory history onto the
+/// decoy, so only interactive shells are worth killing: a non-interactive shell
+/// — a service's script, a `sh -c` wrapper, a pipeline subshell — has no history
+/// to flush, and SIGKILLing it would only break decoy services.
+fn shell_is_interactive(argv: &[String], stdin_tty: bool, stderr_tty: bool) -> bool {
+    let mut forced_interactive = false;
+    let mut read_stdin = false;
+    let mut args = argv.iter().skip(1);
+    while let Some(arg) = args.next() {
+        let arg = arg.as_str();
+        if arg == "--" {
+            break;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            // Long options that consume the next word.
+            if matches!(long, "rcfile" | "init-file") {
+                args.next();
+            }
+            continue;
+        }
+        if let Some(flags) = arg.strip_prefix(['-', '+'])
+            && !flags.is_empty()
+        {
+            for flag in flags.chars() {
+                match flag {
+                    'c' => return false,
+                    'i' => forced_interactive = true,
+                    's' => read_stdin = true,
+                    _ => {}
+                }
+            }
+            if flags.ends_with(['o', 'O']) {
+                args.next();
+            }
+            continue;
+        }
+        // The first non-option argument is a script to run, unless -s says the
+        // commands come from stdin and the words are positional parameters.
+        if !read_stdin {
+            return forced_interactive;
+        }
+        break;
+    }
+    forced_interactive || (stdin_tty && stderr_tty)
+}
+
+/// Whether a resolved `/proc/<pid>/fd/N` target is a terminal device.
+#[cfg(not(test))]
+fn fd_is_terminal(proc_pid: &Path, fd: &str) -> bool {
+    fs::read_link(proc_pid.join("fd").join(fd)).is_ok_and(|link| {
+        let text = link.to_string_lossy();
+        ["/dev/pts/", "/dev/tty", "/dev/console", "/dev/hvc"]
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
+    })
+}
+
+/// Whether the shell process `pid` is interactive (see [`shell_is_interactive`]).
+#[cfg(not(test))]
+fn process_shell_is_interactive(pid: u32) -> bool {
+    let proc_pid = Path::new("/proc").join(pid.to_string());
+    let argv: Vec<String> = fs::read(proc_pid.join("cmdline"))
+        .map(|raw| {
+            raw.split(|byte| *byte == 0)
+                .filter(|part| !part.is_empty())
+                .map(|part| String::from_utf8_lossy(part).into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    shell_is_interactive(
+        &argv,
+        fd_is_terminal(&proc_pid, "0"),
+        fd_is_terminal(&proc_pid, "2"),
+    )
+}
+
 /// Whether a scanned PID is in the caller-supplied protected set.
 ///
 /// Protected PIDs are the deactivation process's own ancestry plus any PIDs
@@ -271,6 +356,12 @@ fn kill_shells(protected_pids: &[u32], scope: KillScope) -> ShellKillReport {
                 continue;
             }
 
+            if !process_shell_is_interactive(pid) {
+                tracing::debug!(pid = pid, comm = %comm, "Skipping non-interactive shell (no history to flush)");
+                report.skipped.push(pid);
+                continue;
+            }
+
             #[cfg(feature = "test-hooks")]
             if let Some(service_name) = read_service_name(pid)
                 && protected_service_names()
@@ -312,6 +403,76 @@ fn kill_shells(protected_pids: &[u32], scope: KillScope) -> ShellKillReport {
 
 #[cfg(test)]
 mod tests {
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn a_terminal_login_shell_is_interactive() {
+        assert!(shell_is_interactive(&argv(&["-bash"]), true, true));
+        assert!(shell_is_interactive(&argv(&["bash", "-l"]), true, true));
+        assert!(shell_is_interactive(&argv(&["zsh"]), true, true));
+    }
+
+    #[test]
+    fn a_shell_without_a_terminal_is_not_interactive() {
+        assert!(!shell_is_interactive(&argv(&["bash"]), false, false));
+        // stdin a pipe, stderr a terminal: still not interactive.
+        assert!(!shell_is_interactive(&argv(&["bash"]), false, true));
+    }
+
+    #[test]
+    fn command_strings_and_scripts_are_not_interactive() {
+        assert!(!shell_is_interactive(
+            &argv(&["sh", "-lc", "nails emergency"]),
+            true,
+            true
+        ));
+        assert!(!shell_is_interactive(
+            &argv(&["bash", "-c", "true"]),
+            true,
+            true
+        ));
+        // A script argument, even with a terminal on every fd.
+        assert!(!shell_is_interactive(
+            &argv(&["bash", "--norc", "/dev/hvc0"]),
+            true,
+            true
+        ));
+        assert!(!shell_is_interactive(
+            &argv(&["bash", "/etc/backup.sh"]),
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn dash_i_forces_interactive_and_dash_s_keeps_stdin() {
+        assert!(shell_is_interactive(&argv(&["bash", "-i"]), false, false));
+        assert!(shell_is_interactive(
+            &argv(&["bash", "-i", "script"]),
+            false,
+            false
+        ));
+        assert!(shell_is_interactive(
+            &argv(&["bash", "-s", "arg1"]),
+            true,
+            true
+        ));
+        assert!(!shell_is_interactive(
+            &argv(&["bash", "-s", "arg1"]),
+            false,
+            false
+        ));
+        // An option argument after -o is not mistaken for a script.
+        assert!(shell_is_interactive(
+            &argv(&["bash", "-o", "vi"]),
+            true,
+            true
+        ));
+    }
+
     use super::*;
 
     #[test]
